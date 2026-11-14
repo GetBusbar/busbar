@@ -168,7 +168,12 @@ fn summarize_recovery_chains(
             );
         }
     }
-    Ok(selections.into_values().collect())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a chain replay summarizes the whole recovery Store, at attach and recovery checks"
+    )]
+    let summaries = selections.into_values().collect();
+    Ok(summaries)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,11 +249,14 @@ impl RecoveryResolution {
 impl RecoveryEvent {
     pub fn fingerprint(&self) -> Result<[u8; 32], RecoveryError> {
         use sha2::Digest;
-        let encoded = serde_json::to_vec(self)
-            .map_err(|error| RecoveryError::Invalid(format!("invalid recovery event: {error}")))?;
         let mut digest = sha2::Sha256::new();
         digest.update(b"busbar.usage-recovery.event.v1\0");
-        digest.update(&encoded);
+        serde_json::to_writer(super::DigestWriter(&mut digest), self).map_err(|error| {
+            super::rendered_error(
+                RecoveryError::Invalid,
+                format_args!("invalid recovery event: {error}"),
+            )
+        })?;
         Ok(digest.finalize().into())
     }
 
@@ -618,7 +626,9 @@ impl RecoveryAdmin<'_> {
                 governance
                     .keep_recovery_event(&current)
                     .await
-                    .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+                    .map_err(|error| {
+                        crate::governance::rendered_error(RecoveryError::Unavailable, error)
+                    })?;
                 return self.resume_adopted(cost, resolution.operation_id).await;
             }
             return self.adopt_foreign(cost, resolution, cached.clone()).await;
@@ -716,7 +726,9 @@ impl RecoveryAdmin<'_> {
         let governance = self.governance;
         let driver = governance
             .recovery_driver(resolution.operation_id)
-            .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+            .map_err(|error| {
+                crate::governance::rendered_error(RecoveryError::Unavailable, error)
+            })?;
         let running = driver
             .enter(false)
             .await
@@ -766,14 +778,14 @@ impl RecoveryAdmin<'_> {
         governance
             .validate_recovery_origin(&selected)
             .await
-            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+            .map_err(|error| crate::governance::rendered_error(RecoveryError::Invalid, error))?;
         match selected.kind {
             RecoveryKind::Correction => governance.restore_correction_recovery(&selected),
             RecoveryKind::Usage | RecoveryKind::Metering => {
                 governance.restore_raw_recovery(&selected)
             }
         }
-        .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+        .map_err(|error| crate::governance::rendered_error(RecoveryError::Invalid, error))?;
         drop(correction_guard);
         drop(running);
         self.resume_adopted(cost, resolution.operation_id).await
@@ -796,14 +808,18 @@ impl RecoveryAdmin<'_> {
                 governance
                     .drive_raw_recovery(operation_id)
                     .await
-                    .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+                    .map_err(|error| {
+                        crate::governance::rendered_error(RecoveryError::Unavailable, error)
+                    })?;
                 let current = governance.recovery_event(operation_id).ok_or_else(|| {
                     RecoveryError::Unavailable("adopted recovery selection disappeared".into())
                 })?;
                 governance
                     .resume_recovery_children(&current)
                     .await
-                    .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+                    .map_err(|error| {
+                        crate::governance::rendered_error(RecoveryError::Unavailable, error)
+                    })?;
             }
         }
         governance
@@ -830,6 +846,10 @@ impl RecoveryAdmin<'_> {
                 "recovery Store is not attached".into(),
             ));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the operator's recovery list is built per admin request (control plane)"
+        )]
         let mut items: std::collections::BTreeMap<_, _> = self
             .governance
             .selected_recovery_events()
@@ -846,17 +866,23 @@ impl RecoveryAdmin<'_> {
             item.can_resolve = false;
             items.insert(item.operation_id, item);
         }
-        Ok(items
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the operator's recovery list page is built per admin request (control plane)"
+        )]
+        let page = items
             .into_iter()
             .filter(|(id, _)| after.is_none_or(|after| *id > after))
             .take(limit)
             .map(|(_, item)| item)
-            .collect())
+            .collect();
+        Ok(page)
     }
 }
 
 impl super::GovState {
     pub(super) fn has_unsettled_recovery(&self) -> bool {
+        // busbar:expect(bp::state_scan, reason = "boot: shutdown custody inspection, run once after admission has stopped")
         self.recovery_book.attaching.is_running()
             || self
                 .recovery_book
@@ -906,7 +932,7 @@ impl super::GovState {
         let selected = sink
             .replay_selections()
             .await
-            .map_err(|error| super::RecordStoreError(error.to_string()))?
+            .map_err(crate::governance::store_error)?
             .into_iter()
             .find(|selection| selection.initial.operation_id == initial.operation_id);
         let Some(selection) = selected else {
@@ -914,7 +940,7 @@ impl super::GovState {
         };
         selection
             .validate_identity()
-            .map_err(|error| super::RecordStoreError(error.to_string()))?;
+            .map_err(crate::governance::store_error)?;
         if selection.initial != *initial {
             return Err(super::RecordStoreError(
                 "unit terminal receipt differs from its persisted intent".into(),
@@ -960,7 +986,7 @@ impl super::GovState {
         self.recovery_book
             .replay(sink)
             .await
-            .map_err(|error| super::RecordStoreError(error.to_string()))?;
+            .map_err(crate::governance::store_error)?;
         for event in self.selected_recovery_events() {
             self.validate_recovery_origin(&event).await?;
             match event.kind {
@@ -992,13 +1018,20 @@ impl super::GovState {
     }
 
     pub(super) fn selected_recovery_events(&self) -> Vec<RecoveryEvent> {
-        self.recovery_book
+        // busbar:expect(bp::state_scan, reason = "boot: every selected event is restored at attach or listed for the operator")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: every selected event is restored at attach or listed for the operator"
+        )]
+        let events = self
+            .recovery_book
             .entries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .values()
             .filter_map(|entry| entry.selected.clone())
-            .collect()
+            .collect();
+        events
     }
 
     /// Only a retained same-process monotonic clock authorizes receipt replay.
@@ -1053,17 +1086,10 @@ impl super::GovState {
         {
             return;
         }
-        let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&event.payload) else {
+        let Ok(payload) = serde_json::from_slice::<RootCustody>(&event.payload) else {
             return;
         };
-        if payload
-            .get("origin")
-            .is_some_and(|origin| !origin.is_null())
-            || !payload
-                .get("handoffs")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(Vec::is_empty)
-        {
+        if payload.origin.is_some() || !payload.handoffs.is_empty_list() {
             return;
         }
         entries.remove(&operation_id);
@@ -1082,7 +1108,7 @@ impl super::GovState {
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .verify_origin(event)
             .await
-            .map_err(|error| super::RecordStoreError(error.to_string()))
+            .map_err(crate::governance::store_error)
     }
 
     fn clear_unselected_adoption(&self, resolution: &RecoveryResolution) {
@@ -1239,7 +1265,7 @@ impl super::GovState {
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .confirm_owned_checkpoint(event)
             .await
-            .map_err(|error| super::RecordStoreError(error.to_string()))
+            .map_err(crate::governance::store_error)
     }
 
     pub(super) async fn verify_current_recovery_checkpoint(
@@ -1252,7 +1278,7 @@ impl super::GovState {
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .verify_checkpoint(event)
             .await
-            .map_err(|error| super::RecordStoreError(error.to_string()))
+            .map_err(crate::governance::store_error)
     }
 
     pub(super) async fn verify_recovery_checkpoint(
@@ -1277,7 +1303,7 @@ impl super::GovState {
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .verify_checkpoint(event)
             .await
-            .map_err(|error| super::RecordStoreError(error.to_string()))
+            .map_err(crate::governance::store_error)
     }
 
     pub(super) fn recovery_driver(
@@ -1352,7 +1378,7 @@ impl super::GovState {
         self.recovery_book
             .keep(event)
             .await
-            .map_err(|error| super::RecordStoreError(error.to_string()))
+            .map_err(crate::governance::store_error)
     }
 }
 
@@ -1412,6 +1438,77 @@ pub(super) struct RecoveryChild {
 pub struct RecoveryOrigin {
     pub operation_id: [u8; 16],
     pub event_fingerprint: [u8; 32],
+}
+
+/// The two facts a settled root's payload is read for, decoded without building a JSON tree:
+/// whether it names a non-null `origin`, and whether `handoffs` is an empty list. Every other
+/// field is skipped.
+#[derive(Deserialize)]
+struct RootCustody {
+    #[serde(default)]
+    origin: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    handoffs: Handoffs,
+}
+
+/// The shape of a payload's `handoffs` value: an empty list, or anything else (absent, null, a
+/// non-empty list or another type).
+#[derive(Default)]
+enum Handoffs {
+    EmptyList,
+    #[default]
+    Other,
+}
+
+impl Handoffs {
+    fn is_empty_list(&self) -> bool {
+        matches!(self, Self::EmptyList)
+    }
+}
+
+impl<'de> Deserialize<'de> for Handoffs {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+        struct Shape;
+        impl<'de> Visitor<'de> for Shape {
+            type Value = Handoffs;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Handoffs, A::Error> {
+                let empty = seq.next_element::<IgnoredAny>()?.is_none();
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(if empty {
+                    Handoffs::EmptyList
+                } else {
+                    Handoffs::Other
+                })
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Handoffs, A::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(Handoffs::Other)
+            }
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Handoffs, E> {
+                Ok(Handoffs::Other)
+            }
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Handoffs, E> {
+                Ok(Handoffs::Other)
+            }
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Handoffs, E> {
+                Ok(Handoffs::Other)
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Handoffs, E> {
+                Ok(Handoffs::Other)
+            }
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Handoffs, E> {
+                Ok(Handoffs::Other)
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Handoffs, E> {
+                Ok(Handoffs::Other)
+            }
+        }
+        deserializer.deserialize_any(Shape)
+    }
 }
 
 #[cfg(test)]

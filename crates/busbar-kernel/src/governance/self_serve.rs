@@ -42,10 +42,28 @@ pub(crate) fn hold_reason(
 
 impl GovState {
     fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
+        /// Streams formatted text straight into the MAC, so the message is never materialized.
+        struct MacText<'a>(&'a mut ring::hmac::Context);
+        impl std::fmt::Write for MacText<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.0.update(text.as_bytes());
+                Ok(())
+            }
+        }
         let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, seed);
-        let msg = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}");
-        let tag = ring::hmac::sign(&key, msg.as_bytes());
-        format!("{VK_ID_PREFIX}{}", hex::encode(&tag.as_ref()[..16]))
+        let mut mac = ring::hmac::Context::with_key(&key);
+        std::fmt::Write::write_fmt(
+            &mut MacText(&mut mac),
+            format_args!("{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}"),
+        )
+        .expect("a MAC accepts any text");
+        let tag = mac.sign();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a self-serve key id is derived once per self-serve mint (control plane)"
+        )]
+        let id = format!("{VK_ID_PREFIX}{}", hex::encode(&tag.as_ref()[..16]));
+        id
     }
 
     /// The subject's current self-serve binding: its live (enabled, not tombstoned) row, in
@@ -194,13 +212,19 @@ impl GovState {
                 stride.saturating_mul(2)
             };
         }
-        Err(RecordStoreError(format!(
-            "self-serve binding: {MAX_PROBES} probes from epoch {from} all landed on existing \
-             rows; refusing to write over a key id already in use"
-        )))
+        Err(rendered_error(
+            RecordStoreError,
+            format_args!(
+                "self-serve binding: {MAX_PROBES} probes from epoch {from} all landed on existing \
+                 rows; refusing to write over a key id already in use"
+            ),
+        ))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is one part of the binding a self-serve mint writes"
+    )]
     async fn write_self_binding(
         &self,
         material: &SigningMaterial,
@@ -214,7 +238,15 @@ impl GovState {
     ) -> RecordStoreResult<(VirtualKey, String)> {
         let seed = material.signer.secret_bytes();
         let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch).await?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a self-serve binding is written once per self-serve mint (control plane)"
+        )]
         let generation = epoch.to_string();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a self-serve binding is written once per self-serve mint (control plane)"
+        )]
         let binding = VirtualKey {
             id: id.clone(),
             generation_hash: binding_marker(&id, &generation),
@@ -240,16 +272,17 @@ impl GovState {
             idp_provider: Some(provider.to_string()),
             ..Default::default()
         };
-        let mut ids = vec![id.clone()];
-        if let Some(previous) = previous {
-            ids.push(previous.id.clone());
-        }
-        ids.sort();
-        ids.dedup();
-        let mut key_claims = Vec::new();
-        for id in &ids {
-            key_claims.push(self.identity_key_guard(id).await);
-        }
+        // Claim the one or two key ids in ascending order (the shared lock order), each once.
+        let (first, second) = match previous.map(|previous| previous.id.as_str()) {
+            Some(other) if other < id.as_str() => (other, Some(id.as_str())),
+            Some(other) if other > id.as_str() => (id.as_str(), Some(other)),
+            _ => (id.as_str(), None),
+        };
+        let _first_claim = self.identity_key_guard(first).await;
+        let _second_claim = match second {
+            Some(second) => Some(self.identity_key_guard(second).await),
+            None => None,
+        };
         let identity = self.core_store()?.identity();
         let commit = match previous {
             Some(previous) => {
@@ -296,8 +329,8 @@ impl GovState {
         now: u64,
     ) -> Result<(VirtualKey, String), SelfMintError> {
         let Some(material) = self.signing_material() else {
-            return Err(RecordStoreError(
-                "signed-token minting is unavailable: no signing key is configured".to_string(),
+            return Err(store_error(
+                "signed-token minting is unavailable: no signing key is configured",
             )
             .into());
         };
@@ -327,7 +360,12 @@ impl GovState {
                 if new_scopes != existing.allowed_scopes || adopt {
                     let mut updated = (*existing).clone();
                     updated.allowed_scopes = new_scopes;
-                    updated.idp_provider = Some(provider.to_string());
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: a self-serve binding adopts its provider once, on its first provider-named mint"
+                    )]
+                    let provider = provider.to_string();
+                    updated.idp_provider = Some(provider);
                     let commit = self
                         .core_store()?
                         .identity()
@@ -393,8 +431,8 @@ impl GovState {
         now: u64,
     ) -> Result<(VirtualKey, String), SelfMintError> {
         let Some(material) = self.signing_material() else {
-            return Err(RecordStoreError(
-                "signed-token minting is unavailable: no signing key is configured".to_string(),
+            return Err(store_error(
+                "signed-token minting is unavailable: no signing key is configured",
             )
             .into());
         };
@@ -436,4 +474,9 @@ impl GovState {
             .await?;
         Ok(out)
     }
+}
+
+/// Whether `group` is `user_sub`'s self-serve group (`user:<sub>`), compared in place.
+fn is_self_group(group: Option<&str>, user_sub: &str) -> bool {
+    group.and_then(|group| group.strip_prefix(SELF_KEY_GROUP_PREFIX)) == Some(user_sub)
 }

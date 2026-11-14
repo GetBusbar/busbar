@@ -3,7 +3,7 @@
 
 use busbar_contract::count::{Count, CountError, COUNT_SCALE};
 use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
-use std::collections::HashMap;
+use foldhash::{HashMap, HashMapExt};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -45,7 +45,12 @@ pub const SELF_KEY_BINDING_MODE: &str = "user-bound";
 pub const SELF_KEY_BINDING_MODE_APP: &str = "time-bound";
 
 pub fn binding_marker(id: &str, generation: &str) -> String {
-    format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a binding marker is minted once per key mint, rotation or revocation (control plane)"
+    )]
+    let marker = format!("{BINDING_MARKER_PREFIX}{id}:{generation}");
+    marker
 }
 
 pub fn binding_generation(generation_hash: &str) -> Option<&str> {
@@ -64,6 +69,10 @@ pub fn generation_matches(generation_hash: &str, presented: Option<&str>) -> boo
 
 pub(crate) fn generate_binding_generation() -> Result<String, getrandom::Error> {
     let mut raw = [0u8; 16];
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a binding generation is drawn once per key mint, rotation or revocation (control plane)"
+    )]
     getrandom::fill(&mut raw)?;
     Ok(hex::encode(raw))
 }
@@ -197,22 +206,24 @@ impl BudgetCell {
         });
     }
 
-    fn park(&mut self, window: u64, delta: UsageDelta) {
+    fn park(&mut self, window: u64, delta: impl std::borrow::Borrow<UsageDelta>) {
+        let delta = delta.borrow();
         self.mutate(|cell| {
             park_window(
                 &mut cell.rolled,
                 window,
-                ExactUsageDelta::from_signed(&delta),
+                ExactUsageDelta::from_signed(delta),
             );
         });
     }
 
-    fn park_eras(&mut self, window: u64, delta: UsageDelta) {
+    fn park_eras(&mut self, window: u64, delta: impl std::borrow::Borrow<UsageDelta>) {
+        let delta = delta.borrow();
         self.mutate(|cell| {
             park_window(
                 &mut cell.rolled_eras,
                 window,
-                ExactUsageDelta::from_signed(&delta),
+                ExactUsageDelta::from_signed(delta),
             );
         });
     }
@@ -243,45 +254,73 @@ impl BudgetCell {
         era: RawRateEra,
         units: &std::collections::BTreeMap<String, Count>,
     ) -> Result<(), CountError> {
-        fn add(
-            cell: &mut BudgetCell,
+        // Every sum is checked against the held counts before any cell changes, so a refused
+        // accrual leaves the cell (and its correction branch) exactly as it was, without copying it.
+        fn check(
+            cell: &BudgetCell,
             model: &str,
             era: RawRateEra,
             units: &std::collections::BTreeMap<String, Count>,
         ) -> Result<(), CountError> {
-            let at = cell
+            let held = cell
                 .models
                 .iter()
-                .position(|m| &*m.model == model && m.era == era);
-            let mut next = at.map(|i| cell.models[i].cur.clone()).unwrap_or_default();
+                .position(|m| &*m.model == model && m.era == era)
+                .map(|i| &cell.models[i].cur);
             for (k, v) in units {
                 if v.is_negative() {
                     return Err(CountError::Negative);
                 }
                 if !v.is_zero() {
-                    let slot = next.entry(k.clone()).or_default();
-                    *slot = slot.checked_add(*v)?;
+                    let slot = held.and_then(|cur| cur.get(k)).copied().unwrap_or_default();
+                    slot.checked_add(*v)?;
                 }
-            }
-            if let Some(i) = at {
-                cell.models[i].cur = next;
-            } else {
-                cell.models.push(ModelCell {
-                    model: model.into(),
-                    era,
-                    cur: next,
-                    flushed: Default::default(),
-                    flushed_era: Default::default(),
-                });
             }
             Ok(())
         }
-        let mut next = self.clone();
-        add(&mut next, model, era, units)?;
-        if let Some(branch) = next.correction.as_mut() {
-            add(&mut branch.accepted, model, era, units)?;
+        fn add(
+            cell: &mut BudgetCell,
+            model: &str,
+            era: RawRateEra,
+            units: &std::collections::BTreeMap<String, Count>,
+        ) {
+            let at = cell
+                .models
+                .iter()
+                .position(|m| &*m.model == model && m.era == era);
+            let i = at.unwrap_or_else(|| {
+                cell.models.push(ModelCell {
+                    model: model.into(),
+                    era,
+                    cur: Default::default(),
+                    flushed: Default::default(),
+                    flushed_era: Default::default(),
+                });
+                cell.models.len() - 1
+            });
+            let cur = &mut cell.models[i].cur;
+            for (k, v) in units {
+                if v.is_zero() {
+                    continue;
+                }
+                let checked = "sum checked before the cell changed";
+                match cur.get_mut(k) {
+                    Some(slot) => *slot = slot.checked_add(*v).expect(checked),
+                    None => {
+                        let first = Count::default().checked_add(*v).expect(checked);
+                        cur.insert(k.clone(), first);
+                    }
+                }
+            }
         }
-        *self = next;
+        check(self, model, era, units)?;
+        if let Some(branch) = self.correction.as_deref() {
+            check(&branch.accepted, model, era, units)?;
+        }
+        add(self, model, era, units);
+        if let Some(branch) = self.correction.as_deref_mut() {
+            add(&mut branch.accepted, model, era, units);
+        }
         Ok(())
     }
 
@@ -367,11 +406,31 @@ const ERA_MODEL_SEP: char = '\u{1f}';
 
 const RAW_ERA_PREFIX: &str = "busbar.raw-era.v1:";
 
-fn era_tag(era: RawRateEra) -> String {
-    match era.entry_id {
-        Some(id) => format!("{RAW_ERA_PREFIX}{}:{id}", era.effective_from),
-        None => era.effective_from.to_string(),
+/// An era's stored tag, written straight into whatever text holds it (no intermediate String).
+struct EraTag(RawRateEra);
+
+impl std::fmt::Display for EraTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.entry_id {
+            Some(id) => write!(f, "{RAW_ERA_PREFIX}{}:{id}", self.0.effective_from),
+            None => write!(f, "{}", self.0.effective_from),
+        }
     }
+}
+
+fn era_tag(era: RawRateEra) -> String {
+    era_text(EraTag(era))
+}
+
+/// The one owned rendering of a stored ledger name (era tag, era-qualified model, dated bucket).
+/// Each is a key of a durable ledger row, built when that row is written, read or corrected.
+fn era_text(name: impl std::fmt::Display) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a ledger row's stored name is rendered once per durable row write"
+    )]
+    let text = name.to_string();
+    text
 }
 
 fn parse_era_tag(tag: &str) -> RecordStoreResult<Option<RawRateEra>> {
@@ -387,7 +446,7 @@ fn parse_era_tag(tag: &str) -> RecordStoreResult<Option<RawRateEra>> {
 }
 
 fn era_model(era: RawRateEra, model: &str) -> String {
-    format!("{}{ERA_MODEL_SEP}{model}", era_tag(era))
+    era_text(format_args!("{}{ERA_MODEL_SEP}{model}", EraTag(era)))
 }
 
 fn dated_delta(delta: &UsageDelta, era: RawRateEra) -> UsageDelta {
@@ -404,13 +463,12 @@ fn dated_delta(delta: &UsageDelta, era: RawRateEra) -> UsageDelta {
         })
         .collect();
     if delta.billable_requests != 0 {
+        let mut usage_units = std::collections::BTreeMap::new();
+        usage_units.insert(era_text(ERA_FEE_UNIT), i128::from(delta.billable_requests));
         models.push(busbar_contract::records::ModelTokensDelta {
             model: era_tag(era),
             scale: 0,
-            usage_units: std::collections::BTreeMap::from([(
-                ERA_FEE_UNIT.to_string(),
-                i128::from(delta.billable_requests),
-            )]),
+            usage_units,
         });
     }
     UsageDelta {
@@ -435,7 +493,17 @@ fn park_window(parked: &mut Vec<(u64, ExactUsageDelta)>, window: u64, delta: Exa
 
 fn era_bucket(bucket: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, bucket.as_bytes());
-    format!("{ERA_BUCKET_PREFIX}{}", hex::encode(&digest.as_ref()[..16]))
+    era_text(EraBucket(&digest.as_ref()[..16]))
+}
+
+/// A dated bucket's stored name: the prefix, then the lowercase hex of the digest prefix.
+struct EraBucket<'a>(&'a [u8]);
+
+impl std::fmt::Display for EraBucket<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(ERA_BUCKET_PREFIX)?;
+        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
+    }
 }
 
 pub fn is_token_class(class: &str) -> bool {
@@ -659,15 +727,13 @@ impl<V> Default for MapShard<V> {
 }
 
 struct Sharded<V> {
-    shards: Box<[MapShard<V>]>,
+    shards: Box<[MapShard<V>; GOV_SHARDS]>,
 }
 
 impl<V> Sharded<V> {
     fn new() -> Self {
-        let mut shards = Vec::with_capacity(GOV_SHARDS);
-        shards.resize_with(GOV_SHARDS, MapShard::default);
         Self {
-            shards: shards.into_boxed_slice(),
+            shards: Box::new(std::array::from_fn(|_| MapShard::default())),
         }
     }
 
@@ -1050,11 +1116,26 @@ pub fn synthesize_bound_key(
     principal: &crate::auth::Principal,
     role_bindings: &crate::config::RoleBindings,
 ) -> Option<Arc<VirtualKey>> {
+    /// The bound marker's JSON, serialized from borrows (keys in the order `json!` sorted them).
+    #[derive(serde::Serialize)]
+    struct Marker<'a> {
+        id: &'a str,
+        module: &'a str,
+        roles: &'a [String],
+    }
     let mut key = synthesize_key(principal, role_bindings.get(module))?;
-    key.generation_hash = format!(
-        "{PRINCIPAL_MARKER_PREFIX}{}",
-        serde_json::json!({ "id": principal.id, "module": module, "roles": principal.roles })
-    );
+    // The synthesized key's generation text already starts with the marker prefix: keep that
+    // prefix and serialize the marker straight after it, into the same buffer.
+    let mut marker = std::mem::take(&mut key.generation_hash).into_bytes();
+    marker.truncate(PRINCIPAL_MARKER_PREFIX.len());
+    debug_assert_eq!(marker, PRINCIPAL_MARKER_PREFIX.as_bytes());
+    let fields = Marker {
+        id: &principal.id,
+        module,
+        roles: &principal.roles,
+    };
+    serde_json::to_writer(&mut marker, &fields).expect("a borrowed marker always serializes");
+    key.generation_hash = String::from_utf8(marker).expect("serde_json writes UTF-8");
     Some(Arc::new(key))
 }
 
@@ -1143,6 +1224,10 @@ pub fn grant_scopes(
     if pools.is_none() && plane.is_none() {
         return None;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a key's grant list is built once per key mint or binding load (control plane)"
+    )]
     let mut list: Vec<busbar_contract::records::ScopeRef> = pools
         .into_iter()
         .flatten()
@@ -1164,11 +1249,16 @@ pub fn plane_declares_kind(kind: &str) -> bool {
 pub(crate) fn pool_scopes(
     allowed_pools: Option<Vec<String>>,
 ) -> Option<Vec<busbar_contract::records::ScopeRef>> {
-    allowed_pools.map(|list| {
-        list.into_iter()
-            .map(busbar_contract::records::ScopeRef::pool)
-            .collect()
-    })
+    let list = allowed_pools?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a self-serve key's pool grant is built once per mint (control plane)"
+    )]
+    let scopes = list
+        .into_iter()
+        .map(busbar_contract::records::ScopeRef::pool)
+        .collect();
+    Some(scopes)
 }
 
 fn synthesize_key(
@@ -1227,18 +1317,32 @@ fn draw(alphabet: &str, n: usize) -> Result<String, getrandom::Error> {
         return Ok(String::new());
     }
     let mut buf = vec![0u8; n];
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: credential entropy is drawn once per credential mint (control plane)"
+    )]
     getrandom::fill(&mut buf)?;
-    Ok(buf
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the minted credential text is built once per credential mint (control plane)"
+    )]
+    let drawn = buf
         .iter()
         .map(|&b| char::from(symbols[usize::from(b) % symbols.len()]))
-        .collect())
+        .collect();
+    Ok(drawn)
 }
 
 pub(crate) fn issue_credential(
     shape: &busbar_contract::auth_calls::IssuedShape,
 ) -> Result<(String, String), getrandom::Error> {
     let tail = shape.id_len.saturating_sub(shape.id_prefix.len());
-    let id = format!("{}{}", shape.id_prefix, draw(&shape.id_alphabet, tail)?);
+    let tail = draw(&shape.id_alphabet, tail)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the public credential id is built once per credential mint (control plane)"
+    )]
+    let id = format!("{}{tail}", shape.id_prefix);
     Ok((id, draw(&shape.secret_alphabet, shape.secret_len)?))
 }
 
@@ -1346,28 +1450,43 @@ impl MeterCounts {
     }
     pub fn try_merge(&mut self, other: &Self) -> Result<(), CountError> {
         other.validate()?;
-        let mut next = self.clone();
-        next.requests = next
+        // Every sum is checked before any field changes, so a refused merge leaves `self` exactly
+        // as it was without copying it first.
+        let requests = self
             .requests
             .checked_add(other.requests)
             .ok_or(CountError::Overflow)?;
-        next.tokens_input = next.tokens_input.checked_add(other.tokens_input)?;
-        next.tokens_output = next.tokens_output.checked_add(other.tokens_output)?;
-        next.tokens_cache_read = next
+        let tokens_input = self.tokens_input.checked_add(other.tokens_input)?;
+        let tokens_output = self.tokens_output.checked_add(other.tokens_output)?;
+        let tokens_cache_read = self
             .tokens_cache_read
             .checked_add(other.tokens_cache_read)?;
-        next.tokens_cache_write = next
+        let tokens_cache_write = self
             .tokens_cache_write
             .checked_add(other.tokens_cache_write)?;
         for (class, n) in &other.usage_units {
-            let cur = next.usage_units.entry(class.clone()).or_default();
-            *cur = cur.checked_add(*n)?;
+            let held = self.usage_units.get(class).copied().unwrap_or_default();
+            held.checked_add(*n)?;
         }
-        *self = next;
+        self.requests = requests;
+        self.tokens_input = tokens_input;
+        self.tokens_output = tokens_output;
+        self.tokens_cache_read = tokens_cache_read;
+        self.tokens_cache_write = tokens_cache_write;
+        let checked = "unit sum checked before the counts changed";
+        for (class, n) in &other.usage_units {
+            match self.usage_units.get_mut(class) {
+                Some(cur) => *cur = cur.checked_add(*n).expect(checked),
+                None => {
+                    let first = Count::default().checked_add(*n).expect(checked);
+                    self.usage_units.insert(class.clone(), first);
+                }
+            }
+        }
         Ok(())
     }
-    pub fn merge(&mut self, other: MeterCounts) {
-        self.try_merge(&other)
+    pub fn merge(&mut self, other: impl std::borrow::Borrow<MeterCounts>) {
+        self.try_merge(other.borrow())
             .expect("metering count accumulation exceeds Count range");
     }
     fn validate(&self) -> Result<(), CountError> {
@@ -1392,7 +1511,7 @@ impl MeterCounts {
             && self.tokens_output.is_zero()
             && self.tokens_cache_read.is_zero()
             && self.tokens_cache_write.is_zero()
-            && self.usage_units.values().all(|n| n.is_zero())
+            && !has_units(&self.usage_units)
     }
 }
 
@@ -1434,6 +1553,10 @@ fn accrue_pending_checked(
         return Ok(());
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the overflow sentinel is keyed only once the accumulator is at cap (store outage)"
+    )]
     let sentinel: MeterKey = (
         METERING_OVERFLOW_KEY_ID.to_string(),
         key.1,
@@ -1446,7 +1569,12 @@ fn accrue_pending_checked(
     pending.entry(sentinel).or_default().try_merge(&add)?;
     metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);
 
-    if let Some(coalesced) = warn.note(std::time::Instant::now()) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the overflow warning throttle reads the clock only once the accumulator is at cap"
+    )]
+    let noted = warn.note(std::time::Instant::now());
+    if let Some(coalesced) = noted {
         crate::diagnostics::diag_warn!(
             crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
             overflow_bucket = key.1,
@@ -1481,7 +1609,7 @@ impl CoalesceWarn {
 }
 
 pub struct PendingMetering {
-    shards: Box<[std::sync::Mutex<HashMap<MeterKey, MeterCounts>>]>,
+    shards: Box<[std::sync::Mutex<HashMap<MeterKey, MeterCounts>>; GOV_SHARDS]>,
     coalesce_warn: CoalesceWarn,
 
     flight: std::sync::Mutex<std::collections::VecDeque<metering_flush::MeteringWrite>>,
@@ -1496,10 +1624,10 @@ impl Default for PendingMetering {
 
 impl PendingMetering {
     pub fn new() -> Self {
-        let mut shards = Vec::with_capacity(GOV_SHARDS);
-        shards.resize_with(GOV_SHARDS, || std::sync::Mutex::new(HashMap::new()));
         Self {
-            shards: shards.into_boxed_slice(),
+            shards: Box::new(std::array::from_fn(|_| {
+                std::sync::Mutex::new(HashMap::new())
+            })),
             coalesce_warn: CoalesceWarn::default(),
             flight: std::sync::Mutex::new(std::collections::VecDeque::new()),
             flush_runner: BudgetFlushRunner::default(),
@@ -1530,15 +1658,17 @@ impl PendingMetering {
         )
     }
 
-    pub fn drain(&self) -> Vec<(MeterKey, MeterCounts)> {
-        let mut out = Vec::new();
-        for shard in self.shards.iter() {
+    /// Take every shard's pending counts, one shard at a time as the caller consumes them, so
+    /// they move straight into the caller's flight without an intermediate list.
+    pub fn drain(&self) -> impl Iterator<Item = (MeterKey, MeterCounts)> + '_ {
+        self.shards.iter().flat_map(|shard| {
             let mut map = shard.lock().unwrap_or_else(|e| e.into_inner());
-            if !map.is_empty() {
-                out.extend(std::mem::take(&mut *map));
+            if map.is_empty() {
+                HashMap::new()
+            } else {
+                std::mem::take(&mut *map)
             }
-        }
-        out
+        })
     }
 
     #[cfg(test)]
@@ -1566,8 +1696,70 @@ trait IntoStoreResult<T> {
 }
 impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
     fn store(self) -> RecordStoreResult<T> {
-        self.map_err(|e| RecordStoreError(format!("OS CSPRNG (getrandom) unavailable: {e}")))
+        self.map_err(|e| {
+            rendered_error(
+                RecordStoreError,
+                format_args!("OS CSPRNG (getrandom) unavailable: {e}"),
+            )
+        })
     }
+}
+
+/// Wrap a failure's rendered text in one of the owned-message error types (`RecordStoreError`,
+/// `RecoveryError::*`, ..). The text is the error's own payload, rendered once the operation has
+/// already failed; a `format_args!` carries any context without an intermediate String.
+pub(crate) fn rendered_error<E>(
+    wrap: impl FnOnce(String) -> E,
+    error: impl std::fmt::Display,
+) -> E {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: an owned-message error renders its text once, on the failure path"
+    )]
+    let text = error.to_string();
+    wrap(text)
+}
+
+/// The ascending, de-duplicated union of two ascending streams (two maps' keys), merged lazily:
+/// the same sequence as collecting both into a `BTreeSet`, without building one.
+pub(crate) fn sorted_union<T: Ord, A, B>(a: A, b: B) -> impl Iterator<Item = T>
+where
+    A: IntoIterator<Item = T>,
+    B: IntoIterator<Item = T>,
+{
+    let (mut a, mut b) = (a.into_iter().peekable(), b.into_iter().peekable());
+    std::iter::from_fn(move || match (a.peek(), b.peek()) {
+        (Some(x), Some(y)) => match x.cmp(y) {
+            std::cmp::Ordering::Less => a.next(),
+            std::cmp::Ordering::Greater => b.next(),
+            std::cmp::Ordering::Equal => {
+                b.next();
+                a.next()
+            }
+        },
+        (Some(_), None) => a.next(),
+        (None, _) => b.next(),
+    })
+}
+
+/// Feeds serialized bytes straight into a running digest, so a fingerprint hashes the encoding
+/// without first collecting it into a buffer.
+pub(crate) struct DigestWriter<'a, D>(pub(crate) &'a mut D);
+
+impl<D: sha2::Digest> std::io::Write for DigestWriter<'_, D> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// [`rendered_error`] into the store's error type: `.map_err(store_error)`.
+pub(crate) fn store_error(error: impl std::fmt::Display) -> RecordStoreError {
+    rendered_error(RecordStoreError, error)
 }
 
 pub fn spawn_budget_flusher(
@@ -1589,13 +1781,16 @@ pub async fn run_budget_flusher(
 ) {
     let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
     purge_usage_windows(&gov).await;
-    let mut purged_at = std::time::Instant::now();
+    // The purge cadence rides the runtime's timer: its first tick completes at once (the boot
+    // purge above is that tick); later ticks are checked, never awaited, on each flush tick.
+    let mut purge_due = tokio::time::interval(USAGE_PURGE_EVERY);
+    purge_due.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    purge_due.tick().await;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(interval) => {
-                if purged_at.elapsed() >= USAGE_PURGE_EVERY {
+                if futures::FutureExt::now_or_never(purge_due.tick()).is_some() {
                     purge_usage_windows(&gov).await;
-                    purged_at = std::time::Instant::now();
                 }
                 resume_current_correction_verdicts(&gov, app.as_ref()).await;
                 if let Err(e) = gov.flush_unit_checkpoints().await {
@@ -1647,9 +1842,7 @@ pub async fn purge_usage_windows(gov: &GovState) {
     let Ok(core) = gov.core_store() else {
         return;
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = crate::store::now();
     let before = now.saturating_sub(USAGE_WINDOW_HORIZON_SECS);
     match core.ledger().prune_usage_before(before).await {
         Ok(purged) => tracing::debug!(
