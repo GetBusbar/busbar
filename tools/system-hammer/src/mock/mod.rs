@@ -557,3 +557,27 @@ async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
 }
 
 const IN_TOK_DEC: i64 = 4;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accept_error_is_counted_and_backs_off() {
+        let stats = Stats::default();
+        let t = std::time::Instant::now();
+        for _ in 0..2 {
+            // EMFILE
+            assert!(
+                accepted::<()>(Err(std::io::Error::from_raw_os_error(24)), &stats)
+                    .await
+                    .is_none()
+            );
+        }
+        assert!(
+            t.elapsed() >= ACCEPT_BACKOFF * 2,
+            "accept error must back off, not spin"
+        );
+        assert_eq!(stats.snapshot()["accept_errors"], 2);
+    }
+}
