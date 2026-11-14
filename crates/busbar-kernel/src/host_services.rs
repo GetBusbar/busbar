@@ -3334,6 +3334,8 @@ impl HostServices for KernelServices {
                 },
                 Err(refusal) => Stored {
                     value: svc::ticket_refused(refusal.code(), refusal.retry_after_secs()),
+                    bytes: Vec::new(),
+                    spans: Vec::new(),
                     ..Stored::refused(refusal.reason())
                 },
             }
