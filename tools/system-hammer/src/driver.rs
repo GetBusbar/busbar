@@ -600,3 +600,30 @@ pub fn pct_us(h: &Histogram<u64>, q: f64) -> f64 {
     }
     h.value_at_quantile(q) as f64 / 1000.0
 }
+
+#[cfg(test)]
+mod tests {
+    /// Error text for the first-error report must be built inside the lazy
+    /// `note_error` closure, so an error storm does not allocate per response.
+    #[test]
+    fn note_error_text_built_lazily() {
+        let src = include_str!("driver.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        let mut rest = prod;
+        let mut seen = 0;
+        while let Some(i) = rest.find("from_utf8_lossy") {
+            let before = &rest[..i];
+            let open = before
+                .rfind("note_error(||")
+                .expect("from_utf8_lossy used outside a note_error closure");
+            assert!(
+                !before[open..].contains(';'),
+                "from_utf8_lossy evaluated eagerly before note_error: {}",
+                &before[open.saturating_sub(200)..]
+            );
+            seen += 1;
+            rest = &rest[i + 1..];
+        }
+        assert!(seen > 0, "expected error-text sites in driver.rs");
+    }
+}
