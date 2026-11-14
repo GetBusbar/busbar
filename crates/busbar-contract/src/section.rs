@@ -204,7 +204,7 @@ where
 
     // Each member is read as serde_yaml read a `Value`: repeated keys refused, tags kept.
     let mut raw: indexmap::IndexMap<String, crate::yaml::Value> =
-        indexmap::IndexMap::<String, crate::yaml::Untyped>::deserialize(deserializer)?
+        indexmap::IndexMap::<String, crate::yaml::UntypedValue>::deserialize(deserializer)?
             .into_iter()
             .map(|(name, value)| (name, value.0))
             .collect();
