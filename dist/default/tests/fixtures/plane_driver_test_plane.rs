@@ -1176,6 +1176,14 @@ extern "C" fn on_piece(
             u.saw_last |= i.flags & PIECE_LAST != 0;
             match u.mode.as_slice() {
                 b"fault" => return RawOutcome::of(Outcome::Fault),
+                b"far-only" => {
+                    let request = b"PRIVATE_OUTBOUND_REQUEST";
+                    assert!(request.len() <= i.reply_cap);
+                    std::ptr::copy_nonoverlapping(request.as_ptr(), i.reply_buf, request.len());
+                    o.emitted = request.len() as u64;
+                    o.flags = EMIT_TO_FAR_END;
+                    return say(out, Outcome::Ready);
+                }
                 b"wedge" => {
                     drop(units);
                     std::thread::sleep(WEDGE);
