@@ -90,7 +90,7 @@ static TICKET_NODES: std::sync::LazyLock<Mutex<Vec<std::sync::Weak<TicketCustody
 pub(crate) struct TicketCustody {
     pub(crate) nonce: Arc<()>,
     closed: std::sync::atomic::AtomicBool,
-    sources: Mutex<std::collections::HashMap<busbar_contract::UnitKey, Arc<TicketSource>>>,
+    sources: Mutex<foldhash::HashMap<busbar_contract::UnitKey, Arc<TicketSource>>>,
     entries: Mutex<TicketEntries>,
 }
 
@@ -114,7 +114,7 @@ struct TicketSource {
     store: Arc<busbar_kernel::persistence::facade::CoreStore>,
     key: Arc<busbar_contract::records::VirtualKey>,
     money: std::sync::Weak<PlaneMoney>,
-    instance: String,
+    instance: Arc<str>,
     instance_nonce: Arc<()>,
     live: std::sync::Weak<DoorApply>,
     unit: busbar_contract::UnitKey,
@@ -171,12 +171,16 @@ impl TicketCustody {
         let custody = Arc::new(Self {
             nonce: Arc::new(()),
             closed: std::sync::atomic::AtomicBool::new(false),
-            sources: Mutex::new(std::collections::HashMap::new()),
+            sources: Mutex::new(foldhash::HashMap::default()),
             entries: Mutex::new(TicketEntries::default()),
         });
         let mut nodes = TICKET_NODES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the custody list is pruned once per plane composition"
+        )]
         nodes.retain(|n| n.strong_count() > 0);
         nodes.push(Arc::downgrade(&custody));
         custody
@@ -194,7 +198,7 @@ impl TicketCustody {
             store: app.governance.as_ref()?.core_store_handle().ok()?,
             key: Arc::clone(key?),
             money: Arc::downgrade(&served.money),
-            instance: served.instance.clone(),
+            instance: Arc::clone(&served.live.instance),
             instance_nonce: Arc::clone(&live.ticket_nonce),
             live: Arc::downgrade(&served.live),
             unit,
@@ -507,7 +511,7 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
                 .values()
                 .find(|s| {
                     s.unit.get() == unit
-                        && s.instance == caller.namespace().as_ref()
+                        && *s.instance == *caller.namespace().as_ref()
                         && s.key.as_ref() == principal.as_ref()
                 })
                 .cloned();
@@ -980,6 +984,9 @@ pub struct DoorLive {
     pub shown: Option<crate::root::model_egress::ModelShown>,
 }
 
+/// The model catalog, in the map type the configuration (`RootCfg::models`) holds it as.
+pub type ModelCatalog = std::collections::HashMap<String, busbar_contract::config::ModelCfg>;
+
 pub struct ApplyReach {
     providers: BTreeMap<String, crate::root::door_steps::ProviderRoute>,
     auths: Arc<crate::root::door_steps::OutboundAuths>,
@@ -987,11 +994,13 @@ pub struct ApplyReach {
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
     stream_ceiling_secs: u64,
 
-    catalog: Option<std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
+    catalog: Option<ModelCatalog>,
     upgrades: Vec<&'static str>,
 }
 
 pub struct DoorApply {
+    /// The instance's label, shared with every ticket source its units register.
+    instance: Arc<str>,
     observations_supported: bool,
     plugin: DoorPlane,
     dispatcher: Arc<Dispatcher>,
@@ -1050,14 +1059,20 @@ impl DoorApply {
     pub fn listen_setting(&self, carrier: &str) -> Option<String> {
         use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
         let f = &self.served_facts;
-        f.need_auths
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: names the unset listener setting in a refused media offer"
+        )]
+        let tail = f
+            .need_auths
             .iter()
             .zip(&f.need_targets)
             .zip(&f.need_transports)
             .find(|(((direction, _), target), transport)| {
                 *direction == DIRECTION_INBOUND && !target.is_empty() && **transport == carrier
             })
-            .map(|((_, target), _)| format!("{}.{target}.listen", f.section))
+            .map(|((_, target), _)| format!("{}.{target}.listen", f.section));
+        tail
     }
 
     #[must_use]
@@ -1178,7 +1193,7 @@ impl DoorApply {
         &self,
         section: &serde_yaml::Value,
         handed: &serde_yaml::Value,
-        owned: &serde_json::Map<String, serde_json::Value>,
+        owned: &[u8],
         generation: u64,
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
         scope: &busbar_contract::config_time::ConfigScope,
@@ -1196,7 +1211,7 @@ impl DoorApply {
             &self.plugin,
             &self.dispatcher,
             &settings,
-            &owned_bytes(owned)?,
+            owned,
             generation,
         )?;
         let binding = self.plugin.connection_binding();
@@ -1204,6 +1219,10 @@ impl DoorApply {
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
         );
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane is refreshed once per configuration apply"
+        )]
         let pools = DoorPools::of(&table, self.served_facts.section)
             .map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
         let mut facts = self.facts.clone();
@@ -1262,6 +1281,10 @@ impl DoorApply {
                 &self.units,
             );
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane is refreshed once per configuration apply"
+        )]
         let observations = observations::parse(
             self.plugin
                 .service_caller()
@@ -1272,10 +1295,15 @@ impl DoorApply {
             &pools,
         )?;
         if !observations.is_empty() && !self.observations_supported {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a plane is refreshed once per configuration apply"
+            )]
             return Err("usage observations require an atomic durable store"
                 .to_owned()
                 .into());
         }
+        // busbar:expect(bp::clone_alloc, reason = "config: a plane is refreshed once per configuration apply")
         Ok(DoorLive {
             observations,
             ticket_nonce: Arc::new(()),
@@ -1302,6 +1330,7 @@ pub fn applied_section(
         .get(plane)
         .and_then(|s| s.downcast_ref::<busbar_kernel::plane_driver::door::DoorSlot>())
     else {
+        // busbar:expect(bp::clone_alloc, reason = "config: the applied section is read once per configuration apply")
         return now.section.clone();
     };
 
@@ -1358,8 +1387,7 @@ impl DoorAppliers {
             }
             let now = p.current();
             let next = now.generation + 1;
-            let owned = match owned_sections(facts, sections).and_then(|owned| owned_bytes(&owned))
-            {
+            let owned = match owned_sections(facts, sections) {
                 Ok(owned) => owned,
                 Err(e) => {
                     tracing::error!(plane = name, error = %e, "door plane's new configuration is not JSON; it keeps serving the previous one");
@@ -1479,16 +1507,32 @@ fn validate_hook_children(served: &Served, app: &busbar_kernel::state::App) -> R
         let Some(grant) = hook.child_dispatch.as_ref() else {
             continue;
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: hook child bindings are validated once per configuration"
+        )]
         let at = format!("hooks.{name}.child_dispatch");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: hook child bindings are validated once per configuration"
+        )]
         grant.validate().map_err(|why| format!("{at}: {why}"))?;
         if hook.kind != busbar_kernel::config::HookKind::Gate
             || !hook.fires_at_stage(busbar_kernel::config::HookStage::Request)
             || app.governance.is_none()
         {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: hook child bindings are validated once per configuration"
+            )]
             return Err(format!(
                 "{at}: child dispatch requires a request-stage gate and governance"
             ));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: hook child bindings are validated once per configuration"
+        )]
         let plane = served
             .planes
             .iter()
@@ -1501,11 +1545,19 @@ fn validate_hook_children(served: &Served, app: &busbar_kernel::state::App) -> R
             .entries()
             .contains(&grant.target_binding)
         {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: hook child bindings are validated once per configuration"
+            )]
             return Err(format!(
                 "{at}: unknown target binding '{}' in plane '{}'",
                 grant.target_binding, grant.plane
             ));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: hook child bindings are validated once per configuration"
+        )]
         let lines = plane
             .snapshot
             .claims
@@ -1516,10 +1568,18 @@ fn validate_hook_children(served: &Served, app: &busbar_kernel::state::App) -> R
                 claim_line(&plane.instance, rung as u32, claim, &[], &[], &[]).map(|(line, _)| line)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: hook child bindings are validated once per configuration"
+        )]
         let claims = GuestList::seal(lines).map_err(|_| format!("{at}: ambiguous plane claims"))?;
         let path = grant.target.split('?').next().unwrap_or_default();
         if !matches!(claims.matched(&grant.operation, path, &[]), Matched::Line(line) if matches!(&line.claimant, Claimant::Plane(instance) if instance == &grant.plane))
         {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: hook child bindings are validated once per configuration"
+            )]
             return Err(format!(
                 "{at}: operation '{}' target '{}' is not a claim of plane '{}'",
                 grant.operation, grant.target, grant.plane
@@ -1550,6 +1610,10 @@ impl Served {
         mut shutdown: tokio::sync::broadcast::Receiver<()>,
     ) -> tokio::task::JoinHandle<()> {
         let routes = self.nests.clone();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the recovery scanner is set up once at startup"
+        )]
         let kernels: Vec<_> = self.planes.iter().map(|p| p.kernel.clone()).collect();
         struct Ready(Vec<Arc<KernelServices>>);
         impl Drop for Ready {
@@ -1574,6 +1638,10 @@ impl Served {
                     _ = shutdown.recv() => break,
                     _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
                 }
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: the recovery scanner is set up once at startup"
+                )]
                 let live: Vec<_> = routes
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -1596,19 +1664,35 @@ impl Served {
 
     #[must_use]
     pub fn appliers(&self) -> DoorAppliers {
-        DoorAppliers(self.planes.iter().map(|p| Arc::clone(&p.live)).collect())
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the appliers are gathered once at startup"
+        )]
+        let tail = DoorAppliers(self.planes.iter().map(|p| Arc::clone(&p.live)).collect());
+        tail
     }
 
     #[must_use]
     pub fn need_trust(&self) -> Vec<&'static str> {
-        self.planes
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the trust needs are gathered once at startup"
+        )]
+        let tail = self
+            .planes
             .iter()
             .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
-            .collect()
+            .collect();
+        tail
     }
 
     #[must_use]
     pub fn member_tls_sections(&self) -> Vec<&'static str> {
+        // busbar:expect(bp::state_scan, reason = "boot: the member TLS sections are gathered once at startup")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the member TLS sections are gathered once at startup"
+        )]
         self.planes
             .iter()
             .filter(|plane| {
@@ -1625,6 +1709,11 @@ impl Served {
 
     #[must_use]
     pub fn unopened(&self, doors: &[(String, DoorPlane)]) -> Vec<&'static str> {
+        // busbar:expect(bp::state_scan, reason = "boot: the unopened planes are listed once at startup")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the unopened planes are listed once at startup"
+        )]
         doors
             .iter()
             .filter(|(instance, _)| !self.planes.iter().any(|p| p.instance == *instance))
@@ -1666,6 +1755,10 @@ impl LeaseTick {
 
     async fn ticks(self) {
         let every = busbar_kernel::host_records::FLUSH_INTERVAL;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the lease tick is scheduled once at startup"
+        )]
         let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let this = Arc::new(self);
@@ -1713,7 +1806,10 @@ impl LeaseTick {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "composition takes every boot part it wires together"
+)]
 pub async fn compose_served(
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
@@ -1740,7 +1836,10 @@ pub async fn compose_served(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "composition takes every boot part it wires together"
+)]
 pub async fn compose_served_checked(
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
@@ -1814,6 +1913,7 @@ pub fn datagram_binds(
     doors: &[(String, DoorPlane)],
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
 ) -> Result<Vec<crate::root::loader::boot::InboundBind>, String> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the datagram binds are planned once at startup")
     let mut binds = Vec::new();
     for (instance, plugin) in doors {
         binds.extend(need_binds(
@@ -1835,21 +1935,42 @@ pub(crate) fn need_binds(
     let Some(section) = sections.get(section_name) else {
         return Ok(Vec::new());
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the inbound binds are planned once at startup"
+    )]
     let settings: busbar_contract::plugin_settings::Settings =
         serde::Deserialize::deserialize(section.clone())
             .map_err(|_| format!("{section_name}: settings must be an object"))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the inbound binds are planned once at startup"
+    )]
     let claims =
         busbar_contract::conn::inbound::admit(&busbar_kernel::seal::acquire(), &settings, needs)
             .map_err(|why| format!("{section_name}.{why}"))?;
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the inbound binds are planned once at startup")
     let mut binds = Vec::new();
     for claim in claims {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the inbound binds are planned once at startup"
+        )]
         let at = format!("{section_name}.{}", claim.path);
         let Some(binding) = claim.binding else {
             if matches!(claim.path.as_str(), "listen" | "ingress") {
                 continue;
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: the inbound binds are planned once at startup"
+            )]
             return Err(format!("{at}: not set; an inbound listener needs `listen`"));
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the inbound binds are planned once at startup"
+        )]
         binds.push(crate::root::loader::boot::InboundBind {
             owner: crate::root::loader::boot::BindOwner::Need {
                 instance: instance.to_string(),
@@ -1990,12 +2111,17 @@ impl HookStage {
         plane_key: &str,
         dialects: &[&str],
     ) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
-        Arc::new(LiveHooks {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane's hook binder is built once per composition"
+        )]
+        let tail = Arc::new(LiveHooks {
             host: Arc::clone(&self.host),
             gov: Arc::clone(&self.gov),
             dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
             plane_key: plane_key.to_string(),
-        })
+        });
+        tail
     }
 
     fn gated(
@@ -2004,12 +2130,17 @@ impl HookStage {
         dialects: &[&str],
     ) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
         let gov = Arc::clone(&self.gov);
-        Arc::new(busbar_kernel::plane_driver::HostGatedHooks {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane's hook binder is built once per composition"
+        )]
+        let tail = Arc::new(busbar_kernel::plane_driver::HostGatedHooks {
             host: Arc::clone(&self.host),
             plane_key: plane_key.to_string(),
             keys: Arc::new(move |principal: &str| gov.lookup_by_sub(principal)),
             dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
-        })
+        });
+        tail
     }
 }
 
@@ -2041,21 +2172,31 @@ pub fn door_pools(
         BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     >,
 ) -> DoorPoolsByKey {
-    plane_pools
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: door pools are resolved once per configuration"
+    )]
+    let tail = plane_pools
         .iter()
         .map(|(section, pools)| (*section, pools.clone()))
-        .collect()
+        .collect();
+    tail
 }
 
 #[must_use]
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
-    busbar_kernel::plane_driver::registry::plane_decls()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: door pools are resolved once per configuration"
+    )]
+    let tail = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .filter_map(|decl| {
             app.plane_pools(decl.key)
                 .map(|pools| (decl.config_section, pools.clone()))
         })
-        .collect()
+        .collect();
+    tail
 }
 
 fn section_with_pools(
@@ -2066,6 +2207,7 @@ fn section_with_pools(
         BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
 ) -> serde_yaml::Value {
+    // busbar:expect(bp::clone_alloc, reason = "config: the section is composed once per configuration")
     let mut section = written.clone();
     for (owner, stated) in pools {
         if *owner == key {
@@ -2080,8 +2222,13 @@ fn handed_settings(path: &[&str], section: &serde_yaml::Value) -> Result<Vec<u8>
     if let Some(map) = section.as_mapping_mut() {
         map.remove(busbar_contract::section::RESERVED_WORK_KEY);
     }
-    busbar_kernel::config::filled::plane_bound_bytes(path, &section)
-        .map_err(|e| format!("its section: {e}"))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the settings are handed once per configuration"
+    )]
+    let tail = busbar_kernel::config::filled::plane_bound_bytes(path, &section)
+        .map_err(|e| format!("its section: {e}"));
+    tail
 }
 
 fn settings_path(
@@ -2111,6 +2258,10 @@ pub fn pools_into(
     let mut map = serde_yaml::Mapping::new();
     for (name, pool) in stated {
         let mut entry = serde_yaml::Mapping::new();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the pools are written once per configuration"
+        )]
         entry.insert(
             POOL_MEMBERS_KEY.into(),
             serde_yaml::Value::Sequence(
@@ -2126,6 +2277,10 @@ pub fn pools_into(
                     .collect(),
             ),
         );
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the pools are written once per configuration"
+        )]
         entry.insert(
             POOL_REPEATABLE_KEY.into(),
             serde_yaml::Value::Sequence(
@@ -2152,6 +2307,7 @@ pub fn pools_into(
 #[must_use]
 pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
     use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
+    // busbar:expect(bp::clone_alloc, reason = "config: the plane settings are composed once per configuration")
     let mut section = section.clone();
     if let Some(map) = section.as_mapping_mut() {
         map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
@@ -2169,11 +2325,15 @@ pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
             .and_then(|p| p.get_mut(POOL_MEMBERS_KEY))
             .and_then(serde_yaml::Value::as_sequence_mut);
         for member in members.into_iter().flat_map(|m| m.iter_mut()) {
-            if let Some(name) = member
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the plane settings are composed once per configuration"
+            )]
+            let name = member
                 .get(POOL_MEMBER_NAME_KEY)
                 .and_then(serde_yaml::Value::as_str)
-                .map(str::to_owned)
-            {
+                .map(str::to_owned);
+            if let Some(name) = name {
                 *member = serde_yaml::Value::String(name);
             }
         }
@@ -2187,7 +2347,10 @@ pub struct DoorEgress<'a> {
     pub journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "composition takes every boot part it wires together"
+)]
 pub async fn compose_planes(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
@@ -2220,7 +2383,10 @@ pub async fn compose_planes(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "composition takes every boot part it wires together"
+)]
 pub(crate) async fn compose_planes_over(
     linked: &crate::root::linked::Linked,
     doors: &[(String, DoorPlane)],
@@ -2249,9 +2415,11 @@ pub(crate) async fn compose_planes_over(
         Some(proof) if !proof.published().await => Some(proof),
         _ => None,
     };
+    // busbar:expect(bp::fresh_buffer, reason = "config: planes are composed once per configuration")
     let mut staged_tables = Vec::new();
     if let Some(proof) = &first_start {
         use sha2::{Digest, Sha256};
+        // busbar:expect(bp::fresh_buffer, reason = "config: planes are composed once per configuration")
         let mut plan = Vec::new();
         for (instance, plugin) in doors {
             if !plugin.declared().conditional_records {
@@ -2275,7 +2443,7 @@ pub(crate) async fn compose_planes_over(
                 .unwrap_or_default();
             let handed =
                 zeroize::Zeroizing::new(handed_settings(settings_path(&facts), &settings)?);
-            let owned = zeroize::Zeroizing::new(owned_bytes(&owned)?);
+            let owned = zeroize::Zeroizing::new(owned);
             let mut hash = Sha256::new();
             hash.update(b"busbar.initial-record-binding/1\0");
             for bytes in [
@@ -2307,7 +2475,12 @@ pub(crate) async fn compose_planes_over(
                 digest: hash.finalize().into(),
             });
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         plan.sort_by(|a, b| a.instance.cmp(&b.instance));
+        // busbar:expect(bp::clone_alloc, reason = "config: planes are composed once per configuration")
         confirm_first_start(|| proof.freeze(plan.clone())).await?;
     }
     for (instance, plugin) in doors {
@@ -2335,6 +2508,10 @@ pub(crate) async fn compose_planes_over(
         let dialects = egress
             .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
             .unwrap_or_default();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         crate::root::door_steps::member_tls_refusal(&served_facts, &walked)
             .map_err(|e| format!("{instance}: {e}"))?;
         let opened = open(
@@ -2346,8 +2523,16 @@ pub(crate) async fn compose_planes_over(
             &dialects,
         );
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         crate::root::door_steps::owned_anchors_refusal(&served_facts.need_trust, sections)
             .map_err(|e| format!("{instance}: {e}"))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         let snapshot = opened.map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
         let calls = Arc::new(PlaneInstance::new(
@@ -2356,6 +2541,10 @@ pub(crate) async fn compose_planes_over(
             0,
         ));
         let plane_money = money();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         let config = DriverConfig {
             caps: BufferCaps::default(),
             op_classes: served_facts
@@ -2368,12 +2557,24 @@ pub(crate) async fn compose_planes_over(
 
             caller_refs: plane_money.caller_refs(),
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         let caller = plugin
             .service_caller()
             .ok_or_else(|| format!("{instance}: plane has no bound service caller"))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         kernel
             .bind_record_bootstrap_caller(&caller)
             .map_err(|why| format!("{instance}: {why}"))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         let driver = PlaneDriver::new(
             Arc::clone(&calls) as Arc<dyn PlaneCalls>,
             config,
@@ -2387,12 +2588,20 @@ pub(crate) async fn compose_planes_over(
 
         if plugin.declared().conditional_records {
             if plugin.has_ready() {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: planes are composed once per configuration"
+                )]
                 kernel
                     .bind_native_record_bootstrap(&caller)
                     .await
                     .map_err(str::to_string)?;
                 let ready_plugin = plugin.clone();
                 let ready_dispatcher = Arc::clone(dispatcher);
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: planes are composed once per configuration"
+                )]
                 tokio::task::spawn_blocking(move || {
                     ready_plugin.ready(
                         &ready_dispatcher,
@@ -2404,6 +2613,10 @@ pub(crate) async fn compose_planes_over(
             }
             if let Some(proof) = &first_start {
                 confirm_first_start(|| proof.complete(instance)).await?;
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: planes are composed once per configuration"
+                )]
                 kernel
                     .revoke_native_record_bootstrap(&caller)
                     .map_err(str::to_string)?;
@@ -2432,6 +2645,10 @@ pub(crate) async fn compose_planes_over(
             } else {
                 driver
             };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         let routes = snapshot
             .admin_routes
             .iter()
@@ -2443,6 +2660,10 @@ pub(crate) async fn compose_planes_over(
             })
             .collect();
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         staged_tables.push(ServeTable {
             instance: instance.clone(),
             audit_kind: served_facts.audit_kind.to_string(),
@@ -2460,12 +2681,20 @@ pub(crate) async fn compose_planes_over(
             .chain(&served_facts.fee_units)
         {
             if registration.key(class).is_none() {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: planes are composed once per configuration"
+                )]
                 return Err(format!(
                     "{instance}: its class '{class}' cannot join the image's vocabulary"
                 ));
             }
         }
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are composed once per configuration"
+        )]
         let bench = crate::root::linked::door_breaker(
             linked,
             crate::root::linked::dropped(),
@@ -2487,6 +2716,10 @@ pub(crate) async fn compose_planes_over(
             kernel.units(),
         )?;
         if !live.observations.is_empty() && !plane_money.observations_supported() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: planes are composed once per configuration"
+            )]
             return Err(format!(
                 "{instance}: usage observations require an atomic durable store"
             ));
@@ -2500,6 +2733,7 @@ pub(crate) async fn compose_planes_over(
         ));
         arm_probes(&driver, &served_facts, &mut live, egress, &probe_schedule);
         let facts = live.facts.clone();
+        // busbar:expect(bp::clone_alloc, reason = "config: planes are composed once per configuration")
         let reach = egress.map(|e| ApplyReach {
             providers: e.reach.providers.clone(),
             auths: Arc::clone(&e.reach.auths),
@@ -2509,7 +2743,10 @@ pub(crate) async fn compose_planes_over(
             catalog: e.reach.catalog.cloned(),
             upgrades: e.reach.upgrades.clone(),
         });
+        // busbar:expect(bp::into_alloc, reason = "config: planes are composed once per configuration")
+        // busbar:expect(bp::clone_alloc, reason = "config: planes are composed once per configuration")
         let live = Arc::new(DoorApply {
+            instance: Arc::from(instance.as_str()),
             observations_supported: plane_money.observations_supported(),
             plugin: plugin.clone(),
             dispatcher: Arc::clone(dispatcher),
@@ -2535,6 +2772,10 @@ pub(crate) async fn compose_planes_over(
             dialects: served_facts.dialects.clone(),
         });
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: planes are composed once per configuration"
+    )]
     served
         .tables
         .validate_batch(&staged_tables, &[])
@@ -2542,6 +2783,10 @@ pub(crate) async fn compose_planes_over(
     if let Some(proof) = &first_start {
         confirm_first_start(|| proof.publish()).await?;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: planes are composed once per configuration"
+    )]
     served
         .tables
         .publish_batch(staged_tables, &[])
@@ -2561,10 +2806,14 @@ where
 {
     use busbar_kernel::persistence::startup::Progress;
     loop {
-        match advance()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refused first publication fails the composition"
+        )]
+        let progress = advance()
             .await
-            .map_err(|error| format!("native first publication refused: {error:?}"))?
-        {
+            .map_err(|error| format!("native first publication refused: {error:?}"))?;
+        match progress {
             Progress::Advanced => return Ok(()),
             Progress::Pending => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
             _ => return Err("native first publication requires reconciliation".into()),
@@ -2576,18 +2825,16 @@ const SESSION_KEY: &str = "session";
 const MODEL_KEY: &str = "model";
 
 #[must_use]
-pub fn catalog_routes(
-    section: &serde_yaml::Value,
-    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
-) -> serde_yaml::Value {
+pub fn catalog_routes(section: &serde_yaml::Value, catalog: &ModelCatalog) -> serde_yaml::Value {
     fold_catalog_routes(section, catalog).0
 }
 
 fn fold_catalog_routes(
     section: &serde_yaml::Value,
-    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
+    catalog: &ModelCatalog,
 ) -> (serde_yaml::Value, Option<String>) {
     use serde_yaml::{Mapping, Value};
+    // busbar:expect(bp::clone_alloc, reason = "config: catalog routes are folded once per configuration")
     let mut routes = section.clone();
     let named = section
         .get(SESSION_KEY)
@@ -2614,13 +2861,19 @@ fn fold_catalog_routes(
     let mut models = Mapping::new();
     models.insert(model.into(), Value::Mapping(folded));
     map.insert(models_key, Value::Mapping(models));
-    (routes, Some(model.to_string()))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: catalog routes are folded once per configuration"
+    )]
+    let tail = (routes, Some(model.to_string()));
+    tail
 }
 
 fn routes_of(
     section: &serde_yaml::Value,
-    catalog: Option<&std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
+    catalog: Option<&ModelCatalog>,
 ) -> (serde_yaml::Value, Option<String>) {
+    // busbar:expect(bp::clone_alloc, reason = "config: catalog routes are folded once per configuration")
     catalog.map_or_else(
         || (section.clone(), None),
         |c| fold_catalog_routes(section, c),
@@ -2647,12 +2900,19 @@ fn seal_secondary_scopes(
     else {
         return;
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: scopes are sealed once per configuration"
+    )]
     facts
         .secondary_scopes
         .insert(entry.to_string(), kind.to_string());
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "composition takes every boot part it wires together"
+)]
 fn seal_live(
     instance: &str,
     plugin: &DoorPlane,
@@ -2668,6 +2928,10 @@ fn seal_live(
 ) -> Result<DoorLive, String> {
     let models_plane = served_facts.section == busbar_contract::section::RESERVED_POOLS_KEY;
     let card_plane = if models_plane { "" } else { plugin.name() };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a plane's live state is sealed once per configuration"
+    )]
     let mut facts = door_facts(
         card_plane,
         scope_kinds,
@@ -2685,23 +2949,38 @@ fn seal_live(
             .collect(),
     );
     facts.bench_below_trip_threshold = bench_below_trip_threshold;
-    facts.route_cost = served_facts.route_cost.clone();
+    facts.route_cost.clone_from(&served_facts.route_cost);
 
     facts.stream_ceiling_secs = served_facts.stream_ceiling_secs;
 
-    facts.dialects = served_facts
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a plane's live state is sealed once per configuration"
+    )]
+    let dialects = served_facts
         .dialects
         .iter()
         .map(|d| (*d).to_string())
         .collect();
+    facts.dialects = dialects;
 
-    facts.metric_lanes = served_facts
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a plane's live state is sealed once per configuration"
+    )]
+    let metric_lanes = served_facts
         .metric_lanes
         .iter()
         .map(|w| (*w).to_string())
         .collect();
+    facts.metric_lanes = metric_lanes;
     if let Some(egress) = egress {
-        facts.translations = (
+        // busbar:expect(bp::clone_alloc, reason = "config: a plane's live state is sealed once per configuration")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane's live state is sealed once per configuration"
+        )]
+        let translations = (
             served_facts
                 .dialects
                 .iter()
@@ -2716,15 +2995,24 @@ fn seal_live(
                     .collect(),
             ),
         );
+        facts.translations = translations;
     }
 
     let binding = plugin.connection_binding();
     let (table, catalog_entry) = routes_of(section, egress.and_then(|e| e.reach.catalog));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a plane's live state is sealed once per configuration"
+    )]
     let pools =
         DoorPools::of(&table, served_facts.section).map_err(|e| format!("{instance}: {e}"))?;
     seal_secondary_scopes(&mut facts, scope_kinds, &pools, catalog_entry.as_deref());
     let egress = match egress {
         Some(egress) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a plane's live state is sealed once per configuration"
+            )]
             let routes = crate::root::door_steps::member_routes(
                 &table,
                 &pools,
@@ -2757,6 +3045,10 @@ fn seal_live(
                 )
                 .map(|e| (e, None)),
             };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a plane's live state is sealed once per configuration"
+            )]
             let (sealed, shown) = sealed.map_err(|e| format!("{instance}: {e}"))?;
 
             bind_fetches(plugin, binding.owner(), served_facts, &routes, units);
@@ -2769,6 +3061,7 @@ fn seal_live(
         None => (None, None),
     };
     let observations = observations::parse(instance, section, &facts, &pools)?;
+    // busbar:expect(bp::clone_alloc, reason = "config: a plane's live state is sealed once per configuration")
     Ok(DoorLive {
         observations,
         ticket_nonce: Arc::new(()),
@@ -2818,6 +3111,10 @@ fn arm_probes(
         return;
     }
     let (kernel, keys) = crate::root::plane_node::node().kernel_and_keys();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: probes are armed once per configuration"
+    )]
     let Some(target) = busbar_kernel::plane_driver::PlaneProbes::new(
         if served_facts.probes {
             busbar_contract::abi::plane::TAIL_PROBES
@@ -2835,36 +3132,57 @@ fn arm_probes(
         return;
     };
     let target = Arc::new(target);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: probes are armed once per configuration"
+    )]
     let members: Vec<busbar_kernel::probe::ProbeMember> =
         members.into_iter().map(|(_, m)| m).collect();
     busbar_kernel::probe::spawn_probers(&target, schedule, &members);
     live.probes = Some(target);
 }
 
+/// The sections the plane owns, as the JSON object it is handed (no bytes when it owns none).
 fn owned_sections(
     facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+) -> Result<Vec<u8>, String> {
+    #[expect(
+        clippy::disallowed_types,
+        reason = "config: owned sections are encoded once per configuration"
+    )]
     let mut owned = serde_json::Map::new();
     for name in &facts.owns {
         let Some(section) = sections.get(name) else {
             continue;
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: owned sections are encoded once per configuration"
+        )]
         let value = serde_json::to_value(section)
             .map_err(|_| format!("{name}: owned section is not JSON"))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: owned sections are encoded once per configuration"
+        )]
         let value = busbar_kernel::config::filled::plane_bound(&[name], value)
             .map_err(|error| format!("{name}: {error}"))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: owned sections are encoded once per configuration"
+        )]
         owned.insert((*name).to_string(), value);
     }
-    Ok(owned)
-}
-
-fn owned_bytes(owned: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<u8>, String> {
     if owned.is_empty() {
-        Ok(Vec::new())
-    } else {
-        serde_json::to_vec(owned).map_err(|e| format!("its owned sections: {e}"))
+        return Ok(Vec::new());
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: owned sections are encoded once per configuration"
+    )]
+    let bytes = serde_json::to_vec(&owned).map_err(|e| format!("its owned sections: {e}"))?;
+    Ok(bytes)
 }
 
 fn handed_keyed(facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts) -> bool {
@@ -2877,6 +3195,7 @@ fn settings_of(
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
 ) -> serde_yaml::Value {
     if !handed_keyed(facts) {
+        // busbar:expect(bp::clone_alloc, reason = "config: the settings are composed once per configuration")
         let mut settings = section.clone();
         if let Some(map) = settings.as_mapping_mut() {
             map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
@@ -2884,6 +3203,7 @@ fn settings_of(
         return settings;
     }
     let own = if facts.section == busbar_contract::section::RESERVED_POOLS_KEY {
+        // busbar:expect(bp::clone_alloc, reason = "config: the settings are composed once per configuration")
         let mut own = section.clone();
         if let Some(map) = own.as_mapping_mut() {
             map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
@@ -2918,10 +3238,12 @@ fn walked_section(
         .contains(&RESERVED_MODELS_KEY)
         .then(|| sections.get(RESERVED_MODELS_KEY))
         .flatten();
+    // busbar:expect(bp::clone_alloc, reason = "config: the walked section is composed once per configuration")
     match models {
         Some(models) if facts.section == RESERVED_POOLS_KEY => {
             let mut uniform = serde_yaml::Mapping::new();
             uniform.insert(RESERVED_MODELS_KEY.into(), models.clone());
+            // busbar:expect(bp::clone_alloc, reason = "config: the walked section is composed once per configuration")
             let mut pools = section.clone();
             if let Some(policy) = pools
                 .as_mapping_mut()
@@ -2944,11 +3266,10 @@ fn open(
     path: &[&str],
     section: &serde_yaml::Value,
     public_url: Option<&str>,
-    owned: &serde_json::Map<String, serde_json::Value>,
+    owned: &[u8],
     dialects: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Result<OwnedSnapshot, String> {
     let settings = handed_settings(path, section)?;
-    let owned = owned_bytes(owned)?;
     let url = public_url.unwrap_or_default();
 
     let providers = crate::root::loader::dispatch::kinds::plane::provider_facts(dialects);
@@ -3012,11 +3333,20 @@ fn open(
     if called.outcome != AbiOutcome::Ready {
         return Err(called.open_failure(plugin.name()));
     }
-    snapshot.ok_or_else(|| "its snapshot did not pass the host's checks".to_string())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a plane is opened once per configuration"
+    )]
+    let tail = snapshot.ok_or_else(|| "its snapshot did not pass the host's checks".to_string());
+    tail
 }
 
 fn arrival_entries(served: &Served) -> Vec<Arc<EntrySpans>> {
-    served
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: arrival entries are gathered once per composition"
+    )]
+    let tail = served
         .planes
         .iter()
         .map(|plane| {
@@ -3029,7 +3359,8 @@ fn arrival_entries(served: &Served) -> Vec<Arc<EntrySpans>> {
                 )
             })))
         })
-        .collect()
+        .collect();
+    tail
 }
 
 /// Reserved credential and hop fields never enter a plane request, regardless of carrier.
@@ -3057,7 +3388,7 @@ pub struct DataRoutes {
     guests: busbar_kernel::guest::GuestList,
     of_line: std::collections::HashMap<(String, u32), DoorClaim>,
 
-    frames: Mutex<std::collections::HashMap<u64, Arc<busbar_kernel::state::App>>>,
+    frames: Mutex<foldhash::HashMap<u64, Arc<busbar_kernel::state::App>>>,
 }
 
 struct UnitFrame<'r> {
@@ -3093,17 +3424,15 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
         nest: busbar_kernel::host_services::Nest,
         done: busbar_kernel::host_services::NestDone,
     ) {
-        let routes: Vec<_> = self
+        // The listener generations are searched under their lock, never copied out.
+        let found = self
             .routes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter_map(std::sync::Weak::upgrade)
-            .collect();
-        let Some((routes, bound)) = routes
-            .into_iter()
-            .find_map(|routes| routes.parent_of(&nest).map(|bound| (routes, bound)))
-        else {
+            .find_map(|routes| routes.parent_of(&nest).map(|bound| (routes, bound)));
+        let Some((routes, bound)) = found else {
             done(busbar_kernel::host_services::NestReply::Unserved(
                 NEST_PARENT_GONE,
             ));
@@ -3192,7 +3521,10 @@ pub fn data_mounts(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "composition takes every boot part it wires together"
+)]
 pub fn data_mounts_with_listeners(
     served: Served,
     app: &busbar_kernel::state::App,
@@ -3226,7 +3558,10 @@ pub fn data_mounts_with_listeners(
 }
 
 /// Prepare both the compatibility operator mounts and their neutral governed dispatcher.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "composition takes every boot part it wires together"
+)]
 pub fn data_routes_with_dispatch(
     served: Served,
     app: &busbar_kernel::state::App,
@@ -3319,11 +3654,11 @@ pub struct ListenerPlan {
     upgrades: std::sync::OnceLock<Vec<String>>,
     claim_doors: Arc<OnceLock<serve_datagram::ClaimDoors>>,
     planes: std::sync::OnceLock<Vec<ListenerPlaneLine>>,
-    plane_sections: std::sync::OnceLock<std::collections::HashMap<String, (&'static str, bool)>>,
-    plane_keys: std::sync::OnceLock<std::collections::HashMap<String, String>>,
+    plane_sections: std::sync::OnceLock<foldhash::HashMap<String, (&'static str, bool)>>,
+    plane_keys: std::sync::OnceLock<foldhash::HashMap<String, String>>,
     offers: Vec<TransportOffer>,
-    framers: std::collections::HashMap<String, (u64, bool)>,
-    refusals: Mutex<std::collections::HashMap<String, Vec<PlaneRefusalSpec>>>,
+    framers: foldhash::HashMap<String, (u64, bool)>,
+    refusals: Mutex<foldhash::HashMap<String, Vec<PlaneRefusalSpec>>>,
     nests: NestRoutes,
     plugin_mounts: std::sync::OnceLock<Vec<(String, RouteMethod, bool)>>,
 }
@@ -3335,8 +3670,15 @@ struct ListenerPlaneLine {
     root_only: bool,
 }
 
+/// The mounted plugin paths, in the set type the kernel's configuration check takes.
+pub type MountedPaths = std::collections::HashSet<String>;
+
+/// The opened auths a line names, by name, in the map type the kernel's inbound listener takes.
+pub type InboundAuths =
+    std::collections::HashMap<String, Arc<dyn busbar_contract::auth_calls::AuthCalls>>;
+
 pub type PreparedListeners =
-    std::collections::HashMap<String, Arc<busbar_kernel::router::PreparedListener>>;
+    foldhash::HashMap<String, Arc<busbar_kernel::router::PreparedListener>>;
 
 impl ListenerPlan {
     pub fn new(
@@ -3344,7 +3686,8 @@ impl ListenerPlan {
         offers: Vec<TransportOffer>,
         framer_for: &FramerFor,
     ) -> Self {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = foldhash::HashSet::default();
+        // busbar:expect(bp::fresh_buffer, reason = "config: the listener plan is built once at startup")
         let mut root_claims = Vec::new();
         for (scheme, _) in &offers {
             let Some(door) = framer_for(scheme) else {
@@ -3373,7 +3716,11 @@ impl ListenerPlan {
                 }
             }
         }
-        let framers: std::collections::HashMap<String, (u64, bool)> = offers
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the listener plan is built once at startup"
+        )]
+        let framers: foldhash::HashMap<String, (u64, bool)> = offers
             .iter()
             .filter_map(|(scheme, _)| {
                 let door = framer_for(scheme)?;
@@ -3390,6 +3737,10 @@ impl ListenerPlan {
         // Only a truly unused implicit root bind may disappear. An accepting framer without
         // the slot declaration is an error, never an invitation to pick its first claim.
         if !initial.root_required && initial.needs.is_empty() && framers.is_empty() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the listener plan is built once at startup"
+            )]
             initial.binds.retain(|bind| bind.at != "listen");
         }
         Self {
@@ -3415,6 +3766,7 @@ impl ListenerPlan {
 
     /// Whether boot retained a physical root data listener.
     pub fn has_root_listener(&self) -> bool {
+        // busbar:expect(bp::state_scan, reason = "config: the listener plan is read once per configuration")
         self.initial.binds.iter().any(|bind| bind.at == "listen")
     }
 
@@ -3432,6 +3784,10 @@ impl ListenerPlan {
     }
 
     pub fn hold_refusals(&self, at: &str, refusals: Vec<PlaneRefusalSpec>) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: refusals are held once per configuration"
+        )]
         self.refusals
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -3448,10 +3804,15 @@ impl ListenerPlan {
             {
                 continue;
             }
+            // busbar:expect(bp::state_scan, reason = "config: claim doors are shared once at startup")
             if let Some(bind) = self.initial.binds.iter().find(|bind| bind.at == need.at) {
                 if let Some(door) = served.claim_doors.get(&bind.transport) {
                     served.claim_doors.insert(&need.transport, door);
                 } else {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: claim doors are shared once at startup"
+                    )]
                     return Err(format!(
                         "{}: its validated claim door was not bound",
                         need.instance
@@ -3459,9 +3820,15 @@ impl ListenerPlan {
                 }
             }
         }
-        self.claim_doors
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: claim doors are shared once at startup"
+        )]
+        let tail = self
+            .claim_doors
             .set(served.claim_doors.clone())
-            .map_err(|_| "physical claim doors were already installed".to_string())
+            .map_err(|_| "physical claim doors were already installed".to_string());
+        tail
     }
 
     pub fn guests(
@@ -3469,14 +3836,21 @@ impl ListenerPlan {
         app: &busbar_kernel::state::App,
         at: &str,
     ) -> Result<busbar_kernel::guest::GuestList, String> {
-        self.lists(app)?
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the listener plan is read once per configuration"
+        )]
+        let tail = self
+            .lists(app)?
             .into_iter()
             .find(|(name, _)| name == at)
             .map(|(_, guests)| guests)
-            .ok_or_else(|| format!("listener {at} has no guest list"))
+            .ok_or_else(|| format!("listener {at} has no guest list"));
+        tail
     }
 
     pub fn stream_binds(&self) -> impl Iterator<Item = &crate::root::loader::boot::InboundBind> {
+        // busbar:expect(bp::state_scan, reason = "config: the listener plan is read once per configuration")
         self.initial.binds.iter().filter(|bind| {
             bind.owner != crate::root::loader::boot::BindOwner::Root
                 && self
@@ -3496,11 +3870,16 @@ impl ListenerPlan {
         use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
         validate_hook_children(served, app)?;
         let cfg = self.config(app)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are mounted once per configuration"
+        )]
         let chain: Vec<_> = cfg
             .data_chain
             .iter()
             .map(|name| (name.clone(), app.auth.position_points(name)))
             .collect();
+        // busbar:expect(bp::fresh_buffer, reason = "config: planes are mounted once per configuration")
         let mut lines = Vec::new();
         for plane in &served.planes {
             for (rung, claim) in plane.snapshot.claims.iter().enumerate() {
@@ -3522,6 +3901,10 @@ impl ListenerPlan {
                 .enumerate()
                 .filter(|(_, route)| route.flags & busbar_contract::abi::plane::ROUTE_PUBLIC != 0)
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: planes are mounted once per configuration"
+                )]
                 let method = METHODS
                     .into_iter()
                     .find(|method| method.as_str().eq_ignore_ascii_case(&route.verb))
@@ -3552,6 +3935,10 @@ impl ListenerPlan {
                 });
             }
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are mounted once per configuration"
+        )]
         self.plane_keys
             .set(
                 served
@@ -3561,6 +3948,10 @@ impl ListenerPlan {
                     .collect(),
             )
             .map_err(|_| "plane listener keys were already mounted")?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are mounted once per configuration"
+        )]
         self.plane_sections
             .set(
                 served
@@ -3584,6 +3975,10 @@ impl ListenerPlan {
         self.served
             .set(served.clone())
             .map_err(|_| "plane listener handlers were already mounted")?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: planes are mounted once per configuration"
+        )]
         self.upgrades
             .set(
                 upgrades
@@ -3597,6 +3992,10 @@ impl ListenerPlan {
     }
 
     fn freeze_mounts(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: mounts are frozen once per configuration"
+        )]
         self.plugin_mounts
             .set(
                 app.plugin_routes
@@ -3670,11 +4069,19 @@ impl ListenerPlan {
         if cfg.listener_routes.get().is_some() {
             return Ok(());
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: listeners are prepared once per configuration"
+        )]
         let chain: Vec<_> = cfg
             .data_chain
             .iter()
             .map(|name| (name.clone(), app.auth.position_points(name)))
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: listeners are prepared once per configuration"
+        )]
         let upgrades: Vec<_> = self
             .upgrades
             .get()
@@ -3682,7 +4089,7 @@ impl ListenerPlan {
             .flatten()
             .map(String::as_str)
             .collect();
-        let mut prepared = PreparedListeners::new();
+        let mut prepared = PreparedListeners::default();
         for (at, guests) in self.lists(app)? {
             let core = if at == "listen" {
                 busbar_kernel::base_data_core_lines(app)
@@ -3731,18 +4138,23 @@ impl ListenerPlan {
             .cloned()
     }
 
-    pub fn mounted_plugin_paths(
-        &self,
-        app: &busbar_kernel::state::App,
-    ) -> Option<std::collections::HashSet<String>> {
+    pub fn mounted_plugin_paths(&self, app: &busbar_kernel::state::App) -> Option<MountedPaths> {
         self.config(app).ok()?.listener_routes.get()?;
-        let mut paths: std::collections::HashSet<_> = self
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: mounted paths are listed once per configuration check"
+        )]
+        let mut paths: MountedPaths = self
             .plugin_mounts
             .get()?
             .iter()
             .filter(|(_, _, admin)| *admin)
             .map(|(path, _, _)| path.clone())
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: mounted paths are listed once per configuration check"
+        )]
         paths.extend(
             app.plugin_routes
                 .descriptors()
@@ -3779,6 +4191,10 @@ impl ListenerPlan {
                     .get()
                     .is_none_or(|mounted| mounted.iter().any(|(path, _, _)| path == route.path))
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: mounts are checked once per configuration"
+                )]
                 return Err(format!(
                     "{}: the candidate has no opened SERVE dispatcher for this mounted route; restart required",
                     route.path
@@ -3794,6 +4210,10 @@ impl ListenerPlan {
                             && (!*admin || *method == route.method)
                     })
                 {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: mounts are checked once per configuration"
+                    )]
                     return Err(format!(
                         "{}: changing a mounted admin plugin method or physical admin placement requires a restart",
                         route.path
@@ -3823,6 +4243,10 @@ impl ListenerPlan {
             if name == busbar_kernel::config::KEYS_MODULE {
                 continue;
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: listener auths are resolved once per published policy"
+            )]
             let calls = app
                 .auth
                 .position_calls(name)
@@ -3907,12 +4331,21 @@ impl ListenerPlan {
             if next.root_required || next.needs.iter().any(|need| need.at == "listen") {
                 return Err("listen: adding a physical listener requires a restart".into());
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: listener lists are sealed once per configuration"
+            )]
             next.binds.retain(|bind| bind.at != "listen");
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: listener lists are sealed once per configuration"
+        )]
         next.needs
             .retain(|need| !self.withheld_public_export_need(app, need));
         let physical_bind = |at: &str| {
             let proposed = next.binds.iter().find(|bind| bind.at == at);
+            // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
             self.initial
                 .binds
                 .iter()
@@ -3926,6 +4359,7 @@ impl ListenerPlan {
                     })
                 })
                 .or_else(|| {
+                    // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
                     self.initial
                         .binds
                         .iter()
@@ -3934,20 +4368,32 @@ impl ListenerPlan {
         };
         for bind in &next.binds {
             if physical_bind(&bind.at).is_none() {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: listener lists are sealed once per configuration"
+                )]
                 return Err(format!(
                     "{}: changing or adding a physical listener requires a restart",
                     bind.at
                 ));
             }
         }
-        let mut datagram_claims = std::collections::HashMap::new();
+        let mut datagram_claims = foldhash::HashMap::default();
         for need in &next.needs {
             if need.kind == KindCode::Plane && self.planes.get().is_some_and(|lines|
                 !lines.iter().any(|route| matches!(&route.line.claimant, Claimant::Plane(owner) if owner == &need.instance)
                     && !route.root_only && route.transport == need.transport)) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: listener lists are sealed once per configuration"
+                )]
                 return Err(format!("{}: inbound need {} has no served plane claim", need.instance, need.need));
             }
             let Some((owner, datagram)) = self.framers.get(&need.transport) else {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: listener lists are sealed once per configuration"
+                )]
                 return Err(format!(
                     "{}: inbound need {} has no accepting framer for {}",
                     need.instance, need.need, need.transport
@@ -3955,15 +4401,27 @@ impl ListenerPlan {
             };
             if *datagram {
                 if need.kind != KindCode::Plane || need.at == "listen" {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: listener lists are sealed once per configuration"
+                    )]
                     return Err(format!(
                         "{}: datagram need {} has no physical plane claim door",
                         need.instance, need.need
                     ));
                 }
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: listener lists are sealed once per configuration"
+                )]
                 let bind = physical_bind(&need.at)
                     .ok_or_else(|| format!("{}: unknown datagram listener", need.at))?;
                 if let Some(previous) = datagram_claims.insert(&need.transport, &bind.at) {
                     if previous != &bind.at {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: listener lists are sealed once per configuration"
+                        )]
                         return Err(format!(
                             "{}: a second claim door for {}",
                             need.at, need.transport
@@ -3972,6 +4430,10 @@ impl ListenerPlan {
                 }
             }
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: listener lists are sealed once per configuration"
+                )]
                 let bind = physical_bind(&need.at)
                     .ok_or_else(|| format!("{}: unknown physical listener", need.at))?;
                 let scheme = &bind.transport;
@@ -4000,6 +4462,10 @@ impl ListenerPlan {
                 if bind.at == "admin_listen"
                     || (physical.is_none_or(|(physical, _)| physical != owner) && !upgrades_here)
                 {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: listener lists are sealed once per configuration"
+                    )]
                     return Err(format!(
                         "{}: inbound need {} has incompatible physical framing at {}",
                         need.instance, need.need, bind.at
@@ -4008,6 +4474,7 @@ impl ListenerPlan {
             }
             if matches!(need.kind, KindCode::Hook | KindCode::Export)
                 && !app.plugin_routes.descriptors().iter().any(|route| {
+                    // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
                     route.source_instance == need.instance
                         && route.dispatch_available
                         && (!route.persistent || self.initial.needs.contains(need))
@@ -4020,12 +4487,20 @@ impl ListenerPlan {
                         }
                 })
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: listener lists are sealed once per configuration"
+                )]
                 return Err(format!(
                     "{}: inbound need {} has no data SERVE route",
                     need.instance, need.need
                 ));
             }
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: listener lists are sealed once per configuration"
+        )]
         let chain: Vec<_> = cfg
             .data_chain
             .iter()
@@ -4045,6 +4520,11 @@ impl ListenerPlan {
             }
             Ok(line)
         };
+        // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: listener lists are sealed once per configuration"
+        )]
         let mut partitions: Vec<(String, Vec<Line>)> = self
             .initial
             .binds
@@ -4062,6 +4542,10 @@ impl ListenerPlan {
                      at: &str,
                      mut line: Line|
          -> Result<(), String> {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: listener lists are sealed once per configuration"
+            )]
             let bind =
                 physical_bind(at).ok_or_else(|| format!("listener {at} was not bound at boot"))?;
             let scheme = &bind.transport;
@@ -4069,6 +4553,10 @@ impl ListenerPlan {
             if matches!(line.auth, LineAuth::Chain(..)) && !cfg.data_chain.is_empty() {
                 line.auth = chain_auth(&chain);
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: listener lists are sealed once per configuration"
+            )]
             let lines = &mut partitions
                 .iter_mut()
                 .find(|(name, _)| name == &bind.at)
@@ -4088,6 +4576,10 @@ impl ListenerPlan {
             }
             Ok(())
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: listener lists are sealed once per configuration"
+        )]
         let assigned = |kind: KindCode, owner: &str, transport: Option<&str>| {
             next.needs
                 .iter()
@@ -4145,7 +4637,11 @@ impl ListenerPlan {
             }
             let mut needs = assigned(KindCode::Plane, owner, Some(transport));
             if needs.is_empty() && line.upgrade.is_some() {
-                needs = assigned(KindCode::Plane, owner, None)
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: listener lists are sealed once per configuration"
+                )]
+                let upgraded = assigned(KindCode::Plane, owner, None)
                     .into_iter()
                     .filter(|need| {
                         self.framers
@@ -4153,6 +4649,7 @@ impl ListenerPlan {
                             .is_some_and(|(_, datagram)| !datagram)
                     })
                     .collect();
+                needs = upgraded;
             }
             if needs.is_empty() {
                 if next
@@ -4161,6 +4658,10 @@ impl ListenerPlan {
                     .any(|need| need.kind == KindCode::Plane && need.instance == *owner)
                     && line.upgrade.is_none()
                 {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: listener lists are sealed once per configuration"
+                    )]
                     return Err(format!(
                         "{owner}: claim {} has no inbound need for its transport {transport}",
                         line.route.path
@@ -4234,7 +4735,12 @@ impl ListenerPlan {
                 busbar_kernel::plugin_routes::RouteKind::Hook => KindCode::Hook,
                 busbar_kernel::plugin_routes::RouteKind::Export => KindCode::Export,
             };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: listener lists are sealed once per configuration"
+            )]
             let needs = if route.persistent {
+                // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
                 self.initial
                     .needs
                     .iter()
@@ -4277,24 +4783,37 @@ impl ListenerPlan {
                 }
             }
         }
-        partitions
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: listener lists are sealed once per configuration"
+        )]
+        let tail = partitions
             .into_iter()
             .map(|(at, lines)| {
                 GuestList::seal(lines)
                     .map(|list| (at.clone(), list))
                     .map_err(|refusal| {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: listener lists are sealed once per configuration"
+                        )]
                         let listener = physical_bind(&at)
                             .map(|bind| format!("{at} ({})", bind.listen))
                             .unwrap_or_else(|| at.clone());
                         guest_refusal(&listener, refusal)
                     })
             })
-            .collect()
+            .collect();
+        tail
     }
 
     pub fn policy(self: &Arc<Self>, at: String) -> crate::root::inbound::ListenerPolicy {
         let plan = Arc::clone(self);
         Arc::new(move |source| {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a listener policy is selected once per published generation"
+            )]
             let guests = plan
                 .lists(&source.app)?
                 .into_iter()
@@ -4418,14 +4937,23 @@ mod open_relay_composition_tests;
 
 fn chain_auth(data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
     let points = data_chain.iter().fold(0, |set, (_, p)| set | p.bits());
-    busbar_kernel::guest::LineAuth::Chain(
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: line auths are resolved once per configuration"
+    )]
+    let tail = busbar_kernel::guest::LineAuth::Chain(
         data_chain.iter().map(|(name, _)| name.clone()).collect(),
         busbar_contract::abi::auth::AuthPoints(points),
-    )
+    );
+    tail
 }
 
 fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) -> String {
     use busbar_kernel::guest::{GuestRefusal, Line};
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused guest list is described in its error"
+    )]
     let methods = |line: &Line| {
         [
             "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE",
@@ -4437,6 +4965,10 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
         .collect::<Vec<_>>()
         .join("|")
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused guest list is described in its error"
+    )]
     let named = |lines: &[Line]| {
         lines
             .iter()
@@ -4444,7 +4976,11 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
             .collect::<Vec<_>>()
             .join(", ")
     };
-    match refusal {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused guest list is described in its error"
+    )]
+    let tail = match refusal {
         GuestRefusal::EqualPrecedence(pair) => format!(
             "{listener}: route conflict between {:?} {} {} and {:?} {} {}; both match at equal precedence. \
              Assign one plane to a different socket using its ingress.listen configuration, or disable one conflicting plugin",
@@ -4470,7 +5006,8 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
             line.auth.points().bits(),
             line.offered.bits()
         ),
-    }
+    };
+    tail
 }
 
 const CORE_CLAIMANT: &str = "core";
@@ -4480,10 +5017,15 @@ pub fn upgrade_carriers(
     transports: &[crate::root::linked::LinkedTransport],
     dropped: &[crate::root::registry::DroppedDoor],
 ) -> Vec<&'static str> {
-    transport_rows(transports, dropped)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: upgrade carriers are listed once per configuration"
+    )]
+    let tail = transport_rows(transports, dropped)
         .into_iter()
         .flat_map(|r| r.upgrades)
-        .collect()
+        .collect();
+    tail
 }
 
 pub type TransportOffer = (&'static str, busbar_contract::abi::auth::AuthPoints);
@@ -4514,7 +5056,12 @@ fn transport_rows(
         under: d.composes_over.first().copied(),
         offered: d.offered,
     });
-    linked.chain(dropped).collect()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: transport rows are listed once per configuration"
+    )]
+    let tail = linked.chain(dropped).collect();
+    tail
 }
 
 #[must_use]
@@ -4523,11 +5070,20 @@ pub fn transport_offers(
     dropped: &[crate::root::registry::DroppedDoor],
 ) -> Vec<TransportOffer> {
     let rows = transport_rows(transports, dropped);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: transport offers are listed once per configuration"
+    )]
     let own: Vec<TransportOffer> = rows
         .iter()
         .flat_map(|r| r.claims.iter().map(move |c| (*c, r.offered)))
         .collect();
-    rows.iter()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: transport offers are listed once per configuration"
+    )]
+    let tail = rows
+        .iter()
         .flat_map(|r| {
             let under = r.under.map(|l| offered_by(&own, l));
             r.claims.iter().map(move |c| match under {
@@ -4535,7 +5091,8 @@ pub fn transport_offers(
                 _ => (*c, r.offered),
             })
         })
-        .collect()
+        .collect();
+    tail
 }
 
 fn offered_by(offers: &[TransportOffer], claim: &str) -> busbar_contract::abi::auth::AuthPoints {
@@ -4573,6 +5130,10 @@ fn claim_line(
         // neutral guest list serves it; there is no single HTTP adapter method to mount.
         (METHOD_ANY, None)
     } else {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: claim lines are built once per configuration"
+        )]
         let method = METHODS
             .into_iter()
             .find(|m| m.as_str() == claim.verb)
@@ -4586,6 +5147,10 @@ fn claim_line(
     };
     let exact = claim.flags & CLAIM_EXACT != 0;
     let pattern = claim.flags & CLAIM_PATTERN != 0;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: claim lines are built once per configuration"
+    )]
     let line = busbar_kernel::guest::Line {
         route: busbar_kernel::guest::Route {
             methods,
@@ -4614,7 +5179,12 @@ fn line_path(
     if as_written {
         claim.target.clone()
     } else {
-        format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: claim lines are built once per configuration"
+        )]
+        let tail = format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'));
+        tail
     }
 }
 
@@ -4622,6 +5192,11 @@ fn signed_paths(
     claims: &[crate::root::loader::dispatch::kinds::plane::OwnedClaim],
 ) -> Arc<[String]> {
     use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
+    // busbar:expect(bp::into_alloc, reason = "config: signed paths are listed once per configuration")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: signed paths are listed once per configuration"
+    )]
     claims
         .iter()
         .filter(|c| {
@@ -4638,17 +5213,35 @@ fn routed(claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim) -> bo
 }
 
 fn mount_paths(path: &str) -> Option<Vec<String>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: mount paths are built once per configuration"
+    )]
     let segs: Vec<&str> = path.split('/').collect();
     let at = segs
         .iter()
         .position(|s| s.starts_with('{') && s.ends_with("+}"))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: mount paths are built once per configuration"
+    )]
     let prefix = segs[..at].join("/");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: mount paths are built once per configuration"
+    )]
     let target = if prefix.is_empty() {
         "/".to_string()
     } else {
+        // busbar:expect(bp::clone_alloc, reason = "config: mount paths are built once per configuration")
         prefix.clone()
     };
-    Some(vec![target, format!("{prefix}/{{*{SUBTREE}}}")])
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: mount paths are built once per configuration"
+    )]
+    let tail = Some(vec![target, format!("{prefix}/{{*{SUBTREE}}}")]);
+    tail
 }
 
 type DoorClaim = (usize, u32);
@@ -4694,7 +5287,6 @@ pub fn door_mounts(
     door_mounts_planned(served, pin, data_chain, core, upgrades, offers, None)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn door_mounts_planned(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -4706,13 +5298,17 @@ fn door_mounts_planned(
 ) -> Result<DoorMounts, String> {
     use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
-    use std::collections::HashMap;
+    use foldhash::HashMap;
 
     let public = if plan.is_none_or(|(_, _, at)| at == "listen") {
         public_routes(&served)
     } else {
         Vec::new()
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: door mounts are planned once per configuration"
+    )]
     let physical = if let Some((plan, app, at)) = plan {
         if plan.planes.get().is_none() {
             plan.mount_planes(&served, app, upgrades)?;
@@ -4727,14 +5323,20 @@ fn door_mounts_planned(
     } else {
         None
     };
-    let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
+    let mut upgraded: foldhash::HashSet<DoorClaim> = foldhash::HashSet::default();
+    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut lines = Vec::new();
+    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut doors: Vec<(busbar_kernel::guest::Line, Option<RouteMethod>, DoorClaim)> = Vec::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: door mounts are planned once per configuration"
+            )]
             let rung =
                 u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
             let (mut line, method) =
@@ -4756,6 +5358,10 @@ fn door_mounts_planned(
     }
 
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: door mounts are planned once per configuration"
+        )]
         lines.push(busbar_kernel::guest::Line {
             route: busbar_kernel::guest::Route {
                 methods: method_bit(method.as_str()),
@@ -4790,11 +5396,16 @@ fn door_mounts_planned(
             crate::root::plane_node::node(),
         ))
     });
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: door mounts are planned once per configuration"
+    )]
     let instances: Vec<String> = served.planes.iter().map(|p| p.instance.clone()).collect();
     let documents = resource_documents(&served);
 
+    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
-    let mut of_line: HashMap<(String, u32), (RouteAuth, DoorClaim)> = HashMap::new();
+    let mut of_line: HashMap<(String, u32), (RouteAuth, DoorClaim)> = HashMap::default();
     for (line, method, door) in doors {
         let auth = match line.auth {
             LineAuth::None => RouteAuth::None,
@@ -4804,13 +5415,25 @@ fn door_mounts_planned(
         let Some(method) = method else {
             continue;
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: door mounts are planned once per configuration"
+        )]
         let tail = format!("/{{*{SUBTREE}}}");
         let paths = if let Some(paths) = mount_paths(&line.route.path) {
             paths
         } else if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
             vec![line.route.path.clone()]
         } else {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: door mounts are planned once per configuration"
+            )]
             let target = line.route.path.trim_end_matches(&tail).to_string();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: door mounts are planned once per configuration"
+            )]
             let target = if target.is_empty() {
                 "/".to_string()
             } else {
@@ -4826,6 +5449,10 @@ fn door_mounts_planned(
         }
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: door mounts are planned once per configuration"
+    )]
     let concrete: Vec<String> = mounts
         .iter()
         .map(|(path, ..)| path.clone())
@@ -4853,6 +5480,10 @@ fn door_mounts_planned(
         }
     }
     let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: door mounts are planned once per configuration"
+    )]
     let routes = Arc::new(DataRoutes {
         live: served
             .planes
@@ -4877,6 +5508,10 @@ fn door_mounts_planned(
                 .nests
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: door mounts are planned once per configuration"
+            )]
             nests.retain(|routes| routes.strong_count() != 0);
             nests.push(Arc::downgrade(&routes));
         }
@@ -4886,8 +5521,11 @@ fn door_mounts_planned(
     } else {
         attach_nests(kernel, &routes);
     }
+    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
+    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut sessions = Vec::new();
+    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut requests = Vec::new();
     for mount in mounts {
         let (path, method, auth, door) = mount;
@@ -4922,12 +5560,20 @@ fn door_mounts_planned(
         });
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: door mounts are planned once per configuration"
+    )]
     let signed: Vec<Arc<[String]>> = routes
         .served
         .planes
         .iter()
         .map(|p| signed_paths(&p.snapshot.claims))
         .collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: door mounts are planned once per configuration"
+    )]
     let refusals: Vec<PlaneRefusalSpec> = requests
         .iter()
         .chain(&session_mounts)
@@ -5002,6 +5648,10 @@ fn door_mounts_planned(
             ))
         })
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: door mounts are planned once per configuration"
+    )]
     let routes_of = requests
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
@@ -5083,6 +5733,7 @@ fn door_mounts_planned(
     routes_of.extend(public);
 
     if plan.is_none() {
+        // busbar:expect(bp::clone_alloc, reason = "config: door mounts are planned once per configuration")
         crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
     }
     Ok(DoorMounts {
@@ -5099,13 +5750,22 @@ pub(crate) fn line_routes(
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
 ) -> Result<Arc<DataRoutes>, String> {
     use busbar_kernel::guest::GuestList;
+    // busbar:expect(bp::fresh_buffer, reason = "config: line routes are planned once per configuration")
     let mut lines_of = Vec::new();
+    #[expect(
+        clippy::disallowed_types,
+        reason = "config: line routes are planned once per configuration, in the map the owner tests build"
+    )]
     let mut of_line = std::collections::HashMap::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: line routes are planned once per configuration"
+            )]
             let rung =
                 u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
             let (line, _) = claim_line(&plane.instance, rung, claim, &[], &[], &[])?;
@@ -5121,6 +5781,10 @@ pub(crate) fn line_routes(
         ))
     });
     let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: line routes are planned once per configuration"
+    )]
     let routes = Arc::new(DataRoutes {
         live: served
             .planes
@@ -5165,7 +5829,11 @@ fn attach_nest_routes(kernel: Option<Arc<KernelServices>>, routes: NestRoutes) {
 
 fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     let tables = &served.tables;
-    served
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: public routes are listed once per configuration"
+    )]
+    let tail = served
         .planes
         .iter()
         .flat_map(|p| p.snapshot.admin_routes.iter())
@@ -5183,6 +5851,10 @@ fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
                     move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
                         let tables = tables.clone();
                         Box::pin(async move {
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "config: public routes are listed once per configuration"
+                            )]
                             let target = ctx
                                 .uri
                                 .path_and_query()
@@ -5201,7 +5873,8 @@ fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
                 }),
             })
         })
-        .collect()
+        .collect();
+    tail
 }
 
 struct ResourceDocument {
@@ -5210,10 +5883,8 @@ struct ResourceDocument {
     scopes_supported: Vec<String>,
 }
 
-fn resource_documents(
-    served: &Served,
-) -> std::collections::HashMap<(usize, u32), Arc<ResourceDocument>> {
-    let mut out = std::collections::HashMap::new();
+fn resource_documents(served: &Served) -> foldhash::HashMap<(usize, u32), Arc<ResourceDocument>> {
+    let mut out = foldhash::HashMap::default();
     for (p, plane) in served.planes.iter().enumerate() {
         let snapshot = &plane.snapshot;
         let (Some(resource), Some(metadata)) = (&snapshot.audience, &snapshot.resource_metadata)
@@ -5409,7 +6080,7 @@ impl DataRoutes {
         let target = req
             .uri
             .path_and_query()
-            .map_or_else(|| req.uri.path().to_string(), |t| t.as_str().to_string());
+            .map_or_else(|| req.uri.path(), |t| t.as_str());
         let head: Vec<(Vec<u8>, Vec<u8>)> = req
             .headers
             .iter()
@@ -5643,15 +6314,32 @@ impl DataRoutes {
         }).await;
     }
 
+    /// The datagram opening as the owner tests drive it: a named carrier.
+    #[cfg(test)]
     async fn open_datagram(
         self: Arc<Self>,
         (framer, carrier): (Arc<dyn busbar_core_connector::framer::FramerDoor>, String),
         door: SessionDoor,
         arrival: Arrival,
     ) -> Response {
-        let whole = self
-            .open_datagram_neutral((framer, carrier), door, arrival)
-            .await;
+        let whole = self.open_datagram_on(framer, &carrier, door, arrival).await;
+        stated((whole.status, whole.fields), Body::from(whole.body))
+    }
+
+    async fn open_datagram_framed(
+        self: Arc<Self>,
+        framer: Arc<dyn busbar_core_connector::framer::FramerDoor>,
+        door: SessionDoor,
+        arrival: Arrival,
+    ) -> Response {
+        // The carrier is borrowed from the claim it was framed on, through a second handle.
+        let routes = Arc::clone(&self);
+        let carrier = routes.served.planes[door.plane]
+            .snapshot
+            .claims
+            .get(arrival.claim as usize)
+            .map_or("", |c| c.carrier.as_str());
+        let whole = self.open_datagram_on(framer, carrier, door, arrival).await;
         stated((whole.status, whole.fields), Body::from(whole.body))
     }
 
@@ -5661,30 +6349,52 @@ impl DataRoutes {
         door: SessionDoor,
         arrival: Arrival,
     ) -> neutral::Whole {
+        self.open_datagram_on(framer, &carrier, door, arrival).await
+    }
+
+    async fn open_datagram_on(
+        self: Arc<Self>,
+        framer: Arc<dyn busbar_core_connector::framer::FramerDoor>,
+        carrier: &str,
+        door: SessionDoor,
+        arrival: Arrival,
+    ) -> neutral::Whole {
         let doors = self
             .claim_doors
             .as_ref()
             .and_then(|doors| doors.get())
             .unwrap_or(&self.served.claim_doors);
-        let Some(claim_door) = doors.get(&carrier) else {
+        let Some(claim_door) = doors.get(carrier) else {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a refused media offer renders its refusal text"
+            )]
             let setting = self.served.planes[door.plane]
                 .live
-                .listen_setting(&carrier)
+                .listen_setting(carrier)
                 .unwrap_or_else(|| format!("the `{carrier}` listener's `listen`"));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a refused media offer renders its refusal text"
+            )]
             let text = format!(
                 "this deployment serves no media for the offer: no listener is configured for its \
                  `{carrier}` carrier (set `{setting}`)"
             );
-            return self.refused_open(&door, &arrival, &carrier, ReasonCode::NoDestination, &text);
+            return self.refused_open(&door, &arrival, carrier, ReasonCode::NoDestination, &text);
         };
         let opened = match serve_datagram::Opened::open(&claim_door, framer, &arrival.body) {
             Ok(o) => o,
             Err(why) => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a refused media offer renders its refusal text"
+                )]
                 let text = format!("the offer cannot open a media session: {why}");
                 return self.refused_open(
                     &door,
                     &arrival,
-                    &carrier,
+                    carrier,
                     ReasonCode::DecodeFailed,
                     &text,
                 );
@@ -5747,6 +6457,10 @@ impl DataRoutes {
             .claims
             .get(arrival.claim as usize)
             .map_or(0, |c| u32::from(c.refusal_dialect));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refused media offer renders its refusal text"
+        )]
         let rendered = served
             .driver
             .refuse_kernel(reason, status, text, dialect, &arrival.target)
@@ -5755,6 +6469,10 @@ impl DataRoutes {
                 fields: Vec::new(),
                 body: text.as_bytes().to_vec(),
             });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refused media offer renders its refusal text"
+        )]
         busbar_kernel::audit::auditlog::emit_admin_hostless_now(
             "door.session_open",
             &format!("{}:{carrier}", served.instance),
@@ -5783,7 +6501,9 @@ impl DataRoutes {
             .filter(|(n, _)| keep_arrival_field(n.as_str().as_bytes()))
             .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
             .collect();
-        let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
+        let target = uri
+            .path_and_query()
+            .map_or_else(|| uri.path(), |t| t.as_str());
         let arrival = Arrival {
             claim,
             method: method.as_str().as_bytes().to_vec(),
@@ -5804,7 +6524,7 @@ impl DataRoutes {
                 .claims
                 .get(claim as usize)
                 .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
-        let key = gov.key.clone();
+        let key = gov.key;
         let door = SessionDoor {
             admission: None,
             plane,
@@ -5872,12 +6592,12 @@ impl DataRoutes {
             .get(claim as usize)
             .and_then(|c| self.framer_for(&c.carrier).map(|d| (d, c.carrier.as_str())));
 
-        let datagram_carrier = framed
+        let datagram_framer = framed
             .as_ref()
             .filter(|(d, _)| d.facts().datagram)
-            .map(|(d, c)| (Arc::clone(d), (*c).to_owned()));
-        if let Some(carried) = datagram_carrier {
-            return self.open_datagram(carried, door, arrival).await;
+            .map(|(d, _)| Arc::clone(d));
+        if let Some(framer) = datagram_framer {
+            return self.open_datagram_framed(framer, door, arrival).await;
         }
         let SessionDoor {
             app,
@@ -5898,7 +6618,7 @@ impl DataRoutes {
                 .iter()
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone()))
                 .collect();
-            let target = String::from_utf8_lossy(&arrival.target).into_owned();
+            let target = String::from_utf8_lossy(&arrival.target);
             let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
                 door, carrier, &target, &head, scheme,
             ) else {
@@ -5919,7 +6639,7 @@ impl DataRoutes {
                     };
                 }
             };
-            let (arrival, inner, reply) = deframed_arrival(arrival, &messages);
+            let (arrival, inner, reply) = deframed_arrival(arrival, messages);
             let stream = serve_framed::shared(stream);
             let (trailers, trailed) = oneshot::channel();
             let caller = serve_framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
@@ -5974,8 +6694,7 @@ impl DataRoutes {
 
     fn frames_lock(
         &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Arc<busbar_kernel::state::App>>>
-    {
+    ) -> std::sync::MutexGuard<'_, foldhash::HashMap<u64, Arc<busbar_kernel::state::App>>> {
         self.frames
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -6070,7 +6789,10 @@ impl DataRoutes {
         reply.answer_nested_bound(Box::pin(unit), reply_bound).await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one unit's parts, moved into the drive that owns it"
+    )]
     async fn drive<C: SessionCaller + Stated + Send + Sync>(
         &self,
         plane: usize,
@@ -6079,7 +6801,7 @@ impl DataRoutes {
         open: bool,
         caller: &C,
         arrival: Arrival,
-        nesting: Option<Nesting>,
+        mut nesting: Option<Nesting>,
         admission: Option<&busbar_kernel::inbound::RequestAdmission>,
     ) -> Option<Rendered> {
         let served = &self.served.planes[plane];
@@ -6148,11 +6870,14 @@ impl DataRoutes {
             Arc::clone(&node.ticket_custody.nonce),
             Arc::clone(&live.ticket_nonce),
         );
-        if let Some(n) = &nesting {
+        if let Some(n) = nesting.as_mut() {
+            // The ancestry is read nowhere after this: it moves into the unit records.
             served
                 .kernel
                 .units()
-                .set_child_ancestry(unit.get(), n.ancestry.clone());
+                .set_child_ancestry(unit.get(), std::mem::take(&mut n.ancestry));
+        }
+        if let Some(n) = &nesting {
             steps = steps
                 .under(n.parent.cell())
                 .with_child_constraints(n.constraints.clone());
@@ -6233,26 +6958,37 @@ impl DataRoutes {
                     |d| d.dialect,
                 );
                 let pool = downgraded
-                    .or_else(|| {
-                        decoded
-                            .and_then(|d| d.pool)
-                            .map(|p| String::from_utf8_lossy(&p).into_owned())
-                    })
+                    .or_else(|| decoded.and_then(|d| d.pool).map(decoded_name))
                     .filter(|name| {
                         live.pools.pools().contains_key(name)
                             || live.pools.entries().iter().any(|e| e == name)
-                    })
-                    .unwrap_or_else(|| "unresolved".to_string());
+                    });
+                let pool = pool.as_deref().unwrap_or("unresolved");
                 busbar_kernel::telemetry::model_request_finished(
                     &app_for_metrics,
                     served.dialects.get(dialect as usize).copied().unwrap_or(""),
-                    &pool,
+                    pool,
                     u16::try_from(status).unwrap_or(u16::MAX),
                     started.elapsed().as_secs_f64(),
                 );
             }
         }
         rendered
+    }
+}
+
+/// A pool name a plane decoded, as text: its own bytes when they are UTF-8 (no copy).
+fn decoded_name(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(name) => name,
+        Err(invalid) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a decoded pool name that is not UTF-8 is replaced lossily"
+            )]
+            let name = String::from_utf8_lossy(invalid.as_bytes()).into_owned();
+            name
+        }
     }
 }
 
@@ -6311,13 +7047,18 @@ pub(crate) fn report_of(
             continue;
         }
         if let Some(name) = facts.classes.get(u.class as usize) {
+            let count = u.count().ok()?;
+            // Counts are nonnegative, so a class totals zero only when every count is zero: a zero
+            // count never opens an entry (no zero row to sweep out afterwards).
+            if count.is_zero() {
+                continue;
+            }
             let n = usage_units
                 .entry(name.clone())
                 .or_insert(busbar_contract::Count::ZERO);
-            *n = n.checked_add(u.count().ok()?).ok()?;
+            *n = n.checked_add(count).ok()?;
         }
     }
-    usage_units.retain(|_, n| !n.is_zero());
     Some((
         busbar_contract::billing::ExactUsage { usage_units },
         fee,
@@ -6562,11 +7303,19 @@ impl DatagramOpening {
         unit: u64,
         join: impl FnOnce(serve_datagram::Joining) -> Result<(), String>,
     ) -> Result<(), String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a datagram admission that lost its opening is refused"
+        )]
         let joining = {
             let mut state = state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.abandoned {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a datagram admission that lost its opening is refused"
+                )]
                 return Err(DATAGRAM_OPEN_ABANDONED.to_owned());
             }
             state
@@ -6589,7 +7338,12 @@ impl DatagramOpening {
         };
         if abandoned {
             crate::root::connector::the().unpair(unit);
-            Err(DATAGRAM_OPEN_ABANDONED.to_owned())
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a datagram admission that lost its opening is refused"
+            )]
+            let tail = Err(DATAGRAM_OPEN_ABANDONED.to_owned());
+            tail
         } else {
             Ok(())
         }
@@ -6750,11 +7504,21 @@ impl busbar_kernel::plane_driver::SessionCaller for PipeCaller {
     }
 }
 
+/// The deframed messages, as the unit's body: one message is handed over as is (no copy); only
+/// several are joined.
 fn deframed_arrival(
     arrival: Arrival,
-    messages: &[Vec<u8>],
+    mut messages: Vec<Vec<u8>>,
 ) -> (Arrival, IngressCaller, IngressReply) {
-    let deframed = Bytes::from(messages.concat());
+    let deframed = if messages.len() == 1 {
+        Bytes::from(messages.swap_remove(0))
+    } else {
+        let mut joined = bytes::BytesMut::with_capacity(messages.iter().map(Vec::len).sum());
+        for message in &messages {
+            joined.extend_from_slice(message);
+        }
+        joined.freeze()
+    };
     let arrival = Arrival {
         body: deframed.clone(),
         ..arrival
@@ -6865,7 +7629,8 @@ impl SessionCaller for IngressCaller {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(body) = first {
-            return Some(body.to_vec());
+            // A uniquely held body hands over its allocation; a shared one is copied once.
+            return Some(Vec::from(body));
         }
         self.body.closed().await;
         None
@@ -6995,11 +7760,10 @@ impl IngressReply {
         let rendered = match first {
             Ok(Some(h)) if whole_answer(&h.1) => {
                 let whole = collect(body, unit).await;
-                return stated(unlengthed(h), Body::from(whole));
+                return unlengthed(stated(h, Body::from(whole)));
             }
 
             Ok(Some(h)) => {
-                let h = if whole_answer(&h.1) { unlengthed(h) } else { h };
                 if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
                     let _ = unit.await;
                     return closed_whole(h, block);
@@ -7015,10 +7779,9 @@ impl IngressReply {
                     while let Ok(bytes) = body.try_recv() {
                         whole.push(bytes);
                     }
-                    return stated(unlengthed(h), Body::from(whole.into_bytes()));
+                    return unlengthed(stated(h, Body::from(whole.into_bytes())));
                 }
                 Ok(h) => {
-                    let h = if whole_answer(&h.1) { unlengthed(h) } else { h };
                     if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
                         return closed_whole(h, block);
                     }
@@ -7087,9 +7850,12 @@ fn streamed_media(content_type: &str) -> bool {
         })
 }
 
-fn unlengthed((status, mut fields): Head) -> Head {
-    fields.retain(|(name, _)| !name.eq_ignore_ascii_case(b"content-length"));
-    (status, fields)
+/// A whole answer's response without the unit's stated length: its body is measured instead.
+fn unlengthed(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .remove(axum::http::header::CONTENT_LENGTH);
+    response
 }
 
 async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Bytes {
@@ -7179,7 +7945,8 @@ impl NestedBody {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.whole.into_bytes().to_vec()
+        // The joined pieces, or a lone uniquely held piece, hand over their allocation (no copy).
+        Vec::from(self.whole.into_bytes())
     }
 }
 
