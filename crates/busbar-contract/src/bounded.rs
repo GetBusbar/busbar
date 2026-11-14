@@ -57,14 +57,6 @@ impl<T, const N: usize> BoundedVec<T, N> {
         }
     }
 
-    /// A new, empty list that has already reserved the whole capacity its type declares.
-    #[must_use]
-    pub fn with_declared_capacity() -> Self {
-        Self {
-            items: Vec::with_capacity(N),
-        }
-    }
-
     /// The capacity this type was declared with.
     #[must_use]
     pub const fn capacity(&self) -> usize {

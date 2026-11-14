@@ -60,25 +60,9 @@ fn filling_a_bounded_list_to_capacity_takes_one_allocation() {
     );
 }
 
-/// Asking for the capacity up front is the same one allocation, taken earlier.
-fn a_list_built_with_its_declared_capacity_never_reallocates() {
-    let mut list: BoundedVec<u8, MAX_LEGS> = BoundedVec::with_declared_capacity();
-
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
-    for i in 0..MAX_LEGS {
-        list.push(u8::try_from(i).expect("the ceiling fits in a byte"))
-            .expect("every push is under the ceiling");
-    }
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
-
-    assert_eq!(after - before, 0, "a pre-sized bounded list reallocated");
-    assert!(list.push(0).is_err(), "the ceiling still refuses");
-}
-
-/// The three measurements, one after another on one thread: no other test's allocations can
+/// The two measurements, one after another on one thread: no other test's allocations can
 #[test]
 fn bounded_lists_allocate_exactly_what_their_capacity_says() {
     an_untouched_bounded_list_allocates_nothing();
     filling_a_bounded_list_to_capacity_takes_one_allocation();
-    a_list_built_with_its_declared_capacity_never_reallocates();
 }

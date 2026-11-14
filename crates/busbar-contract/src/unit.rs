@@ -282,17 +282,6 @@ pub enum FinishClass {
     Error,
 }
 
-/// THE ONE MAPPING from how a unit ended to the finish class its audit record carries.
-pub fn finish_class_of(end: &UnitEnd<'_>, completed: FinishClass) -> FinishClass {
-    match end {
-        UnitEnd::Completed => completed,
-        UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
-        UnitEnd::Aborted(AbortBy::Client)
-        | UnitEnd::Aborted(AbortBy::Kernel { .. })
-        | UnitEnd::Stalled => FinishClass::Partial,
-    }
-}
-
 /// Where a plane found the values the metering step folds.
 ///
 /// A plane returns locators, never amounts: the type carries a class, where the value was found,
