@@ -40,6 +40,8 @@ criterion = { version = "0.7", default-features = false, features = ["cargo_benc
 # 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
 ed25519-dalek = { version = "3", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# FAST-MAPS: the fast map hasher (already locked through hashbrown); `std` gives the HashMap aliases.
+foldhash = "0.2"
 futures = "0.3"
 getrandom = "0.3"
 num-bigint = { version = "0.4", default-features = false, features = ["std"] }
