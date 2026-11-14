@@ -851,3 +851,21 @@ fn the_shared_cidr_reader_parses_matches_and_refuses() {
     assert_eq!(IpNet::parse("proxy.internal"), Err(IpNetError::NotNetwork));
     assert_eq!(IpNet::read("proxy.internal"), Ok(None));
 }
+
+/// DEPENDENCY-LADDER C6 (percent-encoding) pins the host decoder before the hand loop goes: `%XX`
+/// decoded in either case, a short or non-hex escape kept, and the host left as spelled when the
+/// decoded bytes are not UTF-8.
+#[test]
+fn host_percent_decoding_pins_every_escape_shape() {
+    for (raw, normalized) in [
+        ("example.com", "example.com"),
+        ("ex%41mple.com.", "exAmple.com"),
+        ("ex%61mple.com", "example.com"),
+        ("a%zz", "a%zz"),
+        ("a%4", "a%4"),
+        ("%FF.example", "%FF.example"),
+        ("%C3%A9.example", "\u{e9}.example"),
+    ] {
+        assert_eq!(normalize_host(raw), normalized, "{raw:?}");
+    }
+}
