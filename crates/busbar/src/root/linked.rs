@@ -269,7 +269,8 @@ pub struct RootUnit {
 #[cfg(any(test, distribution_root))]
 pub struct BookCtx<'a> {
     pub book: &'a crate::root::durability::NodeBook,
-
+    /// The app the book was opened for: what the mounted owner tests' steps read.
+    #[cfg(test)]
     pub app: &'a busbar_kernel::state::App,
 }
 
