@@ -114,7 +114,7 @@ async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent
             &mut jar,
             reqwest::Method::POST,
             &format!("{origin}/consent"),
-            Some(&[("return", return_to.as_str())]),
+            Some(&[("return", return_to.as_str()), ("answer", "approve")]),
         )
         .await;
         assert_eq!(
