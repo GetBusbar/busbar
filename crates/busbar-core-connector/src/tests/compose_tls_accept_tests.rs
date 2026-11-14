@@ -208,6 +208,9 @@ fn tls_plain_is_zero() -> bool {
 /// `tls_out` and a rustls client completes its handshake against the accepted line.
 #[test]
 fn tls_accept_handshake_completes_via_compose() {
+    // The connection's deadlines are tokio timers: a worker's runtime must be entered.
+    let rt = crate::support::worker();
+    let _entered = rt.enter();
     let (conn, _pipe, client) = handshaken();
     assert!(!client.is_handshaking());
     assert!(conn.is_open());
@@ -219,6 +222,9 @@ fn tls_accept_handshake_completes_via_compose() {
 /// NewSessionTicket takes the same path (`plaintext_bytes_to_read() == 0`, probe `WouldBlock`).
 #[test]
 fn tls_ticket_only_record_on_unframed_line_delivers_no_got() {
+    // The connection's deadlines are tokio timers: a worker's runtime must be entered.
+    let rt = crate::support::worker();
+    let _entered = rt.enter();
     let (mut conn, pipe, mut client) = handshaken();
     let before = crate::compose::tls_probe::ingests();
     client.refresh_traffic_keys().unwrap();
@@ -246,6 +252,9 @@ fn tls_ticket_only_record_on_unframed_line_delivers_no_got() {
 /// The last data record and close_notify in one read: the data, then the end, exactly once.
 #[test]
 fn tls_data_then_close_notify_ends_once() {
+    // The connection's deadlines are tokio timers: a worker's runtime must be entered.
+    let rt = crate::support::worker();
+    let _entered = rt.enter();
     let (mut conn, pipe, mut client) = handshaken();
     let (calls, ends) = crate::compose::tls_probe::ingests();
     let mut bytes = records(&mut client, b"data");
@@ -273,6 +282,9 @@ fn tls_data_then_close_notify_ends_once() {
 /// A FIN with no close_notify after data is a truncation: the line fails.
 #[test]
 fn tls_unclean_eof_is_refused() {
+    // The connection's deadlines are tokio timers: a worker's runtime must be entered.
+    let rt = crate::support::worker();
+    let _entered = rt.enter();
     let (mut conn, pipe, mut client) = handshaken();
     {
         let mut w = pipe.wire.lock().unwrap();
@@ -291,6 +303,9 @@ fn tls_unclean_eof_is_refused() {
 /// and its reader disagree, the line fails closed and the scratch is wiped.
 #[test]
 fn tls_plaintext_count_mismatch_fails() {
+    // The connection's deadlines are tokio timers: a worker's runtime must be entered.
+    let rt = crate::support::worker();
+    let _entered = rt.enter();
     let (mut conn, pipe, mut client) = handshaken();
     pipe.wire
         .lock()
@@ -323,6 +338,9 @@ const RECORD: usize = 600;
 /// chunk more than the same bytes read in the clear (the unframed `Got` both pay).
 #[test]
 fn tls_read_allocates_nothing() {
+    // The connection's deadlines are tokio timers: a worker's runtime must be entered.
+    let rt = crate::support::worker();
+    let _entered = rt.enter();
     let (mut conn, _pipe, mut client) = handshaken();
     let (mut plain, _plain_pipe) = plain_line();
     // Warm both: buffers, the inbox and the scratch slots reach their working size.
@@ -350,6 +368,9 @@ fn tls_read_allocates_nothing() {
 /// the two slots never contend, so the read allocates nothing more and no taker misses its slot.
 #[test]
 fn tls_read_with_carrier_scratch_held_allocates_nothing() {
+    // The connection's deadlines are tokio timers: a worker's runtime must be entered.
+    let rt = crate::support::worker();
+    let _entered = rt.enter();
     let (mut conn, pipe, mut client) = handshaken();
     let (mut plain, plain_pipe) = plain_line();
     let mut cx = Context::from_waker(std::task::Waker::noop());
