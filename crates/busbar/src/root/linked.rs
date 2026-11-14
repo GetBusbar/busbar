@@ -353,11 +353,13 @@ fn conns() -> Option<busbar_contract::conn::admissions::AdmissionAuthority> {
     })
 }
 
+/// The process's one secret axis: this build's linked secret sources, whichever reader asks first.
+/// It is never an unlinked set, so a reader that runs before boot publishes the axis reads the
+/// same admitted source declarations boot does.
 pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
-    SECRETS.get_or_init(|| {
-        crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher, conns)
-            .with_logs(|| crate::root::boot::plugin_logs().clone())
-            .with_disk_lane(disk_run)
+    link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares).unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
     })
 }
 

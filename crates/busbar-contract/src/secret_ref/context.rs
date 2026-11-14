@@ -90,10 +90,16 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Context<'_, D> {
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
         if name == REFERENCE {
-            self.inner.deserialize_any(Reference {
-                inner: visitor,
-                sugars: self.sugars,
-            })
+            // Asked through the inner reader's own reference position, so a context nested inside
+            // another (a type that reads itself under the installed owners, read by a caller that
+            // named its owners) defers to the enclosing one: the context nearest the input governs.
+            self.inner.deserialize_newtype_struct(
+                REFERENCE,
+                Reference {
+                    inner: visitor,
+                    sugars: self.sugars,
+                },
+            )
         } else {
             self.inner.deserialize_newtype_struct(
                 name,
@@ -353,6 +359,12 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
             "a canonical secret reference or a shorthand declared by an admitted source owner",
         )
     }
+    fn visit_newtype_struct<D: Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
     fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
         self.inner.visit_newtype_struct(value.into_deserializer())
     }
@@ -495,6 +507,26 @@ mod tests {
                 &[(REWRITE_SUGAR, "cabinet".into(), "other".into())]
             )
             .is_err());
+    }
+
+    /// A context nested inside another defers to the enclosing one: the declarations the outer
+    /// reader was given govern its reference positions, whatever an inner type would install.
+    #[test]
+    fn the_context_nearest_the_input_governs_a_nested_one() {
+        struct Inner(SecretRef);
+        impl<'de> Deserialize<'de> for Inner {
+            fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+                deserialize(de, &Sugars::default()).map(Inner)
+            }
+        }
+        let outer = declared("cabinet", "owner-one", "entry");
+        let mut raw = serde_json::Deserializer::from_str(r#"{"cabinet":"item"}"#);
+        let read: Inner = deserialize(&mut raw, &outer).unwrap();
+        assert_eq!(read.0, outer.get("cabinet").unwrap().reference("item"));
+        let Err(alone) = serde_json::from_str::<Inner>(r#"{"cabinet":"item"}"#) else {
+            panic!("an inner context with no owners refuses on its own");
+        };
+        assert!(alone.to_string().contains("not declared"), "{alone}");
     }
 
     /// No scalar literal at a secret-reference position is ever echoed: every one is refused with
