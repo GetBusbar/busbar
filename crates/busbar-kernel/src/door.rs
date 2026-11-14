@@ -34,6 +34,13 @@ pub fn node() -> u64 {
     IDS.node
 }
 
+/// A unit ref's nonce: this boot's node and the next value of the `op_id` counter, so no two
+/// mints in a process (and, with a fresh node per boot, across boots) share one. It needs no
+/// secrecy: the MAC key is the secret.
+pub(crate) fn unit_nonce() -> [u64; 2] {
+    [IDS.node, next_counter(&IDS.counter)]
+}
+
 static IDS: std::sync::LazyLock<OpIds> = std::sync::LazyLock::new(|| OpIds::boot(boot_node()));
 
 /// One boot's `op_id`s: its node half and its counter.
