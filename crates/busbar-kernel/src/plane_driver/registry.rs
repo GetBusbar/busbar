@@ -650,8 +650,8 @@ plane_behaviour! {
     /// `build_runtime` inserted into `plane_slots[runtime_slot_key(<decl key>)]`), erased as `&dyn Any`;
     /// the plane downcasts it to its own runtime type inside the plane crate and returns a borrow as the
     /// substrate trait object. Core's [`crate::plane_driver::slots::PlaneSlots`]-driven `engine_tables_view` calls
-    /// this at most once per scrape/discovery read and falls back to the substrate-resident
-    /// [`crate::plane_driver::route_tables::EMPTY_VIEW`] when the plane contributed no runtime slot (the zero-plane binary).
+    /// this at most once per scrape/discovery read and falls back to the kernel's own
+    /// [`crate::plane_driver::route_tables::ConfigTables`] when the plane contributed no runtime slot (the zero-plane binary).
     /// `None` for a plane whose runtime exposes no routing tables (MCP/A2A: they contribute no
     /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in the retired engine crate.
     #[allow(clippy::type_complexity)]
