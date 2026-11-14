@@ -70,8 +70,7 @@ async fn complete_context(
         &request.inner.original.method,
         &request.inner.original.target,
         headers,
-        client_token,
-        &mut read,
+        dpop::Surface::Plane,
     )
     .await
     {
@@ -79,7 +78,9 @@ async fn complete_context(
             (client_token.map(std::borrow::Cow::Borrowed), false)
         }
         dpop::SenderConstraint::Proven(token) => (Some(std::borrow::Cow::Owned(token)), true),
-        dpop::SenderConstraint::Refused => return Err(AdmittedRefusal::SenderConstraint),
+        dpop::SenderConstraint::Refused(reason) => {
+            return Err(AdmittedRefusal::SenderConstraint(reason))
+        }
     };
     let mut consumed = gate_consumed(&app, false, proven);
     consumed.caller = verified_caller_credential(

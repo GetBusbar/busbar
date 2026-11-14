@@ -103,7 +103,7 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
 
 #[tokio::test]
 async fn dpop_refusal_names_the_sender_constraint() {
-    let response = refusal(ExchangeError::SenderConstraint(
+    let response = refusal(&ExchangeError::SenderConstraint(
         crate::auth::dpop::Refusal::Unverifiable,
     ));
     let status = response.status().as_u16();
@@ -148,7 +148,7 @@ async fn exchange_answers_a_held_subject_403_with_a_coded_body() {
             "your account is on hold; ask your Busbar administrator",
         ),
     ] {
-        let response = refusal(ExchangeError::Held(reason));
+        let response = refusal(&ExchangeError::Held(reason));
         let status = response.status().as_u16();
         let bytes = axum::body::to_bytes(response.into_body(), 4096)
             .await
