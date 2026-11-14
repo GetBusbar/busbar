@@ -397,7 +397,7 @@ impl CostModel {
                                     let amount = i64::try_from(l.amount).unwrap_or(i64::MAX);
 
                                     if bucket.budget_cap.is_none_or(|c| amount < c) {
-                                        bucket.downgrade_to = l.downgrade_to.clone();
+                                        bucket.downgrade_to.clone_from(&l.downgrade_to);
                                     }
                                     if l.admission == Some(AdmissionMode::Estimate) {
                                         bucket.budget_admission = AdmissionMode::Estimate;

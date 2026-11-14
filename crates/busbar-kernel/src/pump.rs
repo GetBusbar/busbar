@@ -51,16 +51,13 @@ impl NestedPool {
         self.size
     }
 
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
     pub fn enter(&self, depth: usize) -> Result<NestedPermit, ReasonCode> {
         if depth >= self.max_depth {
             return Err(ReasonCode::ScopeDenied);
         }
         match self
             .permits
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
         {
             Ok(_) => Ok(NestedPermit { depth }),
             Err(_) => {

@@ -67,7 +67,12 @@ impl AttemptTiming {
             if let Some(wait) = wait {
                 span.record("route_wait_us", micros(wait));
             }
-            Instant::now()
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an attempt is timed only when tracing enables its span"
+            )]
+            let start = Instant::now();
+            start
         });
         Self {
             span,
@@ -107,6 +112,10 @@ impl AttemptTiming {
 
     fn mark(&self, field: &'static str) {
         if let Some(start) = self.start {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an attempt is timed only when tracing enables its span"
+            )]
             self.span.record(field, micros(start.elapsed()));
         }
     }
@@ -180,14 +189,17 @@ pub fn forward_instrumentation(
         request_id = tracing::field::Empty
     );
     if !span.is_disabled() {
-        let pool = downgraded
+        let downgraded = downgraded
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .or_else(|| Some(String::from_utf8_lossy(pool).into_owned()));
-        if let Some(pool) = pool.as_deref() {
-            span.record("pool", tracing::field::display(pool));
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match downgraded.as_deref() {
+            Some(pool) => span.record("pool", tracing::field::display(pool)),
+            None => span.record(
+                "pool",
+                tracing::field::display(String::from_utf8_lossy(pool)),
+            ),
+        };
+        drop(downgraded);
         span.record("ingress", "openai");
         span.record("request_id", 7_u64);
     }
@@ -207,7 +219,15 @@ pub fn forward_instrumentation(
         None
     };
     for attempt in 1..=attempts {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the route wait is timed only when hot-path tracing is enabled"
+        )]
         let route_started = hotpath_enabled().then(Instant::now);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the route wait is timed only when hot-path tracing is enabled"
+        )]
         let route_wait = route_started.map(|started| started.elapsed());
         let span = if hotpath_enabled() {
             let w = live

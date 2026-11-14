@@ -171,23 +171,23 @@ impl RootSettings {
             routing,
         } = self;
         if let Some(v) = listen {
-            deploy.listen = v.clone();
+            deploy.listen.clone_from(v);
             deploy.listen_explicit = true;
         }
         if tls.is_some() {
-            deploy.tls = tls.clone();
+            deploy.tls.clone_from(tls);
         }
         if let Some(v) = admin_listen {
-            deploy.admin_listen = v.clone();
+            deploy.admin_listen.clone_from(v);
         }
         if admin_tls.is_some() {
-            deploy.admin_tls = admin_tls.clone();
+            deploy.admin_tls.clone_from(admin_tls);
         }
         if let Some(v) = admin_require_mtls {
             deploy.admin_require_mtls = *v;
         }
         if rate_card.is_some() {
-            deploy.rate_card = rate_card.clone();
+            deploy.rate_card.clone_from(rate_card);
         }
         if let Some(cards) = plugin_rate_cards {
             deploy.plugin_rate_cards = cards.clone();
@@ -196,7 +196,7 @@ impl RootSettings {
             deploy.per_request_fee = *v;
         }
         if store.is_some() {
-            deploy.store = store.clone();
+            deploy.store.clone_from(store);
         }
 
         if let Some(v) = security {
@@ -637,7 +637,7 @@ pub async fn persist_async(
             if let Some(name) = deleted_remove {
                 doc.deleted.retain(|n| n != name);
             }
-            doc.hooks = hooks.clone();
+            doc.hooks.clone_from(hooks);
             doc.global_hooks = global_hooks.to_vec();
             doc.deleted
                 .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));

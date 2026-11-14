@@ -26,7 +26,7 @@ mod timing;
 #[doc(hidden)]
 pub use timing::forward_instrumentation;
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::{

@@ -985,7 +985,7 @@ pub async fn build_app_from_config(
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
-    build_app_from_config_with_store(
+    Box::pin(build_app_from_config_with_store(
         cfg,
         plugins_cfg,
         overlay_path,
@@ -996,7 +996,7 @@ pub async fn build_app_from_config(
         rules,
         None,
         false,
-    )
+    ))
     .await
 }
 
@@ -2001,7 +2001,7 @@ async fn build_app_native(
     // Existing direct builders pass an explicit providers path. The executable replaces this
     // initial default with its actual CLI/env provenance; subsequent generations inherit it.
     if let Some(prior) = prior {
-        app.providers_override = prior.providers_override.clone();
+        app.providers_override.clone_from(&prior.providers_override);
     }
     app.config_pending_restart = prior
         .map(|app| app.config_pending_restart.clone())

@@ -51,6 +51,7 @@ tracing-subscriber = { workspace = true }
 tracing-log = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
+foldhash = { workspace = true }
 ed25519-dalek = { workspace = true }
 crc32fast = { workspace = true }
 async-trait = { workspace = true }
