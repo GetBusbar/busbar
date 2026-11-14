@@ -1,0 +1,37 @@
+name: stub-plugins
+group: core
+description: "Core overhead floor: open auth, memory store, no hooks or exports, an instant upstream. Cases: GET /healthz (transport and core router only) and the smallest openai>openai relay. NOTE: core's neutral stub plane (crates/plugin-loader/tests/fixtures/neutral_plane_plugin.rs) refuses every data op, so it cannot carry traffic yet; when the INLINE-DISPATCH flagged stub ops land, load it here through --plugins-dir."
+config: |
+  listen: "{LISTEN}"
+  providers:
+    p: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m: { provider: p }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  store: { module: memory }
+config_1_5: |
+  listen: "{LISTEN}"
+  providers:
+    p: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m: { provider: p }
+providers: |
+  p: { protocol: openai, base_url: "{MOCK}" }
+cases:
+  - name: core floor GET /healthz c=32
+    shape: { closed: 32 }
+    requests:
+      - { method: GET, path: /healthz }
+  - name: minimal relay openai>openai c=32
+    shape: { closed: 32 }
+    requests:
+      - path: /v1/chat/completions
+        headers: { content-type: application/json }
+        body: '{"model":"m","messages":[{"role":"user","content":"hi"}]}'
+        contains: hammer-ok
+    direct:
+      listener: mock
+      path: /v1/chat/completions
+      headers: { content-type: application/json }
+      body: '{"model":"mock","messages":[{"role":"user","content":"hi"}]}'
