@@ -33,6 +33,9 @@ use crate::root::{durability::NodeBook, linked::Compose};
 pub struct Preparation {
     pub startup: Startup,
     pub config: RootCfg,
+    /// The semantic pass's one result when boot already judged `config` (the fresh-instance
+    /// principal transition); construction consumes it instead of judging again.
+    pub judged: Option<busbar_kernel::config_validate::Judged>,
     pub plugins: PluginsCfg,
     pub overlay: Option<Arc<OverlayStore>>,
     pub deploy: DeployCfg,
@@ -128,6 +131,7 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
     let Preparation {
         startup,
         config,
+        judged,
         plugins,
         overlay,
         deploy,
@@ -176,18 +180,17 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
         return Err(failed.refused(config::store_required()));
     };
     let store_module = store.module.clone();
-    let (mut app, rotation, limits) = match appbuild::build_app_from_config_with_store(
-        config,
-        plugins,
-        overlay.clone(),
+    let (mut app, rotation, limits) = match appbuild::build_boot_app(appbuild::BootBuild {
+        cfg: config,
+        judged,
+        plugins_cfg: plugins,
+        overlay_path: overlay.clone(),
         base_hook_names,
         base_group_names,
-        (Some(config_path), Some(providers_path)),
-        None,
-        &rules,
-        Some(core.clone()),
-        true,
-    )
+        config_paths: (Some(config_path), Some(providers_path)),
+        rules: &rules,
+        boot_store: core.clone(),
+    })
     .await
     {
         Ok(built) => built,
