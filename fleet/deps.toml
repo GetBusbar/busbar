@@ -40,8 +40,26 @@ reason = "the sans-IO MySQL client protocol (packets, handshake, auth plugins, v
 
 [plugin-deps.percent-encoding]
 version = "2"
-repos = ["busbar-store-mysql"]
-reason = "the mysql store's reading of its `mysql://` URL (the 1.5.5 driver's URL rules); pure parsing."
+repos = ["busbar-store-mysql", "busbar-auth-sigv4", "busbar-transport-grpc", "busbar-auth-webhook-signature"]
+reason = "pure percent-encoding: the mysql store's reading of its `mysql://` URL (the 1.5.5 driver's URL rules); the SigV4 canonical path and query codec over a SigV4 unreserved AsciiSet (DEPENDENCY-LADDER S16); the gRPC `grpc-message` codec (S20); the twilio form body's strict UTF-8 check (S18). Already in busbar's lock (2.3.2)."
+
+[plugin-deps.time]
+version = "0.3"
+default-features = false
+features = ["std", "formatting", "parsing", "macros"]
+repos = ["busbar-auth-sigv4"]
+reason = "the SigV4 `x-amz-date` format and parse (`[year][month][day]T[hour][minute][second]Z`) in place of hand-written civil-date arithmetic (DEPENDENCY-LADDER S17, R6: one date crate, time 0.3). Pure; busbar's lock already holds the 0.3.49 line."
+
+[plugin-deps.form_urlencoded]
+version = "1"
+repos = ["busbar-auth-webhook-signature"]
+reason = "the twilio signature's `application/x-www-form-urlencoded` body decode (DEPENDENCY-LADDER S18); the pair cap, strict-escape and UTF-8 checks stay the plugin's. Pure; already in busbar's lock (1.2.2, through url)."
+
+[plugin-deps.quick_cache]
+version = "0.7"
+default-features = false
+repos = ["busbar-auth-oidc"]
+reason = "the OIDC verdict cache, bounded with O(1) eviction (DEPENDENCY-LADDER S26, R9: quick_cache everywhere). Default features off: std hasher and locks, so its only dependencies are equivalent and hashbrown, both already in the closure. Pure, no socket."
 
 [plugin-deps.postgres]
 version = "0.19"
@@ -146,6 +164,7 @@ allow = [
     { crate = "crypto-common", line = "0.2", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's crypto-common line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "const-oid", line = "0.10", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's const-oid line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "wasi", line = "0.14", repos = ["busbar-store-postgres"], use = "tests-only", reason = "the independent `postgres` test client (tokio-postgres 0.7.18 -> whoami 2) the live tests verify the store with; never shipped" },
+    { crate = "quick_cache", line = "0.7", repos = ["busbar-auth-oidc"], use = "shipped", reason = "the OIDC verdict cache (DEPENDENCY-LADDER S26, R9); busbar's own quick_cache row (C22) is not on dev yet, so its lock holds no line of it" },
 ]
 
 # ── cargo-deny [bans] ─────────────────────────────────────────────────────────────────────────────
