@@ -222,6 +222,10 @@ criteria = "safe-to-deploy"
 version = "0.19.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.fastrand]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.faststr]]
 version = "0.2.34"
 criteria = "safe-to-deploy"

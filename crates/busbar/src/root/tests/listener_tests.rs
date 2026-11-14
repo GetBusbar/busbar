@@ -1481,3 +1481,16 @@ fn tls_fixture_bindings_preserve_unbound_and_unavailable_material_refusals() {
     )
     .is_err());
 }
+
+#[test]
+fn the_root_accept_backoff_sequence_is_5ms_doubling_to_a_250ms_cap() {
+    let mut b = super::AcceptBackoff::new();
+    let emfile = std::io::Error::from_raw_os_error(24);
+    let tick_ms = |d: std::time::Duration| d.as_nanos().div_ceil(1_000_000);
+    let delays: Vec<_> = (0..64)
+        .map(|_| tick_ms(b.next_delay(&emfile).expect("exhaustion backs off")))
+        .collect();
+    let mut want = vec![5, 10, 20, 40, 80, 160];
+    want.resize(64, 250);
+    assert_eq!(delays, want);
+}
