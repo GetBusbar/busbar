@@ -1,0 +1,5 @@
+# The per-request work-budget gate prints its counts (`WORK-COUNT section=<s> <item>=<n>`) for
+# perf/work-budget.toml; show them in the log when it passes, not only when it fails.
+[[profile.default.overrides]]
+filter = 'test(/work_budget::/)'
+success-output = "immediate"
