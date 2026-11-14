@@ -17,30 +17,19 @@ pub use source::{process_generation, RequestIdentity, RequestSnapshot};
 #[cfg(test)]
 pub use source::Source;
 
-use std::collections::HashMap;
-use std::sync::RwLock;
-
-const CACHE_KEY_SEP: char = '\u{1f}';
-
-static REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> = OnceLock::new();
-static DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> = OnceLock::new();
-
-static PLANE_REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> =
-    OnceLock::new();
-static PLANE_DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> =
-    OnceLock::new();
+// The bank misses below (labels the bind-time `AppSlots` did not register: custom protocols, a pool
+// from another generation, a bare test `App`) emit through the recorder uncached. The keyed handle
+// cache they used before built a `format!` key per call and grew without bound; the registered
+// series are banked in `telemetry::AppSlots`, so nothing on the request path needs it.
 
 pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
-    let key = || format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}");
-    let make = || {
-        metrics::counter!(
-            REQUESTS_TOTAL,
-            "ingress_protocol" => ingress_protocol.to_string(),
-            "pool" => pool.to_string(),
-            "outcome" => outcome
-        )
-    };
-    with_handle(&REQUESTS_HANDLES, key, make, |h| h.increment(1));
+    metrics::counter!(
+        REQUESTS_TOTAL,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string(),
+        "outcome" => outcome
+    )
+    .increment(1);
 }
 
 pub(crate) fn incr_plane_requests_total(
@@ -49,33 +38,23 @@ pub(crate) fn incr_plane_requests_total(
     pool: &str,
     outcome: &'static str,
 ) {
-    let key = || {
-        format!(
-            "{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}"
-        )
-    };
-    let make = || {
-        metrics::counter!(
-            PLANE_REQUESTS_TOTAL,
-            "plane" => plane.to_string(),
-            "ingress_protocol" => ingress_protocol.to_string(),
-            "pool" => pool.to_string(),
-            "outcome" => outcome
-        )
-    };
-    with_handle(&PLANE_REQUESTS_HANDLES, key, make, |h| h.increment(1));
+    metrics::counter!(
+        PLANE_REQUESTS_TOTAL,
+        "plane" => plane.to_string(),
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string(),
+        "outcome" => outcome
+    )
+    .increment(1);
 }
 
 pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, seconds: f64) {
-    let key = || format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}");
-    let make = || {
-        metrics::histogram!(
-            REQUEST_DURATION_SECONDS,
-            "ingress_protocol" => ingress_protocol.to_string(),
-            "pool" => pool.to_string()
-        )
-    };
-    with_handle(&DURATION_HANDLES, key, make, |h| h.record(seconds));
+    metrics::histogram!(
+        REQUEST_DURATION_SECONDS,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string()
+    )
+    .record(seconds);
 }
 
 pub(crate) fn record_plane_request_duration(
@@ -84,45 +63,13 @@ pub(crate) fn record_plane_request_duration(
     pool: &str,
     seconds: f64,
 ) {
-    let key = || format!("{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}");
-    let make = || {
-        metrics::histogram!(
-            PLANE_REQUEST_DURATION_SECONDS,
-            "plane" => plane.to_string(),
-            "ingress_protocol" => ingress_protocol.to_string(),
-            "pool" => pool.to_string()
-        )
-    };
-    with_handle(&PLANE_DURATION_HANDLES, key, make, |h| h.record(seconds));
-}
-
-fn with_handle<H>(
-    cache: &OnceLock<RwLock<HashMap<Box<str>, H>>>,
-    key: impl FnOnce() -> String,
-    make: impl FnOnce() -> H,
-    use_it: impl FnOnce(&H),
-) {
-    if !recorder_installed() {
-        use_it(&make());
-        return;
-    }
-    let cache = cache.get_or_init(|| RwLock::new(HashMap::new()));
-    let key = key();
-    if let Some(h) = cache
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(key.as_str())
-    {
-        use_it(h);
-        return;
-    }
-    let handle = make();
-    use_it(&handle);
-    cache
-        .write()
-        .unwrap_or_else(|p| p.into_inner())
-        .entry(key.into_boxed_str())
-        .or_insert(handle);
+    metrics::histogram!(
+        PLANE_REQUEST_DURATION_SECONDS,
+        "plane" => plane.to_string(),
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string()
+    )
+    .record(seconds);
 }
 
 pub async fn refresh_scrape_gauges(app: &App) -> Result<(), &'static str> {
