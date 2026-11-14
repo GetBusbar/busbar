@@ -1065,3 +1065,23 @@ fn prepare_config_store_refusal_goes_through_store_boot_refusal() {
          already names its own subject"
     );
 }
+
+#[test]
+fn store_boot_refusal_passes_the_inner_error_through_on_an_ordinary_boot() {
+    let inner = "plugins.fetch failed:\n  - sha256 mismatch: expected 11, got 22 (not written)";
+    assert_eq!(
+        store_boot_refusal(false, inner.to_owned()),
+        inner,
+        "an ordinary boot prints the inner error unchanged: it already names its own subject, \
+         and a plugin download is not a Store overlay anchor"
+    );
+}
+
+#[test]
+fn store_boot_refusal_prints_the_context_alone_under_a_principal_transition() {
+    assert_eq!(
+        store_boot_refusal(true, "plugins.fetch failed:\n  - secret detail".to_owned()),
+        "principal transition base Store opening refused",
+        "a principal transition summary carries no inner detail"
+    );
+}
