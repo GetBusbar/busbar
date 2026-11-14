@@ -849,7 +849,7 @@ impl<S> tower::Layer<S> for CatchPanicLayer {
 
 /// The service [`CatchPanicLayer`] wraps a router in.
 #[derive(Clone)]
-pub(crate) struct CatchPanic<S> {
+pub struct CatchPanic<S> {
     inner: S,
     handle: std::sync::Arc<state::AppHandle>,
 }
