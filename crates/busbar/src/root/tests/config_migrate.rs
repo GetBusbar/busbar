@@ -280,7 +280,7 @@ fn current_settings_validation_does_not_read_a_selected_planes_historical_catalo
             kind: &str,
             module: &str,
             settings: &serde_json::Value,
-        ) -> Result<(), busbar_migrations::config::migrate_plugins::Unvalidated> {
+        ) -> Result<(), String> {
             if kind == "auth" {
                 assert_eq!(module, "oidc");
                 assert_eq!(
@@ -398,8 +398,9 @@ fn an_unreachable_credentialed_index_is_shown_without_its_secrets() {
     host.index_source =
         "https://u:TOKSENTINEL@127.0.0.1:1/i.json?sig=SIGSENTINEL#FRAGSENTINEL".into();
     host.download = echo_fail;
-    let line = migrate_config_with(GOVERNANCE_14, &host)
-        .expect_err("a Store whose plugin cannot be obtained is not emitted");
+    let Err(line) = migrate_config_with(GOVERNANCE_14, &host) else {
+        panic!("a Store whose plugin cannot be obtained is not emitted");
+    };
     assert!(line.contains("https://127.0.0.1:1/i.json"), "{line}");
     for secret in [
         "TOKSENTINEL",
@@ -444,8 +445,9 @@ fn an_unreachable_plugin_asset_is_shown_without_downloader_text() {
         abi,
     );
     host.download = echo_fail;
-    let line = migrate_config_with(GOVERNANCE_14, &host)
-        .expect_err("a Store whose plugin cannot be downloaded is not emitted");
+    let Err(line) = migrate_config_with(GOVERNANCE_14, &host) else {
+        panic!("a Store whose plugin cannot be downloaded is not emitted");
+    };
     assert!(line.contains("could not be downloaded"), "{line}");
     assert!(
         line.contains(
@@ -475,8 +477,9 @@ fn a_hostile_index_cannot_forge_a_line() {
             super::RootHost::for_document(GOVERNANCE_14, &directory.0.join("config.yaml"));
         host.index_source = sqlite_index(&directory.0, repo, tag, release_abi);
         host.download = echo_fail;
-        let line = migrate_config_with(GOVERNANCE_14, &host)
-            .expect_err("a Store whose plugin cannot be obtained is not emitted");
+        let Err(line) = migrate_config_with(GOVERNANCE_14, &host) else {
+            panic!("a Store whose plugin cannot be obtained is not emitted");
+        };
         assert!(line.contains("<unprintable source>"), "{line:?}");
         for forged in ["\n", "\r", "\u{1b}", "migrated OK", "[busbar] ok"] {
             assert!(

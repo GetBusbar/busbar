@@ -179,8 +179,23 @@ pub trait MigrateHost {
         _kind: &str,
         _module: &str,
         _settings: &serde_json::Value,
-    ) -> Result<(), Unvalidated> {
+    ) -> Result<(), String> {
         Ok(())
+    }
+
+    /// Validate converted current settings as [`Self::validate_migrated`] does, saying whether the
+    /// current plugin could not be obtained or refused them. The default reads every
+    /// [`Self::validate_migrated`] refusal as [`Unvalidated::Refused`] and drops its text, which
+    /// may echo settings. A host that fetches current plugins overrides this to say why one could
+    /// not be obtained.
+    fn validate_current(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+    ) -> Result<(), Unvalidated> {
+        self.validate_migrated(kind, module, settings)
+            .map_err(|_| Unvalidated::Refused)
     }
 
     fn migrating_from(&self) -> &str {
@@ -315,10 +330,10 @@ impl Site {
         settings: &serde_json::Value,
     ) -> Result<(), Unvalidated> {
         let Some(client_id) = &self.browser_client_id else {
-            return host.validate_migrated(&self.kind, &self.module, settings);
+            return host.validate_current(&self.kind, &self.module, settings);
         };
         if settings.get("client_id").is_some() {
-            return host.validate_migrated(&self.kind, &self.module, settings);
+            return host.validate_current(&self.kind, &self.module, settings);
         }
         // Match login opening: browser configuration supplies a fallback only.
         // Keep this projection out of authored settings and migration write-back.
@@ -335,7 +350,7 @@ impl Site {
             map.entry("client_id")
                 .or_insert_with(|| client_id.clone().into());
         }
-        host.validate_migrated(&self.kind, &self.module, &effective)
+        host.validate_current(&self.kind, &self.module, &effective)
     }
 }
 
