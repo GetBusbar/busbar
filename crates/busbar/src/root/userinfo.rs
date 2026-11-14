@@ -114,24 +114,7 @@ fn basic_value(plain: &[u8]) -> Vec<u8> {
 }
 
 fn percent_decoded(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = |b: u8| (b as char).to_digit(16);
-        match (bytes[i], bytes.get(i + 1), bytes.get(i + 2)) {
-            (b'%', Some(&h), Some(&l)) if hex(h).is_some() && hex(l).is_some() => {
-                let (h, l) = (hex(h).unwrap_or(0), hex(l).unwrap_or(0));
-                out.push((h * 16 + l) as u8);
-                i += 3;
-            }
-            (b, _, _) => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).ok()
+    String::from_utf8(busbar_contract::net::percent_decoded_bytes(text)).ok()
 }
 
 #[must_use]

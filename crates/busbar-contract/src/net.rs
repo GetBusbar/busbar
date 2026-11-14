@@ -343,26 +343,25 @@ fn percent_decode_host(host: &str) -> Cow<'_, str> {
     if !host.contains('%') {
         return Cow::Borrowed(host);
     }
-    let bytes = host.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(hi), Some(lo)) = (hi, lo) {
-                out.push((hi * 16 + lo) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    match String::from_utf8(out) {
-        Ok(s) => Cow::Owned(s),
-        Err(_) => Cow::Borrowed(host),
-    }
+    String::from_utf8(percent_decoded_bytes(host)).map_or(Cow::Borrowed(host), Cow::Owned)
+}
+
+/// RFC 3986 unreserved bytes (ALPHA, DIGIT, `-`, `.`, `_`, `~`) stay; every other byte is written as
+/// upper-case `%XX`. The one set every URI-component encoder here uses (DEPENDENCY-LADDER C6).
+pub const UNRESERVED_KEPT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// `s` with every `%XX` escape decoded by percent-encoding; a `%` not followed by two hex digits
+/// stays. The bytes land in one buffer of `s`'s length that never regrows, so decoded credential
+/// bytes leave no stray copy behind.
+#[must_use]
+pub fn percent_decoded_bytes(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    out.extend(percent_encoding::percent_decode_str(s));
+    out
 }
 
 /// The WHATWG basic URL parser's first step, both halves, in its order: trim leading and trailing C0

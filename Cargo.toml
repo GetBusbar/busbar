@@ -79,6 +79,10 @@ oauth-as = { version = "1.0.1", features = [
     "client-assertion",
 ] }
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
+# URI component and form codecs (DEPENDENCY-LADDER C6); already linked through url. The fleet's
+# plugins take percent-encoding from this row too.
+percent-encoding = "2.3.2"
+form_urlencoded = "1.2.2"
 # ring only; members whose tests write PEM add the `pem` feature.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
