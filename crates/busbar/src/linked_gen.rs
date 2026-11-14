@@ -196,7 +196,6 @@ pub(crate) const CFG_AXES: &[&str] = &[
     "stores",
     "hooks",
     "protocols",
-    "node",
 ];
 
 /// THE BUILD'S CFGS: every manifest-driven cfg build.rs declares, each with whether this feature
