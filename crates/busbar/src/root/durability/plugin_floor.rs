@@ -11,10 +11,6 @@ pub use busbar_kernel::persistence::plugin_floor::{
 use std::collections::BTreeMap;
 
 #[cfg(test)]
-pub async fn release_keys_floor(owner: &PluginFloor, host: &str) -> Result<u64, String> {
-    owner.release_keys_floor(host).await
-}
-#[cfg(test)]
 pub async fn check(
     owner: &PluginFloor,
     host: &str,

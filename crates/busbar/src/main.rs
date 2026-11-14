@@ -1624,8 +1624,11 @@ async fn run(
 
     #[cfg(distribution_root)]
     if let Some(book) = &book {
-        let app = app_handle.load();
-        let ctx = root::linked::BookCtx { book, app: &app };
+        let ctx = root::linked::BookCtx {
+            book,
+            #[cfg(test)]
+            app: &app_handle.load(),
+        };
         for step in ROOT_UNITS.iter().filter_map(|u| u.on_book) {
             step(&ctx);
         }

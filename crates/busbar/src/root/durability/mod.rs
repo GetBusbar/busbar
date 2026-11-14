@@ -180,11 +180,6 @@ impl Durability {
         true
     }
     #[cfg(test)]
-    #[must_use]
-    pub fn refuses_money(&self) -> Option<String> {
-        self.journal.refuses_money()
-    }
-    #[cfg(test)]
     pub fn stage_entries(&self, entries: &[Entry]) -> Result<Arc<StagedRun>, String> {
         self.journal
             .stage_run(entries)
