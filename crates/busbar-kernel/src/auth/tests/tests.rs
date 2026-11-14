@@ -1988,3 +1988,50 @@ async fn presented_credentials_keep_challenge_error_descriptions_and_scope_rules
         );
     }
 }
+
+#[tokio::test]
+async fn admin_door_throttle_answers_rate_limited_with_the_real_retry_after() {
+    let response = rate_limited_after(137);
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response
+            .headers()
+            .get_all(axum::http::header::RETRY_AFTER)
+            .iter()
+            .count(),
+        1
+    );
+    assert_eq!(response.headers()[axum::http::header::RETRY_AFTER], "137");
+    let expected = crate::admin::gate::ApiError::RateLimited;
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({"error": {"code": expected.code(), "message": expected.message()}})
+    );
+}
+
+#[test]
+fn admin_door_counts_only_presented_and_refused_credentials_per_source() {
+    let guard = login_limits::LoginGuard::with_sink(|_, _, _, _| {});
+    let peer: std::net::IpAddr = "203.0.113.77".parse().unwrap();
+    let source = guard.source_of(Some(peer), &HeaderMap::new());
+    let now = 1_800_000_000;
+    for _ in 0..49 {
+        guard.admin_refused(source, now);
+    }
+    assert_eq!(guard.admin_throttled(source, now), None);
+    guard.admin_refused(source, now);
+    assert_eq!(guard.admin_throttled(source, now + 10), Some(290));
+    let unknown = guard.source_of(None, &HeaderMap::new());
+    for _ in 0..100 {
+        guard.admin_refused(unknown, now);
+    }
+    assert_eq!(
+        guard.admin_throttled(unknown, now),
+        None,
+        "an unknown source is never bucketed (B2)"
+    );
+}

@@ -246,6 +246,10 @@ pub struct App {
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::ratelimit::MutationLimiter>,
+    /// THE LOGIN ATTEMPT LIMITER's node state (source buckets, alarm, breakers, admin door, audit
+    /// gate), carried across a config reload like `mutation_limiter`; each build publishes its
+    /// policy into it.
+    pub(crate) login_guard: Arc<crate::auth::login_limits::LoginGuard>,
     /// The admin side's state (the config VERSION HISTORY, typed and filled by the admin service),
     /// behind the admin seam's one slot. Arc-shared across apply snapshots (survives every swap).
     pub admin: Arc<crate::admin::seam::AdminSlot>,
@@ -617,6 +621,7 @@ impl App {
         export_projections: crate::export::projection::ProjectionUnion,
         mutation_limiter: Arc<crate::ratelimit::MutationLimiter>,
         login_methods: Arc<crate::auth::login::LoginMethods>,
+        login_guard: Arc<crate::auth::login_limits::LoginGuard>,
     ) -> Self {
         let AppParts {
             fallback_runtime_key,
@@ -740,6 +745,7 @@ impl App {
             identity_providers,
             export_defs,
             mutation_limiter,
+            login_guard,
             admin,
             admin_chain,
             admin_modules,
@@ -782,6 +788,7 @@ impl App {
             crate::export::projection::ProjectionUnion::default(),
             Arc::new(crate::ratelimit::MutationLimiter::new()),
             Arc::new(crate::auth::login::LoginMethods::empty()),
+            Arc::default(),
         )
     }
 

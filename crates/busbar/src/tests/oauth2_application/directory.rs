@@ -5,6 +5,20 @@ use std::io::{Read, Write};
 
 const USER: &[u8] = b"uid=alice,dc=example";
 
+/// Every BindRequest the directory saw, by DN: what a lockout policy would count.
+static BINDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<Vec<u8>, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// How many binds the directory saw for `uid=<user>,dc=example`.
+pub(super) fn binds_for(user: &str) -> usize {
+    BINDS
+        .lock()
+        .unwrap()
+        .get(format!("uid={user},dc=example").as_bytes())
+        .copied()
+        .unwrap_or(0)
+}
+
 fn element(tag: u8, bytes: &[u8]) -> Vec<u8> {
     let mut result = vec![tag];
     if bytes.len() < 128 {
@@ -102,6 +116,7 @@ fn conversation(mut socket: std::net::TcpStream, delay: std::time::Duration) {
                 let Some((0x80, password, _)) = take(body) else {
                     return;
                 };
+                *BINDS.lock().unwrap().entry(dn.to_vec()).or_default() += 1;
                 std::thread::sleep(delay);
                 bound = dn == USER && password == b"pw";
                 let code = if bound { 0 } else { 49 };

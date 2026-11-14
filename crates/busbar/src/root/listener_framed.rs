@@ -330,6 +330,7 @@ pub(super) async fn serve<I>(
     secured: bool,
     timeout: std::time::Duration,
     mut stop: tokio::sync::watch::Receiver<bool>,
+    peer: Option<std::net::SocketAddr>,
 ) where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -365,6 +366,7 @@ pub(super) async fn serve<I>(
         secured,
         established,
         timeout,
+        peer,
         out: VecDeque::new(),
         read_done: false,
         ended: false,
@@ -404,6 +406,8 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     secured: bool,
     established: Established,
     timeout: std::time::Duration,
+    /// The connection's socket peer, stamped on every operator request it carries.
+    peer: Option<std::net::SocketAddr>,
 
     out: VecDeque<u8>,
 
@@ -1038,6 +1042,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             request
                 .extensions_mut()
                 .insert(super::listener_scheme(self.secured));
+            if let Some(peer) = self.peer {
+                request
+                    .extensions_mut()
+                    .insert(busbar_kernel::auth::login_limits::ClientAddr(peer));
+            }
             request.extensions_mut().insert(slot.clone());
             self.tasks.spawn(operator::serve(
                 self.router.clone(),
@@ -1586,7 +1595,7 @@ pub(in crate::root) async fn serve_governed_test<I>(
 ) where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    serve(io, framer, Router::new(), secured, timeout, stop).await;
+    serve(io, framer, Router::new(), secured, timeout, stop, None).await;
 }
 
 /// One response op the admitted request actor sent, as the connection writer receives it.

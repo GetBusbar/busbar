@@ -68,6 +68,8 @@ fn every_patch_mirrors_every_field_of_its_section() {
 
         block_private_addresses: _,
         allow_destinations: _,
+        trusted_proxies: _,
+        forwarded_header: _,
     } = crate::config::AdvancedCfg::default();
     let _ = AdvancedPatch {
         rate_sweep_interval: Some(rate_sweep_interval),
