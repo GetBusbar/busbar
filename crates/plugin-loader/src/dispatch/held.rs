@@ -30,6 +30,8 @@ struct Cycle {
     /// One inspection per issuing instance, outside the completion-handle namespace.
     inspections: HashSet<usize>,
     conditionals: HashSet<usize>,
+    /// This cycle's first kept-cycle refusal has been logged (one WARN per cycle, never per call).
+    warned: bool,
 }
 
 /// The driver tickets' cycles, by ticket.
@@ -169,11 +171,23 @@ impl Held {
             caller,
             handle: Handle { domain, seq: h.seq },
         };
-        if (c.refusing && c.issued.contains(&key))
-            || c.issued.iter().chain(c.fresh.iter()).any(|old| {
-                old.caller == caller && old.handle.seq == h.seq && old.handle.domain != domain
-            })
-        {
+        if c.refusing && c.issued.contains(&key) {
+            if !std::mem::replace(&mut c.warned, true) {
+                tracing::warn!(
+                    ticket_slot = h.ticket.slot,
+                    ticket_generation = h.ticket.generation,
+                    seq = h.seq,
+                    domain = ?domain,
+                    "a plugin re-issued a completion handle at a kept-cycle tick: a tick starts new \
+                     work and never re-issues a handle issued earlier in the cycle (the drive its \
+                     wake brings resumes it); the call is refused as FAULT"
+                );
+            }
+            return false;
+        }
+        if c.issued.iter().chain(c.fresh.iter()).any(|old| {
+            old.caller == caller && old.handle.seq == h.seq && old.handle.domain != domain
+        }) {
             return false;
         }
         c.fresh.insert(key);
