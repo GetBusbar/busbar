@@ -229,7 +229,7 @@ fn parse_response(raw: &[u8]) -> Result<Resp, String> {
         .iter()
         .any(|(k, v)| k == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
     let body = if chunked {
-        dechunk(rest)
+        dechunk(rest)?
     } else {
         rest.to_vec()
     };
@@ -240,26 +240,27 @@ fn parse_response(raw: &[u8]) -> Result<Resp, String> {
     })
 }
 
-fn dechunk(mut b: &[u8]) -> Vec<u8> {
+fn dechunk(mut b: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    while let Some(nl) = b.windows(2).position(|w| w == b"\r\n") {
-        let size = usize::from_str_radix(
-            String::from_utf8_lossy(&b[..nl])
-                .split(';')
-                .next()
-                .unwrap_or("0")
-                .trim(),
-            16,
-        )
-        .unwrap_or(0);
+    loop {
+        let nl = b
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or("chunked body ended without terminator")?;
+        let line = String::from_utf8_lossy(&b[..nl]);
+        let hex = line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(hex, 16).map_err(|_| format!("bad chunk size {hex:?}"))?;
         b = &b[nl + 2..];
-        if size == 0 || b.len() < size {
-            break;
+        if size == 0 {
+            return Ok(out);
+        }
+        // `b.len() - size < 2` instead of `size + 2` so a huge declared size cannot overflow.
+        if b.len() < size || b.len() - size < 2 || &b[size..size + 2] != b"\r\n" {
+            return Err(format!("short chunk: want {size}, have {}", b.len()));
         }
         out.extend_from_slice(&b[..size]);
-        b = &b[(size + 2).min(b.len())..];
+        b = &b[size + 2..];
     }
-    out
 }
 
 #[cfg(test)]
