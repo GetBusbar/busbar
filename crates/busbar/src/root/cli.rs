@@ -343,8 +343,10 @@ pub(crate) fn validate_config_command() -> i32 {
         config::overlay::merge_into(&mut cfg, doc);
     }
 
-    let destination_guard =
-        |c: &config::RootCfg| crate::root::connector::guard_for(&c.destinations()).map(|_| ());
+    let destination_guard = |c: &config::RootCfg| {
+        crate::root::door_steps::public_url_refusal(c)?;
+        crate::root::connector::guard_for(&c.destinations()).map(|_| ())
+    };
     let registry = match config_validate::check(
         &cfg,
         config_validate::Check {

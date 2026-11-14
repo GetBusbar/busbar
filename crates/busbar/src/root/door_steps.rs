@@ -2178,10 +2178,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
 
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
         kernel_sections(cfg)?;
-        if let Some(url) = cfg.public_url.as_deref() {
-            busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)
-                .map_err(|errors| errors.join("\n"))?;
-        }
+        public_url_refusal(cfg)?;
         let anchors = self
             .owned_anchors
             .lock()
@@ -2206,6 +2203,18 @@ impl busbar_kernel::appbuild::RootRules for Rules {
         if let Some(guard) = &self.guard {
             guard.destinations_applied(destinations);
         }
+    }
+}
+
+/// THE ONE JUDGEMENT OF `public_url:`, shared by boot and `--validate`, so the dry run refuses
+/// every origin boot refuses (scheme, host, bare origin, metadata host).
+pub fn public_url_refusal(cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+    match cfg.public_url.as_deref() {
+        Some(url) => {
+            busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)
+                .map_err(|errors| errors.join("\n"))
+        }
+        None => Ok(()),
     }
 }
 

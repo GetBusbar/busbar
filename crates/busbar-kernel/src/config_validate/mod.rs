@@ -1933,17 +1933,23 @@ fn validate_providers_with(
             )
             .unwrap_or_default();
             let cred = cred.expose(&crate::seal::lend());
+            let plaintext = provider_cfg
+                .token_url
+                .as_deref()
+                .filter(|_| settings_concrete)
+                .and_then(token_url_plaintext_refusal);
+            let host_judged = |setting: &str| plaintext.is_some() && names_token_url(setting);
             if settings_concrete && (!cred.trim().is_empty() || provider_cfg.api_key.is_none()) {
                 for e in outbound_credential_refusals(style, cred, &params) {
                     if let Some(settings) = e.strip_prefix("settings: ") {
                         let error = format!("provider '{provider_name}' {settings}");
-                        if !errors.contains(&error) {
+                        if !host_judged(settings) && !errors.contains(&error) {
                             errors.push(error);
                         }
                     } else {
                         errors.push(format!(
                             "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                            provider_cfg.api_key.describe()
+                            describe_reference(&provider_cfg.api_key)
                         ));
                     }
                 }
@@ -1953,12 +1959,15 @@ fn validate_providers_with(
                         .check_outbound_settings(style, &params)
                         .unwrap_or_else(|e| vec![e])
                     {
-                        errors.push(format!(
-                            "provider '{provider_name}' {}",
-                            error.strip_prefix("settings: ").unwrap_or(&error)
-                        ));
+                        let setting = error.strip_prefix("settings: ").unwrap_or(&error);
+                        if !host_judged(setting) {
+                            errors.push(format!("provider '{provider_name}' {setting}"));
+                        }
                     }
                 }
+            }
+            if let Some(refusal) = plaintext {
+                errors.push(format!("provider '{provider_name}' {refusal}"));
             }
         }
 
@@ -2007,7 +2016,7 @@ fn validate_providers_with(
                 for e in refusals {
                     errors.push(format!(
                         "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
+                        describe_reference(&provider_cfg.api_key)
                     ));
                 }
             }
@@ -2139,6 +2148,35 @@ pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
     Ok(parsed
         .token_uri
         .unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()))
+}
+
+/// THE HOST'S TRANSPORT RULE FOR A TOKEN ENDPOINT, in 1.5.5's words: the client secret is POSTed
+/// there, so plaintext http is admitted only to a private or loopback host. The endpoint's own
+/// syntax (and any other scheme) stays the auth owner's to judge.
+fn token_url_plaintext_refusal(token_url: &str) -> Option<String> {
+    use busbar_contract::net::{extract_normalized_host, host_is_private_or_loopback, scheme_is};
+    let private = extract_normalized_host(token_url)
+        .as_deref()
+        .is_some_and(host_is_private_or_loopback);
+    (scheme_is(token_url, http::uri::Scheme::HTTP.as_str()) && !private).then(|| {
+        let token_url = busbar_kernel_egress::trust::net::redact_userinfo(token_url);
+        format!(
+            "token_url must use https for a public host (got '{token_url}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
+        )
+    })
+}
+
+/// Whether an auth owner's settings refusal is about `token_url`: once the host has refused that
+/// setting, the owner's refusal of the same setting is not a second fault.
+fn names_token_url(refusal: &str) -> bool {
+    refusal.starts_with("token_url ") || refusal.contains("`token_url`")
+}
+
+/// A credential reference as the operator wrote it: the admitted shorthand (`env:VAR`,
+/// `file:/path`, 1.5.5's spelling) when the reference is exactly one declared sugar, else the
+/// source metadata alone.
+fn describe_reference(reference: &busbar_contract::secret_ref::SecretRef) -> String {
+    crate::config::secret::sugars().describe(reference)
 }
 
 pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), String> {
