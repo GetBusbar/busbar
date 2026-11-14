@@ -63,10 +63,12 @@ impl TrustedProxies {
         for (i, entry) in entries.iter().enumerate() {
             match IpNet::parse(entry) {
                 Ok(net) => nets.push(net),
-                Err(busbar_contract::net::IpNetError::HostBitsSet) => return Err(format!(
+                Err(busbar_contract::net::IpNetError::HostBitsSet) => {
+                    return Err(format!(
                     "advanced.trusted_proxies[{i}]: `{entry}` sets address bits past its prefix \
                          length; write the network address"
-                )),
+                ))
+                }
                 Err(busbar_contract::net::IpNetError::NotNetwork) => {
                     return Err(format!(
                         "advanced.trusted_proxies[{i}]: `{entry}` is not an IP address or a CIDR"
