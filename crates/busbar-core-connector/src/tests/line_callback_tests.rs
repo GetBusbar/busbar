@@ -38,11 +38,11 @@ fn every_busy_line_poll_owns_raw_wakers_before_taking_state() {
         line.emit_waking(EXCHANGE_STREAM, b"x", true, false, Some(&waker)),
         Err(Failure::Pending)
     ));
-    let config = Arc::new(
-        rustls::ClientConfig::builder()
-            .with_root_certificates(rustls::RootCertStore::empty())
-            .with_no_client_auth(),
-    );
+    let config = busbar_contract::crypto::tls::client_config(|b| {
+        Ok(b.with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth())
+    })
+    .unwrap();
     assert!(line
         .upgrade_secure(
             &config,

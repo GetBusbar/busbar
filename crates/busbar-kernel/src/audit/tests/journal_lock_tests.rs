@@ -197,8 +197,8 @@ async fn concurrent_candidates_for_one_scope_conflict_then_replan_gap_free() {
     let book_b = ChainBook::default();
     let mut operation_a = [0; 16];
     let mut operation_b = [0; 16];
-    getrandom::fill(&mut operation_a).unwrap();
-    getrandom::fill(&mut operation_b).unwrap();
+    busbar_contract::crypto::fill(&mut operation_a).unwrap();
+    busbar_contract::crypto::fill(&mut operation_b).unwrap();
     let (request_a, _) = book_a
         .prepare_ordinary_async(
             &rows,

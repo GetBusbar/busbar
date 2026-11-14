@@ -299,7 +299,7 @@ impl FetchedDir {
     fn create_in(parent: &Path) -> std::io::Result<Self> {
         loop {
             let mut random = [0_u8; STAGING_RANDOM_BYTES];
-            getrandom::fill(&mut random)
+            busbar_contract::crypto::fill(&mut random)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let path = parent.join(format!("{STAGING_DIRECTORY_PREFIX}{}", hex::encode(random)));
             let mut builder = std::fs::DirBuilder::new();

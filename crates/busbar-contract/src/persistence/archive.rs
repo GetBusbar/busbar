@@ -10,8 +10,8 @@
 pub mod spool;
 
 use super::{legacy_row, source_fence::CaptureFence};
+use crate::crypto::Sha256;
 use crate::Secret;
-use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -121,16 +121,16 @@ impl Hasher {
     }
     /// Include the next exact native stream bytes.
     pub fn update(&mut self, bytes: &[u8]) {
-        self.0.update(bytes);
+        self.0.update(&bytes[..]);
     }
     /// Finish the exact complete stream digest.
     pub fn finish(self) -> [u8; 32] {
-        self.0.finalize().into()
+        self.0.finish()
     }
 }
 /// Compute SHA256 for public native inventory metadata.
 pub fn digest(bytes: &[u8]) -> [u8; 32] {
-    Sha256::digest(bytes).into()
+    crate::crypto::sha256(bytes).into()
 }
 fn io(error: std::io::Error) -> Error {
     if error.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -457,7 +457,7 @@ impl<W: Write> Writer<W> {
             self.failed = true;
             return Err(Error::Io);
         }
-        self.hash.update(bytes);
+        self.hash.update(&bytes[..]);
         self.bytes = next;
         Ok(())
     }
@@ -536,7 +536,7 @@ impl<W: Write> Writer<W> {
     /// Hash the immutable capture bytes for a live post-capture probe. Calling
     /// this does not complete the artifact or release native capture guards.
     pub fn content_digest(&self) -> [u8; 32] {
-        self.hash.clone().finalize().into()
+        self.hash.clone().finish()
     }
     /// Finish an explicitly snapshot-only archive with no claimed live origin.
     pub fn finish(self) -> Result<(W, Summary), Error> {
@@ -565,7 +565,7 @@ impl<W: Write> Writer<W> {
         let summary = Summary {
             rows: self.rows,
             bytes: self.bytes,
-            digest: self.hash.finalize().into(),
+            digest: self.hash.finish(),
             catalogue_digest: self.header.catalogue_digest,
             layout_digest: self.layout_digest,
             content_digest: prefix,
@@ -793,7 +793,7 @@ pub fn read<R: Read + Seek + Send>(
         let before = hash.clone();
         let tag = get(&mut source, &mut hash, &mut bytes, 1, limits)?[0];
         if tag == FOOTER {
-            let prefix: [u8; 32] = before.finalize().into();
+            let prefix: [u8; 32] = before.finish();
             let footer = get(&mut source, &mut hash, &mut bytes, 40, limits)?;
             if u64::from_le_bytes(footer[..8].try_into().map_err(|_| Error::Malformed)?)
                 != index.len() as u64
@@ -823,7 +823,7 @@ pub fn read<R: Read + Seek + Send>(
             let summary = Summary {
                 rows: index.len() as u64,
                 bytes,
-                digest: hash.finalize().into(),
+                digest: hash.finish(),
                 catalogue_digest: header.catalogue_digest,
                 layout_digest,
                 content_digest: prefix,

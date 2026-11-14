@@ -5,9 +5,9 @@
 //! supply interpreted facts; physical formats never select core behavior.
 use super::super::{Bounds, Edge, Family, Format, Registry, TargetRow, CORE_FORMAT};
 use super::*;
+use busbar_contract::crypto::Sha256;
 use busbar_contract::{persistence::Address, Secret};
 use busbar_kernel::persistence::import_target::records::history::{HistoryCollection, HistoryMode};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub const IDENTITY: [u8; 16] = *b"legacy.identity1";
@@ -74,8 +74,8 @@ pub(super) fn source_parts(key: &[u8]) -> Result<(&str, &[u8]), Error> {
     ))
 }
 pub(super) fn hash_field(hash: &mut Sha256, bytes: &[u8]) {
-    hash.update((bytes.len() as u64).to_le_bytes());
-    hash.update(bytes);
+    hash.update(&(bytes.len() as u64).to_le_bytes());
+    hash.update(&bytes[..]);
 }
 pub(crate) fn code_digest() -> [u8; 32] {
     let mut hash = Sha256::new();
@@ -218,7 +218,7 @@ pub(crate) fn code_digest() -> [u8; 32] {
     ] {
         hash_field(&mut hash, bytes);
     }
-    hash.finalize().into()
+    hash.finish()
 }
 pub(crate) fn bind_config(
     hash: &mut Sha256,
@@ -330,7 +330,7 @@ pub(super) fn registered_edge(
     bounds: Bounds,
 ) -> Result<Edge, super::super::Error> {
     let code_digest = code_digest();
-    let verification_rule_digest=Sha256::digest(b"busbar.legacy/native-readback+all-source-coverage+exact-mirror+graph+original-receipt-fenced-resolution/1").into();
+    let verification_rule_digest=busbar_contract::crypto::sha256(b"busbar.legacy/native-readback+all-source-coverage+exact-mirror+graph+original-receipt-fenced-resolution/1").into();
     let mut identity = Sha256::new();
     hash_field(&mut identity, &code_digest);
     hash_field(&mut identity, &preconditions_digest);
@@ -338,7 +338,7 @@ pub(super) fn registered_edge(
     hash_field(&mut identity, &bounds.bytes.to_le_bytes());
     hash_field(&mut identity, &source.owner);
     hash_field(&mut identity, &source.physical.to_le_bytes());
-    let digest = identity.finalize();
+    let digest = identity.finish();
     let id = digest[..16]
         .try_into()
         .map_err(|_| super::super::Error::Corrupt)?;
@@ -480,7 +480,7 @@ impl ReleasedProofs {
         Ok(Self {
             provenance,
             audit,
-            digest: hash.finalize().into(),
+            digest: hash.finish(),
         })
     }
 }

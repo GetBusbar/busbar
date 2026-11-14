@@ -198,7 +198,6 @@ fn a_silent_far_end_is_held_to_the_framers_deadline() {
 /// The open is bounded on its own: a far end that never answers the TLS handshake times out.
 #[test]
 fn an_open_that_never_completes_is_held_to_its_timeout() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let far = silent().await;
         let door = Arc::new(TestDoor::new(
@@ -237,16 +236,17 @@ fn localhost_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 /// TLS is the connector's, with the protocol offer the registration states: the framer is told
 #[test]
 fn tls_and_the_protocol_offer_are_the_connectors() {
-    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
-        let mut server = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![leaf.into()],
-                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-            )
-            .unwrap();
+        let mut server = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(
+                    vec![leaf.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+                )
+            })
+            .unwrap(),
+        );
         server.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -288,7 +288,6 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
 /// THE OFFER IS THE FRAMER'S (THE DESIGN, connections): the protocols the handshake offers are
 #[test]
 fn the_handshake_offers_what_the_framer_located() {
-    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
         type Case = (Option<&'static [u8]>, Vec<Vec<u8>>, Option<&'static [u8]>);
@@ -303,13 +302,15 @@ fn the_handshake_offers_what_the_framer_located() {
             (None, vec![b"http/1.1".to_vec()], Some(b"http/1.1")),
         ];
         for (offer, registered, agreed) in cases {
-            let mut server = rustls::ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(
-                    vec![leaf.clone().into()],
-                    rustls_pki_types::PrivateKeyDer::try_from(key.clone()).unwrap(),
-                )
-                .unwrap();
+            let mut server = std::sync::Arc::unwrap_or_clone(
+                busbar_contract::crypto::tls::server_config(|b| {
+                    b.with_no_client_auth().with_single_cert(
+                        vec![leaf.clone().into()],
+                        rustls_pki_types::PrivateKeyDer::try_from(key.clone()).unwrap(),
+                    )
+                })
+                .unwrap(),
+            );
             server.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
             let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
             let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -509,7 +510,6 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
     use busbar_contract::abi::host::conn::connector::{
         CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_SECURITY,
     };
-    crate::tls::install_crypto_provider();
     let (_, leaf, key) = localhost_cert();
     worker().block_on(async move {
         let closed = std::net::TcpListener::bind("127.0.0.1:0")
@@ -531,13 +531,15 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
             })
         );
 
-        let server = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![leaf.into()],
-                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-            )
-            .unwrap();
+        let server = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(
+                    vec![leaf.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+                )
+            })
+            .unwrap(),
+        );
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let far = l.local_addr().unwrap().to_string();
@@ -609,7 +611,6 @@ fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fail
         )
         .await
         .expect("the far end's clear answer arrives");
-        crate::tls::install_crypto_provider();
         let config = Arc::new(
             crate::tls::client::build_client_config(&Default::default())
                 .expect("the default config"),
@@ -795,16 +796,17 @@ fn a_parked_streams_empty_write_backpressures_only_that_stream() {
 #[test]
 fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
     const SENT: usize = 200_000;
-    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
-        let server = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![leaf.into()],
-                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-            )
-            .unwrap();
+        let server = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(
+                    vec![leaf.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+                )
+            })
+            .unwrap(),
+        );
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let far = l.local_addr().unwrap().to_string();
@@ -1067,7 +1069,6 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
 fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
     use busbar_contract::conn::SEALED_FIELDS_FIELD;
     const SECRET: &[u8] = b"Bearer sealed-credential-0123456789";
-    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     let opening = || {
         Some((
@@ -1086,13 +1087,15 @@ fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
         ..Knobs::default()
     };
     worker().block_on(async move {
-        let mut server = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![leaf.into()],
-                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-            )
-            .unwrap();
+        let mut server = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(
+                    vec![leaf.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+                )
+            })
+            .unwrap(),
+        );
         server.alpn_protocols = vec![b"http/1.1".to_vec()];
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1261,16 +1264,17 @@ fn duplex_pending_writes_survive_the_incoming_streams_clean_end() {
 
 #[test]
 fn query_credentials_reach_the_secure_target_without_crossing_the_framer_as_plaintext() {
-    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
-        let mut server = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![leaf.into()],
-                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-            )
-            .unwrap();
+        let mut server = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(
+                    vec![leaf.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+                )
+            })
+            .unwrap(),
+        );
         server.alpn_protocols = vec![b"http/1.1".to_vec()];
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

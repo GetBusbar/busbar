@@ -401,23 +401,19 @@ name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
  "async-trait",
- "aws-lc-sys",
  "base64 0.22.1",
  "busbar-crypto",
  "busbar-yaml",
  "bytes",
  "futures",
- "getrandom 0.3.4",
  "hex",
  "http",
  "idna",
  "indexmap",
  "libc",
  "memchr",
- "ring",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "smallvec",
  "tracing",
  "tracing-core",
@@ -456,11 +452,8 @@ dependencies = [
  "dimpl",
  "futures",
  "libc",
- "rcgen",
- "ring",
  "rustls",
  "rustls-pki-types",
- "rustls-webpki",
  "serde_json",
  "socket2",
  "tokio",
@@ -487,7 +480,6 @@ dependencies = [
  "http-body-util",
  "oauth-as",
  "psl",
- "ring",
  "serde",
  "serde_json",
  "tokio",
@@ -500,6 +492,7 @@ name = "busbar-crypto"
 version = "1.6.0"
 dependencies = [
  "busbar-crypto-backend",
+ "dimpl",
  "rustls",
  "rustls-pki-types",
  "zeroize",
@@ -512,6 +505,7 @@ dependencies = [
  "aws-lc-rs",
  "aws-lc-sys",
  "blake3",
+ "dimpl",
  "rcgen",
  "rustls",
  "rustls-webpki",
@@ -576,10 +570,8 @@ dependencies = [
  "busbar-yaml",
  "bytes",
  "core_affinity",
- "ed25519-dalek",
  "flate2",
  "futures",
- "getrandom 0.3.4",
  "h2",
  "hex",
  "http",
@@ -592,14 +584,11 @@ dependencies = [
  "metrics",
  "opentelemetry-proto",
  "prost",
- "rcgen",
  "reqwest",
- "ring",
  "rustls",
  "rustls-pki-types",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "socket2",
  "tikv-jemallocator",
  "tokio",
@@ -742,9 +731,7 @@ dependencies = [
  "busbar-yaml",
  "bytes",
  "crc32fast",
- "ed25519-dalek",
  "futures",
- "getrandom 0.3.4",
  "hex",
  "http",
  "http-body",
@@ -755,12 +742,10 @@ dependencies = [
  "loom",
  "metrics",
  "metrics-util",
- "ring",
  "schemars",
  "serde",
  "serde_json",
  "serde_urlencoded",
- "sha2 0.10.9",
  "sonic-rs",
  "tikv-jemalloc-sys",
  "tokio",
@@ -777,8 +762,6 @@ name = "busbar-kernel-audit"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "ed25519-dalek",
- "ring",
  "serde_json",
  "zeroize",
 ]
@@ -804,7 +787,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "hex",
- "ring",
 ]
 
 [[package]]
@@ -820,7 +802,6 @@ name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "ring",
 ]
 
 [[package]]
@@ -836,11 +817,9 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-yaml",
- "getrandom 0.3.4",
  "hex",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tokio",
  "zeroize",
 ]
@@ -929,14 +908,11 @@ version = "1.6.0"
 dependencies = [
  "arc-swap",
  "busbar-contract",
- "ed25519-dalek",
  "flate2",
  "futures",
- "getrandom 0.3.4",
  "hex",
  "libc",
  "libloading",
- "ring",
  "serde",
  "serde_json",
  "tar",
@@ -1297,32 +1273,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "curve25519-dalek"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.3.0",
- "curve25519-dalek-derive",
- "digest 0.11.3",
- "fiat-crypto",
- "rustc_version",
- "subtle",
-]
-
-[[package]]
-name = "curve25519-dalek-derive"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1408,27 +1358,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "ed25519"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29fcf32e6c73d1079f83ab4d782de2d81620346a5f38c6237a86a22f8368980a"
-dependencies = [
- "signature",
-]
-
-[[package]]
-name = "ed25519-dalek"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ebaa1a2bf1290ab3bfe5a7b771d050ebffab2711c19a81691c683a5144a25de"
-dependencies = [
- "curve25519-dalek",
- "ed25519",
- "sha2 0.11.1",
- "subtle",
-]
-
-[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1505,12 +1434,6 @@ dependencies = [
  "serde",
  "simdutf8",
 ]
-
-[[package]]
-name = "fiat-crypto"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "filetime"
@@ -2983,7 +2906,6 @@ checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
  "aws-lc-rs",
  "pem",
- "ring",
  "rustls-pki-types",
  "time",
  "x509-parser",
@@ -3187,15 +3109,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
 
 [[package]]
-name = "rustc_version"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
-dependencies = [
- "semver",
-]
-
-[[package]]
 name = "rusticata-macros"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3317,12 +3230,6 @@ dependencies = [
  "slab",
  "thiserror",
 ]
-
-[[package]]
-name = "semver"
-version = "1.0.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"
@@ -3459,12 +3366,6 @@ dependencies = [
  "errno",
  "libc",
 ]
-
-[[package]]
-name = "signature"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
 
 [[package]]
 name = "simd-adler32"
@@ -4357,7 +4258,6 @@ dependencies = [
  "lazy_static",
  "nom 7.1.3",
  "oid-registry",
- "ring",
  "rusticata-macros",
  "thiserror",
  "time",

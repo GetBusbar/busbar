@@ -3,10 +3,10 @@
 
 //! Operator-attested cold record migration. A quiet host queue is never backend quiescence.
 
+use crate::hashing::Sha256;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::services::Caller;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::host_records::record_key;
 use crate::persistence::{commit::SubmitResult, facade::CoreStore};

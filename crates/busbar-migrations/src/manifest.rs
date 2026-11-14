@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::crypto::Sha256;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::Error;
 
@@ -477,7 +477,7 @@ impl Manifest {
         .expect("fixed manifest fields serialize");
         let mut digest = Sha256::new();
         digest.update(b"busbar.migration.plan.v1\0");
-        digest.update(bytes);
-        digest.finalize().into()
+        digest.update(&bytes[..]);
+        digest.finish()
     }
 }

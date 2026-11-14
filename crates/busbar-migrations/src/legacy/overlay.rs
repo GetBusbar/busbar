@@ -4,9 +4,9 @@
 //! Assemble the core-owned overlay protocol from admitted record facts.
 //! Root receives only the exact protected document from the frozen capture.
 use crate::{archive_source::ArchiveRows, Error, Identity};
+use busbar_contract::crypto::Sha256;
 use busbar_contract::Secret;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub const SCHEMA: &str = "busbar.config.overlay.v1";
@@ -77,7 +77,7 @@ pub fn frozen_overlay_from_facts(
         if charge > budget {
             return Err(Error::Bounds);
         }
-        let digest: [u8; 32] = Sha256::digest(key.expose(&seal)).into();
+        let digest: [u8; 32] = busbar_contract::crypto::sha256(key.expose(&seal)).into();
         if entries
             .insert(
                 digest,
@@ -93,7 +93,7 @@ pub fn frozen_overlay_from_facts(
         Ok(())
     })?;
     let lookup = |key: &[u8]| -> Result<Option<&Secret<Vec<u8>>>, Error> {
-        let digest: [u8; 32] = Sha256::digest(key).into();
+        let digest: [u8; 32] = busbar_contract::crypto::sha256(key).into();
         let Some(entry) = entries.get(&digest) else {
             return Ok(None);
         };
@@ -127,14 +127,14 @@ pub fn frozen_overlay_from_facts(
         }
         output.extend_from_slice(chunk);
     }
-    if <[u8; 32]>::from(Sha256::digest(&output)) != head.digest {
+    if <[u8; 32]>::from(busbar_contract::crypto::sha256(&output)) != head.digest {
         return Err(Error::Verification);
     }
     Ok(Some(FrozenOverlay {
         source: identity.clone(),
         bytes: Secret::new(std::mem::take(&mut *output)),
         digest: head.digest,
-        head_digest: Sha256::digest(raw.expose(&seal)).into(),
+        head_digest: busbar_contract::crypto::sha256(raw.expose(&seal)).into(),
     }))
 }
 
@@ -171,7 +171,7 @@ impl PreparedOverlay {
         ] {
             super::transform::hash_field(&mut hash, field);
         }
-        let identity: [u8; 32] = hash.finalize().into();
+        let identity: [u8; 32] = hash.finish();
         let generation = identity[..16].try_into().map_err(|_| Error::Corrupt)?;
         let mut rows = Vec::new();
         let mut charge = converted.expose(&seal).len();
@@ -199,7 +199,7 @@ impl PreparedOverlay {
         Ok(Self {
             source: original.source,
             rows,
-            digest: hash.finalize().into(),
+            digest: hash.finish(),
         })
     }
     pub fn source(&self) -> &Identity {
@@ -342,7 +342,7 @@ mod tests {
     fn fixture() -> Rows {
         let bytes = b"{\"version\":1,\"deleted\":[\"removed-owner\"]}";
         let generation = [4; 16];
-        let head = serde_json::to_vec(&serde_json::json!({"version":1,"generation":generation,"length":bytes.len(),"digest":<[u8;32]>::from(Sha256::digest(bytes))})).unwrap();
+        let head = serde_json::to_vec(&serde_json::json!({"version":1,"generation":generation,"length":bytes.len(),"digest":<[u8;32]>::from(busbar_contract::crypto::sha256(bytes))})).unwrap();
         let mut chunk = b"chunk:".to_vec();
         chunk.extend_from_slice(&generation);
         chunk.extend_from_slice(&0u64.to_be_bytes());

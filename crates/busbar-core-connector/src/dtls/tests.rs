@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The dtls engine: demux, the ICE-gated bind, the ring handshake, and every refusal.
+//! The dtls engine: demux, the ICE-gated bind, the DTLS handshake (crypto backend provider),
+//! and every refusal.
 
 use super::*;
 use std::time::Duration;
@@ -29,11 +30,10 @@ fn check(to: &IceCredentials, from_ufrag: &str, key: &str) -> Vec<u8> {
     m.resize(20 + 4 + padded, 0);
     let covered_len = u16::try_from(m.len() - 20 + 24).unwrap();
     m[2..4].copy_from_slice(&covered_len.to_be_bytes());
-    let key = ::ring::hmac::Key::new(::ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key.as_bytes());
-    let tag = ::ring::hmac::sign(&key, &m);
+    let tag = busbar_contract::crypto::legacy::hmac_sha1(key.as_bytes(), &m).unwrap();
     m.extend_from_slice(&0x0008_u16.to_be_bytes());
     m.extend_from_slice(&20_u16.to_be_bytes());
-    m.extend_from_slice(tag.as_ref());
+    m.extend_from_slice(&tag);
     m
 }
 
@@ -43,11 +43,10 @@ fn answer(probe: &[u8], pwd: &str) -> Vec<u8> {
     m.extend_from_slice(&probe[8..20]);
     let covered_len = u16::try_from(m.len() - 20 + 24).unwrap();
     m[2..4].copy_from_slice(&covered_len.to_be_bytes());
-    let key = ::ring::hmac::Key::new(::ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, pwd.as_bytes());
-    let tag = ::ring::hmac::sign(&key, &m);
+    let tag = busbar_contract::crypto::legacy::hmac_sha1(pwd.as_bytes(), &m).unwrap();
     m.extend_from_slice(&0x0008_u16.to_be_bytes());
     m.extend_from_slice(&20_u16.to_be_bytes());
-    m.extend_from_slice(tag.as_ref());
+    m.extend_from_slice(&tag);
     m
 }
 
@@ -166,11 +165,12 @@ fn ownership_probes_use_peer_reflexive_priority_and_keep_their_authentication() 
         let mut covered = wire[..integrity_at].to_vec();
         let covered_len = u16::try_from(integrity_at + 24 - 20).unwrap();
         covered[2..4].copy_from_slice(&covered_len.to_be_bytes());
-        let key = ::ring::hmac::Key::new(
-            ::ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY,
-            remote.pwd.as_bytes(),
+        let tag =
+            busbar_contract::crypto::legacy::hmac_sha1(remote.pwd.as_bytes(), &covered).unwrap();
+        assert!(
+            busbar_contract::crypto::ct_eq(&tag, mac),
+            "priority is authenticated"
         );
-        ::ring::hmac::verify(&key, &covered, mac).expect("priority is authenticated");
         let (_, fingerprint_at, fingerprint) = attribute(0x8028);
         assert_eq!(
             u32::from_be_bytes(fingerprint.try_into().unwrap()),
@@ -578,27 +578,15 @@ fn the_session_cert_shows_only_its_fingerprint_and_dimpl_never_holds_the_key() {
 
 #[test]
 fn red_the_key_provider_refuses_raw_key_bytes() {
-    let pkcs8 = ::ring::signature::EcdsaKeyPair::generate_pkcs8(
-        &::ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
-        &SystemRandom::new(),
-    )
-    .unwrap();
-    assert!(super::ring::provider()
-        .key_provider
-        .load_private_key(pkcs8.as_ref())
-        .is_err());
+    let provider = || busbar_contract::crypto::dtls::dtls_provider().unwrap();
+    let pkcs8 = busbar_contract::crypto::ecdsa_p256::generate_pkcs8().unwrap();
+    assert!(provider().key_provider.load_private_key(&pkcs8).is_err());
     let cert = SessionCert::mint().unwrap();
     let handle = cert.dimpl().private_key;
-    assert!(super::ring::provider()
-        .key_provider
-        .load_private_key(&handle)
-        .is_ok());
+    assert!(provider().key_provider.load_private_key(&handle).is_ok());
     drop(cert);
     assert!(
-        super::ring::provider()
-            .key_provider
-            .load_private_key(&handle)
-            .is_err(),
+        provider().key_provider.load_private_key(&handle).is_err(),
         "a dropped certificate's handle resolves to nothing"
     );
 }

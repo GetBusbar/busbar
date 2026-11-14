@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use crate::hashing::Sha256;
 use busbar_contract::{
     persistence::{
         Address, Candidate, DatasetId, ExpectedValue, Failure, Mutation, NamespaceId, Predicate,
@@ -19,7 +20,6 @@ use busbar_contract::{
     Secret,
 };
 use busbar_kernel_wal::{JournalBreak, JournalRecord, Record};
-use sha2::{Digest, Sha256};
 
 use super::{
     facade::{AccessError, CoreStore, LogicalClaim, LogicalId, Submission, WriterAuthority},

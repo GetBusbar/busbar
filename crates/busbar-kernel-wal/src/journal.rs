@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
-use ring::digest::{Context, SHA256};
+use busbar_contract::crypto::Sha256;
 
 use crate::record::Record;
 use crate::recover::{Bridge, QuarantineNote};
@@ -359,7 +359,7 @@ impl JournalRecord {
         header[at::BODY_HASH..at::BODY_HASH + 32].copy_from_slice(&self.body_hash);
         header[at::PREV_HASH..at::PREV_HASH + 32].copy_from_slice(&self.prev_hash);
         // at::HASH..end is not part of the preimage.
-        let mut hasher = Context::new(&SHA256);
+        let mut hasher = Sha256::new();
         hasher.update(&header[0..at::HASH]);
         crate::record::digest32(hasher)
     }
@@ -374,7 +374,7 @@ impl JournalRecord {
 /// The digest of a body.
 #[must_use]
 pub fn body_digest(body: &[u8]) -> [u8; 32] {
-    let mut hasher = Context::new(&SHA256);
+    let mut hasher = Sha256::new();
     hasher.update(body);
     crate::record::digest32(hasher)
 }

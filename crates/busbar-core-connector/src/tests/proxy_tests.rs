@@ -758,7 +758,6 @@ fn configured_plain_connect_proxy_carries_an_open_web_tls_target() {
             panic!("both targets are pinned literals")
         }
     }
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let ca = crate::test_support::private_ca();
         let trust = busbar_contract::transport::trust::EgressTrust {
@@ -766,13 +765,15 @@ fn configured_plain_connect_proxy_carries_an_open_web_tls_target() {
             ..Default::default()
         };
         let client = Arc::new(crate::tls::client::build_client_config(&trust).unwrap());
-        let server = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![ca.leaf_der.into()],
-                rustls_pki_types::PrivateKeyDer::try_from(ca.key_der).unwrap(),
-            )
-            .unwrap();
+        let server = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(
+                    vec![ca.leaf_der.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(ca.key_der).unwrap(),
+                )
+            })
+            .unwrap(),
+        );
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();

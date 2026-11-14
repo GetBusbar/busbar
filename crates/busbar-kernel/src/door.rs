@@ -72,7 +72,7 @@ fn next_counter(counter: &std::sync::atomic::AtomicU64) -> u64 {
 fn boot_node() -> u64 {
     for _ in 0..8 {
         let mut b = [0u8; 8];
-        if getrandom::fill(&mut b).is_ok() {
+        if busbar_contract::crypto::fill(&mut b).is_ok() {
             let n = u64::from_le_bytes(b);
             if n != 0 {
                 return n;

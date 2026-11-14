@@ -61,7 +61,7 @@ pub(super) async fn append(
     content: &[u8],
 ) -> Outcome {
     let mut operation = [0; 16];
-    getrandom::fill(&mut operation).unwrap();
+    busbar_contract::crypto::fill(&mut operation).unwrap();
     let (request, position) = book
         .prepare_ordinary_async(
             rows,

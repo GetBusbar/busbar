@@ -2767,8 +2767,7 @@ impl<K: Kind> Plugin<K> {
         // for measurement class identity after that comparison.
         let stated = &v.rendering;
         let mut statement_digest = [0; 32];
-        statement_digest
-            .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, stated).as_ref());
+        statement_digest.copy_from_slice(&busbar_contract::crypto::sha256(stated));
         let families = (0..st.families_len)
             .map(|i| {
                 // SAFETY: `validate` checked `families` holds `families_len` entries.

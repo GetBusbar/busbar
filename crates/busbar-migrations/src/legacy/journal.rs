@@ -12,13 +12,13 @@ use super::{
     CanonicalRows,
 };
 use crate::{archive_source::ArchiveSource, Bounds, Error};
+use busbar_contract::crypto::Sha256;
 use busbar_contract::Secret;
 use busbar_kernel::persistence::import_target::{
     journal::{self as codec, Error as JournalError},
     records::keys,
 };
 use busbar_kernel_wal::{JournalRecord, Record as Original};
-use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Seek},
     sync::Arc,
@@ -369,18 +369,18 @@ impl<R: Read + Seek + Send> JournalPlan<R> {
         };
         let mut hash = Sha256::new();
         hash.update(b"busbar.migration.original-journal/1\0");
-        hash.update(provenance.dataset);
-        hash.update(provenance.catalogue);
-        hash.update(source.identity().artifact_digest);
+        hash.update(&provenance.dataset[..]);
+        hash.update(&provenance.catalogue[..]);
+        hash.update(&source.identity().artifact_digest[..]);
         for node in &nodes {
-            hash.update(node.verified.node().to_be_bytes());
-            hash.update(node.verified.count().to_be_bytes());
-            hash.update(node.verified.original_digest());
+            hash.update(&node.verified.node().to_be_bytes());
+            hash.update(&node.verified.count().to_be_bytes());
+            hash.update(&node.verified.original_digest()[..]);
         }
         for fact in &facts {
-            hash.update(fact.node.to_be_bytes());
-            hash.update(fact.sequence.to_be_bytes());
-            hash.update(fact.hash.ok_or(Error::Corrupt)?);
+            hash.update(&fact.node.to_be_bytes());
+            hash.update(&fact.sequence.to_be_bytes());
+            hash.update(&fact.hash.ok_or(Error::Corrupt)?[..]);
         }
         Ok(Self {
             source,
@@ -388,7 +388,7 @@ impl<R: Read + Seek + Send> JournalPlan<R> {
             facts,
             nodes,
             provenance,
-            descriptor: hash.finalize().into(),
+            descriptor: hash.finish(),
         })
     }
     /// Enumerate verified original node identities in ascending order.

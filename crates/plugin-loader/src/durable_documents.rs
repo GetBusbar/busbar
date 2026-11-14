@@ -251,7 +251,7 @@ mod platform {
             Err(e) => return Err(e),
         };
         let mut random = [0; 16];
-        getrandom::fill(&mut random)
+        busbar_contract::crypto::fill(&mut random)
             .map_err(|_| io::Error::other("document temporary entropy failed"))?;
         let temporary = Temporary {
             dir: &dir,
@@ -891,7 +891,8 @@ mod platform {
             Err(e) => return Err(e),
         };
         let mut random = [0; 16];
-        getrandom::fill(&mut random).map_err(|_| io::Error::other("document entropy failed"))?;
+        busbar_contract::crypto::fill(&mut random)
+            .map_err(|_| io::Error::other("document entropy failed"))?;
         let temporary = Temporary(
             absolute
                 .parent()
@@ -1022,7 +1023,7 @@ mod tests {
         fn new() -> Self {
             let base = std::env::temp_dir().canonicalize().unwrap();
             let mut random = [0; 16];
-            getrandom::fill(&mut random).unwrap();
+            busbar_contract::crypto::fill(&mut random).unwrap();
             let path = base.join(format!("document-commit-{}", hex::encode(random)));
             std::fs::create_dir(&path).unwrap();
             std::fs::write(path.join("config.yaml"), b"original").unwrap();
@@ -1182,7 +1183,7 @@ mod windows_tests {
     impl Fixture {
         fn new() -> Self {
             let mut random = [0; 16];
-            getrandom::fill(&mut random).unwrap();
+            busbar_contract::crypto::fill(&mut random).unwrap();
             let directory = std::env::temp_dir()
                 .canonicalize()
                 .unwrap()

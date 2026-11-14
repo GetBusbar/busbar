@@ -258,7 +258,7 @@ impl GovState {
         let (public_id, plain) = super::issue_credential(shape).store()?;
         let plain = Secret::new(plain);
         let mut random = [0u8; 16];
-        getrandom::fill(&mut random)
+        busbar_contract::crypto::fill(&mut random)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
         let meta = CredentialMeta {
             id: format!("cred_{}", hex::encode(random)),

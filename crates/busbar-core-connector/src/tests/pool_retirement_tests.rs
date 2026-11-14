@@ -198,11 +198,11 @@ fn an_unregistered_release_preserves_its_holder_without_retaining_the_key() {
         let (line, stream) = held.line.lock().unwrap().take().unwrap();
         c.forget(OWNER);
 
-        let trust = Arc::new(
-            rustls::ClientConfig::builder()
-                .with_root_certificates(rustls::RootCertStore::empty())
-                .with_no_client_auth(),
-        );
+        let trust = busbar_contract::crypto::tls::client_config(|b| {
+            Ok(b.with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth())
+        })
+        .unwrap();
         let weak = Arc::downgrade(&trust);
         let mut key = original.clone();
         key.trust = Some(crate::pool::Same(trust));

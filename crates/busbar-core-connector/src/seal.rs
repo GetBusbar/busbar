@@ -3,7 +3,6 @@
 
 //! SEALED CREDENTIAL VALUES (TSEAL; the "plane never sees credential bytes" family): the bound
 
-use ring::rand::{SecureRandom as _, SystemRandom};
 use zeroize::Zeroizing;
 
 use crate::compose::Opening;
@@ -57,7 +56,7 @@ pub(crate) fn take_sealed_names(fields: &mut Vec<(String, Vec<u8>)>) -> Vec<Stri
 
 fn filler(len: usize) -> Option<Vec<u8>> {
     let mut bytes = vec![0_u8; len];
-    SystemRandom::new().fill(&mut bytes).ok()?;
+    busbar_contract::crypto::fill(&mut bytes).ok()?;
     for b in &mut bytes {
         *b = ALPHABET[usize::from(*b) % ALPHABET.len()];
     }

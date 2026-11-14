@@ -4,9 +4,9 @@
 //! Publication of already normalized documents under a protected native checkpoint.
 //! File failures never reverse the selected Store generation. No original is copied to disk.
 use super::documents::{Documents, Publication, SecretPublication};
+use busbar_contract::crypto::Sha256;
 use busbar_contract::Secret;
 use busbar_kernel::durable::{DocumentInspection, DocumentReplace, DurableFs};
-use sha2::{Digest, Sha256};
 use std::{
     future::Future,
     path::{Path, PathBuf},
@@ -132,14 +132,14 @@ pub fn custody_locator(documents: &Documents, host: &str) -> Result<[u8; 32], St
     paths.dedup();
     let mut hash = Sha256::new();
     hash.update(b"busbar.startup.document-locator.1\0");
-    hash.update((host.len() as u64).to_le_bytes());
+    hash.update(&(host.len() as u64).to_le_bytes());
     hash.update(host.as_bytes());
     for path in paths {
         let bytes = path_bytes(&path);
-        hash.update((bytes.len() as u64).to_le_bytes());
-        hash.update(bytes);
+        hash.update(&(bytes.len() as u64).to_le_bytes());
+        hash.update(&bytes[..]);
     }
-    Ok(hash.finalize().into())
+    Ok(hash.finish())
 }
 const MAGIC: &[u8; 8] = b"BBCDOC01";
 fn failure() -> String {
@@ -235,8 +235,10 @@ impl Inventory {
     fn capture(documents: &Documents, fs: &dyn DurableFs) -> Result<Self, String> {
         let mut captured = Vec::new();
         for publication in documents.pending()? {
-            if Sha256::digest(&publication.original).as_slice() != publication.original_digest
-                || Sha256::digest(&publication.converted).as_slice() != publication.target_digest
+            if busbar_contract::crypto::sha256(&publication.original).as_slice()
+                != publication.original_digest
+                || busbar_contract::crypto::sha256(&publication.converted).as_slice()
+                    != publication.target_digest
             {
                 return Err(failure());
             }
@@ -272,7 +274,7 @@ impl Inventory {
             digest: [0; 32],
         };
         inventory.check()?;
-        inventory.digest = Sha256::digest(&inventory.material()?).into();
+        inventory.digest = busbar_contract::crypto::sha256(&inventory.material()?).into();
         Ok(inventory)
     }
     fn check(&self) -> Result<(), String> {
@@ -288,8 +290,8 @@ impl Inventory {
         }
         for document in &self.documents {
             let p = &document.publication;
-            if Sha256::digest(&p.original).as_slice() != p.original_digest
-                || Sha256::digest(&p.converted).as_slice() != p.target_digest
+            if busbar_contract::crypto::sha256(&p.original).as_slice() != p.original_digest
+                || busbar_contract::crypto::sha256(&p.converted).as_slice() != p.target_digest
             {
                 return Err(failure());
             }
@@ -381,7 +383,9 @@ impl Inventory {
             _ => return Err(failure()),
         };
         let material = r.0;
-        if Sha256::digest(material).as_slice() != digest || r.take(1)?[0] != platform() {
+        if busbar_contract::crypto::sha256(material).as_slice() != digest
+            || r.take(1)?[0] != platform()
+        {
             return Err(failure());
         }
         let n = r.u32()? as usize;
@@ -833,7 +837,7 @@ mod tests {
         fn new() -> Self {
             let base = std::env::temp_dir().canonicalize().unwrap();
             let mut random = [0; 16];
-            getrandom::fill(&mut random).unwrap();
+            busbar_contract::crypto::fill(&mut random).unwrap();
             let path = base.join(format!("document-checkpoint-{}", hex::encode(random)));
             std::fs::create_dir(&path).unwrap();
             let publications = vec![
@@ -865,9 +869,12 @@ mod tests {
                 doc.publication
                     .converted
                     .extend_from_slice(b"# normalized\n");
-                doc.publication.target_digest = Sha256::digest(&doc.publication.converted).into();
-                doc.publication.transform_id =
-                    Sha256::digest(doc.publication.path.as_os_str().as_encoded_bytes()).into();
+                doc.publication.target_digest =
+                    busbar_contract::crypto::sha256(&doc.publication.converted).into();
+                doc.publication.transform_id = busbar_contract::crypto::sha256(
+                    doc.publication.path.as_os_str().as_encoded_bytes(),
+                )
+                .into();
                 // Capture saw a no-op pair as AlreadyConverted. After creating
                 // this synthetic conversion, retain genuine native metadata for
                 // the now-distinct original/target pair before checkpointing.
@@ -888,7 +895,8 @@ mod tests {
                 doc.metadata = Some(metadata);
                 doc.read_only = read_only;
             }
-            inventory.digest = Sha256::digest(inventory.material().unwrap()).into();
+            inventory.digest =
+                busbar_contract::crypto::sha256(&inventory.material().unwrap()).into();
             inventory
         }
     }

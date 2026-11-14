@@ -13,7 +13,3 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-ring = { workspace = true }
-
-[dev-dependencies]
-sha2 = { workspace = true }

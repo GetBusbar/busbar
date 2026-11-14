@@ -4,7 +4,7 @@
 //! Complete admitted plane authority inventory for frozen-source migration.
 //! Source rows cannot add owners or declare collection relationships.
 
-use sha2::{Digest, Sha256};
+use busbar_contract::crypto::Sha256;
 use std::collections::BTreeSet;
 
 use busbar_contract::{
@@ -64,7 +64,7 @@ pub(crate) fn inventory() -> Result<DeclarationInventory, String> {
         }
         statements.push(AdmittedStatement {
             owner: candidate.name.clone(),
-            statement_sha256: Sha256::digest(&candidate.stated).into(),
+            statement_sha256: busbar_contract::crypto::sha256(&candidate.stated).into(),
             kind: statement.kind,
             kind_abi: statement.kind_abi,
             layout_fingerprint: candidate.kind.layout_fingerprint(),
@@ -436,14 +436,14 @@ fn conversion_digest() -> [u8; 32] {
         include_bytes!("../../../../busbar-migrations/src/config/migration_table.rs").as_slice(),
         include_bytes!("../../../../busbar-migrations/src/config/migrate_export.rs").as_slice(),
     ] {
-        hash.update((source.len() as u64).to_be_bytes());
-        hash.update(source);
+        hash.update(&(source.len() as u64).to_be_bytes());
+        hash.update(&source[..]);
     }
     for (key, value) in busbar_migrations::config::migration_table::rows() {
-        hash.update((key.len() as u64).to_be_bytes());
+        hash.update(&(key.len() as u64).to_be_bytes());
         hash.update(key.as_bytes());
-        hash.update((value.len() as u64).to_be_bytes());
+        hash.update(&(value.len() as u64).to_be_bytes());
         hash.update(value.as_bytes());
     }
-    hash.finalize().into()
+    hash.finish()
 }

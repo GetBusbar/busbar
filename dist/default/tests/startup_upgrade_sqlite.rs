@@ -16,7 +16,6 @@ use std::{
 
 use busbar_plugin_loader::sign::{Manifest, SigningKey};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 const ADMIN: &str = "released-sqlite-startup-admin";
 // Native CI records new keys and timestamps on each invocation. Pin the writer
@@ -37,7 +36,9 @@ fn released_source(fixture: &Path) -> io::Result<(Vec<u8>, Value)> {
                 .all(|part| matches!(part, std::path::Component::Normal(_))));
             assert!(files.insert(name), "duplicate fixture file");
             assert_eq!(
-                hex::encode(Sha256::digest(std::fs::read(fixture.join(name))?)),
+                hex::encode(busbar_contract::crypto::sha256(&std::fs::read(
+                    fixture.join(name)
+                )?)),
                 digest,
                 "released fixture file changed: {name}"
             );
@@ -232,7 +233,7 @@ fn stage_plugin(work: &Path) -> Value {
     std::fs::write(work.join("plugins/sqlite.tar.gz"), &archive).unwrap();
     json!({
         "enabled": true, "dir": work.join("plugins"),
-        "fetch": [{"url":"https://startup-fixtures.invalid/sqlite.tar.gz", "sha256":hex::encode(Sha256::digest(&archive))}],
+        "fetch": [{"url":"https://startup-fixtures.invalid/sqlite.tar.gz", "sha256":hex::encode(busbar_contract::crypto::sha256(&archive))}],
         "trust": {"allow_unsigned":false, "allow_third_party":true, "publishers":[{"name":"startup-fixture", "public_key":hex::encode(key.verifying_key().as_bytes())}]}
     })
 }
@@ -342,7 +343,7 @@ async fn ordinary_startup_upgrades_released_sqlite_and_restart_does_not_reapply(
         "BUSBAR_TEST_SQLITE_155_FIXTURE supplies the actual published-writer fixture directory",
     ));
     let (original, source) = released_source(&fixture)?;
-    let source_sha256 = hex::encode(Sha256::digest(&original));
+    let source_sha256 = hex::encode(busbar_contract::crypto::sha256(&original));
     let root = PathBuf::from(
         std::env::var_os("BUSBAR_TEST_TMP_ROOT")
             .expect("BUSBAR_TEST_TMP_ROOT explicitly selects disposable native-test output"),
@@ -436,7 +437,7 @@ advanced:
     );
     assert_eq!(std::fs::read(work.0.join("config.yaml"))?, converted);
     assert_eq!(
-        hex::encode(Sha256::digest(std::fs::read(
+        hex::encode(busbar_contract::crypto::sha256(&std::fs::read(
             fixture.join("governance.db")
         )?)),
         source_sha256,

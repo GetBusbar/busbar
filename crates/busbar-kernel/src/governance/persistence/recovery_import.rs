@@ -7,11 +7,11 @@
 use super::*;
 use crate::governance::recovery::MigratedChildContext;
 use crate::governance::{recovery::RecoveryKind, GovState};
+use crate::hashing::Sha256;
 use crate::persistence::facade::{LogicalClaim, LogicalId};
 use busbar_contract::persistence::{
     Candidate as NativeCandidate, Mutation, PreparedCandidate, CANDIDATE_VERSION,
 };
-use sha2::{Digest, Sha256};
 
 const IMPORTED: NamespaceId = NamespaceId(*b"busbar.recimp1\0\0");
 const CHILD_CONTEXT: NamespaceId = NamespaceId(*b"busbar.recctx1\0\0");

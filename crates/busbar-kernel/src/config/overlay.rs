@@ -745,12 +745,11 @@ pub async fn read_state_async(store: &OverlayStore) -> OverlayReadState {
 pub async fn read_state_with_revision_async(
     store: &OverlayStore,
 ) -> (Option<String>, OverlayReadState) {
-    use sha2::Digest as _;
     match store.read_bytes_async().await {
         Ok(bytes) => {
             let revision = bytes
                 .as_ref()
-                .map(|bytes| hex::encode(sha2::Sha256::digest(bytes)));
+                .map(|bytes| hex::encode(crate::hashing::Sha256::digest(bytes)));
             (revision, classify_bytes(bytes))
         }
         Err(error) => {

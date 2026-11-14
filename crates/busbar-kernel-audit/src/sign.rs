@@ -3,7 +3,7 @@
 
 //! The signature over a sealed record's digest, minted in the process that sealed it.
 
-use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
+use busbar_contract::crypto::ed25519::{SigningKey, VerifyingKey};
 use zeroize::Zeroize as _;
 
 /// The domain this signature is FOR, and the first bytes of every preimage.
@@ -131,7 +131,7 @@ fn nibble(c: u8) -> Result<u8, KeyError> {
 /// The identifier for one public key: the first [`KEY_ID_BYTES`] bytes of its SHA-256, in lowercase
 #[must_use]
 pub fn key_id_of(public_key: &VerifyingKey) -> String {
-    let digest = crate::digest::sha256_hex(public_key.as_bytes());
+    let digest = crate::digest::sha256_hex(&public_key.to_bytes());
 
     digest[..KEY_ID_BYTES * 2].to_string()
 }
@@ -156,7 +156,10 @@ impl AuditSigningKey {
     /// Build one from a 32-byte ed25519 seed.
     #[must_use]
     pub fn from_seed(seed: &[u8; 32]) -> Self {
-        let inner = SigningKey::from_bytes(seed);
+        // PANIC: any 32-byte seed is a valid RFC 8032 seed; only a backend refusing Ed25519 outright
+        // can fail here, and a node without its audit signature cannot run.
+        let inner = SigningKey::from_seed(seed)
+            .unwrap_or_else(|e| panic!("crypto backend refused an Ed25519 seed: {e}"));
         let key_id = key_id_of(&inner.verifying_key());
         AuditSigningKey { inner, key_id }
     }
@@ -178,10 +181,9 @@ impl AuditSigningKey {
     /// A 32-BYTE SECRET DERIVED FROM THIS KEY under `label`: HMAC-SHA256 keyed by the seed, over
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> [u8; 32] {
-        let mut seed = self.inner.to_bytes();
+        let seed = self.inner.to_seed();
         // A 32-byte key: no backend refuses it (FIPS's floor is 14 bytes).
-        let out = busbar_contract::crypto::hmac_sha256(&seed, label);
-        seed.zeroize();
+        let out = busbar_contract::crypto::hmac_sha256(&*seed, label);
         match out {
             Ok(mac) => mac,
             Err(e) => panic!("crypto backend refused HMAC-SHA256 under a 32-byte key: {e}"),
@@ -197,13 +199,13 @@ impl AuditSigningKey {
     /// The public half as 64 lowercase hex characters.
     #[must_use]
     pub fn public_key_hex(&self) -> String {
-        to_hex(self.inner.verifying_key().as_bytes())
+        to_hex(&self.inner.verifying_key().to_bytes())
     }
 
     /// Sign one record's digest. The answer is 128 lowercase hex characters.
     #[must_use]
     pub fn sign_digest(&self, digest_hex: &str) -> String {
-        to_hex(&self.inner.sign(&signing_preimage(digest_hex)).to_bytes())
+        to_hex(&self.inner.sign(&signing_preimage(digest_hex)))
     }
 }
 
@@ -211,10 +213,7 @@ impl AuditSigningKey {
     /// Sign one ledger checkpoint's body: 64 raw ed25519 signature bytes over
     #[must_use]
     pub fn sign_checkpoint_body(&self, body: &[u8]) -> Vec<u8> {
-        self.inner
-            .sign(&checkpoint_preimage(body))
-            .to_bytes()
-            .to_vec()
+        self.inner.sign(&checkpoint_preimage(body)).to_vec()
     }
 }
 
@@ -249,16 +248,15 @@ impl AuditVerifyingKey {
     /// The key as 64 lowercase hex characters.
     #[must_use]
     pub fn public_key_hex(&self) -> String {
-        to_hex(self.inner.as_bytes())
+        to_hex(&self.inner.to_bytes())
     }
 
     /// Check one signature over one digest.
     pub fn verify_digest(&self, digest_hex: &str, signature_hex: &str) -> Result<(), KeyError> {
         let raw =
             from_hex_exact::<64>(signature_hex.trim()).map_err(|_| KeyError::MalformedSignature)?;
-        let signature = ed25519_dalek::Signature::from_bytes(&raw);
         self.inner
-            .verify_strict(&signing_preimage(digest_hex), &signature)
+            .verify_strict(&signing_preimage(digest_hex), &raw)
             .map_err(|_| KeyError::BadSignature)
     }
 }
@@ -305,12 +303,11 @@ impl AuditKeySet {
         let raw: [u8; 64] = signature
             .try_into()
             .map_err(|_| KeyError::MalformedSignature)?;
-        let signature = ed25519_dalek::Signature::from_bytes(&raw);
         let preimage = checkpoint_preimage(body);
         if self
             .keys
             .iter()
-            .any(|k| k.inner.verify_strict(&preimage, &signature).is_ok())
+            .any(|k| k.inner.verify_strict(&preimage, &raw).is_ok())
         {
             Ok(())
         } else {

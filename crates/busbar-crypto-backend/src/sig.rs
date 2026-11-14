@@ -69,9 +69,14 @@ pub mod ed25519 {
     pub struct VerifyingKey([u8; 32]);
 
     impl VerifyingKey {
-        /// The key encoded as `bytes`. Whether the point decodes is checked by `verify_strict`.
+        /// The key encoded as `bytes`: `Err(Invalid)` unless it is the canonical encoding of a
+        /// curve point (small-order points decode; see `is_weak`).
         pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
-            Ok(Self(*bytes))
+            if crate::weak::decodes(bytes) {
+                Ok(Self(*bytes))
+            } else {
+                Err(Error::Invalid("Ed25519 public key is not a canonical curve point"))
+            }
         }
 
         /// The encoded key.

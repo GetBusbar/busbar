@@ -35,9 +35,9 @@
 //!
 //! ## Crypto provider
 //!
-//! The process-wide crypto provider TLS needs is installed by the connector
-//! (`busbar_core_connector::tls::install_crypto_provider`), with the `ServerConfig` it builds — TLS
-//! stays in the connector, and the composition root names no TLS library.
+//! No process-wide crypto provider is installed. The connector builds every `ServerConfig` through
+//! `busbar_contract::crypto::tls`, which uses the linked crypto backend's provider and approves the
+//! result — TLS stays in the connector, and the composition root names no TLS library.
 //!
 //! ## Failure model
 //!

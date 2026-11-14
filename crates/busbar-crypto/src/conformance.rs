@@ -264,6 +264,26 @@ pub fn signatures() {
         assert!(k.is_weak(), "{weak}");
         assert!(k.verify_strict(b"", &sig).is_err());
     }
+    // Off-curve and non-canonical encodings do not decode (RFC 8032 §5.1.3).
+    for bad in [
+        "0200000000000000000000000000000000000000000000000000000000000000",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    ] {
+        assert!(
+            matches!(
+                ed25519::VerifyingKey::from_bytes(&a(bad)),
+                Err(Error::Invalid(_))
+            ),
+            "{bad}"
+        );
+    }
+    // Mixed-order (non-weak, not torsion-free) keys decode and are not weak.
+    let mixed = ed25519::VerifyingKey::from_bytes(&a(
+        "98519eadf35b995233b51b5cd23e9cc5a28b639b5a4af0ec903cb960d81b7819",
+    ))
+    .unwrap();
+    assert!(!mixed.is_weak());
     let g = ed25519::SigningKey::generate().unwrap();
     g.verifying_key().verify_strict(MSG, &g.sign(MSG)).unwrap();
 

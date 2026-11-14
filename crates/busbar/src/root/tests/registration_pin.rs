@@ -8,12 +8,12 @@ use std::time::Duration;
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
+use busbar_contract::crypto::testing::rcgen::PublicKeyData as _;
 use busbar_contract::transport::trust::{key_pin, Anchors, EgressTrust};
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::registry::Transports;
 use busbar_core_connector::{process, Connector, DEFAULT_CLASS};
 use busbar_kernel::config::Destinations;
-use rcgen::PublicKeyData as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
@@ -92,27 +92,36 @@ struct Issued {
 
 struct Pki {
     ca_der: Vec<u8>,
-    issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
+    issuer: busbar_contract::crypto::testing::rcgen::Issuer<
+        'static,
+        busbar_contract::crypto::testing::rcgen::KeyPair,
+    >,
 }
 
 impl Pki {
     fn new() -> Self {
-        let ca_key = rcgen::KeyPair::generate().expect("a CA key");
-        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("CA params");
-        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_key =
+            busbar_contract::crypto::testing::rcgen::KeyPair::generate().expect("a CA key");
+        let mut ca_params =
+            busbar_contract::crypto::testing::rcgen::CertificateParams::new(Vec::<String>::new())
+                .expect("CA params");
+        ca_params.is_ca = busbar_contract::crypto::testing::rcgen::IsCa::Ca(
+            busbar_contract::crypto::testing::rcgen::BasicConstraints::Unconstrained,
+        );
         let ca = ca_params.self_signed(&ca_key).expect("the CA");
         Self {
             ca_der: ca.der().to_vec(),
-            issuer: rcgen::Issuer::new(ca_params, ca_key),
+            issuer: busbar_contract::crypto::testing::rcgen::Issuer::new(ca_params, ca_key),
         }
     }
 
     fn leaf(&self, name: &str) -> Issued {
-        let kp = rcgen::KeyPair::generate().expect("a leaf key");
-        let cert = rcgen::CertificateParams::new(vec![name.to_owned()])
-            .expect("leaf params")
-            .signed_by(&kp, &self.issuer)
-            .expect("the leaf");
+        let kp = busbar_contract::crypto::testing::rcgen::KeyPair::generate().expect("a leaf key");
+        let cert =
+            busbar_contract::crypto::testing::rcgen::CertificateParams::new(vec![name.to_owned()])
+                .expect("leaf params")
+                .signed_by(&kp, &self.issuer)
+                .expect("the leaf");
         Issued {
             der: cert.der().to_vec(),
             pem: cert.pem(),
@@ -124,26 +133,26 @@ impl Pki {
 }
 
 async fn far_end(pki: &Pki, leaf: &Issued, mutual: bool) -> (u16, UnboundedReceiver<Saw>) {
-    busbar_core_connector::tls::install_crypto_provider();
     let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
     let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key_der.clone()).expect("a key");
-    let builder = rustls::ServerConfig::builder();
-    let mut config = if mutual {
-        let mut roots = rustls::RootCertStore::empty();
-        roots
-            .add(rustls_pki_types::CertificateDer::from(pki.ca_der.clone()))
-            .expect("the root");
-        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-            .build()
-            .expect("a client verifier");
-        builder.with_client_cert_verifier(verifier)
-    } else {
-        builder.with_no_client_auth()
-    }
-    .with_single_cert(chain, key)
+    let config = busbar_contract::crypto::tls::server_config(|builder| {
+        let mut config = if mutual {
+            let mut roots = rustls::RootCertStore::empty();
+            roots
+                .add(rustls_pki_types::CertificateDer::from(pki.ca_der.clone()))
+                .expect("the root");
+            let verifier = busbar_contract::crypto::tls::client_verifier(Arc::new(roots), |b| b)
+                .expect("a client verifier");
+            builder.with_client_cert_verifier(verifier)
+        } else {
+            builder.with_no_client_auth()
+        }
+        .with_single_cert(chain, key)?;
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Ok(config)
+    })
     .expect("a server config");
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let acceptor = tokio_rustls::TlsAcceptor::from(config);
     let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
     let port = l.local_addr().expect("its address").port();
     let (tx, rx) = unbounded_channel();

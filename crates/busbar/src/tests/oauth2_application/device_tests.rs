@@ -6,8 +6,8 @@ use super::{
     browser::{send, Jar},
 };
 use base64::Engine as _;
+use busbar_contract::crypto::ecdsa_p256;
 use busbar_core_oauth2::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
-use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -17,18 +17,14 @@ const CLIENT: &str = "operator-device-client";
 const ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-struct Key(EcdsaKeyPair);
+struct Key(ecdsa_p256::KeyPair);
 impl Key {
     fn new() -> Self {
-        let rng = ring::rand::SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
-        Self(
-            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
-                .unwrap(),
-        )
+        let pkcs8 = ecdsa_p256::generate_pkcs8().unwrap();
+        Self(ecdsa_p256::from_pkcs8(&pkcs8).unwrap())
     }
     fn jwk(&self) -> StaticClientJwk {
-        let point = self.0.public_key().as_ref();
+        let point = &self.0.public_key();
         StaticClientJwk {
             kty: "EC".into(),
             crv: Some("P-256".into()),
@@ -54,11 +50,8 @@ impl Key {
             .to_string(),
         );
         let input = format!("{header}.{claims}");
-        let signature = self
-            .0
-            .sign(&ring::rand::SystemRandom::new(), input.as_bytes())
-            .unwrap();
-        format!("{input}.{}", B64.encode(signature.as_ref()))
+        let signature = self.0.sign_fixed(input.as_bytes()).unwrap();
+        format!("{input}.{}", B64.encode(signature))
     }
 }
 

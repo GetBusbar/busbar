@@ -20,4 +20,4 @@ serde = { workspace = true }
 [dev-dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
+busbar-contract = { path = "../busbar-contract" }

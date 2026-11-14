@@ -12,11 +12,11 @@ use crate::{
     },
     *,
 };
+use busbar_contract::crypto::Sha256;
 use busbar_contract::{
     persistence::{archive::Table, lifecycle, Address},
     Secret,
 };
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 mod parents;
 pub use parents::with_parent_graph_from_facts;
@@ -215,7 +215,7 @@ impl PreparedRoute {
             }
             field(&mut hash, &table.native_layout);
         }
-        let digest = hash.finalize().into();
+        let digest = hash.finish();
         Ok(Self {
             reader,
             source: source.clone(),
@@ -241,7 +241,7 @@ impl PreparedRoute {
             &bindings.histories,
             &bindings.tokens,
         );
-        self.digest = hash.finalize().into();
+        self.digest = hash.finish();
         self.bindings = bindings;
         self.inventory = self.bindings.clone();
         self.bindings_resolved = true;
@@ -301,7 +301,7 @@ impl PreparedRoute {
             &admitted.bindings.histories,
             &admitted.bindings.tokens,
         );
-        self.digest = hash.finalize().into();
+        self.digest = hash.finish();
         self.inventory = admitted.bindings;
         // Admission proves which declarations may be selected, not which
         // instances were enabled by the source configuration. Even a unique
@@ -427,8 +427,8 @@ fn importer_format(actual: lifecycle::Format) -> Result<Format, Error> {
     })
 }
 fn field(hash: &mut Sha256, bytes: &[u8]) {
-    hash.update((bytes.len() as u64).to_le_bytes());
-    hash.update(bytes);
+    hash.update(&(bytes.len() as u64).to_le_bytes());
+    hash.update(&bytes[..]);
 }
 fn canonical_bindings(bindings: &mut Bindings, budget: usize) -> Result<(), Error> {
     use busbar_contract::records::{PlaneDisposition, PlaneRecordRef};
@@ -642,7 +642,7 @@ fn canonical_inventory(bindings: &mut Bindings, budget: usize) -> Result<(), Err
         let digest = |h: &HistoryBinding| {
             let mut hash = Sha256::new();
             legacy::transform::bind_config(&mut hash, &[], std::slice::from_ref(h), &[]);
-            <[u8; 32]>::from(hash.finalize())
+            hash.finish()
         };
         digest(a).cmp(&digest(b))
     });

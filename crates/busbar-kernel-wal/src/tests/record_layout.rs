@@ -242,17 +242,17 @@ fn a_payload_edit_is_an_altered_whole_frame() {
 /// THE ON-DISK DIGESTS ARE SHA-256, BYTE FOR BYTE. The frame digest, the header check and the
 #[test]
 fn the_frame_digest_and_header_check_are_sha256_byte_for_byte() {
-    use sha2::Digest as _;
+    use busbar_contract::crypto;
     let body: Vec<u8> = (0..1000u32).map(|i| (i * 7 % 256) as u8).collect();
     for frame in Record::new(5, 11, body).encode() {
-        let mut h = sha2::Sha256::new();
+        let mut h = crypto::Sha256::new();
         h.update(&frame[0..64]);
         h.update(&frame[FRAME_HEADER_BYTES..]);
-        let digest: [u8; 32] = h.finalize().into();
+        let digest: [u8; 32] = h.finish();
         assert_eq!(frame[64..96], digest);
-        let check: [u8; 32] = sha2::Sha256::digest(&frame[0..34]).into();
+        let check: [u8; 32] = crypto::sha256(&frame[0..34]);
         assert_eq!(frame[34..38], check[0..4]);
     }
-    let witness: [u8; 32] = sha2::Sha256::digest(b"abc").into();
+    let witness: [u8; 32] = crypto::sha256(b"abc");
     assert_eq!(crate::journal::body_digest(b"abc"), witness);
 }

@@ -28,7 +28,7 @@ pub struct Canary {
 impl Canary {
     pub fn new(kind: &'static str) -> Self {
         let mut raw = [0u8; 8];
-        getrandom::fill(&mut raw).expect("random bytes for a canary");
+        busbar_contract::crypto::fill(&mut raw).expect("random bytes for a canary");
         let tail = hex::encode(raw);
         let slug: String = kind
             .chars()

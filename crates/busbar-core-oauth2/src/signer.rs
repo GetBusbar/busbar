@@ -2,29 +2,27 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use base64::Engine as _;
+use busbar_contract::crypto::{self, ecdsa_p256};
 use oauth_as::jwt::{EcCurve, Jwk, JwsAlg, JwsSignature, JwsSigner, JwsVerifier, SignerError};
-use ring::signature::KeyPair as _;
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-pub(crate) struct RingEs256Key {
-    pair: ring::signature::EcdsaKeyPair,
-    rng: ring::rand::SystemRandom,
-
+pub(crate) struct Es256Key {
+    pair: ecdsa_p256::KeyPair,
     jwk: Jwk,
 }
 
 /// Why a signing key could not be loaded or generated. Carries no key material, ever.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum KeyError {
-    /// `ring` refused the PKCS#8 document.
+    /// The crypto backend refused the PKCS#8 document.
     NotAP256Key(String),
     /// The platform RNG failed, which is not a condition a token endpoint may paper over.
     Rng(String),
-    /// `ring` handed back a public key that is not the 65-byte uncompressed SEC1 point. Unreachable
-    /// on `ring` 0.17 for a P-256 key and checked anyway: the derivation below indexes into it, and
-    /// an index that is right by assumption is a panic waiting for a version bump.
+    /// The backend handed back a public key that is not an uncompressed SEC1 point. Unreachable for
+    /// a P-256 key and checked anyway: the derivation below indexes into it, and an index that is
+    /// right by assumption is a panic waiting for a backend change.
     MalformedPublicKey { bytes: usize },
 }
 
@@ -38,7 +36,7 @@ impl std::fmt::Display for KeyError {
             KeyError::Rng(e) => write!(f, "the platform random number generator failed: {e}"),
             KeyError::MalformedPublicKey { bytes } => write!(
                 f,
-                "ring returned a {bytes}-byte public key where an uncompressed P-256 point is 65"
+                "the crypto backend returned a {bytes}-byte public key where an uncompressed P-256 point is 65"
             ),
         }
     }
@@ -46,32 +44,20 @@ impl std::fmt::Display for KeyError {
 
 impl std::error::Error for KeyError {}
 
-impl RingEs256Key {
+impl Es256Key {
     pub(crate) fn from_pkcs8_der(kid: impl Into<String>, der: &[u8]) -> Result<Self, KeyError> {
-        let rng = ring::rand::SystemRandom::new();
-        let pair = ring::signature::EcdsaKeyPair::from_pkcs8(
-            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-            der,
-            &rng,
-        )
-        .map_err(|e| KeyError::NotAP256Key(e.to_string()))?;
+        let pair = ecdsa_p256::from_pkcs8(der).map_err(|e| KeyError::NotAP256Key(e.to_string()))?;
         let jwk = public_jwk_of(&pair, kid.into())?;
-        Ok(Self { pair, rng, jwk })
+        Ok(Self { pair, jwk })
     }
 
     pub(crate) fn generate_pkcs8() -> Result<Vec<u8>, KeyError> {
-        let rng = ring::rand::SystemRandom::new();
-        ring::signature::EcdsaKeyPair::generate_pkcs8(
-            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-            &rng,
-        )
-        .map(|doc| doc.as_ref().to_vec())
-        .map_err(|e| KeyError::Rng(e.to_string()))
+        ecdsa_p256::generate_pkcs8().map_err(|e| KeyError::Rng(e.to_string()))
     }
 }
 
-fn public_jwk_of(pair: &ring::signature::EcdsaKeyPair, kid: String) -> Result<Jwk, KeyError> {
-    let point = pair.public_key().as_ref();
+fn public_jwk_of(pair: &ecdsa_p256::KeyPair, kid: String) -> Result<Jwk, KeyError> {
+    let point = &pair.public_key();
     if point.len() != 65 || point[0] != 0x04 {
         return Err(KeyError::MalformedPublicKey { bytes: point.len() });
     }
@@ -84,7 +70,7 @@ fn public_jwk_of(pair: &ring::signature::EcdsaKeyPair, kid: String) -> Result<Jw
     })
 }
 
-impl JwsSigner for RingEs256Key {
+impl JwsSigner for Es256Key {
     fn alg(&self) -> JwsAlg {
         JwsAlg::Es256
     }
@@ -95,17 +81,9 @@ impl JwsSigner for RingEs256Key {
     ) -> impl std::future::Future<Output = Result<JwsSignature, SignerError>> + Send {
         let signed = self
             .pair
-            .sign(&self.rng, signing_input)
-            .map_err(|_| SignerError::new("the platform random number generator failed"))
-            .and_then(|sig| {
-                <[u8; 64]>::try_from(sig.as_ref())
-                    .map(JwsSignature::Es256)
-                    .map_err(|_| {
-                        SignerError::new(
-                            "ring produced a signature that is not the 64-byte fixed-width r||s form",
-                        )
-                    })
-            });
+            .sign_fixed(signing_input)
+            .map(JwsSignature::Es256)
+            .map_err(|_| SignerError::new("the platform random number generator failed"));
         async move { signed }
     }
 
@@ -114,14 +92,14 @@ impl JwsSigner for RingEs256Key {
     }
 }
 
-/// ES256 VERIFICATION over `ring`, for the credentials a client signs (RFC 9449 DPoP proofs,
+/// ES256 VERIFICATION over the crypto facade, for the credentials a client signs (RFC 9449 DPoP proofs,
 /// RFC 9101 request objects, RFC 7523 client assertions).
 ///
 /// A unit struct, because verification holds no state: every key arrives with the credential.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RingEs256Verifier;
+pub(crate) struct Es256Verifier;
 
-impl JwsVerifier for RingEs256Verifier {
+impl JwsVerifier for Es256Verifier {
     fn alg(&self) -> JwsAlg {
         JwsAlg::Es256
     }
@@ -150,22 +128,17 @@ impl JwsVerifier for RingEs256Verifier {
         point[0] = 0x04;
         point[1..33].copy_from_slice(&x);
         point[33..65].copy_from_slice(&y);
-        ring::signature::UnparsedPublicKey::new(
-            &ring::signature::ECDSA_P256_SHA256_FIXED,
-            point.as_slice(),
-        )
-        .verify(signing_input, signature)
-        .is_ok()
+        ecdsa_p256::verify_fixed(&point, signing_input, signature).is_ok()
     }
 }
 
-/// The PS256 verifier over `ring` (RSASSA-PSS, SHA-256, MGF1-SHA-256, RFC 7518 s3.5): FAPI 2.0
+/// The PS256 verifier over the crypto facade (RSASSA-PSS, SHA-256, MGF1-SHA-256, RFC 7518 s3.5): FAPI 2.0
 /// s5.4.1's other algorithm, for a client provisioned with an RSA key and for its DPoP proofs.
 /// Installed into the PS256 slot only, so an RS256 credential finds no verifier and is refused.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RingPs256Verifier;
+pub(crate) struct Ps256Verifier;
 
-impl JwsVerifier for RingPs256Verifier {
+impl JwsVerifier for Ps256Verifier {
     fn alg(&self) -> JwsAlg {
         JwsAlg::Ps256
     }
@@ -177,13 +150,14 @@ impl JwsVerifier for RingPs256Verifier {
         let (Ok(n), Ok(e)) = (B64.decode(n), B64.decode(e)) else {
             return false;
         };
-        ring::signature::RsaPublicKeyComponents { n, e }
-            .verify(
-                &ring::signature::RSA_PSS_2048_8192_SHA256,
-                signing_input,
-                signature,
-            )
-            .is_ok()
+        crypto::rsa::verify_components(
+            crypto::rsa::Scheme::PssSha256,
+            &n,
+            &e,
+            signing_input,
+            signature,
+        )
+        .is_ok()
     }
 }
 

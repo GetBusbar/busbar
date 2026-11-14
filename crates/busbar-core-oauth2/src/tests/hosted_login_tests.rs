@@ -184,10 +184,7 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
 fn pkce_code_challenge_is_s256_of_verifier() {
     let verifier = random_b64url(32);
     let challenge = code_challenge_s256(&verifier);
-    let expected = B64.encode(ring::digest::digest(
-        &ring::digest::SHA256,
-        verifier.as_bytes(),
-    ));
+    let expected = B64.encode(busbar_contract::crypto::sha256(verifier.as_bytes()));
     assert_eq!(challenge, expected);
 
     assert!(!challenge.contains('+') && !challenge.contains('/') && !challenge.contains('='));

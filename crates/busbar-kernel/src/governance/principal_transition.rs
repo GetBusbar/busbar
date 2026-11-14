@@ -10,13 +10,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::hashing::Sha256;
 use crate::persistence::facade::CoreStore;
 use busbar_contract::host_records::conditional::{Expected, Mutation, Predicate, Request, VERSION};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::records::OpId;
 use busbar_contract::records::{UsageLedger, VirtualKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::config::{
     overlay::{OverlayDoc, OverlayStore},
@@ -2324,7 +2324,8 @@ pub async fn initialize_ephemeral_with_record_bootstrap(
         return Err("fresh principal baseline changed before record bootstrap".into());
     }
     let mut epoch = [0u8; 16];
-    getrandom::fill(&mut epoch).map_err(|_| "fresh record bootstrap entropy unavailable")?;
+    busbar_contract::crypto::fill(&mut epoch)
+        .map_err(|_| "fresh record bootstrap entropy unavailable")?;
     Ok(crate::host_record_bootstrap::ColdRecordReceipt {
         version: 1,
         epoch: hex::encode(epoch),

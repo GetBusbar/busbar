@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use busbar_contract::abi::host::service::{MAX_WORK_RECORD, WORK_LIVE, WORK_SETTLED};
+use busbar_contract::crypto::Sha256;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError};
-use ring::digest;
 
 use crate::host_records::{record_key, RecordRows};
 
@@ -93,7 +93,7 @@ impl WorkBounds {
 
 #[must_use]
 pub fn owner_of(principal: Option<&str>) -> Owner {
-    let mut ctx = digest::Context::new(&digest::SHA256);
+    let mut ctx = Sha256::new();
     ctx.update(b"busbar work owner\0");
     match principal {
         Some(id) => {
@@ -103,7 +103,7 @@ pub fn owner_of(principal: Option<&str>) -> Owner {
         None => ctx.update(&[0]),
     }
     let mut owner = Owner::default();
-    owner.copy_from_slice(ctx.finish().as_ref());
+    owner.copy_from_slice(&ctx.finish());
     owner
 }
 

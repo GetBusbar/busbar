@@ -601,7 +601,7 @@ fn verify_cli(args: &[String]) -> ExitCode {
 
 fn keygen() -> ExitCode {
     let mut seed = [0u8; 32];
-    if let Err(e) = getrandom::fill(&mut seed) {
+    if let Err(e) = busbar_contract::crypto::fill(&mut seed) {
         eprintln!("error: OS RNG unavailable: {e}");
         return ExitCode::FAILURE;
     }

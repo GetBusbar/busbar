@@ -95,7 +95,7 @@ pub(crate) fn standard_result<T, E>(result: Result<T, WithCryptoError<E>>) -> Re
     policy_result(result).expect("StandardCrypto has no unavailable services")
 }
 
-/// Raw key storage: decoding this type never constructs a Dalek key. Public construction is
+/// Raw key storage: decoding this type never constructs a key object. Public construction is
 /// allowed, so every verification validates keys with the selected provider as well.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawReleaseKey {
@@ -125,7 +125,7 @@ impl RawReleaseKey {
     pub(crate) fn into_standard(self) -> ReleaseKey {
         match self {
             Self::Ed25519(k) => ReleaseKey::Ed25519(
-                ed25519_dalek::VerifyingKey::from_bytes(&k)
+                crate::sign::VerifyingKey::from_bytes(&k)
                     .expect("key already validated by StandardCrypto"),
             ),
             Self::P256(k) => ReleaseKey::P256(k),
@@ -152,9 +152,9 @@ impl ReleaseCrypto for StandardCrypto {
     fn validate_public_key(&self, key: PublicKey<'_>) -> Result<bool, CryptoUnavailable> {
         Ok(match key {
             PublicKey::Ed25519(k) => {
-                ed25519_dalek::VerifyingKey::from_bytes(k).is_ok_and(|key| !key.is_weak())
+                crate::sign::VerifyingKey::from_bytes(k).is_ok_and(|key| !key.is_weak())
             }
-            // Historically the Standard P-256 parser validates SEC1 syntax; ring checks the
+            // Historically the Standard P-256 parser validates SEC1 syntax; the backend checks the
             // curve point when verifying the signature. Preserve that behavior here.
             PublicKey::P256(k) => k[0] == 4,
         })
@@ -165,12 +165,10 @@ impl ReleaseCrypto for StandardCrypto {
         message: &[u8],
         signature: &[u8; 64],
     ) -> Result<bool, CryptoUnavailable> {
-        Ok(
-            ed25519_dalek::VerifyingKey::from_bytes(key).is_ok_and(|key| {
-                key.verify_strict(message, &ed25519_dalek::Signature::from_bytes(signature))
-                    .is_ok()
-            }),
-        )
+        Ok(crate::sign::VerifyingKey::from_bytes(key).is_ok_and(|key| {
+            key.verify_strict(message, &crate::sign::Signature::from_bytes(signature))
+                .is_ok()
+        }))
     }
     fn verify_p256_sha256_asn1(
         &self,
@@ -178,11 +176,7 @@ impl ReleaseCrypto for StandardCrypto {
         message: &[u8],
         signature_der: &[u8],
     ) -> Result<bool, CryptoUnavailable> {
-        Ok(
-            ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_ASN1, key)
-                .verify(message, signature_der)
-                .is_ok(),
-        )
+        Ok(busbar_contract::crypto::ecdsa_p256::verify_asn1(key, message, signature_der).is_ok())
     }
 }
 

@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::crypto::testing::rcgen;
 use busbar_core_connector::listen::{AcceptLimits, Listening};
 use busbar_core_connector::{carrier, compose, framer, hostio};
 use busbar_kernel::config::secret::SecretResolver;
@@ -49,7 +50,6 @@ fn main() {
             .expect("usage: tls_subject <out dir>"),
     );
     std::fs::create_dir_all(&dir).expect("out dir");
-    busbar_core_connector::tls::install_crypto_provider();
 
     let mut params =
         rcgen::CertificateParams::new(vec!["localhost".to_owned()]).expect("cert params");
@@ -101,7 +101,7 @@ fn main() {
             Some(door),
             &support::via(),
             "127.0.0.1:0",
-            Some(Arc::new(server)),
+            Some(server),
             alpn,
             AcceptLimits::default(),
         )

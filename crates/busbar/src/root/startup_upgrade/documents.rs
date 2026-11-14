@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Original authored bytes stay in custody across bootstrap and source-proven conversion.
+use busbar_contract::crypto::Sha256;
 use busbar_kernel::{
     appbuild::{ConfigDocument, RootRules},
     config,
 };
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -271,22 +271,22 @@ impl Documents {
         let source = proof.source();
         let mut binding = Sha256::new();
         binding.update(b"busbar.startup.config-source.1\0");
-        binding.update(source.native_anchor);
-        binding.update(source.dataset.0);
-        binding.update(source.catalogue_digest);
-        binding.update(source.layout_digest);
+        binding.update(&source.native_anchor[..]);
+        binding.update(&source.dataset.0[..]);
+        binding.update(&source.catalogue_digest[..]);
+        binding.update(&source.layout_digest[..]);
         if let Some(format) = source.format {
-            binding.update(format.owner);
-            binding.update(format.physical.to_be_bytes());
-            binding.update(format.logical.to_be_bytes());
-            binding.update(format.codec.to_be_bytes());
+            binding.update(&format.owner[..]);
+            binding.update(&format.physical.to_be_bytes());
+            binding.update(&format.logical.to_be_bytes());
+            binding.update(&format.codec.to_be_bytes());
         }
-        binding.update(proof.reader().decoder_digest());
-        binding.update([match proof.documents() {
+        binding.update(&proof.reader().decoder_digest()[..]);
+        binding.update(&[match proof.documents() {
             busbar_contract::persistence::lifecycle::DocumentSemantics::Historical => 0,
             busbar_contract::persistence::lifecycle::DocumentSemantics::Current => 1,
         }]);
-        self.enter_released_binding(binding.finalize().into(), proof.documents())
+        self.enter_released_binding(binding.finish(), proof.documents())
     }
 
     /// Phase entry is wired below to the migration coordinator's opaque source proof.
@@ -721,8 +721,10 @@ impl Documents {
                 .get(&publication.path)
                 .ok_or("checkpoint names an unobserved configuration source")?;
             let kind = *kind;
-            let original_digest: [u8; 32] = Sha256::digest(publication.original.as_slice()).into();
-            let target_digest: [u8; 32] = Sha256::digest(publication.converted.as_slice()).into();
+            let original_digest: [u8; 32] =
+                busbar_contract::crypto::sha256(publication.original.as_slice()).into();
+            let target_digest: [u8; 32] =
+                busbar_contract::crypto::sha256(publication.converted.as_slice()).into();
             if original_digest != publication.original_digest
                 || target_digest != publication.target_digest
             {
@@ -856,8 +858,10 @@ impl Documents {
             } else {
                 converted
             };
-            let original_digest: [u8; 32] = Sha256::digest(entry.original.as_bytes()).into();
-            let target_digest: [u8; 32] = Sha256::digest(converted.as_bytes()).into();
+            let original_digest: [u8; 32] =
+                busbar_contract::crypto::sha256(entry.original.as_bytes()).into();
+            let target_digest: [u8; 32] =
+                busbar_contract::crypto::sha256(converted.as_bytes()).into();
             let transform_id = entry.restored_transform.unwrap_or_else(|| {
                 document_transform(
                     path,
@@ -898,7 +902,8 @@ impl Documents {
             .documents
             .get_mut(&publication.path)
             .ok_or("published source custody disappeared")?;
-        let actual_original: [u8; 32] = Sha256::digest(entry.original.as_bytes()).into();
+        let actual_original: [u8; 32] =
+            busbar_contract::crypto::sha256(entry.original.as_bytes()).into();
         if actual_original != publication.original_digest
             || entry.converted.as_ref().is_none_or(|target| {
                 let target = if entry.runtime_only {
@@ -906,7 +911,8 @@ impl Documents {
                 } else {
                     target
                 };
-                <[u8; 32]>::from(Sha256::digest(target.as_bytes())) != publication.target_digest
+                <[u8; 32]>::from(busbar_contract::crypto::sha256(target.as_bytes()))
+                    != publication.target_digest
             })
         {
             return Err("published source changed during native publication".into());
@@ -920,19 +926,19 @@ impl Documents {
         let mut hash = Sha256::new();
         hash.update(b"busbar.startup.documents.2\0");
         for output in outputs {
-            hash.update(output.transform_id);
-            hash.update([u8::from(output.locked)]);
+            hash.update(&output.transform_id[..]);
+            hash.update(&[u8::from(output.locked)]);
         }
         let state = self
             .state
             .lock()
             .map_err(|_| "configuration custody failed")?;
         hash.update(
-            state
+            &state
                 .secret_binding
-                .unwrap_or_else(|| secret_fingerprint(&state.secrets)),
+                .unwrap_or_else(|| secret_fingerprint(&state.secrets))[..],
         );
-        Ok(hash.finalize().into())
+        Ok(hash.finish())
     }
 }
 
@@ -965,13 +971,13 @@ fn document_transform(
     let mut hash = Sha256::new();
     hash.update(b"busbar.startup.document-transform.1\0");
     hash.update(path.as_os_str().as_encoded_bytes());
-    hash.update(original);
-    hash.update(target);
-    hash.update([u8::from(kind == ConfigDocument::Providers)]);
+    hash.update(&original[..]);
+    hash.update(&target[..]);
+    hash.update(&[u8::from(kind == ConfigDocument::Providers)]);
     if let Some(binding) = source {
-        hash.update(binding);
+        hash.update(&binding[..]);
     }
-    hash.finalize().into()
+    hash.finish()
 }
 
 fn secret_fingerprint(secrets: &BTreeMap<PathBuf, SecretPublication>) -> [u8; 32] {
@@ -983,17 +989,17 @@ fn secret_fingerprint(secrets: &BTreeMap<PathBuf, SecretPublication>) -> [u8; 32
             secret.path.as_os_str().as_encoded_bytes(),
             secret.site.as_bytes(),
         ] {
-            hash.update((part.len() as u64).to_be_bytes());
-            hash.update(part);
+            hash.update(&(part.len() as u64).to_be_bytes());
+            hash.update(&part[..]);
         }
-        hash.update((secret.settings_path.len() as u64).to_be_bytes());
+        hash.update(&(secret.settings_path.len() as u64).to_be_bytes());
         for part in &secret.settings_path {
-            hash.update((part.len() as u64).to_be_bytes());
+            hash.update(&(part.len() as u64).to_be_bytes());
             hash.update(part.as_bytes());
         }
-        hash.update(Sha256::digest(secret.bytes.as_slice()));
+        hash.update(&busbar_contract::crypto::sha256(secret.bytes.as_slice())[..]);
     }
-    hash.finalize().into()
+    hash.finish()
 }
 
 pub struct BootstrapRules(pub Arc<Documents>);

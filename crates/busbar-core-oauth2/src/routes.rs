@@ -629,7 +629,7 @@ fn percent_decode(s: &str) -> String {
 
 fn new_session_id() -> Option<String> {
     let mut bytes = [0u8; 32];
-    match ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes) {
+    match busbar_contract::crypto::fill(&mut bytes) {
         Ok(()) => Some(bytes.iter().map(|b| format!("{b:02x}")).collect()),
         Err(_) => None,
     }

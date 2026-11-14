@@ -2,10 +2,13 @@ use super::*;
 
 impl GovState {
     fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
-        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, seed);
         let msg = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}");
-        let tag = ring::hmac::sign(&key, msg.as_bytes());
-        format!("{VK_ID_PREFIX}{}", hex::encode(&tag.as_ref()[..16]))
+        // PANIC: `seed` is the fixed 32-byte token-signing secret; no backend refuses a 32-byte
+        // HMAC-SHA256 key (FIPS's floor is 14 bytes), so this cannot fail for a running node.
+        let tag = busbar_contract::crypto::hmac_sha256(seed, msg.as_bytes()).unwrap_or_else(|e| {
+            panic!("crypto backend refused HMAC-SHA256 under a 32-byte key: {e}")
+        });
+        format!("{VK_ID_PREFIX}{}", hex::encode(&tag[..16]))
     }
 
     fn current_self_binding(rows: &[VirtualKey], user_sub: &str) -> Option<Arc<VirtualKey>> {

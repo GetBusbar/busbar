@@ -12,7 +12,6 @@ name = "busbar_kernel"
 path = "src/lib.rs"
 
 [dependencies]
-sha2 = { workspace = true }
 bumpalo = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
@@ -34,7 +33,6 @@ url = { workspace = true }
 indexmap = { workspace = true }
 schemars = { workspace = true, optional = true }
 loom = { workspace = true, optional = true }
-ring = { workspace = true }
 base64 = { workspace = true }
 sonic-rs = { workspace = true }
 serde_yaml = { workspace = true }
@@ -50,8 +48,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-log = { workspace = true }
 hex = { workspace = true }
-getrandom = { workspace = true }
-ed25519-dalek = { workspace = true }
 crc32fast = { workspace = true }
 async-trait = { workspace = true }
 arc-swap = { workspace = true }
@@ -70,7 +66,6 @@ mallctl = ["dep:tikv-jemalloc-sys", "dep:libc"]
 
 [dev-dependencies]
 busbar-plugin-loader = { path = "../plugin-loader" }
-sha2 = { workspace = true }
 # Integration tests use ordinary production ABI test support, never kernel fixture exports.
 # Dev-only: the test seal is absent from release builds.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
@@ -81,7 +76,6 @@ http-body-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
-rcgen = { workspace = true, features = ["pem"] }
 criterion = { workspace = true }
 # Member `test-support` features are enabled here, never in a release build.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
