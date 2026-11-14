@@ -64,7 +64,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         input_utok: 500.0,
         output_utok: 500.0,
         cache_read_utok: 500.0,
-        cache_write_utok: 500.0,
+        cache_write_utok: Some(500.0),
         ..Default::default()
     };
     let rate_card: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> = [

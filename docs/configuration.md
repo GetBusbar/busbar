@@ -694,7 +694,7 @@ rate_card:
                                guardrail_sensitive_information_policy_free_units: 0,
                                guardrail_sensitive_information_policy_units: 0,
                                guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }   # open classes: free, but explicitly configured
-  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0 }
+  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0, cache_write_utok: 3.5 }
 per_request_fee: 0
 ```
 

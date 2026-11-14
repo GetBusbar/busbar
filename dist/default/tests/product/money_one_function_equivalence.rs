@@ -69,7 +69,7 @@ fn kernel_cost_model(
                         input_utok: r[0],
                         output_utok: r[1],
                         cache_read_utok: r[2],
-                        cache_write_utok: r[3],
+                        cache_write_utok: Some(r[3]),
                         ..Default::default()
                     },
                 )

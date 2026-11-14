@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 pub mod boot;
+pub mod chat_spend;
 pub mod credentials;
 pub mod fresh_namespace;
 pub mod lines;

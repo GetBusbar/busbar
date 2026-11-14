@@ -15,7 +15,11 @@ does not authorize that identity transition. What the migration does:
   `sha256`). The operator must authorize replacement native bootstrap/check/migration archives
   with their exact new base fetch hashes before they execute (see below). A 1.5.5 build left in
   `plugins.dir` beside its 1.6.0 build is skipped with a warning;
-- prices every billable unit a `rate_card:` entry left out at `0`, which is what 1.5.5 billed;
+- prices every billable unit a `rate_card:` entry left out at `0`, which is what 1.5.5 billed, except
+  the cache-write TTL units `cache_write_30m` and `cache_write_12h`. 1.5.5 billed those tokens inside
+  input, so they take the entry's `cache_write_utok`, else its `input_utok`;
+- removes a root `rate_card.<model>.cache_write_utok: 0`, which in 1.5.5 meant "no separate write
+  tariff"; cache writes then price at `input_utok`, never 0;
 - adds to `advanced.allow_destinations` exactly the private or loopback hosts a provider's plane or a
   sign-in plugin reports it dials (never a blanket `block_private_addresses: false`);
 - removes a metadata block-list entry that names no usable host (it never matched anything);
@@ -398,8 +402,9 @@ pools.rate_card does not configure billable unit(s) search_units, classification
 
 **This is the one edit a 1.5.5 config with a `rate_card:` needs.** Every count a provider reports
 is a ledger line under its own unit (owner ruling LEDGER-100). The LLM plane counts `input`,
-`output`, `cache_read`, `cache_write` (the `*_utok` tiers; a tier the entry leaves out is `0`, as in
-1.5.5) and these open units, which have no tier:
+`output`, `cache_read`, `cache_write` (the `*_utok` tiers: an omitted or `null` `cache_write_utok`
+prices writes at `input_utok`, and a root-YAML `cache_write_utok: 0` is read the same way on every
+path; other omitted tiers are `0`, as in 1.5.5) and these open units, which have no tier:
 
 | unit | what the provider reported |
 |---|---|
@@ -410,6 +415,11 @@ is a ledger line under its own unit (owner ruling LEDGER-100). The LLM plane cou
 | `images` | the images a per-image provider returned (dall-e, Imagen, Titan, SDXL) |
 | `audio_ms` | a transcription's reported duration, in whole milliseconds |
 | `guardrail_*` (nine) | the Bedrock guardrail policy units, one unit per policy type |
+
+If you migrate by hand instead of running `--migrate-config`: delete `cache_write_utok: 0` from a
+1.5.5 entry. 1.6.0 removes it and logs a WARN at boot, and cache writes bill at `input_utok`. A
+config reload that adds it is refused with the reason. YAML cannot yet make cache writes free; use
+the admin API.
 
 1.5.5 billed every one of them at `0`, so the upgrade that keeps every figure 1.5.5 billed is to
 price each at `0`:

@@ -29425,7 +29425,7 @@
                               "items": {}
                             }
                           ],
-                          "description": "RateEntryCfg: input_utok, output_utok, cache_read_utok, cache_write_utok and units. Normal rate validation applies."
+                          "description": "RateEntryCfg: input_utok, output_utok, cache_read_utok, cache_write_utok and units. An omitted or null cache_write_utok is priced at input_utok. Normal rate validation applies."
                         }
                       },
                       "plugin_rate_cards": {

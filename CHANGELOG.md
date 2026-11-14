@@ -695,6 +695,40 @@ minted secret carries over.
   1.6.0 migration guide](docs/migration-1.6.md).
 
 - 1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.
+- 1.6.0 Changed: an OpenAI cache write is ledgered under its own class on every `protocol: openai` provider that reports `prompt_tokens_details.cache_write_tokens`, and an omitted write rate prices at the input rate, never 0.
+  1. **Ledger and money.** OpenAI Chat `prompt_tokens_details.cache_write_tokens` is ledgered as
+     `cache_write` (priced by `cache_write_utok`, counted by `tokens_cache_write` caps, reports and
+     exporters); `input` and `tokens_input` caps fall by the same amount. A TTL partition
+     (`cache_write_tokens_details`) goes to `cache_write_30m`/`cache_write_12h`, priced under
+     `units:`; a malformed partition refuses metering, as on Responses.
+  2. **Translated wire bodies.** When a Chat upstream reports writes and the client called another
+     API, its body changes: Anthropic `input_tokens` falls and `cache_creation_input_tokens` is
+     non-zero; Responses gains `input_tokens_details.cache_write_tokens`; Bedrock gains
+     `cacheWriteInputTokens`. A wire `cache_write_tokens: 0` is now an explicit 0. Same-dialect
+     Chat pass-through is unchanged.
+  3. **Hooks and exporters** see the same moves: `cache_write` appears and `input` falls.
+  4. **Rate card default.** An omitted (or `null`) `cache_write_utok` prices cache writes at the
+     entry's `input_utok` instead of 0. Anthropic, Bedrock and OpenAI Responses writes on such cards
+     move from 0 to the input rate (set the vendor's write premium explicitly). An explicit 1.6
+     value, including an admin-API `0`, is unchanged.
+  5. **1.5.5 zeros and serialization.** A root-YAML `cache_write_utok: 0` and a version-1 overlay
+     `0` are removed and reported per model (change line, `--migrate-overlay` report `changes`, or
+     a boot WARN). A config reload that adds a root `cache_write_utok: 0`, and a boot whose root
+     `cache_write_utok` interpolates to 0, are refused, audited and explained. Migrated
+     `units.cache_write_30m`/`_12h` take the entry's write rate, else input, not 0. An admin-API or
+     version-2-overlay `cache_write_utok: 0` makes cache writes free (the operator's stated tariff).
+     Admin GET, the overlay authoring view and the card bytes omit an unset `cache_write_utok`
+     where they showed `0.0`, so `rate_card_version` changes once for those cards.
+  6. **Other providers.** Every `protocol: openai` provider that reports
+     `prompt_tokens_details.cache_write_tokens` gets the same split and the same over-total refusal.
+
+  **Migration:** in a root `rate_card:`, `cache_write_utok: 0` means "no separate write tariff" in
+  YAML. It is removed at boot (with a WARN), by `--migrate-config` (every run) and by
+  `--migrate-overlay`, and cache writes price at `input_utok`. A drop-in 1.5.5 overlay imported at
+  boot is converted the same way. A config reload that adds it is refused with the reason. Migrated
+  `units.cache_write_30m`/`_12h` take the entry's write rate, else input, not 0. To make cache
+  writes free, set `cache_write_utok: 0` through the admin API. Where the provider charges a write
+  premium (Anthropic, Bedrock-Claude), set its write rate.
 - 1.6.0 Changed: a translated stream that busbar cannot keep translating after its first byte is billed for the tokens the far end reported before the abort. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.
 - 1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.
   A request that arrives just before a window boundary can be charged on a group bucket another
@@ -1320,6 +1354,7 @@ each dialect translates, field by field, is listed in the generated
 
 ### Fixed
 
+- 1.6.0 Fixed: OpenAI cached + cache-write tokens exceeding the prompt total refuse metering (audited and explained) instead of over-billing input.
 - 1.6.0 Fixed: a webrequest hook's status no longer reports drift where its settings match.
 - **Billing change: Gemini transcriptions bill every token Google reports.** A transcription
   (`generateContent` with inline audio) served same-dialect, from a Gemini caller to a Gemini

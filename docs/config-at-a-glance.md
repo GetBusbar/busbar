@@ -116,7 +116,7 @@ groups:
 rate_card:                      # the ONLY cost source: per-model token rates in abstract MICRO-units.
   gpt-4o-mini: { input_utok: 0.15, output_utok: 0.6 }
   gpt-4o:                       # ALL-OR-NOTHING: present = must cover every configured model AND
-    { input_utok: 2.5, output_utok: 10, cache_read_utok: 1.25, cache_write_utok: 0,
+    { input_utok: 2.5, output_utok: 10, cache_read_utok: 1.25, cache_write_utok: 2.5,
       units: { search_units: 0, classifications: 0, web_fetch_requests: 0, unitemized_tokens: 0,
                images: 0, audio_ms: 0, guardrail_automated_reasoning_policies: 0,
                guardrail_automated_reasoning_policy_units: 0, guardrail_content_policy_image_units: 0,

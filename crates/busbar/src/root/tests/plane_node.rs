@@ -322,7 +322,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
             input_utok: 1.0,
             output_utok: 1.0,
             cache_read_utok: 0.0,
-            cache_write_utok: 0.0,
+            cache_write_utok: Some(0.0),
             ..Default::default()
         },
     )]);
@@ -4651,7 +4651,7 @@ async fn an_aliased_lane_prices_at_the_rate_card_under_its_config_name() {
             input_utok: 1000.0,
             output_utok: 1000.0,
             cache_read_utok: 0.0,
-            cache_write_utok: 0.0,
+            cache_write_utok: Some(0.0),
             ..Default::default()
         },
     )]);
