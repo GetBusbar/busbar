@@ -2433,20 +2433,25 @@ impl KernelServices {
         Some(facts)
     }
 
+    /// The caller's own standing for `kind`: admitted, and `kind` one it declared.
+    fn declared(&self, caller: &Caller, kind: &str) -> Result<RecordSchemaId, Stored> {
+        let facts = self
+            .facts(caller)
+            .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
+        facts
+            .record_kinds
+            .iter()
+            .find(|k| k.as_str() == kind)
+            .copied()
+            .ok_or_else(|| Stored::refused(NOT_A_KIND))
+    }
+
     fn scope(
         &self,
         caller: &Caller,
         kind: &str,
     ) -> Result<(RecordSchemaId, &Records, &dyn Offload), Stored> {
-        let facts = self
-            .facts(caller)
-            .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
-        let schema = facts
-            .record_kinds
-            .iter()
-            .find(|k| k.as_str() == kind)
-            .copied()
-            .ok_or_else(|| Stored::refused(NOT_A_KIND))?;
+        let schema = self.declared(caller, kind)?;
         let records = self
             .records
             .get()
@@ -3042,16 +3047,24 @@ impl HostServices for KernelServices {
                 }
             });
         }
-        let (_, records, pool) = match self.scope(caller, kind) {
-            Ok(s) => s,
-            Err(refused) => return Ran::Now(refused),
-        };
+        // The caller's own standing and its `in` are judged first: a misconfigured claim is
+        // REFUSED. Only a well-formed claim of a declared kind, on a host with no store bound,
+        // is UNSERVED: the host keeps no claim ledger, and single use is the caller's own.
+        if let Err(refused) = self.declared(caller, kind) {
+            return Ran::Now(refused);
+        }
         if ttl_ms == 0 {
             return Ran::Now(Stored::refused(NO_TTL));
         }
         let now_ms = (self.wall_ms)();
         let Some(expires_ms) = now_ms.checked_add(ttl_ms) else {
             return Ran::Now(Stored::refused(EXPIRY_OVERFLOW));
+        };
+        let Some(records) = self.records.get() else {
+            return Ran::Now(Stored::unserved(NO_STORE));
+        };
+        let Some(pool) = self.pool() else {
+            return Ran::Now(Stored::refused(NO_POOL));
         };
 
         let now = now_ms / 1000;
