@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{apply_mint_ttl_ceiling, MintPolicy, MintRequest, RoleCeiling};
+use busbar_contract::records::ScopeRef;
 
 const DAY: u64 = 86_400;
 
 fn req<'a>(
     roles: &'a [String],
-    pools: Option<&'a [String]>,
+    pools: Option<&'a [ScopeRef]>,
     ttl: u64,
     explicit: bool,
 ) -> MintRequest<'a> {
@@ -43,7 +44,7 @@ fn mint_ceiling_of_named_pools_refuses_a_grant_of_another_kind() {
         None,
     );
     let roles = vec!["app-admin".to_string()];
-    let pools = vec!["fast".to_string()];
+    let pools = vec![ScopeRef::pool("fast")];
     let other = MintRequest {
         grants_other_kinds: true,
         ..req(&roles, Some(&pools), DAY, true)
@@ -113,12 +114,12 @@ fn mint_ceiling_role_pool_subset_is_enforced() {
     );
     let roles = vec!["app-admin".to_string()];
 
-    let ok = vec!["growth".to_string()];
+    let ok = vec![ScopeRef::pool("growth")];
     assert!(policy
         .check_mint(&req(&roles, Some(&ok), DAY, true))
         .is_ok());
 
-    let bad = vec!["growth".to_string(), "secret".to_string()];
+    let bad = vec![ScopeRef::pool("growth"), ScopeRef::pool("secret")];
     let err = policy
         .check_mint(&req(&roles, Some(&bad), DAY, true))
         .expect_err("a pool outside the ceiling must be refused");
@@ -129,7 +130,7 @@ fn mint_ceiling_role_pool_subset_is_enforced() {
         "requesting ALL pools under a finite ceiling is an over-ask"
     );
 
-    let none: Vec<String> = Vec::new();
+    let none: Vec<ScopeRef> = Vec::new();
     assert!(policy
         .check_mint(&req(&roles, Some(&none), DAY, true))
         .is_ok());

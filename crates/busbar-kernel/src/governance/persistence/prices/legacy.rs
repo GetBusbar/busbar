@@ -104,7 +104,9 @@ pub struct StoredEntry {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EntryJson {
+/// `C` is the card in its canonical JSON form; the codec names that type only inside the
+/// statements that build or read an entry.
+struct EntryJson<C> {
     v: u32,
     from: u64,
     #[serde(default)]
@@ -117,7 +119,7 @@ struct EntryJson {
     writer: u64,
     #[serde(default)]
     set: Vec<String>,
-    card: serde_json::Value,
+    card: C,
     #[serde(default)]
     correction: Option<String>,
 }
@@ -125,8 +127,13 @@ struct EntryJson {
 impl StoredEntry {
     #[must_use]
     pub fn value(&self) -> Vec<u8> {
+        #[expect(
+            clippy::disallowed_types,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
         let card: serde_json::Value =
             serde_json::from_slice(&self.card.to_bytes()).unwrap_or(serde_json::Value::Null);
+        // busbar:expect(bp::clone_alloc, reason = "boot: the legacy price codec runs only in offline startup migration")
         let json = EntryJson {
             v: 1,
             from: self.effective_from,
@@ -140,18 +147,40 @@ impl StoredEntry {
             card,
             correction: self.correction.as_deref().map(hex::encode),
         };
-        serde_json::to_vec(&json).unwrap_or_default()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
+        let out = serde_json::to_vec(&json).unwrap_or_default();
+        out
     }
 
     pub fn from_value(key: EntryKey, value: &[u8]) -> Result<Self, String> {
-        let json: EntryJson = serde_json::from_slice(value)
+        #[expect(
+            clippy::disallowed_methods,
+            clippy::disallowed_types,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
+        let json: EntryJson<serde_json::Value> = serde_json::from_slice(value)
             .map_err(|e| format!("card entry {key}: not an entry: {e}"))?;
         if json.v != 1 {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: the legacy price codec runs only in offline startup migration"
+            )]
             return Err(format!("card entry {key}: version {} is not known", json.v));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
         let card = CardFields::from_bytes(
             &serde_json::to_vec(&json.card).map_err(|e| format!("card entry {key}: {e}"))?,
         )?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
         let base = match json.base {
             Some(hex) => Some(
                 EntryKey::parse_hex(&hex)
@@ -159,6 +188,10 @@ impl StoredEntry {
             ),
             None => None,
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
         let correction = match json.correction {
             Some(h) => Some(
                 hex::decode(&h)
@@ -209,6 +242,10 @@ pub struct VoidRecord {
 impl VoidRecord {
     #[must_use]
     pub fn record_key(&self) -> Vec<u8> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
         let mut key = EntryKey::parse_hex(&self.voided)
             .map(|k| k.0.to_vec())
             .unwrap_or_default();
@@ -218,16 +255,26 @@ impl VoidRecord {
     }
 
     pub fn record(&self) -> Result<(Vec<u8>, RecordBytes), String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
         let value = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        Ok((
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
+        let out = Ok((
             self.record_key(),
             RecordBytes::new(value).map_err(|n| format!("a {n}-byte void record"))?,
-        ))
+        ));
+        out
     }
 }
 
 #[must_use]
 pub fn part_key(key: &EntryKey, part: u16) -> Vec<u8> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the legacy price codec runs only in offline startup migration")
     let mut out = Vec::with_capacity(ENTRY_KEY_LEN + 2);
     out.extend_from_slice(key.as_bytes());
     out.extend_from_slice(&part.to_be_bytes());
@@ -273,6 +320,10 @@ impl Activation {
         let mut value = vec![ACTIVATION_VERSION];
         value.extend_from_slice(&self.effective_from.to_be_bytes());
         value.extend_from_slice(&sha256(&entry.value()));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
         let value = RecordBytes::new(value).map_err(|error| error.to_string())?;
         Ok(vec![
             (tagged_key(entry.key, ACTIVATION_TAG), value.clone()),
@@ -313,6 +364,10 @@ fn is_opening_author(author: &EntryAuthor) -> bool {
 pub fn retirement_records(entry: &StoredEntry) -> Result<Records, String> {
     let mut value = vec![RETIREMENT_VERSION];
     value.extend_from_slice(&sha256(&entry.value()));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the legacy price codec runs only in offline startup migration"
+    )]
     let value = RecordBytes::new(value).map_err(|error| error.to_string())?;
     Ok(vec![
         (tagged_key(entry.key, RETIREMENT_TAG), value.clone()),
@@ -352,6 +407,10 @@ pub struct Scanned {
 }
 
 fn tagged_key(key: EntryKey, tag: u8) -> Vec<u8> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the legacy price codec runs only in offline startup migration"
+    )]
     let mut out = key.as_bytes().to_vec();
     out.push(tag);
     out
@@ -366,9 +425,14 @@ fn data_key(key: EntryKey, part: u64) -> Vec<u8> {
 fn value_records(key: EntryKey, value: &[u8], own: bool) -> Result<Records, String> {
     let length = u64::try_from(value.len()).map_err(|_| "card value length overflow")?;
     let count = length.div_ceil(PART_BYTES as u64);
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the legacy price codec runs only in offline startup migration")
     let mut records = Vec::new();
     for (index, part) in value.chunks(PART_BYTES).enumerate() {
         let index = u64::try_from(index).map_err(|_| "card chunk index overflow")?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the legacy price codec runs only in offline startup migration"
+        )]
         records.push((
             data_key(key, index),
             RecordBytes::new(part.to_vec()).map_err(|_| "card chunk length overflow")?,
@@ -407,6 +471,7 @@ fn assemble(parts: &BTreeMap<u64, Vec<u8>>, meta: &[u8]) -> Result<(Vec<u8>, boo
     {
         return Err("card chunk count does not match its value length");
     }
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the legacy price codec runs only in offline startup migration")
     let mut value = Vec::new();
     for (expected, (&index, chunk)) in (0..count).zip(parts.iter()) {
         if index != expected {
@@ -434,12 +499,17 @@ impl Scanned {
         let mut grouped: BTreeMap<EntryKey, Parts> = BTreeMap::new();
         let mut unique: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
         let mut scanned = Self::default();
+        // busbar:expect(bp::fresh_buffer, reason = "boot: the legacy price codec runs only in offline startup migration")
         let mut voids = Vec::new();
         for (key, value) in records {
             let Some(entry_key) = key.get(..ENTRY_KEY_LEN).and_then(EntryKey::from_slice) else {
                 continue;
             };
             let slot = grouped.entry(entry_key).or_default();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: the legacy price codec runs only in offline startup migration"
+            )]
             let value = value.as_slice().to_vec();
             if let Some(previous) = unique.get(&key) {
                 if *previous != value {
@@ -447,6 +517,7 @@ impl Scanned {
                 }
                 continue;
             }
+            // busbar:expect(bp::clone_alloc, reason = "boot: the legacy price codec runs only in offline startup migration")
             unique.insert(key.clone(), value.clone());
             let rest = &key[ENTRY_KEY_LEN..];
             match rest {
@@ -534,6 +605,10 @@ impl Scanned {
                             !chunk.is_empty() && (index + 1 == count || chunk.len() == PART_BYTES)
                         })
                     });
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: the legacy price codec runs only in offline startup migration"
+                )]
                 let value: Vec<u8> = parts.legacy.values().flatten().copied().collect();
                 if !complete || sha256(&value)[..] != commit[2..] {
                     scanned
@@ -651,6 +726,10 @@ impl Scanned {
                     }
                     None => None,
                 };
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: the legacy price codec runs only in offline startup migration"
+                )]
                 let mut records: Records = parts
                     .data
                     .into_iter()

@@ -6,3 +6,4 @@ pub mod identity;
 pub mod ledger;
 pub mod prices;
 pub mod recovery;
+mod shape;

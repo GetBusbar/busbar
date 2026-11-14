@@ -24,7 +24,12 @@ fn now_ms() -> u64 {
     crate::store::now_ms()
 }
 fn error(error: super::Error) -> String {
-    format!("price persistence: {error:?}")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+    )]
+    let out = format!("price persistence: {error:?}");
+    out
 }
 fn opening(entry: &StoredEntry) -> bool {
     matches!(
@@ -150,6 +155,10 @@ impl PreparedCard {
             let mut flow = pending.flow.lock().await;
             self.book.resolve_current(&pending, &mut flow).await?;
             if matches!(flow.phase, Some(Phase::Retiring | Phase::Retired)) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+                )]
                 return Err(format!(
                     "retirement of rate-card entry {key} requires explicit recovery"
                 ));
@@ -180,6 +189,11 @@ impl ConfirmedCard {
     pub fn commit(mut self) -> EntryKey {
         let key = self.prepared.key.take().expect("confirmed price identity");
         let mut state = self.prepared.book.lock();
+        // busbar:expect(bp::state_scan, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let confirmed: Vec<_> = state
             .pending
             .iter()
@@ -218,9 +232,17 @@ impl CardStore {
         node: u64,
         rates: fn(&CardFields) -> RateCard,
     ) -> Result<Arc<Self>, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let authority = store
             .authority()
             .map_err(|error| format!("price writer authority: {error:?}"))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let mut identity = authority.writer.to_vec();
         identity.extend_from_slice(&authority.execution_epoch.to_be_bytes());
         identity.extend_from_slice(&node.to_be_bytes());
@@ -271,13 +293,23 @@ impl CardStore {
         self.node_published.load_full()
     }
     pub fn entries(&self) -> Vec<StoredEntry> {
-        self.lock().snapshot.entries.values().cloned().collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
+        let out = self.lock().snapshot.entries.values().cloned().collect();
+        out
     }
     pub fn entry(&self, key: &EntryKey) -> Option<StoredEntry> {
         self.lock().snapshot.entries.get(key).cloned()
     }
     pub fn alarms(&self) -> Vec<String> {
-        self.lock().alarms.iter().cloned().collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
+        let out = self.lock().alarms.iter().cloned().collect();
+        out
     }
     pub fn pending(&self) -> Option<EntryKey> {
         let state = self.lock();
@@ -289,7 +321,9 @@ impl CardStore {
             .or_else(|| state.voiding.keys().next().copied())
     }
     pub fn pending_refusal(&self) -> Option<String> {
-        self.pending().map(|key|format!("rate-card entry {key} is pending native Store confirmation or generation commit; previous confirmed prices remain active"))
+        #[expect(clippy::disallowed_methods, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")]
+        let out = self.pending().map(|key|format!("rate-card entry {key} is pending native Store confirmation or generation commit; previous confirmed prices remain active"));
+        out
     }
     pub fn own(&self) -> Option<(EntryKey, CardFields)> {
         let state = self.lock();
@@ -333,7 +367,8 @@ impl CardStore {
             .chain(state.pending.keys())
             .map(EntryKey::t_ms)
             .max();
-        let at = head.map_or(now_ms(), |at| now_ms().max(at.saturating_add(1)));
+        let now = now_ms();
+        let at = head.map_or(now, |at| now.max(at.saturating_add(1)));
         EntryKey::new(
             at,
             self.incarnation,
@@ -341,19 +376,26 @@ impl CardStore {
         )
     }
     fn alarm(&self, state: &mut State, message: String) {
-        if state.alarms.insert(message.clone()) {
+        if !state.alarms.contains(&message) {
             tracing::error!(alarm = "card_history", "{message}");
             metrics::counter!(CARD_ALARMS_TOTAL).increment(1);
+            state.alarms.insert(message);
         }
     }
     fn check_alarms(&self, state: &mut State) {
         let now = now_ms();
+        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let voided: BTreeSet<_> = state
             .snapshot
             .voids
             .iter()
             .map(|v| v.voided.clone())
             .collect();
+        // busbar:expect(bp::fresh_buffer, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let mut messages = Vec::new();
         for entry in state.snapshot.entries.values() {
             let from = state
@@ -362,6 +404,10 @@ impl CardStore {
                 .get(&entry.key)
                 .map_or(entry.effective_from, |activation| activation.effective_from);
             if from > now.saturating_add(SKEW_MS) && !voided.contains(&entry.key.hex()) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+                )]
                 messages.push(format!(
                     "rate-card entry {} from node {} starts {} ms ahead of this node's clock",
                     entry.key,
@@ -370,6 +416,7 @@ impl CardStore {
                 ));
             }
             if entry.base.is_some_and(|base| voided.contains(&base.hex())) {
+                #[expect(clippy::disallowed_methods, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")]
                 messages.push(format!("rate-card entry {} extends a voided entry; correct the configuration and reload",entry.key));
             }
         }
@@ -381,6 +428,10 @@ impl CardStore {
                 .and_then(|entry| state.snapshot.entries.get(&entry.key()))
             {
                 if own.key != fleet.key && own.card != fleet.card {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+                    )]
                     messages.push(format!(
                         "node {} prices with rate-card entry {}; fleet entry {} differs in [{}]",
                         self.node,
@@ -391,6 +442,10 @@ impl CardStore {
                 }
             }
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let changes: Vec<_> = state
             .snapshot
             .entries
@@ -402,6 +457,7 @@ impl CardStore {
         for (index, lower) in changes.iter().enumerate() {
             for higher in &changes[index + 1..] {
                 if lower.base.is_some() && lower.base == higher.base {
+                    #[expect(clippy::disallowed_methods, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")]
                     messages.push(format!("nodes run different rate cards: entries {} (node {}, {}) and {} (node {}, {}) both extend {}; each node prices its own counts with its own card, and a time-based read takes the later ({}), whose card differs in [{}]. Make the nodes' configuration agree", lower.key, lower.writer, lower.actor, higher.key, higher.writer, higher.actor, lower.base.map(|base| base.hex()).unwrap_or_default(), higher.key, lower.card.differing_fields(&higher.card).join(", ")));
                 }
             }
@@ -496,7 +552,8 @@ impl CardStore {
         ) {
             flow.boot_progress = BootNativeProgress::PendingOriginal;
         }
-        match outcome {
+        #[expect(clippy::disallowed_methods, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")]
+        let out = match outcome {
             Outcome::Applied => {
                 let phase = match operation {
                     Operation::Prepare if !pending.own => Phase::Active,
@@ -514,16 +571,19 @@ impl CardStore {
             Outcome::Conflict => {
                 flow.plan = None;
                 flow.operation = None;
-                Err(format!(
+                #[expect(clippy::disallowed_methods, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")]
+                let out = Err(format!(
                     "price guard conflict for {}; immutable entry retained for another guarded attempt",
                     pending.entry.key
-                ))
+                ));
+                out
             }
             outcome => Err(format!(
                 "price transition for {} remains unresolved or refused: {outcome:?}; original native plan retained",
                 pending.entry.key
             )),
-        }
+        };
+        out
     }
 
     async fn resolve_current(&self, pending: &Pending, flow: &mut Flow) -> Result<(), String> {
@@ -546,6 +606,10 @@ impl CardStore {
                     .get(key)
                     .is_some_and(|held| held.entry != intent.entry)
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+                )]
                 return Err(format!("conflicting immutable rate-card entry {key}"));
             }
         }
@@ -556,6 +620,10 @@ impl CardStore {
                 .get(key)
                 .is_some_and(|held| held != activation)
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+                )]
                 return Err(format!("conflicting immutable price activation {key}"));
             }
         }
@@ -565,6 +633,10 @@ impl CardStore {
             snapshot.entries.remove(key);
             snapshot.activations.remove(key);
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         snapshot.voids.retain(|record| {
             EntryKey::parse_hex(&record.voided).is_some_and(|key| !state.voiding.contains_key(&key))
         });
@@ -594,6 +666,10 @@ impl CardStore {
                 snapshot.entries.remove(key);
                 snapshot.activations.remove(key);
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+            )]
             snapshot.voids.retain(|record| {
                 EntryKey::parse_hex(&record.voided)
                     .is_some_and(|key| !state.voiding.contains_key(&key))
@@ -632,6 +708,10 @@ impl CardStore {
                     break;
                 }
                 Err(error) => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+                    )]
                     let pending: Vec<_> = self
                         .lock()
                         .pending
@@ -725,6 +805,7 @@ impl CardStore {
                 }
             }
             if !recovery {
+                #[expect(clippy::disallowed_methods, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")]
                 return Err(format!(
                     "rate-card entry {} remains pending; retry its exact configuration or explicitly reload for recovery",
                     pending.entry.key
@@ -944,6 +1025,10 @@ impl CardStore {
         {
             Outcome::Applied => {}
             outcome => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+                )]
                 return Err(format!(
                     "VOID for {key} remains pending or refused: {outcome:?}"
                 ));
@@ -956,6 +1041,10 @@ impl CardStore {
         Ok(())
     }
     pub async fn retry_pending(&self) -> Result<(), String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let pending: Vec<_> = self.lock().pending.values().cloned().collect();
         for pending in pending {
             let mut flow = pending.flow.lock().await;
@@ -971,6 +1060,10 @@ impl CardStore {
                 self.publish(&state);
             }
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let voids: Vec<_> = self
             .lock()
             .voiding
@@ -1000,6 +1093,10 @@ impl CardStore {
     }
 
     fn start_background(self: &Arc<Self>) -> Result<(), String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let mut task = self
             .background
             .try_lock()

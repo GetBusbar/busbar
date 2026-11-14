@@ -34,8 +34,12 @@ pub(super) fn guards_digest(guards: &[Predicate]) -> [u8; 32] {
     }
     digest.finalize().into()
 }
-pub(super) fn copy_guards(guards: &[Predicate]) -> Vec<Predicate> {
-    guards
+pub(super) fn copy_guards(guards: &[Predicate]) -> Arc<[Predicate]> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+    )]
+    let out = guards
         .iter()
         .map(|guard| Predicate {
             address: guard.address.clone(),
@@ -44,7 +48,8 @@ pub(super) fn copy_guards(guards: &[Predicate]) -> Vec<Predicate> {
                 ExpectedValue::Exact(value) => ExpectedValue::Exact(value.clone()),
             },
         })
-        .collect()
+        .collect();
+    out
 }
 
 /// Stable facts supplied only after the migration provider checks its actual
@@ -80,10 +85,15 @@ struct Disposition {
     digest: [u8; 32],
 }
 fn imported_address(operation: &[u8; 16]) -> Address {
-    Address {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+    )]
+    let out = Address {
         namespace: IMPORTED.0,
         key: operation.to_vec(),
-    }
+    };
+    out
 }
 pub fn applied_disposition_authorizes(address: &Address) -> bool {
     address.namespace == IMPORTED.0
@@ -96,7 +106,7 @@ fn validate_original(event: &RecoveryEvent) -> Result<(), RecoveryError> {
         RecoveryKind::Metering => GovState::legacy_metering_values(event).map(|_| ()),
         RecoveryKind::Correction => GovState::legacy_correction_fingerprint(event).map(|_| ()),
     };
-    checked.map_err(invalid)
+    checked.map_err(|e| invalid_from(&e))
 }
 impl Disposition {
     fn checked(proof: AppliedProof) -> Result<Self, RecoveryError> {
@@ -124,7 +134,8 @@ impl Disposition {
         }
         validate_original(initial)?;
         validate_original(selected)?;
-        let head: Head = serde_json::from_slice(&proof.original_head).map_err(invalid)?;
+        let head: Head =
+            serde_json::from_slice(&proof.original_head).map_err(|e| invalid_from(&e))?;
         if head.version != 1
             || head.node == 0
             || head.sequence == 0
@@ -156,7 +167,11 @@ impl Disposition {
         }
         let mut hash = Sha256::new();
         hash.update(b"busbar.recovery.imported-applied/1\0");
-        hash.update(serde_json::to_vec(&proof).map_err(invalid)?);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+        )]
+        hash.update(serde_json::to_vec(&proof).map_err(|e| invalid_from(&e))?);
         Ok(Self {
             version: 1,
             proof,
@@ -164,7 +179,7 @@ impl Disposition {
         })
     }
     fn decode(address: &Address, bytes: &[u8]) -> Result<Self, RecoveryError> {
-        let value: Self = serde_json::from_slice(bytes).map_err(invalid)?;
+        let value: Self = serde_json::from_slice(bytes).map_err(|e| invalid_from(&e))?;
         let checked = Self::checked(value.proof.clone())?;
         if value != checked
             || !applied_disposition_authorizes(address)
@@ -175,7 +190,11 @@ impl Disposition {
         Ok(value)
     }
     fn resolution(&self, selected: &RecoveryEvent) -> RecoveryResolution {
-        RecoveryResolution {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+        )]
+        let out = RecoveryResolution {
             operation_id: selected.operation_id,
             body_fingerprint: selected.body_fingerprint,
             expected_revision: selected.revision,
@@ -187,7 +206,8 @@ impl Disposition {
                 "verified frozen Applied receipt {}",
                 hex::encode(self.digest)
             ),
-        }
+        };
+        out
     }
 }
 
@@ -213,8 +233,8 @@ impl ChildDescriptor {
         }
     }
     fn decode(bytes: &Secret<Vec<u8>>, disposition: [u8; 32]) -> Result<Self, RecoveryError> {
-        let descriptor: Self =
-            serde_json::from_slice(bytes.expose(&crate::seal::lend())).map_err(invalid)?;
+        let descriptor: Self = serde_json::from_slice(bytes.expose(&crate::seal::lend()))
+            .map_err(|e| invalid_from(&e))?;
         if descriptor != Self::new(disposition, descriptor.context.created_at_ms) {
             return Err(invalid(
                 "migrated child descriptor differs from disposition",
@@ -235,6 +255,7 @@ impl StoreRecovery {
         disposition_raw: &Secret<Vec<u8>>,
     ) -> Result<(ChildDescriptor, Predicate), RecoveryError> {
         let operation = disposition.proof.initial.operation_id;
+        // busbar:expect(bp::clone_alloc, reason = "boot: legacy recovery import runs only during startup upgrade adoption")
         self.context_for(
             disposition.digest,
             operation,
@@ -253,6 +274,10 @@ impl StoreRecovery {
         selected_head: &Secret<Vec<u8>>,
         guards: &[Predicate],
     ) -> Result<(ChildDescriptor, Predicate), RecoveryError> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+        )]
         let context_address = Address {
             namespace: CHILD_CONTEXT.0,
             key: operation.to_vec(),
@@ -318,13 +343,19 @@ impl StoreRecovery {
                     ExpectedValue::Exact(value) => ExpectedValue::Exact(value.clone()),
                 },
             }));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+            )]
             let candidate = PreparedCandidate::new(NativeCandidate {
                 id: self.store.next_id().map_err(unavailable)?,
                 codec: CANDIDATE_VERSION,
                 predicates,
                 mutations: vec![Mutation::Put {
                     address: context_address.clone(),
-                    value: Secret::new(serde_json::to_vec(&descriptor).map_err(invalid)?),
+                    value: Secret::new(
+                        serde_json::to_vec(&descriptor).map_err(|e| invalid_from(&e))?,
+                    ),
                 }],
                 time: None,
                 result: Secret::default(),
@@ -352,6 +383,10 @@ impl StoreRecovery {
     }
 
     pub(super) async fn adopt_imported(&self) -> Result<(), RecoveryError> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+        )]
         let retained = self
             .state
             .lock()
@@ -389,8 +424,8 @@ impl StoreRecovery {
                 continue;
             };
             let disposition = Disposition::decode(&imported, raw.expose(&crate::seal::lend()))?;
-            let original: Head =
-                serde_json::from_slice(&disposition.proof.original_head).map_err(invalid)?;
+            let original: Head = serde_json::from_slice(&disposition.proof.original_head)
+                .map_err(|e| invalid_from(&e))?;
             if tip != original {
                 // A previous real adoption is reusable only through actual
                 // selected ancestry, never from fabricated quiescence facts.
@@ -530,27 +565,31 @@ impl StoreRecovery {
             let event = &selection.selected;
             let digest = match event.kind {
                 RecoveryKind::Usage => {
-                    let cells = GovState::legacy_usage_values(event).map_err(invalid)?;
+                    let cells =
+                        GovState::legacy_usage_values(event).map_err(|e| invalid_from(&e))?;
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+                    )]
                     let cells = cells
                         .iter()
                         .map(|(bucket, window, delta)| (bucket.as_str(), *window, delta.clone()))
                         .collect::<Vec<_>>();
                     *Dedupe::usage(&cells).body()
                 }
-                RecoveryKind::Metering => {
-                    *Dedupe::metering(&GovState::legacy_metering_values(event).map_err(invalid)?)
-                        .body()
-                }
-                RecoveryKind::Correction => {
-                    GovState::canonical_correction_receipt_digest(event).map_err(invalid)?
-                }
+                RecoveryKind::Metering => *Dedupe::metering(
+                    &GovState::legacy_metering_values(event).map_err(|e| invalid_from(&e))?,
+                )
+                .body(),
+                RecoveryKind::Correction => GovState::canonical_correction_receipt_digest(event)
+                    .map_err(|e| invalid_from(&e))?,
             };
             let (receipt, receipt_guard) = self
                 .store
                 .ledger()
                 .recovery_receipt(OpId(operation), digest)
                 .await
-                .map_err(invalid)?;
+                .map_err(|e| invalid_from(&e))?;
             let known = match event.state {
                 RecoveryState::Applied | RecoveryState::VerdictLanded => Some(true),
                 RecoveryState::ConditionConflict | RecoveryState::VerdictNotLanded => Some(false),
@@ -636,20 +675,29 @@ pub fn applied_disposition_rows(
     original_head: &[u8],
     evidence: &AppliedImportEvidence,
 ) -> Result<ImportRows, RecoveryError> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+    )]
     let disposition = Disposition::checked(AppliedProof {
         initial: initial.clone(),
         selected: selected.clone(),
         original_head: original_head.to_vec(),
         evidence: evidence.clone(),
     })?;
-    Ok(vec![
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+    )]
+    let out = Ok(vec![
         (
             super::address(&selected.operation_id),
             Secret::new(original_head.to_vec()),
         ),
         (
             imported_address(&selected.operation_id),
-            Secret::new(serde_json::to_vec(&disposition).map_err(invalid)?),
+            Secret::new(serde_json::to_vec(&disposition).map_err(|e| invalid_from(&e))?),
         ),
-    ])
+    ]);
+    out
 }
