@@ -197,41 +197,16 @@ impl std::fmt::Display for EntryId {
 
 /// `bytes` as lowercase hex, spelled into `out` (exactly twice their length) and borrowed back.
 fn hex_into<'o>(bytes: &[u8], out: &'o mut [u8]) -> &'o str {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    for (pair, b) in out.as_chunks_mut::<2>().0.iter_mut().zip(bytes) {
-        pair[0] = DIGITS[usize::from(b >> 4)];
-        pair[1] = DIGITS[usize::from(b & 0x0f)];
+    if hex::encode_to_slice(bytes, out).is_err() {
+        return "";
     }
     std::str::from_utf8(out).unwrap_or_default()
 }
 
-/// The owned hex spelling the admin card-history verbs and the card store's records carry.
-fn hex(bytes: &[u8]) -> String {
-    let mut spelled = [0u8; 2 * ENTRY_KEY_LEN];
-    let spelled = hex_into(bytes, &mut spelled[..2 * bytes.len()]);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: an entry's hex spelling is owned only by the admin card-history verbs and the card store's records, never by a priced request"
-    )]
-    let owned = spelled.to_owned();
-    owned
-}
-
 /// The `N` bytes spelled by exactly `2 * N` hex digits, or `None`.
 fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
-    fn nibble(d: u8) -> Option<u8> {
-        char::from(d)
-            .to_digit(16)
-            .and_then(|n| u8::try_from(n).ok())
-    }
-    let text = text.as_bytes();
-    if text.len() != 2 * N {
-        return None;
-    }
     let mut out = [0u8; N];
-    for (b, pair) in out.iter_mut().zip(text.as_chunks::<2>().0) {
-        *b = (nibble(pair[0])? << 4) | nibble(pair[1])?;
-    }
+    hex::decode_to_slice(text, &mut out).ok()?;
     Some(out)
 }
 
