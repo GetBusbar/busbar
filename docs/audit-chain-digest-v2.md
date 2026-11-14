@@ -8,9 +8,7 @@ and the inputs a price is computed from — the tier, the fee count, the rate ca
 priced figure: money is computed when it is read, from the counts and the rate card in force. So
 `v2` drops `pre_tier`, `priced` and `hooks[].priced_delta` from the `v1` field order and changes
 nothing else: no field is renamed, reordered or re-framed, and the signature domain is unchanged. A
-body naming `"recipe": "busbar.audit.digest.v1"` is checked by
-[`audit-chain-digest-v1.md`](audit-chain-digest-v1.md), which is kept exactly as it was published;
-a body naming `v2` is checked by this page.
+body naming `v2` is checked by this page.
 
 **This is a public contract, not a description of an implementation.** It is written down so that a
 third party can verify a busbar node's audit chain *without the busbar binary* — without our code,
