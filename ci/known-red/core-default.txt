@@ -1,8 +1,8 @@
 # dist/default known-red list (decision 314). Seeded from dev pipeline 5219; calibrated once (decision 315)
 # from the four-run evidence of pipelines 5219, 5815 (job 14547), 5819 (job 14561) and 5822 (job 14572).
-# The admin_application and mcp_stdio_serve flaky rows are gone (CDT-FLAKY-ADMIN-CUSTODY / CDT-FLAKY-MCP-STDIO:
-# the Store's 1 s watch budget, now widened in test builds); four mcp_stdio_serve rows that fail every run
-# with a configuration load refusal stay, as stable. Shrink-only from here on.
+# The admin_application and mcp_stdio_serve flaky rows are gone (CDT-FLAKY-ADMIN-CUSTODY / CDT-FLAKY-MCP-STDIO: the Store's
+# 1 s watch budget, widened in test builds) except four mcp_stdio_serve rows that fail every run with a
+# configuration load refusal (ledger CDT-MCP-STDIO-FIXTURE); they keep the seed's kind. Shrink-only from here on.
 busbar-default::bin/busbar distribution::admin_application_admin_stuck_key_sentinel::a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::admin_configuration_contracts::test_admin_v1_put_auth_refuses_clearing_a_protected_chain	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::admin_cross_plane::openapi::openapi_json_matches_committed_file	CDT-KNOWN-RED	stable
@@ -139,10 +139,10 @@ busbar-default::decisions_served a_booted_busbar_serves_post_v1_systemone	CDT-KN
 busbar-default::door_ready_alloc every_request_path_op_is_measured	CDT-KNOWN-RED	stable
 busbar-default::export_otlp_delivers_spans the_request_paths_spans_reach_the_collector_as_1_5_5_named_them	CDT-KNOWN-RED	stable
 busbar-default::export_scrape_is_first_party a_third_party_metrics_sink_never_serves_metrics	CDT-KNOWN-RED	stable
-busbar-default::mcp_stdio_serve a_broken_stdout_ends_the_line_session_without_waiting_for_stdin_eof	CDT-KNOWN-RED	stable
-busbar-default::mcp_stdio_serve a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it	CDT-KNOWN-RED	stable
-busbar-default::mcp_stdio_serve a_stdin_read_error_is_not_a_successful_eof	CDT-KNOWN-RED	stable
-busbar-default::mcp_stdio_serve an_ungranted_tool_is_refused_per_call_on_the_line	CDT-KNOWN-RED	stable
+busbar-default::mcp_stdio_serve a_broken_stdout_ends_the_line_session_without_waiting_for_stdin_eof	CDT-FLAKY-MCP-STDIO	flaky
+busbar-default::mcp_stdio_serve a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it	CDT-FLAKY-MCP-STDIO	flaky
+busbar-default::mcp_stdio_serve a_stdin_read_error_is_not_a_successful_eof	CDT-FLAKY-MCP-STDIO	flaky
+busbar-default::mcp_stdio_serve an_ungranted_tool_is_refused_per_call_on_the_line	CDT-FLAKY-MCP-STDIO	flaky
 busbar-default::migration_corpus a_migration_with_nothing_to_decide_emits_no_comment_banner	CDT-KNOWN-RED	stable
 busbar-default::otlp_span_records real_producer_span_records_survive_both_otlp_doors	CDT-KNOWN-RED	stable
 busbar-default::plane_blackbox every_linked_doors_black_box_cases_run_against_the_real_binary	CDT-KNOWN-RED	stable
