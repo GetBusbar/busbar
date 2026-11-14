@@ -395,11 +395,11 @@ pub fn untyped_option<'de, D: serde::Deserializer<'de>>(
 /// A [`Value`] read through [`untyped`], for containers (`IndexMap<String, Untyped>`) whose
 /// members serde would otherwise read with ciborium's own `Deserialize`.
 #[derive(Debug, Clone)]
-pub struct Untyped(pub Value);
+pub struct UntypedValue(pub Value);
 
-impl<'de> serde::Deserialize<'de> for Untyped {
+impl<'de> serde::Deserialize<'de> for UntypedValue {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        untyped(deserializer).map(Untyped)
+        untyped(deserializer).map(UntypedValue)
     }
 }
 
