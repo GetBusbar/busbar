@@ -1000,3 +1000,16 @@ fn export_restart_metadata_compares_boot_membership_module_and_effective_project
         Some(&narrowed)
     ));
 }
+
+/// W6: ten scrapes inside one STATUS_REFRESH window cross STATUS once, and the next window
+/// crosses again.
+#[test]
+fn scrape_status_crossings_are_once_per_refresh() {
+    let at = std::sync::Mutex::new(None);
+    let start = std::time::Instant::now();
+    let due = (0..10)
+        .filter(|n| status_due(&at, start + std::time::Duration::from_secs(*n)))
+        .count();
+    assert_eq!(due, 1, "ten scrapes in 10 s cross STATUS once");
+    assert!(status_due(&at, start + STATUS_REFRESH));
+}
