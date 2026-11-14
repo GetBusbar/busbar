@@ -548,7 +548,7 @@ impl DoorUnit {
     }
 }
 
-impl busbar_kernel::teller::DoorSeats for DoorUnit {
+impl busbar_kernel::teller::seats::DoorSeats for DoorUnit {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         self.reached_arrival.store(true, Ordering::SeqCst);
         SeatVerdict::proceed(

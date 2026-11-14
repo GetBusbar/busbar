@@ -51,7 +51,7 @@ impl ParentExitsMidRoute<'_> {
     }
 }
 
-impl busbar_kernel::teller::DoorSeats for ParentExitsMidRoute<'_> {
+impl busbar_kernel::teller::seats::DoorSeats for ParentExitsMidRoute<'_> {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         self.child.arrival(token, ctx)
     }

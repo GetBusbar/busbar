@@ -44,7 +44,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("cli-help", "cli_help", "CLI_HELP"),
     ("stores", "stores", "STORE"),
     ("hooks", "hook_doors", "door"),
-    ("node", "node", "install_node"),
 ];
 
 const TRANSPORT_AXIS: &str = "transport";

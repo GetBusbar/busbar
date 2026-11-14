@@ -22,7 +22,7 @@ impl ToDestination {
     }
 }
 
-impl busbar_kernel::teller::DoorSeats for ToDestination {
+impl busbar_kernel::teller::seats::DoorSeats for ToDestination {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         SeatVerdict::proceed(
             token,
@@ -175,7 +175,7 @@ impl RouteAwait for ToDestination {
 fn handed() -> Handed {
     let build: crate::root::linked::node::Build = Box::new(
         |_lent: crate::root::linked::node::Lent| -> crate::root::linked::node::Built {
-            let units: Arc<dyn busbar_kernel::teller::SeatedUnits + Send + Sync> =
+            let units: Arc<dyn busbar_kernel::teller::seats::SeatedUnits + Send + Sync> =
                 Arc::new(ToDestination);
             let route: Arc<dyn RouteAwait + Send + Sync> = Arc::new(ToDestination);
             let finish: crate::root::linked::node::Finish =
@@ -271,7 +271,7 @@ impl RouteAwait for RefusedAtApprove {
     }
 }
 
-impl busbar_kernel::teller::DoorSeats for RefusedAtApprove {
+impl busbar_kernel::teller::seats::DoorSeats for RefusedAtApprove {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         ToDestination.arrival(token, ctx)
     }
@@ -527,7 +527,7 @@ struct Hooked<'p> {
     hooks: Option<Vec<busbar_kernel_audit::HookApplied>>,
 }
 
-impl busbar_kernel::teller::DoorSeats for Hooked<'_> {
+impl busbar_kernel::teller::seats::DoorSeats for Hooked<'_> {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         ToDestination.arrival(token, ctx)
     }
