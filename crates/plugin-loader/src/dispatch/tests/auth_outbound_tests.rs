@@ -661,3 +661,6 @@ fn fields_copy_security_before_releasing_the_reply_lease_even_when_metadata_refu
         }
     }
 }
+
+#[path = "auth_fields_copy_tests.rs"]
+mod auth_fields_copy_tests;

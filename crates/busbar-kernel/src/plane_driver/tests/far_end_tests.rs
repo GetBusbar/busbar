@@ -3943,3 +3943,6 @@ async fn failed_timeout_defaults_refuse_before_authentication_or_open() {
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert_eq!(far.unsent(&t), Some(RefusalCode::UnsentOpenRefused));
 }
+
+#[path = "auth_fields_copy_tests.rs"]
+mod auth_fields_copy_tests;
