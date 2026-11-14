@@ -370,7 +370,7 @@ impl<'a> Tx<'a> {
         }
     }
     async fn prefetch(&mut self, mut addresses: Vec<Address>) -> Result<()> {
-        addresses.sort_unstable();
+        addresses.sort();
         addresses.dedup();
         addresses.retain(|at| !self.observed.contains_key(at) && !self.changes.contains_key(at));
         if addresses.is_empty() {

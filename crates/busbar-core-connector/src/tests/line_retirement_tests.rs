@@ -328,7 +328,7 @@ fn a_handed_over_open_that_fails_after_its_holder_left_files_no_refusal_and_the_
         {
             let s = line.state();
             let mut filed: Vec<u64> = s.refused.keys().copied().collect();
-            filed.sort_unstable();
+            filed.sort();
             assert_eq!(
                 filed,
                 vec![live],

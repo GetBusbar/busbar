@@ -125,7 +125,7 @@ fn a_restart_during_an_on_disk_store_outage_still_owes_the_store_every_record() 
     commit_each(&mut wal, 301, 1);
 
     let mut taken = store.taken.lock().unwrap().clone();
-    taken.sort_unstable();
+    taken.sort();
     taken.dedup();
     let expected: Vec<(u64, u64)> = (1..=301).map(|seq| (RESTART_NODE, seq)).collect();
     assert_eq!(

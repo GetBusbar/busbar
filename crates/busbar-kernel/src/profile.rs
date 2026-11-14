@@ -163,7 +163,7 @@ pub fn dump() {
         if samples.is_empty() {
             continue;
         }
-        samples.sort_unstable();
+        samples.sort();
 
         let retained = samples.len();
         let seen = bucket.seen;

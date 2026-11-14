@@ -1404,7 +1404,7 @@ impl GovState {
             .iter()
             .map(|(bucket, _)| self.budget.shard_index(bucket))
             .collect();
-        order.sort_unstable();
+        order.sort();
         order.dedup();
         let mut guards: Vec<_> = order
             .iter()
@@ -1685,7 +1685,7 @@ impl GovState {
                 .iter()
                 .map(|(bucket, _)| self.budget.shard_index(bucket))
                 .collect();
-            order.sort_unstable();
+            order.sort();
             order.dedup();
             let pending = {
                 let mut guards: Vec<_> = order

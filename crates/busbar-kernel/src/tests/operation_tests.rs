@@ -24,7 +24,7 @@ fn names_are_stable_and_distinct() {
     let names: Vec<_> = ALL.iter().map(|(o, _, _)| o.name()).collect();
 
     let mut sorted = names.clone();
-    sorted.sort_unstable();
+    sorted.sort();
     sorted.dedup();
     assert_eq!(sorted.len(), names.len(), "operation names must be unique");
     assert_eq!(OpVerb::CHAT.name(), "chat");
@@ -71,7 +71,7 @@ fn every_shape_is_enumerated_once_with_a_distinct_word() {
     let mut words: Vec<&str> = OpShape::ALL.iter().map(|s| s.as_str()).collect();
     let n = words.len();
     assert_eq!(n, 6, "the shape set is six");
-    words.sort_unstable();
+    words.sort();
     words.dedup();
     assert_eq!(words.len(), n, "every shape's word must be distinct");
     for shape in OpShape::ALL {

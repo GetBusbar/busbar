@@ -227,7 +227,7 @@ fn a_version_1_segment_is_quarantined_never_read() {
     assert_eq!(q.len(), 1, "the unreadable segment is set aside, loudly");
     assert_eq!(q[0].damage_at, 0);
     let mut ids = q[0].identities.clone();
-    ids.sort_unstable();
+    ids.sort();
     assert_eq!(ids, vec![(3, 1), (3, 2), (3, 3), (3, 4)]);
     assert_eq!(quarantine_files(dir.path()).len(), 1);
     assert_eq!(

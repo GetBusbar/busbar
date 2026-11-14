@@ -308,7 +308,7 @@ impl<R: Read + Seek + Send> JournalPlan<R> {
             }
             Ok(())
         })?;
-        facts.sort_unstable_by_key(|fact| (fact.node, fact.sequence));
+        facts.sort_by_key(|fact| (fact.node, fact.sequence));
         if facts
             .windows(2)
             .any(|pair| (pair[0].node, pair[0].sequence) == (pair[1].node, pair[1].sequence))

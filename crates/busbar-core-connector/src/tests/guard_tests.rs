@@ -681,7 +681,7 @@ fn a_lookup_past_the_cap_is_refused_at_once_and_starts_no_thread() {
     let mut rest: Vec<(u32, bool)> = (0..2)
         .map(|_| answered.recv_timeout(Duration::from_secs(5)).unwrap())
         .collect();
-    rest.sort_unstable();
+    rest.sort();
     assert_eq!(rest, [(0, true), (1, true)], "the two in flight answer");
 }
 

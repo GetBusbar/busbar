@@ -143,7 +143,7 @@ pub fn initialization<O>(candidate: &Candidate<O>, dataset: DatasetId) -> bool {
         }
         addresses.push(&predicate.address);
     }
-    addresses.sort_unstable();
+    addresses.sort();
     let mut controls = 0;
     for mutation in &candidate.mutations {
         let Mutation::Put { address, value } = mutation else {

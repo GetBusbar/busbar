@@ -489,7 +489,7 @@ pub(super) fn validate_with_plugins(
             .map(|(name, _)| name.as_str())
             .collect();
         if defaults.len() > 1 {
-            defaults.sort_unstable();
+            defaults.sort();
             errors.push(format!(
                 "more than one hook sets `default: true` ({}); at most one hook may be the default \
                  base ordering",

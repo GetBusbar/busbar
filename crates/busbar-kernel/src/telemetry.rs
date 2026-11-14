@@ -68,7 +68,7 @@ impl AppSlots {
         let mut ingress_labels: Vec<&str> = pools.iter().map(|(pool, _)| *pool).collect();
         ingress_labels.extend(by_model.iter().map(|(model, _)| *model));
         ingress_labels.push(POOL_LABEL_UNRESOLVED);
-        ingress_labels.sort_unstable();
+        ingress_labels.sort();
         ingress_labels.dedup();
 
         let mut request = HashMap::with_capacity(ingress_labels.len());

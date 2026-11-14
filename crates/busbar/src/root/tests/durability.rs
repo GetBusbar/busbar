@@ -492,7 +492,7 @@ async fn registered_peers_keep_separate_records_and_walk_checks_every_original()
     let (lane, own, keys, budget) = resumed.stored_walk_inputs();
     let walk = walk_stored_chains(&lane, own, &keys, budget).await;
     let mut both = vec![first.id, second.id];
-    both.sort_unstable();
+    both.sort();
     assert_eq!(walk.chains, both);
     assert!(walk.findings.is_empty(), "{:?}", walk.findings);
     second_fixture.corrupt_original(2).await;

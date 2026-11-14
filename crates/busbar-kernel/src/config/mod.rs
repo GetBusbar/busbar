@@ -226,7 +226,7 @@ fn assert_interpolation_preserves_structure(
         Ok(v) => v,
         Err(error) => {
             let mut vars: Vec<&str> = occurrences.iter().map(|o| o.var_name.as_str()).collect();
-            vars.sort_unstable();
+            vars.sort();
             vars.dedup();
             let position = error.location().map_or_else(String::new, |at| {
                 format!(" at line {} column {}", at.line(), at.column())
@@ -1806,7 +1806,7 @@ pub fn resolve(
                 None => {
                     let mut names: Vec<&str> =
                         resolved_providers.keys().map(String::as_str).collect();
-                    names.sort_unstable();
+                    names.sort();
                     errors.push(format!(
                         "{path} names '{provider_name}', which is not defined in the top-level \
                          `providers:` map. Valid providers: {}. Define it there, or fix the \

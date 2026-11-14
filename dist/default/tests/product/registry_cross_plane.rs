@@ -288,7 +288,7 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
         .flat_map(|d| d.scope_kinds.iter().copied())
         .collect();
     let before = scope_kinds.len();
-    scope_kinds.sort_unstable();
+    scope_kinds.sort();
     scope_kinds.dedup();
     assert_eq!(
         before,
@@ -298,7 +298,7 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
 
     let mut audit_kinds: Vec<&str> = folded.iter().map(|d| d.audit_kind).collect();
     let before = audit_kinds.len();
-    audit_kinds.sort_unstable();
+    audit_kinds.sort();
     audit_kinds.dedup();
     assert_eq!(
         before,
@@ -308,7 +308,7 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
 
     let mut sections: Vec<&str> = folded.iter().map(|d| d.config_section).collect();
     let before = sections.len();
-    sections.sort_unstable();
+    sections.sort();
     sections.dedup();
     assert_eq!(
         before,
@@ -992,7 +992,7 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
         .flat_map(|d| d.scope_kinds.iter().copied())
         .collect();
     let before = scope_kinds.len();
-    scope_kinds.sort_unstable();
+    scope_kinds.sort();
     scope_kinds.dedup();
     assert_eq!(
         before,
@@ -1002,7 +1002,7 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
 
     let mut audit_kinds: Vec<&str> = mounted.iter().map(|d| d.audit_kind).collect();
     let before = audit_kinds.len();
-    audit_kinds.sort_unstable();
+    audit_kinds.sort();
     audit_kinds.dedup();
     assert_eq!(
         before,
@@ -1011,9 +1011,9 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
     );
 
     let mut keys = mounted_keys;
-    keys.sort_unstable();
+    keys.sort();
     let mut want = vec![owning("tools").key, owning("agents").key];
-    want.sort_unstable();
+    want.sort();
     assert_eq!(keys, want);
 }
 

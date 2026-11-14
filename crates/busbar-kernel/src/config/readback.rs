@@ -430,7 +430,7 @@ fn hooks_view(defs: &std::collections::HashMap<String, super::HookCfg>) -> Value
 
 fn sorted_names<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
     let mut names: Vec<_> = names.map(String::as_str).collect();
-    names.sort_unstable();
+    names.sort();
     names
 }
 

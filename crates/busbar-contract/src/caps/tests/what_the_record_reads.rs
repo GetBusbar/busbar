@@ -28,7 +28,7 @@ fn every_refusal_the_cell_can_give_says_which_one_it_was() {
         assert_eq!(as_error.to_string(), *spelling);
     }
     let mut spellings: Vec<&str> = refusals.iter().map(|(_, s)| *s).collect();
-    spellings.sort_unstable();
+    spellings.sort();
     spellings.dedup();
     assert_eq!(
         spellings.len(),
@@ -42,7 +42,7 @@ fn every_refusal_the_cell_can_give_says_which_one_it_was() {
         assert_eq!(as_error.to_string(), *spelling);
     }
     let mut cell_spellings: Vec<&str> = CELL_ERRORS.iter().map(|(_, s)| *s).collect();
-    cell_spellings.sort_unstable();
+    cell_spellings.sort();
     cell_spellings.dedup();
     assert_eq!(
         cell_spellings.len(),

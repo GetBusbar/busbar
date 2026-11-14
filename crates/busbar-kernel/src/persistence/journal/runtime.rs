@@ -233,7 +233,7 @@ impl RuntimeJournal {
             .map(|(_, node)| node)
             .collect();
         nodes.push(self.node);
-        nodes.sort_unstable();
+        nodes.sort();
         nodes.dedup();
         Ok(nodes)
     }

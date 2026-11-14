@@ -57,7 +57,7 @@ fn every_linked_transport_and_plane_registers() {
         .map(|row| (row.plane)().key())
         .collect();
     let mut claimed: Vec<&str> = linked_claims().iter().map(|c| c.plane).collect();
-    claimed.sort_unstable();
+    claimed.sort();
     claimed.dedup();
     for key in &claimed {
         let registered = registry.resolve(PluginKind::Plane, key).is_some();
@@ -220,7 +220,7 @@ fn the_sealed_order_is_most_specific_first_and_stable() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
     let mut seen = sealed.order.clone();
-    seen.sort_unstable();
+    seen.sort();
     assert_eq!(
         seen,
         (0..claims.len()).collect::<Vec<_>>(),
@@ -334,7 +334,7 @@ fn claims_with_disjoint_scheme_sets_do_not_collide() {
 fn the_precedence_order_is_a_permutation_of_every_claim() {
     let claims = linked_claims();
     let mut seen = seal_claims(&claims).order;
-    seen.sort_unstable();
+    seen.sort();
     assert_eq!(seen, (0..claims.len()).collect::<Vec<_>>());
 }
 
