@@ -10,7 +10,7 @@ use super::super::self_keys::{
 };
 use super::super::{ChainVerdict, Principal};
 use crate::config::{RoleBindingCfg, RoleBindings};
-use crate::governance::GovState;
+use crate::governance::{GovState, SelfMintRefusal, UnattributedBinding, VirtualKey};
 use busbar_contract::persistence::{
     BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Page, PersistenceBackend,
     PreparedCandidate, Read, ReadResult, Scan,
@@ -74,6 +74,17 @@ async fn self_rows(gov: &GovState, sub: &str) -> Vec<crate::governance::VirtualK
         .unwrap()
         .into_iter()
         .filter(|k| k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(&group))
+        .collect()
+}
+
+/// Every undeleted row owned as the subject's self key, in any group.
+async fn all_self_rows(gov: &GovState, sub: &str) -> Vec<VirtualKey> {
+    let derived = GovState::derived_self_ids(&SEED, sub, 64);
+    gov.all_keys_async()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|k| GovState::owned_by(k, sub, &SEED, &derived))
         .collect()
 }
 
@@ -329,6 +340,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             mint_provisioned_self_key(
                 gov.clone(),
                 crate::governance::SelfMintOp::Issue,
+                crate::governance::UnattributedBinding::Adopt,
                 &principal("sam", &["eng"]),
                 "corp",
                 None,
@@ -352,6 +364,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             mint_provisioned_self_key(
                 first_gov,
                 crate::governance::SelfMintOp::Refresh,
+                crate::governance::UnattributedBinding::Adopt,
                 &principal("sam", &["eng"]),
                 "corp",
                 None,
@@ -379,6 +392,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
                 } else {
                     crate::governance::SelfMintOp::Issue
                 },
+                crate::governance::UnattributedBinding::Adopt,
                 &principal("sam", &["eng"]),
                 "corp",
                 None,
@@ -400,6 +414,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             mint_provisioned_self_key(
                 other_gov,
                 crate::governance::SelfMintOp::Issue,
+                crate::governance::UnattributedBinding::Adopt,
                 &principal("other", &["eng"]),
                 "corp",
                 None,
@@ -849,6 +864,7 @@ async fn resolve_then_issue_via_real_seam() {
     let issued = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         p,
         "corp",
         pools,
@@ -885,6 +901,7 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     let issued = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         p,
         "corp",
         pools,
@@ -929,6 +946,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     let t0 = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "corp",
         None,
@@ -951,6 +969,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         mint_provisioned_self_key(
             gov.clone(),
             crate::governance::SelfMintOp::Issue,
+            crate::governance::UnattributedBinding::Adopt,
             &alice,
             "corp",
             None,
@@ -959,13 +978,14 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         )
         .await
         .unwrap_err(),
-        ExchangeError::Unbound,
+        ExchangeError::SelfMintRefused(SelfMintRefusal::Disabled),
         "a login while the key is disabled is refused, not re-enabled"
     );
     assert_eq!(
         mint_provisioned_self_key(
             gov.clone(),
             crate::governance::SelfMintOp::Refresh,
+            crate::governance::UnattributedBinding::Adopt,
             &alice,
             "corp",
             None,
@@ -974,7 +994,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         )
         .await
         .unwrap_err(),
-        ExchangeError::Unbound,
+        ExchangeError::SelfMintRefused(SelfMintRefusal::Disabled),
         "a refresh while the key is disabled is refused too"
     );
     assert!(
@@ -992,8 +1012,12 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     );
 }
 
+// T1 (owner sign-off: inverts the 1.5.5-parity pin `a_login_after_an_admin_disable_mints_as_1_5_5_minted`).
+// Default configuration, no `hold_self_mint_state`: a login after an admin disable is refused and the
+// disable stands. Red on b345530502: the probe reuses the disabled derived row (self_serve.rs:137-140)
+// and `write_self_binding` writes it back `enabled: true` (:229), so both doors return Ok.
 #[tokio::test]
-async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
+async fn a_login_after_an_admin_disable_is_refused_and_the_disable_stands() {
     let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
@@ -1003,6 +1027,7 @@ async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
     let t0 = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "corp",
         None,
@@ -1016,34 +1041,43 @@ async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
         .unwrap()
         .expect("the key exists");
 
-    let again = mint_provisioned_self_key(
-        gov.clone(),
+    for op in [
         crate::governance::SelfMintOp::Issue,
-        &alice,
-        "corp",
-        None,
-        mint_now.saturating_add(ttl.as_secs()),
-        mint_now,
-    )
-    .await
-    .expect("1.5.5 minted a key on the next login");
-    assert_eq!(again.key_id, t0.key_id, "1.5.5 wrote the derived row back");
-    assert!(row(&gov, &t0.key_id).await.enabled, "and wrote it enabled");
-    mint_provisioned_self_key(
-        gov.clone(),
         crate::governance::SelfMintOp::Refresh,
-        &alice,
-        "corp",
-        None,
-        mint_now.saturating_add(ttl.as_secs()),
-        mint_now,
-    )
-    .await
-    .expect("1.5.5 minted on a refresh too");
+    ] {
+        assert_eq!(
+            mint_provisioned_self_key(
+                gov.clone(),
+                op,
+                crate::governance::UnattributedBinding::Adopt,
+                &alice,
+                "corp",
+                None,
+                mint_now.saturating_add(ttl.as_secs()),
+                mint_now,
+            )
+            .await
+            .unwrap_err(),
+            ExchangeError::SelfMintRefused(SelfMintRefusal::Disabled),
+            "{op:?} after an admin disable is refused"
+        );
+    }
+    let after = row(&gov, &t0.key_id).await;
+    assert!(!after.enabled, "the admin's disable stands");
+    assert!(after.deleted_at.is_none());
+    assert_eq!(
+        all_self_rows(&gov, "oidc:alice").await.len(),
+        1,
+        "no other self row was minted beside the disabled one"
+    );
 }
 
+// T2 (owner sign-off: inverts the 1.5.5-parity pin
+// `a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did`). OIDC Core 1.0 §2:
+// `sub` is unique only within its issuer. Red on b345530502: `self_mint_refusal` returns None while
+// the toggle is off (self_serve.rs:90-92), so partner is handed corp's key id.
 #[tokio::test]
-async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did() {
+async fn a_second_provider_asserting_the_same_subject_is_refused_by_default() {
     let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
@@ -1053,6 +1087,7 @@ async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5
     let corp = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "corp",
         None,
@@ -1061,21 +1096,40 @@ async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5
     )
     .await
     .expect("corp issues");
-    let partner = mint_provisioned_self_key(
+    assert_eq!(
+        mint_provisioned_self_key(
+            gov.clone(),
+            crate::governance::SelfMintOp::Issue,
+            crate::governance::UnattributedBinding::Adopt,
+            &alice,
+            "partner",
+            None,
+            mint_now.saturating_add(ttl.as_secs()),
+            mint_now,
+        )
+        .await
+        .unwrap_err(),
+        ExchangeError::SelfMintRefused(SelfMintRefusal::OtherProvider),
+        "a second provider asserting the same subject is refused"
+    );
+    assert_eq!(
+        row(&gov, &corp.key_id).await.idp_provider.as_deref(),
+        Some("corp"),
+        "the row still names corp"
+    );
+    let again = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
-        "partner",
+        "corp",
         None,
         mint_now.saturating_add(ttl.as_secs()),
         mint_now,
     )
     .await
-    .expect("1.5.5 minted for the second provider");
-    assert_eq!(
-        partner.key_id, corp.key_id,
-        "the subject's one key, as in 1.5.5"
-    );
+    .expect("corp still issues");
+    assert_eq!(again.key_id, corp.key_id);
 }
 
 #[tokio::test]
@@ -1089,6 +1143,7 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     let issued = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "corp",
         None,
@@ -1104,6 +1159,7 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     let again = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "corp",
         None,
@@ -1117,6 +1173,7 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     let rotated = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Refresh,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "corp",
         None,
@@ -1147,6 +1204,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
     let issued = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "corp",
         None,
@@ -1166,6 +1224,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
         mint_provisioned_self_key(
             gov.clone(),
             crate::governance::SelfMintOp::Issue,
+            crate::governance::UnattributedBinding::Adopt,
             &alice,
             "partner",
             None,
@@ -1174,13 +1233,14 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
         )
         .await
         .unwrap_err(),
-        ExchangeError::Unbound,
+        ExchangeError::SelfMintRefused(SelfMintRefusal::OtherProvider),
         "another provider asserting the subject is refused"
     );
     assert_eq!(
         mint_provisioned_self_key(
             gov.clone(),
             crate::governance::SelfMintOp::Refresh,
+            crate::governance::UnattributedBinding::Adopt,
             &alice,
             "partner",
             None,
@@ -1189,7 +1249,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
         )
         .await
         .unwrap_err(),
-        ExchangeError::Unbound,
+        ExchangeError::SelfMintRefused(SelfMintRefusal::OtherProvider),
         "and cannot refresh corp's key away"
     );
 
@@ -1206,6 +1266,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
     let again = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "corp",
         None,
@@ -1230,6 +1291,7 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     let issued = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "corp",
         None,
@@ -1251,6 +1313,7 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     let adopted = mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         &alice,
         "partner",
         None,
@@ -1274,6 +1337,7 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
         mint_provisioned_self_key(
             gov.clone(),
             crate::governance::SelfMintOp::Issue,
+            crate::governance::UnattributedBinding::Adopt,
             &alice,
             "corp",
             None,
@@ -1282,7 +1346,7 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
         )
         .await
         .unwrap_err(),
-        ExchangeError::Unbound,
+        ExchangeError::SelfMintRefused(SelfMintRefusal::OtherProvider),
         "after the adoption, any other provider is refused"
     );
 }
@@ -1296,6 +1360,7 @@ async fn issued_key_debug_never_leaks_the_live_token() {
     let issued = mint_provisioned_self_key(
         gov().await,
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         p,
         "corp",
         None,
@@ -1319,4 +1384,493 @@ async fn issued_key_debug_never_leaks_the_live_token() {
         dbg.contains(&issued.key_id),
         "key_id (safe id) still shows: {dbg}"
     );
+}
+
+// ---- selfmint: a self-serve login must not undo an admin decision or cross IdPs ----
+// Every case below runs on the default configuration (no `hold_self_mint_state`).
+
+use super::super::self_keys::{self_mint_modules_of, self_mint_refused_resource, IssuedKey};
+use crate::governance::SelfMintOp::{Issue, Refresh};
+use crate::governance::UnattributedBinding::{Adopt, Refuse};
+
+async fn mint(
+    gov: &Arc<GovState>,
+    op: crate::governance::SelfMintOp,
+    unattributed: UnattributedBinding,
+    sub: &str,
+    provider: &str,
+) -> Result<IssuedKey, ExchangeError> {
+    let now = busbar_kernel::store::now();
+    mint_provisioned_self_key(
+        gov.clone(),
+        op,
+        unattributed,
+        &principal(sub, &["eng"]),
+        provider,
+        None,
+        now.saturating_add(3600),
+        now,
+    )
+    .await
+}
+
+/// Audit records `self_mint.refused` for this subject, provider and reason.
+async fn refusals(sub: &str, provider: &str, reason: SelfMintRefusal) -> usize {
+    crate::audit::auditlog::flush_pending()
+        .await
+        .expect("the refusal audit is confirmed");
+    crate::audit::auditlog::AUDIT_LOG
+        .list_filtered(
+            0,
+            usize::MAX,
+            Some("self_mint.refused"),
+            Some(&self_mint_refused_resource(sub, provider, reason)),
+        )
+        .len()
+}
+
+/// A row in the real 1.5.5 shape: derived id, `binding_marker(id, epoch)`, group `user:<sub>`, and no
+/// `idp_provider` / `idp_subject` / `binding_mode`.
+fn legacy_row(sub: &str, epoch: u64) -> VirtualKey {
+    let id = GovState::derive_self_subject(&SEED, sub, epoch);
+    VirtualKey {
+        generation_hash: crate::governance::binding_marker(&id, &epoch.to_string()),
+        name: format!("self-serve key ({sub})"),
+        enabled: true,
+        group: Some(format!("user:{sub}")),
+        id,
+        ..Default::default()
+    }
+}
+
+async fn seed(gov: &GovState, key: &VirtualKey) {
+    gov.core_store()
+        .unwrap()
+        .identity()
+        .put_key(key)
+        .await
+        .unwrap();
+    gov.refresh_async().await.unwrap();
+}
+
+async fn tombstone(gov: &GovState, key: &VirtualKey) {
+    seed(gov, key).await;
+    gov.core_store()
+        .unwrap()
+        .identity()
+        .delete_key(&key.id)
+        .await
+        .unwrap();
+    gov.refresh_async().await.unwrap();
+}
+
+async fn live_self_rows(gov: &GovState, sub: &str) -> Vec<VirtualKey> {
+    all_self_rows(gov, sub)
+        .await
+        .into_iter()
+        .filter(|k| k.enabled)
+        .collect()
+}
+
+async fn regroup(gov: &GovState, id: &str, group: &str) {
+    gov.update_key_outcome_async(id, None, Some(Some(group.to_string())))
+        .await
+        .unwrap()
+        .expect("the key exists");
+}
+
+// T5 kernel half / T1 audit. Red on b345530502: the probe reuses the disabled row and Ok is returned.
+#[tokio::test]
+async fn a_disable_refusal_is_audited_with_subject_provider_and_reason() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let gov = gov().await;
+    let sub = "oidc:audit-disabled";
+    let first = mint(&gov, Issue, Adopt, sub, "corp").await.unwrap();
+    gov.update_key_outcome_async(&first.key_id, Some(false), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        mint(&gov, Issue, Adopt, sub, "corp").await.unwrap_err(),
+        ExchangeError::SelfMintRefused(SelfMintRefusal::Disabled)
+    );
+    assert_eq!(
+        refusals(sub, "corp", SelfMintRefusal::Disabled).await,
+        1,
+        "one audit record per refused login"
+    );
+}
+
+// T6 kernel half. Red on b345530502: partner is handed corp's key.
+#[tokio::test]
+async fn an_other_provider_refusal_is_audited() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let gov = gov().await;
+    let sub = "oidc:audit-other";
+    mint(&gov, Issue, Adopt, sub, "corp").await.unwrap();
+    assert_eq!(
+        mint(&gov, Issue, Adopt, sub, "other").await.unwrap_err(),
+        ExchangeError::SelfMintRefused(SelfMintRefusal::OtherProvider)
+    );
+    assert_eq!(
+        refusals(sub, "other", SelfMintRefusal::OtherProvider).await,
+        1
+    );
+}
+
+// T7 kernel twin. Red on b345530502: the regrouped row is not the cached/current binding (both are
+// group-only, self_serve.rs:11-34), so the login falls into `write_self_binding`, which reuses epoch 0
+// and writes `group: user:<sub>` back: the body group is `user:<sub>`.
+#[tokio::test]
+async fn a_login_after_an_admin_regroup_keeps_the_key_in_the_admins_group() {
+    let gov = gov().await;
+    let sub = "oidc:regroup-t7";
+    let first = mint(&gov, Issue, Adopt, sub, "corp").await.unwrap();
+    regroup(&gov, &first.key_id, "contractors").await;
+
+    let again = mint(&gov, Issue, Adopt, sub, "corp")
+        .await
+        .expect("a login after a regroup issues");
+    assert_eq!(again.key_id, first.key_id, "the same key, not a second one");
+    assert_eq!(again.group, "contractors", "in the admin's group");
+    let live = live_self_rows(&gov, sub).await;
+    assert_eq!(live.len(), 1, "one live key: {live:?}");
+    assert_eq!(live[0].group.as_deref(), Some("contractors"));
+
+    let rotated = mint(&gov, Refresh, Adopt, sub, "corp")
+        .await
+        .expect("refresh rotates");
+    assert_ne!(rotated.key_id, first.key_id);
+    assert_eq!(
+        rotated.group, "contractors",
+        "the rotation stays in the group"
+    );
+    assert!(row(&gov, &first.key_id).await.deleted_at.is_some());
+    let live = live_self_rows(&gov, sub).await;
+    assert_eq!(live.len(), 1, "one live key after refresh: {live:?}");
+    assert_eq!(live[0].id, rotated.key_id);
+}
+
+// T10 kernel twin (C1). Red on b345530502: the probe reuses the revoked row at epoch 0 and
+// `compare_self_key` refuses "self binding is revoked" (identity.rs:677-682): a MintFailed store
+// error, never a Revoked refusal, and no audit record.
+#[tokio::test]
+async fn a_login_after_an_admin_revoke_is_refused_as_revoked_even_on_a_stale_node() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let gov = gov().await;
+    let sub = "oidc:revoke-t10";
+    let first = mint(&gov, Issue, Adopt, sub, "corp").await.unwrap();
+    gov.revoke_async(&first.key_id, "admin revoke")
+        .await
+        .unwrap();
+    for op in [Issue, Refresh] {
+        assert_eq!(
+            mint(&gov, op, Adopt, sub, "corp").await.unwrap_err(),
+            ExchangeError::SelfMintRefused(SelfMintRefusal::Revoked),
+            "{op:?}: revoked, not disabled"
+        );
+    }
+    assert_eq!(refusals(sub, "corp", SelfMintRefusal::Revoked).await, 2);
+
+    gov.forget_denylisted_in_memory(&first.key_id);
+    assert_eq!(
+        mint(&gov, Issue, Adopt, sub, "corp").await.unwrap_err(),
+        ExchangeError::SelfMintRefused(SelfMintRefusal::Revoked),
+        "the store read keeps a node with a stale denylist truthful"
+    );
+    assert_eq!(all_self_rows(&gov, sub).await.len(), 1);
+}
+
+// T10 legacy (E2), epoch 0. Red on b345530502: see the case above (probe reuse at epoch 0, generic
+// "self binding is revoked" store error, no audit).
+#[tokio::test]
+async fn a_revoked_1_5_5_row_is_refused_as_revoked() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let gov = gov().await;
+    let sub = "oidc:revoke-legacy-0";
+    let legacy = legacy_row(sub, 0);
+    seed(&gov, &legacy).await;
+    gov.revoke_async(&legacy.id, "admin revoke").await.unwrap();
+    for op in [Issue, Refresh] {
+        assert_eq!(
+            mint(&gov, op, Adopt, sub, "corp").await.unwrap_err(),
+            ExchangeError::SelfMintRefused(SelfMintRefusal::Revoked),
+            "{op:?}"
+        );
+    }
+    assert_eq!(refusals(sub, "corp", SelfMintRefusal::Revoked).await, 2);
+    let rows = all_self_rows(&gov, sub).await;
+    assert_eq!(rows.len(), 1, "only the revoked row: {rows:?}");
+    assert_eq!(rows[0].id, legacy.id);
+}
+
+// T10 legacy (E2), epoch 5 behind tombstones 0..=4, moved to `contractors`. Red on b345530502: the
+// moved row is not in `self_keys`, the probe walks 0, 1, 2, 4 (tombstones) and mints at epoch 8.
+#[tokio::test]
+async fn a_revoked_and_moved_1_5_5_row_is_matched_by_the_window_and_refused() {
+    let gov = gov().await;
+    let sub = "oidc:revoke-legacy-5";
+    for epoch in 0..5 {
+        tombstone(&gov, &legacy_row(sub, epoch)).await;
+    }
+    let mut legacy = legacy_row(sub, 5);
+    legacy.group = Some("contractors".into());
+    seed(&gov, &legacy).await;
+    gov.revoke_async(&legacy.id, "admin revoke").await.unwrap();
+    for op in [Issue, Refresh] {
+        assert_eq!(
+            mint(&gov, op, Adopt, sub, "corp").await.unwrap_err(),
+            ExchangeError::SelfMintRefused(SelfMintRefusal::Revoked),
+            "{op:?}"
+        );
+    }
+    let rows = all_self_rows(&gov, sub).await;
+    assert_eq!(rows.len(), 1, "no fresh key past the revoked one: {rows:?}");
+}
+
+// T11 kernel (C3). Red on b345530502: `cached_self_binding(alice)` finds bob's row in `user:alice`
+// (group-only lookup, self_serve.rs:23-34) and alice's login is handed bob's key.
+#[tokio::test]
+async fn another_subjects_key_in_my_self_group_is_refused_and_left_alone() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let gov = gov().await;
+    let alice = "oidc:t11-alice";
+    let bob = "oidc:t11-bob";
+    let bobs = mint(&gov, Issue, Adopt, bob, "corp").await.unwrap();
+    regroup(&gov, &bobs.key_id, &format!("user:{alice}")).await;
+    let before = row(&gov, &bobs.key_id).await;
+
+    assert_eq!(
+        mint(&gov, Issue, Adopt, alice, "corp").await.unwrap_err(),
+        ExchangeError::SelfMintRefused(SelfMintRefusal::ForeignKeyInGroup)
+    );
+    assert_eq!(
+        refusals(alice, "corp", SelfMintRefusal::ForeignKeyInGroup).await,
+        1
+    );
+    assert_eq!(
+        row(&gov, &bobs.key_id).await,
+        before,
+        "bob's row is untouched"
+    );
+
+    let again = mint(&gov, Issue, Adopt, bob, "corp")
+        .await
+        .expect("bob still logs in");
+    assert_eq!(again.key_id, bobs.key_id);
+    assert_eq!(
+        again.group,
+        format!("user:{alice}"),
+        "the admin's regroup stands"
+    );
+}
+
+// T11 further cases (D1): an admin-minted time-bound key, a plain admin key, and a legacy-shaped
+// key with a random id, each live in `user:<alice>`. Red on b345530502: alice's login takes it over.
+#[tokio::test]
+async fn an_admin_or_unverifiable_key_in_my_self_group_is_refused() {
+    let gov = gov().await;
+    let now = busbar_kernel::store::now();
+    for (n, mode) in [Some("time-bound"), None].into_iter().enumerate() {
+        let alice = format!("oidc:t11-admin-{n}");
+        let (key, _) = gov
+            .mint_signed_async(
+                crate::governance::NewKeySpec {
+                    group: Some(format!("user:{alice}")),
+                    binding_mode: mode.map(str::to_string),
+                    ..Default::default()
+                },
+                now + 3600,
+                now,
+            )
+            .await
+            .unwrap();
+        let before = row(&gov, &key.id).await;
+        assert_eq!(
+            mint(&gov, Issue, Adopt, &alice, "corp").await.unwrap_err(),
+            ExchangeError::SelfMintRefused(SelfMintRefusal::ForeignKeyInGroup),
+            "{mode:?}"
+        );
+        assert_eq!(row(&gov, &key.id).await, before, "{mode:?}: untouched");
+    }
+    let alice = "oidc:t11-legacy-foreign";
+    let foreign = VirtualKey {
+        id: "vk_00112233445566778899aabbccddeeff".into(),
+        generation_hash: crate::governance::binding_marker(
+            "vk_00112233445566778899aabbccddeeff",
+            "random-generation",
+        ),
+        enabled: true,
+        group: Some(format!("user:{alice}")),
+        ..Default::default()
+    };
+    seed(&gov, &foreign).await;
+    let before = row(&gov, &foreign.id).await;
+    assert_eq!(
+        mint(&gov, Issue, Adopt, alice, "corp").await.unwrap_err(),
+        ExchangeError::SelfMintRefused(SelfMintRefusal::ForeignKeyInGroup)
+    );
+    assert_eq!(row(&gov, &foreign.id).await, before);
+}
+
+// T11 bob-side legacy (E1). Red on b345530502: bob's login does not see his moved 1.5.5 row (it is in
+// `user:<alice>` with no `idp_subject`) and mints a second key.
+#[tokio::test]
+async fn a_moved_1_5_5_row_stays_its_owners_binding() {
+    let gov = gov().await;
+    let alice = "oidc:e1-alice";
+    let bob = "oidc:e1-bob";
+    let mut legacy = legacy_row(bob, 0);
+    legacy.group = Some(format!("user:{alice}"));
+    seed(&gov, &legacy).await;
+
+    assert_eq!(
+        mint(&gov, Issue, Adopt, alice, "corp").await.unwrap_err(),
+        ExchangeError::SelfMintRefused(SelfMintRefusal::ForeignKeyInGroup)
+    );
+    let issued = mint(&gov, Issue, Adopt, bob, "corp").await.unwrap();
+    assert_eq!(issued.key_id, legacy.id, "bob's own row is his binding");
+    let rotated = mint(&gov, Refresh, Adopt, bob, "corp").await.unwrap();
+    assert_eq!(rotated.group, format!("user:{alice}"));
+    let live = live_self_rows(&gov, bob).await;
+    assert_eq!(live.len(), 1, "bob holds one live self key: {live:?}");
+    assert_eq!(live[0].id, rotated.key_id);
+}
+
+// T14 / T8 (D1, D2). Red on b345530502: adoption stamps only `idp_provider` (self_serve.rs:317-321);
+// with more than one mint-capable module nothing refuses the unattributed row.
+#[tokio::test]
+async fn a_1_5_5_row_is_adopted_only_by_the_one_mint_capable_module() {
+    let gov = gov().await;
+    let sub = "oidc:t14-adopt";
+    let legacy = legacy_row(sub, 0);
+    seed(&gov, &legacy).await;
+    let issued = mint(&gov, Issue, Adopt, sub, "corp").await.unwrap();
+    assert_eq!(issued.key_id, legacy.id);
+    let adopted = row(&gov, &legacy.id).await;
+    assert_eq!(adopted.idp_provider.as_deref(), Some("corp"));
+    assert_eq!(adopted.idp_subject.as_deref(), Some(sub));
+    assert_eq!(adopted.binding_mode.as_deref(), Some("user-bound"));
+    assert_eq!(
+        adopted.group, legacy.group,
+        "adoption never writes the group"
+    );
+
+    let sub = "oidc:t14-refuse";
+    let legacy = legacy_row(sub, 0);
+    seed(&gov, &legacy).await;
+    let before = row(&gov, &legacy.id).await;
+    for op in [Issue, Refresh] {
+        assert_eq!(
+            mint(&gov, op, Refuse, sub, "second").await.unwrap_err(),
+            ExchangeError::SelfMintRefused(SelfMintRefusal::Unattributed),
+            "{op:?}"
+        );
+    }
+    assert_eq!(row(&gov, &legacy.id).await, before, "the row is unchanged");
+}
+
+// T14 moved-disabled. Red on b345530502: the moved row is not in `self_keys`, the probe reuses epoch
+// 0 and `write_self_binding` aborts with "self binding changed; retry the request": no Disabled
+// refusal, no audit.
+#[tokio::test]
+async fn a_disabled_1_5_5_row_moved_to_another_group_is_refused_as_disabled() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let gov = gov().await;
+    let sub = "oidc:t14-moved-disabled";
+    let mut legacy = legacy_row(sub, 0);
+    legacy.enabled = false;
+    legacy.group = Some("contractors".into());
+    seed(&gov, &legacy).await;
+    for op in [Issue, Refresh] {
+        assert_eq!(
+            mint(&gov, op, Adopt, sub, "corp").await.unwrap_err(),
+            ExchangeError::SelfMintRefused(SelfMintRefusal::Disabled),
+            "{op:?}"
+        );
+    }
+    assert_eq!(refusals(sub, "corp", SelfMintRefusal::Disabled).await, 2);
+    assert_eq!(all_self_rows(&gov, sub).await.len(), 1, "no new self row");
+}
+
+// T14 moved-live. Red on b345530502: neither door sees the moved row; the probe reuses epoch 0 and
+// both fail with "self binding changed; retry the request".
+#[tokio::test]
+async fn a_live_1_5_5_row_moved_to_another_group_is_bound_and_rotated_there() {
+    let gov = gov().await;
+    let sub = "oidc:t14-moved-live";
+    let mut legacy = legacy_row(sub, 0);
+    legacy.group = Some("contractors".into());
+    seed(&gov, &legacy).await;
+    let issued = mint(&gov, Issue, Adopt, sub, "corp").await.unwrap();
+    assert_eq!(issued.key_id, legacy.id);
+    assert_eq!(issued.group, "contractors");
+    let rotated = mint(&gov, Refresh, Adopt, sub, "corp").await.unwrap();
+    assert_eq!(rotated.group, "contractors");
+    assert!(row(&gov, &legacy.id).await.deleted_at.is_some());
+    let live = live_self_rows(&gov, sub).await;
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert_eq!(live[0].id, rotated.key_id);
+}
+
+// T14 rotated by the admin (random generation), live in `user:<sub>`: owned through the window. A
+// guard: green before and after.
+#[tokio::test]
+async fn an_admin_rotated_1_5_5_row_is_still_the_binding() {
+    let gov = gov().await;
+    let sub = "oidc:t14-rotated";
+    let mut legacy = legacy_row(sub, 0);
+    legacy.generation_hash = crate::governance::binding_marker(&legacy.id, "c0ffee-random");
+    seed(&gov, &legacy).await;
+    let issued = mint(&gov, Issue, Adopt, sub, "corp").await.unwrap();
+    assert_eq!(issued.key_id, legacy.id);
+    assert_eq!(live_self_rows(&gov, sub).await.len(), 1);
+}
+
+// T14 unverifiable legacy row in `user:<sub>`. Red on b345530502: it is taken over.
+#[tokio::test]
+async fn a_legacy_shaped_random_id_in_my_self_group_is_refused_and_audited() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let gov = gov().await;
+    let sub = "oidc:t14-random";
+    let foreign = VirtualKey {
+        id: "vk_ffeeddccbbaa99887766554433221100".into(),
+        generation_hash: crate::governance::binding_marker(
+            "vk_ffeeddccbbaa99887766554433221100",
+            "0",
+        ),
+        enabled: true,
+        group: Some(format!("user:{sub}")),
+        ..Default::default()
+    };
+    seed(&gov, &foreign).await;
+    let before = row(&gov, &foreign.id).await;
+    assert_eq!(
+        mint(&gov, Issue, Adopt, sub, "corp").await.unwrap_err(),
+        ExchangeError::SelfMintRefused(SelfMintRefusal::ForeignKeyInGroup)
+    );
+    assert_eq!(
+        refusals(sub, "corp", SelfMintRefusal::ForeignKeyInGroup).await,
+        1
+    );
+    assert_eq!(row(&gov, &foreign.id).await, before);
+}
+
+// T12 (C5). Only a door with a group-granting role binding counts; `keys` never does.
+#[test]
+fn only_modules_that_can_reach_a_self_mint_count_toward_adoption() {
+    let mut rb = bindings("corp", "eng", Some("team"));
+    rb.extend(bindings("admin-oidc", "admins", None));
+    assert_eq!(
+        self_mint_modules_of(["corp", "admin-oidc", "keys"], &rb),
+        std::collections::BTreeSet::from(["corp".to_string()]),
+        "an admin-only module (no group binding) is not a second IdP"
+    );
+    rb.extend(bindings("admin-oidc", "admins", Some("ops")));
+    assert_eq!(
+        self_mint_modules_of(["corp", "admin-oidc"], &rb).len(),
+        2,
+        "an admin module that grants a group can mint, so adoption refuses"
+    );
+    rb.extend(bindings("keys", "eng", Some("team")));
+    assert!(!self_mint_modules_of(["keys"], &rb).contains("keys"));
 }

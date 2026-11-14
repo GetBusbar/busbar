@@ -787,3 +787,149 @@ async fn identity_settlement_skips_active_and_foreign_attempts_and_keeps_cancell
         "foreign uncertainty still blocks snapshot publication"
     );
 }
+
+// T15 row-source scope (G3, H1, H2). Rows sit only at epochs the b345530502 probe never reads
+// (it visits 0, 1, 2, 4, 8, ...), so only the derived-id set in the pre-query guard can defer them.
+const SELF_SEED: [u8; 32] = [7; 32];
+const DEFERRED: &str = "identity operation deferred: same-key native outcome unresolved";
+
+fn legacy_self_row(sub: &str, epoch: u64, group: &str) -> VirtualKey {
+    let id = crate::governance::GovState::derive_self_subject(&SELF_SEED, sub, epoch);
+    VirtualKey {
+        generation_hash: crate::governance::binding_marker(&id, &epoch.to_string()),
+        name: format!("self-serve key ({sub})"),
+        enabled: true,
+        group: Some(group.into()),
+        id,
+        ..Default::default()
+    }
+}
+
+async fn self_gov(core: Arc<CoreStore>) -> crate::governance::GovState {
+    crate::governance::GovState::new_with_core(
+        core,
+        None,
+        Some(crate::governance::signing::TokenSigner::from_secret_bytes(
+            &SELF_SEED, "test",
+        )),
+    )
+    .await
+    .unwrap()
+}
+
+/// Leave an unresolved native update on `id` that keeps it legacy-shaped in its own group, so
+/// no b345530502 subject guard (`idp_subject` / `user:<sub>`) can match it.
+async fn unresolved_update(backend: &Backend, gov: &crate::governance::GovState, id: &str) {
+    backend.state.lock().unwrap().unknown = true;
+    assert!(gov
+        .update_key_outcome_async(id, Some(false), None)
+        .await
+        .is_err());
+}
+
+/// The login defers with the pre-query guard's text and writes no self row: every other derived id
+/// the b345530502 probe could have minted at (0..=8) is still absent or a tombstone. (A full key
+/// listing would itself defer while the native outcome is unresolved.)
+async fn assert_deferred_and_nothing_written(
+    gov: &crate::governance::GovState,
+    core: &CoreStore,
+    sub: &str,
+    unresolved_epoch: u64,
+) {
+    let err = gov
+        .issue_self(sub, "corp", None, u64::MAX, 1234)
+        .await
+        .expect_err("the login defers on its own unresolved row");
+    assert!(
+        err.to_string().contains(DEFERRED),
+        "deferred by the pre-query guard: {err}"
+    );
+    for epoch in (0..=8).filter(|e| *e != unresolved_epoch) {
+        let id = crate::governance::GovState::derive_self_subject(&SELF_SEED, sub, epoch);
+        let row = core.identity().get_key(&id).await.unwrap();
+        assert!(
+            row.as_ref().is_none_or(|k| k.deleted_at.is_some()),
+            "no self row was written at epoch {epoch}: {row:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn self_login_is_not_deferred_by_an_unrelated_unresolved_key() {
+    let (backend, store) = setup().await;
+    let core = Arc::new(store);
+    let gov = self_gov(core.clone()).await;
+    let (plain, _) = gov
+        .mint_signed_async(
+            crate::governance::NewKeySpec {
+                group: Some("other".into()),
+                ..Default::default()
+            },
+            u64::MAX,
+            1234,
+        )
+        .await
+        .unwrap();
+    unresolved_update(&backend, &gov, &plain.id).await;
+    gov.issue_self("alice", "corp", None, u64::MAX, 1234)
+        .await
+        .expect("an unrelated unresolved key does not hold alice's login");
+}
+
+// Red on b345530502: derive(5) sits in `contractors`, so `cached_self_binding` (self_serve.rs:23-34)
+// misses it, `self_keys` returns only the tombstones, none unresolved, and the probe walks 0,1,2,4
+// and mints at epoch 8 with an Ok.
+#[tokio::test]
+async fn self_login_defers_on_its_moved_legacy_row_at_an_unprobed_epoch() {
+    let (backend, store) = setup().await;
+    for epoch in 0..5 {
+        let row = legacy_self_row("alice", epoch, "user:alice");
+        store.identity().put_key(&row).await.unwrap();
+        store.identity().delete_key(&row.id).await.unwrap();
+    }
+    let moved = legacy_self_row("alice", 5, "contractors");
+    store.identity().put_key(&moved).await.unwrap();
+    let core = Arc::new(store);
+    let gov = self_gov(core.clone()).await;
+    unresolved_update(&backend, &gov, &moved.id).await;
+    assert_deferred_and_nothing_written(&gov, &core, "alice", 5).await;
+}
+
+// Red on b345530502: nothing of alice's is in `user:alice` or carries `idp_subject`, so `self_keys`
+// is not blocked and returns nothing; the probe reads epoch 0 (free, not guarded) and mints there.
+#[tokio::test]
+async fn self_login_defers_on_a_derived_id_it_has_not_probed() {
+    let (backend, store) = setup().await;
+    let moved = legacy_self_row("alice", 3, "contractors");
+    store.identity().put_key(&moved).await.unwrap();
+    let core = Arc::new(store);
+    let gov = self_gov(core.clone()).await;
+    unresolved_update(&backend, &gov, &moved.id).await;
+    assert_deferred_and_nothing_written(&gov, &core, "alice", 3).await;
+}
+
+#[tokio::test]
+async fn a_long_1_6_0_refresh_history_keeps_the_default_window() {
+    let (_backend, store) = setup().await;
+    let core = Arc::new(store);
+    let gov = self_gov(core.clone()).await;
+    gov.issue_self("alice", "corp", None, u64::MAX, 1234)
+        .await
+        .unwrap();
+    for _ in 0..40 {
+        gov.refresh_self("alice", "corp", None, u64::MAX, 1234)
+            .await
+            .unwrap();
+    }
+    let derived = crate::governance::GovState::derived_self_ids(&SELF_SEED, "alice", 64);
+    let rows = core.identity().self_keys("alice", &derived).await.unwrap();
+    assert!(rows.len() > 40, "the tombstones are read: {}", rows.len());
+    assert_eq!(
+        crate::governance::GovState::self_epoch_window(&SELF_SEED, "alice", &rows),
+        64,
+        "1.6.0 rows never widen the window"
+    );
+    gov.issue_self("alice", "corp", None, u64::MAX, 1234)
+        .await
+        .expect("the next login succeeds");
+}
