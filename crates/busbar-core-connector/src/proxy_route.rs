@@ -132,7 +132,12 @@ impl ProxyChoice {
         }
     }
 
-    /// Whether the exemption list excludes `target_host` from both slots.
+    /// Whether the exemption list excludes `target_host` from both slots. Matching is
+    /// hyper-util's `matcher::Matcher` (curl's rules, built with `builder()`, never
+    /// `from_env()`, whose CGI rule would turn every proxy off), with three deliberate
+    /// deviations: `*` exempts IP literals too, a bare v6 host is bracketed before it is
+    /// matched, and the host must read back unchanged from the `Uri` it forms. A host that
+    /// does not is never exempt, so a dial errs toward the proxy, never a silent direct dial.
     #[must_use]
     pub fn exempts(&self, target_host: &str) -> bool {
         http::Uri::try_from(format!("http://{target_host}/"))
@@ -217,27 +222,4 @@ impl NoProxy {
             }
         })
     }
-}
-
-/// CIDR containment by prefix-length bit compare over octets — the ~10 lines that make an
-fn cidr_contains(net: &IpAddr, prefix: u8, addr: &IpAddr) -> bool {
-    match (net, addr) {
-        (IpAddr::V4(n), IpAddr::V4(a)) => octets_prefix_eq(&n.octets(), &a.octets(), prefix),
-        (IpAddr::V6(n), IpAddr::V6(a)) => octets_prefix_eq(&n.octets(), &a.octets(), prefix),
-        _ => false,
-    }
-}
-
-/// The first `prefix` bits of `net` and `addr` are equal. `prefix` is pre-validated against
-fn octets_prefix_eq(net: &[u8], addr: &[u8], prefix: u8) -> bool {
-    let whole = usize::from(prefix / 8);
-    let rem = prefix % 8;
-    if net[..whole] != addr[..whole] {
-        return false;
-    }
-    if rem == 0 {
-        return true;
-    }
-    let mask = 0xffu8 << (8 - rem);
-    (net[whole] & mask) == (addr[whole] & mask)
 }
