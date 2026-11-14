@@ -187,7 +187,13 @@ fn main() {
         }
     };
     if a.list {
-        let suites = scenario::load_suites(&a.scenarios_dir).unwrap_or_default();
+        let suites = match scenario::load_suites(&a.scenarios_dir) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        };
         for (k, v) in &suites {
             println!("suite {k}: {}", v.join(" "));
         }
