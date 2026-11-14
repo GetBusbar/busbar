@@ -572,7 +572,7 @@ pub struct DoorSteps<'s> {
 
     depth: u32,
 
-    credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    credential: Option<busbar_kernel::auth::CallerCredential>,
 
     ticket: Option<Vec<u8>>,
 
@@ -612,7 +612,7 @@ pub struct DoorCaller {
     pub depth: u32,
     /// The caller's verified credential, lent on the unit's record while it runs: a passthrough
     /// member's auth call made inside the unit (the plane's own fetches included) is lent it.
-    pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    pub credential: Option<busbar_kernel::auth::CallerCredential>,
     /// The record of the ticket the auth gate spent admitting the caller (row 132); `None` when a
     /// key admitted it.
     pub ticket: Option<Vec<u8>>,
@@ -1026,9 +1026,6 @@ impl DriverSteps for DoorSteps<'_> {
                         },
                     );
                     if let Some(credential) = &self.credential {
-                        busbar_contract::stage_probe::tick(
-                            busbar_contract::stage_probe::Derive::SecretCopy,
-                        );
                         records.lend(ctx.key.get(), credential.clone());
                     }
 

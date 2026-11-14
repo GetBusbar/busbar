@@ -210,10 +210,7 @@ impl DataRoutes {
             principal,
             key: gov.key.clone(),
             open,
-            credential: consumed
-                .caller
-                .as_ref()
-                .map(busbar_kernel::auth::CallerCredential::lend),
+            credential: consumed.caller,
             ticket: consumed.ticket,
             host_ticket_admission: consumed.host_ticket_admission,
         };
