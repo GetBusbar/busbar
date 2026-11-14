@@ -34,12 +34,30 @@
 # over [`MIN_PROFILE_FUNCS`] distinct functions).
 #
 # Usage:
-#   scripts/bolt-pass.sh --binary <path> (--fdata <path> | --perf-data <path>) --out <path>
+#   scripts/bolt-pass.sh --binary <path> (--yaml <path> | --fdata <path> | --perf-data <path>) --out <path>
 #
 #   --binary     the emit-relocs release binary to optimize
+#   --yaml       THE RELEASE INPUT: a committed BOLT YAML profile (release/bolt/<target>.yaml),
+#                recorded by the CI training job with `llvm-bolt -instrument` over the same workload
+#                PGO trains on (scripts/pgo-workload.sh). YAML carries per-block hashes, so the
+#                rewrite runs with -infer-stale-profile: functions that changed since the recording
+#                are matched by block hash instead of being dropped, and the output stays a pure
+#                function of (binary, committed profile, pinned llvm-bolt) - reproducible, OR
 #   --fdata      a BOLT profile already converted on the recording host, OR
 #   --perf-data  a raw `perf record` capture; the perf2bolt conversion runs here instead
 #   --out        where the optimized binary is written
+#
+#   scripts/bolt-pass.sh --ship <target> --binary <path> --out <path> --evidence-dir <dir>
+#
+#   --ship       THE RELEASE STEP, for every builder of the shipped bytes (release-build.sh, the
+#                oracle's candidate build, the benchmark build): the committed
+#                release/bolt/<target>.yaml is the profile (as --yaml), the llvm-bolt in use must
+#                be the version release/bolt/<target>.manifest records (two BOLT versions lay out
+#                the same input differently), the unstripped rewrite is kept as
+#                <dir>/busbar.symbols (same build-id: crash addresses symbolize against it), --out
+#                receives the `strip --strip-all` bytes (the symbol table and .rela.* the
+#                emit-relocs link kept only so BOLT could run), which must execute, and
+#                <dir>/busbar.bolt-applied records the version and the profile digest.
 #
 # Requires: llvm-bolt + perf2bolt (Ubuntu 24.04: the `bolt-20` package; detection below also scans
 # /usr/lib/llvm-*/bin for installs that never symlinked into /usr/bin), readelf (binutils), and
@@ -85,8 +103,15 @@ assert_profile() {
   # A row is any non-blank, non-comment line. The FUNCTION is the field a no-LBR fdata row carries
   # after its flags; counting distinct values of it is what separates "the capture saw the program"
   # from "the capture saw one function spin".
+  if [ "${2:-fdata}" = yaml ]; then
+    # A YAML profile's samples are its blocks (`- bid:` rows with counts); its reach is its
+    # `functions:` entries (`- name:` rows). Same floors, same meaning.
+    rows="$(grep -cE '^[[:space:]]*- bid:' "$f" || true)"; rows="${rows:-0}"
+    funcs="$(grep -E '^[[:space:]]*- name:' "$f" | sort -u | wc -l | tr -d ' ')"
+  else
   rows="$(grep -cvE '^[[:space:]]*(#|$)' "$f" || true)"; rows="${rows:-0}"
   funcs="$(grep -vE '^[[:space:]]*(#|$)' "$f" | awk '{ for (i = 1; i <= NF; i++) if ($i !~ /^[0-9]+$/) { print $i; break } }' | sort -u | wc -l | tr -d ' ')"
+  fi
   funcs="${funcs:-0}"
   if [ "$rows" -lt "$MIN_PROFILE_ROWS" ]; then
     echo "BOLT profile at $f carries $rows sampled row(s), floor is $MIN_PROFILE_ROWS. A near-empty profile is not an empty file: llvm-bolt exits 0, the output executes, and an essentially UNOPTIMIZED binary ships wearing the measured +38%. Non-empty was never the same as usable."
@@ -100,23 +125,35 @@ assert_profile() {
   return 0
 }
 
-BINARY="" FDATA="" PERF_DATA="" OUT=""
+BINARY="" FDATA="" PERF_DATA="" YAML="" OUT="" SHIP="" EVIDENCE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --binary)    BINARY="${2:?--binary needs a path}"; shift 2 ;;
+    --yaml)      YAML="${2:?--yaml needs a path}"; shift 2 ;;
     --fdata)     FDATA="${2:?--fdata needs a path}"; shift 2 ;;
     --perf-data) PERF_DATA="${2:?--perf-data needs a path}"; shift 2 ;;
     --out)       OUT="${2:?--out needs a path}"; shift 2 ;;
-    *) die "unknown argument '$1' (usage: bolt-pass.sh --binary <path> (--fdata <path> | --perf-data <path>) --out <path>)" ;;
+    --ship)      SHIP="${2:?--ship needs a release target}"; shift 2 ;;
+    --evidence-dir) EVIDENCE="${2:?--evidence-dir needs a directory}"; shift 2 ;;
+    *) die "unknown argument '$1' (usage: bolt-pass.sh --binary <path> (--yaml <path> | --fdata <path> | --perf-data <path> | --ship <target> --evidence-dir <dir>) --out <path>)" ;;
   esac
 done
 [ -n "$BINARY" ] || die "--binary is required"
 [ -n "$OUT" ] || die "--out is required"
-# Exactly one profile source: two would mean this script silently chose, and choosing is a knob.
-if [ -n "$FDATA" ] && [ -n "$PERF_DATA" ]; then
-  die "--fdata and --perf-data are mutually exclusive: pass the converted profile OR the raw capture, not both"
+if [ -n "$SHIP" ]; then
+  [ -z "$YAML$FDATA$PERF_DATA" ] || die "--ship takes its profile from release/bolt/$SHIP.yaml; pass no other profile"
+  [ -n "$EVIDENCE" ] || die "--ship requires --evidence-dir"
+  YAML="release/bolt/$SHIP.yaml"
+  [ -f "$YAML" ] || die "--ship $SHIP: no committed BOLT profile at $YAML"
+  WANT_BOLT="$(sed -n 's/^llvm_bolt_version=//p' "release/bolt/$SHIP.manifest" 2>/dev/null)"
+  [ -n "$WANT_BOLT" ] || die "release/bolt/$SHIP.manifest must record llvm_bolt_version"
+else
+  [ -z "$EVIDENCE" ] || die "--evidence-dir belongs to --ship"
 fi
-[ -n "$FDATA" ] || [ -n "$PERF_DATA" ] || die "one of --fdata or --perf-data is required"
+# Exactly one profile source: two would mean this script silently chose, and choosing is a knob.
+SOURCES=0
+for v in "$YAML" "$FDATA" "$PERF_DATA"; do [ -n "$v" ] && SOURCES=$((SOURCES + 1)); done
+[ "$SOURCES" -eq 1 ] || die "exactly one of --yaml, --fdata or --perf-data is required (got $SOURCES)"
 [ -f "$BINARY" ] || die "no binary at $BINARY"
 
 # ── tool detection ──────────────────────────────────────────────────────────────────────────────
@@ -132,7 +169,7 @@ find_tool() { # find_tool <name> -> path on stdout, empty if absent
   fi
   printf '%s' "$hit"
 }
-LLVM_BOLT="$(find_tool llvm-bolt)"
+LLVM_BOLT="${BUSBAR_LLVM_BOLT:-$(find_tool llvm-bolt)}"
 [ -n "$LLVM_BOLT" ] || die "llvm-bolt not found on PATH or under /usr/lib/llvm-*/bin. On Ubuntu 24.04: apt-get install bolt-20 (provides /usr/lib/llvm-20/bin/llvm-bolt and perf2bolt)."
 if [ -n "$PERF_DATA" ]; then
   PERF2BOLT="$(find_tool perf2bolt)"
@@ -140,6 +177,10 @@ if [ -n "$PERF_DATA" ]; then
 fi
 command -v readelf >/dev/null 2>&1 || die "readelf not found (install binutils) - the relocation guard below cannot run without it, and running without the guard is how a segfaulting binary ships green"
 log "llvm-bolt: $LLVM_BOLT"
+if [ -n "$SHIP" ]; then
+  HAVE_BOLT="$("$LLVM_BOLT" --version | sed -n 's/^.*LLVM version \([0-9][0-9.]*\).*$/\1/p' | head -1)"
+  [ "$HAVE_BOLT" = "$WANT_BOLT" ] || die "$LLVM_BOLT is LLVM $HAVE_BOLT, but $YAML was recorded with $WANT_BOLT (set BUSBAR_LLVM_BOLT to the pinned llvm-bolt)"
+fi
 
 # ── THE SEGFAULT GUARD: refuse a binary linked without --emit-relocs ────────────────────────────
 # llvm-bolt does not fail on such a binary; it produces one that crashes at runtime (observed on
@@ -166,7 +207,15 @@ if [ -n "$PERF_DATA" ]; then
   "$PERF2BOLT" -nl -p "$PERF_DATA" -o "$FDATA" "$BINARY" \
     || die "perf2bolt conversion failed - most commonly the capture was recorded against a DIFFERENT build of the binary; record and rewrite must use the same bytes"
 fi
-FLOOR_REPORT="$(assert_profile "$FDATA")" || die "$FLOOR_REPORT"
+if [ -n "$YAML" ]; then
+  FDATA="$YAML"
+  FLOOR_REPORT="$(assert_profile "$FDATA" yaml)" || die "$FLOOR_REPORT"
+  # Stale matching applies only to YAML (it needs the recorded block hashes).
+  STALE_FLAGS=(-infer-stale-profile)
+else
+  FLOOR_REPORT="$(assert_profile "$FDATA")" || die "$FLOOR_REPORT"
+  STALE_FLAGS=()
+fi
 log "$FLOOR_REPORT"
 
 # ── the rewrite: the exact proven recipe, no variations ─────────────────────────────────────────
@@ -175,6 +224,8 @@ log "$FLOOR_REPORT"
 #   -split-functions           move never-sampled tails of hot functions out of line
 #   -split-all-cold            and every fully-cold function too, shrinking the hot text that has
 #                              to fit in iTLB (the -83% iTLB-load-misses is this line's work)
+#   -infer-stale-profile       (--yaml only) match functions changed since the recording by block
+#                              hash rather than discarding their profile
 #   -use-gnu-stack             reuse the PT_GNU_STACK slot instead of growing the program-header
 #                              table, which not every loader tolerates moving
 log "rewriting $BINARY -> $OUT"
@@ -189,6 +240,7 @@ STAGED="$STAGE/$(basename "$OUT")"
   -split-functions \
   -split-all-cold \
   -use-gnu-stack \
+  ${STALE_FLAGS[@]+"${STALE_FLAGS[@]}"} \
   || die "llvm-bolt rewrite failed"
 [ -s "$STAGED" ] || die "llvm-bolt exited 0 but produced nothing at $STAGED"
 chmod +x "$STAGED"
@@ -203,6 +255,15 @@ case "$STAGED" in */*) RUN="$STAGED" ;; *) RUN="./$STAGED" ;; esac
 INFO="$("$RUN" --build-info)" \
   || die "the staged BOLTed binary at $STAGED failed to execute --build-info. This is the segfault signature; the output is broken and MUST NOT ship. (If the failure is exec-format, this host is not the binary's architecture - run the pass on a matching host.)"
 [ -n "$INFO" ] || die "the BOLTed binary executed but printed an empty build-provenance stamp"
+if [ -n "$SHIP" ]; then
+  mkdir -p "$EVIDENCE"
+  cp "$STAGED" "$EVIDENCE/busbar.symbols"
+  strip --strip-all -o "$STAGED.stripped" "$STAGED" || die "strip --strip-all of the rewrite failed"
+  "$STAGED.stripped" --build-info >/dev/null || die "the stripped BOLTed binary does not execute"
+  mv -f "$STAGED.stripped" "$STAGED"
+  printf 'llvm_bolt_version=%s\nprofile_sha256=%s\n' "$HAVE_BOLT" \
+    "$( (sha256sum "$YAML" 2>/dev/null || shasum -a 256 "$YAML") | cut -d' ' -f1)" > "$EVIDENCE/busbar.bolt-applied"
+fi
 mv -fT "$STAGED" "$OUT"
 log "verified: $OUT executes (build: $INFO)"
 log "done: $OUT"

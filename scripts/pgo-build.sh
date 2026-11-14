@@ -2,20 +2,25 @@
 # PGO build creator: produce a profile-guided-optimized busbar binary in three phases.
 #
 #   1. build instrumented      (-Cprofile-generate)
-#   2. train on a traffic MIX  (concurrent + governed: openai chat passthrough at 10x weight,
-#                               anthropic-ingress translation, SSE streaming, and an auth-refusal
-#                               sliver - all as signed-key Bearer traffic through the keys chain,
-#                               against an embedded zero-dependency mock upstream), repeated as
-#                               THREE independent trainer runs (fresh gateway process each) whose
-#                               raw profiles all feed ONE llvm-profdata merge - see TRAIN_RUNS
+#   2. train on a traffic MIX  (concurrent + governed: the benchmark's full 6 x 6 ingress x egress
+#                               grid with openai passthrough at 10x weight, SSE streaming, a large
+#                               body and an auth-refusal sliver - all as signed-key traffic through
+#                               the keys chain, against the GetBusbar/benchmarking `mock` upstream and
+#                               driven by its `otb loadgen`), repeated as THREE independent trainer
+#                               runs (fresh gateway process each) whose raw profiles all feed ONE
+#                               llvm-profdata merge - see TRAIN_RUNS
 #   3. build optimized         (-Cprofile-use)
 #
 # This is the release build: the layout of the shipped binary is deliberate (profile-guided),
-# not the linker's dice roll, and the profile regenerates fresh from THIS source tree on every
-# run - nothing is checked in, nothing goes stale. Usage:
+# not the linker's dice roll. Releases build from the profile COMMITTED for their target
+# (release/pgo/<target>.profdata, passed as PGO_PROFILE - phases 1-2 are skipped), so the optimized
+# build is a function of the tree alone. Training (PGO_TRAIN_ONLY=<out>) is the CI training job's
+# step; it needs the benchmarking rig (PGO_BENCH_MOCK, PGO_BENCH_OTB - see phase 2). Usage:
 #
-#   scripts/pgo-build.sh                # binary at target/pgo/release/busbar
-#   PGO_REQS=5000 scripts/pgo-build.sh  # more training requests per traffic shape
+#   PGO_PROFILE=release/pgo/<target>.profdata scripts/pgo-build.sh
+#                                       # optimized build; binary at target/pgo/release/busbar
+#   PGO_TRAIN_ONLY=out.profdata PGO_BENCH_MOCK=… PGO_BENCH_OTB=… scripts/pgo-build.sh
+#                                       # train and merge only; writes out.profdata
 #   PGO_TARGET=x86_64-unknown-linux-musl scripts/pgo-build.sh
 #                                       # cargo --target build; binary at
 #                                       # target/pgo/<target>/release/busbar. The instrumented
@@ -41,15 +46,13 @@
 # The workflow asserts this marker exists and is non-trivial before shipping, so it is impossible
 # to ship a non-PGO binary and pass. Every fatal exit removes any stale marker first.
 #
-# Knobs: PGO_REQS (base request count, default 2000; the openai passthrough volume shape runs
-# 10x this so its weight in the merged profile matches its weight in production; each of the
-# TRAIN_RUNS trainer runs drives 1/RUN_DIV of every shape - see the constants below), PGO_STREAMS
-# (streamed requests, default 200), PGO_CONC (loadgen keep-alive connections, default 32 - the
-# middle of the benchmark's c=8..64 range), PGO_PORT / PGO_MOCK_PORT (defaults 18080/18000),
-# PGO_TARGET (cargo --target). Requires: cargo, rustup (llvm-tools is installed on demand),
-# python3, curl. The training mix mirrors the benchmark suites (perf / xlate / stream) PLUS the
-# governed production shape (signed-key auth + group admission + per-principal reqlog); keep the
-# shapes in sync when the product grows a new hot path.
+# Knobs: PGO_UNIT_SECS (seconds of keep-alive load per mix unit, default 2; see phase 2's mix
+# table), PGO_CONC (loadgen keep-alive connections, default 32 - the middle of the benchmark's
+# c=8..64 range), PGO_PORT / PGO_MOCK_PORT (defaults 18080/18000), PGO_TARGET (cargo --target).
+# Requires: cargo, rustup (llvm-tools is installed on demand), python3, curl, and for training the
+# benchmarking rig binaries. The training mix is the benchmark's grid PLUS the governed production
+# shape (signed-key auth + group admission + per-principal reqlog); keep it in sync when the
+# product grows a new hot path.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
@@ -72,9 +75,6 @@ scripts/build-provenance-gate.sh --check-build-env || exit 1
 RECEIPT_WRAPPER="$(scripts/build-provenance-gate.sh --prepare-wrapper)" || exit 1
 RECEIPT_SOURCE="$(env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE git -C "$(pwd)" rev-parse --verify HEAD)" || exit 1
 
-REQS="${PGO_REQS:-2000}"
-STREAMS="${PGO_STREAMS:-200}"
-CONC="${PGO_CONC:-32}"
 # Multi-run profile accumulation - constants, NOT knobs: this is a fixed part of the release
 # recipe, not something to tune per build. A single trainer run's edge counters carry sampling
 # noise (racy non-atomic increments under concurrency, scheduler-dependent interleavings), and
@@ -83,12 +83,9 @@ CONC="${PGO_CONC:-32}"
 # each run flushes its own .profraw set - and then feeding ALL raw profiles to ONE llvm-profdata
 # merge averages the noise: llvm-profdata sums counters across inputs, and the sum of three
 # independent samples has a tighter relative error than any single one.
-# Wall-time math: each run drives 1/RUN_DIV of every shape's single-run count, so total counted
-# requests = TRAIN_RUNS/RUN_DIV = 3/2 = 1.5x the historical single-run volume; with 3x the
-# (seconds-scale) gateway boot/teardown, total training wall time lands in the 1.5-2x band.
-# Shape weights are ratios, so halving every shape per run preserves the mix exactly.
+# Wall time: roughly 50 mix units of load per run, so ~2 minutes per run at the default unit,
+# plus the seconds-scale gateway boot/teardown.
 TRAIN_RUNS=3
-RUN_DIV=2
 PORT="${PGO_PORT:-18080}"
 MOCK_PORT="${PGO_MOCK_PORT:-18000}"
 TARGET="${PGO_TARGET:-}"
@@ -162,6 +159,19 @@ case "$EFFECTIVE_TRIPLE" in
   *-windows-msvc) CRT_FLAG="-Ctarget-feature=+crt-static" ;;
   *)              CRT_FLAG="" ;;
 esac
+# PATH REMAPPING (reproducibility + privacy). Without it the shipped bytes embed the builder's
+# absolute paths - every panic location in a registry or git dependency names
+# $CARGO_HOME/registry/src/... or $CARGO_HOME/git/checkouts/..., and path dependencies outside the
+# dist/default workspace name the checkout - so the same tree built under another home or checkout
+# directory gives different bytes, and the release leaks the build host's layout. Measured on a
+# first-party plugin cdylib built the way release builds are: 52 such absolute paths. Both prefixes
+# map to fixed names. It joins BOTH PGO phases identically: LLVM names a local-linkage function in a
+# profile by its source path, so a profile trained under one mapping misses those functions under
+# another. release-build.sh's non-PGO arm carries the same two flags. Paths with whitespace cannot
+# ride RUSTFLAGS (cargo splits it on whitespace), so they are refused rather than half-applied.
+REMAP_HOME="${CARGO_HOME:-$HOME/.cargo}"
+case "$(pwd)$REMAP_HOME" in *[[:space:]]*) echo "the checkout or CARGO_HOME path contains whitespace; --remap-path-prefix cannot be passed through RUSTFLAGS" >&2; exit 1 ;; esac
+REMAP_FLAGS="--remap-path-prefix=$(pwd)=/busbar --remap-path-prefix=$REMAP_HOME=/cargo"
 # THE deterministic output path (see fail-closed rule above).
 OUT="target/pgo/${TARGET_SEG}release/busbar"
 # Positive-proof marker: written only after a verified PGO build; the workflow gates on it.
@@ -206,8 +216,9 @@ rm -f "$MARKER" 2>/dev/null || true
 # passed by scripts/release-build.sh as PGO_PROFILE). The optimized build is then a function of
 # the tree alone, and a second builder can reproduce it byte for byte. Training stays nondeterministic
 # (concurrency, timing), so it is done once, on purpose: PGO_TRAIN_ONLY=<path> runs phases 1-2 and
-# the merge, writes the merged profile to <path> and stops. `scripts/release/candidate.py
-# pgo-train` drives that, and a person reviews and commits the result. Both modes are fail-closed.
+# the merge, writes the merged profile to <path> and stops. The release training job drives
+# that on every release (with a drift check that fails a stale committed profile), and a person
+# reviews and commits the result. Both modes are fail-closed.
 if [ -n "${PGO_PROFILE:-}" ] && [ -n "${PGO_TRAIN_ONLY:-}" ]; then
   pgo_fail "PGO_PROFILE (build from a committed profile) and PGO_TRAIN_ONLY (train one) are exclusive"
 fi
@@ -215,7 +226,21 @@ if [ -n "${PGO_PROFILE:-}" ]; then
   [ -s "$PGO_PROFILE" ] || pgo_fail "the committed profile is missing or empty at $PGO_PROFILE"
   MERGED="$(cd "$(dirname "$PGO_PROFILE")" && pwd)/$(basename "$PGO_PROFILE")"
   MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
-  RAW_COUNT=committed
+  # THE PROFILE'S RECEIPT. A committed profile travels with the manifest its training run wrote
+  # (<profile minus .profdata>.manifest, key=value): the raw-profile count that fed it, its digest,
+  # and what trained it. The proof marker below must carry a NUMBER for profraw_count -
+  # verify-artifact.py's pgo_applied row refuses anything else - and the honest number for a
+  # committed profile is the one recorded when it was trained, not a placeholder. (The placeholder
+  # this replaces, `committed`, failed that row on every committed-profile release.) The digest
+  # check binds the receipt to these exact profile bytes.
+  PGO_MANIFEST="${MERGED%.profdata}.manifest"
+  [ -s "$PGO_MANIFEST" ] || pgo_fail "the committed profile has no training manifest at $PGO_MANIFEST (commit the .manifest the training job wrote beside it)"
+  RAW_COUNT="$(sed -n 's/^profraw_count=//p' "$PGO_MANIFEST")"
+  case "$RAW_COUNT" in ''|*[!0-9]*|0) pgo_fail "the training manifest $PGO_MANIFEST records no positive profraw_count ('$RAW_COUNT')" ;; esac
+  WANT_SHA="$(sed -n 's/^profile_sha256=//p' "$PGO_MANIFEST")"
+  HAVE_SHA="$( (sha256sum "$MERGED" 2>/dev/null || shasum -a 256 "$MERGED") | cut -d' ' -f1)"
+  [ -n "$WANT_SHA" ] && [ "$WANT_SHA" = "$HAVE_SHA" ] \
+    || pgo_fail "the committed profile's digest $HAVE_SHA does not match its training manifest ($WANT_SHA): the profile and its receipt are from different training runs"
   log "phases 1-2 skipped: building from the committed profile $MERGED (${MERGED_SIZE} bytes)"
 else
 # ---- phase 1: instrumented build ------------------------------------------------------------
@@ -226,7 +251,7 @@ rm -rf "$PROF_DIR"; mkdir -p "$PROF_DIR"
 # statement about a different binary.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
 BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
-RUSTFLAGS="-Cprofile-generate=$PROF_DIR${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
+RUSTFLAGS="-Cprofile-generate=$PROF_DIR $REMAP_FLAGS${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
   cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo-gen \
   || pgo_fail "instrumented build failed"
 INSTRUMENTED="target/pgo-gen/${TARGET_SEG}release/busbar"
@@ -247,265 +272,21 @@ INSTRUMENTED="target/pgo-gen/${TARGET_SEG}release/busbar"
 # flush proofs and the merge-time re-checks below still gate on the files that matter.
 rm -f "$PROF_DIR"/*.profraw
 
-# ---- embedded mock upstream (zero deps: python3 stdlib) --------------------------------------
-# Speaks just enough OpenAI chat-completions for training: fixed JSON reply, and a paced SSE
-# stream when the request body carries "stream": true. Not a test double for correctness - a
-# traffic generator's counterparty. The benchmark repo's mock is the real one; this exists so
-# the release build has no external checkout dependency.
-cat > "$WORK/mock.py" <<'PY'
-import http.server, json, time, sys
-PORT = int(sys.argv[1])
-# ~600 B of completion content (not a 22-byte quip): the response parse/serialize/usage-tap
-# paths should train on the body sizes a real completion has.
-BODY = json.dumps({
-    "id": "chatcmpl-pgo", "object": "chat.completion", "created": 0, "model": "gpt-4o-mini",
-    "choices": [{"index": 0, "message": {"role": "assistant", "content": "profile training reply. " * 24},
-                  "finish_reason": "stop"}],
-    "usage": {"prompt_tokens": 12, "completion_tokens": 96, "total_tokens": 108},
-}).encode()
-CHUNK = ('data: ' + json.dumps({"id": "chatcmpl-pgo", "object": "chat.completion.chunk",
-         "created": 0, "model": "gpt-4o-mini",
-         "choices": [{"index": 0, "delta": {"content": "tok "}, "finish_reason": None}]}) + '\n\n').encode()
-class H(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    def log_message(self, *a): pass
-    def do_POST(self):
-        n = int(self.headers.get("content-length", 0))
-        body = self.rfile.read(n)
-        if b'"stream": true' in body or b'"stream":true' in body:
-            self.send_response(200)
-            self.send_header("content-type", "text/event-stream")
-            self.send_header("transfer-encoding", "chunked")
-            self.end_headers()
-            def w(b):
-                self.wfile.write(f"{len(b):x}\r\n".encode() + b + b"\r\n")
-            for _ in range(16):
-                w(CHUNK); self.wfile.flush(); time.sleep(0.005)
-            w(b"data: [DONE]\n\n"); w(b""); self.wfile.flush()
-        else:
-            self.send_response(200)
-            self.send_header("content-type", "application/json")
-            self.send_header("content-length", str(len(BODY)))
-            self.end_headers()
-            self.wfile.write(BODY)
-class S(http.server.ThreadingHTTPServer):
-    daemon_threads = True
-    # socketserver's default listen backlog is 5: a concurrent trainer ramping its egress pool
-    # overflows that, the connect errors trip busbar's breaker, and the run 503s spuriously.
-    request_queue_size = 128
-S(("127.0.0.1", PORT), H).serve_forever()
-PY
-
-# ---- embedded loadgen (zero deps: python3 stdlib) --------------------------------------------
-# Replaces the per-request `xargs -P curl` trainer. That loop spawned a fresh process AND a fresh
-# TCP connection for every request, which (a) capped training volume at under ~1k req/s of mostly
-# fork/exec, and (b) trained the accept/handshake/connection-setup path as if it ran once PER
-# REQUEST - when the benchmark that matters (c=8..64 openai passthrough on keep-alive
-# connections) runs it approximately never. The counter distribution was the inverse of
-# production. This loadgen holds PGO_CONC persistent connections busy, so the tokio scheduler,
-# hyper keep-alive read path, and the reqwest egress pool all train under real concurrency
-# (instrumented counters are per-edge counts; racy non-atomic drops under contention are
-# proportional, so concurrency loses nothing and gains the contended paths). FAIL-CLOSED: any
-# response with an unexpected status exits non-zero - the old curl loop never checked status, so
-# a trainer that silently 4xx'd every request would have profiled the refusal path as "success".
-#   argv: port conc total expected-status path; body on stdin
-#   env:  PGO_LOADGEN_HEADERS - newline-separated header=value lines
-# CREDENTIALS TRAVEL IN THE ENVIRONMENT, NOT ON ARGV. Every shape below authenticates with the run's
-# minted bbk_* key, and an argv is world-readable via `ps` for the whole life of the process - on a
-# shared or developer box that is the trainer's live credential on display for the duration of a
-# multi-thousand-request run. The HEADERS THEMSELVES ARE UNCHANGED: same names, same values, same
-# request bytes on the wire, so the profile this trains is identical. Only the shell-to-python
-# transport moved.
-cat > "$WORK/loadgen.py" <<'PY'
-import http.client, os, sys, threading, time
-PORT, CONC, TOTAL = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
-EXPECT, PATH = int(sys.argv[4]), sys.argv[5]
-HDRS = {"content-type": "application/json"}
-for kv in os.environ.get("PGO_LOADGEN_HEADERS", "").splitlines():
-    if not kv.strip():
-        continue
-    k, _, v = kv.partition("="); HDRS[k] = v
-BODY = sys.stdin.buffer.read()
-lock, errs, first = threading.Lock(), [0], [None]
-def worker(n):
-    conn = http.client.HTTPConnection("127.0.0.1", PORT)
-    for _ in range(n):
-        status, data = -1, b""
-        for _attempt in (0, 1):
-            try:
-                conn.request("POST", PATH, BODY, HDRS)
-                r = conn.getresponse(); data = r.read(); status = r.status
-                if r.will_close:  # server said Connection: close (e.g. after a 401): reopen
-                    conn.close(); conn = http.client.HTTPConnection("127.0.0.1", PORT)
-                break
-            except Exception as e:
-                # A keep-alive connection the server already closed surfaces as a broken
-                # write on the NEXT request: reconnect and retry that request once.
-                data = repr(e).encode()
-                conn.close(); conn = http.client.HTTPConnection("127.0.0.1", PORT)
-        if status != EXPECT:
-            with lock:
-                errs[0] += 1
-                if first[0] is None:
-                    first[0] = (status, data[:200])
-    conn.close()
-base, extra = divmod(TOTAL, CONC)
-ts = [threading.Thread(target=worker, args=(base + (1 if i < extra else 0),)) for i in range(CONC)]
-t0 = time.time()
-for t in ts: t.start()
-for t in ts: t.join()
-dt = max(time.time() - t0, 1e-9)
-print("    %d/%d ok in %.1fs (%d req/s)" % (TOTAL - errs[0], TOTAL, dt, TOTAL / dt), file=sys.stderr)
-if errs[0]:
-    print("    FIRST FAILURE: status=%s body=%r" % first[0], file=sys.stderr)
-    sys.exit(1)
-PY
-
-# ---- busbar training config (mirrors the benchmark manifest's shape) -------------------------
-# Written per trainer run because each run binds its own port stride (see the training loop);
-# everything except the ports is byte-identical across runs.
-. scripts/pgo-config.sh
-
 # ---- phase 2: train --------------------------------------------------------------------------
-# Per-run shape counts: 1/RUN_DIV of the historical single-run mix (see TRAIN_RUNS/RUN_DIV at
-# the top). The shapes' RELATIVE weights - openai volume at 10x, large-body and anthropic
-# translation at 1x, the stream count, the ~1% refusal sliver - are unchanged; only the absolute
-# per-run counts shrink, and the merge sums them back across runs.
-#
-# SIGNED-TOKEN COVERAGE, verified (do not add a dedicated "signed" shape): every shape below
-# ALREADY sends a signed busbar token - the minted bbk_* Bearer/x-api-key credential IS the
-# 1.5.0 Ed25519 signed token (there is no other bearer-credential shape), so ed25519 verify,
-# the generation gate, AND the per-request hex digesting all train at full volume. The
-# drift-check once flagged `hex::ToHex::encode_hex` (the reqlog chain digest, reached via
-# ingress finish_inner -> busbar_api::auth::sha256_hex on every governed request) as a trainer
-# gap; the calibration profile disproved it - sha256_hex carried one call per counted request
-# (8052 across 3 runs at PGO_REQS=400) with 32-iteration hex-loop counters inside - the symbol
-# merely INLINES AWAY in the instrumented binary while production's optimized binary outlines
-# it. scripts/pgo-drift-check.sh now classifies that case (instrumentation-invisible) instead
-# of misreporting it as a scenario gap.
-RUN_VOLUME=$((REQS * 10 / RUN_DIV))
-RUN_REQS=$((REQS / RUN_DIV))
-RUN_STREAMS=$((STREAMS / RUN_DIV))
-RUN_REFUSALS=$((REQS / 10 / RUN_DIV))
-# The warmup was 500 in the single-run era; it is uncounted overhead paid once per run, so it
-# halves per run too (total warmup 750 vs 500 - the extra 250 is part of the 1.5-2x budget).
-RUN_WARMUP=$((500 / RUN_DIV))
-log "phase 2/3: training ($TRAIN_RUNS runs, c=$CONC, per run: $RUN_VOLUME openai + $RUN_REQS large-body + $RUN_REQS xlate + $RUN_STREAMS streams + $RUN_REFUSALS refusals)"
-# The signing key is minted by the instrumented binary itself (offline, needs no config): the
-# trainer stays in the grammar of the binary it trains, and the CLI arm gets a profile too.
-# One key serves all runs - it is env-provided config, so reusing it keeps the runs identical
-# in everything except the counter noise the multi-run merge exists to average out.
-PGO_SIGNING_KEY="$("./$INSTRUMENTED" --generate-signing-key 2>/dev/null)"
-[ -n "$PGO_SIGNING_KEY" ] || pgo_fail "--generate-signing-key produced no key"
-PGO_ADMIN_TOKEN="pgo-admin-$$"
-export PGO_SIGNING_KEY PGO_ADMIN_TOKEN
-
-OPENAI_BODY='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"profile training request with a moderately sized body to exercise the parser"}]}'
-# ~1.4 KB request-body variant: real prompts are not one-liners, so the ingress parse/copy
-# paths get a size distribution instead of a single 130-byte point.
-FILLER="$(printf 'profile training filler segment %.0s' $(seq 1 42))"
-OPENAI_BODY_LARGE='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"'"$FILLER"'"}]}'
-ANTH_BODY='{"model":"gpt-4o-mini","max_tokens":64,"messages":[{"role":"user","content":"profile training request for the translation path"}]}'
-STREAM_BODY='{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"streaming profile training"}]}'
-
-# Each iteration is a complete, independent trainer run: fresh mock, fresh gateway process,
-# fresh in-memory client key. Each run's gateway gets an explicit per-run LLVM_PROFILE_FILE
-# (run<N>_%m_%p.profraw) instead of the toolchain default: rustc's default pattern is %m-only,
-# under which same-binary processes ONLINE-merge into a single locked file - counters would
-# still accumulate, but no per-run artifact would exist to verify. The explicit per-run name
-# makes each run's flush a checkable fact, and the final llvm-profdata merge sums all runs'
-# sets. Any failure in any run goes through pgo_fail: multi-run does not soften fail-closed -
-# three chances to fail, still zero chances to ship untrained.
+# The workload lives in scripts/pgo-workload.sh (one trainer run against a given binary), because the
+# BOLT pass replays the SAME traffic against its instrumented rewrite: one definition of
+# representative traffic for both profile-guided passes. It drives the GetBusbar/benchmarking rig -
+# its `mock` upstream and `otb loadgen` - built READ-ONLY at that repository's ENGINE_PIN commit and
+# passed in as PGO_BENCH_MOCK / PGO_BENCH_OTB (the rig is the benchmark's frozen instrument; it is
+# never edited for training). Each run is a complete, independent trainer run: fresh mock, fresh
+# gateway process, fresh in-memory client key, with an explicit per-run LLVM_PROFILE_FILE
+# (run<N>_%m_%p.profraw) so each run's flush is a checkable fact. Any failure in any run is fatal:
+# multi-run does not soften fail-closed.
+log "phase 2/3: training ($TRAIN_RUNS runs via scripts/pgo-workload.sh)"
 for RUN in $(seq 1 "$TRAIN_RUNS"); do
-  # Deterministic per-run port stride (+10 per run, both listeners and the mock): back-to-back
-  # runs never contend with the previous run's connections lingering in TIME_WAIT, and nothing
-  # here depends on wall clock or randomness.
-  RUN_PORT=$((PORT + (RUN - 1) * 10))
-  RUN_MOCK_PORT=$((MOCK_PORT + (RUN - 1) * 10))
-  write_run_configs "$RUN_PORT" "$RUN_MOCK_PORT"
-  # Validate the training config with the binary BEFORE serving: this names the failure that the
-  # 1.5.3 grammar break (documented at the config above) produced as a silent dead trainer.
-  BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" PGO_MOCK_KEY=x \
-    "./$INSTRUMENTED" --validate \
-    || pgo_fail "run $RUN/$TRAIN_RUNS: training config rejected by the binary it trains (--validate)"
-  python3 "$WORK/mock.py" "$RUN_MOCK_PORT" & MOCK_PID=$!
-  LLVM_PROFILE_FILE="$PROF_DIR/run${RUN}_%m_%p.profraw" \
-    BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" PGO_MOCK_KEY=x \
-    "./$INSTRUMENTED" & BUSBAR_PID=$!
-  for _ in $(seq 1 50); do
-    curl -sf -o /dev/null "http://127.0.0.1:$RUN_PORT/healthz" && break; sleep 0.2
-  done
-  # The instrumented binary must actually be serving (it may not even be host-executable under a
-  # cross PGO_TARGET) - a dead trainer means no profile, so fail loud now rather than merge-fail.
-  curl -sf -o /dev/null "http://127.0.0.1:$RUN_PORT/healthz" \
-    || pgo_fail "run $RUN/$TRAIN_RUNS: instrumented busbar never became healthy (not host-executable, or crashed)"
-
-  # Mint the run's client key on the admin listener (per run - the key store is in-memory, so it
-  # dies with the run's gateway). This also trains the admin plane (admin chain, scope check,
-  # mutation limiter, audit) - one warm request on an otherwise-cold surface, now once per run.
-  # The admin bearer goes in a mktemp'd header file inside $WORK (removed by the EXIT trap), not on
-  # curl's argv, which `ps` shows to every user on the box for the life of the process. Same header,
-  # same request bytes, same admin-plane path trained.
-  printf 'authorization: Bearer %s\n' "$PGO_ADMIN_TOKEN" > "$WORK/admin-hdr"
-  CLIENT_TOKEN="$(curl -sS -X POST "http://127.0.0.1:$((RUN_PORT + 1))/api/v1/admin/keys" \
-    -H @"$WORK/admin-hdr" -H "content-type: application/json" \
-    -d '{"name":"pgo","group":"bench","expires_in":"1h"}' \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')" \
-    || pgo_fail "run $RUN/$TRAIN_RUNS: key mint on the admin listener failed"
-  # The malformed-token message reports the SHAPE, never the value. The old message interpolated
-  # $CLIENT_TOKEN verbatim: it fires when the value is not bbk_-prefixed, which is normally an error
-  # body, but the day that prefix changes it would print a live credential into the build log.
-  case "$CLIENT_TOKEN" in
-    bbk_*) ;;
-    *) pgo_fail "run $RUN/$TRAIN_RUNS: minted client token malformed (${#CLIENT_TOKEN} chars, starts '$(printf '%.4s' "$CLIENT_TOKEN")', expected a bbk_ prefix) - the admin mint returned something that is not a key" ;;
-  esac
-
-  # The per-shape header sets, carried to the loadgen in the environment rather than on its argv
-  # (see the loadgen's header note). Identical header names and values to before, so every shape
-  # sends byte-identical requests and trains exactly what it trained.
-  BEARER_HDRS="authorization=Bearer $CLIENT_TOKEN"
-  ANTH_HDRS="$(printf 'x-api-key=%s\nanthropic-version=2023-06-01' "$CLIENT_TOKEN")"
-  BOGUS_HDRS="authorization=Bearer bbk_bogus.bogus"
-
-  # warmup (uncounted): ramp the reqwest egress pool and let reliability state learn the lane
-  # healthy BEFORE the volume shape, so training measures steady state, not cold-start ramp.
-  printf '%s' "$OPENAI_BODY" | PGO_LOADGEN_HEADERS="$BEARER_HDRS" \
-    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_WARMUP" 200 /v1/chat/completions \
-    || pgo_fail "run $RUN/$TRAIN_RUNS: training warmup failed"
-  # shape 1: openai chat passthrough at 10x weight - THE volume path; its share of the merged
-  # profile's counts should match its share of production load, so branch statistics and the
-  # hot/cold split are decided by this shape.
-  printf '%s' "$OPENAI_BODY" | PGO_LOADGEN_HEADERS="$BEARER_HDRS" \
-    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_VOLUME" 200 /v1/chat/completions \
-    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 1 (openai chat) failed"
-  log "  run $RUN/$TRAIN_RUNS: shape 1 (openai chat x$RUN_VOLUME) done"
-  printf '%s' "$OPENAI_BODY_LARGE" | PGO_LOADGEN_HEADERS="$BEARER_HDRS" \
-    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REQS" 200 /v1/chat/completions \
-    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 1b (openai chat, large body) failed"
-  log "  run $RUN/$TRAIN_RUNS: shape 1b (openai chat, large body) done"
-  # shape 2: anthropic ingress -> openai upstream (the translation path). x-api-key, not Bearer:
-  # that is what real anthropic-dialect clients send, and it trains the second extractor branch.
-  printf '%s' "$ANTH_BODY" | PGO_LOADGEN_HEADERS="$ANTH_HDRS" \
-    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REQS" 200 /v1/messages \
-    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 2 (anthropic translation) failed"
-  log "  run $RUN/$TRAIN_RUNS: shape 2 (anthropic translation) done"
-  # shape 3: SSE streaming relay (the loadgen's read() drains the chunked event stream to
-  # completion, so the relay's full write-flush-finish path trains, not just the headers).
-  printf '%s' "$STREAM_BODY" | PGO_LOADGEN_HEADERS="$BEARER_HDRS" \
-    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_STREAMS" 200 /v1/chat/completions \
-    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 3 (SSE streaming) failed"
-  log "  run $RUN/$TRAIN_RUNS: shape 3 (SSE streaming) done"
-  # shape 4: refusal sliver (~1% of the mix, expects 401): biases the verify branch correctly
-  # (valid overwhelmingly likely) while still giving the reject/finish_rejected arms real counts
-  # instead of zero - small enough that refusal code is not promoted into the hot layout.
-  printf '%s' "$OPENAI_BODY" | PGO_LOADGEN_HEADERS="$BOGUS_HDRS" \
-    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REFUSALS" 401 /v1/chat/completions \
-    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 4 (auth refusal) failed"
-  log "  run $RUN/$TRAIN_RUNS: shape 4 (auth refusal) done"
-
-  # graceful stop so the runtime flushes this run's .profraw files before the next run boots
-  kill "$BUSBAR_PID"; wait "$BUSBAR_PID" 2>/dev/null || true; BUSBAR_PID=""
-  kill "$MOCK_PID" 2>/dev/null || true; wait "$MOCK_PID" 2>/dev/null || true; MOCK_PID=""
+  LLVM_PROFILE_FILE="$PROF_DIR/run${RUN}_%m_%p.profraw" PGO_PORT="$PORT" PGO_MOCK_PORT="$MOCK_PORT" \
+    scripts/pgo-workload.sh --binary "$INSTRUMENTED" --run "$RUN" --runs "$TRAIN_RUNS" \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: the training workload failed (see [pgo-workload] above)"
   # Per-run flush proof: the run's gateway must have written its named .profraw set. A run that
   # served traffic but flushed nothing would silently thin the merge below the designed three
   # samples - fail closed here, attributed to the run that lost its profile.
@@ -543,6 +324,23 @@ MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 if [ -n "${PGO_TRAIN_ONLY:-}" ]; then
   mkdir -p "$(dirname "$PGO_TRAIN_ONLY")"
   cp "$MERGED" "$PGO_TRAIN_ONLY" || pgo_fail "could not write the trained profile to $PGO_TRAIN_ONLY"
+  # The receipt a committed-profile build reads back (see PGO_MANIFEST above). Deliberately no
+  # wall-clock field: the manifest is committed, and two reviews of the same training run must
+  # see the same bytes.
+  {
+    echo "profraw_count=$RAW_COUNT"
+    echo "profile_bytes=$MERGED_SIZE"
+    echo "profile_sha256=$( (sha256sum "$MERGED" 2>/dev/null || shasum -a 256 "$MERGED") | cut -d' ' -f1)"
+    echo "source_commit=$RECEIPT_SOURCE"
+    echo "toolchain=$(rustc -V)"
+    echo "target=${TARGET:-$EFFECTIVE_TRIPLE}"
+    echo "target_features=${LSE_FLAG:+lse}"
+    echo "arm64_baseline=${BUSBAR_ARM64_BASELINE:-0}"
+    echo "train_runs=$TRAIN_RUNS"
+    echo "unit_secs=${PGO_UNIT_SECS:-2}"
+    echo "conc=${PGO_CONC:-32}"
+    echo "bench_engine_pin=${PGO_BENCH_ENGINE_PIN:-unrecorded}"
+  } > "${PGO_TRAIN_ONLY%.profdata}.manifest" || pgo_fail "could not write the training manifest"
   log "trained profile: $PGO_TRAIN_ONLY (${MERGED_SIZE} bytes from ${RAW_COUNT} .profraw); review and commit it"
   exit 0
 fi
@@ -562,7 +360,7 @@ fi
 # here exactly as it joined the instrumented build, and BOLT's emit-relocs path is unchanged by it.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
 BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
-RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
+RUSTFLAGS="-Cprofile-use=$MERGED $REMAP_FLAGS${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
   python3 scripts/release/cargo_capture.py --directory "${BUSBAR_CARGO_CAPTURE_DIR:-$WORK/cargo-final}" -- \
   build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
@@ -607,8 +405,7 @@ scripts/build-provenance-gate.sh "$OUT" release true \
   echo "target_features=${LSE_FLAG:+lse}"
   echo "arm64_baseline=${BUSBAR_ARM64_BASELINE:-0}"
   echo "train_runs=$TRAIN_RUNS"
-  echo "reqs_per_shape=$REQS"
-  echo "streams=$STREAMS"
+  echo "unit_secs=${PGO_UNIT_SECS:-2}"
   echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$MARKER" || pgo_fail "could not write proof marker at $MARKER"
 [ -s "$MARKER" ] || pgo_fail "proof marker empty after write at $MARKER"
