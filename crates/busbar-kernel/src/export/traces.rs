@@ -27,6 +27,52 @@ pub fn layer<S: Subscriber + for<'a> LookupSpan<'a>>(floor: LevelFilter) -> Opti
     super::plugin::axis().map(|_| producer)
 }
 
+/// Whether any opened sink wants the Traces stream; set once, right before the
+/// interest rebuild that follows OPEN. The sink set is fixed for the process
+/// (a membership or projection change requires a restart), so is this.
+static TRACES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Called by OPEN once the sink set is fixed, before its interest rebuild, so
+/// that rebuild reads this layer's final hint.
+pub(super) fn sinks_fixed() {
+    let _ = TRACES.set(super::plugin::sinks().any(|s| s.projection.wants_stream(Traces)));
+}
+
+/// The traces layer's filter. Before OPEN it consults `wanted` per callsite,
+/// as boot needs. After OPEN with no Traces sink it is `never` everywhere and
+/// hints OFF, so it neither runs per event nor holds the process level up.
+struct SinkFilter<W> {
+    wanted: W,
+    floor: LevelFilter,
+}
+
+impl<S, W: Fn(&tracing::Metadata<'_>) -> bool> tracing_subscriber::layer::Filter<S>
+    for SinkFilter<W>
+{
+    fn enabled(&self, meta: &tracing::Metadata<'_>, _: &Context<'_, S>) -> bool {
+        match TRACES.get() {
+            Some(false) => false,
+            None | Some(true) => (self.wanted)(meta),
+        }
+    }
+
+    fn callsite_enabled(&self, meta: &'static tracing::Metadata<'static>) -> Interest {
+        match TRACES.get() {
+            None => Interest::sometimes(),
+            Some(false) => Interest::never(),
+            Some(true) if (self.wanted)(meta) => Interest::always(),
+            Some(true) => Interest::never(),
+        }
+    }
+
+    fn max_level_hint(&self) -> Option<LevelFilter> {
+        match TRACES.get() {
+            Some(false) => Some(LevelFilter::OFF),
+            None | Some(true) => Some(self.floor),
+        }
+    }
+}
+
 fn deliver(facts: &Fields, span: Option<&[u8]>) {
     let ingress = first_text(facts, F::Ingress).unwrap_or_default();
     if tokio::runtime::Handle::try_current().is_ok() {
