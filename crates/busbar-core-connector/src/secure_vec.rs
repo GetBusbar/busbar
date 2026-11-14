@@ -209,6 +209,9 @@ impl fmt::Debug for SecureVec {
 /// door, and core never names a plugin as trusted (TRANSPORT-TLS §2.0 rule 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tail {
+    /// The reader copies exactly the count it returns: only rustls' plaintext `Reader::read`
+    /// into a region sized to that count (T6).
+    Trusted,
     /// Wipe `[k, max)` after the read.
     Wipe,
 }
@@ -220,6 +223,9 @@ thread_local! {
     /// The carrier read's scratch (T11-dev): taken only in `Connection::read`, held until `feed`
     /// returns.
     pub(crate) static READ_SCRATCH: Slot = Cell::new(Some(SecureVec::new()));
+    /// The TLS plaintext's scratch (T6): taken only in `feed`, after the `process_new_packets`
+    /// loop, held until `ingest` returns. It nests inside `READ_SCRATCH` and never contends.
+    pub(crate) static TLS_PLAIN: Slot = Cell::new(Some(SecureVec::new()));
 }
 
 /// A slot's buffer, taken for one read. Drop wipes what it holds and puts it back, so the slot is
