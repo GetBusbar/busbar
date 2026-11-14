@@ -2435,3 +2435,30 @@ fn linked_product_digest_hashes_the_running_image() {
     ));
     assert_eq!(executable_sha256().expect("running image digest"), expected);
 }
+
+#[test]
+fn a_failed_running_image_digest_is_retried_not_kept() {
+    let cell = DigestCell::new();
+    assert_eq!(
+        once_digest(&cell, || Err("transient".to_owned())),
+        Err("transient".to_owned())
+    );
+    assert_eq!(
+        once_digest(&cell, || Ok("digest".to_owned())),
+        Ok("digest".to_owned()),
+        "a transient failure must not refuse every later linked principal transition"
+    );
+    assert_eq!(
+        once_digest(&cell, || Err("later".to_owned())),
+        Ok("digest".to_owned()),
+        "a computed digest is kept"
+    );
+}
+
+#[test]
+fn an_unreadable_running_image_refusal_names_it_and_why() {
+    let refusal = executable_refusal(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert!(refusal.contains(RUNNING_EXECUTABLE), "{refusal}");
+    assert!(refusal.contains("linked auth principal"), "{refusal}");
+    assert!(refusal.contains("permission denied"), "{refusal}");
+}

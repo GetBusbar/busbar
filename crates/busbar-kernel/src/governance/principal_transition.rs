@@ -2088,6 +2088,12 @@ pub fn requirements(
     Ok(requirements)
 }
 
+/// What [`running_executable`] opens, as its refusals name it.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const RUNNING_EXECUTABLE: &str = "/proc/self/exe";
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const RUNNING_EXECUTABLE: &str = "the running executable (std::env::current_exe)";
+
 /// The image this process is running, opened for hashing.
 ///
 /// On Linux `/proc/self/exe` names the mapped inode itself, so a file renamed over the
@@ -2096,7 +2102,7 @@ pub fn requirements(
 fn running_executable() -> std::io::Result<std::fs::File> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        std::fs::File::open("/proc/self/exe")
+        std::fs::File::open(RUNNING_EXECUTABLE)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
@@ -2104,24 +2110,38 @@ fn running_executable() -> std::io::Result<std::fs::File> {
     }
 }
 
+/// The running image's digest, once it has been computed.
+type DigestCell = std::sync::OnceLock<Result<String, String>>;
+
 fn executable_sha256() -> Result<String, String> {
-    static DIGEST: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
-    DIGEST
-        .get_or_init(|| {
-            use std::io::Read;
-            let mut file = running_executable().map_err(|e| e.to_string())?;
-            let mut digest = Sha256::new();
-            let mut bytes = [0u8; 65536];
-            loop {
-                let n = file.read(&mut bytes).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    break;
-                }
-                digest.update(&bytes[..n]);
+    static DIGEST: DigestCell = DigestCell::new();
+    once_digest(&DIGEST, || {
+        use std::io::Read;
+        let mut file = running_executable().map_err(executable_refusal)?;
+        let mut digest = Sha256::new();
+        let mut bytes = [0u8; 65536];
+        loop {
+            let n = file.read(&mut bytes).map_err(executable_refusal)?;
+            if n == 0 {
+                break;
             }
-            Ok(hex::encode(digest.finalize()))
-        })
-        .clone()
+            digest.update(&bytes[..n]);
+        }
+        Ok(hex::encode(digest.finalize()))
+    })
+}
+
+/// The digest `cell` holds, computed by `hash` when it holds none.
+fn once_digest(
+    cell: &DigestCell,
+    hash: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    cell.get_or_init(hash).clone()
+}
+
+/// The refusal for a running image that could not be opened or read.
+fn executable_refusal(error: std::io::Error) -> String {
+    error.to_string()
 }
 
 fn tracked(requirements: &[Requirement]) -> impl Iterator<Item = &Requirement> {
