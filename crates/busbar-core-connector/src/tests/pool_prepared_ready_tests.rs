@@ -599,6 +599,50 @@ fn on_thread<T: Send + 'static>(
     rx
 }
 
+/// One worker thread T, as a worker makes its exchanges: lines are pooled per thread (each
+/// thread's pool shard), so P's prepare and S's open are made on T, S's when the test says go.
+struct Worker {
+    p: ConnId,
+    go: mpsc::Sender<()>,
+    s: mpsc::Receiver<Option<Result<ConnId, ConnError>>>,
+}
+
+impl Worker {
+    /// Prepare `desc` on a new thread T; T then waits for [`Worker::open_s`].
+    fn prepare(rt: &tokio::runtime::Runtime, c: &Arc<Connector>, far: &str) -> Self {
+        let (p_tx, p_rx) = mpsc::channel();
+        let (go, wait) = mpsc::channel::<()>();
+        let s = on_thread(rt, {
+            let c = Arc::clone(c);
+            let far = far.to_owned();
+            move || {
+                let _ = p_tx.send(c.prepare_request(OWNER, NEED, &prepared_request(&far), 5000));
+                wait.recv_timeout(BOUND).ok()?;
+                Some(c.open(OWNER, NEED, &request(&far, b"s", 0)))
+            }
+        });
+        let p = p_rx
+            .recv_timeout(BOUND)
+            .expect("T prepares")
+            .expect("the prepare is taken");
+        Self { p, go, s }
+    }
+
+    /// T opens S (its drive may block on an armed gate).
+    fn open_s(&self) {
+        let _ = self.go.send(());
+    }
+
+    /// S, once T's open returned.
+    fn s(&self) -> ConnId {
+        self.s
+            .recv_timeout(BOUND)
+            .expect("S's open on T returns")
+            .expect("T was told to open S")
+            .expect("S opens")
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The tests.
 
@@ -868,16 +912,13 @@ fn prepared_fresh_h2c_line_lent_while_connecting_waits() {
     );
 
     let desc = prepared_request(&far.addr);
-    let p = prepare(&c, &desc);
+    let t = Worker::prepare(&rt, &c, &far.addr);
+    let p = t.p;
     let line = line_of(&c, p);
     assert!(line.multiplexes(), "prior knowledge: h2 from the dial");
 
     let gate = carrier.connect.arm();
-    let t = on_thread(&rt, {
-        let c = Arc::clone(&c);
-        let far = far.addr.clone();
-        move || c.open(OWNER, NEED, &request(&far, b"s", 0))
-    });
+    t.open_s();
     let entered = gate.entered();
     assert_eq!(
         line.users(),
@@ -900,10 +941,7 @@ fn prepared_fresh_h2c_line_lent_while_connecting_waits() {
     assert!(dial_due_armed(&c, p), "P's dial bound is still armed");
 
     gate.release();
-    let s = t
-        .recv_timeout(BOUND)
-        .expect("S's open returns")
-        .expect("S opens");
+    let s = t.s();
     until("the ticket waker fires once the connect lands", || {
         (wakes.load(Ordering::SeqCst) > before).then_some(())
     });
@@ -1029,7 +1067,8 @@ fn prepared_facts_wait_while_begin_parked() {
     );
 
     let desc = prepared_request(&far.addr);
-    let p = prepare(&c, &desc);
+    let t = Worker::prepare(&rt, &c, &far.addr);
+    let p = t.p;
     let line = line_of(&c, p);
     until("P's handshake completes and its begin parks", || {
         match c.landed(OWNER, p, TICKET) {
@@ -1045,11 +1084,7 @@ fn prepared_facts_wait_while_begin_parked() {
     );
 
     let gate = door.resume.arm();
-    let t = on_thread(&rt, {
-        let c = Arc::clone(&c);
-        let far = far.addr.clone();
-        move || c.open(OWNER, NEED, &request(&far, b"s", 0))
-    });
+    t.open_s();
     assert!(gate.entered(), "S's drive on T reaches the parked begin");
     assert_eq!(line.users(), 2, "S was lent the prepared line");
 
@@ -1066,10 +1101,7 @@ fn prepared_facts_wait_while_begin_parked() {
     assert!(dial_due_armed(&c, p), "P's dial bound is still armed");
 
     gate.release();
-    let s = t
-        .recv_timeout(BOUND)
-        .expect("S's open returns")
-        .expect("S opens");
+    let s = t.s();
     assert_eq!(
         c.landed(OWNER, p, TICKET),
         Err(ConnError::Pending),
