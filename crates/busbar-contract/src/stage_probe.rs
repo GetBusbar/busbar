@@ -33,11 +33,13 @@ pub enum Derive {
     /// The kernel's inbound units table locked (SP-AU5). A lock, not a derivation, counted
     /// here so one scope reads both.
     UnitsLock,
+    /// A head scanned for the credentials its unit's auth points strip (SP-AU4).
+    StripScan,
 }
 
 impl Derive {
     /// Every id, in counter order.
-    pub const ALL: [Derive; 8] = [
+    pub const ALL: [Derive; 9] = [
         Derive::PlaneAdmission,
         Derive::AdmissionOnHead,
         Derive::HeaderMap,
@@ -46,6 +48,7 @@ impl Derive {
         Derive::ExchangeToken,
         Derive::UnitMac,
         Derive::UnitsLock,
+        Derive::StripScan,
     ];
 
     #[cfg(feature = "stage-probe")]
@@ -59,6 +62,7 @@ impl Derive {
             Derive::ExchangeToken => 5,
             Derive::UnitMac => 6,
             Derive::UnitsLock => 7,
+            Derive::StripScan => 8,
         }
     }
 }

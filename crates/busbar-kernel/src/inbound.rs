@@ -105,6 +105,7 @@ impl Head {
 
     fn stripped(&self, strips: &[Strip]) -> Option<Self> {
         use zeroize::Zeroize as _;
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
         let mut head = self.clone();
         head.fields.retain_mut(|(name, value)| {
             let remove = strips.iter().any(|strip| {
@@ -1388,6 +1389,7 @@ fn same(want: u64, got: u64) -> bool {
 }
 
 fn still_present(strips: &[Strip], head: &Head) -> bool {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
     strips.iter().any(|s| match s.place {
         StripPlace::Field => head
             .fields
