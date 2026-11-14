@@ -18,7 +18,7 @@ pub(super) mod native_runtime;
 pub(super) mod identity_runtime;
 
 #[path = "self_serve.rs"]
-mod self_serve;
+pub(super) mod self_serve;
 
 #[path = "ledger_adjust.rs"]
 pub(super) mod ledger_adjust;
@@ -211,9 +211,6 @@ impl GovState {
             refresh_order,
             #[cfg(test)]
             identity_wait_observer: std::sync::Mutex::new(None),
-            self_mint_holds: std::sync::atomic::AtomicBool::new(
-                SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
-            ),
             transition_self_holds: RwLock::new(Default::default()),
             amendments: Arc::default(),
         })

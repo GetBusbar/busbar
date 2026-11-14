@@ -885,6 +885,12 @@ impl AuthMiddleware {
         })
     }
 
+    /// The configured names of the data-plane chain's modules, in order: the `module` a
+    /// [`ChainVerdict::Identified`] from this chain carries.
+    pub fn chain_providers(&self) -> Vec<String> {
+        self.chain.iter().map(|e| e.provider.clone()).collect()
+    }
+
     pub fn chain_names(&self) -> Vec<String> {
         self.chain.iter().map(|e| e.name.clone()).collect()
     }

@@ -1432,6 +1432,17 @@ summary = "An update_key request body did not parse as valid JSON, so busbar ret
 action = "None — self-heals; the client must send well-formed JSON. Persistent volume from one caller indicates a broken client worth fixing."
 
 [[diagnostic]]
+name = "SELF_MINT_REFUSED"
+doc = "A self-serve login or token exchange was refused because an admin decision or another provider's binding holds the subject's key."
+code = 4032
+class = "Auth"
+slug = "self-mint-refused"
+title = "Self-serve login refused: an admin decision or another provider holds the key"
+severity = "Actionable"
+summary = "A self-serve login (hosted login or token exchange) authenticated a subject but was refused with a 403, because the subject's self-serve key was disabled or revoked by an administrator, a disable or revocation carried over through an identity change, the key is bound to a different identity module, the key predates identity-provider tracking while more than one module can mint self-serve keys, or the subject's self group holds a key not issued to it. Nothing was written; the refusal is also recorded in the admin audit log as self_mint.refused with the subject, provider and reason."
+action = "By reason. disabled: re-enable the key. revoked: delete the key so the next login mints a fresh one. other_provider / unattributed: confirm the person is the key's original owner before deleting it (the self group and key id are keyed on the subject alone). transition_held: review the identity change that carried the hold. foreign_key_in_group: move the named key out of user:<subject>."
+
+[[diagnostic]]
 name = "PLANE_BREAKER_TRIPPED"
 code = 5038
 class = "Proxy"

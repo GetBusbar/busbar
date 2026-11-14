@@ -861,8 +861,15 @@ impl Identity<'_> {
                 _ => unreachable!(),
             })
     }
-    pub async fn self_keys(&self, subject: &str) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.query(Query::SelfKeys(subject))
+    /// Every key row a self-serve login for `subject` judges: its `user:<subject>` group rows, its
+    /// `idp_subject` rows, and the rows at `derived` (the subject's derived ids, wherever an admin
+    /// moved them). Unrelated keys are not returned and do not defer the read.
+    pub async fn self_keys(
+        &self,
+        subject: &str,
+        derived: &std::collections::BTreeSet<String>,
+    ) -> RecordStoreResult<Vec<VirtualKey>> {
+        self.query(Query::SelfKeys { subject, derived })
             .await
             .map(|output| match output {
                 Output::Keys(keys) => keys,
@@ -1071,13 +1078,11 @@ impl Identity<'_> {
             Query::Key(id) | Query::Denied(id) | Query::Credentials(id) => {
                 self.guard_targets(&[id], None, None)
             }
-            Query::SelfKeys(subject) => {
-                let keys = match output {
-                    Some(Output::Keys(keys)) => {
-                        keys.iter().map(|key| key.id.as_str()).collect::<Vec<_>>()
-                    }
-                    _ => Vec::new(),
-                };
+            Query::SelfKeys { subject, derived } => {
+                let mut keys = derived.iter().map(String::as_str).collect::<Vec<_>>();
+                if let Some(Output::Keys(rows)) = output {
+                    keys.extend(rows.iter().map(|key| key.id.as_str()));
+                }
                 self.guard_targets(&keys, None, Some(subject))
             }
             _ => {
@@ -1157,7 +1162,7 @@ impl Identity<'_> {
                 }
                 Output::Denied(denied.into_iter().map(|entry| entry.subject).collect())
             }
-            Query::SelfKeys(subject) => {
+            Query::SelfKeys { subject, derived } => {
                 let mut keys = Vec::new();
                 let group = format!("{}{}", crate::governance::SELF_KEY_GROUP_PREFIX, subject);
                 for (address, value) in tx.scan(vec![b'K']).await? {
@@ -1167,6 +1172,7 @@ impl Identity<'_> {
                     }
                     if key.group.as_deref() == Some(group.as_str())
                         || key.idp_subject.as_deref() == Some(*subject)
+                        || derived.contains(&key.id)
                     {
                         keys.push(key);
                     }
@@ -1243,7 +1249,10 @@ impl Identity<'_> {
 }
 enum Query<'a> {
     Denied(&'a str),
-    SelfKeys(&'a str),
+    SelfKeys {
+        subject: &'a str,
+        derived: &'a std::collections::BTreeSet<String>,
+    },
     Snapshot,
     Key(&'a str),
     Keys(Option<u64>),
