@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 arc-swap = { workspace = true }
+backon = { workspace = true }
 # One-way: busbar-kernel names nothing in this crate.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }

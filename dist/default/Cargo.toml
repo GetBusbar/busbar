@@ -1045,6 +1045,9 @@ busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-stre
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
 busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "a27ecaf51f34a170e0f145e8aef146db53fc8f43" }
 arc-swap = "1"
+# The accept-error backoff (core-connector listen.rs, shared by the root listener). No default
+# features: no sleeper, no std rng; only the ExponentialBuilder iterator, as a const.
+backon = { version = "1.6", default-features = false }
 async-trait = "0.1"
 axum = "0.8"
 # 0.22, the line axum, pbjson and oauth-as already ship: one base64 in the binary.

@@ -26,10 +26,41 @@ pub const DEFAULT_MAX_CONNS: usize = 1024;
 /// A TLS handshake's bound when its settings name none: 1.5.5's `limits.tls_handshake_timeout_secs`
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The first accept-error backoff (1.5.5).
-const BACKOFF_FIRST: Duration = Duration::from_millis(5);
-/// The accept-error backoff's cap (1.5.5).
-const BACKOFF_CAP: Duration = Duration::from_millis(250);
+/// 1.5.5's accept-error backoff, on backon: 5 ms doubling to a 250 ms cap, no jitter, no retry
+/// limit. `next_delay` answers `None` (retry now) for an aborted or interrupted accept, which also
+/// starts the sequence over, and the next delay for anything else (fd exhaustion and the like).
+/// The root listener and the connector's `Listening` share this one.
+#[derive(Debug, Default)]
+pub struct AcceptBackoff(Option<backon::ExponentialBackoff>);
+
+impl AcceptBackoff {
+    /// The first delay.
+    pub const FIRST: Duration = Duration::from_millis(5);
+    /// The cap.
+    pub const CAP: Duration = Duration::from_millis(250);
+    const DELAYS: backon::ExponentialBuilder = backon::ExponentialBuilder::new()
+        .with_min_delay(Self::FIRST)
+        .with_max_delay(Self::CAP)
+        .without_max_times();
+
+    /// Start the sequence over (an accept succeeded).
+    pub fn reset(&mut self) {
+        self.0 = None;
+    }
+
+    /// `None` = retry now; otherwise how long to wait before accepting again.
+    pub fn next_delay(&mut self, e: &std::io::Error) -> Option<Duration> {
+        use backon::BackoffBuilder as _;
+        if matches!(
+            e.kind(),
+            std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::Interrupted
+        ) {
+            self.0 = None;
+            return None;
+        }
+        self.0.get_or_insert_with(|| Self::DELAYS.build()).next()
+    }
+}
 
 /// The bounds one listener keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +159,7 @@ pub struct Listening {
     accept: Accept,
     max_conns: usize,
     live: Arc<AtomicUsize>,
-    backoff: Option<Duration>,
+    backoff: AcceptBackoff,
     sleep: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
@@ -221,7 +252,7 @@ impl Listening {
             },
             max_conns: limits.max_conns,
             live: Arc::new(AtomicUsize::new(0)),
-            backoff: None,
+            backoff: AcceptBackoff::default(),
             sleep: None,
         })
     }
@@ -262,7 +293,7 @@ impl Listening {
             },
             max_conns: limits.max_conns,
             live: Arc::new(AtomicUsize::new(0)),
-            backoff: None,
+            backoff: AcceptBackoff::default(),
             sleep: None,
         })
     }
@@ -337,7 +368,7 @@ impl Listening {
             };
             match got {
                 Ok((got, peer)) => {
-                    self.backoff = None;
+                    self.backoff.reset();
                     let Some(slot) = Slot::take(&self.live, self.max_conns) else {
                         drop(got);
                         continue;
@@ -374,20 +405,9 @@ impl Drop for Listening {
 }
 
 impl Listening {
-    /// 1.5.5's accept backoff: `None` = retry now. An aborted or interrupted accept is the far
+    /// The listener's [`AcceptBackoff`]: `None` = retry now.
     fn next_delay(&mut self, e: &std::io::Error) -> Option<Duration> {
-        if matches!(
-            e.kind(),
-            std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::Interrupted
-        ) {
-            self.backoff = None;
-            return None;
-        }
-        let d = self
-            .backoff
-            .map_or(BACKOFF_FIRST, |prev| (prev * 2).min(BACKOFF_CAP));
-        self.backoff = Some(d);
-        Some(d)
+        self.backoff.next_delay(e)
     }
 }
 

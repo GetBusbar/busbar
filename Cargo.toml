@@ -25,6 +25,9 @@ members = [
 [workspace.dependencies]
 busbar-contract = { path = "crates/busbar-contract" }
 arc-swap = "1"
+# The accept-error backoff (core-connector listen.rs, shared by the root listener). No default
+# features: no sleeper, no std rng; only the ExponentialBuilder iterator, as a const.
+backon = { version = "1.6", default-features = false }
 async-trait = "0.1"
 aws-lc-sys = { version = "=0.47.0", default-features = false }
 axum = "0.8"
