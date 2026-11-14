@@ -884,8 +884,8 @@ members = ["."]
 
 [workspace.dependencies]
 busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "6571192080c0c838d81849a6c1f81ed9b2f639cb" }
-busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "ec75c61087d537dbc1b0e8b1175855a5696785d5" }
-busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "de55629bb3a949b67ac9684b2044ed6d190a925f" }
+busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "f323ece8307bd40ce9a5a1adb87142437f73d60a" }
+busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "642377b5b2f8376a91c04b606ae9bfbb9f32777f" }
 # THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is
 # e154678 plus its held-cell test reading the rig's node journal (busbar #1427: the node amendment
 # journal is an instance the node owns; `node_recent` is gone).
@@ -989,7 +989,7 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # (upgrade cell BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
 # a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "efd0fd43cf650160a446f092341d09c851125102" }
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "73395bdf848cd622cf5b149d9002362c920a2820" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
@@ -1235,8 +1235,8 @@ busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]
 # Dependency patches are effective only at the consuming workspace root.
-mysql_common = { git = "https://github.com/GetBusbar/busbar-store-mysql", rev = "60c6acb8cd42c9d73d1ec5ffa5001d340ba3d859" }
-postgres-protocol = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "de55629bb3a949b67ac9684b2044ed6d190a925f" }
+mysql_common = { git = "https://github.com/GetBusbar/busbar-store-mysql", rev = "334cc3234f2e06a1ebf670b3114cc9a78f022764" }
+postgres-protocol = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "642377b5b2f8376a91c04b606ae9bfbb9f32777f" }
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
 stringprep = { git = "https://github.com/MattJackson/rust-stringprep", rev = "da1e3cea3ca61b8b3882a71ee96496cd231601f2" }

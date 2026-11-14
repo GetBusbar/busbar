@@ -975,7 +975,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=efd0fd43cf650160a446f092341d09c851125102#efd0fd43cf650160a446f092341d09c851125102"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=73395bdf848cd622cf5b149d9002362c920a2820#73395bdf848cd622cf5b149d9002362c920a2820"
 dependencies = [
  "busbar-contract",
  "getrandom 0.3.4",
@@ -986,7 +986,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=de55629bb3a949b67ac9684b2044ed6d190a925f#de55629bb3a949b67ac9684b2044ed6d190a925f"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=642377b5b2f8376a91c04b606ae9bfbb9f32777f#642377b5b2f8376a91c04b606ae9bfbb9f32777f"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -1007,7 +1007,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=ec75c61087d537dbc1b0e8b1175855a5696785d5#ec75c61087d537dbc1b0e8b1175855a5696785d5"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=f323ece8307bd40ce9a5a1adb87142437f73d60a#f323ece8307bd40ce9a5a1adb87142437f73d60a"
 dependencies = [
  "busbar-contract",
  "getrandom 0.3.4",
@@ -2550,7 +2550,7 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 [[package]]
 name = "postgres-protocol"
 version = "0.6.12"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=de55629bb3a949b67ac9684b2044ed6d190a925f#de55629bb3a949b67ac9684b2044ed6d190a925f"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=642377b5b2f8376a91c04b606ae9bfbb9f32777f#642377b5b2f8376a91c04b606ae9bfbb9f32777f"
 dependencies = [
  "base64 0.22.1",
  "byteorder",
@@ -4353,4 +4353,4 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[patch.unused]]
 name = "mysql_common"
 version = "0.35.5"
-source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=60c6acb8cd42c9d73d1ec5ffa5001d340ba3d859#60c6acb8cd42c9d73d1ec5ffa5001d340ba3d859"
+source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=334cc3234f2e06a1ebf670b3114cc9a78f022764#334cc3234f2e06a1ebf670b3114cc9a78f022764"
