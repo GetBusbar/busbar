@@ -324,3 +324,56 @@ fn no_fold_switch_remains_and_the_default_build_links_every_plane_door() {
         "the default build does not link these plane doors: {missing:?} (shipped = {shipped:?})"
     );
 }
+
+#[test]
+fn every_declared_build_cfg_is_set_by_some_feature_set() {
+    // Every cfg rule only ever turns on as features are added, so the build with every feature
+    // on is the union of every feature set: a declared cfg it leaves off is off in every build,
+    // and the code it gates runs nowhere.
+    let manifest = read("Cargo.toml");
+    let never: Vec<String> = generator::build_cfgs(&manifest, &|_| true)
+        .into_iter()
+        .filter(|(_, on)| !on)
+        .map(|(cfg, _)| cfg)
+        .collect();
+    assert!(
+        never.is_empty(),
+        "declared cfgs that no feature set of this distribution sets (the code they gate runs \
+         in no build): {never:?}"
+    );
+}
+
+#[test]
+fn a_build_cfg_follows_the_rows_that_drive_it() {
+    let manifest = r#"
+[features]
+one = []
+two = []
+
+[package.metadata.busbar.linked]
+one = "busbar-first"
+two = "busbar-second"
+
+[package.metadata.busbar.linked-axes]
+one = "plane-door egress"
+two = "plane-door"
+"#;
+    let on = |enabled: &dyn Fn(&str) -> bool, name: &str| {
+        generator::build_cfgs(manifest, enabled)
+            .into_iter()
+            .find(|(cfg, _)| cfg == name)
+            .map(|(_, on)| on)
+    };
+    assert_eq!(on(&|f| f == "one", "linked_axis_plane_door"), Some(true));
+    assert_eq!(on(&|_| false, "linked_axis_plane_door"), Some(false));
+    assert_eq!(on(&|f| f == "one", "linked_every_plane_door"), Some(false));
+    assert_eq!(on(&|_| true, "linked_every_plane_door"), Some(true));
+    assert_eq!(on(&|f| f == "one", "linked_egress"), Some(true));
+    let unseamed = manifest.replace("plane-door egress", "plane-door");
+    assert!(
+        !generator::build_cfgs(&unseamed, &|_| true)
+            .iter()
+            .any(|(cfg, _)| cfg == "linked_egress"),
+        "a seam no row drives is not declared"
+    );
+}

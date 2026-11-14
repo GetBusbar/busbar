@@ -187,8 +187,86 @@ pub(crate) fn ident(krate: &str) -> String {
     krate.replace('-', "_")
 }
 
-pub(crate) fn seam_cfgs() -> Vec<&'static str> {
-    SEAMS.iter().map(|(_, cfg)| *cfg).collect()
+/// The axes whose `linked_axis_<axis>` cfg a build declares (the composition root's sources gate
+/// on them) and sets when an enabled row names the axis.
+pub(crate) const CFG_AXES: &[&str] = &[
+    PLANE_DOOR_AXIS,
+    DOOR_AXIS,
+    EXPORT_DOOR_AXIS,
+    AUTH_AXIS,
+    "stores",
+    "hooks",
+    "protocols",
+    "node",
+];
+
+/// THE BUILD'S CFGS: every manifest-driven cfg build.rs declares, each with whether this feature
+/// set sets it. build.rs declares every name and sets the ones that are on, from this one table, so
+/// a test can hold that every declared name is set by some feature set: a cfg that no build ever
+/// sets gates code that runs nowhere. A seam's cfg is declared only when some row drives the seam.
+pub(crate) fn build_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> Vec<(String, bool)> {
+    let features = declared_features(manifest);
+    let required = required_deps(manifest);
+    let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
+    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    let always = |key: &str| {
+        !features.iter().any(|f| f == key)
+            && plugins
+                .iter()
+                .any(|(k, krate)| k == key && required.contains(krate))
+    };
+    let named = |axis: &str| -> Vec<&String> {
+        axes.iter()
+            .filter(|(_, list)| list.split_whitespace().any(|a| a == axis))
+            .map(|(row, _)| row)
+            .collect()
+    };
+    let mut out = vec![(
+        "distribution_root".to_string(),
+        metadata_value(manifest, "package.metadata.busbar.core", "dir").is_some(),
+    )];
+    for (axis, cfg) in SEAMS {
+        let rows = named(axis);
+        if !rows.is_empty() {
+            let on = rows.iter().any(|row| enabled(row) || always(row));
+            out.push((cfg.to_string(), on));
+        }
+    }
+    for axis in CFG_AXES {
+        let on = named(axis).iter().any(|row| enabled(row));
+        out.push((format!("linked_axis_{}", axis.replace('-', "_")), on));
+    }
+    for (feature, section) in metadata_map(manifest, "package.metadata.busbar.linked-section") {
+        let cfg = format!("linked_section_{}", section.replace('-', "_"));
+        out.push((cfg, enabled(&feature)));
+    }
+    out.push((
+        "linked_every_plane_door".to_string(),
+        named(PLANE_DOOR_AXIS).iter().all(|row| enabled(row)),
+    ));
+    out.push((
+        "linked_every_auth".to_string(),
+        named(AUTH_AXIS).iter().all(|row| enabled(row)),
+    ));
+    out.push((
+        "linked_operator_auth".to_string(),
+        metadata_value(manifest, "package.metadata.busbar.operator-auth", "row")
+            .is_some_and(|row| enabled(&row)),
+    ));
+    out.push((
+        "linked_driver_proofs".to_string(),
+        metadata_map(manifest, "package.metadata.busbar.driver-proofs")
+            .iter()
+            .any(|(feature, _)| enabled(feature)),
+    ));
+    out.push((
+        "linked_every_transport".to_string(),
+        named(TRANSPORT_AXIS)
+            .iter()
+            .filter(|row| plugins.iter().any(|(k, _)| k == **row))
+            .all(|row| enabled(row) || always(row)),
+    ));
+    out
 }
 
 pub(crate) fn linked_source(
