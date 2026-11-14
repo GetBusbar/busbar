@@ -1,5 +1,8 @@
 mod bootstrap;
 mod confine;
+#[cfg(test)]
+#[path = "confined_tests.rs"]
+mod confined_tests;
 mod fetch;
 mod images;
 mod inflate;

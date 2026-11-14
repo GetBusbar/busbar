@@ -2437,6 +2437,35 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A merge destination that already holds a link named like a copied entry must refuse,
+    /// never write the copied bytes (or a copied directory) through the link.
+    #[test]
+    fn merge_copies_never_write_through_a_destination_link() {
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("busbar-ci-copy-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (source, outside) = (root.join("source"), root.join("outside"));
+        fs::create_dir_all(source.join("sub")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(source.join("file"), "candidate").unwrap();
+        fs::write(source.join("sub/inner"), "candidate").unwrap();
+        fs::write(outside.join("target"), "host").unwrap();
+
+        let file_merge = root.join("file-merge");
+        fs::create_dir(&file_merge).unwrap();
+        std::os::unix::fs::symlink(outside.join("target"), file_merge.join("file")).unwrap();
+        assert!(copy_tree(&source, &file_merge, false, true).is_err());
+        assert_eq!(fs::read(outside.join("target")).unwrap(), b"host");
+
+        let dir_merge = root.join("dir-merge");
+        fs::create_dir(&dir_merge).unwrap();
+        std::os::unix::fs::symlink(&outside, dir_merge.join("sub")).unwrap();
+        assert!(copy_tree(&source, &dir_merge, false, true).is_err());
+        assert!(!outside.join("inner").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn trusted_checkout_must_be_the_exact_clean_revision() {
         let root = fs::canonicalize(std::env::temp_dir())
