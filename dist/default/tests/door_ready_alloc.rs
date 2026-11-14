@@ -12,12 +12,14 @@ use std::sync::{Arc, OnceLock};
 
 use busbar_contract::abi::hook::{MessageView, SignalEntry, SignalValue};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, RawOutcome, Span};
-use busbar_contract::abi::mechanism::door::Door;
+use busbar_contract::abi::mechanism::door::{Door, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpsHead};
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, CatalogIn, CatalogOut, OnPieceIn, OnPieceOut, Ops, OutField,
-    PlaneOpenIn, PlaneOpenOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
-    UnitCount, CONTRACTS, FROM_FAR_END,
+    slot, ArriveIn, ArriveOut, AuthenticatedRouteIn, AuthenticatedRouteOut, CatalogIn, CatalogOut,
+    OnPieceIn, OnPieceOut, Ops, OutField, PlaneOpenIn, PlaneOpenOut, PlaneTail, ProjectIn,
+    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CONTRACTS, FROM_FAR_END,
+    ROUTE_POOL, TAIL_AUTHENTICATED_ROUTE,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_plugin_loader::dispatch::{
@@ -133,6 +135,51 @@ extern "C" fn catalog(_: *mut c_void, _: *const c_void, out: *mut c_void) -> Raw
     })
 }
 
+/// The pool `authenticated_route` names.
+const ROUTED_ENTRY: &[u8] = b"the-pool";
+
+extern "C" fn authenticated_route(
+    _: *mut c_void,
+    input: *const c_void,
+    out: *mut c_void,
+) -> RawOutcome {
+    unmeasured(|| {
+        // SAFETY: the host lends `authenticated_route` a whole `AuthenticatedRouteIn`.
+        let input = unsafe { input.cast::<AuthenticatedRouteIn>().read_unaligned() };
+        let written = ROUTED_ENTRY.len().min(input.entry_cap);
+        let out = out.cast::<AuthenticatedRouteOut>();
+        // SAFETY: `entry_buf` is the host's own `entry_cap` writable bytes, of which `written` are
+        // filled, and the host lends a whole, writable `AuthenticatedRouteOut`.
+        unsafe {
+            std::ptr::copy_nonoverlapping(ROUTED_ENTRY.as_ptr(), input.entry_buf, written);
+            std::ptr::addr_of_mut!((*out).entry_written)
+                .write_unaligned(u32::try_from(written).unwrap_or(0));
+            std::ptr::addr_of_mut!((*out).route).write_unaligned(ROUTE_POOL);
+            std::ptr::addr_of_mut!((*out).head.outcome)
+                .write_unaligned(RawOutcome::of(AbiOutcome::Ready));
+        }
+        RawOutcome::of(AbiOutcome::Ready)
+    })
+}
+
+/// The test plane's Statement, its tail declaring [`TAIL_AUTHENTICATED_ROUTE`] so the host admits
+/// the authenticated route continuation this door answers.
+fn statement(own: *const Statement) -> &'static Statement {
+    static TAIL: OnceLock<Shared<PlaneTail>> = OnceLock::new();
+    static STATEMENT: OnceLock<Shared<Statement>> = OnceLock::new();
+    // SAFETY: `own` is the test plane's `'static` Statement.
+    let own = unsafe { *own };
+    let tail = &TAIL
+        .get_or_init(|| {
+            // SAFETY: a plane Statement's kind tail is its `'static` `PlaneTail`.
+            let mut tail = unsafe { own.kind_tail().cast::<PlaneTail>().read_unaligned() };
+            tail.flags |= TAIL_AUTHENTICATED_ROUTE;
+            Shared(tail)
+        })
+        .0;
+    &STATEMENT.get_or_init(|| Shared(own.with_kind_tail(tail))).0
+}
+
 extern "C" fn door() -> &'static Door {
     static OPS: OnceLock<Shared<Ops>> = OnceLock::new();
     static DOOR: OnceLock<Shared<Door>> = OnceLock::new();
@@ -145,6 +192,7 @@ extern "C" fn door() -> &'static Door {
                 serve: Some(serve),
                 project: Some(project),
                 catalog: Some(catalog),
+                authenticated_route: Some(authenticated_route),
                 ..*inner()
             })
         })
@@ -153,8 +201,10 @@ extern "C" fn door() -> &'static Door {
         .get_or_init(|| {
             let mut parts = plane::door().parts();
             parts.ops = (ops as *const Ops).cast::<OpsHead>();
-            // SAFETY: the test plane's own `'static` Statement, over a `'static` plane table whose
-            // request-path slots wrap the test plane's own.
+            parts.statement = statement(parts.statement);
+            // SAFETY: the test plane's own `'static` Statement with its tail declaring the
+            // authenticated route, over a `'static` plane table whose request-path slots wrap the
+            // test plane's own.
             Shared(unsafe { Door::__from_parts(parts) })
         })
         .0
@@ -240,7 +290,7 @@ const STATS: &[u8] = b"/stats";
 const POST: &[u8] = b"POST";
 const REASON_TEXT: &[u8] = b"in-flight cap";
 
-fn crossing(plugin: &Plugin<Plane>, s: u32, b: &mut Bufs, measure: Measure) -> u64 {
+fn crossing(plugin: &Plugin<Plane>, ticket: Ticket, s: u32, b: &mut Bufs, measure: Measure) -> u64 {
     match s {
         slot::ARRIVE => {
             let mut frame = Frame::new(
@@ -343,6 +393,19 @@ fn crossing(plugin: &Plugin<Plane>, s: u32, b: &mut Bufs, measure: Measure) -> u
             );
             measure(&mut || ready(s, plugin.call(s, &mut frame).outcome))
         }
+        slot::AUTHENTICATED_ROUTE => {
+            let mut frame = Frame::new(
+                AuthenticatedRouteIn {
+                    unit: 1,
+                    caller_ref: AbiStr::over(b"verified-caller"),
+                    entry_buf: b.reply.as_mut_ptr(),
+                    entry_cap: b.reply.len(),
+                    ..blank_in()
+                },
+                blank_out::<AuthenticatedRouteOut>(),
+            );
+            measure(&mut || ready(s, plugin.call_inline(ticket, false, s, &mut frame).outcome))
+        }
         other => panic!(
             "request-path op {other} has no measured case: the zero-allocation claim is unproven \
              for it until one is added here"
@@ -395,6 +458,10 @@ fn every_request_path_op_is_measured() {
     );
     let plugin = opened(&dispatcher);
     let mut bufs = Bufs::new();
+    let inline = dispatcher
+        .inline_ticket()
+        .expect("the dispatcher mints an inline ticket");
+    let ticket = inline.ticket();
     let ops = request_path_ops();
     assert!(
         !ops.is_empty(),
@@ -403,13 +470,13 @@ fn every_request_path_op_is_measured() {
 
     for _ in 0..8 {
         for &s in &ops {
-            crossing(&plugin, s, &mut bufs, not_measured);
+            crossing(&plugin, ticket, s, &mut bufs, not_measured);
         }
     }
     let mut allocated = Vec::new();
     for &s in &ops {
         for _ in 0..64 {
-            let n = crossing(&plugin, s, &mut bufs, measured);
+            let n = crossing(&plugin, ticket, s, &mut bufs, measured);
             if n != 0 {
                 allocated.push((s, n));
                 break;
