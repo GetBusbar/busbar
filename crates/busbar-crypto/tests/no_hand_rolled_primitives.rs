@@ -5,6 +5,7 @@
 //! RSA-OAEP) is deleted for the crypto facade. A primitive needs its constants, so no first-party
 //! source outside the backend may spell one, and no first-party manifest may name a bignum crate.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Initial values and round constants of SHA-256, SHA-1 and MD5, with and without digit separators.
@@ -43,23 +44,25 @@ fn no_first_party_source_spells_a_hash_constant() {
     walk(&root().join("crates"), ".rs", &mut files);
     walk(&root().join("dist/default/tests"), ".rs", &mut files);
     assert!(files.len() > 100, "walked {} files", files.len());
-    let mut hits = Vec::new();
+    let (mut hits, mut compact, mut needle) = (String::new(), String::new(), String::new());
     for f in files {
-        let text = std::fs::read_to_string(&f)
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let compact: String = text.chars().filter(|c| *c != '_').collect();
+        let text = std::fs::read_to_string(&f).unwrap_or_default();
+        compact.clear();
+        compact.extend(
+            text.chars()
+                .filter(|c| *c != '_')
+                .map(|c| c.to_ascii_lowercase()),
+        );
         for c in CONSTANTS {
-            if compact.contains(&format!("0x{c}")) {
-                hits.push(format!("{} spells 0x{c}", f.display()));
+            needle.clear();
+            needle.push_str("0x");
+            needle.push_str(c);
+            if compact.contains(needle.as_str()) {
+                writeln!(hits, "{} spells 0x{c}", f.display()).unwrap();
             }
         }
     }
-    assert!(
-        hits.is_empty(),
-        "hand-written primitives remain:\n{}",
-        hits.join("\n")
-    );
+    assert!(hits.is_empty(), "hand-written primitives remain:\n{hits}");
 }
 
 #[test]
