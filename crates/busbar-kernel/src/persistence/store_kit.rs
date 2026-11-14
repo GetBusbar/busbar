@@ -24,7 +24,7 @@ use std::time::Duration;
 use busbar_contract::persistence::{control, Address, PersistenceBackend, Read, ReadResult};
 
 use super::facade::{CoreStore, Limits};
-use super::first_start::{self, Binding, FirstStart};
+use super::first_start::{self, Abandoned, Binding, FirstStart};
 use super::startup::{manifest_address, root_address, writer_address, Error, Progress, Startup};
 
 /// Every drive-to-state loop is bounded; overrun is a failure naming the case and step.
@@ -51,6 +51,7 @@ pub const CASES: &[&str] = &[
     "k3_racing_initialize",
     "t1_staggered_boot",
     "t2_waiter_restart",
+    "t11_abandon_hands_over",
 ];
 
 /// The prefix of the lines `run` and each case print: `cases <n>` once, `passed <case>` per case.
@@ -64,6 +65,7 @@ pub async fn run<F: Fixture>(fixture: &F) {
     k3_racing_initialize(fixture).await;
     t1_staggered_boot(fixture).await;
     t2_waiter_restart(fixture).await;
+    t11_abandon_hands_over(fixture).await;
 }
 
 /// K1: first start over an empty dataset publishes; a second writer is admitted with no first
@@ -324,6 +326,84 @@ pub async fn t2_waiter_restart<F: Fixture>(fixture: &F) {
     passed(CASE);
 }
 
+/// T11 (FIRST-START-TAKEOVER §8): an owner that leaves on purpose abandons its first start: its
+/// own writer row is retired and the birth record is left exactly as it was, so the next writer
+/// takes over at once, with no `Pending`, and the abandoned owner makes no further step. Run with
+/// no plane done and with one plane done; after publication `abandon` writes nothing.
+pub async fn t11_abandon_hands_over<F: Fixture>(fixture: &F) {
+    const CASE: &str = "t11_abandon_hands_over";
+    for done in [0usize, 1] {
+        let dataset = fixture.fresh().await;
+        let h1 = fixture.open(&dataset).await;
+        let mut a = startup(CASE, &h1, true);
+        let store_a = admitted(CASE, "A over the empty dataset", &mut a).await;
+        let proof = owner(CASE, "A", &store_a);
+        if done == 1 {
+            expect_advanced(CASE, "A", "freeze", proof.freeze(vec![kit_binding()]).await);
+            expect_advanced(CASE, "A", "complete", proof.complete("kit").await);
+        }
+        let writer_a = proof.owner();
+        let birth = rows(CASE, &h1, vec![first_start::address()]).await;
+        assert_eq!(
+            proof.abandon().await,
+            Ok(Abandoned::Retired),
+            "{CASE}: A abandons with {done} plane(s) done"
+        );
+        let row = writer(CASE, &h1, writer_a).await;
+        assert!(
+            row.retired_through == row.admitted_through && !row.admits(1),
+            "{CASE}: A's writer row is not retired after abandon ({row:?})"
+        );
+        assert_eq!(
+            rows(CASE, &h1, vec![first_start::address()]).await,
+            birth,
+            "{CASE}: abandon changed the birth record"
+        );
+        assert_eq!(
+            proof.freeze(vec![kit_binding()]).await,
+            Err(Error::Authority),
+            "{CASE}: A made a first-start step after abandon"
+        );
+        let retired = rows(CASE, &h1, vec![writer_address(writer_a)]).await;
+
+        let h2 = fixture.open(&dataset).await;
+        let mut b = startup(CASE, &h2, false);
+        let store_b = admitted_at_once(CASE, "B after A abandoned", &mut b).await;
+        let next = owner(CASE, "B", &store_b);
+        assert_ne!(
+            next.owner(),
+            writer_a,
+            "{CASE}: B took over under A's writer"
+        );
+        assert_eq!(
+            rows(CASE, &h1, vec![writer_address(writer_a)]).await,
+            retired,
+            "{CASE}: B's takeover rewrote A's retired writer row"
+        );
+        publish(CASE, "B", &next).await;
+    }
+
+    let dataset = fixture.fresh().await;
+    let h = fixture.open(&dataset).await;
+    let mut a = startup(CASE, &h, true);
+    let store_a = admitted(CASE, "A over the empty dataset", &mut a).await;
+    let proof = owner(CASE, "A", &store_a);
+    publish(CASE, "A", &proof).await;
+    let watched = vec![writer_address(proof.owner()), first_start::address()];
+    let before = rows(CASE, &h, watched.clone()).await;
+    assert_eq!(
+        proof.abandon().await,
+        Ok(Abandoned::Published),
+        "{CASE}: A abandons after publication"
+    );
+    assert_eq!(
+        rows(CASE, &h, watched).await,
+        before,
+        "{CASE}: abandon after publication wrote A's writer row or the birth record"
+    );
+    passed(CASE);
+}
+
 /// One racing writer in K3.
 struct Side {
     name: &'static str,
@@ -427,6 +507,18 @@ async fn admitted(case: &str, step: &str, startup: &mut Startup) -> Arc<CoreStor
     panic!("{case}: {step}: not admitted within {STEPS} steps")
 }
 
+/// Admission that never waits: every advance is `Advanced` until `Admitted`.
+async fn admitted_at_once(case: &str, step: &str, startup: &mut Startup) -> Arc<CoreStore> {
+    for _ in 0..STEPS {
+        match startup.advance().await {
+            Ok(Progress::Admitted) => return startup.store().expect("admitted store"),
+            Ok(Progress::Advanced) => {}
+            other => panic!("{case}: {step}: admission answered {other:?}, not at once"),
+        }
+    }
+    panic!("{case}: {step}: not admitted within {STEPS} steps")
+}
+
 async fn retired(case: &str, step: &str, startup: &mut Startup) {
     for _ in 0..STEPS {
         match startup.advance().await {
@@ -445,13 +537,17 @@ fn owner(case: &str, who: &str, store: &CoreStore) -> Arc<FirstStart> {
     })
 }
 
-/// Freeze a one-instance plan, complete it and publish, each step applied.
-async fn publish(case: &str, who: &str, proof: &FirstStart) {
-    let binding = Binding {
+/// The one-instance plan every case freezes.
+fn kit_binding() -> Binding {
+    Binding {
         instance: "kit".into(),
         digest: [7; 32],
-    };
-    expect_advanced(case, who, "freeze", proof.freeze(vec![binding]).await);
+    }
+}
+
+/// Freeze a one-instance plan, complete it and publish, each step applied.
+async fn publish(case: &str, who: &str, proof: &FirstStart) {
+    expect_advanced(case, who, "freeze", proof.freeze(vec![kit_binding()]).await);
     expect_advanced(case, who, "complete", proof.complete("kit").await);
     expect_advanced(case, who, "publish", proof.publish().await);
     assert!(

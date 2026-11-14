@@ -246,6 +246,15 @@ async fn a_correct_store_passes_the_kit() {
     .await;
 }
 
+/// T11 alone over the correct mock store, so its red-before-green proof names one test.
+#[tokio::test]
+async fn a_correct_store_hands_over_at_once_after_abandon() {
+    t11_abandon_hands_over(&Mocks {
+        blind_initialize: false,
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn the_kit_fails_a_store_that_applies_initialize_blindly() {
     let blind = Mocks {
