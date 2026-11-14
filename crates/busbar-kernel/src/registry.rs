@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
-
 use crate::grammar::{Selector, SelectorFamily};
 
 /// Which generation of the registry a lookup is against.
@@ -19,88 +17,9 @@ impl Generation {
     }
 }
 
-pub use busbar_contract::{Kind as PluginKind, Plugin};
-
-/// Why a registration was refused.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RegistryError {
-    /// Two plugins of one kind declared the same key.
-    DuplicateKey {
-        /// The kind they both are.
-        kind: PluginKind,
-        /// The key they both claimed.
-        key: &'static str,
-    },
-}
-
-impl std::fmt::Display for RegistryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RegistryError::DuplicateKey { kind, key } => {
-                write!(f, "two {kind:?} plugins both declare the key {key:?}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for RegistryError {}
-
-struct Registered {
-    key: &'static str,
-    kind: PluginKind,
-    plugin: Arc<dyn Plugin>,
-}
-
-/// Everything the kernel can call, and when.
-#[derive(Default)]
-pub struct Registry {
-    entries: Vec<Registered>,
-    generation: Generation,
-}
-
 impl Default for Generation {
     fn default() -> Self {
         Generation::FIRST
-    }
-}
-
-impl std::fmt::Debug for Registry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Registry")
-            .field("entries", &self.entries.len())
-            .field("generation", &self.generation)
-            .finish()
-    }
-}
-
-impl Registry {
-    pub fn new() -> Self {
-        Registry::default()
-    }
-
-    pub fn generation(&self) -> Generation {
-        self.generation
-    }
-
-    pub fn register(&mut self, plugin: Arc<dyn Plugin>) -> Result<Generation, RegistryError> {
-        let (key, kind) = (plugin.key(), plugin.kind());
-        if self.live(kind, key).is_some() {
-            return Err(RegistryError::DuplicateKey { kind, key });
-        }
-        self.entries.push(Registered { key, kind, plugin });
-        Ok(self.generation)
-    }
-
-    pub fn resolve(&self, kind: PluginKind, key: &str) -> Option<Arc<dyn Plugin>> {
-        self.live(kind, key).map(|e| Arc::clone(&e.plugin))
-    }
-
-    pub fn count(&self, kind: PluginKind) -> usize {
-        self.entries.iter().filter(|e| e.kind == kind).count()
-    }
-
-    fn live(&self, kind: PluginKind, key: &str) -> Option<&Registered> {
-        self.entries.iter().find(|e| e.kind == kind && e.key == key)
     }
 }
 

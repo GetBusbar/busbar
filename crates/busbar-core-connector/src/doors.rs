@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use crate::{
     carrier::{Carry, Side},
     framer::{Call, Crossed, DoorFacts, FramerDoor},
-    wire::HostWire,
+    wire::unlayered,
 };
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -18,8 +18,8 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::slot;
 use busbar_plugin_loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
-    load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
-    OutFrame, Plugin, PluginLogConfig,
+    Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, NoSink, OutFrame, Plugin,
+    PluginLogConfig,
 };
 
 /// The dispatcher every transport door is adopted by (its watchdog watches every crossing).
@@ -583,14 +583,12 @@ impl FramerDoor for Dispatched {
     }
 }
 
-/// An opened door and the boot fold's admission of it ([`HostWire`]).
-pub type Served = (Arc<dyn FramerDoor>, Arc<HostWire>);
-
 /// A door, opened with the deployment's `settings` and admitted to be served over the host's
+/// sockets: it names no layer ([`unlayered`]).
 pub fn served(
     plugin: Plugin<TransportKind>,
     settings: &busbar_contract::transport::TransportSettings,
-) -> Result<Served, String> {
+) -> Result<Arc<dyn FramerDoor>, String> {
     let door: Arc<dyn FramerDoor> = Arc::new(Dispatched::open(plugin, settings)?);
     let wire = Arc::new(HostWire::new(door.as_ref())?);
     Ok((door, wire))
@@ -826,6 +824,13 @@ mod identity_tests {
         assert!(
             refused.contains("`tcp-misnamed`") && refused.contains("`tcp`"),
             "the actual identity validator names both spellings: {refused}"
+        );
+        let mut unclaimed = actual;
+        unclaimed.claims.clear();
+        let refused = checked_row(unclaimed).expect_err("a door with no claim has no key");
+        assert!(
+            refused.contains("the transport door `tcp` claims no scheme"),
+            "{refused}"
         );
     }
 }

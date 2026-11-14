@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A TRANSPORT ENTRY AS THE BOOT FOLD ADMITS IT: [`HostWire`] is the composition root's record of one
+//! THE ONE COMPOSITION RULE A SERVED TRANSPORT ENTRY KEEPS: it names no layer. The carrier is the
+//! connector's choice from the target's scheme, so an entry that composes over another is refused
+//! where the connector opens it.
 
 use crate::framer::FramerDoor;
 
@@ -46,6 +48,11 @@ impl HostWire {
     pub fn key(&self) -> &'static str {
         self.key
     }
+    Err(format!(
+        "transport `{}` names a transport it composes over; no transport names another \
+         (the carrier is the connector's choice from the target's scheme)",
+        facts.name
+    ))
 }
 
 #[cfg(test)]

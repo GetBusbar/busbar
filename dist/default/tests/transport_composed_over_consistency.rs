@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::transport::TransportSettings;
-
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
 const TRANSPORT_FOLD: &str =
@@ -28,14 +26,7 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
         "the linked transport table and the shipped fold disagree on how many wires there are"
     );
 
-    let built = fold_linked_transports(&TransportSettings::default());
-    assert_eq!(
-        built.len(),
-        LINKED_TRANSPORTS.len(),
-        "every linked wire is built"
-    );
-    for (row, t) in &built {
-        assert_eq!(t.key(), row.key, "a wire answers the key its row declares");
+    for row in LINKED_TRANSPORTS.iter() {
         let (_, expected) = shipped
             .iter()
             .find(|(key, _)| *key == row.key)
@@ -43,6 +34,11 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
         assert_eq!(
             *expected, None,
             "{} is served over the host's sockets and is built over nothing",
+            row.key
+        );
+        assert!(
+            row.composes_over.is_empty(),
+            "`{}` names a layer",
             row.key
         );
     }
