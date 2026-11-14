@@ -485,6 +485,77 @@ mod tests {
         }
     }
 
+    fn yaml_strings<'a>(v: &'a serde_yaml::Value, out: &mut Vec<&'a str>) {
+        match v {
+            serde_yaml::Value::String(s) => out.push(s),
+            serde_yaml::Value::Sequence(xs) => {
+                for x in xs {
+                    yaml_strings(x, out);
+                }
+            }
+            serde_yaml::Value::Mapping(m) => {
+                for (k, x) in m {
+                    yaml_strings(k, out);
+                    yaml_strings(x, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A scenario that drives model traffic must exercise every model it
+    /// configures: a declared provider no case reaches is never measured.
+    /// Scenarios whose models no case or route touches carry them only to
+    /// boot, and are skipped.
+    #[test]
+    fn every_configured_model_is_exercised_when_a_scenario_drives_models() {
+        let dir = scenarios_dir();
+        for n in &all_names(&dir) {
+            let s = load(&dir, n).unwrap_or_else(|e| panic!("{e}"));
+            if !s.llm_matrix.is_empty() {
+                continue;
+            }
+            let mut cfg: serde_yaml::Value =
+                serde_yaml::from_str(&s.config).unwrap_or_else(|e| panic!("{n} config yaml: {e}"));
+            let Some(map) = cfg.as_mapping_mut() else {
+                continue;
+            };
+            let models: Vec<String> = map
+                .get("models")
+                .and_then(|v| v.as_mapping())
+                .map(|m| {
+                    m.keys()
+                        .filter_map(|k| k.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            map.remove("models");
+            map.remove("rate_card");
+            let mut refs = Vec::new();
+            yaml_strings(&cfg, &mut refs);
+            let reqs: String = s
+                .cases
+                .iter()
+                .flat_map(|c| &c.requests)
+                .map(|r| format!("{} {}\n", r.path, r.body))
+                .collect();
+            let used = |k: &str| {
+                refs.contains(&k)
+                    || reqs.contains(&format!("\"{k}\""))
+                    || reqs.contains(&format!("/models/{k}:"))
+            };
+            if !models.iter().any(|k| used(k)) {
+                continue;
+            }
+            for k in &models {
+                assert!(
+                    used(k),
+                    "{n}: model {k} is configured but no case or route exercises it"
+                );
+            }
+        }
+    }
+
     #[test]
     fn fill_replaces_only_known_tokens() {
         let mut v = BTreeMap::new();
