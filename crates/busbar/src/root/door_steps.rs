@@ -310,7 +310,7 @@ impl DoorPools {
     }
 
     #[must_use]
-    pub fn member_pool(&self, entry: &str) -> Option<&str> {
+    pub(crate) fn member_pool(&self, entry: &str) -> Option<&str> {
         self.member_pools.get(entry).map(String::as_str)
     }
 
