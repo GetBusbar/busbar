@@ -403,7 +403,7 @@ plugins:
     kind: plane
     # Immutable capture used by the generic historical provider-key census.
     provider_key_census:
-      fixture: testing/config/provider-keys-llm.json
+      fixture: crates/busbar-kernel/src/config/tests/fixtures/provider-keys-llm.json
       commit: "e1a3d6fb36f9474240101710b6926587b659213e"
       path: "plane-llm/src/meta.rs"
       constant: "PROVIDER_KEYS"

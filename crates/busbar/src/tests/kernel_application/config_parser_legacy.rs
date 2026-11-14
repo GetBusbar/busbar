@@ -93,7 +93,7 @@ fn legacy_markers_detected_and_named() {
 
     let clean = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/clean-config-1.5.0.yaml"),
+            .join("../../dist/default/tests/fixtures/clean-config-1.5.0.yaml"),
     )
     .expect("the canonical example exists");
     let doc: serde_yaml::Value = serde_yaml::from_str(&clean).unwrap();
