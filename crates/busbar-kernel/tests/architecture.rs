@@ -5,7 +5,8 @@
 //! owner decision 200); `arch/escapes.rs` holds A8 and A7.
 //!
 //! Core's production lines, counted one way only (`diet-metrics-v2`: Cargo targets, `mod`,
-//! `#[path]` and `include!` followed, `cfg(test)` and doc attributes excluded, comments and
+//! `#[path]` and `include!` followed, code only `cfg(test)` or the dev-only `test-support` feature
+//! compiles and doc attributes excluded, comments and
 //! blank lines never counted), must stay within `arch/loc-budget.json`, and the budgets only
 //! ratchet down. The fixed rules live in `arch/loc-bar.json` (owner approval to change); the
 //! dependency-set guard (§5) lives in `arch/layering.json`. Every failure message names the
