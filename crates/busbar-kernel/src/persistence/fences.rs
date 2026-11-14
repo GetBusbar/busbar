@@ -219,7 +219,7 @@ mod tests {
             vec![(at.clone(), Secret::new(b"opaque".to_vec()))],
         )
         .unwrap();
-        assert!(control::initialization(prepared.candidate(), dataset));
+        assert!(control::initialization(&prepared, dataset));
         assert_eq!(prepared.candidate().mutations.len(), 3);
         for namespace in [control::NAMESPACE.0, control::GENERATION_NAMESPACE.0] {
             assert!(matches!(
@@ -252,10 +252,7 @@ mod tests {
     #[test]
     fn retirement_must_run_from_successor_and_initialization_is_exact() {
         let initial = initialize(DatasetId([1; 16]), [2; 16], [3; 16]).unwrap();
-        assert!(control::initialization(
-            initial.candidate(),
-            DatasetId([1; 16])
-        ));
+        assert!(control::initialization(&initial, DatasetId([1; 16])));
         let mut id = initial.candidate().id;
         let current = control::Writer {
             retired_through: 0,
