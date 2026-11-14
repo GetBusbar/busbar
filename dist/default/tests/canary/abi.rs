@@ -55,14 +55,10 @@ fn doors() -> &'static Doors {
                 common::plugins::BUILD_PINNED,
             )
         });
-        // SAFETY: the pinned first-party cdylib; its initialisers are the SDK's.
-        let lib = unsafe { libloading::Library::new(&path) }.expect("dlopen the OIDC cdylib");
-        // SAFETY: `busbar_plugin_door` is typed `RawDoorFn` by the mechanism.
-        let raw: RawDoorFn = unsafe {
-            *lib.get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
-                .expect("the cdylib exports its door")
-        };
-        std::mem::forget(lib);
+        // The loader's one load chokepoint (LINT-RULES R23) loads the pinned first-party cdylib
+        // and keeps it for the process.
+        let raw: RawDoorFn =
+            busbar_plugin_loader::keep_door(&path).expect("load the OIDC cdylib's door");
         // SAFETY: the library is never unloaded, so its door lives for the process.
         let oidc_door = unsafe { recorder::wrap("busbar-auth-oidc (dropped-in cdylib)", raw()) };
         let oidc = (stated_name(oidc_door), oidc_door);
