@@ -398,17 +398,11 @@ async fn owner_plane_with_store(
     };
     let block = serde_yaml::to_value(config.authoring(&busbar_kernel::test_hooks::tokens::seal()))
         .expect("owner config serializes");
-    crate::plane::seam_build::<crate::NoConnections>(
-        block,
-        Vec::new(),
-        Vec::new(),
-        None,
-        Some(store),
-    )
-    .await
-    .expect("the actual owner seam builds over the supplied Store product")
-    .downcast::<crate::plane::AsPlane>()
-    .unwrap_or_else(|_| panic!("the owner seam returns its plane"))
+    crate::plane::seam_build::<crate::NoConnections>(block, Vec::new(), Vec::new(), None, store)
+        .await
+        .expect("the actual owner seam builds over the supplied Store product")
+        .downcast::<crate::plane::AsPlane>()
+        .unwrap_or_else(|_| panic!("the owner seam returns its plane"))
 }
 
 async fn approved_token(
@@ -488,7 +482,7 @@ async fn issued_code_tokens_retain_their_live_private_records_for_each_default_s
         Vec::new(),
         Vec::new(),
         None,
-        Some(crate::testkit::memory_store().await),
+        crate::testkit::memory_store().await,
     )
     .await
     .expect("the actual owner seam builds over the supplied Store product");

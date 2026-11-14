@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use oauth_as::client::{ClientAuth, ClientId};
 use oauth_as::scope::ScopeSet;
-use oauth_as::store::{MemoryStorage, Storage as _};
+use oauth_as::store::Storage as _;
 
 use super::{
     document_need, is_cimd_client_id, materialize, site_of, CimdFetch, CimdStore, ConnectorFetch,
@@ -247,7 +247,7 @@ impl CimdFetch for Recording {
 async fn the_store_wins_and_every_cimd_failure_reads_as_an_unknown_client() {
     let fetch = Recording::refusing();
     let handle: Arc<Recording> = Arc::clone(&fetch);
-    let store = CimdStore::new(MemoryStorage::new(), ceiling(), handle, Vec::new());
+    let store = CimdStore::new(ceiling(), handle, Vec::new()).await;
 
     let missed = store
         .get_client(&ClientId::new("flow-test-client"))
@@ -644,7 +644,7 @@ async fn a_validated_document_is_fetched_once_for_the_requests_naming_it() {
         held: false,
     });
     let handle: Arc<Counting> = Arc::clone(&fetch);
-    let store = CimdStore::new(MemoryStorage::new(), ceiling(), handle, Vec::new());
+    let store = CimdStore::new(ceiling(), handle, Vec::new()).await;
     for _ in 0..2 {
         let found = store
             .get_client(&ClientId::new(URL))
@@ -667,12 +667,7 @@ async fn document_fetches_in_flight_are_bounded() {
         held: true,
     });
     let handle: Arc<Counting> = Arc::clone(&fetch);
-    let store = Arc::new(CimdStore::new(
-        MemoryStorage::new(),
-        ceiling(),
-        handle,
-        Vec::new(),
-    ));
+    let store = Arc::new(CimdStore::new(ceiling(), handle, Vec::new()).await);
     for i in 0..IN_FLIGHT {
         let store = Arc::clone(&store);
         tokio::spawn(async move {
@@ -732,12 +727,7 @@ async fn one_slow_site_cannot_hold_every_document_fetch() {
         fetches: std::sync::atomic::AtomicUsize::new(0),
     });
     let handle: Arc<OneSlowSite> = Arc::clone(&fetch);
-    let store = Arc::new(CimdStore::new(
-        MemoryStorage::new(),
-        ceiling(),
-        handle,
-        Vec::new(),
-    ));
+    let store = Arc::new(CimdStore::new(ceiling(), handle, Vec::new()).await);
     for i in 0..16 {
         let store = Arc::clone(&store);
         tokio::spawn(async move {
@@ -822,12 +812,7 @@ async fn one_slow_ipv6_block_cannot_hold_every_document_fetch() {
         fetches: std::sync::atomic::AtomicUsize::new(0),
     });
     let handle: Arc<OneSlowBlock> = Arc::clone(&fetch);
-    let store = Arc::new(CimdStore::new(
-        MemoryStorage::new(),
-        ceiling(),
-        handle,
-        Vec::new(),
-    ));
+    let store = Arc::new(CimdStore::new(ceiling(), handle, Vec::new()).await);
     for i in 1..=16 {
         let store = Arc::clone(&store);
         tokio::spawn(async move {
@@ -860,7 +845,7 @@ async fn an_abandoned_fetch_leaves_no_flight_behind() {
         held: true,
     });
     let handle: Arc<Counting> = Arc::clone(&fetch);
-    let store = CimdStore::new(MemoryStorage::new(), ceiling(), handle, Vec::new());
+    let store = CimdStore::new(ceiling(), handle, Vec::new()).await;
     for i in 0..3 {
         let abandoned = tokio::time::timeout(
             std::time::Duration::from_millis(50),
@@ -951,12 +936,7 @@ async fn documents_at_addresses_cannot_hold_every_document_fetch() {
         fetches: std::sync::atomic::AtomicUsize::new(0),
     });
     let handle: Arc<AddressesNeverAnswer> = Arc::clone(&fetch);
-    let store = Arc::new(CimdStore::new(
-        MemoryStorage::new(),
-        ceiling(),
-        handle,
-        Vec::new(),
-    ));
+    let store = Arc::new(CimdStore::new(ceiling(), handle, Vec::new()).await);
     let mut hosts: Vec<String> = (1..=4).map(|i| format!("198.51.100.{i}")).collect();
     hosts.extend((1..=4).map(|i| format!("[2001:db8:{i:x}::1]")));
     for host in &hosts {
@@ -1002,12 +982,7 @@ impl CimdFetch for AnswersAll {
 
 #[tokio::test]
 async fn a_document_at_an_address_is_still_fetched() {
-    let store = CimdStore::new(
-        MemoryStorage::new(),
-        ceiling(),
-        Arc::new(AnswersAll),
-        Vec::new(),
-    );
+    let store = CimdStore::new(ceiling(), Arc::new(AnswersAll), Vec::new()).await;
     for url in ["https://198.51.100.9/doc", "https://[2001:db8:9::1]/doc"] {
         let found = store
             .get_client(&ClientId::new(url))

@@ -49,7 +49,7 @@ async fn the_owner_seam_keeps_the_complete_configured_identity() {
         Vec::new(),
         Vec::new(),
         None,
-        Some(crate::testkit::memory_store().await),
+        crate::testkit::memory_store().await,
     )
     .await
     .expect("the owner's generation builds");
