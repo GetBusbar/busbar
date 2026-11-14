@@ -72,6 +72,17 @@ pub fn fallback_key() -> &'static str {
         .unwrap_or("")
 }
 
+/// The plane key a door's card/lane qualifier (`DoorFacts.plane`) names. The models plane's
+/// qualifier is `""` (its lanes are unqualified), and the models plane is the fallback plane.
+#[must_use]
+pub fn plane_of_qualifier(qualifier: &str) -> &str {
+    if qualifier.is_empty() {
+        fallback_key()
+    } else {
+        qualifier
+    }
+}
+
 pub(crate) fn is_fallback(key: &str) -> bool {
     registry::plane_decls()
         .iter()
