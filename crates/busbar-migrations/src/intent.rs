@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use busbar_contract::secure::SecureVec;
 use busbar_contract::{persistence::*, Secret};
 use tokio::sync::Mutex;
-use zeroize::Zeroizing;
 
 use super::ReconciliationProgress;
 use super::{coordinator::ResolutionKind, Digest32, Error, Id, IntentResolution, IntentStore};
@@ -771,23 +771,25 @@ impl StoreIntent {
         if length > self.budget {
             return Err(Error::Bounds);
         }
-        let mut bytes = Zeroizing::new(Vec::new());
-        bytes.try_reserve_exact(length).map_err(|_| Error::Bounds)?;
-        bytes.resize(HEADER, 0);
-        bytes[..8].copy_from_slice(b"BSMINT1\0");
-        bytes[8..24].copy_from_slice(&self.info.dataset.0);
-        bytes[24..40].copy_from_slice(&header.migration);
-        bytes[40..56].copy_from_slice(&header.operation);
-        bytes[56..88].copy_from_slice(&header.fingerprint);
-        bytes[88..104].copy_from_slice(&header.prepared_at.authority);
-        bytes[104..112].copy_from_slice(&header.prepared_at.unix_seconds.to_le_bytes());
-        bytes[112..120].copy_from_slice(&header.deadline.to_le_bytes());
-        bytes[120..128].copy_from_slice(&(snapshot.len() as u64).to_le_bytes());
-        bytes[128..144].copy_from_slice(&header.original.writer);
-        bytes[144..152].copy_from_slice(&header.original.writer_epoch.to_le_bytes());
-        bytes[152..160].copy_from_slice(&header.original.execution_epoch.to_le_bytes());
-        bytes.extend_from_slice(snapshot);
-        Ok(Secret::new(std::mem::take(&mut *bytes)))
+        // Exact size, one allocation: the wiping buffer never grows (LINT-RULES LR-117). The
+        // header holds no secret, so it is laid out on the stack first.
+        let mut bytes = SecureVec::with_capacity(length).map_err(|_| Error::Bounds)?;
+        let mut head = [0_u8; HEADER];
+        head[..8].copy_from_slice(b"BSMINT1\0");
+        head[8..24].copy_from_slice(&self.info.dataset.0);
+        head[24..40].copy_from_slice(&header.migration);
+        head[40..56].copy_from_slice(&header.operation);
+        head[56..88].copy_from_slice(&header.fingerprint);
+        head[88..104].copy_from_slice(&header.prepared_at.authority);
+        head[104..112].copy_from_slice(&header.prepared_at.unix_seconds.to_le_bytes());
+        head[112..120].copy_from_slice(&header.deadline.to_le_bytes());
+        head[120..128].copy_from_slice(&(snapshot.len() as u64).to_le_bytes());
+        head[128..144].copy_from_slice(&header.original.writer);
+        head[144..152].copy_from_slice(&header.original.writer_epoch.to_le_bytes());
+        head[152..160].copy_from_slice(&header.original.execution_epoch.to_le_bytes());
+        bytes.extend(&head).map_err(|_| Error::Bounds)?;
+        bytes.extend(snapshot).map_err(|_| Error::Bounds)?;
+        Ok(Secret::new(std::mem::take(&mut *bytes.into_zeroizing())))
     }
 
     fn decode(
@@ -1351,14 +1353,18 @@ impl IntentStore for StoreIntent {
                 if HEADER.checked_add(length).ok_or(Error::Bounds)? > self.budget {
                     return Err(Error::Bounds);
                 }
-                let mut out = Zeroizing::new(Vec::new());
-                out.try_reserve_exact(length).map_err(|_| Error::Bounds)?;
-                out.extend_from_slice(b"BSMPRF01");
-                out.extend_from_slice(&(source.len() as u64).to_le_bytes());
-                out.extend_from_slice(&(result.len() as u64).to_le_bytes());
-                out.extend_from_slice(source);
-                out.extend_from_slice(result);
-                (5, self.encode(header, &out)?)
+                // Exact size, one allocation: the wiping buffer never grows (LR-117).
+                let mut out = SecureVec::with_capacity(length).map_err(|_| Error::Bounds)?;
+                for part in [
+                    b"BSMPRF01".as_slice(),
+                    &(source.len() as u64).to_le_bytes(),
+                    &(result.len() as u64).to_le_bytes(),
+                    &source[..],
+                    &result[..],
+                ] {
+                    out.extend(part).map_err(|_| Error::Bounds)?;
+                }
+                (5, self.encode(header, out.as_slice())?)
             } else {
                 (state, self.encode(header, &[])?)
             }
