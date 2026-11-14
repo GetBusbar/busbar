@@ -199,9 +199,6 @@ struct Shared {
     shed_pending: AtomicU64,
 
     flusher: Mutex<Option<Waker>>,
-    /// Deliver what is queued, then end the flusher once nothing is in
-    /// flight. Set on drop before `stop`, which sheds what is still queued.
-    drain: AtomicBool,
     stop: AtomicBool,
 
     abandon: AtomicBool,
@@ -356,14 +353,9 @@ impl Shared {
                 inflight.push(self.clone().deliver(worker, stream, lines));
                 started = true;
             }
-            if started {
-                continue;
+            if !started {
+                return Poll::Pending;
             }
-            // Draining ends once everything queued has been delivered.
-            if self.drain.load(Ordering::Acquire) && inflight.is_empty() && self.lock().is_empty() {
-                return Poll::Ready(());
-            }
-            return Poll::Pending;
         }));
         if !inflight.is_empty() {
             tracing::warn!(
@@ -401,7 +393,7 @@ impl std::fmt::Debug for ExportInstance {
 
 impl Drop for ExportInstance {
     fn drop(&mut self) {
-        self.shared.drain.store(true, Ordering::Release);
+        self.shared.stop.store(true, Ordering::Release);
         self.shared.notify();
         let flusher = self
             .flusher
@@ -409,10 +401,7 @@ impl Drop for ExportInstance {
             .unwrap_or_else(|p| p.into_inner())
             .take();
         if let Some((f, flushed)) = flusher {
-            // Drain within STOP_GRACE; past it, stop: shed what is still
-            // queued and abandon the deliveries still in flight.
             if let Err(RecvTimeoutError::Timeout) = flushed.recv_timeout(STOP_GRACE) {
-                self.shared.stop.store(true, Ordering::Release);
                 self.shared.abandon.store(true, Ordering::Release);
                 self.shared.notify();
             }
@@ -455,7 +444,6 @@ impl ExportInstance {
             queue: Mutex::new(VecDeque::new()),
             shed_pending: AtomicU64::new(0),
             flusher: Mutex::new(None),
-            drain: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             abandon: AtomicBool::new(false),
             node: node_id(),

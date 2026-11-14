@@ -221,7 +221,6 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
         queue: Mutex::default(),
         shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
-        drain: AtomicBool::new(false),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
         node: node_id(),
@@ -799,7 +798,6 @@ fn a_batch_dropped_after_failed_delivery_is_counted_as_shed() {
         queue: Mutex::default(),
         shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
-        drain: AtomicBool::new(false),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
         node: node_id(),
@@ -933,7 +931,6 @@ fn counting_sink() -> (ExportInstance, Arc<Shared>) {
         queue: Mutex::default(),
         shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
-        drain: AtomicBool::new(false),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
         node: node_id(),
@@ -988,24 +985,6 @@ fn counting_shed_folds() -> Vec<u64> {
         .filter(|metric| metric["name"] == COUNTING_SHED)
         .map(|metric| metric["value"].as_u64().unwrap())
         .collect()
-}
-
-#[test]
-fn stop_drains_queued_lines() {
-    let guard = crate::observe::testing::exclusive();
-    let (sink, shared) = counting_sink();
-    crate::observe::testing::clear(&guard);
-    queue_lines(&sink, 300);
-    // The drop path drains: it sets `drain` and stops only past STOP_GRACE.
-    shared.drain.store(true, Ordering::Release);
-    Arc::clone(&shared).flush();
-    assert_eq!(
-        counting::LINES.load(Ordering::SeqCst),
-        300,
-        "lines queued at stop are delivered, not shed"
-    );
-    assert_eq!(sink.queued(), 0);
-    assert_eq!(counting_shed_folds().iter().sum::<u64>(), 0);
 }
 
 #[test]
