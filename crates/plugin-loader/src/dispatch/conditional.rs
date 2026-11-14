@@ -138,14 +138,19 @@ pub(crate) unsafe fn prepare(
     {
         return Err(());
     }
-    let mut added = Vec::new();
-    if let Some((capability, receipt)) = normal {
+    // The parts appended after the prior bytes, in order; written once, straight into the frame's
+    // bytes.
+    let mut capability_part = None;
+    let mut receipt_part: &[u8] = &[];
+    let mut settlement_part: &[u8] = &[];
+    if let Some((capability, receipt)) = &normal {
+        let capability = *capability;
         let prior_capability = wire::read_capability(prior).map_err(|_| ())?;
         if prior_capability.is_some_and(|c| c != capability) {
             return Err(());
         }
         if prior_capability.is_none() {
-            added.extend_from_slice(&wire::encode_capability(capability));
+            capability_part = Some(wire::encode_capability(capability));
         }
         let existing = wire::entry(prior, wire::RESULT).map_err(|_| ())?;
         let observed = wire::entry(prior, wire::OBSERVED).map_err(|_| ())?;
@@ -160,7 +165,7 @@ pub(crate) unsafe fn prepare(
             }
         }
         if existing.is_none() && observed.is_none() {
-            added.extend_from_slice(receipt.as_deref().unwrap_or(&[]));
+            receipt_part = receipt.as_deref().unwrap_or(&[]);
         }
     } else if wire::read_capability(prior).map_err(|_| ())?.is_some()
         || wire::entry(prior, wire::RESULT).map_err(|_| ())?.is_some()
@@ -178,17 +183,20 @@ pub(crate) unsafe fn prepare(
         {
             return Err(());
         }
-    } else if let Some(settlement) = settlement {
-        added.extend_from_slice(&settlement);
+    } else if let Some(settlement) = &settlement {
+        settlement_part = settlement;
     }
+    let capability_part = capability_part.as_deref().unwrap_or(&[]);
     let len = prior
         .len()
-        .checked_add(added.len())
+        .checked_add(capability_part.len() + receipt_part.len() + settlement_part.len())
         .filter(|&n| n <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize)
         .ok_or(())?;
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(len));
     bytes.extend_from_slice(prior);
-    bytes.extend_from_slice(&added);
+    bytes.extend_from_slice(capability_part);
+    bytes.extend_from_slice(receipt_part);
+    bytes.extend_from_slice(settlement_part);
     let bytes = Arc::new(bytes);
     head.extensions = Blob {
         ptr: bytes.as_ptr(),
@@ -668,13 +676,12 @@ pub(crate) unsafe fn answer(
                 result: Err(ConditionalFailure::Refused(reason)),
             };
             let bytes = wire::encode_observed(&observation, &result).map_err(|_| ())?;
-            if served.store.observation_complete(
-                caller(wake),
-                unit,
-                &observation,
-                &result,
-                Arc::from(bytes),
-            ) {
+            // busbar:expect(bp::into_alloc, reason = "error: the provider refused the observation; its refusal receipt is kept")
+            let receipt = Arc::from(bytes);
+            if served
+                .store
+                .observation_complete(caller(wake), unit, &observation, &result, receipt)
+            {
                 if let Some(waking) = Waking::of(wake) {
                     waking.wake(ticket);
                 }
@@ -711,7 +718,9 @@ pub(crate) unsafe fn answer(
             correlation: request.candidate.correlation,
             decision: Err(ConditionalFailure::Refused(reason)),
         };
-        let receipt = Arc::from(wire::encode_result(&request, &result).map_err(|_| ())?);
+        let bytes = wire::encode_result(&request, &result).map_err(|_| ())?;
+        // busbar:expect(bp::into_alloc, reason = "error: the provider refused the commit; its refusal receipt is kept")
+        let receipt = Arc::from(bytes);
         if served
             .store
             .conditional_complete(caller(wake), unit, &request, &result, receipt)

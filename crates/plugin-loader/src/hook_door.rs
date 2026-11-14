@@ -27,8 +27,8 @@ use crate::dispatch::lifecycle::{
     blob, close, copy_blob, lend_or_null, open_frame, release, text, validate_json, AnswerLease,
 };
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
-    EnvelopeSink, Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig,
+    in_head, instant_at, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable,
+    Dispatcher, EnvelopeSink, Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig,
 };
 use crate::PluginRegistry;
 
@@ -161,6 +161,10 @@ fn checkpoint(out: &ConfigureOut) -> Result<Option<ConfigureCheckpoint>, String>
     }
     // SAFETY: the checked configure answer remains live under its plugin lease until release.
     let bytes = unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the hook's configuration checkpoint did not decode"
+    )]
     let checkpoint = ConfigureCheckpoint::decode(bytes).map_err(str::to_owned)?;
     if checkpoint.is_some() && (out.head.lease == 0 || ext.flags & BLOB_SECRET == 0) {
         return Err("hook configuration checkpoint has no secret lease".into());
@@ -187,10 +191,15 @@ fn reconfigure(plugin: &Plugin<Hook>, pushed: &Configured) -> Result<ConfigureCh
     let checkpoint = if c.outcome == Outcome::Ready && f.out.acked_version == version {
         checkpoint(&f.out)
     } else {
-        Err(c.error.map_or_else(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a recovering hook did not restore its configuration"
+        )]
+        let refused = c.error.map_or_else(
             || format!("it did not acknowledge settings version {version} again"),
-            |e| String::from_utf8_lossy(&e).into_owned(),
-        ))
+            crate::dispatch::lifecycle::lossy,
+        );
+        Err(refused)
     };
     release(plugin, c.lease);
     let restored = checkpoint?.ok_or("hook did not checkpoint its restored configuration")?;
@@ -220,11 +229,33 @@ impl Inner {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// `hook '<name>' <rest>`: the one spelling of a failed hook call's message.
+    fn broken(&self, rest: std::fmt::Arguments<'_>) -> String {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: names the hook whose call failed"
+        )]
+        let message = format!("hook '{}' {rest}", self.name);
+        message
+    }
+
     async fn live(self: &Arc<Self>, deadline: Instant) -> Result<Arc<Plugin<Hook>>, String> {
+        // The served path: a live, unfaulted instance, taken without a clock read.
+        if let State::Live { plugin, .. } = &*self.lock() {
+            if !plugin.is_faulted() {
+                return Ok(Arc::clone(plugin));
+            }
+        }
+        self.recover(deadline).await
+    }
+
+    /// The faulted instance's path: quarantine, the timed trial, and the wait for it.
+    async fn recover(self: &Arc<Self>, deadline: Instant) -> Result<Arc<Plugin<Hook>>, String> {
         loop {
             let (wait, retired, trial) = {
                 let mut state = self.lock();
-                let now = Instant::now();
+                // busbar:expect(bp::clock_repeat, reason = "error: a faulted hook's quarantine wait re-reads the clock each turn")
+                let now = instant_at(now_ns());
                 match &*state {
                     State::Live { plugin, .. } if !plugin.is_faulted() => {
                         return Ok(Arc::clone(plugin));
@@ -251,19 +282,17 @@ impl Inner {
                     }
                     State::Quarantined { trial_at, .. } => {
                         if *trial_at > deadline {
-                            return Err(format!(
-                                "hook '{}' is quarantined past the call's budget",
-                                self.name
-                            ));
+                            return Err(
+                                self.broken(format_args!("is quarantined past the call's budget"))
+                            );
                         }
                         (*trial_at - now, None, None)
                     }
                     State::Trialing => {
                         if now >= deadline {
-                            return Err(format!(
-                                "hook '{}' is quarantined past the call's budget",
-                                self.name
-                            ));
+                            return Err(
+                                self.broken(format_args!("is quarantined past the call's budget"))
+                            );
                         }
                         ((deadline - now).min(TRIAL_POLL), None, None)
                     }
@@ -285,32 +314,38 @@ impl Inner {
                             let mut state = inner.lock();
                             if matches!(*state, State::Trialing) {
                                 *state = State::Quarantined {
-                                    trial_at: Instant::now() + window,
+                                    trial_at: instant_at(now_ns()) + window,
                                     window,
                                 };
                             }
-                            Err("hook recovery worker panicked".to_owned())
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "error: the hook's recovery worker panicked"
+                            )]
+                            let panicked = "hook recovery worker panicked".to_owned();
+                            Err(panicked)
                         }
                     }
                 });
-                return match tokio::time::timeout(
-                    deadline.saturating_duration_since(Instant::now()),
+                return match tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(deadline),
                     trial,
                 )
                 .await
                 {
                     Ok(Ok(answer)) => answer,
                     Ok(Err(_)) => {
+                        // busbar:expect(bp::clock_repeat, reason = "error: a failed recovery worker re-quarantines from the time it failed")
+                        let failed_at = instant_at(now_ns());
                         *self.lock() = State::Quarantined {
-                            trial_at: Instant::now() + window,
+                            trial_at: failed_at + window,
                             window,
                         };
-                        Err(format!("hook '{}' recovery worker failed", self.name))
+                        Err(self.broken(format_args!("recovery worker failed")))
                     }
-                    Err(_) => Err(format!(
-                        "hook '{}' is quarantined past the call's budget",
-                        self.name
-                    )),
+                    Err(_) => {
+                        Err(self.broken(format_args!("is quarantined past the call's budget")))
+                    }
                 };
             }
             tokio::time::sleep(wait).await;
@@ -321,7 +356,13 @@ impl Inner {
         let recoverable = {
             let configured = self.configured.lock().unwrap_or_else(|e| e.into_inner());
             if configured.pending != 0 || configured.uncertain {
-                Err("hook configuration result is unresolved; recovery is unavailable".to_owned())
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a quarantined hook cannot recover while its configuration is unresolved"
+                )]
+                let unresolved =
+                    "hook configuration result is unresolved; recovery is unavailable".to_owned();
+                Err(unresolved)
             } else {
                 Ok(())
             }
@@ -350,7 +391,12 @@ impl Inner {
                 Ok(saved) => saved,
                 Err(error) => {
                     close(&p);
-                    return Err(error.to_owned());
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: a quarantined hook cannot recover while its configuration is unresolved"
+                    )]
+                    let error = error.to_owned();
+                    return Err(error);
                 }
             };
             let restored = match saved
@@ -399,13 +445,12 @@ impl Inner {
         if let Err(error) = &opened {
             let window = (window * 2).min(QUARANTINE_MAX);
             *self.lock() = State::Quarantined {
-                trial_at: Instant::now() + window,
+                trial_at: instant_at(now_ns()) + window,
                 window,
             };
-            return Err(format!(
-                "hook '{}' is quarantined: its trial did not open: {error}",
-                self.name
-            ));
+            return Err(self.broken(format_args!(
+                "is quarantined: its trial did not open: {error}"
+            )));
         }
         opened
     }
@@ -417,6 +462,16 @@ impl Inner {
         version: u64,
         checkpoint: Result<Option<ConfigureCheckpoint>, String>,
     ) -> Result<(), String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a hook's acknowledged configuration keeps the name it was pushed under"
+        )]
+        let kept = |checkpoint| {
+            Some(Arc::new(Configured {
+                name: name.to_owned(),
+                checkpoint,
+            }))
+        };
         let mut configured = self.configured.lock().unwrap_or_else(|e| e.into_inner());
         if !configured.owner.ptr_eq(&Arc::downgrade(plugin)) {
             return Err("hook configuration was acknowledged by a retired instance".into());
@@ -442,17 +497,11 @@ impl Inner {
                     if next.settings_version <= previous.settings_version {
                         return Ok(());
                     }
-                    configured.kept = Some(Arc::new(Configured {
-                        name: name.to_owned(),
-                        checkpoint: None,
-                    }));
+                    configured.kept = kept(None);
                     return Err("hook configuration checkpoint order is inconsistent".into());
                 }
                 if next.settings_version < previous.settings_version {
-                    configured.kept = Some(Arc::new(Configured {
-                        name: name.to_owned(),
-                        checkpoint: None,
-                    }));
+                    configured.kept = kept(None);
                     return Err("hook configuration checkpoint version moved backwards".into());
                 }
                 if next.revision == previous.revision {
@@ -461,10 +510,7 @@ impl Inner {
                     {
                         return Ok(());
                     }
-                    configured.kept = Some(Arc::new(Configured {
-                        name: name.to_owned(),
-                        checkpoint: None,
-                    }));
+                    configured.kept = kept(None);
                     return Err("hook reused a configuration checkpoint revision".into());
                 }
             }
@@ -473,10 +519,7 @@ impl Inner {
             Ok(checkpoint) => (checkpoint, None),
             Err(error) => (None, Some(error)),
         };
-        configured.kept = Some(Arc::new(Configured {
-            name: name.to_owned(),
-            checkpoint,
-        }));
+        configured.kept = kept(checkpoint);
         error.map_or(Ok(()), Err)
     }
 
@@ -496,7 +539,7 @@ impl Inner {
             };
             if let Some(window) = window {
                 *state = State::Quarantined {
-                    trial_at: Instant::now() + window,
+                    trial_at: instant_at(now_ns()) + window,
                     window,
                 };
             }
@@ -553,14 +596,13 @@ impl Inner {
         I: InFrame,
         O: OutFrame + Copy,
     {
-        let deadline = Instant::now().checked_add(budget).ok_or_else(|| {
-            Answered::Broken(format!(
-                "hook '{}' call budget exceeds the clock range",
-                self.name
-            ))
+        // The call's one clock read: both deadline spellings derive from it.
+        let now = now_ns();
+        let deadline = instant_at(now).checked_add(budget).ok_or_else(|| {
+            Answered::Broken(self.broken(format_args!("call budget exceeds the clock range")))
         })?;
-        let deadline_ns =
-            now_ns().saturating_add(u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX));
+        let until = tokio::time::Instant::from_std(deadline);
+        let deadline_ns = now.saturating_add(u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX));
         let mut lent = lent;
         let mut first = true;
         'route: loop {
@@ -569,10 +611,9 @@ impl Inner {
             let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
 
             let Some(call) = Ticketed::mint(&self.dispatcher, worker) else {
-                return Err(Answered::Broken(format!(
-                    "hook '{}' could not be called: no ticket",
-                    self.name
-                )));
+                return Err(Answered::Broken(
+                    self.broken(format_args!("could not be called: no ticket")),
+                ));
             };
             let mut call = call.watched(budget);
             if let Some(child) = lent
@@ -602,12 +643,7 @@ impl Inner {
                     Arc::clone(&lent),
                 );
 
-                let Ok(done) = tokio::time::timeout(
-                    deadline.saturating_duration_since(Instant::now()),
-                    &mut call,
-                )
-                .await
-                else {
+                let Ok(done) = tokio::time::timeout_at(until, &mut call).await else {
                     return Err(Answered::TimedOut);
                 };
 
@@ -632,11 +668,13 @@ impl Inner {
                             continue;
                         }
                     } else {
-                        let left = deadline.saturating_duration_since(Instant::now());
-                        if left.is_zero() {
+                        // Every slot is taken: back off, never past the call's deadline.
+                        if tokio::time::timeout_at(until, tokio::time::sleep(slot_wait))
+                            .await
+                            .is_err()
+                        {
                             return Err(Answered::TimedOut);
                         }
-                        tokio::time::sleep(slot_wait.min(left)).await;
                         slot_wait = (slot_wait * 2).min(SLOT_WAIT_MAX);
                         retried_free = false;
                         continue;
@@ -669,16 +707,18 @@ impl Inner {
                     }
                     (Outcome::Fault, _) => {
                         self.faulted(&plugin);
-                        Err(Answered::Broken(format!(
-                            "hook '{}' broke the hook kind's contract (FAULT)",
-                            self.name
-                        )))
+                        Err(Answered::Broken(self.broken(format_args!(
+                            "broke the hook kind's contract (FAULT)"
+                        ))))
                     }
-                    (o, _) => Err(Answered::Broken(format!(
-                        "hook '{}' answered {o:?}{}",
-                        self.name,
-                        text(done.error).map_or_else(String::new, |t| format!(": {t}"))
-                    ))),
+                    (o, _) => {
+                        let why = text(done.error);
+                        let sep = if why.is_some() { ": " } else { "" };
+                        let why = why.as_deref().unwrap_or("");
+                        Err(Answered::Broken(
+                            self.broken(format_args!("answered {o:?}{sep}{why}")),
+                        ))
+                    }
                 };
             }
         }
@@ -757,28 +797,34 @@ impl HookInstance {
     ) -> Result<Self, String> {
         open(&plugin, settings)?;
         let plugin = Arc::new(plugin);
-        Ok(Self {
-            inner: Arc::new(Inner {
-                name: plugin.name().to_string(),
-                routes: plugin
-                    .context::<HookContext>()
-                    .map_or_else(Vec::new, |f| f.routes.clone()),
-                dispatcher,
-                rebind: Box::new(rebind),
-                settings: zeroize::Zeroizing::new(settings.to_vec()),
-                configured: Mutex::new(Configuration {
-                    owner: Arc::downgrade(&plugin),
-                    kept: None,
-                    pending: 0,
-                    uncertain: false,
-                }),
-                state: Mutex::new(State::Live {
-                    plugin,
-                    next_fault_window: QUARANTINE_FIRST,
-                }),
-                next_worker: AtomicU32::new(0),
-                orders,
+        // busbar:expect(bp::clone_alloc, reason = "boot: an opened hook instance keeps its own name, routes and settings")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an opened hook instance keeps its own name, routes and settings"
+        )]
+        let inner = Inner {
+            name: plugin.name().to_string(),
+            routes: plugin
+                .context::<HookContext>()
+                .map_or_else(Vec::new, |f| f.routes.clone()),
+            dispatcher,
+            rebind: Box::new(rebind),
+            settings: zeroize::Zeroizing::new(settings.to_vec()),
+            configured: Mutex::new(Configuration {
+                owner: Arc::downgrade(&plugin),
+                kept: None,
+                pending: 0,
+                uncertain: false,
             }),
+            state: Mutex::new(State::Live {
+                plugin,
+                next_fault_window: QUARANTINE_FIRST,
+            }),
+            next_worker: AtomicU32::new(0),
+            orders,
+        };
+        Ok(Self {
+            inner: Arc::new(inner),
         })
     }
 
@@ -883,15 +929,21 @@ fn refused_order<O: 'static>(s: u32, out: &O, name: &str) -> Option<String> {
     }
     let out: &dyn std::any::Any = out;
     let o = out.downcast_ref::<DecideOut>()?;
-    (o.verbs & (VERB_PREFER | busbar_contract::abi::hook::VERB_PRIORITIZE) != 0
+    let ordered = o.verbs & (VERB_PREFER | busbar_contract::abi::hook::VERB_PRIORITIZE) != 0
         || o.order_written > 0
-        || o.order_needed > 0)
-        .then(|| {
-            format!(
-                "hook plugin '{name}' declared `hook.orders: false` and answered an order: its \
+        || o.order_needed > 0;
+    if !ordered {
+        return None;
+    }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: an order-free hook answered an order, which is refused"
+    )]
+    let refused = format!(
+        "hook plugin '{name}' declared `hook.orders: false` and answered an order: its \
              `decide` must always abstain, so the order is refused"
-            )
-        })
+    );
+    Some(refused)
 }
 
 fn regrown<O: 'static>(frame: &DecideFrame, s: u32, out: &O) -> Option<Arc<DecideFrame>> {
@@ -1024,18 +1076,24 @@ impl HookCalls for HookInstance {
         budget: Duration,
     ) -> Pending<Result<(), String>> {
         let inner = Arc::clone(&self.inner);
-        let encoded = settings.encode().map_err(|error| error.to_string());
-        let owned = encoded.and_then(|encoded| {
-            let seal = inner
-                .dispatcher
-                .seal()
-                .ok_or("hook configure requires the host settings seal")?;
-            Ok(Arc::new((
-                name.to_string(),
-                zeroize::Zeroizing::new(encoded.expose(seal).clone()),
-                version,
-            )))
-        });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: pushing a configuration renders and keeps its settings and name once"
+        )]
+        let owned = settings
+            .encode()
+            .map_err(|error| error.to_string())
+            .and_then(|encoded| {
+                let seal = inner
+                    .dispatcher
+                    .seal()
+                    .ok_or("hook configure requires the host settings seal")?;
+                Ok(Arc::new((
+                    name.to_string(),
+                    zeroize::Zeroizing::new(encoded.expose(seal).clone()),
+                    version,
+                )))
+            });
         Box::pin(async move {
             let owned: Pushed = owned?;
             let lent = Arc::clone(&owned);
@@ -1051,12 +1109,15 @@ impl HookCalls for HookInstance {
                     blank_out::<ConfigureOut>(),
                 )
             };
-            let hook = inner.name.clone();
             let mut attempt = ConfigureAttempt {
                 inner: Arc::clone(&inner),
                 target: None,
             };
-            match inner
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: names the hook whose configuration push failed"
+            )]
+            let pushed = match inner
                 .submit_tracked(
                     slot::CONFIGURE,
                     budget,
@@ -1080,17 +1141,22 @@ impl HookCalls for HookInstance {
                         attempt.finish(true);
                     }
 
+                    let hook = &inner.name;
                     Err(done.error.map_or_else(
                         || format!("hook '{hook}' did not acknowledge settings version {version}"),
                         |why| format!("hook '{hook}': {why}"),
                     ))
                 }
                 Err(Answered::TimedOut) => Err(format!(
-                    "hook '{hook}' did not acknowledge settings version {version} within its budget"
+                    "hook '{}' did not acknowledge settings version {version} within its budget",
+                    inner.name
                 )),
                 Err(Answered::Broken(why)) => Err(why),
-                Err(Answered::Answer { .. }) => Err(format!("hook '{hook}' answered out of turn")),
-            }
+                Err(Answered::Answer { .. }) => {
+                    Err(format!("hook '{}' answered out of turn", inner.name))
+                }
+            };
+            pushed
         })
     }
 
@@ -1158,6 +1224,10 @@ impl Drop for ServeLent {
 }
 
 fn copy_serve_text(value: busbar_contract::abi::mechanism::call::AbiStr) -> Result<String, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the hook served a malformed response header"
+    )]
     let bytes = crate::dispatch::plugin::str_bytes(value)
         .ok_or_else(|| "hook serve returned a malformed response header".to_string())?;
     std::str::from_utf8(bytes)
@@ -1205,13 +1275,21 @@ pub struct HookRows {
     conns: Option<fn() -> AdmissionAuthority>,
 }
 
+/// The candidates' names, listed as a `Debug` list without collecting them.
+struct CandidateNames<'a>(&'a [Candidate]);
+
+impl std::fmt::Debug for CandidateNames<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|c| &c.name))
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for HookRows {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HookRows")
-            .field(
-                "candidates",
-                &self.candidates.iter().map(|c| &c.name).collect::<Vec<_>>(),
-            )
+            .field("candidates", &CandidateNames(&self.candidates))
             .finish_non_exhaustive()
     }
 }
@@ -1222,21 +1300,30 @@ impl HookRows {
         registry: Option<&PluginRegistry>,
         dispatcher: Arc<Dispatcher>,
     ) -> Result<Self, String> {
+        // busbar:expect(bp::fresh_buffer, reason = "boot: the hook axis gathers its candidates once")
         let mut candidates = Vec::new();
+        // busbar:expect(bp::fresh_buffer, reason = "boot: the hook axis gathers its first-party names once")
         let mut first_party = Vec::new();
         for door in linked {
             let c = Candidate::linked(*door)?;
             if c.kind != KindCode::Hook {
-                return Err(format!(
-                    "the linked hook door '{}' states another kind",
-                    c.name
-                ));
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: a linked hook door states another kind"
+                )]
+                let refused = format!("the linked hook door '{}' states another kind", c.name);
+                return Err(refused);
             }
             candidates.push(c);
         }
         for p in registry.into_iter().flat_map(PluginRegistry::dropped_hooks) {
             let Some(c) = p.candidate()? else {
-                return Err(format!("plugin '{}': {JSON_HOOK_REFUSED}", p.manifest.name));
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: a dropped hook speaks the refused JSON contract"
+                )]
+                let refused = format!("plugin '{}': {JSON_HOOK_REFUSED}", p.manifest.name);
+                return Err(refused);
             };
             if p.first_party() {
                 first_party.push(c.name.clone());
@@ -1289,6 +1376,7 @@ impl HookRows {
     }
 
     fn find(&self, module: &str) -> Option<&Candidate> {
+        // busbar:expect(bp::state_scan, reason = "config: a configured hook module is matched to its candidate when config is read")
         self.candidates.iter().find(|c| answers(c, module))
     }
 
@@ -1299,6 +1387,7 @@ impl HookRows {
         sink: Arc<dyn EnvelopeSink>,
         conns: ConnTable,
     ) -> Result<Plugin<Hook>, String> {
+        // busbar:expect(bp::into_alloc, reason = "boot: a bound hook instance keeps its label")
         let bind = Bind {
             instance: Arc::from(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
@@ -1306,13 +1395,18 @@ impl HookRows {
             dispatcher: dispatcher.adopter(),
             conns,
         };
-        match &c.origin {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the hook plugin that did not bind"
+        )]
+        let bound = match &c.origin {
             Origin::Linked(row) => load_linked::<Hook>(row, bind),
             Origin::Dropped { file, bytes } => {
                 load_dropped_bytes::<Hook>(bytes, file, &c.stated, bind)
             }
         }
-        .map_err(|e| format!("hook plugin '{}': {e}", c.name))
+        .map_err(|e| format!("hook plugin '{}': {e}", c.name));
+        bound
     }
 }
 
@@ -1326,6 +1420,10 @@ impl HookAxis for HookRows {
         let Some(candidate) = self.find(module) else {
             return Ok(Vec::new());
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: names the hook plugin whose routes config could not read"
+        )]
         let refused = |e| format!("hook plugin '{}': {e}", candidate.name);
         let image = match &candidate.origin {
             Origin::Linked(row) => crate::dispatch::load::prepare_linked::<Hook>(row),
@@ -1336,6 +1434,7 @@ impl HookAxis for HookRows {
         .map_err(refused)?;
         let routes = image.routes().map_err(refused)?;
         if !routes.is_empty() {
+            // busbar:expect(bp::into_alloc, reason = "config: a route probe binds an instance under its label")
             let plugin = image
                 .bind(Bind {
                     instance: Arc::from(instance),
@@ -1345,6 +1444,10 @@ impl HookAxis for HookRows {
                     conns: ConnTable::Probe,
                 })
                 .map_err(refused)?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the hook's settings did not render for validation"
+            )]
             let text = settings.encode().map_err(|error| error.to_string())?;
             let seal = self
                 .dispatcher
@@ -1376,6 +1479,10 @@ impl HookAxis for HookRows {
         let facts = p
             .context::<HookContext>()
             .map(|context| context.facts.clone());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a probe's settings did not render for validation"
+        )]
         let encoded = settings.encode().map_err(|error| error.to_string());
         let validated = encoded.and_then(|text| {
             let seal = self
@@ -1384,6 +1491,10 @@ impl HookAxis for HookRows {
                 .ok_or("hook probe requires the host settings seal")?;
             validate(&p, text.expose(seal))
         });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a probe lists the problems validation found in the hook's settings"
+        )]
         let problems = match validated {
             Ok(()) => Vec::new(),
             Err(words) => words.lines().map(str::to_string).collect(),
@@ -1398,6 +1509,10 @@ impl HookAxis for HookRows {
         settings: &busbar_contract::plugin_settings::ResolvedSettings,
         _budget: Duration,
     ) -> Result<Arc<dyn HookCalls>, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names a configured hook module no plugin answers to"
+        )]
         let c = self
             .find(module)
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?
@@ -1411,11 +1526,19 @@ impl HookAxis for HookRows {
         let conns = ConnTable::serving(self.conns.map(|table| table()));
         let c_orders = c.orders;
         let plugin = Self::bind(&c, &self.dispatcher, label, sink(label)?, conns.clone())?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an opened hook's rebind keeps its label for recovery"
+        )]
         let rebind = {
             let (dispatcher, label) = (Arc::clone(&self.dispatcher), label.to_string());
             let sink = sink(label.as_str())?;
             move || Self::bind(&c, &dispatcher, &label, Arc::clone(&sink), conns.clone())
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the hook's settings did not render for opening"
+        )]
         let text = settings.encode().map_err(|error| error.to_string())?;
         let seal = self
             .dispatcher

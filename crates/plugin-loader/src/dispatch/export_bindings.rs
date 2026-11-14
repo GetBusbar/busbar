@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::{lifecycle::slot, ticket::Ticket};
@@ -37,7 +37,7 @@ struct State {
     entering: usize,
     refreshing: Option<Ticket>,
     pending_refresh: bool,
-    waiting: Vec<Ticket>,
+    waiting: HashSet<Ticket>,
 }
 
 pub(crate) struct Admission {
@@ -49,7 +49,7 @@ pub(crate) struct Admission {
 pub(crate) struct Forgotten {
     binding: Option<Arc<Generation>>,
     replaced: Option<Arc<Generation>>,
-    waiting: Vec<Ticket>,
+    waiting: HashSet<Ticket>,
     wake: &'static InstanceWake,
 }
 
@@ -64,7 +64,7 @@ impl Drop for Forgotten {
         drop(self.binding.take());
         drop(self.replaced.take());
         if let Some(waking) = Waking::of(self.wake) {
-            for ticket in self.waiting.drain(..) {
+            for ticket in self.waiting.drain() {
                 waking.wake(ticket);
             }
         }
@@ -80,7 +80,13 @@ impl Bindings {
     ) -> Option<Admission> {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
         let refresh = op == slot::REFRESH;
-        let another_refresh = refresh && state.staged.keys().any(|pending| *pending != ticket);
+        // Another ticket's refresh is staged: any staged key but this ticket.
+        let another_refresh = refresh
+            && match state.staged.len() {
+                0 => false,
+                1 => !state.staged.contains_key(&ticket),
+                _ => true,
+            };
         if refresh && !another_refresh && state.refreshing.is_none() && state.entering == 0 {
             state.refreshing = Some(ticket);
         }
@@ -90,8 +96,8 @@ impl Bindings {
             state.refreshing.is_some()
         };
         if blocked {
-            if !ticket.is_none() && !state.waiting.contains(&ticket) {
-                state.waiting.push(ticket);
+            if !ticket.is_none() {
+                state.waiting.insert(ticket);
             }
             return None;
         }
@@ -197,7 +203,7 @@ impl Bindings {
             let waiting = if pending_refresh || (staged.is_some() && state.refreshing.is_none()) {
                 std::mem::take(&mut state.waiting)
             } else {
-                Vec::new()
+                HashSet::default()
             };
             let pinned = state.tickets.remove(&ticket);
             let (binding, replaced) = match staged {
@@ -243,13 +249,18 @@ impl Bindings {
 
     pub(crate) fn worker_pins(&self, worker: u32) -> Vec<(Ticket, Arc<Generation>)> {
         let state = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        state
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a wedged worker's replacement forgets the export pins its tickets held"
+        )]
+        let pins = state
             .tickets
             .iter()
             .chain(state.staged.iter())
             .filter(|(ticket, _)| super::ticket::decode(ticket.slot).0 == worker)
             .map(|(ticket, binding)| (*ticket, binding.clone()))
-            .collect()
+            .collect();
+        pins
     }
 }
 
@@ -272,7 +283,7 @@ impl Drop for Admission {
             if state.entering == 0 && state.refreshing.is_none() {
                 std::mem::take(&mut state.waiting)
             } else {
-                Vec::new()
+                HashSet::default()
             }
         };
         if let Some(waking) = Waking::of(self.wake) {

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![allow(unsafe_code)]
+#![expect(
+    unsafe_code,
+    reason = "lends the outbound request's bytes to the plugin across the C ABI"
+)]
 
 use std::future::Future;
 use std::pin::Pin;
@@ -37,11 +40,10 @@ pub struct OutboundInstance {
 }
 
 #[must_use]
-pub fn outbound_styles(plugin: &Plugin<Auth>) -> Vec<OutboundStyle> {
+pub fn outbound_styles(plugin: &Plugin<Auth>) -> &[OutboundStyle] {
     plugin
         .context::<AuthFacts>()
-        .map(|f| f.styles.clone())
-        .unwrap_or_default()
+        .map_or(&[], |f| f.styles.as_slice())
 }
 
 /// Validate one outbound style without opening the plugin or lending a credential.
@@ -50,9 +52,12 @@ pub fn check_settings(plugin: &Plugin<Auth>, style: &str, settings: &[u8]) -> Re
         .context::<AuthFacts>()
         .is_some_and(|facts| facts.outbound_settings_check)
     {
-        return Err(format!(
-            "outbound style '{style}' has no settings-only validator"
-        ));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: settings-only validation refused the style"
+        )]
+        let refused = format!("outbound style '{style}' has no settings-only validator");
+        return Err(refused);
     }
     let ext = extensions::encode(&[(
         busbar_contract::abi::auth::EXT_OUTBOUND_SETTINGS_CHECK,
@@ -65,12 +70,16 @@ pub fn check_settings(plugin: &Plugin<Auth>, style: &str, settings: &[u8]) -> Re
         &mut frame,
     );
     let _lease = AnswerLease::new(plugin, called.lease);
-    match called.outcome {
-        Outcome::Ready => Ok(()),
-        outcome => {
-            Err(super::lifecycle::text(called.error).unwrap_or_else(|| format!("{outcome:?}")))
-        }
+    if called.outcome == Outcome::Ready {
+        return Ok(());
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the plugin refused the style's settings"
+    )]
+    let refused =
+        super::lifecycle::text(called.error).unwrap_or_else(|| format!("{:?}", called.outcome));
+    Err(refused)
 }
 
 impl OutboundInstance {
@@ -93,6 +102,10 @@ impl OutboundInstance {
         settings: &[u8],
     ) -> Result<Self, String> {
         use busbar_contract::abi::mechanism::lifecycle::slot as lc;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names an instance that did not validate or open"
+        )]
         let named = |what: &str, outcome: Outcome, error: Option<Vec<u8>>| {
             format!(
                 "`{}` did not {what} for its outbound styles: {}",
@@ -177,7 +190,7 @@ impl Drop for Lend {
 }
 
 impl Lend {
-    fn new(mut request: FieldsRequest, bytes: usize, fields: usize) -> Box<Self> {
+    fn new(mut request: FieldsRequest, bytes: usize, fields: usize) -> Self {
         let mut capability = extensions::encode(&[(EXT_SEALED_FIELDS, SEALED_FIELDS_V1)]);
         capability.append(&mut request.extensions);
         request.extensions = capability;
@@ -189,12 +202,12 @@ impl Lend {
                 value: blob(v, BLOB_OCTETS, 0),
             })
             .collect();
-        Box::new(Lend {
+        Lend {
             request,
             named,
             field_buf: vec![0; bytes],
             fields: vec![NO_FIELD; fields],
-        })
+        }
     }
 
     fn input(
@@ -349,6 +362,10 @@ impl OutboundInstance {
         credential: &[u8],
         settings: &serde_json::Value,
     ) -> Result<u64, (Outcome, String)> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: binding an outbound style renders its settings once"
+        )]
         let settings =
             serde_json::to_vec(settings).map_err(|e| (Outcome::Refused, e.to_string()))?;
         let mut frame = Frame::new(
@@ -372,6 +389,10 @@ impl OutboundInstance {
         if called.outcome == Outcome::Ready {
             return Ok(frame.out.handle);
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the plugin refused to bind the outbound style"
+        )]
         let why = called
             .error
             .map(|e| String::from_utf8_lossy(&e).into_owned())
@@ -387,13 +408,19 @@ impl OutboundAuth for OutboundInstance {
         credential: &[u8],
         settings: &serde_json::Value,
     ) -> Result<u64, String> {
-        self.open_outbound_raw(style, credential, settings)
-            .map_err(|(outcome, why)| {
-                format!(
-                    "`{}` did not open the outbound style `{style}`: {outcome:?} {why}",
-                    self.plugin.name(),
-                )
-            })
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: names the outbound style binding the plugin refused"
+        )]
+        let opened =
+            self.open_outbound_raw(style, credential, settings)
+                .map_err(|(outcome, why)| {
+                    format!(
+                        "`{}` did not open the outbound style `{style}`: {outcome:?} {why}",
+                        self.plugin.name(),
+                    )
+                });
+        opened
     }
 
     fn ready(&self, handle: u64) -> bool {
@@ -489,7 +516,7 @@ impl Asked {
     ) {
         let mut lend = Lend::new(copy(&self.request), bytes, fields);
         let input = lend.input(self.handle, self.this.dispatcher.seal());
-        let lent: Arc<Lend> = Arc::from(lend);
+        let lent = Arc::new(lend);
         call.submit(
             &*self.this.plugin,
             slot::FIELDS,

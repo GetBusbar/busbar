@@ -9,6 +9,33 @@ use busbar_contract::abi::plane::{
 use busbar_contract::plane_calls::Cancelled;
 use tokio::sync::oneshot;
 
+thread_local! {
+    /// This worker thread's unit-member scratch: reused (its capacity kept) by every unit answer.
+    static MEMBERS: std::cell::Cell<Vec<u32>> = const { std::cell::Cell::new(Vec::new()) };
+    /// This worker thread's unit-waiter scratch: reused by every unit retirement.
+    static WAITERS: std::cell::Cell<Vec<Waiter>> =
+        const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// A unit's member entries, in this thread's scratch buffer, handed back when dropped.
+struct Members(Vec<u32>);
+
+impl std::ops::Deref for Members {
+    type Target = [u32];
+
+    fn deref(&self) -> &[u32] {
+        &self.0
+    }
+}
+
+impl Drop for Members {
+    fn drop(&mut self) {
+        let mut kept = std::mem::take(&mut self.0);
+        kept.clear();
+        MEMBERS.set(kept);
+    }
+}
+
 #[derive(Clone, Copy)]
 enum End {
     Completed,
@@ -306,19 +333,22 @@ impl Worker {
         Self::schedule(st, idx, Action::Cancel);
     }
 
-    fn unit_members(&self, st: &WorkerState, instance: &Arc<Instance>, unit: u64) -> Vec<u32> {
-        st.entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                entry.live
-                    && entry
-                        .unit_binding
-                        .as_ref()
-                        .is_some_and(|b| b.matches(instance, unit))
-            })
-            .map(|(idx, _)| idx as u32)
-            .collect()
+    fn unit_members(&self, st: &WorkerState, instance: &Arc<Instance>, unit: u64) -> Members {
+        let mut members = Members(MEMBERS.take());
+        members.0.extend(
+            st.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    entry.live
+                        && entry
+                            .unit_binding
+                            .as_ref()
+                            .is_some_and(|b| b.matches(instance, unit))
+                })
+                .map(|(idx, _)| idx as u32),
+        );
+        members
     }
 
     fn retire_unit(
@@ -331,7 +361,7 @@ impl Worker {
         env: &Env,
     ) {
         let (end, mut writes) = retirement;
-        let mut waiters = Vec::new();
+        let mut waiters = WAITERS.take();
         for &idx in members {
             let entry = &mut st.entries[idx as usize];
             if let Some(binding) = &mut entry.unit_binding {
@@ -345,7 +375,7 @@ impl Worker {
             waiters.append(&mut entry.unit_waiters);
         }
         let owner = waiters.iter().position(|w| !w.closed());
-        for (position, waiter) in waiters.into_iter().enumerate() {
+        for (position, waiter) in waiters.drain(..).enumerate() {
             let mut answer = end.answer();
             if owner == Some(position) {
                 if let Some(answer) = &mut answer {
@@ -354,6 +384,7 @@ impl Worker {
             }
             waiter.finish(answer);
         }
+        WAITERS.set(waiters);
         let mut primary_written = owner.is_some();
         for &idx in members {
             let queued = std::mem::take(&mut st.entries[idx as usize].queue);
@@ -415,9 +446,11 @@ impl Worker {
             .current
             .as_ref()
             .map_or(DeadlineClass::Stream, |c| c.meta.class);
+        // busbar:expect(bp::fresh_buffer, reason = "error: a cancelled unit group's in-flight jobs, taken back once")
         let mut jobs = Vec::new();
+        // busbar:expect(bp::fresh_buffer, reason = "error: a cancelled unit group's queued loans, kept past the lock once")
         let mut loans = Vec::new();
-        for &idx in &members {
+        for &idx in members.iter() {
             let entry = &mut st.entries[idx as usize];
             entry.unit_binding.as_mut().expect("bound unit").end = Some(End::Fault);
             entry.next = None;
@@ -508,7 +541,7 @@ impl Worker {
             .as_ref()
             .and_then(|c| c.job.as_ref().and_then(|job| job.piece(c.meta.slot)))
             .map(|input| input.stream);
-        for &idx in &members {
+        for &idx in members.iter() {
             let binding = st.entries[idx as usize]
                 .unit_binding
                 .as_mut()
@@ -537,11 +570,16 @@ pub(super) fn group_orphans(
     gone: Vec<Entry>,
     wedged: &Arc<Instance>,
 ) -> (Vec<Orphan>, Vec<Entry>) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a wedged worker's entries are sorted into orphans once, at its replacement"
+    )]
     let mut entries: Vec<_> = gone
         .into_iter()
         .enumerate()
         .map(|(idx, entry)| Some((worker.ticket(idx as u32, entry.generation), entry)))
         .collect();
+    // busbar:expect(bp::fresh_buffer, reason = "error: a wedged worker's pending orphans, grouped once at its replacement")
     let mut orphans = Vec::new();
     for idx in 0..entries.len() {
         let Some((_, entry)) = &entries[idx] else {
@@ -576,6 +614,10 @@ pub(super) fn group_orphans(
         }
         orphans.push(Orphan { entries: group });
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a wedged worker's remaining entries, forgotten once at its replacement"
+    )]
     let rest = entries
         .into_iter()
         .flatten()

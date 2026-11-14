@@ -124,8 +124,13 @@ pub fn check(
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_slice::<Vec<String>>(&bytes)
-        .map_err(|e| format!("export plugin check findings are not a JSON list of strings: {e}"))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an export plugin's check findings did not read"
+    )]
+    let findings = serde_json::from_slice::<Vec<String>>(&bytes)
+        .map_err(|e| format!("export plugin check findings are not a JSON list of strings: {e}"));
+    findings
 }
 
 fn check_bytes(
@@ -133,6 +138,10 @@ fn check_bytes(
     phase: u32,
     instances: &[(String, Vec<u8>)],
 ) -> Result<Vec<u8>, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an export check lends the configured instances once"
+    )]
     let list: Vec<CheckInstance> = instances
         .iter()
         .map(|(name, settings)| CheckInstance {
@@ -177,6 +186,10 @@ fn recorder_requirements(
         busbar_contract::abi::export::CHECK_PHASE_RECORDER,
         &[],
     )?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an export recorder's declaration did not read"
+    )]
     let requirements: busbar_contract::export_calls::RecorderRequirements =
         serde_json::from_slice(&bytes).map_err(|e| format!("invalid recorder declaration: {e}"))?;
     requirements.validate()?;
@@ -353,6 +366,10 @@ impl Shared {
 }
 
 fn node_id() -> [u8; 8] {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: an export instance's node id is drawn once, when it opens"
+    )]
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
@@ -444,7 +461,12 @@ impl ExportInstance {
             .map_err(|e| {
                 let mut f = Frame::new(in_head(), out_head());
                 let _ = shared.plugin.call(lc::CLOSE, &mut f);
-                format!("the export flusher did not start: {e}")
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: the export flusher thread did not start"
+                )]
+                let refused = format!("the export flusher did not start: {e}");
+                refused
             })?;
         Ok(Self {
             shared,
@@ -576,6 +598,10 @@ impl ExportCalls for ExportInstance {
         settings: &busbar_contract::plugin_settings::ResolvedSettings,
         generation: u64,
     ) -> Result<(), String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an export refresh renders its new settings once"
+        )]
         let encoded = settings.encode().map_err(|error| error.to_string())?;
         let seal = self
             .shared
@@ -583,6 +609,10 @@ impl ExportCalls for ExportInstance {
             .seal()
             .ok_or("export refresh requires the host settings seal")?;
         let settings = Arc::new(zeroize::Zeroizing::new(encoded.expose(seal).clone()));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an export refresh found no free ticket"
+        )]
         let mut call = (0..self.shared.dispatcher.workers().max(1))
             .find_map(|worker| Ticketed::mint(&self.shared.dispatcher, worker))
             .ok_or_else(|| "no ticket could be minted for an export refresh".to_string())?;
@@ -767,6 +797,12 @@ fn fold_shed(observing: &crate::observe::Observing, name: &str) {
 }
 
 fn fold_shed_lines(observing: &crate::observe::Observing, name: &str, lines: usize) {
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        reason = "error: an export that shed lines reports them on its shed series"
+    )]
     let metrics = crate::observe::shed_series(name)
         .into_iter()
         .map(|n| serde_json::json!({"name": n, "type": "counter", "value": lines}))
@@ -776,7 +812,9 @@ fn fold_shed_lines(observing: &crate::observe::Observing, name: &str, lines: usi
         metrics,
         diagnostics: Vec::new(),
     };
-    observing.fold(name, busbar_contract::abi::mechanism::kind::EXPORT, &report);
+    // busbar:expect(bp::into_alloc, reason = "error: an export that shed lines reports them under its plugin name")
+    let name: Arc<str> = Arc::from(name);
+    observing.fold(&name, busbar_contract::abi::mechanism::kind::EXPORT, report);
 }
 
 #[cfg(test)]

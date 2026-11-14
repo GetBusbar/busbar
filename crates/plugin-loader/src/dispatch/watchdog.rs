@@ -63,45 +63,63 @@ fn breach(pool: &Pool, inst: &Instance) -> bool {
 pub(crate) fn spawn(pool: Weak<Pool>, period: Duration) {
     std::thread::Builder::new()
         .name("busbar-dispatch-watchdog".into())
-        .spawn(move || loop {
-            std::thread::sleep(period);
-            let Some(pool) = pool.upgrade() else {
-                return;
-            };
-            if pool.stop.load(Ordering::Acquire) {
-                return;
+        .spawn(move || {
+            // The sweep's scratch: one buffer for the watchdog thread's life, cleared per scan.
+            // busbar:expect(bp::fresh_buffer, reason = "boot: allocated once when the watchdog thread starts and reused by every scan")
+            let mut live = Vec::new();
+            loop {
+                std::thread::sleep(period);
+                let Some(pool) = pool.upgrade() else {
+                    return;
+                };
+                if pool.stop.load(Ordering::Acquire) {
+                    return;
+                }
+                scan(&pool, &mut live);
             }
-            scan(&pool);
         })
         .expect("spawn the dispatch watchdog");
 }
 
-fn scan(pool: &Pool) {
+fn scan(pool: &Pool, live: &mut Vec<Arc<Instance>>) {
+    // One clock read per sweep: every crossing and every ticketless call is judged against it.
+    let now = super::now_ns();
     for (i, slot) in pool.slots.iter().enumerate() {
         let w = slot.get();
         let started = w.crossing_since.load(Ordering::Acquire);
         let budget = w.crossing_budget.load(Ordering::Relaxed);
-        if started != 0 && super::now_ns().saturating_sub(started) > budget {
+        if started != 0 && now.saturating_sub(started) > budget {
             replace(pool, i, &w, started);
         }
     }
-    ticketless(pool);
+    ticketless(pool, now, live);
 }
 
-fn ticketless(pool: &Pool) {
+fn ticketless(pool: &Pool, now: u64, live: &mut Vec<Arc<Instance>>) {
+    live.clear();
     let mut adopted = pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
-    adopted.retain(|w| w.strong_count() > 0);
-    let live: Vec<_> = adopted
-        .iter()
-        .filter_map(std::sync::Weak::upgrade)
-        .collect();
+    // One pass both drops the dead adoptions and takes the live ones.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the crossing watchdog's periodic wedge sweep, on its own thread; no request runs it"
+    )]
+    adopted.retain(|w| match w.upgrade() {
+        Some(inst) => {
+            live.push(inst);
+            true
+        }
+        None => false,
+    });
     drop(adopted);
-    for inst in live {
+    let now = super::instant_at(now);
+    for inst in live.drain(..) {
         let fresh = {
             let mut calls = inst.lock_calls();
             let mut fresh = 0;
             for (started, slot, counted) in calls.values_mut() {
-                if !*counted && started.elapsed() > pool.env.budgets.of(*slot, DeadlineClass::Call)
+                if !*counted
+                    && now.saturating_duration_since(*started)
+                        > pool.env.budgets.of(*slot, DeadlineClass::Call)
                 {
                     *counted = true;
                     fresh += 1;
@@ -133,6 +151,10 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
         let quarantined = breach(pool, &breached);
         st.dead = true;
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: replacing a wedged worker; its successor's slab generations"
+        )]
         let gens: Vec<Option<u32>> = st
             .entries
             .iter()
@@ -147,6 +169,10 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
     }
     pool.env.services.forget_worker(old.index);
     pool.env.services.held.untrack_worker(old.index);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: replacing a wedged worker; the connections its faulted tickets held"
+    )]
     let conns: Vec<_> = gone.iter().flat_map(|e| e.conns.iter().copied()).collect();
     super::conn_services::forget_worker(&conns, old.index);
     let (orphans, gone) = old.orphans(gone, &breached);

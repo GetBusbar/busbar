@@ -236,7 +236,8 @@ fn reveals(req: &VerifyRequest) -> bool {
 enum Headers {
     None,
     All,
-    Carriers(Vec<String>),
+    /// The instance's carrier names, shared with its metadata: a verify takes a reference, not a copy.
+    Carriers(Arc<[String]>),
 }
 
 impl Headers {
@@ -483,7 +484,11 @@ pub(crate) fn declined(
     what: &str,
 ) -> Option<String> {
     let text = crate::dispatch::plugin::copy_str(out.head.error)?;
-    let reason = String::from_utf8_lossy(&text).into_owned();
+    let reason = crate::dispatch::lifecycle::lossy(text);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the auth plugin declined and said why"
+    )]
     let line = format!("{what}: {reason}");
     plugin.note(severity, &line);
     match severity {
@@ -542,8 +547,13 @@ pub struct AuthSink(Arc<FlushSink>);
 impl AuthSink {
     #[must_use]
     pub fn new(plugin: &str) -> Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an auth instance's sink keeps its plugin name"
+        )]
+        let plugin = plugin.to_string();
         Self(Arc::new(FlushSink {
-            plugin: plugin.to_string(),
+            plugin,
             family: Mutex::new(None),
             flushed: AtomicU64::new(0),
         }))
@@ -633,7 +643,7 @@ impl Shared {
 
 #[derive(Clone)]
 struct InstanceMetadata {
-    carriers: Vec<String>,
+    carriers: Arc<[String]>,
     presentation: Option<busbar_contract::auth_calls::LoginPresentation>,
     generation: u64,
     // An attempted epoch is never reused, even when the plugin's reply cannot be admitted.
@@ -708,7 +718,11 @@ impl KeptSecrets {
             return Ok(Vec::new());
         }
         let seal = seal.ok_or("credential lending requires the host settings seal")?;
-        Ok(self
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an auth instance lends its credentials once, when it opens"
+        )]
+        let blobs = self
             .0
             .iter()
             .map(|s| Blob {
@@ -717,7 +731,8 @@ impl KeptSecrets {
                 fmt: BLOB_OCTETS,
                 flags: BLOB_SECRET,
             })
-            .collect())
+            .collect();
+        Ok(blobs)
     }
 }
 
@@ -737,9 +752,18 @@ fn instance_carriers(
     use busbar_contract::abi::auth::{EXT_CARRIERS, FACT_DEFAULT_INBOUND_STYLE};
     use busbar_contract::abi::mechanism::extensions;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the auth instance returned invalid carrier metadata"
+    )]
     let invalid = || "auth instance returned invalid carrier metadata".to_string();
     if blob.fmt == BLOB_ABSENT && blob.len == 0 {
-        return Ok(previous.to_vec());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an open or refresh that names no carriers keeps the previous ones"
+        )]
+        let kept = previous.to_vec();
+        return Ok(kept);
     }
     if blob.fmt != BLOB_OCTETS || (blob.len != 0 && blob.ptr.is_null()) {
         return Err(invalid());
@@ -757,6 +781,7 @@ fn instance_carriers(
             return Err(invalid());
         }
         let names: Vec<String> = serde_json::from_slice(value).map_err(|_| invalid())?;
+        // busbar:expect(bp::fresh_buffer, reason = "config: an open or refresh selects the instance's carriers once")
         let mut selected = Vec::new();
         for name in names {
             if !facts
@@ -766,6 +791,10 @@ fn instance_carriers(
             {
                 return Err(invalid());
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an open or refresh selects the instance's carriers once"
+            )]
             let name = name.to_ascii_lowercase();
             if !selected.contains(&name) {
                 selected.push(name);
@@ -779,7 +808,12 @@ fn instance_carriers(
     if consumed != bytes.len() {
         return Err(invalid());
     }
-    Ok(selection.unwrap_or_else(|| previous.to_vec()))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an open or refresh that names no carriers keeps the previous ones"
+    )]
+    let selected = selection.unwrap_or_else(|| previous.to_vec());
+    Ok(selected)
 }
 
 fn instance_metadata(
@@ -791,11 +825,17 @@ fn instance_metadata(
     let carriers = instance_carriers(blob, previous, facts)?;
     // SAFETY: instance_carriers checked the envelope; the caller retains the READY reply lease.
     let bytes = unsafe { crate::dispatch::plugin::blob_bytes(blob) };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the auth instance's login presentation did not read"
+    )]
     let presentation = busbar_contract::auth_calls::presentation::login_presentation(bytes)
         .map_err(str::to_string)?;
     if presentation.is_some() && facts.caps & busbar_contract::abi::auth::CAP_LOGIN == 0 {
         return Err("auth login presentation requires the login capability".into());
     }
+    // busbar:expect(bp::into_alloc, reason = "config: an instance's carriers are shared once per open or refresh")
+    let carriers: Arc<[String]> = Arc::from(carriers);
     Ok(InstanceMetadata {
         carriers,
         presentation,
@@ -818,7 +858,7 @@ impl AuthInstance {
         } else if self.facts.facts & FACT_INBOUND_ALL_HEADERS != 0 {
             Headers::All
         } else {
-            Headers::Carriers(metadata.carriers.clone())
+            Headers::Carriers(Arc::clone(&metadata.carriers))
         })
     }
 
@@ -949,7 +989,8 @@ impl AuthInstance {
             label: label.to_string(),
             lifecycle: Mutex::new(()),
             schedule,
-        })
+        };
+        Ok(opened)
     }
 
     pub fn plugin(&self) -> &Plugin<Auth> {
@@ -1000,11 +1041,16 @@ impl AuthCalls for AuthInstance {
     }
 
     fn carriers(&self) -> Vec<String> {
-        self.metadata
+        let metadata = self
+            .metadata
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .carriers
-            .clone()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: lists the instance's carriers for config and admin"
+        )]
+        let carriers = metadata.carriers.to_vec();
+        carriers
     }
 
     fn issued_shape(&self) -> Option<busbar_contract::auth_calls::IssuedShape> {
@@ -1093,10 +1139,15 @@ impl AuthCalls for AuthInstance {
             Ok(one) => one,
             Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
-                return Err(format!(
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a second refresh found one already in flight"
+                )]
+                let refused = format!(
                     "auth instance `{}`: a refresh is already in flight",
                     self.label
-                ));
+                );
+                return Err(refused);
             }
         };
         let secrets = Arc::clone(

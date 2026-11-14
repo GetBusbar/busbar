@@ -71,6 +71,7 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                     eprintln!("store prepare '{label}': log sink unavailable: {e}");
                     owned::lifecycle::Error::Unavailable
                 })?;
+            // busbar:expect(bp::into_alloc, reason = "boot: a loaded store instance keeps its label")
             let bind = crate::dispatch::Bind {
                 instance: Arc::from(label),
                 max_inflight_cap: u32::MAX,
@@ -112,6 +113,7 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
             let sink = self
                 .logs
                 .sink(label, KindCode::Store, Arc::new(crate::dispatch::NoSink))?;
+            // busbar:expect(bp::into_alloc, reason = "boot: a loaded store instance keeps its label")
             let bind = crate::dispatch::Bind {
                 instance: Arc::from(label),
                 max_inflight_cap: u32::MAX,
@@ -119,6 +121,10 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                 dispatcher: self.dispatcher.adopter(),
                 conns: self.conns.clone(),
             };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: names why the store plugin did not load"
+            )]
             let plugin = match door {
                 StoreDoor::Linked(door) => crate::dispatch::LinkedRow::of_kind::<StoreV4>(door)
                     .and_then(|row| crate::dispatch::load_linked::<StoreV4>(&row, bind)),
@@ -155,6 +161,7 @@ struct OpenFailure {
 
 impl OpenFailure {
     fn new(code: owned::lifecycle::Error, message: impl Into<String>) -> Self {
+        // busbar:expect(bp::into_alloc, reason = "error: a store open failed and says why")
         Self {
             code,
             message: message.into(),
@@ -229,11 +236,17 @@ impl LoadedPersistence {
                 Outcome::Fault => (owned::lifecycle::Error::Corrupt, "fault"),
                 _ => (owned::lifecycle::Error::Unknown, "unknown"),
             };
-            return Err(OpenFailure::new(
-                code,
-                format!("primitive store open failed: plugin answered {name}"),
-            ));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the store plugin refused to open"
+            )]
+            let refused = format!("primitive store open failed: plugin answered {name}");
+            return Err(OpenFailure::new(code, refused));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the store plugin's open answer had no frame"
+        )]
         let info = done
             .frame
             .as_ref()
@@ -526,7 +539,14 @@ trait Request: Send + 'static {
     ) -> Result<Self::Value, ResponseError>;
 }
 
-struct Retained<R>(UnsafeCell<R>, #[allow(dead_code)] Option<Arc<Session>>);
+struct Retained<R>(
+    UnsafeCell<R>,
+    #[expect(
+        dead_code,
+        reason = "held, never read: keeps the session alive while the request is retained"
+    )]
+    Option<Arc<Session>>,
+);
 // SAFETY: Only the caller accesses the request, before submission and after native
 // completion. The dispatcher retains ownership without accessing this cell, including
 // after caller cancellation; native code accesses only stable pointed-to allocations.
@@ -843,6 +863,10 @@ fn octets(bytes: &[u8]) -> Blob {
     }
 }
 fn instance_metadata(blob: Blob) -> Result<owned::BackendInfo, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the store returned invalid or missing instance metadata"
+    )]
     let invalid = || "primitive store returned invalid or missing instance metadata".to_string();
     if blob.fmt != BLOB_OCTETS
         || blob.flags != 0
@@ -910,27 +934,41 @@ unsafe impl Send for OpenLent {}
 unsafe impl Sync for OpenLent {}
 impl OpenLent {
     fn new(refs: &[String], settings: &[u8]) -> Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a store open keeps its own settings and lent secrets"
+        )]
         let mut settings = zeroize::Zeroizing::new(settings.to_vec());
-        let mut secrets = Vec::new();
-        if !refs.is_empty() {
-            if let Ok(mut block) = serde_json::from_slice::<serde_json::Value>(&settings) {
-                let as_bytes = |value: Option<serde_json::Value>| match value {
-                    Some(serde_json::Value::String(value)) => value.into_bytes(),
-                    _ => Vec::new(),
-                };
-                let values = busbar_contract::secret_fields::lend(
-                    &mut block,
-                    refs,
-                    false,
-                    |_, value| Ok::<_, std::convert::Infallible>(as_bytes(value)),
-                    |_, value| Ok(as_bytes(Some(value))),
-                )
-                .unwrap_or_else(|error| match error {});
-                secrets = values.into_iter().map(zeroize::Zeroizing::new).collect();
-                settings.zeroize();
-                settings.extend_from_slice(&serde_json::to_vec(&block).unwrap_or_default());
-            }
-        }
+        #[expect(
+            clippy::disallowed_methods,
+            clippy::disallowed_types,
+            reason = "boot: a store open lends its secret fields out of its settings once"
+        )]
+        let secrets: Vec<zeroize::Zeroizing<Vec<u8>>> = if refs.is_empty() {
+            Vec::new()
+        } else if let Ok(mut block) = serde_json::from_slice::<serde_json::Value>(&settings) {
+            let as_bytes = |value: Option<serde_json::Value>| match value {
+                Some(serde_json::Value::String(value)) => value.into_bytes(),
+                _ => Vec::new(),
+            };
+            let values = busbar_contract::secret_fields::lend(
+                &mut block,
+                refs,
+                false,
+                |_, value| Ok::<_, std::convert::Infallible>(as_bytes(value)),
+                |_, value| Ok(as_bytes(Some(value))),
+            )
+            .unwrap_or_else(|error| match error {});
+            settings.zeroize();
+            settings.extend_from_slice(&serde_json::to_vec(&block).unwrap_or_default());
+            values.into_iter().map(zeroize::Zeroizing::new).collect()
+        } else {
+            Vec::new()
+        };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a store open lends its secrets once"
+        )]
         let blobs = secrets
             .iter()
             .map(|bytes| Blob {

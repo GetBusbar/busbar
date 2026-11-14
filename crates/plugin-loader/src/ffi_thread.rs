@@ -147,7 +147,7 @@ pub(crate) fn debug_assert_permanent(what: &str) {
     );
 }
 
-fn worker(rx: Receiver<Job>) {
+fn worker(rx: &Receiver<Job>) {
     PERMANENT.with(|p| p.set(true));
     while let Ok(job) = rx.recv() {
         // SAFETY: `run`/`data` come from the same `Job`, and the caller is blocked on `done`.
@@ -185,9 +185,13 @@ fn acquire(pool: &'static Mutex<Pool>) -> Lease {
         }
     }
     let (tx, rx) = sync_channel::<Job>(0);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: names the new FFI worker thread the pool grows by"
+    )]
     std::thread::Builder::new()
         .name("busbar-plugin-ffi".to_string())
-        .spawn(move || worker(rx))
+        .spawn(move || worker(&rx))
         .expect("spawn a plugin FFI worker thread");
     let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
     p.all.push(tx.clone());
