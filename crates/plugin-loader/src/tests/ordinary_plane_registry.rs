@@ -81,9 +81,10 @@ fn a_plane_with_no_door_is_refused() {
 
 #[test]
 fn plane_supported_abi_is_the_plane_kinds_one_version() {
-    let range = crate::registry::supported_abi("plane");
-    assert_eq!(range, &[busbar_contract::abi::plane::ABI_VERSION]);
-
-    assert!(!crate::registry::supported_abi("store").is_empty());
-    assert!(crate::registry::supported_abi("nonsense").is_empty());
+    assert_eq!(
+        crate::registry::supported_abi("plane"),
+        Some(busbar_contract::abi::plane::ABI_VERSION)
+    );
+    assert!(crate::registry::supported_abi("store").is_some());
+    assert_eq!(crate::registry::supported_abi("nonsense"), None);
 }

@@ -1211,7 +1211,7 @@ pub fn valid_semver(v: &str) -> bool {
 pub fn validate_structure(
     m: &Manifest,
     lib_bytes: &[u8],
-    supported_abi: &dyn Fn(&str) -> &'static [u32],
+    supported_abi: &dyn Fn(&str) -> Option<u32>,
     host_identity: &str,
 ) -> Result<(), String> {
     validate_identity(m, host_identity)?;
@@ -1294,27 +1294,24 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
 
 pub fn validate_abi(
     m: &Manifest,
-    supported_abi: &dyn Fn(&str) -> &'static [u32],
+    supported_abi: &dyn Fn(&str) -> Option<u32>,
 ) -> Result<(), String> {
-    let supported = supported_abi(&m.kind);
-    match (supported.first(), supported.last()) {
-        (Some(&floor), Some(&max)) if m.abi_version >= floor && m.abi_version <= max => {}
-        (Some(&floor), Some(&max)) => {
+    // Exactly one version per kind (LINT-RULES R21): never a range or a set.
+    match supported_abi(&m.kind) {
+        Some(version) if m.abi_version == version => Ok(()),
+        Some(version) => {
             let rebuild = format!(" — {}", crate::dispatch::load::REBUILD);
-            return Err(format!(
-                "manifest abi_version {} is not supported for kind '{}' by this binary (supported \
-                 range v{floor}..=v{max}){rebuild}",
+            Err(format!(
+                "manifest abi_version {} is not supported for kind '{}' by this binary (it loads \
+                 v{version} only){rebuild}",
                 m.abi_version, m.kind
-            ));
+            ))
         }
-        _ => {
-            return Err(format!(
-                "kind '{}' has no supported abi_version range in this binary",
-                m.kind
-            ));
-        }
+        None => Err(format!(
+            "kind '{}' has no supported abi_version in this binary",
+            m.kind
+        )),
     }
-    Ok(())
 }
 
 fn hard_seal_refusal(refusal: &crate::release_trust::SealRefusal) -> Option<RejectKind> {

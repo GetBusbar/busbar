@@ -11,7 +11,7 @@
 
 /// One ABI generation. It is only ever equal or not equal: there is no ordering, so no code can
 /// accept a range of versions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AbiVersion(u32);
 
 impl AbiVersion {

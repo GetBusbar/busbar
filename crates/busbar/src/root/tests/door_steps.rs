@@ -4757,7 +4757,7 @@ fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load(
             kind: "auth".into(),
             version: "1.0.0".into(),
             publisher: FIRST_PARTY_PUBLISHER.into(),
-            abi_version: crate::root::loader::supported_abi("auth")[0],
+            abi_version: crate::root::loader::supported_abi("auth").unwrap(),
             statement: Some(hex::encode(stated)),
             ..Default::default()
         },
