@@ -128,11 +128,7 @@ impl<R> Eq for Chain<R> {}
 
 impl<R: ChainedRecord> Chain<R> {
     pub(crate) fn new() -> Self {
-        Chain {
-            tail_hash: String::new(),
-            next_seq: 1,
-            _record: PhantomData,
-        }
+        Self::default()
     }
 
     pub(crate) fn from_persisted(records: &[R]) -> Result<Self, ChainBreak> {

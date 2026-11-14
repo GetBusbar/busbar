@@ -317,7 +317,8 @@ fn body_prefix(digest: &str) -> Vec<u8> {
     format!("body:{digest}:").into_bytes()
 }
 
-fn hash(value: &str) -> bool {
+/// A lowercase hex SHA-256 digest (64 chars). Shared with core-admin's archive digest check.
+pub fn hash(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()

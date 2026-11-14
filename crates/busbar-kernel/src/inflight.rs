@@ -408,18 +408,22 @@ impl InFlight {
     }
 
     pub fn snapshot(&self) -> Vec<Arc<UnitSlot>> {
-        let mut all = Vec::new();
-        for shard in &self.shards {
-            let guard = shard.lock().unwrap_or_else(|e| e.into_inner());
-            all.extend(guard.values().map(Arc::clone));
-        }
-        all
+        snapshot_shards(&self.shards)
     }
 
     fn shard(&self, key: UnitKey) -> &Mutex<HashMap<UnitKey, Arc<UnitSlot>>> {
         let index = (key.get() as usize) & (SHARDS - 1);
         &self.shards[index]
     }
+}
+
+fn snapshot_shards<K, V>(shards: &[Mutex<HashMap<K, Arc<V>>>]) -> Vec<Arc<V>> {
+    let mut all = Vec::new();
+    for shard in shards {
+        let guard = shard.lock().unwrap_or_else(|e| e.into_inner());
+        all.extend(guard.values().map(Arc::clone));
+    }
+    all
 }
 
 /// Whether a session's principal is cached, or re-checked on every unit.
@@ -580,12 +584,7 @@ impl Sessions {
     }
 
     pub fn snapshot(&self) -> Vec<Arc<SessionSlot>> {
-        let mut all = Vec::new();
-        for shard in &self.shards {
-            let guard = shard.lock().unwrap_or_else(|e| e.into_inner());
-            all.extend(guard.values().map(Arc::clone));
-        }
-        all
+        snapshot_shards(&self.shards)
     }
 
     fn shard(&self, id: SessionId) -> &Mutex<HashMap<SessionId, Arc<SessionSlot>>> {
