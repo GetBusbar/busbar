@@ -471,4 +471,18 @@ impl Pools {
             line.close();
         }
     }
+
+    /// Every idle line the pools keep, with its shard and key (tests only).
+    #[cfg(test)]
+    pub(crate) fn idle_lines(&self) -> Vec<(usize, PoolKey, Arc<Line>)> {
+        let mut idle = Vec::new();
+        for (shard, map) in self.shards.iter().enumerate() {
+            for (key, entries) in &*map.lock().expect("pool") {
+                for entry in entries.iter().filter(|e| e.idle.is_some()) {
+                    idle.push((shard, key.clone(), Arc::clone(&entry.line)));
+                }
+            }
+        }
+        idle
+    }
 }
