@@ -209,11 +209,98 @@ impl std::fmt::Debug for Exchange {
     }
 }
 
+/// A REQUEST HEAD CHECKED AND FRAMED ONCE: the method, target and plain fields of a request a
+/// plugin sends again and again with the same settings (a sink's POST, a hook's call), and the
+/// names and places of its sealed fields. [`Exchange::prepared`] then frames only each send's
+/// sealed values and body. Hold it with the settings it was built from, so an in-flight send keeps
+/// the head of its own settings generation. Its bytes wipe on drop.
+#[derive(Clone)]
+pub struct PreparedRequest {
+    /// The method, the target, then each plain field's framed line, one after another.
+    head: Zeroizing<Vec<u8>>,
+    method: usize,
+    target: usize,
+    /// Where each plain field's line ends in `head`, in order.
+    lines: Vec<usize>,
+    /// Each sealed field: before which plain field it goes (their count: last) and its name.
+    sealed: Vec<(usize, Vec<u8>)>,
+    timeout_ms: u64,
+}
+
+impl std::fmt::Debug for PreparedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedRequest")
+            .field("head_len", &self.head.len())
+            .field("fields", &self.lines.len())
+            .field("sealed_fields", &self.sealed.len())
+            .finish()
+    }
+}
+
+impl PreparedRequest {
+    /// Check and frame `request`'s method, target and fields (its body is not part of the head and
+    /// is ignored) and the sealed field names, refusing exactly what [`Exchange::request_sealed`]
+    /// refuses for them.
+    pub fn new(request: Request, sealed: Vec<(usize, Vec<u8>)>) -> Result<Self, ConnFailure> {
+        let request = Zeroizing::new(request);
+        for (_, name) in &sealed {
+            if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
+                return Err(ConnFailure::Refused(format!(
+                    "the sealed request field `{}` is a pseudo-field or carries a line break",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+        }
+        for (name, value) in &request.fields {
+            if name.first() == Some(&b':') {
+                return Err(ConnFailure::Refused(format!(
+                    "a request field `{}` is a pseudo-field; the framer names its own head",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+            if name.iter().chain(value).any(|b| *b == b'\r' || *b == b'\n') {
+                return Err(ConnFailure::Refused(format!(
+                    "the request field `{}` carries a line break",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+        }
+        let (m, t) = (request.method.len(), request.target.len());
+        let block: usize = request
+            .fields
+            .iter()
+            .map(|(name, value)| {
+                name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len()
+            })
+            .sum();
+        let mut head = Zeroizing::new(Vec::with_capacity(m + t + block));
+        head.extend_from_slice(&request.method);
+        head.extend_from_slice(&request.target);
+        let mut lines = Vec::with_capacity(request.fields.len());
+        for (name, value) in &request.fields {
+            head.extend_from_slice(name);
+            head.extend_from_slice(fields::SEPARATOR);
+            head.extend_from_slice(value);
+            head.extend_from_slice(fields::LINE_END);
+            lines.push(head.len());
+        }
+        Ok(Self {
+            head,
+            method: m,
+            target: t,
+            lines,
+            sealed,
+            timeout_ms: request.timeout_ms,
+        })
+    }
+}
+
 /// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
 pub struct Exchange {
     sending: Sending,
-    /// The read buffer: each piece's bytes are wiped once applied, the whole of it on drop.
-    buf: Zeroizing<Box<[u8]>>,
+    /// The read buffer: allocated at the first read, each piece's bytes wiped once applied, and
+    /// on drop every byte a read may have written.
+    buf: ReadBuf,
     slot: Box<ReplyPiece>,
     reply: Zeroizing<ExchangeResponse>,
     code: u32,
@@ -266,6 +353,53 @@ impl Drop for Exchange {
     }
 }
 
+/// An exchange's reply read buffer. Built empty: an exchange that never reads (refused before its
+/// dial, cancelled, or sending only) allocates none. On drop it wipes the bytes up to the most any
+/// read may have written, not the whole [`READ_CHUNK`].
+#[derive(Default)]
+struct ReadBuf {
+    bytes: Box<[u8]>,
+    /// How far reads may have written: every completed read's length, the whole buffer after a
+    /// read that did not complete.
+    written: usize,
+}
+
+impl ReadBuf {
+    /// The buffer a read writes into, allocated on first use.
+    fn lend(&mut self) -> &mut [u8] {
+        if self.bytes.is_empty() {
+            self.bytes = vec![0; READ_CHUNK].into_boxed_slice();
+        }
+        &mut self.bytes[..]
+    }
+
+    /// A read may have written the first `len` bytes.
+    fn wrote(&mut self, len: usize) {
+        self.written = self.written.max(len.min(self.bytes.len()));
+    }
+}
+
+impl std::ops::Deref for ReadBuf {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl std::ops::DerefMut for ReadBuf {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes
+    }
+}
+
+impl Drop for ReadBuf {
+    fn drop(&mut self) {
+        if let Some(written) = self.bytes.get_mut(..self.written) {
+            written.zeroize();
+        }
+    }
+}
+
 fn piece(kind: u32) -> Box<RequestPiece> {
     Box::new(RequestPiece {
         kind,
@@ -284,7 +418,7 @@ impl Exchange {
     fn over(sending: Sending) -> Self {
         Self {
             sending,
-            buf: Zeroizing::new(vec![0; READ_CHUNK].into_boxed_slice()),
+            buf: ReadBuf::default(),
             slot: Box::default(),
             reply: Zeroizing::default(),
             code: 0,
@@ -583,6 +717,91 @@ impl Exchange {
         Ok(ex)
     }
 
+    /// An exchange sending `prepared`'s head with `sealed` values (one per sealed name, in the
+    /// order [`PreparedRequest::new`] took them) and `body`. Only the sealed values are checked and
+    /// framed here; the method, target and plain fields were checked and framed once, when the
+    /// head was prepared. The head bytes are those [`Exchange::request_sealed`] frames for the
+    /// same request.
+    pub fn prepared(
+        prepared: &PreparedRequest,
+        sealed: Vec<crate::abi::sdk::cred::Seal>,
+        body: Vec<u8>,
+    ) -> Result<Self, ConnFailure> {
+        let body = Zeroizing::new(body);
+        if sealed.len() != prepared.sealed.len() {
+            return Err(ConnFailure::Refused(format!(
+                "the prepared request names {} sealed fields and was given {}",
+                prepared.sealed.len(),
+                sealed.len()
+            )));
+        }
+        for ((_, name), seal) in prepared.sealed.iter().zip(&sealed) {
+            if seal.wire().iter().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
+                return Err(ConnFailure::Refused(format!(
+                    "the sealed request field `{}` carries a line break or NUL",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+        }
+        let secure_required = sealed
+            .iter()
+            .any(crate::abi::sdk::cred::Seal::secure_required);
+        let sealed_bytes: usize = prepared
+            .sealed
+            .iter()
+            .zip(&sealed)
+            .map(|((_, name), seal)| {
+                name.len() + fields::SEPARATOR.len() + seal.wire().len() + fields::LINE_END.len()
+            })
+            .sum();
+        let block_at = prepared.method + prepared.target;
+        let mut head = Zeroizing::new(Vec::with_capacity(prepared.head.len() + sealed_bytes));
+        head.extend_from_slice(&prepared.head[..block_at]);
+        let mut sealed_lines = Vec::new();
+        let mut index = 0;
+        let plain = prepared.lines.len();
+        let mut from = block_at;
+        for at in 0..=plain {
+            for ((_, name), seal) in prepared
+                .sealed
+                .iter()
+                .zip(&sealed)
+                .filter(|((s_at, _), _)| (*s_at).min(plain) == at)
+            {
+                head.extend_from_slice(name);
+                head.extend_from_slice(fields::SEPARATOR);
+                head.extend_from_slice(seal.wire());
+                head.extend_from_slice(fields::LINE_END);
+                sealed_lines.push(index);
+                index += 1;
+            }
+            if let Some(&end) = prepared.lines.get(at) {
+                head.extend_from_slice(&prepared.head[from..end]);
+                from = end;
+                index += 1;
+            }
+        }
+        let head_piece = Box::new(RequestPiece {
+            kind: REQUEST_HEAD,
+            method: span(0, prepared.method),
+            target: span(prepared.method, prepared.target),
+            fields: span(block_at, head.len() - block_at),
+            timeout_ms: prepared.timeout_ms,
+            ..RequestPiece::ZERO
+        });
+        let mut ex = Self::over(Sending::Framed {
+            head,
+            head_piece,
+            body,
+            body_piece: piece(REQUEST_BODY),
+            end_piece: piece(REQUEST_END),
+            timeout_ms: prepared.timeout_ms,
+        });
+        ex.sealed_lines = sealed_lines;
+        ex.secure_required = secure_required;
+        Ok(ex)
+    }
+
     /// An exchange sending `bytes` as they are, over any transport ([`send_and_ack`]).
     #[must_use]
     pub fn send(bytes: Vec<u8>) -> Self {
@@ -846,16 +1065,23 @@ fn read_to_end<K: KindMarker>(
         }
         let this = c.issued();
         let got = match bounded_step(c, state.expires_at_ns, |c| {
-            c.read_reply(stream, &mut state.buf[..], &mut state.slot)
+            c.read_reply(stream, state.buf.lend(), &mut state.slot)
         }) {
-            Poll::Ready(Ok(got)) => got,
+            Poll::Ready(Ok(got)) => {
+                state.buf.wrote(got.len);
+                got
+            }
             Poll::Ready(Err(e)) => {
+                state.buf.wrote(usize::MAX);
                 if observe(c, state, stream).is_pending() {
                     return Poll::Pending;
                 }
                 return Poll::Ready(Err(e));
             }
-            Poll::Pending => return Poll::Pending,
+            Poll::Pending => {
+                state.buf.wrote(usize::MAX);
+                return Poll::Pending;
+            }
         };
         if let Err(error) = state.within_timeout(c) {
             return Poll::Ready(Err(error));
@@ -1474,6 +1700,7 @@ mod bounded_body_tests {
         let mut state = Exchange::request(Request::default())
             .expect("a valid request")
             .reply_limit(100);
+        state.buf.lend();
         state.buf[..60].fill(b'a');
         let body = ReplyPiece {
             kind: REPLY_BODY,
