@@ -499,6 +499,7 @@ async fn an_mtls_registration_presents_its_client_identity_and_one_with_none_is_
 
 /// The refusal cause of a dial to `url` under `entry` that must fail at its handshake.
 async fn refused_cause(c: &Connector, need: NeedId, url: &str, entry: &str) -> String {
+    use busbar_contract::conn::DeclaredConns as _;
     let (conn, got) = exchange(c, need, url, entry).await;
     assert_eq!(got, Err(ConnError::Refused), "{entry}: refused");
     let conn = conn.expect("refused at its handshake, not before");
