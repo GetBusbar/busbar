@@ -57,7 +57,9 @@ use crate::hooks::{
     content_capped, failed_call_refuses, FallbackHook, RequestedSignals, ResolvedPolicy, TapEntry,
     REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS,
 };
-use crate::snapshot::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOTAL};
+use crate::snapshot::{
+    HOOK_PROJECT_OVER_CAP_TOTAL, ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOTAL,
+};
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hook_wire::HookStageProjection;
 
@@ -606,14 +608,15 @@ impl Constraint {
     }
 }
 
-/// THE PLANE'S PROJECTION of a unit's request, owned: what every hook payload of the unit is
-/// built from.
+/// THE PLANE'S PROJECTION of a unit's request: what every hook payload of the unit is built
+/// from. It borrows the projection arena (or the session stage's own ask) and copies nothing out
+/// of it; only a string that is not UTF-8 is held as its own lossy copy, wiped when it drops.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Projection {
+pub struct Projection<'a> {
     /// The pool the plane names (the walk's, when it names one, wins).
-    pub pool: String,
+    pub pool: Cow<'a, str>,
     /// The dialect the unit arrived in.
-    pub dialect: String,
+    pub dialect: Cow<'a, str>,
     /// The wire turn count.
     pub message_count: usize,
     /// The screenable characters.
@@ -627,18 +630,18 @@ pub struct Projection {
     /// The caller asked for a stream.
     pub stream: bool,
     /// The prompt's system field.
-    pub system: Option<String>,
+    pub system: Option<Cow<'a, str>>,
     /// The prompt's turns.
-    pub turns: Vec<(String, String)>,
+    pub turns: Vec<(Cow<'a, str>, Cow<'a, str>)>,
     /// The end user.
-    pub end_user: Option<String>,
+    pub end_user: Option<Cow<'a, str>>,
     /// The body a rewrite left, when this projection answered one.
-    pub rewritten: Option<Vec<u8>>,
+    pub rewritten: Option<&'a [u8]>,
     /// The session the request continues, as the plane read it (`RequestView::session`).
-    pub session: Option<Vec<u8>>,
+    pub session: Option<&'a [u8]>,
     /// The plane's projected body (`ProjectOut::body`), when it states one: what a gate-first
     /// plane's gates screen.
-    pub projected: Option<Vec<u8>>,
+    pub projected: Option<&'a [u8]>,
     /// The plane stated `PROJECT_REWRITE_NOT_APPLICABLE`: the rewrite this projection carried, for
     /// which it answers no rewritten body, does not apply to the unit (its operation has no
     /// conversation to frame one into). Read only where the call carried a rewrite and no
@@ -646,31 +649,32 @@ pub struct Projection {
     pub rewrite_not_applicable: bool,
 }
 
-impl Default for Projection {
-    fn default() -> Self {
-        Self::empty(String::new(), String::new())
+/// Wipe a string this projection owns: a lossy copy of text that was not UTF-8. Borrowed text
+/// is wiped by its owner.
+fn wipe_owned(text: &mut Cow<'_, str>) {
+    if let Cow::Owned(owned) = text {
+        zeroize::Zeroize::zeroize(owned);
     }
 }
 
-impl Drop for Projection {
+impl Drop for Projection<'_> {
     fn drop(&mut self) {
-        use zeroize::Zeroize as _;
-        self.pool.zeroize();
-        self.dialect.zeroize();
-        self.system.zeroize();
-        self.turns.zeroize();
-        self.end_user.zeroize();
-        self.rewritten.zeroize();
-        self.session.zeroize();
-        self.projected.zeroize();
+        wipe_owned(&mut self.pool);
+        wipe_owned(&mut self.dialect);
+        self.system.iter_mut().for_each(wipe_owned);
+        self.end_user.iter_mut().for_each(wipe_owned);
+        for (role, text) in &mut self.turns {
+            wipe_owned(role);
+            wipe_owned(text);
+        }
     }
 }
 
-impl Projection {
-    fn empty(pool: String, dialect: String) -> Self {
+impl<'a> Projection<'a> {
+    fn empty(pool: &'a str, dialect: &'a str) -> Self {
         Self {
-            pool,
-            dialect,
+            pool: Cow::Borrowed(pool),
+            dialect: Cow::Borrowed(dialect),
             message_count: 0,
             total_chars: 0,
             max_tokens: None,
@@ -689,28 +693,23 @@ impl Projection {
 
     fn prompt(&self) -> PromptProjection<'_> {
         content_capped(PromptProjection {
-            system: self.system.as_deref().map(std::borrow::Cow::Borrowed),
+            system: self.system.as_deref().map(Cow::Borrowed),
             messages: self
                 .turns
                 .iter()
-                .map(|(r, t)| {
-                    (
-                        std::borrow::Cow::Borrowed(r.as_str()),
-                        std::borrow::Cow::Borrowed(t.as_str()),
-                    )
-                })
+                .map(|(r, t)| (Cow::Borrowed(&**r), Cow::Borrowed(&**t)))
                 .collect(),
         })
     }
 
-    fn request<'a>(
-        &'a self,
+    fn request<'s>(
+        &'s self,
         request_id: u64,
-        pool: &'a str,
+        pool: &'s str,
         prompt: bool,
         identity: Option<CallerIdentity>,
         requested: &RequestedSignals,
-    ) -> RoutingRequest<'a> {
+    ) -> RoutingRequest<'s> {
         let prompt = prompt.then(|| self.prompt());
         let mut signals = SignalBag::default();
         if let Some(projected) = prompt
@@ -737,7 +736,7 @@ impl Projection {
             prompt,
             identity,
             signals,
-            session: self.session.as_deref(),
+            session: self.session,
         }
     }
 
@@ -751,6 +750,31 @@ impl Projection {
                     role == original_role && text == original_text
                 },
             )
+    }
+}
+
+/// The shape a unit's later stage taps report (`routing`, `response`): owned, and holding no
+/// prompt text, so nothing of the caller's request stays resident past the request stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShapeFacts {
+    dialect: String,
+    message_count: usize,
+    has_tools: bool,
+    total_chars: usize,
+    max_tokens: Option<u32>,
+    stream: bool,
+}
+
+impl ShapeFacts {
+    fn of(view: &Projection<'_>) -> Self {
+        Self {
+            dialect: view.dialect.to_string(),
+            message_count: view.message_count,
+            has_tools: view.has_tools,
+            total_chars: view.total_chars,
+            max_tokens: view.max_tokens,
+            stream: view.stream,
+        }
     }
 
     fn shape<'a>(&'a self, request_id: u64, pool: &'a str) -> StageShape<'a> {
@@ -1009,7 +1033,7 @@ fn coerce_on_error(
 }
 
 struct Asked<'a> {
-    view: &'a Projection,
+    view: &'a Projection<'a>,
     hooks: &'a UnitHooks,
     pool: &'a str,
     candidates: &'a [Candidate<'a>],
@@ -1022,7 +1046,7 @@ impl Asked<'_> {
         CallerIdentity {
             key_id: self.hooks.key.as_ref().map(|k| k.id.clone()),
             key_name: self.hooks.key.as_ref().map(|k| k.name.clone()),
-            user: self.view.end_user.clone(),
+            user: self.view.end_user.as_deref().map(str::to_owned),
         }
     }
 
@@ -1332,6 +1356,8 @@ type ProjectBytes = Vec<u8>;
 #[cfg(test)]
 type ProjectBytes = project_arena_custody_tests::ObservedArena;
 
+/// One `project` call's working set. Only the arena outlives the call: the signal and message
+/// buffers hold raw pointers into it and are never held across an await.
 struct ProjectBufs {
     signals: Vec<SignalEntry>,
     messages: Vec<MessageView>,
@@ -1342,6 +1368,7 @@ struct ProjectArena(zeroize::Zeroizing<ProjectBytes>);
 
 impl From<Vec<u8>> for ProjectArena {
     fn from(bytes: Vec<u8>) -> Self {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ProjectArena);
         #[cfg(test)]
         let bytes: ProjectBytes = bytes.into();
         Self(zeroize::Zeroizing::new(bytes))
@@ -1371,6 +1398,13 @@ impl ProjectArena {
         grown[..self.len()].copy_from_slice(self);
         *self = grown;
     }
+
+    /// Ready this arena for another projection: wipe it in place. The slice is wiped, never the
+    /// `Vec` (whose `Zeroize` would clear it to length 0 and cost a SHORT answer and a fresh
+    /// allocation on every reuse), so the allocation and its length are kept.
+    fn reset(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self[..]);
+    }
 }
 
 #[cfg(test)]
@@ -1384,8 +1418,177 @@ mod project_copy_tests;
 const SIGNALS_CAP: usize = 16;
 const MESSAGES_CAP: usize = 64;
 
+// An honest plane states each signal id at most once, so it never needs more signal entries than
+// the catalog has ids. The catalog fits the default buffer, which is why the signals bound below
+// (`in / 8 + SIGNALS_CAP`) never refuses an honest plane.
+const _: () = assert!(Signal::ALL.len() <= SIGNALS_CAP);
+
+/// The projection arena may grow to this many times the plane's input (the unit's body and the
+/// rewrite it applies), plus the default arena. The arena holds the projected body, the turn text
+/// and the rewritten body (each at most the input) and the plane's framing; a plane re-escaping
+/// into ASCII-only JSON grows a part up to 6x (`\u00XX` for one byte), so 8x covers the worst
+/// escaped part with the plain ones and the framing. The default arena covers the small strings
+/// and an empty body.
+const ARENA_INPUT_FACTOR: usize = 8;
+
+/// An arena offset range: `None` is the empty string (or an absent span).
+type Cut = Option<std::ops::Range<usize>>;
+
+/// The plane's answer to one `project` call, as offsets into the arena it was written into:
+/// scalars and offsets only, never pointers, so it crosses an await with its arena.
+struct ProjectAt {
+    pool: Cut,
+    dialect: Cut,
+    message_count: usize,
+    total_chars: usize,
+    max_tokens: Option<u32>,
+    has_tools: bool,
+    text_complete: bool,
+    stream: bool,
+    system: Option<Cut>,
+    turns: Vec<(Cut, Cut)>,
+    end_user: Option<Cut>,
+    rewritten: Cut,
+    session: Option<Cut>,
+    projected: Cut,
+    rewrite_not_applicable: bool,
+}
+
+/// The text at `cut`, borrowed when it is UTF-8; otherwise today's lossy replacement, the one
+/// copy a projection makes.
+fn text_at<'a>(arena: &'a [u8], cut: &Cut) -> Cow<'a, str> {
+    let Some(bytes) = cut.clone().and_then(|r| arena.get(r)) else {
+        return Cow::Borrowed("");
+    };
+    let text = String::from_utf8_lossy(bytes);
+    if matches!(text, Cow::Owned(_)) {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ProjectCopy);
+    }
+    text
+}
+
+fn bytes_at<'a>(arena: &'a [u8], cut: &Cut) -> Option<&'a [u8]> {
+    cut.clone().and_then(|r| arena.get(r))
+}
+
+impl ProjectAt {
+    fn view<'a>(&self, arena: &'a [u8]) -> Projection<'a> {
+        Projection {
+            pool: text_at(arena, &self.pool),
+            dialect: text_at(arena, &self.dialect),
+            message_count: self.message_count,
+            total_chars: self.total_chars,
+            max_tokens: self.max_tokens,
+            has_tools: self.has_tools,
+            text_complete: self.text_complete,
+            stream: self.stream,
+            system: self.system.as_ref().map(|c| text_at(arena, c)),
+            turns: self
+                .turns
+                .iter()
+                .map(|(role, text)| (text_at(arena, role), text_at(arena, text)))
+                .collect(),
+            end_user: self.end_user.as_ref().map(|c| text_at(arena, c)),
+            rewritten: bytes_at(arena, &self.rewritten),
+            session: self
+                .session
+                .as_ref()
+                .map(|c| bytes_at(arena, c).unwrap_or_default()),
+            projected: bytes_at(arena, &self.projected),
+            rewrite_not_applicable: self.rewrite_not_applicable,
+        }
+    }
+
+    /// The pool the plane named, without reading the rest of the answer.
+    fn pool<'a>(&self, arena: &'a [u8]) -> Cow<'a, str> {
+        text_at(arena, &self.pool)
+    }
+
+    /// The body a rewrite left, copied out of the arena to become the unit's body: it outlives
+    /// the stage and is re-sent on every attempt, after the arena is wiped. The one copy a
+    /// rewrite costs.
+    fn rewritten_body(&self, arena: &[u8]) -> Option<bytes::Bytes> {
+        let body = bytes_at(arena, &self.rewritten)?;
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ProjectCopy);
+        Some(bytes::Bytes::copy_from_slice(body))
+    }
+}
+
+/// A projection and the arena it borrows.
+struct Projected {
+    arena: ProjectArena,
+    at: ProjectAt,
+}
+
+impl Projected {
+    fn view(&self) -> Projection<'_> {
+        self.at.view(&self.arena)
+    }
+
+    /// Take a re-projection's answer as current, and hand back the superseded arena wiped, as
+    /// the next re-projection's spare.
+    fn accept(&mut self, mut arena: ProjectArena, at: ProjectAt) -> ProjectArena {
+        std::mem::swap(&mut self.arena, &mut arena);
+        self.at = at;
+        arena.reset();
+        arena
+    }
+}
+
+/// The walk's request stage's current view: the plane's projection, or the empty one a unit
+/// with no enforcement hook falls back to when the plane cannot project.
+enum StageView<'w> {
+    Projected(Projected),
+    Fallback(Projection<'w>),
+}
+
+impl StageView<'_> {
+    fn view(&self) -> Projection<'_> {
+        match self {
+            Self::Projected(projected) => projected.view(),
+            Self::Fallback(view) => view.clone(),
+        }
+    }
+
+    /// Take a re-projection's answer as current; the superseded arena comes back wiped, when
+    /// there was one.
+    fn accept(&mut self, arena: ProjectArena, at: ProjectAt) -> Option<ProjectArena> {
+        match self {
+            Self::Projected(projected) => Some(projected.accept(arena, at)),
+            Self::Fallback(_) => {
+                *self = Self::Projected(Projected { arena, at });
+                None
+            }
+        }
+    }
+}
+
+/// The plane asked for more room than its input can need.
+struct OverCap {
+    part: &'static str,
+    needed: usize,
+    cap: usize,
+}
+
 impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
-    fn project(&self, rewrite: Option<&[u8]>, faultable: bool) -> Result<Projection, Stopped> {
+    /// The configured projection arena size.
+    fn default_arena(&self) -> usize {
+        self.driver.config.caps.arena.max(4096)
+    }
+
+    /// A fresh projection arena, of the configured size.
+    fn fresh_arena(&self) -> ProjectArena {
+        vec![0u8; self.default_arena()].into()
+    }
+
+    /// Ask the plane to project the unit's request into `arena`, and hand the arena back beside
+    /// the answer (kept by the caller for reuse, or dropped and wiped).
+    fn project(
+        &self,
+        arena: ProjectArena,
+        rewrite: Option<&[u8]>,
+        faultable: bool,
+    ) -> (ProjectArena, Result<ProjectAt, Stopped>) {
         let a = &self.arrival;
         let unit = self.lock().unit;
         let body = self.lock().body.clone().unwrap_or_else(|| a.body.clone());
@@ -1397,6 +1600,15 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 value: AbiStr::over(v),
             })
             .collect();
+        // The room the plane may ask for, sized from what it was given: it cannot need more turns
+        // than its input spells out (each turn costs at least 2 input bytes), more signal entries
+        // than the catalog has ids, or more arena than `ARENA_INPUT_FACTOR` times its input.
+        let given = body.len().saturating_add(rewrite.map_or(0, <[u8]>::len));
+        let arena_cap = given
+            .saturating_mul(ARENA_INPUT_FACTOR)
+            .saturating_add(self.default_arena());
+        let messages_cap = given / 2 + MESSAGES_CAP;
+        let signals_cap = given / 8 + SIGNALS_CAP;
         let mut bufs = ProjectBufs {
             signals: vec![
                 SignalEntry {
@@ -1413,7 +1625,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 };
                 MESSAGES_CAP
             ],
-            arena: vec![0u8; self.driver.config.caps.arena.max(4096)].into(),
+            arena,
         };
         let mut input = ProjectIn {
             claim: a.claim,
@@ -1432,23 +1644,33 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             ..blank_in()
         };
         let mut o: ProjectOut = blank_out();
+        let mut over_cap: Option<OverCap> = None;
         let outcome = self
             .driver
             .calls
             .project(&mut input, &mut o, &mut |short, i| {
-                bufs.signals.resize(
-                    (short.signals_needed as usize).max(bufs.signals.len()),
-                    bufs.signals[0],
-                );
-                bufs.messages.resize(
-                    (short.messages_needed as usize).max(bufs.messages.len()),
-                    bufs.messages[0],
-                );
-                bufs.arena.grow(
-                    usize::try_from(short.arena_needed)
-                        .unwrap_or(usize::MAX)
-                        .max(bufs.arena.len()),
-                );
+                if over_cap.is_some() {
+                    return;
+                }
+                let arena_needed = usize::try_from(short.arena_needed).unwrap_or(usize::MAX);
+                let messages_needed = short.messages_needed as usize;
+                let signals_needed = short.signals_needed as usize;
+                over_cap = [
+                    ("arena", arena_needed, arena_cap),
+                    ("messages", messages_needed, messages_cap),
+                    ("signals", signals_needed, signals_cap),
+                ]
+                .into_iter()
+                .find(|(_, needed, cap)| needed > cap)
+                .map(|(part, needed, cap)| OverCap { part, needed, cap });
+                if over_cap.is_some() {
+                    return;
+                }
+                bufs.signals
+                    .resize(signals_needed.max(bufs.signals.len()), bufs.signals[0]);
+                bufs.messages
+                    .resize(messages_needed.max(bufs.messages.len()), bufs.messages[0]);
+                bufs.arena.grow(arena_needed.max(bufs.arena.len()));
                 i.signals_buf = bufs.signals.as_mut_ptr();
                 i.signals_cap = bufs.signals.len();
                 i.messages_buf = bufs.messages.as_mut_ptr();
@@ -1457,43 +1679,57 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 i.arena_cap = bufs.arena.len();
             });
 
+        if let Some(over) = over_cap {
+            tracing::warn!(
+                part = over.part,
+                needed = over.needed,
+                cap = over.cap,
+                "the plane asked for more projection room than the request it was given can need; \
+                 refusing the projection"
+            );
+            metrics::counter!(HOOK_PROJECT_OVER_CAP_TOTAL, "part" => over.part).increment(1);
+            let stopped = if rewrite.is_some() {
+                fault_veto()
+            } else {
+                Stopped::Unreadable
+            };
+            return (bufs.arena, Err(stopped));
+        }
+
         if busbar_contract::abi::plane::project_faults(outcome, faultable || rewrite.is_some()) {
             tracing::error!(
                 "the plane could not apply a request rewrite it must not leave unapplied; \
                  rejecting rather than forwarding the body un-rewritten"
             );
-            return Err(fault_veto());
+            return (bufs.arena, Err(fault_veto()));
         }
 
         if outcome == AbiOutcome::Fault {
-            return Err(Stopped::Unparseable {
-                marked: busbar_contract::abi::plane::project_fault_unparseable(outcome, &o),
-            });
+            let marked = busbar_contract::abi::plane::project_fault_unparseable(outcome, &o);
+            return (bufs.arena, Err(Stopped::Unparseable { marked }));
         }
         if outcome != AbiOutcome::Ready {
-            return Err(Stopped::Unreadable);
+            return (bufs.arena, Err(Stopped::Unreadable));
         }
 
         let base = bufs.arena.as_ptr() as usize;
-        let text = |s: AbiStr| -> String {
+        let room = bufs.arena.len();
+        let within = |at: usize, len: usize| -> Cut {
+            let end = at.checked_add(len)?;
+            (end <= room).then_some(at..end)
+        };
+        let text = |s: AbiStr| -> Cut {
             if s.ptr.is_null() || s.len == 0 {
-                return String::new();
+                return None;
             }
-            let at = (s.ptr as usize).wrapping_sub(base);
-            bufs.arena
-                .get(at..at.saturating_add(s.len))
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .unwrap_or_default()
+            within((s.ptr as usize).wrapping_sub(base), s.len)
         };
         let opt = |s: AbiStr| (!s.ptr.is_null()).then(|| text(s));
-        let span = |sp: Span| -> Option<Vec<u8>> {
+        let span = |sp: Span| -> Cut {
             if sp.offset == SPAN_ABSENT || sp.len == 0 {
                 return None;
             }
-            let start = sp.offset as usize;
-            bufs.arena
-                .get(start..start + sp.len as usize)
-                .map(<[u8]>::to_vec)
+            within(sp.offset as usize, sp.len as usize)
         };
         let v = o.view;
         let turns = bufs
@@ -1502,7 +1738,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .take(o.prompt.messages_len)
             .map(|m| (text(m.role), text(m.text)))
             .collect();
-        Ok(Projection {
+        let at = ProjectAt {
             pool: text(v.pool),
             dialect: text(v.ingress_dialect),
             message_count: usize::try_from(v.message_count).unwrap_or(usize::MAX),
@@ -1514,25 +1750,16 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             system: opt(o.prompt.system),
             turns,
             end_user: opt(o.end_user),
-            rewritten: span(o.rewritten).inspect(|_| {
-                busbar_contract::stage_probe::tick(
-                    busbar_contract::stage_probe::Derive::ProjectCopy,
-                );
-            }),
+            rewritten: span(o.rewritten),
             projected: span(o.body),
             rewrite_not_applicable: v.flags
                 & busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
                 != 0,
             session: (v.session.fmt == busbar_contract::abi::mechanism::call::BLOB_OCTETS
                 && !v.session.ptr.is_null())
-            .then(|| {
-                let at = (v.session.ptr as usize).wrapping_sub(base);
-                bufs.arena
-                    .get(at..at.saturating_add(v.session.len))
-                    .map(<[u8]>::to_vec)
-                    .unwrap_or_default()
-            }),
-        })
+            .then(|| within((v.session.ptr as usize).wrapping_sub(base), v.session.len)),
+        };
+        (bufs.arena, Ok(at))
     }
 
     pub(crate) fn state_stage(&self, token: &Pass<Route>) {
@@ -1656,34 +1883,45 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 
         let faultable = !hooks.rewrites.is_empty();
 
-        let first = self.project(None, faultable).map_err(|e| match e {
+        // The stage's arenas: the current view's, and a spare a rewrite re-projects into. A stage
+        // run allocates at most these two, whatever its rewrite count.
+        let (arena, first) = self.project(self.fresh_arena(), None, faultable);
+        let first = first.map_err(|e| match e {
             Stopped::Unparseable { .. } => Stopped::Unreadable,
             other => other,
         });
-        let mut view = match first {
-            Ok(view) => view,
+        let mut cur = match first {
+            Ok(at) => StageView::Projected(Projected { arena, at }),
 
             Err(Stopped::Unreadable)
                 if hooks.rewrites.is_empty()
                     && hooks.gates.is_empty()
                     && hooks.policy.is_none() =>
             {
-                Projection::empty(walk_pool.clone(), hooks.dialect.clone())
+                drop(arena);
+                StageView::Fallback(Projection::empty(&walk_pool, &hooks.dialect))
             }
             Err(stopped) => {
-                let zeroed = Projection::empty(String::new(), hooks.dialect.clone());
-                self.lock().hooked = Some((hooks, zeroed));
+                drop(arena);
+                let shape = ShapeFacts::of(&Projection::empty("", &hooks.dialect));
+                self.lock().hooked = Some((hooks, shape));
                 return Err(stopped);
             }
         };
-        let pool = if walk_pool.is_empty() {
-            view.pool.clone()
+        let mut spare: Option<ProjectArena> = None;
+        let pool: Cow<'_, str> = if walk_pool.is_empty() {
+            Cow::Owned(cur.view().pool.to_string())
         } else {
-            walk_pool
+            Cow::Borrowed(&walk_pool)
         };
-        self.lock().hooked_pool.clone_from(&pool);
+        {
+            let mut st = self.lock();
+            st.hooked_pool.clear();
+            st.hooked_pool.push_str(&pool);
+        }
 
         for (timeout, hook) in &hooks.rewrites {
+            let view = cur.view();
             let req = view.request(hooks.request_id, &pool, true, None, &hooks.requested);
             if req.prompt.is_some() {
                 (hooks.reads)(&[hook.name()], None, &view.dialect, false)
@@ -1692,19 +1930,24 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             let outcome = hook.transform(&req, *timeout).await;
             drop(req);
+            drop(view);
             ran.push(rewrite_applied(hook.name(), &outcome));
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
-                    match self.project(Some(&bytes), true) {
-                        Ok(mut next) if next.rewritten.is_some() || rw.messages.is_empty() => {
-                            if let Some(body) = next.rewritten.take() {
-                                self.lock().body = Some(bytes::Bytes::from(body));
+                    let arena = spare.take().unwrap_or_else(|| self.fresh_arena());
+                    let (mut arena, next) = self.project(arena, Some(&bytes), true);
+                    match next {
+                        Ok(at) if at.rewritten.is_some() || rw.messages.is_empty() => {
+                            if let Some(body) = at.rewritten_body(&arena) {
+                                self.lock().body = Some(body);
                             }
-                            view = next;
+                            spare = cur.accept(arena, at);
                         }
 
-                        Ok(next) if next.rewrite_not_applicable => {
+                        Ok(at) if at.rewrite_not_applicable => {
+                            arena.reset();
+                            spare = Some(arena);
                             gated::rewrite_not_applicable(hook.name(), ran);
                             tracing::warn!(
                                 hook = hook.name(),
@@ -1713,19 +1956,27 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                             );
                         }
                         Err(fault @ Stopped::Veto(_)) => {
-                            self.lock().hooked = Some((hooks, view));
+                            drop(arena);
+                            let shape = ShapeFacts::of(&cur.view());
+                            drop(cur);
+                            self.lock().hooked = Some((hooks, shape));
                             return Err(fault);
                         }
 
                         Ok(_) | Err(_) => {
+                            drop(arena);
                             let (status, message) = gated::refused_rewrite(&**hook, &pool, ran);
-                            self.lock().hooked = Some((hooks, view));
+                            let shape = ShapeFacts::of(&cur.view());
+                            drop(cur);
+                            self.lock().hooked = Some((hooks, shape));
                             return Err(veto(status, message));
                         }
                     }
                 }
                 TransformOutcome::Reject { status, message } => {
-                    self.lock().hooked = Some((hooks, view));
+                    let shape = ShapeFacts::of(&cur.view());
+                    drop(cur);
+                    self.lock().hooked = Some((hooks, shape));
 
                     let (status, message) = gated::rewrite_refusal(status, &message);
                     return Err(veto(status, message));
@@ -1741,7 +1992,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 }
             }
         }
+        drop(spare);
 
+        let view = cur.view();
         fire_request_taps(&hooks, &view, &pool);
 
         // The unit's own member list, narrowed in place by the gates' and the policy's restricts.
@@ -1757,8 +2010,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 ran,
             )
             .await;
+        let shape = ShapeFacts::of(&view);
+        drop(view);
+        drop(cur);
         if let Err(stopped) = decided {
-            self.lock().hooked = Some((hooks, view));
+            self.lock().hooked = Some((hooks, shape));
             return Err(stopped);
         }
 
@@ -1780,14 +2036,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         if constraint != Constraint::default() {
             self.far.constrain(token, constraint);
         }
-        self.lock().hooked = Some((hooks, view));
+        self.lock().hooked = Some((hooks, shape));
         Ok(())
     }
 
     async fn decide_route(
         &self,
         hooks: &UnitHooks,
-        view: &Projection,
+        view: &Projection<'_>,
         (pool, named): (&str, bool),
         (all, constraint): (&mut Vec<CandidateFacts>, &mut Constraint),
         ran: &mut Vec<HookApplied>,
@@ -2062,7 +2318,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         failed: Option<&'static str>,
     ) {
         let st = self.lock();
-        let Some((hooks, view)) = st.hooked.as_ref() else {
+        let Some((hooks, shape)) = st.hooked.as_ref() else {
             return;
         };
         if hooks.taps.routing.is_empty() {
@@ -2090,7 +2346,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         if st.responded {
             return;
         }
-        let Some((hooks, view)) = st.hooked.as_ref() else {
+        let Some((hooks, shape)) = st.hooked.as_ref() else {
             return;
         };
         if !hooks.taps.response.is_empty() {
@@ -2122,7 +2378,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     }
 }
 
-fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
+fn fire_request_taps(hooks: &UnitHooks, view: &Projection<'_>, pool: &str) {
     let taps = &hooks.taps.request;
     if taps.is_empty() {
         return;
@@ -2291,13 +2547,19 @@ impl SessionStage {
             .as_ref()
     }
 
-    fn view(&self, system: Option<String>, turns: Vec<(String, String)>) -> Projection {
+    /// The view a session-stage hook is shown, borrowed from the stage and the ask it answers
+    /// (whose owners wipe it).
+    fn view<'s>(
+        &'s self,
+        system: Option<&'s str>,
+        turns: Vec<(Cow<'s, str>, Cow<'s, str>)>,
+    ) -> Projection<'s> {
         let total_chars = turns.iter().map(|(_, t)| t.chars().count()).sum::<usize>()
-            + system.as_deref().map_or(0, |s| s.chars().count());
-        let mut view = Projection::empty(self.pool.clone(), self.dialect.clone());
+            + system.map_or(0, |s| s.chars().count());
+        let mut view = Projection::empty(&self.pool, &self.dialect);
         view.message_count = turns.len();
         view.total_chars = total_chars;
-        view.system = system;
+        view.system = system.map(Cow::Borrowed);
         view.turns = turns;
         view
     }
@@ -2317,7 +2579,7 @@ impl SessionStage {
         }));
     }
 
-    async fn gate(&self, view: &Projection) -> crate::host_units::StageAnswer {
+    async fn gate(&self, view: &Projection<'_>) -> crate::host_units::StageAnswer {
         use crate::host_units::StageAnswer;
         let Some(hooks) = self.hooks() else {
             return StageAnswer::Pass;
@@ -2400,7 +2662,7 @@ impl SessionStage {
         StageAnswer::Pass
     }
 
-    async fn rewrite(&self, from: u32, view: &Projection) -> crate::host_units::StageAnswer {
+    async fn rewrite(&self, from: u32, view: &Projection<'_>) -> crate::host_units::StageAnswer {
         use crate::host_units::StageAnswer;
         let Some(hooks) = self.hooks() else {
             return StageAnswer::Pass;
@@ -2461,7 +2723,14 @@ impl crate::host_units::UnitHookStage for SessionStage {
         done: crate::host_units::StageDone,
     ) {
         self.spawn(done, move |stage| async move {
-            let view = stage.view(ask.system, ask.messages);
+            // The ask's text is wiped however this task ends: answered, panicked or dropped.
+            let system = zeroize::Zeroizing::new(ask.system);
+            let messages = zeroize::Zeroizing::new(ask.messages);
+            let turns = messages
+                .iter()
+                .map(|(role, text)| (Cow::Borrowed(role.as_str()), Cow::Borrowed(text.as_str())))
+                .collect();
+            let view = stage.view(system.as_deref(), turns);
             if ask.stage == busbar_contract::abi::host::service::HOOK_REWRITE {
                 stage.rewrite(ask.from, &view).await
             } else {
@@ -2472,8 +2741,21 @@ impl crate::host_units::UnitHookStage for SessionStage {
 
     fn scan(self: Arc<Self>, content: Vec<u8>, done: crate::host_units::StageDone) {
         self.spawn(done, move |stage| async move {
-            let text = String::from_utf8_lossy(&content).into_owned();
-            let view = stage.view(None, vec![(CONTENT_ROLE.to_string(), text)]);
+            // The content, and its lossy text when it is not UTF-8, are wiped however this task
+            // ends: answered, panicked or dropped.
+            let content = zeroize::Zeroizing::new(content);
+            let lossy: zeroize::Zeroizing<String>;
+            let text = match std::str::from_utf8(&content) {
+                Ok(text) => text,
+                Err(_) => {
+                    lossy = zeroize::Zeroizing::new(String::from_utf8_lossy(&content).into_owned());
+                    lossy.as_str()
+                }
+            };
+            let view = stage.view(
+                None,
+                vec![(Cow::Borrowed(CONTENT_ROLE), Cow::Borrowed(text))],
+            );
             stage.gate(&view).await
         });
     }

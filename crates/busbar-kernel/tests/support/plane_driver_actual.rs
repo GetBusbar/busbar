@@ -90,6 +90,10 @@ impl Rig {
         self.plane.projects.lock().unwrap().clone()
     }
 
+    pub(crate) fn regrown(&self) -> Vec<(usize, usize, usize)> {
+        self.plane.regrown.lock().unwrap().clone()
+    }
+
     pub(crate) fn stats(&self) -> [u64; stat::COUNT] {
         let mut out = [0; stat::COUNT];
         for (k, v) in out.iter_mut().enumerate() {
@@ -236,6 +240,9 @@ struct Double {
     stats: [AtomicU64; stat::COUNT],
     /// `project` crossings, and the bodies each was handed (with the rewrite, when one came).
     projects: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    /// The `(arena, messages, signals)` capacities each `project` re-call after a SHORT answer
+    /// was handed.
+    regrown: Mutex<Vec<(usize, usize, usize)>>,
     /// The driver tickets minted, and every ticket recycled.
     drivers: Mutex<Vec<Ticket>>,
     recycled: Mutex<Vec<Ticket>>,
@@ -1239,18 +1246,63 @@ impl PlaneCalls for Double {
                 turns.push((role.to_string(), text.to_string()));
             }
         }
-        let mut strings: Vec<&[u8]> = vec![b"", b"test-dialect"];
+        // `/rich` names a pool and a session; `/invalid-utf8` states a turn text that is not UTF-8.
+        let rich = target == b"/rich";
+        let mut strings: Vec<&[u8]> = vec![
+            if rich { &b"rich-pool"[..] } else { &b""[..] },
+            b"test-dialect",
+        ];
         strings.push(system.as_deref().unwrap_or("").as_bytes());
         strings.push(user.as_deref().unwrap_or("").as_bytes());
         for (role, text) in &turns {
             strings.push(role.as_bytes());
-            strings.push(text.as_bytes());
+            strings.push(if target == b"/invalid-utf8" {
+                &b"caf\xff text"[..]
+            } else {
+                text.as_bytes()
+            });
         }
         let rewritten_bytes = rewritten.unwrap_or_default();
+        let session: &[u8] = if rich { &b"rich-session"[..] } else { &b""[..] };
         strings.push(&unit_body);
         strings.push(&rewritten_bytes);
+        strings.push(session);
         let arena: usize = strings.iter().map(|b| b.len()).sum();
+        // `/over-<part>` asks once past the host's input-sized bound for that part, on a call
+        // without a rewrite; `/over-<part>-rw` only on a call with one.
+        let over = target
+            .strip_prefix(b"/over-")
+            .map(|rest| match rest.strip_suffix(b"-rw") {
+                Some(part) => (part.to_vec(), !rewrite.is_empty()),
+                None => (rest.to_vec(), rewrite.is_empty()),
+            })
+            .filter(|(_, now)| *now)
+            .map(|(part, _)| part);
+        let input_len = unit_body.len() + rewrite.len();
         for call in 0..2 {
+            if call == 0 {
+                if let Some(part) = &over {
+                    match part.as_slice() {
+                        b"arena" => {
+                            out.arena_needed = (8 * input_len + input.arena_cap + 1) as u64;
+                        }
+                        b"messages" => {
+                            out.messages_needed = (input_len / 2 + input.messages_cap + 1) as u32;
+                        }
+                        _ => {
+                            out.signals_needed = (input_len / 8 + input.signals_cap + 1) as u32;
+                        }
+                    }
+                    grow(out, input);
+                    self.regrown.lock().unwrap().push((
+                        input.arena_cap,
+                        input.messages_cap,
+                        input.signals_cap,
+                    ));
+                    *out = busbar_contract::abi::sdk::door::blank_out();
+                    continue;
+                }
+            }
             if turns.len() > input.messages_cap || arena > input.arena_cap {
                 if call == 1 {
                     return Outcome::Fault;
@@ -1258,6 +1310,11 @@ impl PlaneCalls for Double {
                 out.messages_needed = turns.len() as u32;
                 out.arena_needed = arena as u64;
                 grow(out, input);
+                self.regrown.lock().unwrap().push((
+                    input.arena_cap,
+                    input.messages_cap,
+                    input.signals_cap,
+                ));
                 *out = busbar_contract::abi::sdk::door::blank_out();
                 continue;
             }
@@ -1285,7 +1342,8 @@ impl PlaneCalls for Double {
             }
             let _ = place(&unit_body);
             let _ = place(&rewritten_bytes);
-            let start = arena - rewritten_bytes.len();
+            let session_at = place(session);
+            let start = arena - session.len() - rewritten_bytes.len();
             let body_start = start - unit_body.len();
             out.view = RequestView {
                 request_id: 0,
@@ -1301,11 +1359,20 @@ impl PlaneCalls for Double {
                 },
                 signals: input.signals_buf.cast_const(),
                 signals_len: 0,
-                session: Blob {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                    fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
-                    flags: 0,
+                session: if rich {
+                    Blob {
+                        ptr: session_at.ptr,
+                        len: session_at.len,
+                        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                        flags: 0,
+                    }
+                } else {
+                    Blob {
+                        ptr: std::ptr::null(),
+                        len: 0,
+                        fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
+                        flags: 0,
+                    }
                 },
             };
             out.prompt.system = sys;

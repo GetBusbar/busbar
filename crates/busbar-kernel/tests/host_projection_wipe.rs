@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! A host projection borrows the arena the plane projected into (whose custody the kernel's
+//! arena tests pin); the only bytes it owns are a lossy copy of text that was not UTF-8. Those
+//! are wiped wherever the projection ends.
+
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
@@ -51,27 +56,31 @@ fn watch(bytes: &[u8]) {
     WIPED.with(|result| result.set(None));
 }
 
-fn projection() -> Projection {
+fn owned(text: &str) -> Cow<'static, str> {
+    Cow::Owned(text.to_string())
+}
+
+fn projection() -> Projection<'static> {
     Projection {
-        pool: "private-pool".to_string(),
-        dialect: "private-dialect".to_string(),
+        pool: owned("private-pool"),
+        dialect: owned("private-dialect"),
         message_count: 1,
         total_chars: 12,
         max_tokens: Some(7),
         has_tools: true,
         stream: false,
         text_complete: true,
-        system: Some("private-system".to_string()),
-        turns: vec![("private-author".to_string(), "private-text".to_string())],
-        end_user: Some("private-user".to_string()),
-        rewritten: Some(b"private-rewrite".to_vec()),
-        session: Some(b"private-session".to_vec()),
-        projected: Some(b"private-projection".to_vec()),
+        system: Some(owned("private-system")),
+        turns: vec![(owned("private-author"), owned("private-text"))],
+        end_user: Some(owned("private-user")),
+        rewritten: Some(b"private-rewrite".as_slice()),
+        session: Some(b"private-session".as_slice()),
+        projected: Some(b"private-projection".as_slice()),
         rewrite_not_applicable: false,
     }
 }
 
-fn field<'a>(view: &'a Projection, name: &str) -> &'a [u8] {
+fn field<'a>(view: &'a Projection<'_>, name: &str) -> &'a [u8] {
     match name {
         "pool" => view.pool.as_bytes(),
         "dialect" => view.dialect.as_bytes(),
@@ -79,14 +88,11 @@ fn field<'a>(view: &'a Projection, name: &str) -> &'a [u8] {
         "author" => view.turns[0].0.as_bytes(),
         "text" => view.turns[0].1.as_bytes(),
         "end-user" => view.end_user.as_ref().unwrap().as_bytes(),
-        "rewritten" => view.rewritten.as_deref().unwrap(),
-        "session" => view.session.as_deref().unwrap(),
-        "projected" => view.projected.as_deref().unwrap(),
         _ => unreachable!(),
     }
 }
 
-fn returned(_view: Projection, fail: bool) -> Result<(), ()> {
+fn returned(_view: Projection<'_>, fail: bool) -> Result<(), ()> {
     if fail {
         Err(())
     } else {
@@ -109,17 +115,7 @@ fn the_projection_witness_distinguishes_plain_and_wiped_payloads() {
 
 #[test]
 fn host_projection_payloads_wipe_on_return_error_cancel_clone_replacement_and_transfer() {
-    for name in [
-        "pool",
-        "dialect",
-        "system",
-        "author",
-        "text",
-        "end-user",
-        "rewritten",
-        "session",
-        "projected",
-    ] {
+    for name in ["pool", "dialect", "system", "author", "text", "end-user"] {
         for exit in [
             "return", "failure", "cancel", "clone", "replace", "transfer",
         ] {
@@ -149,14 +145,11 @@ fn host_projection_payloads_wipe_on_return_error_cancel_clone_replacement_and_tr
                 "replace" => {
                     view = projection();
                     assert_eq!(WIPED.with(Cell::get), Some(true));
-                    assert_eq!(
-                        view.projected.as_deref(),
-                        Some(b"private-projection".as_slice())
-                    );
+                    assert_eq!(view.projected, Some(b"private-projection".as_slice()));
                     drop(view);
                 }
                 "transfer" => {
-                    let final_owner = std::mem::take(&mut view);
+                    let final_owner = std::mem::replace(&mut view, projection());
                     drop(view);
                     assert_eq!(WIPED.with(Cell::get), None);
                     drop(final_owner);
