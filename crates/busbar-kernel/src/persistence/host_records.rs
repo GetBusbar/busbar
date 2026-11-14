@@ -453,7 +453,7 @@ impl<'a> HostRecords<'a> {
         let mut receipt = vec![1];
         receipt.extend_from_slice(&self.namespace.0);
         receipt.extend_from_slice(&fingerprint);
-        let digest = Sha256::digest(&receipt).into();
+        let digest = Sha256::digest(&receipt);
         let claim = self.store.claim_logical(
             super::facade::LogicalId {
                 namespace: RECORD_OPERATIONS.0,

@@ -178,13 +178,15 @@ fn first_der(pem: &str) -> Option<Vec<u8>> {
 /// Whether a literal PEM's first certificate says `basicConstraints CA:TRUE` (`None` when it
 /// cannot be read).
 fn is_ca(pem: &str) -> Option<bool> {
+    use x509_cert::der::Decode as _;
     let der = first_der(pem)?;
-    let (_, cert) = x509_parser::parse_x509_certificate(&der).ok()?;
+    let cert = x509_cert::Certificate::from_der(&der).ok()?;
     Some(
-        cert.basic_constraints()
+        cert.tbs_certificate()
+            .get_extension::<x509_cert::ext::pkix::BasicConstraints>()
             .ok()
             .flatten()
-            .is_some_and(|bc| bc.value.ca),
+            .is_some_and(|(_, bc)| bc.ca),
     )
 }
 

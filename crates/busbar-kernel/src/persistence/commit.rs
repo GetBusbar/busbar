@@ -12,7 +12,6 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use busbar_contract::caps::MigrationGrant;
 use busbar_contract::persistence::{
     Address, BackendInfo, CommitKey, Decision, ExpectedValue, Failure, Mutation,
     PersistenceBackend, PreparedCandidate, Read, ReadResult, SelfFenced, WitnessKind,

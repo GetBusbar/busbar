@@ -39,6 +39,7 @@ pub(crate) fn dlclose_on_worker(lib: Library) {
 /// The door of the library at `path`, loaded through this module and kept for the life of the
 /// process: for a harness that wraps a dropped-in door itself (`dist/default` `tests/canary`).
 /// Refused once the native load guard is installed, like every standalone path load.
+#[cfg(any(test, feature = "test-support"))]
 pub fn keep_door(
     path: &std::path::Path,
 ) -> Result<busbar_contract::abi::sdk::door::RawDoorFn, String> {

@@ -298,60 +298,7 @@ fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
     );
 }
 
-/// 1.5.5's OVERRIDES, ON THE ONE JUDGE: under `security.allow_all_metadata` the metadata guard is
-#[test]
-fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
-    let r = Arc::new(HandResolver::default());
-    let s = services(
-        Arc::clone(&r),
-        Destinations {
-            allow_all_metadata: true,
-            ..Destinations::default()
-        },
-    );
-    let imds: SocketAddr = "169.254.169.254:80".parse().unwrap();
-    assert_eq!(
-        s.judge_dial("169.254.169.254:80", P, Box::new(|_| {})),
-        Some(Ok(imds))
-    );
-    for class in [0, 2, 3, 4] {
-        assert_eq!(
-            s.judge_destination(
-                busbar_kernel::host_services::Destination {
-                    authority: "169.254.169.254:80",
-                    secure: true,
-                    egress_class: class,
-                },
-                Box::new(|_| {}),
-            ),
-            Some(Err(svc::DEST_METADATA)),
-            "class {class}: metadata policy under independently located secure intent"
-        );
-    }
-    let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge(
-        "https://169.254.169.254/latest",
-        P,
-        svc::DEST_RESOLVE,
-        Some(later),
-    ));
-    assert_eq!(got.value, svc::DEST_ALLOWED);
-
-    let pinned = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&pinned);
-    assert!(s
-        .judge_dial(
-            "metadata.google.internal:80",
-            P,
-            Box::new(move |v| *slot.lock().unwrap() = Some(v)),
-        )
-        .is_none());
-    let done = r.held.lock().unwrap().pop().expect("the name was resolved");
-    done(Ok(vec![imds.ip()]));
-    assert_eq!(*pinned.lock().unwrap(), Some(Ok(imds)));
-}
-
-/// With no override nothing changes: metadata is refused on the dial, by literal and by answer.
+/// Metadata is refused on the dial, by literal and by answer (no override exists: BUSBAR-3136).
 #[test]
 fn without_an_override_metadata_stays_refused_on_the_dial() {
     let r = Arc::new(HandResolver::default());

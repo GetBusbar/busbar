@@ -327,8 +327,14 @@ async fn physical_pages_cover_each_original_row_once_independent_of_group_size()
         .iter()
         .chain(&last.records)
         .all(|row| row.preserve_exact));
-    assert_ne!(first.records[0].key, first.records[1].key);
-    assert_ne!(first.records[0].key, last.records[0].key);
+    assert_ne!(
+        first.records[0].key.as_slice(),
+        first.records[1].key.as_slice()
+    );
+    assert_ne!(
+        first.records[0].key.as_slice(),
+        last.records[0].key.as_slice()
+    );
 }
 
 #[tokio::test]

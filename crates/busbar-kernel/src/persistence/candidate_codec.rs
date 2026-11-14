@@ -355,7 +355,7 @@ fn semantic_fingerprint(header: &Header, tail: &[u8]) -> [u8; 32] {
         }
     }
     hash.update(tail);
-    hash.finalize().into()
+    hash.finalize()
 }
 
 enum BorrowedMutation<'a> {

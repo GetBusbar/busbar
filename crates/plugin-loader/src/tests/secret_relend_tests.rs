@@ -149,8 +149,7 @@ fn a_refused_rotation_keeps_the_running_instance() {
     assert_eq!(answers(&*opened), witness::answer_for(b"token-1"), "kept");
     let unresolvable = opened
         .relend(&|_| Err("the source is down".to_string()))
-        .err()
-        .expect("a reference that does not resolve refuses");
+        .expect_err("a reference that does not resolve refuses");
     assert_eq!(unresolvable.cause, RelendCause::Unresolvable);
     assert!(
         !unresolvable.text.contains("token"),
@@ -195,8 +194,7 @@ fn a_plugin_without_refresh_is_reopened_from_the_builds_own_candidate() {
     source.rotate("refuse");
     let refused = third
         .relend(&source.resolve())
-        .err()
-        .expect("a successor that does not open refuses");
+        .expect_err("a successor that does not open refuses");
     assert_eq!(refused.cause, RelendCause::ReopenFailed);
     assert_eq!(
         answers(&*third),

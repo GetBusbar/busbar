@@ -199,7 +199,7 @@ pub(crate) fn carries_bound(headers: &HeaderMap, carriers: &[HeaderName]) -> boo
             };
             if *name == AUTHORIZATION {
                 super::AuthMiddleware::extract_bearer_token(value)
-                    .is_some_and(|token| is_dpop_bound(&token))
+                    .is_some_and(|token| is_dpop_bound(token))
             } else {
                 is_dpop_bound(value)
             }

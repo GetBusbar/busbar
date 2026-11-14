@@ -304,56 +304,12 @@ fn ordinary_cli_flags() -> Option<i32> {
             return Some(EXIT_USAGE);
         }
     }
-    match super::principal_transition::command(supplied.iter().cloned()) {
-        Ok(Some(_)) => return None,
-        Ok(None) => {}
-        Err(error) => {
-            eprintln!(
-                "[error] {}",
-                diagnostics::coded::cli_invalid_arguments(error)
-            );
-            return Some(EXIT_USAGE);
-        }
-    }
-    let mut values = supplied.iter();
-    while let Some(arg) = values.next() {
-        if arg == OPTION_MIGRATE_CONFIG {
-            values.next();
-            continue;
-        }
-        if matches!(
-            arg.as_str(),
-            OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS
-        ) && values.next().is_none()
-        {
-            eprintln!(
-                "[error] {}",
-                diagnostics::coded::cli_flag_requires_value(arg)
-            );
-            return Some(EXIT_USAGE);
-        }
-    }
     const REMOVED_SAFE_MODE: &str = "--safe-mode";
-    if supplied.iter().any(|a| a == REMOVED_SAFE_MODE) {
+    if argv.words.iter().any(|a| a == REMOVED_SAFE_MODE) {
         eprintln!("busbar: unrecognized argument '{REMOVED_SAFE_MODE}'. Try 'busbar --help'.");
         return Some(EXIT_USAGE);
     }
-    let mut args = supplied.into_iter();
-
-    let command = loop {
-        let arg = args.next();
-        match arg.as_deref() {
-            Some(OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS) => {
-                args.next();
-            }
-            Some(crate::OPTION_IGNORE_OVERLAY) => {}
-            Some(a)
-                if a.starts_with(OPTION_CONFIG_ASSIGNMENT)
-                    || a.starts_with(OPTION_PROVIDERS_ASSIGNMENT) => {}
-            _ => break arg,
-        }
-    };
-    match command.as_deref() {
+    match argv.words.first().map(String::as_str) {
         None => None,
         Some(OPTION_VERSION | OPTION_VERSION_SHORT) => {
             println!("busbar {}", env!("CARGO_PKG_VERSION"));

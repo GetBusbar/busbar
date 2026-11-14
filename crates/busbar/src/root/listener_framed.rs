@@ -64,6 +64,7 @@ impl std::fmt::Debug for DataFramer {
     }
 }
 
+#[cfg(test)]
 pub(crate) use crate::root::off_path::listener::configured_framer;
 pub use crate::root::off_path::listener::listener_framer;
 

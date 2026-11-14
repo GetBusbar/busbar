@@ -1511,7 +1511,7 @@ impl Storage for SharedStorage {
     async fn put_client(&self, client: Client) -> Result<(), StorageError> {
         let id = client.client_id.as_str();
         self.shared
-            .update(&id, |b, _| {
+            .update(id, |b, _| {
                 b.client = Some(client.clone());
                 Ok(Swap::Write(()))
             })
@@ -1525,7 +1525,7 @@ impl Storage for SharedStorage {
     ) -> Result<bool, StorageError> {
         let id = updated.client_id.as_str();
         self.shared
-            .update(&id, |b, _| {
+            .update(id, |b, _| {
                 if b.client.as_ref() != Some(expected) {
                     return Ok(Swap::Keep(false));
                 }
@@ -1568,8 +1568,8 @@ impl Storage for SharedStorage {
         let normalized = normalize_user_code(&grant.user_code);
         s.hold_user_code(&normalized, &grant.device_code).await?;
         let client = grant.client_id.as_str();
-        s.index("dev", &grant.device_code, &client).await?;
-        s.update(&client, |b, _| {
+        s.index("dev", &grant.device_code, client).await?;
+        s.update(client, |b, _| {
             b.devices.insert(grant.device_code.clone(), grant.clone());
             Ok(Swap::Write(()))
         })
@@ -1649,9 +1649,9 @@ impl Storage for SharedStorage {
         record: AuthorizationCodeRecord,
     ) -> Result<(), StorageError> {
         let client = record.client_id.as_str();
-        self.shared.index("code", &record.code, &client).await?;
+        self.shared.index("code", &record.code, client).await?;
         self.shared
-            .update(&client, |b, _| {
+            .update(client, |b, _| {
                 b.codes.insert(record.code.clone(), record.clone());
                 Ok(Swap::Write(()))
             })
@@ -1693,10 +1693,10 @@ impl Storage for SharedStorage {
     ) -> Result<WriteOutcome, StorageError> {
         let client = record.client_id.as_str();
         self.shared
-            .index("par", &record.request_uri, &client)
+            .index("par", &record.request_uri, client)
             .await?;
         self.shared
-            .update(&client, |b, _| {
+            .update(client, |b, _| {
                 if b.barred(None, record.pushed_at) {
                     return Ok(Swap::Keep(WriteOutcome::RefusedRevoked));
                 }
@@ -1800,16 +1800,16 @@ impl Storage for SharedStorage {
         if s.family_barred(Some(&expected.family_id)).await? {
             return Ok(false);
         }
-        s.index("tok", &access.access_token, &client).await?;
+        s.index("tok", &access.access_token, client).await?;
         if let Some(f) = &access.family_id {
-            s.index("fam", f, &client).await?;
+            s.index("fam", f, client).await?;
         }
         if let Some(n) = next {
-            s.index("rt", &n.refresh_token, &client).await?;
-            s.index("fam", &n.family_id, &client).await?;
+            s.index("rt", &n.refresh_token, client).await?;
+            s.index("fam", &n.family_id, client).await?;
         }
         let rotated = s
-            .update_guarded(&client, Some(&expected.family_id), |b, _| {
+            .update_guarded(client, Some(&expected.family_id), |b, _| {
                 if b.refresh.get(&expected.refresh_token) != Some(expected)
                     || b.barred(expected.subject.as_deref(), expected.grant_established_at)
                 {
@@ -1825,7 +1825,7 @@ impl Storage for SharedStorage {
             .await?
             .unwrap_or(false);
         if rotated && s.family_barred(Some(&expected.family_id)).await? {
-            s.update(&client, |b, _| {
+            s.update(client, |b, _| {
                 b.tokens.remove(&access.access_token);
                 if let Some(n) = next {
                     b.refresh.remove(&n.refresh_token);
@@ -1864,9 +1864,9 @@ impl Storage for SharedStorage {
     async fn put_consent(&self, record: ConsentRecord) -> Result<(), StorageError> {
         let s = &self.shared;
         let client = record.client_id.as_str();
-        s.index("cons", &record.consent_id, &client).await?;
-        s.index_subject(&record.subject, &client).await?;
-        s.update(&client, |b, _| {
+        s.index("cons", &record.consent_id, client).await?;
+        s.index_subject(&record.subject, client).await?;
+        s.update(client, |b, _| {
             b.consents
                 .insert(record.consent_id.to_string(), record.clone());
             Ok(Swap::Write(()))
@@ -1881,9 +1881,9 @@ impl Storage for SharedStorage {
     ) -> Result<bool, StorageError> {
         let s = &self.shared;
         let client = updated.client_id.as_str();
-        s.index("cons", &updated.consent_id, &client).await?;
-        s.index_subject(&updated.subject, &client).await?;
-        s.update(&client, |b, _| {
+        s.index("cons", &updated.consent_id, client).await?;
+        s.index_subject(&updated.subject, client).await?;
+        s.update(client, |b, _| {
             let current = b
                 .consents
                 .values()

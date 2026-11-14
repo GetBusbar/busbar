@@ -20,7 +20,7 @@ pub mod migration_table;
 pub mod overlay_legacy;
 mod retired;
 
-use busbar_contract::yaml::{self, prelude::*, same_tree};
+use busbar_contract::yaml::{self, prelude::*};
 
 /// The actual default used by supported released configurations that omitted Store.
 #[must_use]
@@ -202,7 +202,7 @@ fn required_security_decisions(doc: &Value) -> Vec<String> {
         return todos;
     };
     for (section, check) in [("auth", 0u8), ("group_map", 2)] {
-        let Some(value) = root.get(section) else {
+        let Some(value) = root.get_key(section) else {
             continue;
         };
         let mut pending = vec![(value, check)];

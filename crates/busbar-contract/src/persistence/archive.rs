@@ -122,7 +122,7 @@ impl Hasher {
     }
     /// Include the next exact native stream bytes.
     pub fn update(&mut self, bytes: &[u8]) {
-        self.0.update(&bytes[..]);
+        self.0.update(bytes);
     }
     /// Finish the exact complete stream digest.
     pub fn finish(self) -> [u8; 32] {
@@ -131,7 +131,7 @@ impl Hasher {
 }
 /// Compute SHA256 for public native inventory metadata.
 pub fn digest(bytes: &[u8]) -> [u8; 32] {
-    crate::crypto::sha256(bytes).into()
+    crate::crypto::sha256(bytes)
 }
 fn io(error: std::io::Error) -> Error {
     if error.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -458,7 +458,7 @@ impl<W: Write> Writer<W> {
             self.failed = true;
             return Err(Error::Io);
         }
-        self.hash.update(&bytes[..]);
+        self.hash.update(bytes);
         self.bytes = next;
         Ok(())
     }

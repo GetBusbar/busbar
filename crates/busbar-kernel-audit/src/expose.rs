@@ -237,7 +237,7 @@ pub fn head_body(chain: &AuditChain) -> String {
     push_json_string(&mut out, "head");
     out.push(':');
     match chain.heads().tip() {
-        Some(head) => push_head(&mut out, &head),
+        Some(head) => push_head(&mut out, head),
         None => out.push_str("null"),
     }
     out.push('}');

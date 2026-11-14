@@ -67,7 +67,8 @@ pub fn note_proxy_posture(by_address: bool) {
     let Ok(env) = crate::proxy::ProxyEnvValues::from_process_env() else {
         return;
     };
-    let hops: Vec<String> = [
+    let mut hops = String::new();
+    for hop in [
         env.https.as_deref(),
         env.http.as_deref(),
         env.all.as_deref(),
@@ -75,8 +76,12 @@ pub fn note_proxy_posture(by_address: bool) {
     .into_iter()
     .flatten()
     .filter_map(|v| crate::proxy::parse_proxy(v).ok())
-    .map(|h| h.endpoint())
-    .collect();
+    {
+        if !hops.is_empty() {
+            hops.push(',');
+        }
+        hops.push_str(hop.endpoint());
+    }
     if hops.is_empty() {
         return;
     }
@@ -84,7 +89,7 @@ pub fn note_proxy_posture(by_address: bool) {
     let mode = if by_address { "local" } else { "proxy" };
     tracing::info!(
         diag = %busbar_kernel::diagnostics::CONFIG_PROXY_DELEGATES_ADDRESS_CHECK.banner(),
-        proxies = %hops.join(","),
+        proxies = %hops,
         no_proxy = %no_proxy,
         proxy_resolution = mode,
         "outbound connections go through a proxy: {}",
@@ -98,10 +103,7 @@ pub fn note_proxy_posture(by_address: bool) {
     );
     busbar_kernel::audit_ring::AUDIT.record_by(
         "config.egress_proxy",
-        &format!(
-            "proxy:{}:no_proxy={no_proxy}:resolution={mode}",
-            hops.join(",")
-        ),
+        &format!("proxy:{hops}:no_proxy={no_proxy}:resolution={mode}"),
         busbar_kernel::audit_ring::OUTCOME_APPLIED,
         "system",
     );
