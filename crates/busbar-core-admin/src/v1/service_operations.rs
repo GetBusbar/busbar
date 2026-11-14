@@ -1885,8 +1885,16 @@ fn check_archive_preimage(expected: Option<&str>, bytes: &[u8]) -> Result<(), Ad
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Plugin archive reads on this thread (WASTE-CORE-LIFECYCLE W7 count tests).
+    pub(super) static ARCHIVE_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn read_archive_bounded(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
+    #[cfg(test)]
+    ARCHIVE_READS.with(|reads| reads.set(reads.get() + 1));
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(cap.saturating_add(1))
