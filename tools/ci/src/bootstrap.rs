@@ -1411,9 +1411,9 @@ impl Root {
             "public tooling import would consume the protected host disk reserve",
         )?;
         *workload_started = true;
-        let python = "/usr/bin/python3".to_owned();
-        let architecture = self.trusted.join("scripts/architecture");
         if self.env["CI_JOB_NAME"] == "native-isolation-diagnostic" {
+            let python = "/usr/bin/python3".to_owned();
+            let architecture = self.trusted.join("scripts/architecture");
             // Fixed-source diagnostic witnesses (Python unit tests and probes).
             let argv = vec![
                 python,
@@ -1460,10 +1460,11 @@ impl Root {
             self.env["CI_PROJECT_ID"], self.env["CI_JOB_ID"]
         ));
         io(fs::create_dir(&work), &work)?;
+        // The confined step runner is this verified controller's own
+        // `native-qualify` command (crate::native), not an interpreter.
         let mut argv = vec![
-            python,
-            "-B".into(),
-            path_text(&architecture.join("native.py")),
+            path_text(&self.self_binary),
+            "native-qualify".into(),
             "--trusted".into(),
             path_text(&self.trusted),
             "--checkout".into(),
