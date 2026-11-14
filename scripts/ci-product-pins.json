@@ -125,7 +125,7 @@
     {
       "repo": "busbar-store-memory",
       "url": "https://github.com/GetBusbar/busbar-store-memory",
-      "commit": "efd0fd43cf650160a446f092341d09c851125102",
+      "commit": "73395bdf848cd622cf5b149d9002362c920a2820",
       "package": "busbar-store-memory-plugin",
       "kind": "store",
       "alias": "memory",
@@ -136,7 +136,7 @@
     {
       "repo": "busbar-store-sqlite",
       "url": "https://github.com/GetBusbar/busbar-store-sqlite",
-      "commit": "ec75c61087d537dbc1b0e8b1175855a5696785d5",
+      "commit": "f323ece8307bd40ce9a5a1adb87142437f73d60a",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
@@ -334,7 +334,7 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://github.com/GetBusbar/busbar-store-mysql",
-      "commit": "60c6acb8cd42c9d73d1ec5ffa5001d340ba3d859",
+      "commit": "334cc3234f2e06a1ebf670b3114cc9a78f022764",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
@@ -345,7 +345,7 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "de55629bb3a949b67ac9684b2044ed6d190a925f",
+      "commit": "642377b5b2f8376a91c04b606ae9bfbb9f32777f",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
@@ -356,7 +356,7 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "67416ec5534c76754b509b1ce2d831eb88eeabc3",
+      "commit": "29db1fe745b49a143fd95a2add250f87cef3170e",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",
