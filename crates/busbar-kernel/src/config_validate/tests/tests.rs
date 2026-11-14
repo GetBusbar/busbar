@@ -1490,10 +1490,27 @@ fn a_present_card_refuses_every_configured_lane_it_does_not_name() {
             "rate_card is present but 2 configured models have no rate entry (rate_card is \
              AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
              Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
-             \x20   b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n\
-             \x20   c: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"
+             \x20   b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0, units: { search_units: 0, images: 0 } }\n\
+             \x20   c: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0, units: { search_units: 0, images: 0 } }\n"
                 .to_string()
         ]
+    );
+    // The stub is paste-ready: pasting it verbatim closes the card with no refusal and no
+    // unpriced-class warning for any class the plane declares.
+    let stub = errors[0]
+        .split("\n\n")
+        .last()
+        .expect("the refusal ends in a stub");
+    let pasted = std::iter::once("a: { input_utok: 1, units: { search_units: 0, images: 0 } }")
+        .chain(stub.lines().map(str::trim))
+        .collect::<Vec<_>>()
+        .join("\n");
+    cfg.rate_card = Some(card_yaml(&pasted));
+    let (result, warnings) = capture_rate_warnings(|| validate_cost_metadata(&cfg, &[&FLAT_PLANE]));
+    assert!(result.is_ok(), "the pasted stub is accepted: {result:?}");
+    assert!(
+        !warnings.contains("BUSBAR-3026") && !warnings.contains("CONFIG_RATE_CARD_MISSING"),
+        "the pasted stub prices every declared class: {warnings}"
     );
 
     let mut card = plane_card("class-plane", "a", "units: { calls: 10, bytes: 0 }");
