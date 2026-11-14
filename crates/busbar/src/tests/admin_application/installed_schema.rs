@@ -179,6 +179,7 @@ fn declaration_candidate(
     for claim in claims {
         bytes(&mut rendering, claim.as_bytes());
     }
+    word(&mut rendering, 0); // measurement_classes (BBSTMT04, fba670826c)
     let facts = busbar_contract::abi::mechanism::rendering::read(&rendering).unwrap();
     assert_eq!(facts.name, "installed-schema-target");
     manifest.statement = Some(hex::encode(rendering));
@@ -256,7 +257,7 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
             .as_array()
             .unwrap()
             .iter()
-            .find(|row| artifact_file(row) == "reviewed.tar.gz")
+            .find(|row| artifact_file(row) == Some("reviewed.tar.gz"))
             .unwrap();
         let url = row["schema_url"].as_str().unwrap();
         assert!(url.starts_with("/api/v1/admin/plugins/reviewed.tar.gz/schema?source=installed_archive&expected_archive_sha256="));
@@ -316,7 +317,7 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| artifact_file(row) == "reviewed.tar.gz")
+        .find(|row| artifact_file(row) == Some("reviewed.tar.gz"))
         .unwrap();
     assert_eq!(row["has_schema"], false);
     assert!(row.get("schema_url").is_none());
@@ -392,7 +393,7 @@ async fn plugin_configuration_inactive_signed_archives_report_declarations_witho
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| artifact_file(row) == "store.tar.gz")
+        .find(|row| artifact_file(row) == Some("store.tar.gz"))
         .unwrap();
     let loaded = body(
         client
@@ -465,7 +466,7 @@ async fn plugin_configuration_inactive_signed_archives_report_declarations_witho
             .as_array()
             .unwrap()
             .iter()
-            .find(|row| artifact_file(row) == "inactive.tar.gz")
+            .find(|row| artifact_file(row) == Some("inactive.tar.gz"))
             .unwrap();
         assert_eq!(row["has_schema"], false);
         assert_eq!(row["archive_sha256"], digest);
@@ -655,13 +656,23 @@ async fn plugin_configuration_actual_linked_plane_and_transport_reads_never_call
     server.abort();
 }
 
-// Decode the archive listing's field schema; the field name is not a provider selector.
-fn artifact_file(row: &serde_json::Value) -> &str {
+// Decode the listing row's field schema; the field name is not a provider selector. A
+// compiled-in row has no backing artifact, so the listing contract omits its `file`; every
+// other row is an archive row and must name its file.
+fn artifact_file(row: &serde_json::Value) -> Option<&str> {
     #[derive(serde::Deserialize)]
     struct Artifact<'a> {
-        file: &'a str,
+        loader: &'a str,
+        #[serde(borrow)]
+        file: Option<&'a str>,
     }
-    <Artifact<'_> as serde::Deserialize>::deserialize(row)
-        .expect("the archive listing supplies its file field")
-        .file
+    let row = <Artifact<'_> as serde::Deserialize>::deserialize(row)
+        .expect("the plugin listing row decodes");
+    match row.loader {
+        "compiled-in" => None,
+        _ => Some(
+            row.file
+                .expect("the archive listing supplies its file field"),
+        ),
+    }
 }

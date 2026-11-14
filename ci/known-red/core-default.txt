@@ -1,7 +1,4 @@
 busbar-default::bin/busbar distribution::admin_cross_plane::openapi::openapi_json_matches_committed_file	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar distribution::admin_installed_schema::installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stale_bytes	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar distribution::admin_installed_schema::plugin_configuration_inactive_signed_archives_report_declarations_without_loading_code	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar distribution::admin_plugin_artifact_cas::plugin_archive_preconditions_fence_replacement_delete_and_rollback	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::admin_settings_persistence::test_admin_v1_config_settings_process_level_flagged_reload_to_apply	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_parser_deploy::pools_reserved_section_keys_are_frozen	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_parser_deploy::test_identity_provider_definition_is_referenced_by_name_from_both_planes	CDT-KNOWN-RED	stable
