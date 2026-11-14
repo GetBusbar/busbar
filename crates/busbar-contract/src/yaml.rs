@@ -332,8 +332,9 @@ pub fn from_value<T: DeserializeOwned>(value: Value) -> Result<T, Error> {
 }
 
 /// Write `value` into a [`Value`] tree, as reading back its YAML text would give it.
-pub fn to_value<T: Serialize + ?Sized>(value: &T) -> Result<Value, Error> {
-    let text = to_string(value)?;
+/// Takes the value by value, as serde_yaml's `to_value` did (a reference serializes the same).
+pub fn to_value<T: Serialize>(value: T) -> Result<Value, Error> {
+    let text = to_string(&value)?;
     from_str(&text).map_err(|e| Error::unplaced(e.message))
 }
 
