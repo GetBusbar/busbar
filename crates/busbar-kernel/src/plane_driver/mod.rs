@@ -1519,7 +1519,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         let streamed = std::mem::replace(&mut self.lock().facts.streamed, true);
         if !streamed {
             self.lock().facts.status = rendered.status;
-            // lint-exempt(whole-body-states-length): not a whole answer, a `head_sent` refuse
+            // Not a whole answer: a `head_sent` refuse
             // follows this frame (the separate mid-run money cut item), so no length is stated.
             self.caller.head(rendered.status, rendered.fields);
         }
