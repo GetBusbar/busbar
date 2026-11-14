@@ -43,6 +43,7 @@ fn same_resolved_inputs(
 
 pub mod gate;
 pub mod taps;
+pub mod text_cut;
 
 #[allow(unused_imports)]
 pub use busbar_contract::hooks::{

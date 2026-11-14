@@ -1681,6 +1681,17 @@ summary = "busbar raised the per-plugin-name high-water marks — the automatic 
 action = "Make the configured data directory writable (the log names the underlying I/O error). A node that cannot write its data directory usually has a larger problem than this notice."
 
 [[diagnostic]]
+name = "PLUGIN_TEXT_CUT"
+doc = "Plugin-supplied text over its cap was cut. Fields and caps: a hook reject message (`reject_message`, 300), a metric `help` (`metric_help`, 200), `label` (`metric_label`, 64), `unit` (`metric_unit`, 16) or label value (`metric_label_value`, 64), and a plugin diagnostic message (`diag_message`, 300) or field value (`diag_field`, 64). The `plugin` field is the configured hook instance name for a reject or a hook status read, and the plugin module name for a metric or diagnostic a plugin reported. `busbar_plugin_text_cut_total{plugin,field}` counts over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused)."
+code = 6013
+class = "Plugins"
+slug = "plugin-text-cut"
+title = "Plugin-supplied text exceeded its cap and was cut"
+severity = "Actionable"
+summary = "A plugin or hook sent text longer than its documented cap: a hook reject message, a metric help, label, unit or label value, or a plugin diagnostic message or field. busbar kept the first `cap` sanitised characters exactly as 1.5.5 did, with nothing appended (for a reject whose kept text is all whitespace, clients see the default reject message instead). This warning fires once per plugin and field for the life of the process; `busbar_plugin_text_cut_total{plugin,field}` counts over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused)."
+action = "Shorten the named plugin's text for the named field to within the cap; the log gives the cap and the text's length after sanitising (control and format characters removed)."
+
+[[diagnostic]]
 name = "GROUP_USAGE_READ_FAILED"
 doc = "A group `/usage` read could not derive a bucket's usage from the governance store. Read-path fault."
 code = 8018

@@ -159,6 +159,105 @@ pub fn sanitize_cap(raw: &str, n: usize) -> String {
         .collect()
 }
 
+/// Which plugin-supplied text a cap applies to. A closed set, so it is safe as a metric label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TextField {
+    /// A hook's reject message ([`REJECT_MESSAGE_MAX_CHARS`]).
+    RejectMessage,
+    /// A metric's `help` ([`MAX_METRIC_HELP_CHARS`]).
+    MetricHelp,
+    /// A metric's `label` display hint ([`MAX_METRIC_LABEL_CHARS`]).
+    MetricLabel,
+    /// A metric's `unit` ([`MAX_METRIC_UNIT_CHARS`]).
+    MetricUnit,
+    /// A metric label VALUE ([`MAX_METRIC_LABEL_CHARS`]).
+    MetricLabelValue,
+    /// A plugin diagnostic's message.
+    DiagMessage,
+    /// A plugin diagnostic's field value.
+    DiagField,
+}
+
+impl TextField {
+    /// Every field, in declaration order.
+    pub const ALL: [TextField; 7] = [
+        TextField::RejectMessage,
+        TextField::MetricHelp,
+        TextField::MetricLabel,
+        TextField::MetricUnit,
+        TextField::MetricLabelValue,
+        TextField::DiagMessage,
+        TextField::DiagField,
+    ];
+
+    /// The field's stable name, as a log field and a metric label value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TextField::RejectMessage => "reject_message",
+            TextField::MetricHelp => "metric_help",
+            TextField::MetricLabel => "metric_label",
+            TextField::MetricUnit => "metric_unit",
+            TextField::MetricLabelValue => "metric_label_value",
+            TextField::DiagMessage => "diag_message",
+            TextField::DiagField => "diag_field",
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The cuts one parse made, per [`TextField`]: how many values were over their cap, and the longest
+/// of them. Every length is the SANITISED length in chars (control and format characters removed,
+/// before the cap), not the raw length on the wire.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextCuts {
+    cuts: [(u32, usize); 7],
+}
+
+impl TextCuts {
+    /// Notes one value of `field` cut from `sanitised_chars` chars.
+    pub fn record(&mut self, field: TextField, sanitised_chars: usize) {
+        let (count, max_sanitised) = &mut self.cuts[field.index()];
+        *count = count.saturating_add(1);
+        *max_sanitised = (*max_sanitised).max(sanitised_chars);
+    }
+
+    /// Each field that was cut at least once: `(field, count, max_sanitised)`.
+    pub fn iter(&self) -> impl Iterator<Item = (TextField, u32, usize)> + '_ {
+        TextField::ALL
+            .into_iter()
+            .zip(self.cuts)
+            .filter(|(_, (count, _))| *count > 0)
+            .map(|(field, (count, max_sanitised))| (field, count, max_sanitised))
+    }
+
+    /// No value was cut.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.cuts.iter().all(|(count, _)| *count == 0)
+    }
+}
+
+/// [`sanitize_cap`], also returning the sanitised length in chars when it was over `n` (the value
+/// was cut), else `None`.
+pub fn sanitize_cap_counted(raw: &str, n: usize) -> (String, Option<usize>) {
+    (sanitize_cap(raw, n), None)
+}
+
+/// [`sanitize_reject_message`], also returning the sanitised length in chars when it was over
+/// [`REJECT_MESSAGE_MAX_CHARS`], else `None`.
+pub fn sanitize_reject_message_counted(raw: &str) -> (String, Option<usize>) {
+    (sanitize_reject_message(raw), None)
+}
+
+/// [`parse_status_metrics`], also returning the cuts it made to the metrics it kept.
+pub fn parse_status_metrics_counted(raw: &[serde_json::Value]) -> (Vec<HookMetric>, TextCuts) {
+    (parse_status_metrics(raw), TextCuts::default())
+}
+
 /// Parse + validate the metrics ARRAY of a `status` reply FAIL-OPEN: a malformed entry (bad
 pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
     let mut out = Vec::new();

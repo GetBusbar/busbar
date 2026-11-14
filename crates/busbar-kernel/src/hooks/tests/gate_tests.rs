@@ -2307,3 +2307,196 @@ async fn incremental_scan_rechecks_shape_and_identity_with_unchanged_content() {
         assert!(seen["request"].get("messages").is_none());
     }
 }
+
+/// A hook plugin that rejects every decide and transform with `message`.
+struct Rejecting {
+    message: String,
+}
+
+impl busbar_contract::hook_calls::HookCalls for Rejecting {
+    fn name(&self) -> &str {
+        "acme-rejecting-plugin"
+    }
+    fn decide(
+        &self,
+        frame: Arc<busbar_contract::abi::host::hook::DecideFrame>,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<
+        busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::DecideOut>,
+    > {
+        let (outcome, out) =
+            frame.answer_decide(&busbar_contract::abi::sdk::hook::Verdict::Reject {
+                status: Some(403),
+                message: self.message.clone(),
+            });
+        Box::pin(async move {
+            busbar_contract::hook_calls::Answered::Answer {
+                outcome,
+                out,
+                error: None,
+                frame,
+            }
+        })
+    }
+    fn transform(
+        &self,
+        frame: Arc<busbar_contract::abi::host::hook::DecideFrame>,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<
+        busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::TransformOut>,
+    > {
+        let (outcome, out) =
+            frame.answer_transform(&busbar_contract::abi::sdk::hook::RewriteVerdict::Reject {
+                status: Some(403),
+                message: self.message.clone(),
+            });
+        Box::pin(async move {
+            busbar_contract::hook_calls::Answered::Answer {
+                outcome,
+                out,
+                error: None,
+                frame,
+            }
+        })
+    }
+    fn notify(
+        &self,
+        _: Arc<busbar_contract::abi::host::hook::NotifyFrame>,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<()> {
+        Box::pin(std::future::ready(()))
+    }
+    fn configure(
+        &self,
+        _: &str,
+        _: &busbar_contract::plugin_settings::ResolvedSettings,
+        _: u64,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<Result<(), String>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    fn status(
+        &self,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<Option<Vec<u8>>> {
+        Box::pin(std::future::ready(None))
+    }
+    fn describe(
+        &self,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<Option<Vec<u8>>> {
+        Box::pin(std::future::ready(None))
+    }
+}
+
+#[test]
+fn an_over_cap_hook_reject_is_cut_as_1_5_5_and_reported_once_against_the_hook() {
+    // T1: every tracing case in one #[test]; hook names are unique (the latch is process-global).
+    use crate::hooks::text_cut::text_cut_tests::probe;
+    use busbar_contract::hook_wire::reply::{TextField, REJECT_MESSAGE_MAX_CHARS};
+    let long = "x".repeat(1000);
+    let cut = "x".repeat(REJECT_MESSAGE_MAX_CHARS);
+    let block_on = |f: std::pin::Pin<Box<dyn std::future::Future<Output = GateVerdict> + '_>>| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    };
+    let policy = crate::plane_driver::hooks::policy::HookPolicy::policy(
+        Arc::new(Rejecting {
+            message: long.clone(),
+        }),
+        "acme-gate",
+        &[],
+        None,
+    );
+    let gates = gate(policy, crate::config::PolicyOnError::Reject, false, false);
+    let body = br#"{"tool":"fs_read","arguments":{}}"#;
+    let reject = || {
+        block_on(Box::pin(decide_door(
+            &gates,
+            &door_on(Some(body), DoorShape::default()),
+            &mut Vec::new(),
+        )))
+    };
+
+    // (a)-(d): the gate path.
+    let ((first, second), seen) = probe(|| (reject(), reject()));
+    for verdict in [first, second] {
+        match verdict {
+            GateVerdict::Reject { message, hook, .. } => {
+                assert_eq!(
+                    message, cut,
+                    "1.5.5 parity: the first 300 chars, nothing added"
+                );
+                assert_eq!(hook, "acme-gate");
+            }
+            GateVerdict::Proceed => panic!("a reject must stop the request"),
+        }
+    }
+    let warns = seen.cut_warns();
+    assert_eq!(
+        warns.len(),
+        1,
+        "one warning, no second event from the gate's re-cap and none for the repeat: {warns:#?}"
+    );
+    for part in [
+        "plugin=acme-gate",
+        "field=reject_message",
+        "cap=300",
+        "sanitised_chars=1000",
+    ] {
+        assert!(warns[0].contains(part), "{part} missing: {}", warns[0]);
+    }
+    assert_eq!(seen.counter("acme-gate", TextField::RejectMessage), 2);
+
+    // (e): the transform path.
+    let xform = crate::plane_driver::hooks::policy::HookPolicy::policy(
+        Arc::new(Rejecting { message: long }),
+        "acme-xform",
+        &[],
+        None,
+    );
+    let req = RoutingRequest {
+        request_id: 1,
+        pool: "acme-pool",
+        ingress_protocol: "",
+        requested_model: None,
+        message_count: 0,
+        tool_count: 0,
+        has_tools: false,
+        total_chars: 0,
+        system_chars: 0,
+        max_tokens: None,
+        stream: false,
+        prompt: None,
+        identity: None,
+        signals: busbar_contract::SignalBag::new(),
+        session: None,
+    };
+    let (outcome, seen) = probe(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(xform.transform(&req, std::time::Duration::from_secs(5)))
+    });
+    match outcome {
+        busbar_contract::hooks::TransformOutcome::Reject { message, .. } => {
+            assert_eq!(message, cut);
+        }
+        other => panic!("the transform must reject: {other:?}"),
+    }
+    let warns = seen.cut_warns();
+    assert_eq!(warns.len(), 1, "{warns:#?}");
+    for part in [
+        "plugin=acme-xform",
+        "field=reject_message",
+        "cap=300",
+        "sanitised_chars=1000",
+    ] {
+        assert!(warns[0].contains(part), "{part} missing: {}", warns[0]);
+    }
+    assert_eq!(seen.counter("acme-xform", TextField::RejectMessage), 1);
+}

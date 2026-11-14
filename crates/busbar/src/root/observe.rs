@@ -137,6 +137,14 @@ impl ObservationSink for Output<'_> {
             "plugin exceeded its metric cardinality budget; further new series or label sets from it \
              are refused (established ones keep reporting)");
     }
+    fn text_cut(
+        &self,
+        _field: busbar_contract::hook_wire::reply::TextField,
+        _cap: usize,
+        _count: u32,
+        _max_sanitised: usize,
+    ) {
+    }
 }
 
 fn labels_for(
@@ -165,3 +173,7 @@ pub fn install(catalogue: busbar_kernel::diagnostics::Catalogue) {
         .observing()
         .install_observer(observer);
 }
+
+#[cfg(test)]
+#[path = "tests/observe.rs"]
+mod tests;
