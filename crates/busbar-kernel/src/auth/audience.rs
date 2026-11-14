@@ -42,11 +42,10 @@ pub enum Bearer {
 #[derive(Debug)]
 pub struct JwtPayload(Vec<u8>);
 
-/// What a payload's `cnf.jkt` is: present (of any JSON type) and, if so, whether a string.
+/// What a payload's `cnf.jkt` is: present (of any JSON type) or not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Jkt {
     pub(crate) present: bool,
-    pub(crate) string: bool,
 }
 
 impl Bearer {
@@ -83,7 +82,266 @@ impl Bearer {
     /// since proving it needs a string thumbprint.
     #[must_use]
     pub fn dpop_bound(&self) -> bool {
-        matches!(self, Bearer::Jwt(claims) if claims["cnf"].get("jkt").is_some())
+        matches!(self, Bearer::Jwt(claims) if claims.cnf_jkt().present)
+    }
+}
+
+impl JwtPayload {
+    /// `aud` names `expected_aud` (as a string, or a string in an array); anything else, or no
+    /// `aud`, mismatches. A repeated member is judged by its last occurrence.
+    fn binding(&self, expected_aud: &str) -> Binding {
+        claims::member(&self.0, "aud", claims::Audience(expected_aud)).map_or(
+            Binding::Mismatch,
+            |bound| {
+                if bound {
+                    Binding::Bound
+                } else {
+                    Binding::Mismatch
+                }
+            },
+        )
+    }
+
+    /// What `cnf.jkt` is, when `cnf` is an object; nothing otherwise.
+    pub(crate) fn cnf_jkt(&self) -> Jkt {
+        claims::member(&self.0, "cnf", claims::Cnf).unwrap_or_default()
+    }
+}
+
+/// Visitors over a payload: one member judged in place, every other value skipped unread.
+mod claims {
+    use super::Jkt;
+    use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+    use std::fmt;
+
+    /// `seed`'s judgement of the last `name` member of the payload object; `None` when the
+    /// payload is not an object or has no such member.
+    pub(super) fn member<'de, S>(
+        payload: &'de [u8],
+        name: &'static str,
+        seed: S,
+    ) -> Option<S::Value>
+    where
+        S: DeserializeSeed<'de> + Copy,
+    {
+        let mut de = serde_json::Deserializer::from_slice(payload);
+        de::Deserializer::deserialize_any(&mut de, Member { name, seed })
+            .ok()
+            .flatten()
+    }
+
+    /// Every value a judging visitor does not care about: scalars answer `$none`, containers are
+    /// drained unread and answer `$none`.
+    macro_rules! answer_others {
+        ($none:expr) => {
+            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+                Ok($none)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok($none)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok($none)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok($none)
+            }
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok($none)
+            }
+        };
+    }
+
+    fn drain_seq<'de, A: SeqAccess<'de>>(mut seq: A) -> Result<(), A::Error> {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(())
+    }
+
+    fn drain_map<'de, A: MapAccess<'de>>(mut map: A) -> Result<(), A::Error> {
+        while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+        Ok(())
+    }
+
+    #[derive(Clone, Copy)]
+    struct Member<S> {
+        name: &'static str,
+        seed: S,
+    }
+
+    impl<'de, S: DeserializeSeed<'de> + Copy> Visitor<'de> for Member<S> {
+        type Value = Option<S::Value>;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a JSON value")
+        }
+        answer_others!(None);
+        fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+            drain_seq(seq).map(|()| None)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut judged = None;
+            while let Some(named) = map.next_key_seed(KeyIs(self.name))? {
+                if named {
+                    judged = Some(map.next_value_seed(self.seed)?);
+                } else {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(judged)
+        }
+    }
+
+    /// Whether a member name is `.0`, compared on the decoded name without keeping it.
+    #[derive(Clone, Copy)]
+    struct KeyIs(&'static str);
+
+    impl<'de> DeserializeSeed<'de> for KeyIs {
+        type Value = bool;
+        fn deserialize<D: de::Deserializer<'de>>(self, d: D) -> Result<bool, D::Error> {
+            d.deserialize_str(self)
+        }
+    }
+
+    impl Visitor<'_> for KeyIs {
+        type Value = bool;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a member name")
+        }
+        fn visit_str<E>(self, key: &str) -> Result<bool, E> {
+            Ok(key == self.0)
+        }
+    }
+
+    /// Whether a value is the string `.0`; any other value is skipped and is not.
+    #[derive(Clone, Copy)]
+    struct StrIs<'a>(&'a str);
+
+    impl<'de> DeserializeSeed<'de> for StrIs<'_> {
+        type Value = bool;
+        fn deserialize<D: de::Deserializer<'de>>(self, d: D) -> Result<bool, D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for StrIs<'_> {
+        type Value = bool;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a JSON value")
+        }
+        answer_others!(false);
+        fn visit_str<E>(self, s: &str) -> Result<bool, E> {
+            Ok(self.0 == s)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<bool, A::Error> {
+            drain_seq(seq).map(|()| false)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<bool, A::Error> {
+            drain_map(map).map(|()| false)
+        }
+    }
+
+    /// `aud` binds the expected audience: it is that string, or an array holding it.
+    #[derive(Clone, Copy)]
+    pub(super) struct Audience<'a>(pub(super) &'a str);
+
+    impl<'de> DeserializeSeed<'de> for Audience<'_> {
+        type Value = bool;
+        fn deserialize<D: de::Deserializer<'de>>(self, d: D) -> Result<bool, D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for Audience<'_> {
+        type Value = bool;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a JSON value")
+        }
+        answer_others!(false);
+        fn visit_str<E>(self, s: &str) -> Result<bool, E> {
+            Ok(s == self.0)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<bool, A::Error> {
+            let mut bound = false;
+            while let Some(element) = seq.next_element_seed(StrIs(self.0))? {
+                bound |= element;
+            }
+            Ok(bound)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<bool, A::Error> {
+            drain_map(map).map(|()| false)
+        }
+    }
+
+    /// `cnf`: when an object, what its last `jkt` member is.
+    #[derive(Clone, Copy)]
+    pub(super) struct Cnf;
+
+    impl<'de> DeserializeSeed<'de> for Cnf {
+        type Value = Jkt;
+        fn deserialize<D: de::Deserializer<'de>>(self, d: D) -> Result<Jkt, D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for Cnf {
+        type Value = Jkt;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a JSON value")
+        }
+        answer_others!(Jkt::default());
+        fn visit_str<E>(self, _: &str) -> Result<Jkt, E> {
+            Ok(Jkt::default())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Jkt, A::Error> {
+            drain_seq(seq).map(|()| Jkt::default())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Jkt, A::Error> {
+            let mut jkt = Jkt::default();
+            while let Some(named) = map.next_key_seed(KeyIs("jkt"))? {
+                if named {
+                    map.next_value::<IgnoredAny>()?;
+                    jkt = Jkt { present: true };
+                } else {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(jkt)
+        }
+    }
+
+    /// One well-formed JSON value, walked so every string and member name is decoded (escapes and
+    /// UTF-8 checked) as a parsed document would be, keeping nothing.
+    pub(super) struct Checked;
+
+    impl<'de> de::Deserialize<'de> for Checked {
+        fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            d.deserialize_any(CheckedVisitor)
+        }
+    }
+
+    struct CheckedVisitor;
+
+    impl<'de> Visitor<'de> for CheckedVisitor {
+        type Value = Checked;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a JSON value")
+        }
+        answer_others!(Checked);
+        fn visit_str<E>(self, _: &str) -> Result<Checked, E> {
+            Ok(Checked)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Checked, A::Error> {
+            while seq.next_element::<Checked>()?.is_some() {}
+            Ok(Checked)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Checked, A::Error> {
+            while map.next_key::<Checked>()?.is_some() {
+                map.next_value::<Checked>()?;
+            }
+            Ok(Checked)
+        }
     }
 }
 
