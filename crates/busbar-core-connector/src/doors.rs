@@ -120,6 +120,10 @@ struct Live {
     plugin: Plugin<TransportKind>,
     settings_keys: Vec<&'static str>,
     generation: AtomicU64,
+    /// How many REFRESH crossings have returned, whatever their outcome: the door's settings
+    /// epoch ([`FramerDoor::settings_epoch`]). `generation` is bumped before the crossing, so it
+    /// cannot say the settings were applied.
+    applied: AtomicU64,
 }
 
 /// EVERY TRANSPORT INSTANCE THIS PROCESS OPENED and still holds, linked and dropped in alike: what
@@ -156,6 +160,9 @@ impl Live {
         i.settings = settings_arg(blob.as_deref());
         let mut f = Frame::new(i, blank_out::<OutHead>());
         let called = self.plugin.call(life::REFRESH, &mut f);
+        // A failed refresh may have applied part of its settings: either way, what the instance
+        // located before this point is stale now.
+        self.applied.fetch_add(1, Ordering::Release);
         if called.outcome == Outcome::Ready {
             return Ok(());
         }
@@ -281,6 +288,7 @@ impl Dispatched {
             plugin,
             settings_keys: stated.settings_keys,
             generation: AtomicU64::new(0),
+            applied: AtomicU64::new(0),
         });
         LIVE.lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -353,6 +361,10 @@ fn go_inline<I: InFrame, O: OutFrame>(
 }
 
 impl FramerDoor for Dispatched {
+    fn settings_epoch(&self) -> u64 {
+        self.live.applied.load(Ordering::Acquire)
+    }
+
     fn incomplete_retirement(&self, error: &crate::framer::Refused) {
         if error.outcome == Outcome::Fault {
             self.live.plugin.incomplete_retirement();
