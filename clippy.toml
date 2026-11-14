@@ -1,5 +1,5 @@
 # Core copy of the fleet bad-pattern rule block (request-path rows, marker-gated). The source is
-# GetBusbar/busbar-release ci/core-clippy-bans.toml (busbar-release 638de70294dd033a4cea0101fd86897bbc6c8050); this block is a
+# GetBusbar/busbar-release ci/core-clippy-bans.toml (busbar-release 264c1aed31f0a83fc4d810967f2dc5e00dd7624a); this block is a
 # byte-identical copy of it below its header. Crate-wide rows are in clippy-crate-wide/clippy.toml.
 
 # --- Fleet bad-pattern rules. One list: GetBusbar/busbar-release LINT-RULES.md (every row, its reason
@@ -59,10 +59,10 @@ disallowed-methods = [
   { path = "serde_json::to_string", reason = "allocates a fresh String per call; serde_json::to_writer into the op's reused buffer", allow-invalid = true },
   { path = "serde_json::to_vec_pretty", reason = "allocates a fresh Vec per call; to_writer into the op's reused buffer", allow-invalid = true },
   { path = "serde_json::to_string_pretty", reason = "allocates a fresh String per call; to_writer into the op's reused buffer", allow-invalid = true },
-  { path = "slice::sort", reason = "a sort per call on the request path (stable: also a scratch buffer); keep the data ordered on insert, or sort once in the tick" },
-  { path = "slice::sort_by", reason = "a sort per call on the request path (stable: also a scratch buffer); keep the data ordered on insert, or sort once in the tick" },
-  { path = "slice::sort_by_key", reason = "a sort per call on the request path (stable: also a scratch buffer); keep the data ordered on insert, or sort once in the tick" },
-  { path = "slice::sort_by_cached_key", reason = "a sort per call plus a key buffer per call; keep the data ordered on insert, or sort once in the tick" },
+  { path = "slice::sort", reason = "no sorting on the request path (a sort per call; stable: also a scratch buffer): data arrives ordered, or lives in an ordered container chosen for a real reason; plain sort only off the request path" },
+  { path = "slice::sort_by", reason = "no sorting on the request path (a sort per call; stable: also a scratch buffer): data arrives ordered, or lives in an ordered container chosen for a real reason; plain sort only off the request path" },
+  { path = "slice::sort_by_key", reason = "no sorting on the request path (a sort per call; stable: also a scratch buffer): data arrives ordered, or lives in an ordered container chosen for a real reason; plain sort only off the request path" },
+  { path = "slice::sort_by_cached_key", reason = "no sorting on the request path (a sort plus a key buffer per call): data arrives ordered, or lives in an ordered container chosen for a real reason; plain sort only off the request path" },
   { path = "alloc::vec::Vec::retain", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
   { path = "alloc::vec::Vec::retain_mut", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
   { path = "alloc::vec::Vec::remove", reason = "O(n) shift per call; swap_remove, VecDeque::pop_front, or a map keyed by id" },
@@ -113,6 +113,5 @@ disallowed-types = [
   { path = "serde_json::Value", reason = "a JSON DOM per call; deserialize into a borrowed struct, or RawValue for pass-through", allow-invalid = true },
   { path = "serde_json::Map", reason = "a JSON DOM per call; serialize a borrowed struct", allow-invalid = true },
   { path = "rand_core::OsRng", reason = "a getrandom syscall per draw; a per-thread userspace CSPRNG seeded once", allow-invalid = true },
-  { path = "zeroize::Zeroizing", reason = "wipes the whole capacity on drop and leaves un-wiped copies when it grows; secret bytes live in busbar_contract::secure SecureVec/SecureString/SecureBuf/SecureArray", allow-invalid = true },
   { path = "sha2::Sha256", reason = "software SHA-256 on the request path; go through busbar_contract::crypto (crypto::sha256 / crypto::Sha256)", allow-invalid = true },
 ]
