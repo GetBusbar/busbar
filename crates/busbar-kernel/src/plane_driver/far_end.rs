@@ -341,6 +341,7 @@ impl Egress {
                 refused: None,
                 unsent: None,
                 local: None,
+                credential_refused: false,
                 sent: false,
                 failed: None,
             }),
@@ -381,6 +382,7 @@ impl Egress {
                 refused: None,
                 unsent: None,
                 local: None,
+                credential_refused: false,
                 sent: false,
                 failed: None,
             }),
@@ -485,6 +487,9 @@ struct State {
     /// The host's OWN fault refused this unit (its outbound framer could not render the request):
     /// audited whether or not bytes were handed to the connection, since the member did nothing.
     local: Option<RefusalCode>,
+    /// The attempt in hand failed on its member's own credential. Attempt-scoped, as `unsent`
+    /// is: both are cleared when each attempt is installed (`EgressFarEnd::admit_taken`).
+    credential_refused: bool,
 
     sent: bool,
 
