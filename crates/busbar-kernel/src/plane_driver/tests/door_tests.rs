@@ -920,3 +920,14 @@ fn temporary_admin_plane_unavailability_preserves_503_classification() {
         PlaneVerbError::Internal(_)
     ));
 }
+
+/// DEPENDENCY-LADDER C6 (percent-encoding) pins the path-segment encoder before the hand loop
+/// goes: RFC 3986 unreserved bytes stay, every other byte (UTF-8 included) is upper-case `%XX`.
+#[test]
+fn a_filled_segment_escapes_all_but_the_unreserved_bytes() {
+    assert_eq!(
+        filled("/fleet/{name}/health", "a b/c?d%e~f-g.h_i\u{e9}"),
+        "/fleet/a%20b%2Fc%3Fd%25e~f-g.h_i%C3%A9/health"
+    );
+    assert_eq!(filled("/{x}", "AZaz09"), "/AZaz09");
+}

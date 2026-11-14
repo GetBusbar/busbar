@@ -38,11 +38,6 @@ default-features = false
 repos = ["busbar-store-mysql"]
 reason = "the sans-IO MySQL client protocol (packets, handshake, auth plugins, values) the mysql store speaks over the host's connector; no socket of its own (busbar-store-mysql#15)."
 
-[plugin-deps.percent-encoding]
-version = "2"
-repos = ["busbar-store-mysql"]
-reason = "the mysql store's reading of its `mysql://` URL (the 1.5.5 driver's URL rules); pure parsing."
-
 [plugin-deps.postgres]
 version = "0.19"
 repos = ["busbar-store-postgres"]

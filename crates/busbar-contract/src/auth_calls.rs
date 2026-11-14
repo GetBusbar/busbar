@@ -664,17 +664,8 @@ impl AuthField {
     /// Encode a query pair for the host connector, retaining secret ownership until handed on.
     pub fn query_pair<S: crate::plugin::KernelSeal + ?Sized>(&self, seal: &S) -> Secret<Vec<u8>> {
         fn append(out: &mut Vec<u8>, bytes: &[u8]) {
-            const HEX: &[u8; 16] = b"0123456789ABCDEF";
-            for &byte in bytes {
-                if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-                    out.push(byte);
-                } else {
-                    out.extend_from_slice(&[
-                        b'%',
-                        HEX[usize::from(byte >> 4)],
-                        HEX[usize::from(byte & 15)],
-                    ]);
-                }
+            for piece in percent_encoding::percent_encode(bytes, crate::net::UNRESERVED_KEPT) {
+                out.extend_from_slice(piece.as_bytes());
             }
         }
         let value = self.value.expose(seal);

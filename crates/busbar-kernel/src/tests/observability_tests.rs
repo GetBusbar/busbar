@@ -234,3 +234,29 @@ fn the_console_filter_stays_on_its_layer_so_otlp_sees_debug_spans() {
     }
     assert_eq!(*otlp_side.0.lock().unwrap(), vec!["forward".to_string()]);
 }
+
+/// DEPENDENCY-LADDER C6 (percent-encoding) pins every escape shape before the hand decoder goes:
+/// upper and lower hex, a `%` short of two hex digits (also at the very end), no `+` rule here,
+/// and the whole input kept when the decoded bytes are not UTF-8.
+#[test]
+fn percent_decode_pins_every_escape_shape_before_the_crate_swap() {
+    for (encoded, decoded) in [
+        ("", ""),
+        ("plain", "plain"),
+        ("a%2Fb", "a/b"),
+        ("a%2fb", "a/b"),
+        ("%41%42", "AB"),
+        ("%4", "%4"),
+        ("100%", "100%"),
+        ("%%41", "%A"),
+        ("%zz", "%zz"),
+        ("%4g", "%4g"),
+        ("a+b", "a+b"),
+        ("%2B", "+"),
+        ("%C3%A9", "\u{e9}"),
+        ("%e9", "%e9"),
+        ("%00", "\0"),
+    ] {
+        assert_eq!(percent_decode(encoded), decoded, "{encoded:?}");
+    }
+}

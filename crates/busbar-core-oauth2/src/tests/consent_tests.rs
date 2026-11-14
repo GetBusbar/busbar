@@ -115,3 +115,14 @@ fn consent_cookie_fields_preserve_first_match_and_malformed_refusal() {
     headers.append("cookie", "busbar_as_session=later".parse().unwrap());
     assert_eq!(super::session_id(&headers), None);
 }
+
+/// DEPENDENCY-LADDER C6 (percent-encoding) pins the consent link encoder before the hand loop
+/// goes: RFC 3986 unreserved bytes stay, everything else is upper-case `%XX`.
+#[test]
+fn the_consent_encoder_escapes_all_but_the_unreserved_bytes() {
+    assert_eq!(
+        super::percent_encode("a b/c?d=e&f%g+h~i-j.k_l\u{e9}"),
+        "a%20b%2Fc%3Fd%3De%26f%25g%2Bh~i-j.k_l%C3%A9"
+    );
+    assert_eq!(super::percent_encode(""), "");
+}

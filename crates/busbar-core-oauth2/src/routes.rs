@@ -608,48 +608,20 @@ pub(super) fn form_urlencoded_pairs(query: &str) -> Vec<(String, String)> {
     query
         .split('&')
         .filter_map(|pair| pair.split_once('='))
-        .map(|(k, v)| (percent_decode(k), percent_decode(v)))
+        .map(|(k, v)| (form_decoded(k), form_decoded(v)))
         .collect()
 }
 
-fn hex_digit(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-
-            b'%' if i + 2 < bytes.len() => {
-                match (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
-                    (Some(hi), Some(lo)) => {
-                        out.push((hi << 4) | lo);
-                        i += 3;
-                    }
-
-                    _ => {
-                        out.push(b'%');
-                        i += 1;
-                    }
-                }
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
+/// One form component: `+` is a space and every `%XX` escape is decoded by percent-encoding (a `%`
+/// short of two hex digits stays); invalid UTF-8 is replaced. `+` is not a hex digit, so no escape
+/// spans a `+`.
+fn form_decoded(s: &str) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    for (i, piece) in s.split('+').enumerate() {
+        if i > 0 {
+            out.push(b' ');
         }
+        out.extend(percent_encoding::percent_decode_str(piece));
     }
     match String::from_utf8(out) {
         Ok(text) => text,
@@ -780,3 +752,7 @@ mod local_path_tests;
 #[cfg(test)]
 #[path = "tests/consent_resolution_tests.rs"]
 mod consent_resolution_tests;
+
+#[cfg(test)]
+#[path = "tests/form_codec_tests.rs"]
+mod form_codec_tests;
