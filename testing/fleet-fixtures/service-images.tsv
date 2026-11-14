@@ -29,7 +29,7 @@
 #   port         the port the service listens on inside the container
 #   local_port   the host port store-services.sh publishes it on, DELIBERATELY OFFSET from the
 #                default so a developer's own postgres on 5432 is never touched, and equally
-#                deliberately nowhere near the shadow oracle's own 487xx/488xx band. `-` = no local
+#                deliberately nowhere near the upgrade corpus's own 487xx/488xx band. `-` = no local
 #                runner. These are exactly the offsets scripts/release-check.sh already uses.
 #   ready_secs   the cap on the readiness poll, in seconds. mysql's is 120 and not 60 because
 #                MySQL 8's FIRST boot initialises the datadir and restarts once; measured in

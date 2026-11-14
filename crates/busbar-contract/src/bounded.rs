@@ -301,7 +301,7 @@ pub trait PlaneAlloc: Send + Sync {
 /// renamed in 1.6.0 from their prior arena-model identifier and its matching wire spelling: unlike
 /// this struct, those two are a
 /// closed reason VOCABULARY, but the whole `ReasonCode` wire vocabulary is NEW in 1.6.0 — the
-/// 1.5.5 golden ledger (`testing/shadow-oracle/golden/1.5.5/ledger.tsv`) and
+/// 1.5.5 baseline ledger (`testing/shadow-oracle/golden/1.5.5/ledger.tsv`) and
 /// `testing/shadow-oracle/cells.json` contain none of these codes, so there is no shipped byte to
 /// preserve and the rename is clean. This struct is a plain, never-persisted Rust error type for
 /// the dead [`PlaneAlloc`] trait and carries none of that weight.

@@ -21,7 +21,7 @@ cd "$(dirname "$0")" || exit 1
 LEDGER="${LEDGER:?LEDGER must point at the probe ledger tsv}"
 EXPECTED_IDS="${EXPECTED_IDS:-}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
-# The gate this verdict speaks for. The plugin functional gate is the default; the shadow oracle
+# The gate this verdict speaks for. The plugin functional gate is the default; the upgrade corpus
 # (testing/shadow-oracle/replay.sh) reuses this file unchanged by setting GATE_NAME.
 GATE_NAME="${GATE_NAME:-plugin functional gate}"
 GATE_UPPER="$(printf '%s' "$GATE_NAME" | tr '[:lower:]' '[:upper:]')"
