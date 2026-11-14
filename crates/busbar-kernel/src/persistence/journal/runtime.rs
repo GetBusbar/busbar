@@ -850,21 +850,12 @@ impl RuntimeJournal {
                 Self::take_group(&mut state, limits)?
             };
             // Runs chain from `state.reserved` in ticket order, so the group's
-            // records are one contiguous chain; concatenating the same pinned
-            // runs always yields the same bytes, hence the same claim digest.
-            let joined: Vec<Record>;
-            let records: &[Record] = match group.as_slice() {
-                [run] => run.records(),
-                runs => {
-                    joined = runs
-                        .iter()
-                        .flat_map(|run| run.records().iter().cloned())
-                        .collect();
-                    &joined
-                }
-            };
+            // records are one contiguous chain; the same pinned runs in order
+            // always yield the same bytes, hence the same claim digest. Borrow
+            // them rather than deep-copying every body on each pass or retry.
+            let runs: Vec<&[Record]> = group.iter().map(|run| run.records()).collect();
             let submission = journal
-                .append(&proof, records)
+                .append_runs(&proof, &runs)
                 .await
                 .map_err(RuntimeError::from)?;
             let WriteResult::Submitted(submission) = submission else {
@@ -882,7 +873,7 @@ impl RuntimeJournal {
                     // old full proof and native H/O CAS establish its ancestry.
                     let mut head = proof.head;
                     let mut records_seal = proof.records_seal;
-                    for original in records {
+                    for original in runs.iter().copied().flatten() {
                         let record = checked_record(self.node, &original.body, head)
                             .map_err(RuntimeError::from)?;
                         head = advance(head, &record).map_err(RuntimeError::from)?;
