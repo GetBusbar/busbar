@@ -218,3 +218,79 @@ async fn rendered_refusal_naming_its_framing_is_not_relengthed() {
         assert_eq!(&bytes[..], body);
     }
 }
+
+/// The head block and body a whole answer queued without the request actor puts on the stream.
+fn queued_wire(fields: HeadFields, body: &[u8]) -> (Vec<u8>, bool, Bytes, bool) {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    queue_whole(
+        &Emitter { stream: 1, tx },
+        Rendered {
+            status: 503,
+            fields,
+            body: body.to_vec(),
+        },
+    );
+    let (block, head_end) = match rx.try_recv().unwrap() {
+        (
+            1,
+            Op::Head {
+                status: 503,
+                fields,
+                end,
+                ..
+            },
+        ) => (fields, end),
+        _ => panic!("expected the refusal head first"),
+    };
+    let (bytes, data_end) = match rx.try_recv().unwrap() {
+        (1, Op::Data { bytes, end, .. }) => (bytes, end),
+        _ => panic!("expected the whole body as the next op"),
+    };
+    assert!(rx.try_recv().is_err(), "nothing follows the whole body");
+    (block, head_end, bytes, data_end)
+}
+
+#[test]
+fn queued_capacity_refusal_states_its_length() {
+    let body = br#"{"error":"busy"}"#;
+    let (block, head_end, bytes, data_end) = queued_wire(
+        vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+        body,
+    );
+    let lines = lines(&block);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("content-length:"))
+            .collect::<Vec<_>>(),
+        ["content-length: 16"],
+        "a whole queued refusal states exactly one length: {lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("transfer-encoding:")),
+        "a whole queued refusal is not chunked: {lines:?}"
+    );
+    assert!(lines.contains(&"content-type: application/json".to_owned()));
+    assert!(!head_end, "the head opens a body");
+    assert!(data_end, "the body ends the stream");
+    assert_eq!(&bytes[..], body);
+}
+
+#[test]
+fn queued_refusal_naming_its_framing_is_not_relengthed() {
+    let body = br#"{"error":"busy"}"#;
+    for framing in [
+        (b"Transfer-Encoding".to_vec(), b"chunked".to_vec()),
+        (b"Content-Length".to_vec(), b"16".to_vec()),
+    ] {
+        let (block, _, bytes, _) = queued_wire(vec![framing.clone()], body);
+        assert_eq!(
+            block,
+            neutral_fields(&vec![framing]),
+            "a stated framing passes through unchanged"
+        );
+        assert_eq!(&bytes[..], body);
+    }
+}
