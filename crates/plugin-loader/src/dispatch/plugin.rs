@@ -2036,6 +2036,8 @@ impl Instance {
                 .flatten()
         });
 
+        // Every refusal is behind us: the plugin is called now (the CI work-budget gate).
+        busbar_contract::work_count::tally(busbar_contract::work_count::Work::Crossing);
         let mut open_ended = OpenEnded {
             ptr: (s == slot::OPEN || self.store_bootstrap(s)).then_some(&self.ptr),
             live: self.ptr.load(Ordering::Acquire),
