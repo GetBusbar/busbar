@@ -15,6 +15,7 @@
 // declarations here, under its own Cargo feature, and nowhere else.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(not(test), deny(dead_code, unused_imports, unused_macros))]
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
