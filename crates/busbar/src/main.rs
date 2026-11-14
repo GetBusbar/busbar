@@ -82,6 +82,17 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == OPTION_SAFE_MODE)
 }
 
+/// The boot refusal for a `prepare_config_store` error. Under a principal transition only the
+/// context is printed; on an ordinary boot the inner error, which already names its own subject
+/// (`plugins.fetch failed: ...`, `store '<m>' settings: ...`), is printed.
+fn store_boot_refusal(transition: bool, error: String) -> String {
+    if transition {
+        "principal transition base Store opening refused".to_owned()
+    } else {
+        format!("base Store overlay anchor: {error}")
+    }
+}
+
 fn line_flag_passed(args: impl Iterator<Item = String>) -> bool {
     line_serve_requested(&root::cli::help_rows(), args)
 }
@@ -676,12 +687,7 @@ async fn run(
         );
         let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
             .await
-            .unwrap_or_else(|error| {
-                die(boot_error(
-                    "principal transition base Store opening refused",
-                    format!("base Store overlay anchor: {error}"),
-                ))
-            });
+            .unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)));
         let binding_inventory = root::startup_upgrade::bindings::inventory()
             .unwrap_or_else(|_| die("startup plane declaration inventory refused"));
         let binding_resolver = Arc::new(
