@@ -364,7 +364,7 @@ impl<O> PreparedCandidate<O> {
 }
 
 fn candidate_fingerprint<O>(candidate: &Candidate<O>) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
+    use crate::abi::sdk::digest::Sha256Stream as Sha256;
     fn bytes(hash: &mut Sha256, value: &[u8]) {
         hash.update((value.len() as u64).to_le_bytes());
         hash.update(value);
@@ -429,7 +429,7 @@ fn candidate_fingerprint<O>(candidate: &Candidate<O>) -> [u8; 32] {
         }
     }
     bytes(&mut hash, &candidate.result.0);
-    hash.finalize().into()
+    hash.finish()
 }
 
 /// Definitive or unresolved execution decision; transport errors remain separate.

@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::abi::sdk::digest::Sha256Stream as Sha256;
 use busbar_contract::{
     persistence::{
         Address, Candidate, DatasetId, ExpectedValue, Failure, Mutation, NamespaceId, Predicate,
@@ -19,7 +20,6 @@ use busbar_contract::{
     Secret,
 };
 use busbar_kernel_wal::{JournalBreak, JournalRecord, Record};
-use sha2::{Digest, Sha256};
 
 use super::{
     facade::{AccessError, CoreStore, LogicalClaim, LogicalId, Submission, WriterAuthority},
@@ -122,13 +122,14 @@ pub(crate) struct VerifiedHead {
     // bridges. This constant-size process-local proof is never a new format.
     records_seal: [u8; 32],
 }
+/// Every replay hashes each original frame through here.
 fn extend_records_seal(previous: [u8; 32], bytes: &[u8]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"busbar.journal.original-proof/1\0");
     hash.update(previous);
     hash.update((bytes.len() as u64).to_be_bytes());
     hash.update(bytes);
-    hash.finalize().into()
+    hash.finish()
 }
 impl VerifiedHead {
     pub(crate) fn owner_identity(&self) -> Option<(u64, [u8; 16])> {
@@ -374,7 +375,7 @@ impl<'a> StoreJournal<'a> {
                 namespace: self.namespace.0,
                 operation,
             },
-            digest.finalize().into(),
+            digest.finish(),
         )? {
             LogicalClaim::Prepare(permit) => permit,
             LogicalClaim::Retained(id) => {

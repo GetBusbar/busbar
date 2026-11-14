@@ -36,3 +36,20 @@ fn sha256_tagged_is_the_standard_base64_tag() {
         "sha256/47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
     );
 }
+
+/// The ring-backed stream is the portable SHA-256, byte for byte, however its input is split.
+#[test]
+fn sha256_stream_matches_the_portable_digest_for_every_split() {
+    use sha2::Digest as _;
+    let data: Vec<u8> = (0..5000u32).map(|i| (i * 7 + i / 13) as u8).collect();
+    for len in [0usize, 1, 55, 56, 63, 64, 65, 127, 128, 1000, 5000] {
+        let want: [u8; 32] = sha2::Sha256::digest(&data[..len]).into();
+        assert_eq!(sha256(&data[..len]), want, "one-shot at {len}");
+        for split in [0, 1.min(len), len / 3, len / 2, len] {
+            let mut hash = Sha256Stream::new();
+            hash.update(&data[..split]);
+            hash.update(&data[split..len]);
+            assert_eq!(hash.finish(), want, "split at {split} of {len}");
+        }
+    }
+}

@@ -5,12 +5,50 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use sha2::{Digest as _, Sha256};
-
 /// The SHA-256 digest of `data`, raw.
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
-    Sha256::digest(data).into()
+    let mut hash = Sha256Stream::new();
+    hash.update(data);
+    hash.finish()
+}
+
+/// Incremental SHA-256 over ring, which uses the CPU's SHA extensions where present (the portable
+/// `sha2` build hashes in software on aarch64). Same digest, byte for byte.
+#[derive(Clone)]
+pub struct Sha256Stream(ring::digest::Context);
+
+impl std::fmt::Debug for Sha256Stream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Sha256Stream")
+    }
+}
+
+impl Default for Sha256Stream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha256Stream {
+    /// An empty SHA-256 state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(ring::digest::Context::new(&ring::digest::SHA256))
+    }
+
+    /// Feed `data`.
+    pub fn update(&mut self, data: impl AsRef<[u8]>) {
+        self.0.update(data.as_ref());
+    }
+
+    /// The digest of everything fed.
+    #[must_use]
+    pub fn finish(self) -> [u8; 32] {
+        let mut digest = [0u8; 32];
+        digest.copy_from_slice(self.0.finish().as_ref());
+        digest
+    }
 }
 
 /// The tag a SHA-256 digest is shown under: `sha256/`.
