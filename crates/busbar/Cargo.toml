@@ -59,15 +59,11 @@ idna_adapter = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
 core_affinity = { workspace = true }
-socket2 = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
 # The jemalloc control main.rs calls (background purge thread, idle arena purge).
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["mallctl"] }
-
-[target.'cfg(target_env = "musl")'.dependencies]
-tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] }
 
 [features]
 default = ["root-admin"]
