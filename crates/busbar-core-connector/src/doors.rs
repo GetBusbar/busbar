@@ -74,8 +74,10 @@ pub fn bind() -> Bind {
 
 /// [`bind`], adopted by `on`: a composition of its own (a root cell's rig) binds its doors on its
 pub fn bind_on(on: &Dispatcher) -> Bind {
+    // busbar:expect(bp::into_alloc, reason = "config: a door's binding is made once, when it is bound")
+    let instance = Arc::from("transport");
     Bind {
-        instance: Arc::from("transport"),
+        instance,
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: on.adopter(),
@@ -92,8 +94,10 @@ pub fn row_bind(row: &str) -> Result<Bind, String> {
         busbar_contract::abi::mechanism::KindCode::Transport,
         bound.sink.clone(),
     )?;
+    // busbar:expect(bp::into_alloc, reason = "config: a linked row's binding is made once, when it is bound")
+    let instance = Arc::from(row);
     Ok(Bind {
-        instance: Arc::from(row),
+        instance,
         sink: Arc::new(sink),
         ..bound
     })
@@ -159,16 +163,18 @@ impl Live {
         if called.outcome == Outcome::Ready {
             return Ok(());
         }
-        let why = called
-            .error
-            .as_deref()
-            .map(|e| format!(": {}", String::from_utf8_lossy(e)))
-            .unwrap_or_default();
-        Err(format!(
-            "transport `{}` did not refresh ({:?}){why}",
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a config apply's refusal text names the transport and its reason"
+        )]
+        let refused = format!(
+            "transport `{}` did not refresh ({:?}){}{}",
             self.plugin.name(),
-            called.outcome
-        ))
+            called.outcome,
+            if called.error.is_some() { ": " } else { "" },
+            String::from_utf8_lossy(called.error.as_deref().unwrap_or_default())
+        );
+        Err(refused)
     }
 }
 
@@ -182,44 +188,76 @@ pub fn refresh_named(
     settings: &busbar_contract::transport::TransportSettings,
     named: impl Fn(&str) -> bool,
 ) -> Vec<String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a config apply sweeps the opened instances once, outside the lock after"
+    )]
     let live: Vec<Arc<Live>> = {
         let mut book = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
         book.retain(|w| w.strong_count() > 0);
+        // busbar:expect(bp::state_scan, reason = "config: a config apply visits every opened instance by design")
         book.iter()
             .filter_map(Weak::upgrade)
             .filter(|l| named(l.plugin.name()))
             .collect()
     };
-    live.iter()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a config apply's refusals are handed back whole"
+    )]
+    let refused = live
+        .iter()
         .filter_map(|l| l.refresh(settings).err())
-        .collect()
+        .collect();
+    refused
 }
 
 /// The deployment's value of the transport setting at config path `path`, as the door's settings
 fn dealt(
     path: &str,
     s: &busbar_contract::transport::TransportSettings,
-) -> Option<serde_json::Value> {
-    Some(match path {
-        "advanced.upstream_h2_prior_knowledge" => s.upstream_h2_prior_knowledge.into(),
-        "advanced.upstream_http1_only" => s.upstream_http1_only.into(),
-        "limits.upstream_request_timeout_secs" => s.request_timeout_secs.into(),
-        "limits.request_body_max_bytes" => s.request_body_max_bytes.into(),
-        _ => return None,
-    })
+    into: &mut Vec<u8>,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    match path {
+        "advanced.upstream_h2_prior_knowledge" => write!(into, "{}", s.upstream_h2_prior_knowledge),
+        "advanced.upstream_http1_only" => write!(into, "{}", s.upstream_http1_only),
+        "limits.upstream_request_timeout_secs" => write!(into, "{}", s.request_timeout_secs),
+        "limits.request_body_max_bytes" => write!(into, "{}", s.request_body_max_bytes),
+        _ => Ok(()),
+    }
 }
 
+/// Every path [`dealt`] deals, in the blob's key order (byte order, as a JSON object's sorted keys).
+const DEALT: [&str; 4] = [
+    "advanced.upstream_h2_prior_knowledge",
+    "advanced.upstream_http1_only",
+    "limits.request_body_max_bytes",
+    "limits.upstream_request_timeout_secs",
+];
+
 /// The settings blob a door that declares `declared` is opened with: each declared path the
+/// deployment deals, as one compact JSON object with its keys in byte order, written straight
+/// into the blob.
 #[must_use]
 pub fn settings_blob(
     declared: &[&str],
     s: &busbar_contract::transport::TransportSettings,
 ) -> Vec<u8> {
-    let map: serde_json::Map<String, serde_json::Value> = declared
-        .iter()
-        .filter_map(|path| Some(((*path).to_owned(), dealt(path, s)?)))
-        .collect();
-    serde_json::Value::Object(map).to_string().into_bytes()
+    // busbar:expect(bp::fresh_buffer, reason = "config: a door is handed its settings blob owned, once per open or config apply")
+    let mut blob = Vec::with_capacity(160);
+    blob.push(b'{');
+    for path in DEALT.iter().filter(|p| declared.contains(p)) {
+        if blob.len() > 1 {
+            blob.push(b',');
+        }
+        blob.push(b'"');
+        blob.extend_from_slice(path.as_bytes());
+        blob.extend_from_slice(b"\":");
+        dealt(path, s, &mut blob).expect("writing into a Vec cannot fail");
+    }
+    blob.push(b'}');
+    blob
 }
 
 impl Dispatched {
@@ -237,6 +275,10 @@ impl Dispatched {
         settings: &busbar_contract::transport::TransportSettings,
         on: Arc<Dispatcher>,
     ) -> Result<Self, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: an open's refusal text names the transport"
+        )]
         let stated = plugin
             .context::<TransportFacts>()
             .cloned()
@@ -248,6 +290,10 @@ impl Dispatched {
         let mut f = Frame::new(i, blank_out::<OpenOut>());
         let opened = plugin.call(life::OPEN, &mut f);
         if opened.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: an open's refusal text names the transport"
+            )]
             return Err(format!(
                 "transport `{}` would not open ({:?})",
                 plugin.name(),
@@ -257,6 +303,10 @@ impl Dispatched {
 
         plugin.ready(&on, busbar_plugin_loader::dispatch::ready::READY_DEADLINE)?;
         let accepts = stated.accepts;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a door's facts are built once, when it is opened"
+        )]
         let facts = DoorFacts {
             name: plugin.name().to_owned(),
             claims: stated.claims,
@@ -483,6 +533,10 @@ impl FramerDoor for Dispatched {
             Call::Locate(i, o) => {
                 if i.head.deadline_ns != 0 {
                     let Some(provider) = self.on.host_services() else {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "error: a crossing refused for want of the host clock carries its reason"
+                        )]
                         return Crossed {
                             outcome: Outcome::Failed,
                             error: Some(b"request head deadline requires the host clock".to_vec()),
@@ -548,15 +602,19 @@ pub fn build(
     door: DoorFn,
     settings: &busbar_contract::transport::TransportSettings,
 ) -> Arc<HostWire> {
-    LinkedRow::of(door)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a linked row is built once at boot; a refusal's text is the panic's"
+    )]
+    let built = LinkedRow::of(door)
         .map_err(|e| e.to_string())
         .and_then(|linked| {
             load_linked::<TransportKind>(&linked, row_bind(row)?).map_err(|e| e.to_string())
         })
         .and_then(|plugin| Dispatched::open(plugin, settings))
         .and_then(|door| HostWire::new(&door))
-        .map(Arc::new)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+        .map(Arc::new);
+    built.unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
 /// A LINKED TRANSPORT ROW'S IDENTITY, read off its door's Statement and nothing else: the row's
@@ -582,12 +640,20 @@ pub fn stated_row(door: DoorFn) -> Result<RowFacts, String> {
 
 fn checked_row(facts: TransportFacts) -> Result<RowFacts, String> {
     let Some(&key) = facts.claims.first() else {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a linked row's refusal text names its door"
+        )]
         return Err(format!(
             "the transport door `{}` claims no scheme: a linked row's key is its door's own claim",
             facts.name
         ));
     };
     if key != facts.name {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a linked row's refusal text names its door"
+        )]
         return Err(format!(
             "the transport door's Statement is named `{}` but its own claim (its first) is `{key}`: \
              a linked row's key is its door's own claim, and the two must be one",
@@ -675,6 +741,11 @@ pub fn locate_bound(
     let stated = plugin
         .context::<TransportFacts>()
         .ok_or("the admitted transport has no declaration")?;
+    // busbar:expect(bp::clone_alloc, reason = "config: a configuration locate stands its declaration's facts up once")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a configuration locate stands its declaration's facts up once"
+    )]
     let locator = Locator {
         plugin,
         facts: DoorFacts {
@@ -696,7 +767,12 @@ pub fn locate_bound(
             datagram: stated.datagram,
         },
     };
-    crate::framer::locate(&locator, target).map_err(|e| e.to_string())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a configuration locate's refusal text"
+    )]
+    let located = crate::framer::locate(&locator, target).map_err(|e| e.to_string())?;
+    Ok(located)
 }
 
 #[cfg(test)]

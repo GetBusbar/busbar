@@ -599,7 +599,7 @@ fn conn_wait_reports_the_keying_timeout_after_the_exchange_spent_the_outer_deadl
         let owner = InstanceId(17);
         let need = NeedId(23);
         let held = crate::Held::over(None, None, None)
-            .bounded(1)
+            .bounded(std::time::Instant::now(), 1)
             .dialling(rig.dialled);
 
         held.answered();

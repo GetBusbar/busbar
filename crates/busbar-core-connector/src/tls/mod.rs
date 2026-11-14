@@ -47,12 +47,17 @@ fn read_pem(
     secret: &SecretRef,
     what: &str,
 ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
-    resolver
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a TLS secret resolves once at config load; the text names its failure"
+    )]
+    let resolved = resolver
         .resolve_at_config(
             secret,
             &busbar_contract::config_time::ConfigScope::config_time(),
         )
-        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
+        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))?;
+    Ok(resolved)
 }
 
 /// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
@@ -64,10 +69,18 @@ fn load_cert_chain(
     let bytes = read_pem(resolver, secret, "cert")?;
     let seal = busbar_kernel::seal::lend();
     let bytes = bytes.expose(&seal);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the TLS chain is parsed once at config load into the owned chain rustls keeps"
+    )]
     let certs = CertificateDer::pem_slice_iter(bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
     if certs.is_empty() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: config-load refusal text naming the secret source"
+        )]
         return Err(format!(
             "TLS cert ({src}) contains no certificates (expected a PEM chain, leaf first)"
         ));
@@ -86,12 +99,17 @@ fn load_private_key(
     let bytes = bytes.expose(&seal);
 
     use rustls::pki_types::pem::Error as PemError;
-    PrivateKeyDer::from_pem_slice(bytes).map_err(|e| match e {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: config-load refusal text naming the secret source"
+    )]
+    let key = PrivateKeyDer::from_pem_slice(bytes).map_err(|e| match e {
         PemError::NoItemsFound => {
             format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
         }
         other => format!("cannot parse TLS key ({src}): {other}"),
-    })
+    })?;
+    Ok(key)
 }
 
 /// BUSBAR'S CLIENT IDENTITY for one destination, from its two secret references: the PEM chain
@@ -102,10 +120,15 @@ pub fn client_identity(
 ) -> Result<busbar_contract::transport::trust::ClientIdentity, String> {
     let chain = load_cert_chain(resolver, cert)?;
     let key = load_private_key(resolver, key)?;
-    Ok(busbar_contract::transport::trust::ClientIdentity {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a destination's client identity is built once at config load"
+    )]
+    let identity = busbar_contract::transport::trust::ClientIdentity {
         cert_chain: chain.into_iter().map(|c| c.as_ref().to_vec()).collect(),
         private_key: key.secret_der().to_vec().into(),
-    })
+    };
+    Ok(identity)
 }
 
 /// Build the client-cert verifier root store from the operator's CA bundle (mTLS).
@@ -117,14 +140,26 @@ fn load_client_roots(
     let bytes = read_pem(resolver, secret, "client_ca")?;
     let seal = busbar_kernel::seal::lend();
     let bytes = bytes.expose(&seal);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the client CA bundle is parsed once at config load"
+    )]
     let cas = CertificateDer::pem_slice_iter(bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
     if cas.is_empty() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: config-load refusal text naming the secret source"
+        )]
         return Err(format!("TLS client_ca ({src}) contains no CA certificates"));
     }
     let mut roots = RootCertStore::empty();
     for ca in cas {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: config-load refusal text naming the secret source"
+        )]
         roots
             .add(ca)
             .map_err(|e| format!("invalid CA certificate in TLS client_ca ({src}): {e}"))?;
@@ -224,6 +259,10 @@ pub fn build_server_config(
     let builder = match &tls.client_ca {
         Some(ca) => {
             let roots = load_client_roots(resolver, ca)?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: config-load refusal text naming the secret source"
+            )]
             let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
                 .build()
                 .map_err(|e| {
@@ -237,6 +276,10 @@ pub fn build_server_config(
         None => builder.with_no_client_auth(),
     };
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: config-load refusal text naming the secret sources"
+    )]
     let mut config = builder.with_single_cert(certs, key).map_err(|e| {
         format!(
             "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
@@ -245,7 +288,12 @@ pub fn build_server_config(
         )
     })?;
 
-    config.alpn_protocols = ALPN_OFFER.iter().map(|p| p.to_vec()).collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: rustls owns the listener's ALPN list, built once at config load"
+    )]
+    let alpn = ALPN_OFFER.iter().map(|p| p.to_vec()).collect();
+    config.alpn_protocols = alpn;
 
     Ok(config)
 }
@@ -340,22 +388,29 @@ pub fn prepare(
     resolver: &SecretResolver,
     transport_capable: bool,
 ) -> Result<Arc<dyn ConnectionSecurity>, FailClosed> {
-    match tls_cfg {
-        None => Ok(Arc::new(Identity)),
-        Some(_) if !transport_capable => Err(FailClosed::IncapableTransport {
+    let Some(tls) = tls_cfg else {
+        return Ok(Arc::new(Identity));
+    };
+    if !transport_capable {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the fail-closed refusal names the binding"
+        )]
+        return Err(FailClosed::IncapableTransport {
             label: label.to_string(),
-        }),
-        Some(tls) => {
-            let _ = installed_crypto();
-            let config = build_server_config(tls, resolver).map_err(|reason| {
-                FailClosed::MaterialUnavailable {
-                    label: label.to_string(),
-                    reason,
-                }
-            })?;
-            Ok(Arc::new(Tls::new(Arc::new(config))))
-        }
+        });
     }
+    let _ = installed_crypto();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the fail-closed refusal names the binding"
+    )]
+    let config =
+        build_server_config(tls, resolver).map_err(|reason| FailClosed::MaterialUnavailable {
+            label: label.to_string(),
+            reason,
+        })?;
+    Ok(Arc::new(Tls::new(Arc::new(config))))
 }
 
 #[cfg(test)]

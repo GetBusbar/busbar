@@ -10,44 +10,61 @@ use dimpl::crypto::{
     SupportedDtls13CipherSuite, SupportedKxGroup, TmpBuf,
 };
 use dimpl::{CryptoError, CryptoOperation};
+use foldhash::HashMap;
 use ring::aead::{self, LessSafeKey, UnboundKey};
 use ring::agreement::{self, EphemeralPrivateKey, UnparsedPublicKey};
 use ring::rand::{SecureRandom as _, SystemRandom};
 use ring::{digest, hmac, signature};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// What a key handle starts with; anything else is refused as a private key.
 const HANDLE_TAG: &[u8] = b"busbar-dtls-key-handle:";
 
-type KeyRegistry = Mutex<HashMap<Vec<u8>, Arc<signature::EcdsaKeyPair>>>;
+/// The random id a handle carries after [`HANDLE_TAG`]; the registry is keyed by it.
+type KeyId = [u8; 16];
+
+type KeyRegistry = Mutex<HashMap<KeyId, Arc<signature::EcdsaKeyPair>>>;
 
 fn key_registry() -> &'static KeyRegistry {
     static REGISTRY: OnceLock<KeyRegistry> = OnceLock::new();
     REGISTRY.get_or_init(Default::default)
 }
 
+/// The id `handle` names: [`HANDLE_TAG`] then exactly one [`KeyId`].
+fn key_id(handle: &[u8]) -> Option<KeyId> {
+    handle
+        .strip_prefix(HANDLE_TAG)
+        .and_then(|id| KeyId::try_from(id).ok())
+}
+
 /// Park `pair` and answer the handle dimpl carries in its place.
 pub(crate) fn register_key(pair: Arc<signature::EcdsaKeyPair>) -> Result<Vec<u8>, CryptoError> {
-    let mut id = [0_u8; 16];
+    let mut id: KeyId = [0_u8; 16];
     SystemRandom::new()
         .fill(&mut id)
         .map_err(|_| CryptoError::OperationFailed(CryptoOperation::FillRandom))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: dimpl carries the key handle owned; one is minted per session certificate"
+    )]
     let mut handle = HANDLE_TAG.to_vec();
     handle.extend_from_slice(&id);
     key_registry()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(handle.clone(), pair);
+        .insert(id, pair);
     Ok(handle)
 }
 
 /// Forget the key a handle names.
 pub(crate) fn unregister_key(handle: &[u8]) {
+    let Some(id) = key_id(handle) else {
+        return;
+    };
     key_registry()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(handle);
+        .remove(&id);
 }
 
 /// The provider every association is built with.
@@ -307,13 +324,13 @@ struct Keys;
 
 impl KeyProvider for Keys {
     fn load_private_key(&self, handle: &[u8]) -> Result<Box<dyn SigningKey>, CryptoError> {
-        if !handle.starts_with(HANDLE_TAG) {
+        let Some(id) = key_id(handle) else {
             return Err(CryptoError::InvalidPrivateKey);
-        }
+        };
         key_registry()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(handle)
+            .get(&id)
             .map(|pair| Box::new(Signer(Arc::clone(pair))) as Box<dyn SigningKey>)
             .ok_or(CryptoError::InvalidPrivateKey)
     }
