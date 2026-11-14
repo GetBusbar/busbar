@@ -128,18 +128,13 @@ impl AuthRows {
             clippy::disallowed_methods,
             reason = "boot: names why the auth plugin did not load"
         )]
-        let loaded = match row.door() {
-            Some(door) => LinkedRow::of_raw(door).and_then(|r| load_linked::<Auth>(&r, bind)),
-            None => match row.manifest.stated_rendering().map_err(refused)? {
-                None => return Err(refused(NO_DOOR.to_string())),
-                Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
-            },
-        };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names why the auth plugin did not load"
-        )]
-        let plugin = loaded.map_err(|e| refused(e.to_string()))?;
+        let plugin = open_loadable::<Auth>(row, name, move || Ok(bind)).map_err(|e| {
+            refused(match e {
+                RowRefusal::Stated(e) | RowRefusal::Bind(e) => e,
+                RowRefusal::NoDoor => NO_DOOR.to_string(),
+                RowRefusal::Load(e) => e.to_string(),
+            })
+        })?;
         Ok(Door::Memory(plugin, sink))
     }
 
