@@ -89,7 +89,7 @@ fn store_boot_refusal(transition: bool, error: String) -> String {
     if transition {
         "principal transition base Store opening refused".to_owned()
     } else {
-        format!("base Store overlay anchor: {error}")
+        error
     }
 }
 

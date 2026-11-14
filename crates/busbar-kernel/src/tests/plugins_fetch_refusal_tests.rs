@@ -27,3 +27,18 @@ fn plugins_fetch_refusal_has_one_writer() {
         "the one plugins.fetch refusal header must be written inside plugins_fetch_refusal"
     );
 }
+
+/// The boot and reload refusal is the 1.5.5 bullet list: a header, then one bullet per failed
+/// target in the order the fetch reported them.
+#[test]
+fn plugins_fetch_refusal_is_the_1_5_5_bullet_list() {
+    let errors: Vec<String> = vec!["a".into(), "b".into()];
+    assert_eq!(
+        super::plugins_fetch_refusal(&errors),
+        "plugins.fetch failed:\n  - a\n  - b"
+    );
+    assert_eq!(
+        super::plugins_fetch_refusal(&["no composition root installed the plugins fetch"]),
+        "plugins.fetch failed:\n  - no composition root installed the plugins fetch"
+    );
+}
