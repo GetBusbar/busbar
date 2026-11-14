@@ -3593,3 +3593,7 @@ mod signed_order_policies;
 #[cfg(test)]
 #[path = "tests/inbound_reader_fallback.rs"]
 mod reader_fallback;
+
+#[cfg(test)]
+#[path = "tests/inbound_nonce_tests.rs"]
+mod nonce_tests;
