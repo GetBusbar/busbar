@@ -181,10 +181,7 @@ fn exclusive_mode_publishes_0600_and_survives_stale_own_temp() {
     use std::os::unix::fs::PermissionsExt as _;
     let sc = Scratch::new("excl");
     let target = sc.path("signing.key");
-    let opts = DurableOpts {
-        mode: Some(0o600),
-        exclusive: true,
-    };
+    let opts = DurableOpts { mode: Some(0o600) };
     fault_reset();
 
     write_with(&target, b"deadbeef", opts).unwrap();
@@ -199,10 +196,7 @@ fn exclusive_mode_publishes_0600_and_survives_stale_own_temp() {
 fn exclusive_pre_removal_clears_a_temp_left_by_a_crashed_run() {
     let sc = Scratch::new("wedge");
     let target = sc.path("signing.key");
-    let opts = DurableOpts {
-        mode: Some(0o600),
-        exclusive: true,
-    };
+    let opts = DurableOpts { mode: Some(0o600) };
     fault_reset();
     write_with(&target, b"first", opts).unwrap();
 

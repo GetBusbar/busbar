@@ -53,7 +53,13 @@ pub fn release_asset(github: &str) -> Option<ReleaseAsset> {
 pub fn release_asset_for(github: &str, target: &str) -> Option<ReleaseAsset> {
     let (path, tag) = github.split_once('@')?;
     let (org, repo) = path.split_once('/')?;
-    if org.is_empty() || repo.is_empty() || tag.is_empty() || repo.contains('/') {
+    // The file name is joined under a directory: no part of the pin may add a path separator.
+    if org.is_empty()
+        || repo.is_empty()
+        || tag.is_empty()
+        || repo.contains(['/', '\\'])
+        || tag.contains(['/', '\\'])
+    {
         return None;
     }
     let version = tag.strip_prefix('v').unwrap_or(tag);
