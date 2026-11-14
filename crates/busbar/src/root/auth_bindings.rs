@@ -153,7 +153,7 @@ impl VirtualKeyDirectory for GovernanceDirectory {
 pub const ADMIN_PRINCIPAL_ID: &str = "admin";
 
 #[must_use]
-pub fn operator_auth_module() -> &'static str {
+pub(crate) fn operator_auth_module() -> &'static str {
     crate::LINKED.operator_auth
 }
 

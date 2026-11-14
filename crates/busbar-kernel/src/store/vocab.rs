@@ -3,9 +3,9 @@
 
 const PROBE_RETRY_FLOOR_MS: u64 = 250;
 
-pub const SHED_RETRY_FLOOR_MS: u64 = 1000;
+pub(crate) const SHED_RETRY_FLOOR_MS: u64 = 1000;
 
-pub const AT_CAPACITY_RECOVERY_FLOOR_MS: u64 = 2_000;
+pub(crate) const AT_CAPACITY_RECOVERY_FLOOR_MS: u64 = 2_000;
 
 /// Why a lane cannot accept a request right now — the ONE taxonomy every consumer speaks: selection
 /// (exclude), least_bad (rank), `Retry-After` (hint), `/stats` + `/metrics` (render), queue (wait).

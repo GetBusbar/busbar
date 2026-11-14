@@ -122,7 +122,7 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
     pub fn descriptor_digest(&self) -> [u8; 32] {
         self.digest
     }
-    pub fn operation_count(&self) -> usize {
+    pub(crate) fn operation_count(&self) -> usize {
         self.heads.len()
     }
     pub fn fenced_receipt_proofs(
@@ -306,7 +306,7 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
             digest: hash.finalize().into(),
         })
     }
-    pub fn visit_selections(
+    pub(crate) fn visit_selections(
         &mut self,
         visitor: &mut dyn FnMut(&RecoverySelection) -> Result<(), Error>,
     ) -> Result<(), Error> {

@@ -16,7 +16,7 @@ use std::{
 };
 
 pub const MAX_CLASSES: usize = 64;
-pub const MAX_REVISIONS: usize = 4096;
+pub(crate) const MAX_REVISIONS: usize = 4096;
 pub const MAX_OPERATIONS: usize = 256;
 const MAX_TEXT: usize = 1024;
 const MAX_CLASS_TEXT: usize = 256;

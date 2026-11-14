@@ -461,7 +461,7 @@ impl History {
     }
 
     /// The highest commit time among the LIVE entries (`head_t_ms`): a voided entry never counts.
-    pub fn head_t_ms(&self) -> Option<u64> {
+    pub(crate) fn head_t_ms(&self) -> Option<u64> {
         self.entries
             .iter()
             .rev()

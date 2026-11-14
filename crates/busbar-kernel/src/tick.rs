@@ -51,7 +51,7 @@ pub fn sweep(
     }
 }
 
-pub fn sweep_outcome(verdict: Sweep) -> Option<Outcome> {
+pub(crate) fn sweep_outcome(verdict: Sweep) -> Option<Outcome> {
     match verdict {
         Sweep::TaskLost { at } => Some(Outcome::Failed(at, ReasonCode::TaskLost)),
         Sweep::Stalled { at } => Some(Outcome::Failed(at, ReasonCode::Stalled)),

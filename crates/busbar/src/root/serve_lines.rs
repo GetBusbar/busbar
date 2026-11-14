@@ -49,7 +49,7 @@ pub fn env_credential(plane: &str, carrier: &str) -> String {
 }
 
 #[must_use]
-pub fn line_claim(served: &Served) -> Option<(usize, u32)> {
+pub(crate) fn line_claim(served: &Served) -> Option<(usize, u32)> {
     let carrier = carrier()?;
     served.planes.iter().enumerate().find_map(|(p, plane)| {
         plane
@@ -227,7 +227,7 @@ pub async fn serve_lines(
     .await
 }
 
-pub async fn serve_lines_over<R, W, S>(
+pub(crate) async fn serve_lines_over<R, W, S>(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,

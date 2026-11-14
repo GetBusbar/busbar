@@ -982,7 +982,7 @@ pub struct DoorLive {
     pub shown: Option<crate::root::model_egress::ModelShown>,
 }
 
-pub struct ApplyReach {
+pub(crate) struct ApplyReach {
     providers: BTreeMap<String, crate::root::door_steps::ProviderRoute>,
     auths: Arc<crate::root::door_steps::OutboundAuths>,
     conns: Arc<dyn busbar_contract::conn::PollConns>,
@@ -1293,7 +1293,7 @@ impl DoorApply {
 }
 
 #[must_use]
-pub fn applied_section(
+pub(crate) fn applied_section(
     app: &busbar_kernel::state::App,
     plane: &str,
     section_key: &str,
@@ -2025,7 +2025,7 @@ pub fn door_pools(
 }
 
 #[must_use]
-pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
+pub(crate) fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
     busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .filter_map(|decl| {
@@ -3045,11 +3045,11 @@ const NEST_REPLY_MAX: usize = 16 << 20;
 
 pub const NEST_UNSERVED: &str = "no plane serves the nested unit's claim";
 
-pub const NEST_PARENT_GONE: &str = "the nested unit's parent is not in flight";
+pub(crate) const NEST_PARENT_GONE: &str = "the nested unit's parent is not in flight";
 
 pub const NEST_UNREAD: &str = "the nested unit's reply could not be read";
 
-pub struct DoorNests {
+pub(crate) struct DoorNests {
     routes: NestRoutes,
     runtime: tokio::runtime::Handle,
     detached: Option<Arc<busbar_kernel::detached::DetachedTasks>>,
@@ -4552,7 +4552,7 @@ pub fn door_routes(
     door_mounts(served, pin, data_chain, core, &[], &[]).map(|m| m.routes)
 }
 
-pub struct DoorMounts {
+pub(crate) struct DoorMounts {
     /// The governed dispatcher retained with the same sealed listener generation.
     pub data: Arc<DataRoutes>,
     pub routes: Vec<PlaneRouteSpec>,
@@ -5199,7 +5199,7 @@ impl DataRoutes {
     /// Resume one Store page per opened plane through the ordinary unit machinery. Recovery
     /// carries host-owned identity only: no caller credential is reconstructed or lent.
     /// The scheduler owns cadence/shutdown; each individual poll has a finite deadline.
-    pub async fn recover_work(self: &Arc<Self>, app: Arc<busbar_kernel::state::App>) -> usize {
+    pub(crate) async fn recover_work(self: &Arc<Self>, app: Arc<busbar_kernel::state::App>) -> usize {
         use busbar_kernel::guest::{Claimant, Matched};
         if app.governance.is_none() {
             return 0;
@@ -6774,7 +6774,7 @@ impl IngressReply {
     }
 
     #[must_use]
-    pub fn with_trailers(mut self, trailers: oneshot::Receiver<axum::http::HeaderMap>) -> Self {
+    pub(crate) fn with_trailers(mut self, trailers: oneshot::Receiver<axum::http::HeaderMap>) -> Self {
         self.trailers = Some(trailers);
         self
     }
@@ -6861,7 +6861,7 @@ impl IngressReply {
         .await
     }
 
-    pub async fn answer_with(
+    pub(crate) async fn answer_with(
         self,
         unit: DrivenUnit,
         unrendered: impl FnOnce(Option<Rendered>) -> Response,

@@ -26,7 +26,7 @@ pub struct CardFields {
 /// One plane's card and fees, as the stored form spells them.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlaneCardFields {
+pub(crate) struct PlaneCardFields {
     /// The plane's card, replaced whole when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_card: Option<BTreeMap<String, RateEntryCfg>>,

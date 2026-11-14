@@ -8,7 +8,7 @@ use crate::persistence::{facade::WriterAuthority, startup};
 use busbar_contract::{persistence::*, Secret};
 use std::sync::Arc;
 
-pub const FORMAT_OWNER: [u8; 16] = *b"busbar.core.v1\0\0";
+pub(crate) const FORMAT_OWNER: [u8; 16] = *b"busbar.core.v1\0\0";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetIdentity {
     pub dataset: DatasetId,

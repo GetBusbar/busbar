@@ -16,10 +16,10 @@ use crate::record::{
 pub const JOURNAL_TAG: &str = "audit.v5";
 
 /// Journal encoding for explicitly versioned exact decimal quantities.
-pub const JOURNAL_TAG_V6: &str = "audit.v6";
+pub(crate) const JOURNAL_TAG_V6: &str = "audit.v6";
 
 /// The original journal format retained for legacy digest recipes.
-pub const JOURNAL_TAG_V4: &str = "audit.v4";
+pub(crate) const JOURNAL_TAG_V4: &str = "audit.v4";
 
 /// A text field longer than the body's length prefix can say (more than `u32::MAX` bytes).
 ///

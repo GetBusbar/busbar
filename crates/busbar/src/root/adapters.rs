@@ -80,7 +80,7 @@ impl BreakerPolicy {
     }
 
     #[must_use]
-    pub fn for_pool(&self, pool: &str) -> Option<&BreakerCfg> {
+    pub(crate) fn for_pool(&self, pool: &str) -> Option<&BreakerCfg> {
         if pool.is_empty() {
             self.fallback.as_ref()
         } else {

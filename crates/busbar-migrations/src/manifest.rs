@@ -8,10 +8,10 @@ use super::Error;
 
 pub type Digest32 = [u8; 32];
 pub type Id = [u8; 16];
-pub const MANIFEST_VERSION: u32 = 1;
+pub(crate) const MANIFEST_VERSION: u32 = 1;
 pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;
-pub const MAX_FAMILIES: usize = 64;
-pub const MAX_EDGES: usize = 32;
+pub(crate) const MAX_FAMILIES: usize = 64;
+pub(crate) const MAX_EDGES: usize = 32;
 
 /// Exact source format identity. Product SemVer is deliberately absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

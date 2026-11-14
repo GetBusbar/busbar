@@ -219,7 +219,7 @@ impl DoorPools {
     }
 
     #[must_use]
-    pub fn member_pool(&self, entry: &str) -> Option<&str> {
+    pub(crate) fn member_pool(&self, entry: &str) -> Option<&str> {
         self.pools
             .iter()
             .filter(|(name, _)| self.member_granted.contains(*name))

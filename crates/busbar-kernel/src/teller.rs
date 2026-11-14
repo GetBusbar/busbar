@@ -481,7 +481,7 @@ pub struct Governed {
     pub(crate) lease: Option<GroupLeaseSlip>,
 }
 
-pub async fn by_seats<'a, U: DoorSeats + ?Sized>(
+pub(crate) async fn by_seats<'a, U: DoorSeats + ?Sized>(
     units: &'a U,
     ctx: &'a UnitCtx,
     door: Door<'a>,

@@ -25,7 +25,7 @@ pub const MAX_KEEP: u32 = 64;
 
 pub const LANE_FULL: &str = "the host's disk lane is full";
 
-pub const LANE_GONE: &str = "the host's disk lane is not running";
+pub(crate) const LANE_GONE: &str = "the host's disk lane is not running";
 
 struct Append {
     dest: DiskDest,
@@ -319,7 +319,7 @@ pub fn rotate(path: &str, keep: u32) -> (bool, u8) {
 
 const MAX_WORDS: usize = 256;
 
-pub const OS_REFUSED: &str = "the operating system refused the write";
+pub(crate) const OS_REFUSED: &str = "the operating system refused the write";
 
 fn os_words(e: &std::io::Error) -> &'static str {
     static WORDS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();

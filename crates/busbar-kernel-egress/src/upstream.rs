@@ -30,7 +30,7 @@ pub const ERR_NET_CONNECT: &str = "connect";
 pub const ERR_NET_TIMEOUT: &str = "timeout";
 
 /// The fields the upstream connection derives for itself, beyond HTTP's hop-by-hop set.
-pub const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
+pub(crate) const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
 
 /// The content coding busbar asks a provider for. 1.6.0 has one choice, `Identity` (as 1.5.5):
 /// busbar sends no `accept-encoding`, so it never spends CPU or latency decoding what it reads to
@@ -66,7 +66,7 @@ pub fn apply_upstream_encoding(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
 }
 
 /// busbar's own header namespace: a client field under it is addressed to busbar, never upstream.
-pub const CONTROL_PREFIX: &str = "x-busbar-";
+pub(crate) const CONTROL_PREFIX: &str = "x-busbar-";
 
 /// Whether the client field `name` is a per-connection mechanic the upstream request re-derives: a
 #[must_use]

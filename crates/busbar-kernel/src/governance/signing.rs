@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub const TOKEN_PREFIX: &str = "bbk_";
 
-pub const TICKET_AUDIENCE: &str = "busbar:ticket";
+pub(crate) const TICKET_AUDIENCE: &str = "busbar:ticket";
 
 pub(crate) fn ticket_audience(consumer: &str) -> String {
     format!("{TICKET_AUDIENCE}:{consumer}")
@@ -249,7 +249,7 @@ impl TokenVerifier {
         self.verify_body(body, now, expected_aud)
     }
 
-    pub fn verify_body(
+    pub(crate) fn verify_body(
         &self,
         body: &str,
         now: u64,
