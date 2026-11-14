@@ -58,7 +58,6 @@ pub struct ReadyCandidate {
     pub limits: ConfirmedLimits,
     pub node_lease_task: Option<JoinHandle<Result<(), String>>>,
     pub deploy: DeployCfg,
-    pub definitions: HashMap<String, ProviderDef>,
     pub overlay: Option<Arc<OverlayStore>>,
     pub configuration_fingerprint: [u8; 32],
 }
@@ -241,7 +240,6 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
         limits,
         node_lease_task: failed.node_lease_task.take(),
         deploy,
-        definitions,
         overlay,
         configuration_fingerprint,
     })
@@ -260,12 +258,6 @@ pub enum Phase {
 pub struct UpgradeBinding {
     pub upgrade_id: [u8; 16],
     pub target: migration::Identity,
-}
-
-#[derive(Clone)]
-enum Binding {
-    Current,
-    Upgrade(UpgradeBinding),
 }
 
 type Preparing =
@@ -312,18 +304,20 @@ impl Drop for State {
 /// Owns both pending futures and their candidate. A bounded-out caller cannot
 /// restart application construction or initialize the global owners a second time.
 pub struct StartupContinuation {
-    binding: Binding,
+    /// `None` binds the current format (no upgrade).
+    binding: Option<UpgradeBinding>,
     state: Mutex<State>,
 }
 
 impl StartupContinuation {
+    #[cfg(test)]
     pub fn current(input: Preparation) -> Arc<Self> {
-        Self::new(input, Binding::Current)
+        Self::new(input, None)
     }
     pub fn for_upgrade(input: Preparation, binding: UpgradeBinding) -> Arc<Self> {
-        Self::new(input, Binding::Upgrade(binding))
+        Self::new(input, Some(binding))
     }
-    fn new(input: Preparation, binding: Binding) -> Arc<Self> {
+    fn new(input: Preparation, binding: Option<UpgradeBinding>) -> Arc<Self> {
         Arc::new(Self {
             binding,
             state: Mutex::new(State {
@@ -339,18 +333,12 @@ impl StartupContinuation {
             }),
         })
     }
+    #[cfg(test)]
     pub async fn phase(&self) -> Phase {
         self.state.lock().await.phase
     }
 
-    /// Remove a failed preparation only for real disposal, never for publication.
-    pub async fn take_failed_preparation(&self) -> Option<PreparationFailure> {
-        let mut state = self.state.lock().await;
-        let failure = state.failed_preparation.take()?;
-        state.taken = true;
-        Some(*failure)
-    }
-
+    #[cfg(test)]
     pub async fn pending_reason(&self) -> Option<&'static str> {
         self.state.lock().await.pending_reason
     }
@@ -447,7 +435,7 @@ impl StartupContinuation {
                 state.validating = None;
                 state.receipt = Some(receipt);
                 state.pending_reason = None;
-                state.phase = if matches!(self.binding, Binding::Current) {
+                state.phase = if self.binding.is_none() {
                     Phase::Ready
                 } else {
                     Phase::Finalizing
@@ -456,23 +444,18 @@ impl StartupContinuation {
             }
         }
     }
+    #[cfg(test)]
     pub async fn verify_target(
         &self,
         target: &migration::Identity,
     ) -> Result<[u8; 32], migration::Error> {
-        if !matches!(&self.binding, Binding::Upgrade(binding) if &binding.target == target) {
+        if !matches!(&self.binding, Some(binding) if &binding.target == target) {
             return Err(migration::Error::Verification);
         }
         self.readiness()
             .await
             .map_err(|_| migration::Error::Verification)?
             .ok_or(migration::Error::ReconciliationRequired)
-    }
-    pub async fn take_current_ready(&self) -> Result<Option<ReadyCandidate>, String> {
-        if !matches!(self.binding, Binding::Current) {
-            return Err("upgraded startup requires its confirmed completion receipt".into());
-        }
-        self.take(None).await
     }
     pub async fn take_ready(
         &self,
@@ -495,8 +478,8 @@ impl StartupContinuation {
             .receipt
             .ok_or("startup candidate has no readiness receipt")?;
         match (&self.binding, completion) {
-            (Binding::Current, None) => {}
-            (Binding::Upgrade(binding), Some(completion))
+            (None, None) => {}
+            (Some(binding), Some(completion))
                 if completion.upgrade_id() == binding.upgrade_id
                     && completion.target() == &binding.target
                     && completion.readiness_digest() == receipt.digest => {}
@@ -644,7 +627,7 @@ fn check_live(candidate: &ReadyCandidate) -> Result<(), ValidationError> {
 
 async fn validate(
     candidate: &mut ReadyCandidate,
-    binding: &Binding,
+    binding: &Option<UpgradeBinding>,
 ) -> Result<Readiness, ValidationError> {
     use ValidationError::Permanent;
     check_owners(candidate)?;
@@ -754,7 +737,7 @@ async fn validate(
         .map_err(|_| Permanent("candidate writer observation refused"))?;
     let mut proof = Sha256::new();
     proof.update(b"busbar.startup-readiness.v1\0");
-    if let Binding::Upgrade(binding) = binding {
+    if let Some(binding) = binding {
         if candidate.core.info().dataset.0 != binding.target.dataset
             || candidate.core.info().physical_version != binding.target.format.physical
             || binding.target.format.owner != migration::CORE_FORMAT_OWNER

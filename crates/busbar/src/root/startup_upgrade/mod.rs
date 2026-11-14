@@ -8,5 +8,6 @@ pub mod continuation;
 pub mod document_commit;
 pub mod documents;
 pub mod publication;
+#[cfg(test)]
 pub(crate) mod recovery;
 pub mod spool;

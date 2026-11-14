@@ -4,9 +4,13 @@
 //! pending ownership, publication and recovery live in kernel governance.
 use busbar_kernel::config::card::CardFields;
 pub use busbar_kernel::governance::persistence::prices::runtime::CardStore;
+#[cfg(test)]
 use busbar_kernel::governance::persistence::prices::{EntryAuthor, StoredEntry};
+#[cfg(test)]
 use busbar_kernel_ledger::cost::{Author, EntryKey, History};
+#[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 pub fn digest_hex(card: &CardFields) -> String {
     hex::encode(card.digest())
 }
@@ -15,8 +19,10 @@ pub fn rate_card_of(card: &CardFields) -> busbar_kernel_ledger::cost::RateCard {
     crate::root::kernel::register_classes(&rates.raw());
     crate::root::kernel::card_from_raw(&rates.raw())
 }
+#[cfg(test)]
 pub type Chain = (u64, Vec<busbar_kernel_wal::JournalRecord>);
 
+#[cfg(test)]
 /// Convert historical cards without changing their timestamp/node/sequence keys.
 ///
 /// Refuses the whole conversion if a card's journal sequence cannot fit the
@@ -142,6 +148,7 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Result<Vec<StoredEntry>, Strin
     Ok(out)
 }
 
+#[cfg(test)]
 #[cfg(feature = "root-admin")]
 fn amended_fields(body: &[u8]) -> CardFields {
     let Some(amendment) = crate::root::units_admin::amendment_from_body(body) else {
@@ -162,7 +169,7 @@ fn amended_fields(body: &[u8]) -> CardFields {
     )
 }
 
-#[cfg(not(feature = "root-admin"))]
+#[cfg(all(test, not(feature = "root-admin")))]
 fn amended_fields(_body: &[u8]) -> CardFields {
     CardFields::default()
 }

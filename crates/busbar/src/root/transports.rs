@@ -8,6 +8,7 @@ pub trait PlaneDispatch: Send + Sync {
         drive: busbar_kernel::teller::RouteLeg<'a>,
     ) -> busbar_kernel::teller::RouteLeg<'a>;
 
+    #[cfg(test)]
     fn driven(&self) -> Option<u64> {
         None
     }
@@ -26,6 +27,7 @@ pub trait PlaneDispatch: Send + Sync {
 #[derive(Debug, Default)]
 pub struct DrivenOnce {
     /// How many of this node's units have driven the seam, since the node was built.
+    #[cfg(test)]
     driven: std::sync::atomic::AtomicU64,
 }
 
@@ -35,6 +37,7 @@ impl DrivenOnce {
         Self::default()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn driven(&self) -> u64 {
         self.driven.load(std::sync::atomic::Ordering::Relaxed)
@@ -48,12 +51,14 @@ impl PlaneDispatch for DrivenOnce {
         drive: busbar_kernel::teller::RouteLeg<'a>,
     ) -> busbar_kernel::teller::RouteLeg<'a> {
         Box::pin(async move {
+            #[cfg(test)]
             self.driven
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             drive.await
         })
     }
 
+    #[cfg(test)]
     fn driven(&self) -> Option<u64> {
         Some(DrivenOnce::driven(self))
     }

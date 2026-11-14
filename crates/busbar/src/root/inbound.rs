@@ -329,6 +329,7 @@ impl ListenerRegistration {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::root) fn validate(&self) -> Result<(), String> {
         let snapshot = published()
             .load_full()

@@ -11,6 +11,7 @@ use busbar_core_connector::datagram::{
     Across, Answered, DatagramFraming, Leg, LegSink, LineStep, Pairing, PortAssociations,
     PublicationTask, SessionBatch,
 };
+#[cfg(test)]
 use busbar_core_connector::framer::Got;
 use busbar_core_connector::publication::{Custody, Message, Messages};
 use busbar_core_connector::udp::{ReadyPort, MAX_DATAGRAM};
@@ -266,6 +267,7 @@ impl ClaimDoor {
         Ok(id)
     }
 
+    #[cfg(test)]
     fn emit(
         &self,
         id: u64,
@@ -285,6 +287,7 @@ impl ClaimDoor {
         ok
     }
 
+    #[cfg(test)]
     async fn emit_ready(&self, id: u64, stream: u64, bytes: &[u8], text: bool) -> bool {
         self.assocs
             .emit_ready(
@@ -425,6 +428,7 @@ impl CallerLeg {
         *lock(&self.id) = Some(id);
     }
 
+    #[cfg(test)]
     fn yielded(self: &Arc<Self>, pieces: Vec<Got>, now: Instant) {
         let mut yielded = busbar_core_connector::framer::Yielded::default();
         yielded.pieces = pieces;
@@ -446,6 +450,7 @@ impl CallerLeg {
         }
     }
 
+    #[cfg(test)]
     fn take(self: &Arc<Self>, session: Vec<Got>, _now: Instant) {
         if self
             .take_batch(

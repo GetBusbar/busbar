@@ -23,10 +23,6 @@ mod fixture;
 #[cfg(test)]
 pub use fixture::{data_framer, DATA_SCHEME};
 
-pub const DATA_LINE: u32 = 1;
-
-pub const DATA_LINE_REF: u64 = 0x6461_7461_6c69_6e65;
-
 const READ_CHUNK: usize = 16 * 1024;
 
 const WRITE_ROOM: usize = 256 * 1024;
@@ -111,6 +107,7 @@ fn configured_framer(
 }
 
 impl DataFramer {
+    #[cfg(test)]
     pub fn validate_policy(&self) -> Result<(), String> {
         self.listener.validate()
     }

@@ -76,6 +76,7 @@ impl Durability {
         Ok(record)
     }
 
+    #[cfg(test)]
     #[must_use]
     pub async fn audit_window(&self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
         match self.audit_window_at(from, to) {
