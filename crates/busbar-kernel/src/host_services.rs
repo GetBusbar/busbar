@@ -2951,38 +2951,7 @@ impl HostServices for KernelServices {
             }
             Ok(None) => {}
         }
-        let (schema, records, pool) = match self.scope(caller, kind) {
-            Ok(s) => s,
-            Err(refused) => return Ran::Now(refused),
-        };
-        if self.chain_of(caller, kind).is_some() {
-            return Ran::Now(Stored::refused(crate::host_chains::CHAIN_READ_WHOLE));
-        }
-        let found = |v: Vec<u8>| {
-            let len = v.len();
-            let mut s = Stored::ready(svc::FOUND);
-            s.bytes = v;
-            s.spans.push(ItemSpan {
-                key: absent_span(),
-                ..span(0, 0, 0, len)
-            });
-            s
-        };
-
-        if let Some(v) = self.pending.get(caller.namespace(), kind, key) {
-            return Ran::Now(if v.is_empty() {
-                Stored::ready(svc::ABSENT)
-            } else {
-                found(v)
-            });
-        }
-        let reads = Arc::clone(&records.reads);
-        let key = record_key(caller.namespace(), key);
-        submit(pool, later, move || match reads.record_get(schema, &key) {
-            Ok(Some(v)) if !v.as_slice().is_empty() => found(v.into_vec()),
-            Ok(_) => Stored::ready(svc::ABSENT),
-            Err(_) => failed(STORE_FAILED),
-        })
+        Ran::Now(self.unbound(caller, kind))
     }
 
     fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
@@ -3050,55 +3019,7 @@ impl HostServices for KernelServices {
             }
             Ok(None) => {}
         }
-        let (schema, records, pool) = match self.scope(caller, &list.kind) {
-            Ok(s) => s,
-            Err(refused) => return Ran::Now(refused),
-        };
-        let cap = usize::try_from(MAX_SPANS).unwrap_or(usize::MAX);
-        let limit = match list.limit {
-            0 => cap,
-            n => (n as usize).min(cap),
-        };
-        let chain = self.chain_of(caller, &list.kind);
-
-        let queued = match chain {
-            Some(_) => Vec::new(),
-            None => self
-                .pending
-                .under(caller.namespace(), &list.kind, &list.prefix),
-        };
-        let reads = Arc::clone(&records.reads);
-        let instance = Arc::clone(caller.namespace());
-        let scope = crate::host_records::record_scope_len(caller.namespace());
-        let prefix = record_key(caller.namespace(), &list.prefix);
-
-        submit(pool, later, move || {
-            match reads.record_scan(schema, &prefix, u32::MAX) {
-                Ok(rows) => {
-                    // In place: the scanned rows are unscoped and moved, never copied.
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: an in-place collect over the scanned rows' own buffers; busbar-contract merge_list takes an owned list"
-                    )]
-                    let rows: Vec<(Vec<u8>, Vec<u8>)> = rows
-                        .into_iter()
-                        .filter_map(|(mut k, v)| {
-                            if k.len() < scope {
-                                return None;
-                            }
-                            k.drain(..scope);
-                            Some((k, v.into_vec()))
-                        })
-                        .collect();
-                    let rows = match chain {
-                        Some(f) => crate::host_chains::verified(&instance, schema, rows, f),
-                        None => rows,
-                    };
-                    spans_of(merge_list(rows, queued, list.after.as_deref(), limit))
-                }
-                Err(_) => failed(STORE_FAILED),
-            }
-        })
+        Ran::Now(self.unbound(caller, &list.kind))
     }
 
     fn records_claim(
@@ -3220,33 +3141,10 @@ impl HostServices for KernelServices {
         if ttl_ms == 0 {
             return Ran::Now(Stored::refused(NO_TTL));
         }
-        let now_ms = (self.wall_ms)();
-        let Some(expires_ms) = now_ms.checked_add(ttl_ms) else {
+        if (self.wall_ms)().checked_add(ttl_ms).is_none() {
             return Ran::Now(Stored::refused(EXPIRY_OVERFLOW));
-        };
-        let Some(records) = self.records.get() else {
-            return Ran::Now(Stored::unserved(NO_STORE));
-        };
-        let Some(pool) = self.pool() else {
-            return Ran::Now(Stored::refused(NO_POOL));
-        };
-
-        let now = now_ms / 1000;
-        let expires_at = expires_ms.div_ceil(1000);
-        let token = claim_token(caller.namespace(), kind, key);
-        let rows = Arc::clone(&records.reads);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a claim moves its kind into the offloaded store call, which outlives this one"
-        )]
-        let kind = kind.to_string();
-        submit(pool, later, move || {
-            match rows.claim(&kind, &token, expires_at, now) {
-                Ok(true) => Stored::ready(svc::CLAIM_WON),
-                Ok(false) => Stored::ready(svc::CLAIM_TAKEN),
-                Err(_) => failed(STORE_FAILED),
-            }
-        })
+        }
+        Ran::Now(Stored::unserved(NO_STORE))
     }
 
     fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
@@ -3941,82 +3839,7 @@ impl HostServices for KernelServices {
             }
             Ok(None) => {}
         }
-        let (facts, records, pool) = match self.work_scope(caller) {
-            Ok(s) => s,
-            Err(refused) => return Ran::Now(refused),
-        };
-        if !facts.record_kinds.iter().any(|k| k.as_str() == kind) {
-            return Ran::Now(Stored::refused(NOT_A_KIND));
-        }
-        if record.len() > svc::MAX_WORK_RECORD {
-            return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
-        }
-        let Some(owner) = self.owner_of_unit(unit) else {
-            return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
-        };
-        let book = Arc::clone(&self.work);
-        let rows = Arc::clone(&records.reads);
-        let bounds = self.work_bounds_of(caller.namespace());
-        let wall_ms = Arc::clone(&self.wall_ms);
-        let instance = Arc::clone(caller.namespace());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a work open moves its lent kind and record into the offloaded writer"
-        )]
-        let (kind, record) = (kind.to_string(), record.to_vec());
-        submit(pool, later, move || {
-            if book.load(&*rows, &instance).is_err() {
-                return failed(STORE_FAILED);
-            }
-            let now_ms = wall_ms();
-
-            for gone in book.sweep(&instance, now_ms, bounds.retain_ms) {
-                if let Ok(empty) = RecordBytes::new(Vec::new()) {
-                    let _struck = rows.record_put(WORK_SCHEMA, &work_key(&instance, &gone), &empty);
-                }
-            }
-            let mut reference = [0u8; 16];
-            if busbar_contract::crypto::fill(&mut reference).is_err() {
-                return failed(NO_RANDOMNESS);
-            }
-            let work = Work {
-                instance: Arc::clone(&instance),
-                reference,
-                kind,
-                owner,
-                live: true,
-                opened_ms: now_ms,
-                settled_ms: 0,
-                record,
-                bound: None,
-                opened_by: unit,
-                recovery,
-            };
-            let Some(row) = work.row() else {
-                return Stored::refused(work_refusal::TOO_LONG);
-            };
-
-            let Some(handle) = book.reserve(work, bounds.max_live) else {
-                return Stored::refused(work_refusal::AT_BOUND);
-            };
-
-            if rows
-                .record_put(WORK_SCHEMA, &work_key(&instance, &reference), &row)
-                .is_err()
-            {
-                book.unreserve(handle);
-                return failed(STORE_FAILED);
-            }
-            let text = reference_text(&reference).into_bytes();
-            let len = text.len();
-            let mut s = Stored::ready(handle);
-            s.bytes = text;
-            s.spans.push(ItemSpan {
-                value: absent_span(),
-                ..span(0, len, 0, 0)
-            });
-            s
-        })
+        Ran::Now(self.work_unbound(caller))
     }
 
     fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
@@ -4163,51 +3986,7 @@ impl HostServices for KernelServices {
             }
             Ok(None) => {}
         }
-        let (_, records, pool) = match self.work_scope(caller) {
-            Ok(s) => s,
-            Err(refused) => return Ran::Now(refused),
-        };
-        if record.len() > svc::MAX_WORK_RECORD {
-            return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
-        }
-        let now_ms = (self.wall_ms)();
-
-        let owner = self.owner_of_unit(unit);
-        let in_flight = |u: u64| self.units.get(u).is_some();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a settled work row keeps its record; the plugin lent the bytes"
-        )]
-        let record = record.to_vec();
-        let settled = match self.work.settle(
-            caller.namespace(),
-            handle,
-            owner.as_ref(),
-            &in_flight,
-            record,
-            now_ms,
-        ) {
-            Ok(v) => v,
-            Err(why) => return Ran::Now(Stored::refused(why)),
-        };
-        let Some(row) = settled.row() else {
-            self.work.cancel_settle(handle);
-            return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
-        };
-
-        let unwritten = Unwritten {
-            book: Arc::clone(&self.work),
-            handle,
-            settled: Some(settled.clone()),
-            later: Some(later),
-        };
-        let rows = Arc::clone(&records.reads);
-        let key = work_key(caller.namespace(), &settled.reference);
-        pool.run(Box::new(move || {
-            let confirmed = rows.record_put(WORK_SCHEMA, &key, &row).is_ok();
-            unwritten.answer(confirmed);
-        }));
-        Ran::Later
+        Ran::Now(self.work_unbound(caller))
     }
 
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, _later: Later) -> Ran {
