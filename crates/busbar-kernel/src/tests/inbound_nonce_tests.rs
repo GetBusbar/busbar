@@ -366,3 +366,48 @@ async fn same_owner_adoption_refuses_old_ref() {
     assert_eq!(current.unit, staged.session.unit);
     assert_eq!(current.flow, FLOW_CONTINUE);
 }
+
+/// Two hosts in one process mint concurrently: every nonce is distinct and carries this boot's
+/// node. Counter values are never asserted, so parallel tests that mint op ids or units cannot
+/// break it.
+#[tokio::test]
+async fn unit_nonces_distinct_across_inbounds() {
+    const MINTS: usize = 10_000;
+    let recording = || {
+        let seen: Arc<Mutex<Vec<[u64; 2]>>> = Arc::default();
+        let into = Arc::clone(&seen);
+        let mac: UnitMac = Arc::new(move |t: &UnitTag| {
+            into.lock().unwrap().push(t.secret);
+            test_mac(t)
+        });
+        (host(mac), seen)
+    };
+    let hosts = [recording(), recording()];
+    std::thread::scope(|scope| {
+        for (inbound, _) in &hosts {
+            let table = inbound.table_at(OWNER, LISTENER, GEN).unwrap();
+            scope.spawn(move || {
+                let binding = RequestBinding {
+                    conn: 1,
+                    stream: 1,
+                    framing: None,
+                };
+                for _ in 0..MINTS {
+                    inbound
+                        .mint(OWNER, GEN, 0, &[], binding, Arc::clone(&table))
+                        .unwrap();
+                }
+            });
+        }
+    });
+    let mut all = HashSet::new();
+    for (_, seen) in &hosts {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), MINTS);
+        for nonce in seen.iter() {
+            assert_eq!(nonce[0], crate::door::node(), "word 0 is this boot's node");
+            assert!(all.insert(*nonce), "a nonce repeats: {nonce:?}");
+        }
+    }
+    assert_eq!(all.len(), 2 * MINTS);
+}

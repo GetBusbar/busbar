@@ -319,7 +319,7 @@ fn install_side(listener: kin::Listener) -> Arc<Inbound> {
     let inbound = Inbound::new(
         kin::Seals {
             mint: Arc::new(move || next.fetch_add(1, Ordering::SeqCst)),
-            mac: Arc::new(|t: &kin::UnitTag| Some(t.unit ^ t.secret[0])),
+            mac: Arc::new(|t: &kin::UnitTag| Some(t.unit ^ t.secret[0] ^ t.secret[1])),
         },
         Arc::new(|_| {}),
         Arc::new(|_: &kin::RefusedUnit| {}),

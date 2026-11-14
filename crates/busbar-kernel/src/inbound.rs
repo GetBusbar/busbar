@@ -364,7 +364,7 @@ impl Drop for PendingUnit {
 /// What a unit ref's MAC covers (#74).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct UnitTag {
-    /// The request's own kernel secret.
+    /// Unique per mint within the process; the MAC key is the secret.
     pub secret: [u64; 2],
     /// The generation.
     pub generation: u64,
@@ -1311,16 +1311,6 @@ impl std::fmt::Debug for Inbound {
     }
 }
 
-fn fresh_secret() -> Option<[u64; 2]> {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b).ok()?;
-    let (a, z) = b.split_at(8);
-    Some([
-        u64::from_le_bytes(a.try_into().ok()?),
-        u64::from_le_bytes(z.try_into().ok()?),
-    ])
-}
-
 fn same(want: u64, got: u64) -> bool {
     std::hint::black_box(want ^ got) == 0
 }
@@ -1793,7 +1783,7 @@ impl Inbound {
             Self::claimed_session(&self.units(), source)?
         };
         let (id, generation, line, _) = original;
-        let secret = fresh_secret().ok_or(UNIT_UNMINTED)?;
+        let secret = crate::door::unit_nonce();
         let mac = (self.seals.mac)(&UnitTag {
             secret,
             generation,
@@ -2010,6 +2000,8 @@ impl Inbound {
         self.peers.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// A live unit's nonce (unique per mint within the process; the MAC key is the secret),
+    /// generation and line.
     #[must_use]
     pub fn unit_secret(&self, owner: u64, unit: u64) -> Option<([u64; 2], u64, u32)> {
         self.units()
@@ -2225,7 +2217,7 @@ impl Inbound {
         binding: RequestBinding,
         table: Arc<Table>,
     ) -> Result<UnitRef, &'static str> {
-        let secret = fresh_secret().ok_or(UNIT_UNMINTED)?;
+        let secret = crate::door::unit_nonce();
         let unit = (self.seals.mint)();
         if unit == 0 {
             return Err(UNIT_UNMINTED);

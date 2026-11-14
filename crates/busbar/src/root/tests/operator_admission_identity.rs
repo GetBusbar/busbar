@@ -142,7 +142,7 @@ async fn operator_first_auth_identity_survives_reload_and_seals_once_without_cha
     let host = Inbound::new(
         kin::Seals {
             mint: Arc::new(move || mint.mint().get()),
-            mac: Arc::new(|tag| Some(tag.unit ^ tag.secret[0])),
+            mac: Arc::new(|tag| Some(tag.unit ^ tag.secret[0] ^ tag.secret[1])),
         },
         Arc::new(|future| {
             tokio::spawn(future);
