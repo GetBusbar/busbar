@@ -40,8 +40,7 @@ fn quoted_retired_names(text: &str) -> Vec<&'static str> {
 }
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries =
-        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
     for entry in entries {
         let path = entry.expect("directory entry").path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
