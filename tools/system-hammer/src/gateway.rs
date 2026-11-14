@@ -274,4 +274,10 @@ mod tests {
         let r = parse_response(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok").unwrap();
         assert_eq!(r.text(), "ok");
     }
+
+    #[test]
+    fn free_port_reports_errors_and_never_yields_zero() {
+        let p: Result<u16, String> = free_port();
+        assert!(p.is_ok_and(|p| p != 0));
+    }
 }
