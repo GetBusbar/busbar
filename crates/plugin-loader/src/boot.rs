@@ -903,15 +903,20 @@ fn open_ready<K: crate::dispatch::Kind>(
     plugin.ready(opening.dispatcher, crate::dispatch::ready::READY_DEADLINE)
 }
 
+/// Open a candidate through its compiled-in row or its dropped library bytes.
+pub fn open_candidate<K: crate::dispatch::Kind>(
+    c: &Candidate,
+    bind: Bind,
+) -> Result<Plugin<K>, crate::dispatch::LoadError> {
+    match &c.origin {
+        Origin::Linked(row) => load_linked::<K>(row, bind),
+        Origin::Dropped { file, bytes } => load_dropped_bytes::<K>(bytes, file, &c.stated, bind),
+    }
+}
+
 fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {
     fn one<K: crate::dispatch::Kind>(c: &Candidate, bind: Bind) -> Result<Plugin<K>, String> {
-        match &c.origin {
-            Origin::Linked(row) => load_linked::<K>(row, bind),
-            Origin::Dropped { file, bytes } => {
-                load_dropped_bytes::<K>(bytes, file, &c.stated, bind)
-            }
-        }
-        .map_err(|e| e.to_string())
+        open_candidate::<K>(c, bind).map_err(|e| e.to_string())
     }
     Ok(match c.kind {
         KindCode::Store => Bound::Store(one(c, bind)?),

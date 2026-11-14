@@ -25,7 +25,7 @@ use busbar_contract::secret::{
 };
 use busbar_contract::secret_ref::SecretRef;
 
-use crate::boot::{Candidate, Origin};
+use crate::boot::Candidate;
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::lifecycle::{self, blob, open_frame, AnswerLease};
 use crate::dispatch::Called;
