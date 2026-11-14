@@ -556,7 +556,12 @@ pools:
 }
 
 async fn models_ids(app: Arc<App>, gov: GovCtx) -> Vec<String> {
-    catalog_names(&app, &gov, linked::fallback().key)
+    catalog_names(
+        &app,
+        &gov,
+        &busbar_kernel::plane_driver::dispatch::LaneQualifier::parse(linked::fallback().key)
+            .unwrap(),
+    )
 }
 
 #[tokio::test]
@@ -706,8 +711,22 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
         },
     ] {
         assert_eq!(
-            catalog_names(&quiet, &gov, linked::fallback().key),
-            catalog_names(topology_app().await.as_ref(), &gov, linked::fallback().key),
+            catalog_names(
+                &quiet,
+                &gov,
+                &busbar_kernel::plane_driver::dispatch::LaneQualifier::parse(
+                    linked::fallback().key
+                )
+                .unwrap()
+            ),
+            catalog_names(
+                topology_app().await.as_ref(),
+                &gov,
+                &busbar_kernel::plane_driver::dispatch::LaneQualifier::parse(
+                    linked::fallback().key
+                )
+                .unwrap()
+            ),
             "a plane listing nothing moves no name"
         );
     }

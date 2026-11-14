@@ -1664,7 +1664,7 @@ impl DriverSteps for DoorSteps<'_> {
 
 #[must_use]
 pub fn door_facts(
-    plane: &str,
+    plane: busbar_kernel::plane_driver::dispatch::LaneQualifier,
     scope_kinds: &[&str],
     classes: &[&'static str],
     fee_units: &[&str],
@@ -1673,7 +1673,7 @@ pub fn door_facts(
 ) -> DoorFacts {
     let index: HashMap<&str, u32> = classes.iter().zip(0u32..).map(|(c, i)| (*c, i)).collect();
     DoorFacts {
-        plane: busbar_kernel::plane_driver::dispatch::LaneQualifier::new(plane),
+        plane,
         scope_kind: scope_kinds.first().map(|k| (*k).to_string()),
         secondary_scopes: BTreeMap::new(),
         classes: classes.iter().map(|c| (*c).to_string()).collect(),

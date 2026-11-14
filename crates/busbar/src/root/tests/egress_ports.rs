@@ -274,8 +274,14 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
             .into_iter()
             .map(|(model, sealed)| (model.to_string(), sealed))
             .collect();
-    let facts =
-        crate::root::door_steps::door_facts("door", &["pool"], &[], &[], "unit", Vec::new());
+    let facts = crate::root::door_steps::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("door").unwrap(),
+        &["pool"],
+        &[],
+        &[],
+        "unit",
+        Vec::new(),
+    );
     let (egress, _shown) = crate::root::model_egress::compose(
         &facts,
         &serving,
