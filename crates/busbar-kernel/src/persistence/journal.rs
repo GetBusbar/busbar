@@ -255,6 +255,7 @@ impl<'a> StoreJournal<'a> {
             failed: false,
             historical: false,
             records_seal: [0; 32],
+            ahead: Ahead::default(),
         })
     }
 
@@ -481,6 +482,42 @@ pub(crate) struct Replay<'j, 's> {
     failed: bool,
     historical: bool,
     records_seal: [u8; 32],
+    /// Originals already read for the ordinals right after `observed`, oldest first. Each is
+    /// checked only when it is consumed, exactly as a one-row read of it would be.
+    ahead: Ahead,
+}
+
+/// Read-ahead for a replay. The proven prefix is immutable, so reading the next few ordinals in
+/// one backend read returns the same rows one-row reads would, for one crossing instead of one
+/// per original. The window adapts to keep retained bytes near [`Ahead::BYTES`].
+#[derive(Default)]
+pub(crate) struct Ahead {
+    rows: std::collections::VecDeque<Option<Secret<Vec<u8>>>>,
+    window: usize,
+}
+impl Ahead {
+    const BYTES: usize = 128 * 1024;
+    const MAX_ROWS: usize = 32;
+    const FIRST_ROWS: usize = 8;
+    fn next_window(&self, left: u64) -> usize {
+        let window = if self.window == 0 {
+            Self::FIRST_ROWS
+        } else {
+            self.window
+        };
+        usize::try_from(left).map_or(window, |left| left.min(window))
+    }
+    fn fill(&mut self, rows: Vec<Option<Secret<Vec<u8>>>>) {
+        let largest = rows
+            .iter()
+            .flatten()
+            .map(|row| row.expose(&crate::seal::lend()).len())
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        self.window = (Self::BYTES / largest).clamp(1, Self::MAX_ROWS);
+        self.rows.extend(rows);
+    }
 }
 impl Replay<'_, '_> {
     pub(crate) async fn next(&mut self) -> Result<Option<Record>> {
@@ -502,11 +539,21 @@ impl Replay<'_, '_> {
             return Ok(None);
         }
         let ordinal = self.observed.count.checked_add(1).ok_or(Error::Overflow)?;
-        let mut rows = self
-            .journal
-            .read(vec![self.journal.address(b'R', ordinal)])
-            .await?;
-        let bytes = rows.pop().flatten().ok_or(Error::Corrupt)?;
+        if self.ahead.rows.is_empty() {
+            let left = self.target.head.count - self.observed.count;
+            let addresses = (ordinal..)
+                .take(self.ahead.next_window(left))
+                .map(|at| self.journal.address(b'R', at))
+                .collect();
+            let rows = self.journal.read(addresses).await?;
+            self.ahead.fill(rows);
+        }
+        let bytes = self
+            .ahead
+            .rows
+            .pop_front()
+            .flatten()
+            .ok_or(Error::Corrupt)?;
         let bytes = bytes.expose(&crate::seal::lend());
         if bytes.len() > self.journal.store.limits().scan_bytes {
             return Err(Error::Budget);
