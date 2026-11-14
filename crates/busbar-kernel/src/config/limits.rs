@@ -48,6 +48,14 @@ pub const DEFAULT_RATE_SWEEP_INTERVAL: u32 = 256;
 
 pub const DEFAULT_USAGE_FLUSH_INTERVAL_MS: u64 = 100;
 
+/// Ticket custody sweep: a held ticket is read once it is within this many seconds of its expiry
+/// by the local clock (a scheduling hint; the store's clock decides expiry). Within [0, 60].
+pub const DEFAULT_TICKET_SKEW_SECS: u64 = 2;
+
+/// Ticket custody sweep backstop: every held ticket is re-read at least this often (seconds), so a
+/// ticket spent or deleted by another node leaves custody.
+pub const DEFAULT_TICKET_BACKSTOP_SECS: u64 = 30;
+
 pub const DEFAULT_PROBE_INTERVAL_SECS: u64 = 30;
 
 pub const DEFAULT_PROBE_TIMEOUT_SECS: u64 = 5;
