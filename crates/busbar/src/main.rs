@@ -322,6 +322,8 @@ fn main() {
         eprintln!("busbar: {e}");
         std::process::exit(1);
     }
+    // Force this boot's node now, so its one OS draw never lands on a request worker.
+    let _ = busbar_kernel::door::node();
     let dispatcher = root::dispatch::boot(WORKERS.0, &late_services);
     root::doors::install_dispatcher(dispatcher);
 

@@ -317,7 +317,7 @@ pub struct RefusalBytes {
 /// The secret a live unit's ref was minted under, and what else its MAC covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnitSecret {
-    /// The request's own kernel secret.
+    /// Unique per mint within the process; the MAC key is the secret.
     pub secret: [u64; 2],
     /// The generation it was minted at.
     pub generation: u64,

@@ -300,8 +300,7 @@ impl MeasurementRuntime {
                 0,
             ),
         };
-        let mut id = [0; 16];
-        getrandom::fill(&mut id).map_err(|_| Refusal::Unavailable)?;
+        let id = crate::door::op_id().0;
         if id == [0; 16] || operations.contains_key(&id) {
             return Err(Refusal::Unavailable);
         }
