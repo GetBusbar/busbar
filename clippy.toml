@@ -7,4 +7,9 @@ disallowed-methods = [
     # head with `RuntimeJournal::live_proof` and find records with `RuntimeJournal::locate`.
     { path = "busbar_kernel::persistence::journal::StoreJournal::historical_replay", reason = "O(journal); live paths use RuntimeJournal::live_proof / locate" },
     { path = "busbar_kernel::persistence::journal::StoreJournal::read_verified_record", reason = "O(journal); live paths use RuntimeJournal::live_proof / locate" },
+    # TRANSPORT-TLS §2.5 ring-write-queue (T7, T7b): a byte ring handed out as its two halves is a
+    # write queue that costs two writes when it wraps, and `drain` leaves what it released unwiped
+    # (request heads carry the injected Authorization). Byte queues are
+    # busbar_core_connector::secure_vec::SecureVec: one contiguous run, consume wipes.
+    { path = "std::collections::VecDeque::as_slices", reason = "a wrapped ring writes twice and drain leaves released bytes unwiped; queue bytes in busbar_core_connector::secure_vec::SecureVec (TRANSPORT-TLS ring-write-queue)" },
 ]
