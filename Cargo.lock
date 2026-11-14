@@ -351,6 +351,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "memchr",
+ "percent-encoding",
  "proc-macro2",
  "quote",
  "serde",
@@ -358,6 +359,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "smallvec",
+ "sseer",
  "subtle",
  "syn 2.0.117",
  "time",
@@ -641,6 +643,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "bytes-utils"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dafe3a8757b027e2be6e4e5601ed563c55989fcf1546e933c66c8eb3a058d35"
+dependencies = [
+ "bytes",
+ "either",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -876,6 +888,12 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "either"
+version = "1.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "email_address"
@@ -2601,6 +2619,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f99e664ecd2d85a68c87e3c7a3cfe691f647ea9e835de984aba4d54a41f817d4"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "sseer"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b88369a34eb39073aea8c04fb615e91b79cdc9cbfc16469a2dbd8ae7c2ee4a8"
+dependencies = [
+ "bytes",
+ "bytes-utils",
+ "futures-core",
+ "memchr",
+ "pin-project-lite",
 ]
 
 [[package]]
