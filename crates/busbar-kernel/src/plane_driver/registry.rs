@@ -93,7 +93,10 @@ pub fn default_section_plane_test_runtime() -> std::sync::Arc<dyn std::any::Any 
 static PLANES: std::sync::atomic::AtomicPtr<&'static [&'static PlaneDecl]> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "reads the leaked plane-list pointer PLANES publishes; see SAFETY"
+)]
 fn planes_at(ptr: *mut &'static [&'static PlaneDecl]) -> &'static [&'static PlaneDecl] {
     // SAFETY: `ptr` is non-null and was stored in `PLANES` from `Box::leak`, which is never freed
     // or mutated; the Acquire load that read it pairs with the Release/AcqRel store that wrote it.
@@ -118,6 +121,7 @@ pub fn merged_boot_plane_decls(
     installed: &[&'static PlaneDecl],
     builtins: &[&'static PlaneDecl],
 ) -> Vec<&'static PlaneDecl> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the process plane list is folded once, at first read")
     let mut decls: Vec<&'static PlaneDecl> = Vec::new();
     for d in installed.iter().chain(builtins) {
         if decls.iter().any(|p| p.key == d.key) {
@@ -131,14 +135,20 @@ pub fn merged_boot_plane_decls(
         decls.push(d);
     }
 
+    // Every key is distinct (deduplicated above) and has a distinct canonical position, so the
+    // unstable sort orders exactly as a stable one would.
     let canonical = canonical_key_order(installed, builtins);
-    decls.sort_by_key(|d| {
+    decls.sort_unstable_by_key(|d| {
         canonical
             .iter()
             .position(|k| *k == d.key)
             .unwrap_or(canonical.len())
     });
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the plane list's declarations are gathered once for the dup-claim guard"
+    )]
     let declared: Vec<&PlaneDeclaration> = decls.iter().map(|d| &d.declaration).collect();
     if let Err(refusal) = check_owned_config_claims(&declared, CORE_OWNED_CONCRETE_SECTIONS) {
         panic!("plane-owned-config dup-claim guard: {refusal}");
@@ -160,6 +170,7 @@ fn canonical_key_order(
     installed: &[&'static PlaneDecl],
     builtins: &[&'static PlaneDecl],
 ) -> Vec<&'static str> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the canonical plane order is computed once, at the plane list's fold")
     let mut order: Vec<&'static str> = Vec::new();
     for d in builtins.iter().chain(installed) {
         if !order.contains(&d.key) {
@@ -177,7 +188,7 @@ pub fn plane_decls() -> &'static [&'static PlaneDecl] {
     }
     let installed = INSTALLED.get().copied().unwrap_or(&[]);
     let folded: &'static [&'static PlaneDecl] =
-        Box::leak(merged_boot_plane_decls(installed, builtin_plane_decls()).into_boxed_slice());
+        merged_boot_plane_decls(installed, builtin_plane_decls()).leak();
     let fresh: *mut &'static [&'static PlaneDecl] = Box::leak(Box::new(folded));
     match PLANES.compare_exchange(
         std::ptr::null_mut(),
@@ -197,49 +208,43 @@ pub fn plane_decls() -> &'static [&'static PlaneDecl] {
 /// registration set through it.
 #[doc(hidden)]
 pub fn publish_planes(registered: &[&'static PlaneDecl]) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a test binary's plane registrations are folded once per registration set"
+    )]
     let mut all: Vec<&'static PlaneDecl> = INSTALLED.get().copied().unwrap_or(&[]).to_vec();
     all.extend_from_slice(registered);
     let folded: &'static [&'static PlaneDecl] =
-        Box::leak(merged_boot_plane_decls(&all, builtin_plane_decls()).into_boxed_slice());
+        merged_boot_plane_decls(&all, builtin_plane_decls()).leak();
     PLANES.store(
         Box::leak(Box::new(folded)),
         std::sync::atomic::Ordering::Release,
     );
 }
 
+/// Every scope kind, `pool` first, then each plane's in plane order, with repeats.
+fn scope_kinds_with_repeats() -> impl Iterator<Item = &'static str> {
+    std::iter::once("pool").chain(
+        plane_decls()
+            .iter()
+            .flat_map(|d| d.scope_kinds.iter().copied()),
+    )
+}
+
+/// Every scope kind once, at its first appearance: the scope-kind index order.
+fn distinct_scope_kinds() -> impl Iterator<Item = &'static str> {
+    scope_kinds_with_repeats()
+        .enumerate()
+        .filter(|&(i, k)| !scope_kinds_with_repeats().take(i).any(|seen| seen == k))
+        .map(|(_, k)| k)
+}
+
 pub fn scope_kind_at(idx: u32) -> Option<&'static str> {
-    let mut seen: Vec<&'static str> = Vec::new();
-    std::iter::once("pool")
-        .chain(
-            plane_decls()
-                .iter()
-                .flat_map(|d| d.scope_kinds.iter().copied()),
-        )
-        .filter(|k| {
-            let fresh = !seen.contains(k);
-            if fresh {
-                seen.push(k);
-            }
-            fresh
-        })
-        .nth(idx as usize)
+    distinct_scope_kinds().nth(idx as usize)
 }
 
 pub fn scope_kind_index(kind: &str) -> Option<u32> {
-    let mut seen: Vec<&'static str> = Vec::new();
-    std::iter::once("pool")
-        .chain(
-            plane_decls()
-                .iter()
-                .flat_map(|d| d.scope_kinds.iter().copied()),
-        )
-        .filter(|k| {
-            let fresh = !seen.contains(k);
-            if fresh {
-                seen.push(k);
-            }
-            fresh
-        })
+    distinct_scope_kinds()
         .position(|k| k == kind)
         .map(|i| i as u32)
 }
@@ -270,6 +275,10 @@ pub fn build_dispatch(
 
         let key_admitted = key_chain && crate::plane_driver::door::is_door(decl);
         if !claims.is_empty() && admission.is_none() && !key_admitted {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a mounted plane with no admission is refused once, at the dispatch build"
+            )]
             return Err(format!(
                 "plane `{}` mounts {} path(s) but bound no admission; a mounted plane must bind an \
                  RFC 8707 audience (see PlaneDispatch::admission_for) or claim no path — serving a \
@@ -299,8 +308,7 @@ pub struct BuildCtx<'a> {
 
     pub prior: Option<&'a dyn crate::plane_driver::slots::PlaneSlots>,
 
-    pub providers:
-        Option<&'a std::collections::HashMap<String, crate::config::providers::ResolvedProvider>>,
+    pub providers: Option<&'a crate::config::ResolvedProviders>,
 }
 
 pub type BootHook = fn(&dyn PlaneBootCtx) -> Result<(), String>;
@@ -395,7 +403,22 @@ fn stated_schemas(
     _req_gen: &mut schemars::SchemaGenerator,
     _paths: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    if let Some(schemas) = crate::plane_driver::door::stated_schemas(decl) {
+    #[expect(
+        clippy::disallowed_types,
+        reason = "config: a door's stated admin schemas are read once per OpenAPI document build"
+    )]
+    let schemas = crate::plane_driver::door::admin_openapi(decl)
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+        .and_then(|mut blob| {
+            blob.get_mut(crate::plane_driver::door::OPENAPI_COMPONENTS)
+                .map(serde_json::Value::take)
+        })
+        .and_then(|mut components| components.get_mut("schemas").map(serde_json::Value::take))
+        .and_then(|schemas| match schemas {
+            serde_json::Value::Object(schemas) => Some(schemas),
+            _ => None,
+        });
+    if let Some(schemas) = schemas {
         schema_gen.definitions_mut().extend(schemas);
     }
 }

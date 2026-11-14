@@ -22,10 +22,27 @@ pub(crate) struct HookPolicy {
     signals: Vec<busbar_contract::Signal>,
     child: Option<Arc<crate::hook_child::Grant>>,
 
-    statics: std::sync::Mutex<Vec<Arc<CandidateStatics>>>,
+    /// Each candidate set's static half, keyed by the set's [`identity`] and confirmed by
+    /// [`CandidateStatics::matches`]; at most [`STATIC_HALVES`] sets are kept.
+    statics: std::sync::Mutex<foldhash::HashMap<u64, Arc<CandidateStatics>>>,
 }
 
 const STATIC_HALVES: usize = 16;
+
+/// A candidate set's identity within one generation: each candidate's index and where its model name
+/// lives. Cheap to take per call; a collision (or a reused address after a reload) is caught by
+/// `matches`, which compares the facts themselves.
+fn identity(candidates: &[Candidate<'_>]) -> u64 {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let mut h = foldhash::fast::FixedState::default().build_hasher();
+    h.write_usize(candidates.len());
+    for c in candidates {
+        h.write_usize(c.idx);
+        h.write_usize(c.model.as_ptr() as usize);
+        h.write_usize(c.model.len());
+    }
+    h.finish()
+}
 
 impl HookPolicy {
     pub(crate) fn policy(
@@ -34,28 +51,35 @@ impl HookPolicy {
         signals: &[busbar_contract::Signal],
         child: Option<&crate::hook_child::Grant>,
     ) -> Arc<dyn RoutingPolicy> {
-        Arc::new(Self {
+        // busbar:expect(bp::into_alloc, reason = "config: a hook policy is built once per generation")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a hook policy is built once per generation"
+        )]
+        let policy = Arc::new(Self {
             calls,
             name: Arc::from(name),
             signals: signals.to_vec(),
             child: child.cloned().map(Arc::new),
-            statics: std::sync::Mutex::new(Vec::new()),
-        })
+            statics: std::sync::Mutex::default(),
+        });
+        policy
     }
 
     fn statics_for(&self, candidates: &[Candidate<'_>]) -> Arc<CandidateStatics> {
+        let key = identity(candidates);
         let mut kept = self
             .statics
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(at) = kept.iter().position(|s| s.matches(candidates)) {
-            let found = kept.remove(at);
-            kept.insert(0, Arc::clone(&found));
-            return found;
+        if let Some(found) = kept.get(&key).filter(|s| s.matches(candidates)) {
+            return Arc::clone(found);
         }
         let built = CandidateStatics::build(candidates);
-        kept.insert(0, Arc::clone(&built));
-        kept.truncate(STATIC_HALVES);
+        if kept.len() >= STATIC_HALVES && !kept.contains_key(&key) {
+            kept.clear();
+        }
+        kept.insert(key, Arc::clone(&built));
         built
     }
 }
@@ -80,12 +104,26 @@ fn reject_of(verbs: u32, status: u16, message: &str) -> (u16, String) {
 
 fn unanswered<O>(name: &str, budget: Duration, a: Answered<O>) -> String {
     match a {
-        Answered::TimedOut => format!("hook plugin deadline ({budget:?}) exceeded"),
+        Answered::TimedOut => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a hook past its deadline is reported once, in words"
+            )]
+            let why = format!("hook plugin deadline ({budget:?}) exceeded");
+            why
+        }
         Answered::Broken(why) => why,
-        Answered::Answer { error, .. } => format!(
-            "hook {name} could not answer: {}",
-            error.unwrap_or_default()
-        ),
+        Answered::Answer { error, .. } => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a hook that could not answer is reported once, in words"
+            )]
+            let why = format!(
+                "hook {name} could not answer: {}",
+                error.unwrap_or_default()
+            );
+            why
+        }
     }
 }
 
@@ -134,18 +172,14 @@ pub(super) fn decision(
         return RoutingDecision::Reject { status, message };
     }
     if verbs & VERB_RESTRICT != 0 {
-        let tags_any = restrict_tags()
-            .into_iter()
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect();
-        return RoutingDecision::Restrict { tags_any };
+        return RoutingDecision::Restrict {
+            tags_any: super::trimmed_tags(restrict_tags()),
+        };
     }
     if verbs & (VERB_PREFER | VERB_PRIORITIZE) == 0 {
         return RoutingDecision::Abstain;
     }
-    let valid: std::collections::HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
-    match RoutingDecision::from_ranked(order(), &valid) {
+    match super::ranked(order(), candidates) {
         RoutingDecision::Prefer(set) if verbs & VERB_PRIORITIZE != 0 => {
             RoutingDecision::Prioritize(set)
         }

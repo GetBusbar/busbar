@@ -673,7 +673,6 @@ pub(crate) struct Pumping<'u> {
 }
 
 impl<'u> Pumping<'u> {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         driver: &'u PlaneDriver,
         token: &'u Pass<Route>,

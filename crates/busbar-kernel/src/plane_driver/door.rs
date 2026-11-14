@@ -9,7 +9,6 @@ use crate::plane_driver::registry::{BuildCtx, PlaneDecl, PlaneHooks};
 
 pub struct DoorRow {
     reg: PlaneRegistration,
-    dialects: &'static [&'static str],
 
     provider_dialects: &'static [&'static str],
 }
@@ -29,17 +28,22 @@ fn row(decl: &PlaneDecl) -> Option<&'static DoorRow> {
 
 pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
     if reg.key.is_empty() || reg.section.is_empty() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a door with no name or section is refused once, at fold"
+        )]
         return Err(format!(
             "plane door `{}` states no name or no declaring section; a plane is installed by its \
              name and configured by its section",
             reg.key
         ));
     }
-    let declaration = declaration_of(&reg);
-
     let named = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS.contains(&reg.section);
     let hooks = door_hooks(named, !reg.owns.is_empty(), !reg.admin_routes.is_empty());
-    let dialects: &'static [&'static str] = reg.dialects.clone().leak();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a door's provider dialects are filtered once, at fold, and leaked for the process"
+    )]
     let provider_dialects: &'static [&'static str] = (reg.dialects.iter())
         .zip(&reg.dialect_flags)
         .filter(|(_, f)| *f & busbar_contract::abi::plane::DIALECT_PROVIDER != 0)
@@ -48,41 +52,49 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
         .leak();
     let door: &'static DoorRow = Box::leak(Box::new(DoorRow {
         reg,
-        dialects,
         provider_dialects,
     }));
-    let mut decl = PlaneDecl::assemble(declaration, hooks);
+    let mut decl = PlaneDecl::assemble(declaration_of(&door.reg), hooks);
     decl.door = Some(door);
     Ok(Box::leak(Box::new(decl)))
 }
 
-fn declaration_of(reg: &PlaneRegistration) -> PlaneDeclaration {
+fn declaration_of(reg: &'static PlaneRegistration) -> PlaneDeclaration {
     PlaneDeclaration {
         key: reg.key,
         fallback: reg.fallback,
         config_section: reg.section,
-        scope_kinds: reg.scope_kinds.clone().leak(),
+        scope_kinds: reg.scope_kinds.as_slice(),
         subject_noun: reg.subject_noun,
         admin_noun: reg.admin_noun,
         audit_kind: reg.audit_kind,
         card_signing_domain: reg.signing.map(|(d, _)| d),
         card_kid_prefix: reg.signing.map(|(_, p)| p),
-        owned_config_sections: reg.owns.clone().leak(),
-        billable_classes: reg
-            .billable_classes
-            .iter()
-            .map(|&(class, family)| BillableClass { class, family })
-            .collect::<Vec<_>>()
-            .leak(),
-        class_parents: reg.class_parents.clone().leak(),
-        fee_units: reg.fee_units.clone().leak(),
+        owned_config_sections: reg.owns.as_slice(),
+        billable_classes: billable_classes_of(reg),
+        class_parents: reg.class_parents.as_slice(),
+        fee_units: reg.fee_units.as_slice(),
         metric_families: &[],
-        record_kinds: reg.record_kinds.clone().leak(),
-        required_config_sections: reg.requires.clone().leak(),
-        trust_keys: reg.trust_keys.clone().leak(),
+        record_kinds: reg.record_kinds.as_slice(),
+        required_config_sections: reg.requires.as_slice(),
+        trust_keys: reg.trust_keys.as_slice(),
         caller_credential_refusal: reg.caller_credential_refusal,
         served_op_classes: &[],
     }
+}
+
+fn billable_classes_of(reg: &PlaneRegistration) -> &'static [BillableClass] {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a door's billable classes are lowered once, at fold, and leaked for the process"
+    )]
+    let classes = reg
+        .billable_classes
+        .iter()
+        .map(|&(class, family)| BillableClass { class, family })
+        .collect::<Vec<_>>()
+        .leak();
+    classes
 }
 
 #[must_use]
@@ -114,18 +126,24 @@ pub fn judge_provider(
     name: &str,
     table: &crate::config::ProviderTable,
 ) -> Option<Result<(), String>> {
+    #[expect(
+        clippy::disallowed_types,
+        reason = "config: a provider's protocol is read from its parsed config table"
+    )]
     let dialect = table
         .get(busbar_contract::section::MODEL_PROTOCOL_KEYS[0])
         .and_then(serde_json::Value::as_str)?;
     let door = (crate::plane_driver::registry::plane_decls().iter())
         .filter_map(|d| d.door)
         .find(|d| d.provider_dialects.contains(&dialect))?;
-    let blob = serde_json::json!({ "providers": { name: table } });
-    Some(
-        serde_json::to_vec(&blob)
-            .map_err(|e| e.to_string())
-            .and_then(|bytes| (door.reg.validate)(&bytes)),
-    )
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a provider entry is encoded once, for its door's validate"
+    )]
+    let judged = serde_json::to_vec(&OneEntry("providers", &OneEntry(name, table)))
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| (door.reg.validate)(&bytes));
+    Some(judged)
 }
 
 /// A DOOR PLANE'S SECTION, as written: the door judged it (`validate`) and is handed it raw; the
@@ -155,6 +173,7 @@ impl DoorSection {
         &self,
     ) -> std::collections::BTreeMap<&'static str, Box<dyn crate::config::plane_sections::PlaneCfg>>
     {
+        // busbar:expect(bp::into_alloc, reason = "config: the section's one-entry definitions map is built per generation")
         std::collections::BTreeMap::from([(
             self.section,
             Box::new(self.clone()) as Box<dyn crate::config::plane_sections::PlaneCfg>,
@@ -171,18 +190,30 @@ impl DoorSection {
         let paths = declaring
             .map(|d| d.reg.secret_refs.as_slice())
             .unwrap_or_default();
+        // busbar:expect(bp::fresh_buffer, reason = "config: the section's secret references are read once per parse and kept on it")
         let mut refs = Vec::new();
+        // busbar:expect(bp::fresh_buffer, reason = "config: one path buffer serves every secret-reference walk of the parse")
+        let mut at = String::with_capacity(64);
         for path in paths {
             let Some(rest) = path.strip_prefix("settings.") else {
                 continue;
             };
-            let segments: Vec<&str> = rest.split('.').collect();
-            collect_refs(&value, &segments, section.to_string(), &mut refs);
+            at.clear();
+            at.push_str(section);
+            collect_refs(&value, Some(rest), &mut at, &mut refs);
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the declared secret paths are lowered once per parse for the contract's check"
+        )]
         let declared: Vec<String> = paths
             .iter()
             .filter_map(|p| p.strip_prefix("settings.").map(str::to_string))
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the section is judged for undeclared secret references once per parse"
+        )]
         let undeclared = serde_json::to_value(&value).ok().and_then(|tree| {
             busbar_contract::secret_fields::undeclared_reference(&tree, &declared).map(|at| {
                 busbar_contract::secret_fields::undeclared_refusal(
@@ -221,23 +252,39 @@ impl DoorSection {
             .get(RESERVED_MODELS_KEY)
             .and_then(serde_yaml::Value::as_mapping)
         {
-            return models
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a section's ledger lane names are composed once per generation"
+            )]
+            let lanes = models
                 .keys()
                 .filter_map(serde_yaml::Value::as_str)
                 .map(|name| format!("{}{sep}{name}", decl.key))
                 .collect();
+            return lanes;
         }
         let Some(kind) = decl.scope_kinds.first() else {
             return Vec::new();
         };
-        self.registrations()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a section's ledger lane names are composed once per generation"
+        )]
+        let lanes = self
+            .registrations()
             .filter(|(name, _)| ![RESERVED_MODELS_KEY, RESERVED_POOLS_KEY].contains(name))
             .map(|(name, _)| format!("{}{sep}{kind}:{name}", decl.key))
-            .collect()
+            .collect();
+        lanes
     }
 
     fn hooks_of(v: &serde_yaml::Value) -> Vec<String> {
-        v.as_mapping()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a container's `hooks:` list is read once per generation"
+        )]
+        let hooks = v
+            .as_mapping()
             .and_then(|m| m.get(busbar_contract::plugin::Kind::Hook.root()))
             .and_then(serde_yaml::Value::as_sequence)
             .map(|s| {
@@ -245,16 +292,23 @@ impl DoorSection {
                     .filter_map(|h| h.as_str().map(str::to_string))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        hooks
     }
 }
 
 impl PlaneCfg for DoorSection {
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
-        self.refs.iter().map(|(at, r)| (at.clone(), r)).collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the section's secret references are listed for the generation's secret resolve"
+        )]
+        let refs = self.refs.iter().map(|(at, r)| (at.clone(), r)).collect();
+        refs
     }
 
     fn undeclared_secret_ref(&self) -> Option<String> {
+        // busbar:expect(bp::clone_alloc, reason = "config: the undeclared-reference refusal is handed to the config load")
         self.undeclared.clone()
     }
 
@@ -263,22 +317,41 @@ impl PlaneCfg for DoorSection {
     }
 
     fn def_names(&self) -> Vec<&str> {
-        self.registrations().map(|(n, _)| n).collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the section's definition names are listed for the config load"
+        )]
+        let names = self.registrations().map(|(n, _)| n).collect();
+        names
     }
 
     fn entry_document(&self, name: &str) -> Option<serde_json::Value> {
-        self.registrations()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: one definition is projected for the admin named-map read"
+        )]
+        let document = self
+            .registrations()
             .find(|(n, _)| *n == name)
-            .and_then(|(_, v)| serde_json::to_value(v).ok())
+            .and_then(|(_, v)| serde_json::to_value(v).ok());
+        document
     }
 
     fn insert_def(&mut self, name: &str, def: &serde_json::Value) -> Result<(), String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: an unrepresentable definition is refused once, at the admin write"
+        )]
         let entry: serde_yaml::Value = serde_yaml::to_value(def)
             .map_err(|e| format!("invalid `{}.{name}` definition: {e}", self.section))?;
         if !self.value.is_mapping() {
             self.value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         }
         if let Some(m) = self.value.as_mapping_mut() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the admin write stores the definition under its own name"
+            )]
             m.insert(serde_yaml::Value::String(name.to_string()), entry);
         }
 
@@ -287,12 +360,17 @@ impl PlaneCfg for DoorSection {
     }
 
     fn container_gates(&self) -> ContainerGateInputs {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the section's container gates are read once per generation"
+        )]
+        let containers = self
+            .registrations()
+            .map(|(n, v)| (n.to_string(), Self::hooks_of(v)))
+            .collect();
         ContainerGateInputs {
             section_hooks: Self::hooks_of(&self.value),
-            containers: self
-                .registrations()
-                .map(|(n, v)| (n.to_string(), Self::hooks_of(v)))
-                .collect(),
+            containers,
         }
     }
 
@@ -320,7 +398,12 @@ impl PlaneCfg for DoorSection {
 
     fn model_provider_refs(&self) -> Vec<(String, String)> {
         use busbar_contract::section::{MODEL_PROVIDER_KEY, RESERVED_MODELS_KEY};
-        self.value
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the section's model provider references are listed once per config load"
+        )]
+        let refs = self
+            .value
             .get(RESERVED_MODELS_KEY)
             .and_then(serde_yaml::Value::as_mapping)
             .into_iter()
@@ -336,7 +419,8 @@ impl PlaneCfg for DoorSection {
                     provider.to_string(),
                 ))
             })
-            .collect()
+            .collect();
+        refs
     }
 
     fn known_dialects(&self) -> Option<&'static [&'static str]> {
@@ -344,7 +428,7 @@ impl PlaneCfg for DoorSection {
         self.door
             .filter(|d| d.reg.section == self.section)
             .filter(|d| d.reg.consumes.contains(&connections))
-            .map(|d| d.dialects)
+            .map(|d| d.reg.dialects.as_slice())
     }
 
     fn is_present(&self) -> bool {
@@ -370,39 +454,68 @@ impl PlaneCfg for DoorSection {
 
 fn collect_refs(
     value: &serde_yaml::Value,
-    segments: &[&str],
-    at: String,
+    path: Option<&str>,
+    at: &mut String,
     out: &mut Vec<(String, busbar_contract::secret_ref::SecretRef)>,
 ) {
-    let Some((head, rest)) = segments.split_first() else {
+    use std::fmt::Write as _;
+    let Some(path) = path else {
         if value.is_mapping() {
             if let Ok(r) = busbar_contract::secret_ref::context::deserialize::<
                 busbar_contract::secret_ref::SecretRef,
                 _,
-            >(value.clone(), &crate::config::secret::sugars())
+            >(value, &crate::config::secret::sugars())
             {
-                out.push((at, r));
+                // busbar:expect(bp::clone_alloc, reason = "config: each found secret reference keeps the path it was read at")
+                out.push((at.clone(), r));
             }
         }
         return;
     };
-    if let (Some(items), true) = (value.as_sequence(), *head == "*") {
+    let (head, rest) = match path.split_once('.') {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (path, None),
+    };
+    let base = at.len();
+    if let (Some(items), true) = (value.as_sequence(), head == "*") {
         for (i, v) in items.iter().enumerate() {
-            collect_refs(v, rest, format!("{at}.{i}"), out);
+            at.truncate(base);
+            let _ = write!(at, ".{i}");
+            collect_refs(v, rest, at, out);
         }
+        at.truncate(base);
         return;
     }
     let Some(map) = value.as_mapping() else {
         return;
     };
-    if *head == "*" {
+    if head == "*" {
         for (k, v) in map {
             if let Some(k) = k.as_str() {
-                collect_refs(v, rest, format!("{at}.{k}"), out);
+                at.truncate(base);
+                at.push('.');
+                at.push_str(k);
+                collect_refs(v, rest, at, out);
             }
         }
-    } else if let Some(v) = map.get(*head) {
-        collect_refs(v, rest, format!("{at}.{head}"), out);
+        at.truncate(base);
+    } else if let Some(v) = map.get(head) {
+        at.push('.');
+        at.push_str(head);
+        collect_refs(v, rest, at, out);
+        at.truncate(base);
+    }
+}
+
+/// `{ key: value }`, serialized straight from the borrowed parts (no JSON tree is built for it).
+struct OneEntry<'a, V: ?Sized>(&'a str, &'a V);
+
+impl<V: serde::Serialize + ?Sized> serde::Serialize for OneEntry<'_, V> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry(self.0, self.1)?;
+        map.end()
     }
 }
 
@@ -410,11 +523,21 @@ fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
     if settings.is_empty() {
         return Ok(settings);
     }
+    #[expect(
+        clippy::disallowed_types,
+        clippy::disallowed_methods,
+        reason = "config: the section is parsed once per judgement for the reserved-word strip"
+    )]
     let value: serde_json::Value =
         serde_json::from_slice(&settings).map_err(|e| format!("the section is not JSON: {e}"))?;
 
     let value = crate::config_validate::deal::strip(section, value, &mut Vec::new());
-    serde_json::to_vec(&serde_json::json!({ section: value })).map_err(|e| e.to_string())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the stripped section is encoded once per judgement for the door's validate"
+    )]
+    let dealt = serde_json::to_vec(&OneEntry(section, &value)).map_err(|e| e.to_string());
+    dealt
 }
 
 fn settings_of(key: &str, value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
@@ -433,7 +556,11 @@ fn view_of(
     let pin_obj = pin
         .and_then(|k| field(k.key))
         .and_then(serde_yaml::Value::as_mapping);
-    crate::api::NamedDefView {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a named definition is projected for the admin read"
+    )]
+    let view = crate::api::NamedDefView {
         name: name.to_string(),
         module: None,
         settings_keys: Vec::new(),
@@ -460,11 +587,12 @@ fn view_of(
                 .unwrap_or_default()
         }),
         unparseable: None,
-    }
+    };
+    view
 }
 
 fn wire_formats(decl: &PlaneDecl) -> &'static [&'static str] {
-    row(decl).map_or(&[], |d| d.dialects)
+    row(decl).map_or(&[], |d| d.reg.dialects.as_slice())
 }
 
 fn provider_dialects(decl: &PlaneDecl) -> &'static [&'static str] {
@@ -535,6 +663,10 @@ fn build(
         .map(DoorOwned::bytes)
         .unwrap_or_else(|| Ok(Vec::new()));
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the providers' dialect facts are lowered once per generation build"
+    )]
     let dialects = busbar_contract::plane_calls::dialect_facts(&section.value, |name| {
         ctx.providers?.get(name).map(|p| {
             (
@@ -574,20 +706,25 @@ fn build(
     }))
 }
 
-fn mount_of(target: &str) -> String {
+fn mount_of(target: &str) -> &str {
     let literal = target.split("/{").next().unwrap_or(target);
-    literal.trim_end_matches('/').to_string()
+    literal.trim_end_matches('/')
 }
 
 fn claims(slot: &dyn std::any::Any) -> Vec<(String, &'static str)> {
     let Some(s) = slot.downcast_ref::<DoorSlot>() else {
         return Vec::new();
     };
+    // busbar:expect(bp::fresh_buffer, reason = "boot: a door's claimed mounts are listed once per generation's route table")
     let mut out: Vec<(String, &'static str)> = Vec::new();
     for (target, dialect) in &s.facing.claims {
         let path = mount_of(target);
-        if !path.is_empty() && !out.iter().any(|(p, _)| *p == path) {
-            out.push((path, dialect));
+        if !path.is_empty() && !out.iter().any(|(p, _)| p == path) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: each distinct claimed mount is owned by the generation's route table"
+            )]
+            out.push((path.to_string(), dialect));
         }
     }
     out
@@ -602,24 +739,26 @@ fn admission(slot: &dyn std::any::Any) -> Option<crate::plane_driver::dispatch::
     })
 }
 
+#[cfg(test)]
 pub fn listed<'a>(
     slots: &'a std::collections::BTreeMap<
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
-    key: Option<&busbar_contract::records::VirtualKey>,
+    key: Option<&'a busbar_contract::records::VirtualKey>,
 ) -> Vec<&'a str> {
-    listed_matching(slots, key, None)
+    listed_matching(slots, key, None).collect()
 }
 
+/// The names `plane`'s door slots list that `key` may see, in plane registration order.
 pub fn listed_for_plane<'a>(
     slots: &'a std::collections::BTreeMap<
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
-    key: Option<&busbar_contract::records::VirtualKey>,
-    plane: &str,
-) -> Vec<&'a str> {
+    key: Option<&'a busbar_contract::records::VirtualKey>,
+    plane: &'a str,
+) -> impl Iterator<Item = &'a str> + 'a {
     listed_matching(slots, key, Some(plane))
 }
 
@@ -628,42 +767,44 @@ fn listed_matching<'a>(
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
-    key: Option<&busbar_contract::records::VirtualKey>,
-    plane: Option<&str>,
-) -> Vec<&'a str> {
+    key: Option<&'a busbar_contract::records::VirtualKey>,
+    plane: Option<&'a str>,
+) -> impl Iterator<Item = &'a str> + 'a {
     let registered = crate::plane_driver::registry::plane_decls();
-    let mut doors: Vec<(&'static str, &'a DoorSlot)> = slots
+    let door_slot = |(k, s): (
+        &'a &'static str,
+        &'a std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    )| { s.downcast_ref::<DoorSlot>().map(|slot| (*k, slot)) };
+    // Registered doors in registration order, then any door slot no registered plane names (in key
+    // order): the order the listing has always had.
+    let in_order = registered
         .iter()
-        .filter_map(|(k, s)| s.downcast_ref::<DoorSlot>().map(|slot| (*k, slot)))
-        .collect();
-
-    doors.sort_by_key(|(k, _)| {
-        registered
-            .iter()
-            .position(|d| d.key == *k)
-            .unwrap_or(usize::MAX)
-    });
-    let mut out = Vec::new();
-    for (_, slot) in doors {
-        let Some(door) = slot.section.door else {
-            continue;
-        };
-        if plane.is_some_and(|plane| door.reg.key != plane) {
-            continue;
-        }
-        let kind = door.reg.scope_kinds.first();
-        out.extend(
-            slot.facing
-                .listed
-                .iter()
-                .map(String::as_str)
-                .filter(|name| match (key, kind) {
-                    (Some(key), Some(kind)) => key.scope_allowed(kind, name),
-                    _ => true,
-                }),
-        );
-    }
-    out
+        .filter_map(move |d| slots.get_key_value(d.key))
+        .filter_map(door_slot);
+    let unregistered = slots
+        .iter()
+        .filter(move |(k, _)| !registered.iter().any(|d| d.key == **k))
+        .filter_map(door_slot);
+    in_order
+        .chain(unregistered)
+        .filter_map(move |(_, slot)| {
+            let door = slot.section.door?;
+            if plane.is_some_and(|plane| door.reg.key != plane) {
+                return None;
+            }
+            let kind = door.reg.scope_kinds.first();
+            Some(
+                slot.facing
+                    .listed
+                    .iter()
+                    .map(String::as_str)
+                    .filter(move |name| match (key, kind) {
+                        (Some(key), Some(kind)) => key.scope_allowed(kind, name),
+                        _ => true,
+                    }),
+            )
+        })
+        .flatten()
 }
 
 fn slot_of(
@@ -683,6 +824,10 @@ fn named_def_list(
     let Some(s) = slot.downcast_ref::<DoorSlot>() else {
         return Vec::new();
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the section's named definitions are projected for the admin list"
+    )]
     let views = s
         .section
         .registrations()
@@ -723,15 +868,20 @@ fn reresolve_gates(decl: &PlaneDecl, next: &mut dyn crate::plane_driver::slots::
     let Some(d) = row(decl) else {
         return;
     };
-    let section = next
+    let gates = next
         .plane_slot(d.reg.key)
-        .and_then(|slot| slot.downcast_ref::<DoorSlot>().map(|s| s.section.clone()));
-    let gates = section
-        .map(|s| s.container_gates())
-        .unwrap_or(ContainerGateInputs {
-            section_hooks: Vec::new(),
-            containers: Vec::new(),
-        });
+        .and_then(|slot| slot.downcast_ref::<DoorSlot>())
+        .map_or(
+            ContainerGateInputs {
+                section_hooks: Vec::new(),
+                containers: Vec::new(),
+            },
+            |s| s.section.container_gates(),
+        );
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the container gates are re-resolved once per generation swap"
+    )]
     let containers: Vec<(&str, &[String])> = gates
         .containers
         .iter()
@@ -740,20 +890,37 @@ fn reresolve_gates(decl: &PlaneDecl, next: &mut dyn crate::plane_driver::slots::
     next.reresolve_container_gates(d.reg.key, &containers, &gates.section_hooks);
 }
 
+/// Whether `e` already names the definition, as `` `<section>.<name>` ``.
+fn names_definition(e: &str, section: &str, name: &str) -> bool {
+    e.strip_prefix('`')
+        .and_then(|r| r.strip_prefix(section))
+        .and_then(|r| r.strip_prefix('.'))
+        .and_then(|r| r.strip_prefix(name))
+        .is_some_and(|r| r.starts_with('`'))
+}
+
 fn config_validate(decl: &PlaneDecl, name: &str, def: &serde_json::Value) -> Result<(), String> {
     let Some(d) = row(decl) else {
         return Ok(());
     };
     let section = d.reg.section;
-    let one = serde_json::json!({ name: def });
-    let bytes = serde_json::to_vec(&one).map_err(|e| e.to_string())?;
-    (d.reg.validate)(&dealt(section, bytes)?).map_err(|e| {
-        if e.starts_with(&format!("`{section}.{name}`")) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an admin-written definition is encoded once, for its door's validate"
+    )]
+    let bytes = serde_json::to_vec(&OneEntry(name, def)).map_err(|e| e.to_string())?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused definition is named once, in the admin write's refusal"
+    )]
+    let judged = (d.reg.validate)(&dealt(section, bytes)?).map_err(|e| {
+        if names_definition(&e, section, name) {
             e
         } else {
             format!("invalid `{section}.{name}` definition: {e}")
         }
-    })
+    });
+    judged
 }
 
 /// A DOOR PLANE'S OWNED SECTION beside its verb (its endpoint block), as written: the door reads it
@@ -771,11 +938,20 @@ impl DoorOwned {
         if self.value.is_null() {
             return Ok(Vec::new());
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the owned section is lowered once per generation build for the bound fill"
+        )]
         let value = serde_json::to_value(&self.value)
             .map_err(|_| "owned plane configuration is not JSON")?;
         let value = crate::config::filled::plane_bound(&[self.section], value)?;
-        serde_json::to_vec(&serde_json::json!({self.section:value}))
-            .map_err(|_| "owned plane configuration cannot be encoded".to_owned())
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the owned section is encoded once per generation build for the door's open"
+        )]
+        let bytes = serde_json::to_vec(&OneEntry(self.section, &value))
+            .map_err(|_| "owned plane configuration cannot be encoded".to_owned());
+        bytes
     }
 }
 
@@ -800,32 +976,41 @@ fn parse_endpoint(
     let section = row(decl)
         .and_then(|d| d.reg.owns.first().copied())
         .unwrap_or("");
-    Ok(Box::new(DoorOwned {
+    // busbar:expect(bp::clone_alloc, reason = "config: the endpoint block is carried as written into the parsed config")
+    let owned = DoorOwned {
         section,
         value: value.clone(),
-    }))
+    };
+    Ok(Box::new(owned))
 }
 
 fn lower_endpoint(
     endpoint: &dyn crate::config::plane_sections::PlaneEndpointCfg,
 ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String> {
-    endpoint
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: an endpoint block not carried as written is refused once, at lowering"
+    )]
+    let lowered = endpoint
         .as_any()
         .downcast_ref::<DoorOwned>()
         .map(|o| std::sync::Arc::new(o.clone()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
-        .ok_or_else(|| "a door plane's endpoint block was not carried as written".to_string())
+        .ok_or_else(|| "a door plane's endpoint block was not carried as written".to_string());
+    lowered
 }
 
 fn parse_section(decl: &PlaneDecl, value: &serde_yaml::Value) -> Result<Box<dyn PlaneCfg>, String> {
     let Some(d) = row(decl) else {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a section parsed before its door folded is refused once"
+        )]
         return Err("a door plane's section was parsed before its door was folded".to_string());
     };
     (d.reg.validate)(&dealt(d.reg.section, settings_of(d.reg.section, value)?)?)?;
-    Ok(Box::new(DoorSection::new(
-        Some(d),
-        d.reg.section,
-        value.clone(),
-    )))
+    // busbar:expect(bp::clone_alloc, reason = "config: the section is carried as written into the parsed config")
+    let section = DoorSection::new(Some(d), d.reg.section, value.clone());
+    Ok(Box::new(section))
 }
 
 fn default_section(decl: &PlaneDecl) -> Box<dyn PlaneCfg> {
@@ -845,7 +1030,12 @@ fn admin_routes(
     let Some(d) = row(decl) else {
         return Vec::new();
     };
-    d.reg
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a door's admin routes are mounted once per generation"
+    )]
+    let routes = d
+        .reg
         .admin_routes
         .iter()
         .filter(|r| r.flags & busbar_contract::abi::plane::ROUTE_PUBLIC == 0)
@@ -880,67 +1070,64 @@ fn admin_routes(
                 }),
             })
         })
-        .collect()
+        .collect();
+    routes
 }
 
-const OPENAPI_COMPONENTS: &str = "components";
+pub(crate) const OPENAPI_COMPONENTS: &str = "components";
 
-fn openapi_blob(decl: &PlaneDecl) -> serde_json::Map<String, serde_json::Value> {
-    match row(decl)
-        .and_then(|d| d.reg.admin_openapi)
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
-    {
-        Some(serde_json::Value::Object(blob)) => blob,
-        _ => serde_json::Map::new(),
-    }
+/// The door's stated admin OpenAPI blob, as the plane registered it.
+pub(crate) fn admin_openapi(decl: &PlaneDecl) -> Option<&'static [u8]> {
+    row(decl).and_then(|d| d.reg.admin_openapi)
 }
 
 fn openapi(decl: &PlaneDecl) -> serde_json::Value {
-    serde_json::Value::Object(
-        openapi_blob(decl)
-            .into_iter()
-            .filter(|(rel, _)| rel != OPENAPI_COMPONENTS)
-            .map(|(rel, item)| (format!("{}{rel}", crate::api::ADMIN_PREFIX), item))
-            .collect(),
-    )
+    #[expect(
+        clippy::disallowed_types,
+        clippy::disallowed_methods,
+        reason = "config: the door's admin OpenAPI paths are composed per OpenAPI document build"
+    )]
+    let paths = match admin_openapi(decl)
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+    {
+        Some(serde_json::Value::Object(blob)) => serde_json::Value::Object(
+            blob.into_iter()
+                .filter(|(rel, _)| rel != OPENAPI_COMPONENTS)
+                .map(|(rel, item)| (format!("{}{rel}", crate::api::ADMIN_PREFIX), item))
+                .collect(),
+        ),
+        _ => serde_json::Value::Object(serde_json::Map::new()),
+    };
+    paths
 }
 
-#[allow(dead_code)]
-pub(crate) fn stated_schemas(
-    decl: &PlaneDecl,
-) -> Option<serde_json::Map<String, serde_json::Value>> {
-    match openapi_blob(decl)
-        .remove(OPENAPI_COMPONENTS)
-        .and_then(|c| c.get("schemas").cloned())
-    {
-        Some(serde_json::Value::Object(schemas)) => Some(schemas),
-        _ => None,
+fn push_encoded(out: &mut String, name: &str) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 15)]));
+        }
     }
 }
 
 fn filled(target: &str, name: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(name.len());
-    for byte in name.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
+    // busbar:expect(bp::fresh_buffer, reason = "config: an admin verb's plane path is filled once per admin call")
+    let mut path = String::with_capacity(target.len() + 3 * name.len());
+    for (i, seg) in target.split('/').enumerate() {
+        if i > 0 {
+            path.push('/');
+        }
+        if seg.len() > 1 && seg.starts_with('{') && seg.ends_with('}') {
+            push_encoded(&mut path, name);
         } else {
-            encoded.push('%');
-            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-            encoded.push(char::from(HEX[usize::from(byte & 15)]));
+            path.push_str(seg);
         }
     }
-    target
-        .split('/')
-        .map(|seg| {
-            if seg.len() > 1 && seg.starts_with('{') && seg.ends_with('}') {
-                encoded.as_str()
-            } else {
-                seg
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("/")
+    path
 }
 
 async fn admin_reply(
@@ -959,26 +1146,40 @@ async fn admin_reply(
         consumed: ctx.consumed.as_ref(),
         principal: ctx.principal.as_ref(),
     };
-    match ctx.serve.served_at(req, ctx.body).await {
-        None => AdminReply::Refused(PlaneVerbError::NotFound),
-        Some(Err(unserved)) => AdminReply::Rejected(PlaneVerbError::Internal(format!(
-            "the plane did not serve `{verb} {path}`: {unserved:?}"
-        ))),
-        Some(Ok(served)) => {
-            let text = String::from_utf8_lossy(&served.body).into_owned();
-            if (200..=299).contains(&served.status) {
-                return AdminReply::Applied(text);
-            }
-            let refused = admin_plane_error(served.status, text, &served.fields);
-            if matches!(&refused, PlaneVerbError::Internal(_)) {
-                return AdminReply::Rejected(refused);
-            }
-            if served.audit == busbar_contract::abi::plane::AUDIT_NONE {
-                AdminReply::Refused(refused)
-            } else {
-                AdminReply::Rejected(refused)
-            }
+    let served = match ctx.serve.served_at(req, ctx.body).await {
+        None => return AdminReply::Refused(PlaneVerbError::NotFound),
+        Some(Err(unserved)) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: an admin verb the plane did not serve is refused once, in words"
+            )]
+            let refusal = format!("the plane did not serve `{verb} {path}`: {unserved:?}");
+            return AdminReply::Rejected(PlaneVerbError::Internal(refusal));
         }
+        Some(Ok(served)) => served,
+    };
+    let text = match String::from_utf8(served.body) {
+        Ok(text) => text,
+        Err(bytes) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a plane's non-UTF-8 admin reply is replaced lossily, once"
+            )]
+            let lossy = String::from_utf8_lossy(bytes.as_bytes()).into_owned();
+            lossy
+        }
+    };
+    if (200..=299).contains(&served.status) {
+        return AdminReply::Applied(text);
+    }
+    let refused = admin_plane_error(served.status, text, &served.fields);
+    if matches!(&refused, PlaneVerbError::Internal(_)) {
+        return AdminReply::Rejected(refused);
+    }
+    if served.audit == busbar_contract::abi::plane::AUDIT_NONE {
+        AdminReply::Refused(refused)
+    } else {
+        AdminReply::Rejected(refused)
     }
 }
 
@@ -995,7 +1196,14 @@ fn admin_plane_error(
             Some(cond) => PlaneVerbError::ValidationOf(text, cond),
             None => PlaneVerbError::Validation(text),
         },
-        status => PlaneVerbError::Internal(format!("the plane answered with status {status}")),
+        status => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a plane's unexpected admin status is refused once, in words"
+            )]
+            let refusal = format!("the plane answered with status {status}");
+            PlaneVerbError::Internal(refusal)
+        }
     }
 }
 

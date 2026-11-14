@@ -148,6 +148,7 @@ impl DriverConfig {
     pub fn status(&self, dialect: u32, reason: ReasonCode) -> u32 {
         let code = reason_code(reason);
         let row = |d: u32| {
+            // busbar:expect(bp::state_scan, reason = "error: a refusal's status is looked up once, in the plane's small refusal table")
             self.refusal_statuses
                 .iter()
                 .find(|r| r.dialect == d && r.reason == code)
@@ -298,7 +299,12 @@ pub struct PreparedSection<'a> {
 impl PreparedSection<'_> {
     /// Commit after every other fallible step of a generation refresh has succeeded.
     pub async fn commit(self) -> Result<(), String> {
-        self.commit_typed().await.map_err(|e| e.to_string())
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refused admission is reported once, in words, to the generation refresh"
+        )]
+        let committed = self.commit_typed().await.map_err(|e| e.to_string());
+        committed
     }
 
     /// Preserve admission refusal identity for the composition root’s refresh observation.
@@ -324,6 +330,12 @@ fn prepare_admission<'a>(
         return Err("the configured store does not support conditional record transactions".into());
     }
     let trust = parse_section(section.0, section.1, &d.trust_keys)?;
+    // busbar:expect(bp::clone_alloc, reason = "config: a plane instance's admission facts are lowered once per generation")
+    // busbar:expect(bp::into_alloc, reason = "config: a plane instance's admission facts are lowered once per generation")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a plane instance's admission facts are lowered once per generation"
+    )]
     let facts = InstanceFacts {
         conditional_record_kinds: d.conditional_record_kinds.clone(),
         record_collections: d.record_collections.clone(),
@@ -382,7 +394,7 @@ impl PlaneDriver {
             sessions: Mutex::default(),
             hooks: None,
             hook_journal: None,
-            label: Arc::from(&*d.label),
+            label: Arc::clone(&d.label),
             audit: Arc::new(CoreAudit),
             refused_piece: false,
             authenticated_route: d.authenticated_route,
@@ -404,6 +416,7 @@ impl PlaneDriver {
         let mut at = 0;
         let mut cause = Cause::Timer;
         loop {
+            // busbar:expect(bp::clock_repeat, reason = "boot: the plane's timer task, started once at boot, reads its clock once per tick")
             let Some(next) = self.calls.tick(driver, self.calls.now_ns()).await else {
                 return;
             };
@@ -538,11 +551,19 @@ impl PlaneDriver {
         let Some(slot) = &self.config.caller_refs else {
             return Ok(());
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a migration with no caller reference key is refused once"
+        )]
         let key = slot
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
             .ok_or_else(|| "caller reference key unavailable during migration".to_string())?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the caller-reference migration walks every key once"
+        )]
         for principal in gov.all_keys_async().await.map_err(|e| e.to_string())? {
             services
                 .resolve_caller_reference(caller, &principal.id, &key.caller_ref(&principal.id))
@@ -1039,7 +1060,8 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
             let declined = st.declined.filter(|_| reason == ReasonCode::DecodeFailed);
 
-            let words = declined.and(st.declined_words.clone());
+            // busbar:expect(bp::clone_alloc, reason = "error: a declined arrival's own words are copied once, into its refusal")
+            let words = declined.and_then(|_| st.declined_words.clone());
             let refused_wait = st
                 .refused_wait
                 .filter(|(refused, _)| *refused == reason)
@@ -1072,7 +1094,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         let text: &[u8] = words
             .as_deref()
             .or(steps_words.as_deref())
-            .unwrap_or(said.unwrap_or(reason.as_str()).as_bytes());
+            .unwrap_or_else(|| said.unwrap_or(reason.as_str()).as_bytes());
         let mut input = RefusalIn {
             cause: if words.is_some() {
                 REFUSAL_ARRIVE

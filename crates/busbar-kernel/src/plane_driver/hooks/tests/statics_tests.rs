@@ -107,7 +107,7 @@ async fn after_a_reload_the_hook_sees_the_new_candidates_never_stale_ones() {
         signals: Vec::new(),
         calls: seen.clone(),
         name: "c7-seen".into(),
-        statics: std::sync::Mutex::new(Vec::new()),
+        statics: std::sync::Mutex::default(),
     };
     let ctx = RoutingContext {
         pool: "c7-pool",
