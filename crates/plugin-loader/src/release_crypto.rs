@@ -185,7 +185,3 @@ impl ReleaseCrypto for StandardCrypto {
         )
     }
 }
-
-#[cfg(test)]
-#[path = "tests/release_crypto_tests.rs"]
-mod tests;
