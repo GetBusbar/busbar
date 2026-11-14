@@ -230,6 +230,17 @@ pub struct Connection {
     full: std::collections::HashSet<u64>,
     /// SEALED CREDENTIAL VALUES (TSEAL, [`crate::seal`]): the real bytes of the fillers the framer
     seals: crate::seal::Seals,
+    /// STICKY: [`Connection::poll_prepared`] answered `Ready(Ok)`, or [`Connection::latch_prepared`]
+    /// found the same condition at home ([`Connection::prepared_now`]). What a line answers a
+    /// prepared exchange from while another holder has the connection out.
+    prepared_landed: bool,
+    /// STICKY: the connection failed while its carrier could still deliver bytes it already held
+    /// (queued and unflushed, owed by TLS, or a parked emit's): `close()` may still send them, so no
+    /// exchange queued on it is ever redialled ([`Connection::fail`]).
+    wire_kept: bool,
+    /// The carrier can no longer take or give bytes: a write or flush failed, it took nothing, or
+    /// the far end ended the stream.
+    carrier_lost: bool,
 }
 
 /// One write held back until the framing takes it: its stream, bytes, whether they end the
@@ -756,6 +767,9 @@ impl Connection {
             early: Vec::new(),
             flushed: 0,
             read_end: false,
+            prepared_landed: false,
+            wire_kept: false,
+            carrier_lost: false,
 
             open_deadline: Instant::now().checked_add(dial.open_timeout),
             framer_deadline: None,
@@ -853,6 +867,9 @@ impl Connection {
             early: Vec::new(),
             flushed: 0,
             read_end: false,
+            prepared_landed: false,
+            wire_kept: false,
+            carrier_lost: false,
             open_deadline: Instant::now().checked_add(dial.open_timeout),
             framer_deadline: None,
             sleep: None,
@@ -960,6 +977,9 @@ impl Connection {
             early: Vec::new(),
             flushed: 0,
             read_end: false,
+            prepared_landed: false,
+            wire_kept: false,
+            carrier_lost: false,
             open_deadline: Instant::now().checked_add(accept.handshake_timeout),
             framer_deadline: None,
             sleep: None,
@@ -1027,6 +1047,41 @@ impl Connection {
     #[must_use]
     pub fn flushed(&self) -> u64 {
         self.flushed
+    }
+
+    /// Whether the connection failed with bytes it held still deliverable by its carrier (see
+    /// [`Connection::fail`]): nothing queued on it may be sent again on another connection.
+    #[must_use]
+    pub(crate) fn wire_kept(&self) -> bool {
+        self.wire_kept
+    }
+
+    /// Whether a prepared exchange's facts have been published on this connection: sticky, set
+    /// only where [`Connection::poll_prepared`] answers (or would answer) `Ready(Ok)`.
+    #[must_use]
+    pub(crate) fn prepared_landed(&self) -> bool {
+        self.prepared_landed
+    }
+
+    /// THE ONE READINESS CONDITION a prepared exchange's facts wait for, as
+    /// [`Connection::poll_prepared`] tests it after its flush: open past its handshake and framing
+    /// begin, and every byte of protocol output gone to the carrier and flushed.
+    fn prepared_now(&self) -> bool {
+        self.is_open()
+            && !self.handshaking()
+            && !self.begin_parked()
+            && self.out.is_empty()
+            && self.ends.is_empty()
+            && !self.unflushed
+            && !self.carried.flushing()
+    }
+
+    /// Latch [`Connection::prepared_landed`] when [`Connection::prepared_now`] holds (no flush, no
+    /// I/O): the connection is at home after its holder's own drive flushed.
+    pub(crate) fn latch_prepared(&mut self) {
+        if self.prepared_now() {
+            self.prepared_landed = true;
+        }
     }
 
     /// Whether the connection can carry another exchange now: dialled, framed and open, with
@@ -1186,18 +1241,28 @@ impl Connection {
             }
         }
         if let Some(framing) = self.framing.as_mut() {
+            // A refusal of the emit yielded no wire: nothing was lost, the connection stays up.
             let y = framing
                 .emit_opening_sensitive(stream, bytes, end, text, body_len, &sensitive)
                 .map_err(failed)?;
-            return self.absorb(y);
+            // Once the framer took the emit, its wire (other streams' frames too) is the
+            // session's: losing it fails the connection, so it is never lent again.
+            if let Err(f) = self.absorb(y) {
+                self.fail(f.clone());
+                return Err(f);
+            }
+            return Ok(());
         }
         if self.door.is_some() {
             return Err(Failure::Closed);
         }
         match self.tls.as_mut() {
             Some(tls) => {
-                tls.writer().write_all(bytes).map_err(failed)?;
-                self.tls_out()?;
+                let written = tls.writer().write_all(bytes).map_err(failed);
+                if let Err(f) = written.and_then(|()| self.tls_out()) {
+                    self.fail(f.clone());
+                    return Err(f);
+                }
             }
             None => self.queue(bytes, end),
         }
@@ -1341,8 +1406,18 @@ impl Connection {
         self.cause.as_ref()
     }
 
-    /// The connection fails with `f`, in the stage it is in.
+    /// The connection fails with `f`, in the stage it is in. Failed while its carrier could still
+    /// deliver bytes it held (queued and not yet taken, owed by TLS, or a parked emit's), it keeps
+    /// them ([`Connection::wire_kept`]): `close()` may still send them, so no exchange on it is ever
+    /// sent again elsewhere.
     fn fail(&mut self, f: Failure) {
+        if !self.carrier_lost
+            && (self.queued > self.flushed
+                || self.tls.as_ref().is_some_and(|t| t.wants_write())
+                || self.parked())
+        {
+            self.wire_kept = true;
+        }
         let framer = self.framer_error.take();
         let stage = match (&f, &self.phase) {
             (Failure::Timeout, _) => CAUSE_DEADLINE,
@@ -1420,11 +1495,8 @@ impl Connection {
                         self.fail(f.clone());
                         return Poll::Ready(Err(f));
                     }
-                    return if self.out.is_empty()
-                        && self.ends.is_empty()
-                        && !self.unflushed
-                        && !self.carried.flushing()
-                    {
+                    return if self.prepared_now() {
+                        self.prepared_landed = true;
                         Poll::Ready(Ok(()))
                     } else {
                         Poll::Pending
@@ -1649,7 +1721,10 @@ impl Connection {
                 match self.carried.poll_flush(cx) {
                     Poll::Pending => return Ok(moved),
                     Poll::Ready(Ok(())) => self.unflushed = false,
-                    Poll::Ready(Err(e)) => return Err(failed(e)),
+                    Poll::Ready(Err(e)) => {
+                        self.carrier_lost = true;
+                        return Err(failed(e));
+                    }
                 }
             }
             if self.out.is_empty() && self.ends.is_empty() {
@@ -1670,7 +1745,10 @@ impl Connection {
                 None => (a, false),
             };
             match self.carried.poll_write(cx, a, end) {
-                Poll::Ready(Ok(0)) if !a.is_empty() => return Err(Failure::Closed),
+                Poll::Ready(Ok(0)) if !a.is_empty() => {
+                    self.carrier_lost = true;
+                    return Err(Failure::Closed);
+                }
                 Poll::Ready(Ok(n)) => {
                     if end && n == a.len() {
                         self.ends.pop_front();
@@ -1680,7 +1758,10 @@ impl Connection {
                     self.unflushed = true;
                     moved = true;
                 }
-                Poll::Ready(Err(e)) => return Err(failed(e)),
+                Poll::Ready(Err(e)) => {
+                    self.carrier_lost = true;
+                    return Err(failed(e));
+                }
                 Poll::Pending => return Ok(moved),
             }
         }
@@ -1695,6 +1776,7 @@ impl Connection {
         match self.carried.poll_read(cx, &mut buf) {
             Poll::Ready(Ok((0, false))) => {
                 self.read_end = true;
+                self.carrier_lost = true;
                 self.feed(&[], true, false)?;
                 Ok(true)
             }
@@ -1703,6 +1785,7 @@ impl Connection {
                 Ok(true)
             }
             Poll::Ready(Err(e)) => {
+                self.carrier_lost = true;
                 if self.door.is_none() && self.tls.is_none() {
                     self.framer_error = Some(e.to_string());
                 }
