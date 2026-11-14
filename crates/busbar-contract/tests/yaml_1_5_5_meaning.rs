@@ -264,6 +264,72 @@ fn tagged_trees_round_trip_through_text() {
     assert_eq!(through_value, doc, "a tree read from a tree keeps its tags");
 }
 
+/// A tagged tree inside a typed value (a struct field, an `Option`, a map value, a `Vec`
+/// element) writes its tag back as `!Name value`, as serde_yaml 0.9 wrote a `Value::Tagged`
+/// (a tagged mapping: the tag, then the block), never as ciborium's internal `@@TAGGED@@`
+/// tuple variant. Migrate rewrites customer config files through these writes.
+///
+/// Red before the fix: `yaml::to_string` handed the typed value straight to serde-saphyr, so a
+/// nested `Value::Tag` came out as ciborium's `@@TAGGED@@` variant with the registry number.
+#[test]
+fn tagged_trees_inside_typed_values_write_their_tags() {
+    #[derive(serde::Serialize)]
+    struct Fields {
+        variant: Value,
+        thing: Value,
+        maybe: Option<Value>,
+        named: BTreeMap<String, Value>,
+        after: String,
+    }
+    #[derive(serde::Serialize)]
+    struct Listed {
+        list: Vec<Value>,
+        after: String,
+    }
+    let variant = tree("!Variant x\n");
+    let thing = tree("!Thing {a: 1}\n");
+    assert_eq!(variant, yaml::tagged("!Variant", text("x")));
+    assert_eq!(yaml::tag_of(&thing).as_deref(), Some("!Thing"));
+
+    let fields = Fields {
+        variant: variant.clone(),
+        thing: thing.clone(),
+        maybe: Some(variant.clone()),
+        named: BTreeMap::from([("k".to_owned(), thing.clone())]),
+        after: "end".to_owned(),
+    };
+    let written = yaml::to_string(&fields).unwrap();
+    assert!(!written.contains("@@TAG"), "{written}");
+    // serde_yaml 0.9's bytes for this struct.
+    assert_eq!(
+        written,
+        "variant: !Variant x\nthing: !Thing\n  a: 1\nmaybe: !Variant x\nnamed:\n  k: !Thing\n    a: 1\nafter: end\n",
+    );
+    let mut through_writer = Vec::new();
+    yaml::to_writer(&mut through_writer, &fields).unwrap();
+    assert_eq!(String::from_utf8(through_writer).unwrap(), written);
+    assert_eq!(
+        tree(&written),
+        tree("variant: !Variant x\nthing: !Thing {a: 1}\nmaybe: !Variant x\nnamed: {k: !Thing {a: 1}}\nafter: end\n"),
+        "{written}"
+    );
+
+    let listed = Listed {
+        list: vec![variant, thing, text("plain")],
+        after: "end".to_owned(),
+    };
+    let written = yaml::to_string(&listed).unwrap();
+    assert!(!written.contains("@@TAG"), "{written}");
+    assert!(written.contains("- !Variant x\n"), "{written}");
+    assert!(written.contains("- !Thing\n"), "{written}");
+    assert!(written.contains("after: end\n"), "{written}");
+    assert_eq!(
+        tree(&written),
+        tree("list: [!Variant x, !Thing {a: 1}, plain]\nafter: end\n"),
+        "{written}"
+    );
+}
+
 /// The tree keeps key order, after reading and after edits.
 #[test]
 fn mappings_keep_key_order() {
