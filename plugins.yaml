@@ -1,4 +1,4 @@
-# First-party plugin metadata consumed by busbar-release fleet tooling.
+# First-party plugin metadata consumed by the fleet tooling.
 #
 # Fields:
 #   repo:          GitHub repo under GetBusbar/
@@ -19,7 +19,7 @@
 #                  fixture, commit, path, constant and sha256 bind the recorded descriptor
 #                  to this registered plane owner independently of the captured artifact.
 #
-# Fleet fields (read by `busbar-release plugin sync` (GetBusbar/busbar-release), the ONE generator: it
+# Fleet fields (read by the fleet tool's `plugin sync`, the ONE generator: it
 # renders every plugin repo's CI caller, toolchain, lint config, deny.toml, workspace dependency table,
 # LICENSE and README header from this file, its template/ and fleet/deps.toml, and checks the repos
 # against the render). Defaults in brackets:
@@ -54,18 +54,18 @@
 #                  `manifest.<alias>` / `asset.<alias>` rows; boot refuses a retired spelling and
 #                  `busbar --migrate-config` rewrites it to the alias (BUSBAR-1.6.0.md §2)
 #   pending_crate  registered repository whose crates have not moved in yet [false].
-#                  busbar-release plugin check skips its crate-shaped checks until seeded.
+#                  the fleet tool's plugin check skips its crate-shaped checks until seeded.
 #   lang           rust | c [rust]. `c`: the plugin is C sources in `<kind>-<name>/`, built from
 #                  busbar_plugin.h alone (decision #84); its CI is plugin-ci.yml's C path (build from the
 #                  header at the pin, `dropped_conformance` through load_dropped, RED arm kept), its
 #                  callers pass `plugin_lang: c`, and it has no Cargo workspace.
 
-# THE FLEET POLICY (`busbar-release plugin check` holds every repo to it; `busbar-release plugin sync` applies it).
+# THE FLEET POLICY (the fleet tool's `plugin check` holds every repo to it; the fleet tool's `plugin sync` applies it).
 #   busbar_ref  ONE pin for every plugin repo: each repo's `.busbar-ref` is exactly this, every
 #               manifest's busbar git rev is its sha, and the rendered callers take busbar's reusable
-#               workflows at that sha. Moving it is one edit here, then `busbar-release plugin sync`.
+#               workflows at that sha. Moving it is one edit here, then the fleet tool's `plugin sync`.
 #   name_pattern  every plugin repo is `busbar-<kind>-<name>`, and <kind> is the entry's kind.
-#   branches    exactly these branches; dev, qa and main carry the repo ruleset `busbar-release plugin sync` applies (PR + plugin-ci green), main and
+#   branches    exactly these branches; dev, qa and main carry the repo ruleset the fleet tool's `plugin sync` applies (PR + plugin-ci green), main and
 #               qa are locked by the org ruleset "release branches: main + qa (owner say-so only)"; any
 #               other branch is stale.
 fleet:
@@ -417,7 +417,7 @@ plugins:
     description: "First-party signed kind:plane plugin cdylib: the llm plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     busbar_checkout: true
     declares: "plane-llm/declares.json"
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by the fleet tool's `plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
   - repo: busbar-plane-mcp
@@ -490,7 +490,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the http transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-http/declares.json"
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by the fleet tool's `plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -512,7 +512,7 @@ plugins:
     extra_test: |-
       set -euo pipefail
       bash testing/ws-conformance/scripts/run.sh --subject
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by the fleet tool's `plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -539,7 +539,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the grpc transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-grpc/declares.json"
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by the fleet tool's `plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -578,7 +578,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:hook plugin cdylib: the ranking hook, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "hook-ranking/declares.json"
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by the fleet tool's `plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -592,7 +592,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:store plugin cdylib: the in-memory store, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "store-memory/declares.json"
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by the fleet tool's `plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -606,7 +606,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:auth plugin cdylib: the webhook-signature auth module, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "auth-webhook-signature/declares.json"
-    # THE DESIGN §9's auth roster; the repo is created by `busbar-release plugin new auth
+    # THE DESIGN §9's auth roster; the repo is created by the fleet tool's `plugin new auth
     # webhook-signature` (PLUGIN-TEMPLATE, ARCHITECT 2026-10-02) with the template's skeleton crates;
     # its door lands in it. busbar links the logic crate on its `auths` axis at a pinned rev (feature
     # `auth-webhook-signature`, default-on). First release with the core version that pins it.
@@ -624,7 +624,7 @@ plugins:
     declares: "auth-header/declares.json"
     # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
-    # repo). Created by `busbar-release plugin new auth header`; busbar's in-tree crate moves in with its
+    # repo). Created by the fleet tool's `plugin new auth header`; busbar's in-tree crate moves in with its
     # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
     # busbar links the logic crate on its `auths` axis at a pinned rev. First release with the core version that pins it.
     released: false
@@ -642,7 +642,7 @@ plugins:
     declares: "auth-sigv4/declares.json"
     # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
-    # repo). Created by `busbar-release plugin new auth sigv4`; busbar's in-tree crate moves in with its
+    # repo). Created by the fleet tool's `plugin new auth sigv4`; busbar's in-tree crate moves in with its
     # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
     # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own SigV4, outbound and inbound, is deleted). First release with the core version that pins it.
     released: false
@@ -659,7 +659,7 @@ plugins:
     declares: "auth-oauth/declares.json"
     # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
-    # repo). Created by `busbar-release plugin new auth oauth`; busbar's in-tree crate moves in with its
+    # repo). Created by the fleet tool's `plugin new auth oauth`; busbar's in-tree crate moves in with its
     # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
     # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own minting copies are deleted). First release with the core version that pins it.
     released: false
@@ -678,7 +678,7 @@ plugins:
     description: "First-party signed kind:secret plugin library, written in C from busbar_plugin.h alone: a self-contained secret source (named values in its own settings), packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "secret-c/declares.json"
     # Decision #84's witness (OWNER RULING 2026-10-02: "just another plugin"): a plugin built from
-    # the generated C header alone, created by `busbar-release plugin new secret c --lang c` and
+    # the generated C header alone, created by the fleet tool's `plugin new secret c --lang c` and
     # tested by itself through plugin-ci.yml's C path at its pin. First release with the core
     # version that pins it.
     released: false

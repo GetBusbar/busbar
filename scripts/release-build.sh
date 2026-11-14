@@ -174,9 +174,9 @@ if [ "$SPEC_PGO" = "true" ]; then
   # THE COMMITTED PROFILE (owner decision D4, 2026-10-26): the release builds from the profile
   # committed for this target, never from a fresh training run, so a second builder gets the same
   # bytes. A target with no committed profile cannot be released: train it on a native backend
-  # (scripts/release/candidate.py pgo-train <target>), review, and commit release/pgo/<target>.profdata.
+  # (the release tooling's `pgo-train <target>`), review, and commit release/pgo/<target>.profdata.
   PROFILE="release/pgo/${TARGET}.profdata"
-  [ -s "$PROFILE" ] || { echo "[release-build] no committed PGO profile at $PROFILE: run scripts/release/candidate.py pgo-train $TARGET on a native backend and commit it" >&2; exit 1; }
+  [ -s "$PROFILE" ] || { echo "[release-build] no committed PGO profile at $PROFILE: train it with the release tooling's pgo-train for $TARGET on a native backend and commit it" >&2; exit 1; }
   BUSBAR_CARGO_CAPTURE_DIR="$EVIDENCE_DIR/cargo-core" PGO_PROFILE="$PROFILE" PGO_TARGET="$SPEC_TRIPLE" scripts/pgo-build.sh
   BIN="target/pgo/${SPEC_TRIPLE}/release/${SPEC_EXE}"
   MARKER="target/pgo/${SPEC_TRIPLE}/release/busbar.pgo-verified"

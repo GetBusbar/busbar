@@ -1474,7 +1474,7 @@ def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_
         "retired explicit": "r:ed25519:" + retired,
         "retired in list": mixed + ",r:ed25519:" + retired.upper(),
     }
-    with tempfile.TemporaryDirectory(prefix="busbar-release-root-") as fixture:
+    with tempfile.TemporaryDirectory(prefix="busbar-trust-root-") as fixture:
         ctx = Ctx()
         ctx.exe, ctx.image = os.path.join(fixture, "busbar"), "example.invalid/busbar@sha256:" + "a" * 64
         runtime = subprocess.CompletedProcess([], 0, stdout="", stderr="")
