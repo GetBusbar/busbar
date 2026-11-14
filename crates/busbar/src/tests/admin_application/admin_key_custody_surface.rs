@@ -6,8 +6,6 @@ use std::sync::Arc;
 
 use busbar_kernel::audit_ring;
 
-use crate::root::test_plugins as plugins;
-
 #[tokio::test]
 async fn test_admin_v1_auth_read_keys_chain_reports_closed() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_A84111105DC5";
@@ -15,30 +13,9 @@ async fn test_admin_v1_auth_read_keys_chain_reports_closed() {
         "actual root case test_admin_v1_auth_read_keys_chain_reports_closed completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
+        "test_admin_v1_auth_read_keys_chain_reports_closed-actual-store",
     );
-    manifest.statement = Some(hex::encode(statement));
-    let directory =
-        plugins::scratch("test_admin_v1_auth_read_keys_chain_reports_closed-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -126,29 +103,8 @@ async fn test_admin_v1_get_single_key() {
     const WITNESS: &str = "actual root case test_admin_v1_get_single_key completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch("test_admin_v1_get_single_key-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let (module, directory, settings) =
+        crate::distribution::rig::actual_store("test_admin_v1_get_single_key-actual-store");
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -274,31 +230,7 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_
     const WITNESS: &str = "actual root case minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_says_what_to_set completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(
-        "minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_says_what_to_set-actual-store",
-    );
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let (module, directory, settings) = crate::distribution::rig::actual_store("minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_says_what_to_set-actual-store");
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"

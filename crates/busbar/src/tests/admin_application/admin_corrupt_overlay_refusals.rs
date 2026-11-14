@@ -8,8 +8,6 @@ use busbar_contract::Secret;
 use busbar_kernel::audit_ring;
 use busbar_kernel::persistence::scoped::ScopedStore;
 
-use crate::root::test_plugins as plugins;
-
 const OVERLAY_SCHEMA: &str = "busbar.config.overlay.v1";
 
 #[tokio::test]
@@ -18,31 +16,9 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     const WITNESS: &str = "actual root corrupt overlay assertions completed";
     isolated!(CHILD, WITNESS, witness = "overlay");
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
         "test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt-actual-store",
     );
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -194,31 +170,9 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     const WITNESS: &str = "actual root corrupt overlay assertions completed";
     isolated!(CHILD, WITNESS, witness = "overlay");
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
         "test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new-actual-store",
     );
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"

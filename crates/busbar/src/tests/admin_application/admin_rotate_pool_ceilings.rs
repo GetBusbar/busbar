@@ -4,7 +4,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::root::test_plugins as plugins;
 use crate::test_common as common;
 
 const AUDIENCE: &str = "api://admin-rotate-pool-ceiling";
@@ -16,30 +15,9 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
         "actual root case proof_role_pool_ceiling_refuses_an_over_ceiling_rotate completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
+        "proof_role_pool_ceiling_refuses_an_over_ceiling_rotate-actual-store",
     );
-    manifest.statement = Some(hex::encode(statement));
-    let directory =
-        plugins::scratch("proof_role_pool_ceiling_refuses_an_over_ceiling_rotate-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -193,30 +171,9 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
         "actual root case proof_role_pool_ceiling_rotates_an_in_ceiling_key completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
+        "proof_role_pool_ceiling_rotates_an_in_ceiling_key-actual-store",
     );
-    manifest.statement = Some(hex::encode(statement));
-    let directory =
-        plugins::scratch("proof_role_pool_ceiling_rotates_an_in_ceiling_key-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -361,30 +318,9 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
         "actual root case a_past_ceiling_rotate_releases_its_idempotency_claim completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
+        "a_past_ceiling_rotate_releases_its_idempotency_claim-actual-store",
     );
-    manifest.statement = Some(hex::encode(statement));
-    let directory =
-        plugins::scratch("a_past_ceiling_rotate_releases_its_idempotency_claim-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"

@@ -4,37 +4,15 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::root::test_plugins as plugins;
-
 #[tokio::test]
 async fn test_signed_mint_verify_then_delete_denies() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_C4B4049668C7";
     const WITNESS: &str = "actual root case test_signed_mint_verify_then_delete_denies completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
+        "test_signed_mint_verify_then_delete_denies-actual-store",
     );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch("test_signed_mint_verify_then_delete_denies-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -146,29 +124,9 @@ async fn test_signed_revoke_denylists_without_deleting() {
         "actual root case test_signed_revoke_denylists_without_deleting completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
+        "test_signed_revoke_denylists_without_deleting-actual-store",
     );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch("test_signed_revoke_denylists_without_deleting-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -295,30 +253,9 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
         "actual root case test_key_state_distinguishes_disable_revoke_and_tombstone completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
+        "test_key_state_distinguishes_disable_revoke_and_tombstone-actual-store",
     );
-    manifest.statement = Some(hex::encode(statement));
-    let directory =
-        plugins::scratch("test_key_state_distinguishes_disable_revoke_and_tombstone-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -339,46 +276,8 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
-    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-        .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
-        Some(overlay),
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
-        None,
-        &rules,
-        Some(anchor),
-        true,
-    )
-    .await
-    .expect("the real root composes the configured Store and admin application");
-    limits.stage_boot();
-    let _book = crate::root::boot::book(&app, &module)
-        .await
-        .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().await.expect("the actual limits commit");
-    if let Some(rotate) = rotate {
-        rotate.await;
-    }
-    let router =
-        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _book) =
+        crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
@@ -485,29 +384,8 @@ async fn test_list_keys_include_tombstoned() {
     const WITNESS: &str = "actual root case test_list_keys_include_tombstoned completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch("test_list_keys_include_tombstoned-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let (module, directory, settings) =
+        crate::distribution::rig::actual_store("test_list_keys_include_tombstoned-actual-store");
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -528,46 +406,8 @@ async fn test_list_keys_include_tombstoned() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
-    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-        .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
-        Some(overlay),
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
-        None,
-        &rules,
-        Some(anchor),
-        true,
-    )
-    .await
-    .expect("the real root composes the configured Store and admin application");
-    limits.stage_boot();
-    let _book = crate::root::boot::book(&app, &module)
-        .await
-        .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().await.expect("the actual limits commit");
-    if let Some(rotate) = rotate {
-        rotate.await;
-    }
-    let router =
-        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _book) =
+        crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
@@ -647,30 +487,9 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
         "actual root case test_signed_mint_group_none_and_pool_acl_matrix completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
+        "test_signed_mint_group_none_and_pool_acl_matrix-actual-store",
     );
-    manifest.statement = Some(hex::encode(statement));
-    let directory =
-        plugins::scratch("test_signed_mint_group_none_and_pool_acl_matrix-actual-store");
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -784,31 +603,9 @@ async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
     const WITNESS: &str = "actual root case a_repeated_key_post_keys_replays_the_first_response_byte_for_byte completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
         "a_repeated_key_post_keys_replays_the_first_response_byte_for_byte-actual-store",
     );
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -829,46 +626,8 @@ async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
-    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-        .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
-        Some(overlay),
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
-        None,
-        &rules,
-        Some(anchor),
-        true,
-    )
-    .await
-    .expect("the real root composes the configured Store and admin application");
-    limits.stage_boot();
-    let _book = crate::root::boot::book(&app, &module)
-        .await
-        .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().await.expect("the actual limits commit");
-    if let Some(rotate) = rotate {
-        rotate.await;
-    }
-    let router =
-        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _book) =
+        crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
     let mint = || {
         client
@@ -901,31 +660,9 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     const WITNESS: &str = "actual root case test_create_key_with_aws_credential_returns_secret_once_and_hides_on_reads completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
         "test_create_key_with_aws_credential_returns_secret_once_and_hides_on_reads-actual-store",
     );
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -949,46 +686,8 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-        .expect("the actual admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
-    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-        .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
-        Some(overlay),
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
-        None,
-        &rules,
-        Some(anchor),
-        true,
-    )
-    .await
-    .expect("the real root composes the configured Store and admin application");
-    limits.stage_boot();
-    let _book = crate::root::boot::book(&app, &module)
-        .await
-        .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().await.expect("the actual limits commit");
-    if let Some(rotate) = rotate {
-        rotate.await;
-    }
-    let router =
-        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _book) =
+        crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
 
     let created = client
