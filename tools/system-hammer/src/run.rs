@@ -133,9 +133,13 @@ pub struct CaseResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub added_p99_us: Option<f64>,
     /// Gateway process CPU time over the load window / requests served in it.
-    pub cpu_us_per_req: f64,
+    /// None when CPU was not measured (no sampler on this platform, sampler thread failed, or
+    /// the case was skipped or failed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_us_per_req: Option<f64>,
     /// The hammer's own CPU (driver + mocks) per request over the same window.
-    pub hammer_cpu_us_per_req: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hammer_cpu_us_per_req: Option<f64>,
     pub rss: Rss,
     /// (mean rps of the last third of the windows - first third) / first third, percent.
     pub drift_pct: f64,
@@ -789,7 +793,8 @@ fn run_case(
         };
         tokio::join!(driver::run(main), bgf)
     });
-    let ((ga, sa), (gb, sb)) = cpu.join().unwrap_or(((None, 0), (None, 0)));
+    // A sampler thread that failed means CPU was not measured, not that it was zero.
+    let (cpu_a, cpu_b) = cpu.join().map_or((None, None), |(a, b)| (Some(a), Some(b)));
     let load_from = m_start.saturating_duration_since(origin);
     let load_to = m_end.saturating_duration_since(origin);
     let mid = load_from + (load_to - load_from) / 2;
@@ -804,9 +809,9 @@ fn run_case(
     let alive = gw.alive();
 
     let served = out.ok.max(1) as f64;
-    let cpu_us = match (ga, gb) {
-        (Some(a), Some(b)) => (b.cpu_ns.saturating_sub(a.cpu_ns)) as f64 / 1000.0 / served,
-        _ => 0.0,
+    let cpu_us = match (cpu_a.and_then(|a| a.0), cpu_b.and_then(|b| b.0)) {
+        (Some(a), Some(b)) => Some(b.cpu_ns.saturating_sub(a.cpu_ns) as f64 / 1000.0 / served),
+        _ => None,
     };
     // Only when both c=1 probes completed requests inside their windows.
     let added = direct
@@ -865,7 +870,9 @@ fn run_case(
         added_p50_us: added.map(|a| a.0),
         added_p99_us: added.map(|a| a.1),
         cpu_us_per_req: cpu_us,
-        hammer_cpu_us_per_req: sb.saturating_sub(sa) as f64 / 1000.0 / served,
+        hammer_cpu_us_per_req: cpu_a
+            .zip(cpu_b)
+            .map(|(a, b)| b.1.saturating_sub(a.1) as f64 / 1000.0 / served),
         rss: Rss {
             idle_mib: mib(idle_rss),
             steady_mib: mib(steady),
