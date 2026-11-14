@@ -287,24 +287,6 @@ impl ClaimDoor {
         ok
     }
 
-    #[cfg(test)]
-    async fn emit_ready(&self, id: u64, stream: u64, bytes: &[u8], text: bool) -> bool {
-        self.assocs
-            .emit_ready(
-                id,
-                stream,
-                bytes,
-                true,
-                text,
-                &|to, d| self.send(to, d),
-                &|answered| {
-                    self.joined.notify_one();
-                    self.answer(answered, Instant::now());
-                },
-            )
-            .await
-    }
-
     fn leave(&self, id: u64) {
         let gone = lock(&self.legs).remove(&id);
         self.assocs.remove(id);

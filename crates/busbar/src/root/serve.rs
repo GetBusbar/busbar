@@ -7007,13 +7007,6 @@ async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Bytes
     whole.into_bytes()
 }
 
-/// A nested reply is opaque and bounded while its producer is still running. Owning the
-/// producer here makes an over-limit reply or a dropped collector cancel it synchronously.
-#[cfg(test)]
-async fn collect_nested(body: mpsc::Receiver<Bytes>, unit: DrivenUnit) -> Option<Vec<u8>> {
-    collect_nested_bound(body, unit, NEST_REPLY_MAX).await
-}
-
 async fn collect_nested_bound(
     mut body: mpsc::Receiver<Bytes>,
     mut unit: DrivenUnit,
