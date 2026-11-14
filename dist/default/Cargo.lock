@@ -804,7 +804,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=163daa7b0fd49872d2acd72c8f6eeb07d4e63742#163daa7b0fd49872d2acd72c8f6eeb07d4e63742"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=eb2f37f7c3213472922e53509dae8e7d0233545b#eb2f37f7c3213472922e53509dae8e7d0233545b"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -3320,6 +3320,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
