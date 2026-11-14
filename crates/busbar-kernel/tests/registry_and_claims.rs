@@ -22,7 +22,7 @@ impl Plugin for Fake {
     }
 
     fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
+        busbar_contract::AbiVersion::from_wire(1)
     }
 }
 

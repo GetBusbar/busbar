@@ -369,7 +369,7 @@ fn dropping(alias: &str, door: busbar_contract::abi::mechanism::door::DoorFn) ->
             kind: "auth".into(),
             version: "1.0.0".into(),
             publisher: FIRST_PARTY_PUBLISHER.into(),
-            abi_version: crate::registry::supported_abi("auth")[0],
+            abi_version: crate::registry::supported_abi("auth").unwrap(),
             statement: Some(hex::encode(stated)),
             ..Default::default()
         },

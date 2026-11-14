@@ -203,8 +203,7 @@ pub struct LinkedDoorExport {
 }
 
 fn export_abi() -> u32 {
-    let supported = crate::root::loader::supported_abi("export");
-    supported.iter().copied().max().unwrap_or_default()
+    crate::root::loader::supported_abi("export").unwrap_or_default()
 }
 
 pub fn linked_exports(

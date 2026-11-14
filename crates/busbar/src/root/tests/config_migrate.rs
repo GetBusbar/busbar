@@ -76,7 +76,7 @@ advanced:
 #[test]
 fn the_release_index_picks_the_newest_release_built_for_this_core() {
     let kind = "store";
-    let speaks = crate::root::loader::registry::supported_abi(kind)[0];
+    let speaks = crate::root::loader::registry::supported_abi(kind).unwrap();
     let index = Index::parse(
         &serde_json::to_vec(&serde_json::json!({
             "plugins": [{
@@ -115,7 +115,7 @@ fn the_release_index_picks_the_newest_release_built_for_this_core() {
 
 #[test]
 fn release_index_orders_prereleases_before_stable_and_numeric_identifiers_numerically() {
-    let abi = crate::root::loader::registry::supported_abi("store")[0];
+    let abi = crate::root::loader::registry::supported_abi("store").unwrap();
     for tags in [
         vec!["v1.6.0", "v1.6.0-rc.10"],
         vec!["v1.6.0-rc.10", "v1.6.0"],

@@ -161,7 +161,7 @@ pub mod markers {
 }
 
 /// The native plugin interface generation a plugin was built against.
-pub use crate::transport::AbiVersion;
+pub use crate::abi::versions::AbiVersion;
 
 /// The base trait every plugin implements.
 pub trait Plugin: Send + Sync + 'static {

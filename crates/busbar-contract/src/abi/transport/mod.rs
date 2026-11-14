@@ -313,10 +313,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
 ];
 
 /// The transport kind's generation as the Rust face states it (`Plugin::abi`): [`ABI_VERSION`]
-pub const TRANSPORT_ABI: crate::transport::AbiVersion =
-    crate::transport::AbiVersion(ABI_VERSION as u16);
-
-const _: () = assert!(ABI_VERSION <= u16::MAX as u32);
+pub const TRANSPORT_ABI: crate::abi::versions::AbiVersion = crate::abi::versions::TRANSPORT;
 
 /// [`crate::abi::mechanism::call::InHead::op`] of each transport op, in table order: kind op `k` is
 pub mod slot {

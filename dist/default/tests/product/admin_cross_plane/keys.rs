@@ -627,10 +627,7 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
         kind: "store".into(),
         version: version.into(),
         publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
+        abi_version: busbar_plugin_loader::supported_abi("store").expect("store abi"),
         sha256: busbar_plugin_loader::sign::sha256_hex(lib),
         signature: String::new(),
         description: String::new(),

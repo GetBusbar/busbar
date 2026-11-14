@@ -1599,10 +1599,7 @@ fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
 
 #[test]
 fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
-    let abi = *crate::supported_abi("hook")
-        .iter()
-        .min()
-        .expect("a hook payload schema");
+    let abi = crate::supported_abi("hook").expect("a hook payload schema");
     let registry = crate::both_ways::dropped(
         "json-hook",
         crate::both_ways::statement("hook", "json-hook", "json-hook", abi),
@@ -1882,7 +1879,7 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     let bare = HookRows::new(&[witness_door], None, dispatcher()).unwrap();
     assert!(!opens(&bare), "RED: a linked row without its former name");
     let lib = std::fs::read(witness_path()).expect("neutral SDK witness bytes");
-    let abi = crate::supported_abi("hook")[0];
+    let abi = crate::supported_abi("hook").unwrap();
     let stated = hex::encode(rendering_of(witness_door).unwrap());
     let manifest = |former: &[&str]| {
         let mut manifest = crate::both_ways::statement("hook", &name, &name, abi);
@@ -1934,7 +1931,7 @@ fn a_former_name_two_hooks_claim_is_refused_on_the_axis() {
 
 #[test]
 fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused() {
-    let abi = crate::supported_abi("hook")[0];
+    let abi = crate::supported_abi("hook").unwrap();
     let stated = hex::encode(
         rendering_of(hook_door_plugin::broken::door).expect("the door renders its Statement"),
     );
