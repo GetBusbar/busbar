@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 # dist/default is its own workspace; the root crate depends on no plugin.
-exclude = ["dist/default"]
+exclude = ["dist/default", "tools/system-hammer"]
 members = [
     "crates/busbar",
     "crates/busbar-core-connector",
@@ -50,7 +50,6 @@ http-body-util = "0.1"
 httpdate = "1.0"
 hyper = { version = "1", default-features = false, features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", default-features = false, features = [
-    "client-legacy",
     "http1",
     "http2",
     "server-auto",
