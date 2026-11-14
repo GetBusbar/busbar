@@ -270,6 +270,25 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
 
 struct SplitDocument(DeployCfg);
 
+/// The document body as its fields declare it, read under whatever source context encloses it.
+struct Body(DeployCfg);
+
+impl<'de> Deserialize<'de> for Body {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        DeployCfg::deserialize(de).map(Body)
+    }
+}
+
+/// A `DeployCfg` read through serde, by any caller, reads the source shorthand the admitted owners
+/// declare: no reader of the configuration skips the admitted grammar. A caller that names its own
+/// owners ([`deploy_with_sources`]) governs, since the context nearest the input governs.
+impl<'de> Deserialize<'de> for DeployCfg {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        busbar_contract::secret_ref::context::deserialize::<Body, _>(de, &super::secret::sugars())
+            .map(|body| body.0)
+    }
+}
+
 impl<'de> Deserialize<'de> for SplitDocument {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         de.deserialize_map(DocumentVisitor)
@@ -291,7 +310,7 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             .flat_map(|d| d.required_config_sections.iter().copied())
             .collect();
         let table = lift_table();
-        let (mut deploy, lifted) = read_document::<_, DeployCfg>(map, watch, &table)?;
+        let (Body(mut deploy), lifted) = read_document::<_, Body>(map, watch, &table)?;
         lifted.install(&mut deploy);
         Ok(SplitDocument(deploy))
     }

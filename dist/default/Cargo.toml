@@ -596,6 +596,9 @@ migration_table_hook = "busbar-hook-webrequest"
 
 [package.metadata.busbar.test-linked]
 planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
+# The secret sources those tests read references through: the axis the root links (`secret-doors`),
+# published beside the planes so a test reads the source shorthand those sources declare.
+secrets = ["busbar-secret-env", "busbar-secret-file"]
 # The operator credential's auth plugin the admin tests (`tests/admin_cross_plane/`) authenticate
 # through: the one the root links for it (`auth-admin-tokens`).
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
