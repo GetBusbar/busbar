@@ -309,3 +309,12 @@ pub fn table(r: &RunReport) -> String {
     );
     out
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unreadable_binary_has_no_fabricated_identity() {
+        let b = super::BinaryInfo::of(std::path::Path::new("/nonexistent/busbar-hammer-bin"), None);
+        assert_eq!(b.sha256, "unknown");
+    }
+}
