@@ -11,11 +11,10 @@
 # row asserts the result on the shipped bytes: input, environment and output, all three.
 #
 # The container gets the repository at /w and a persistent cache (the Rust toolchain installed by the
-# same sha-pinned BUSBAR_TOOL_SH every ModernCI check uses, and cargo's registry). It runs as the
+# same sha-pinned BUSBAR_TOOL_SH every CI check uses, and cargo's registry). It runs as the
 # caller's uid, so everything it writes under target/ belongs to the caller.
 #
-# Usage, from a ModernCI check on a linux runner with docker:
-#   scripts/release/in-baseline.sh python3 scripts/release/candidate.py core x86_64-unknown-linux-gnu --out DIR
+# Usage, from a CI check on a linux runner with docker:
 #   scripts/release/in-baseline.sh scripts/release-build.sh aarch64-unknown-linux-gnu
 #   scripts/release/in-baseline.sh scripts/release/dropin-probe.sh x86_64-unknown-linux-gnu OUT.tar.gz
 set -euo pipefail
@@ -34,7 +33,7 @@ case "$IMAGE" in
 esac
 
 # The toolchain installer every check sources: .ci/tool.sh when the tree has one, else the
-# BUSBAR_TOOL_SH the ModernCI branch file exports. Without either there is no pinned way to install
+# BUSBAR_TOOL_SH the CI configuration exports. Without either there is no pinned way to install
 # Rust in the container, and an unpinned one is not offered.
 if [ -f .ci/tool.sh ]; then
   TOOL_SH="$(cat .ci/tool.sh)"

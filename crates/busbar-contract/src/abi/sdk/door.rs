@@ -400,6 +400,71 @@ unsafe extern "C" fn trampoline<S: Entry, H: CaptureHome, const INDEX: u32>(
     RawOutcome::of(unsafe { enter::<S, H>(INDEX, instance, input.cast(), out.cast()) })
 }
 
+#[cfg(debug_assertions)]
+std::thread_local! {
+    /// LINT-RULES R28 `ready-after-no-ticket`: set when the SDK hands the running door entry a
+    /// `NoTicket` failure ([`crate::abi::sdk::conn::no_ticket`], [`crate::abi::sdk::io::no_ticket`]).
+    /// Debug builds only; the release hot path carries none of it.
+    static NO_TICKET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The SDK is handing the running door entry a `NoTicket` failure: noted for R28 (debug builds).
+#[inline(always)]
+pub(crate) fn handing_no_ticket() {
+    #[cfg(debug_assertions)]
+    NO_TICKET.set(true);
+}
+
+/// Whether the SDK has handed the running door entry `NoTicket` (always `false` in release builds).
+#[inline(always)]
+pub(crate) fn handed_no_ticket() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        NO_TICKET.get()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
+/// Whether the SDK handed this thread `NoTicket` since the last take, clearing it: what a test of an
+/// SDK path run outside a door entry reads (debug builds).
+#[cfg(all(test, debug_assertions))]
+pub(crate) fn take_no_ticket() -> bool {
+    NO_TICKET.replace(false)
+}
+
+/// The R28 flag of ONE door entry. Entries nest on one thread (a connector service calling into a
+/// linked auth door, for one), so an entry starts from a clear flag and puts back the one it found
+/// on every exit, the unwinding path included: an outer entry keeps what it was handed, and an
+/// inner entry's `NoTicket` stays the inner entry's. A zero-sized no-op in release builds.
+#[derive(Debug)]
+struct NoTicketWatch {
+    #[cfg(debug_assertions)]
+    saved: bool,
+}
+
+impl NoTicketWatch {
+    #[inline(always)]
+    fn begin() -> Self {
+        Self {
+            #[cfg(debug_assertions)]
+            saved: NO_TICKET.replace(false),
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for NoTicketWatch {
+    fn drop(&mut self) {
+        NO_TICKET.set(self.saved);
+    }
+}
+
+/// The text of the FAULT a ticketless READY after `NoTicket` is judged (LINT-RULES R28).
+pub const READY_AFTER_NO_TICKET: &str = "READY after the SDK answered NoTicket (LINT-RULES R28)";
+
 /// The trampoline's body.
 ///
 /// # Safety
@@ -470,6 +535,8 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
         call.host
     };
     let mut captured = H::retention().begin(capture_host, instance, call.ticket);
+    // Lives to the end of this entry: every exit puts back the flag it found.
+    let _watch = NoTicketWatch::begin();
     let ran = tracing_core::dispatcher::with_default(&capture, || {
         catch_unwind(move || {
             let mut written = local_out;
@@ -484,14 +551,22 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
         Ok((answered, mut local_out)) => {
             // SAFETY: `S::In` leads with an `InHead` (`AbiIn`).
             let ticket = unsafe { (*ptr::addr_of!(local_in).cast::<InHead>()).ticket };
-            let outcome = if answered == Outcome::Pending && ticket.is_none() {
-                Outcome::Fault
-            } else {
-                answered
-            };
+            // A ticketless call cannot pend; nor may it claim READY once the SDK told it so (R28):
+            // the flag is this entry's own, read before `_watch` puts back the one it found.
+            let ready_after_no_ticket =
+                answered == Outcome::Ready && ticket.is_none() && handed_no_ticket();
+            let outcome =
+                if (answered == Outcome::Pending && ticket.is_none()) || ready_after_no_ticket {
+                    Outcome::Fault
+                } else {
+                    answered
+                };
             // SAFETY: `S::Out` leads with an `OutHead` (`AbiOut`).
             let head = unsafe { &mut *ptr::addr_of_mut!(local_out).cast::<OutHead>() };
             head.outcome = RawOutcome::of(outcome);
+            if ready_after_no_ticket {
+                head.error = abi_str(READY_AFTER_NO_TICKET);
+            }
 
             head.size = size_of::<S::Out>() as u32;
             // What the body logged joins the envelope it answered.

@@ -1740,3 +1740,44 @@ fn nested_manifest_canonical_bytes_match_original_oidc_signer() {
         println!("original_oidc_archive_verified: unchanged signer, archive and library");
     }
 }
+
+/// RFC 8032 §7.1 TEST 1 and TEST 2: the plugin-facing `SigningKey`/`VerifyingKey` derive the same
+/// public key and the same deterministic signature from a fixed seed on every ed25519-dalek major
+/// this crate has shipped on, so keys and signatures made before an upgrade stay byte-identical.
+#[test]
+fn signing_from_a_fixed_seed_matches_the_rfc_8032_known_answers() {
+    for (seed, public, message, signature) in [
+        (
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+            "",
+            concat!(
+                "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555f",
+                "b8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+            ),
+        ),
+        (
+            "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+            "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+            "72",
+            concat!(
+                "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da",
+                "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+            ),
+        ),
+    ] {
+        let seed: [u8; 32] = hex::decode(seed).unwrap().try_into().unwrap();
+        let key = SigningKey::from_bytes(&seed);
+        assert_eq!(hex::encode(key.verifying_key().as_bytes()), public);
+        assert_eq!(key.to_bytes(), seed, "the seed round-trips unchanged");
+        let message = hex::decode(message).unwrap();
+        let signed = key.sign(&message);
+        assert_eq!(hex::encode(signed.to_bytes()), signature);
+        let public: [u8; 32] = hex::decode(public).unwrap().try_into().unwrap();
+        let public = VerifyingKey::from_bytes(&public).unwrap();
+        let wire: [u8; 64] = hex::decode(signature).unwrap().try_into().unwrap();
+        public
+            .verify_strict(&message, &Signature::from_bytes(&wire))
+            .expect("the RFC signature verifies strictly");
+    }
+}
