@@ -130,7 +130,7 @@ impl PersistenceBackend for Backend {
                         .keys()
                         .any(|a| control::counts_toward_empty(NamespaceId(a.namespace)))
                         || !native.slots.is_empty()
-                        || !control::initialization(candidate, self.info().dataset)
+                        || !control::initialization(&prepared, self.info().dataset)
                 } else {
                     let root = native
                         .rows
