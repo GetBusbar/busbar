@@ -274,4 +274,15 @@ mod tests {
         let r = parse_response(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok").unwrap();
         assert_eq!(r.text(), "ok");
     }
+
+    #[test]
+    fn malformed_chunked_bodies_are_errors() {
+        let h = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        for body in [&b"zz\r\nabc\r\n0\r\n\r\n"[..], b"5\r\nab", b"3\r\nabc\r\n"] {
+            assert!(
+                parse_response(&[&h[..], body].concat()).is_err(),
+                "{body:?}"
+            );
+        }
+    }
 }
