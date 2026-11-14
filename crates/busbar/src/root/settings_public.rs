@@ -127,7 +127,7 @@ pub(crate) fn install_with_transports(
         }
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
-            std::process::exit(2);
+            crate::root::exit::exit(2);
         }
     }
 }

@@ -134,6 +134,7 @@ async fn admit_format(
         initialize_empty,
     )
     .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+    let mut waits = 0u32;
     loop {
         match startup
             .advance()
@@ -143,6 +144,12 @@ async fn admit_format(
             Progress::Advanced => {}
             Progress::Admitted => return Ok(startup),
             Progress::Pending => {
+                if let Some(waiting) = startup.waiting_on() {
+                    if waits.is_multiple_of(40) {
+                        log_first_start_wait(waiting);
+                    }
+                    waits = waits.wrapping_add(1);
+                }
                 // The same Startup owns the original candidate throughout uncertainty.
                 // Advancing it reconciles that candidate; it never allocates a replacement.
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -158,6 +165,33 @@ async fn admit_format(
             }
         }
     }
+}
+
+// The stall window's per-plane step must cover one READY as the host bounds it.
+const _: () = assert!(
+    busbar_kernel::persistence::startup::READY_STEP.as_secs()
+        >= busbar_plugin_loader::dispatch::ready::READY_DEADLINE.as_secs()
+            + busbar_plugin_loader::dispatch::ready::CANCEL_GRACE.as_secs()
+);
+
+/// The first-start wait line (FIRST-START-TAKEOVER §2.2): on the first wait and every 10 s after.
+fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
+    let owner = busbar_kernel::persistence::startup::writer_hex(&waiting.owner);
+    let since = waiting.since_change.as_secs();
+    let left = waiting
+        .window
+        .saturating_sub(waiting.since_change)
+        .as_secs();
+    tracing::warn!(
+        diag = %busbar_kernel::diagnostics::FIRST_START_WAITING.banner(),
+        owner = %owner,
+        since_change_s = since,
+        takeover_in_s = left,
+        "waiting on first start of this dataset by writer {owner}: last change {since} s ago, \
+         takeover in {left} s if it stays unchanged. Do not stop or restart this process before \
+         then: a restart resets the wait (startupProbe budget: docs/operations.md \"First start \
+         with several replicas\")."
+    );
 }
 
 struct PluginFloorAuthority {
@@ -1074,7 +1108,7 @@ pub fn dropped_from_config(
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
     let rows = linked_exports(linked.export_doors).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     });
     let scanned = scan_configured();
     if scanned.is_none() && rows.is_empty() {
@@ -1083,7 +1117,7 @@ pub fn dropped_from_config(
     let registry = scanned.unwrap_or_else(crate::root::loader::PluginRegistry::empty);
     let registry = registry.link(rows).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     });
 
     Some(REGISTRY.get_or_init(|| registry))
@@ -1155,7 +1189,7 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
     };
     let set = set.unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     });
     let _ = DOOR_CANDIDATES.set(set.doors);
 }
@@ -1257,7 +1291,7 @@ pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     )
     .unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     })
     .into_iter()
     .map(|(instance, plane)| (instance, std::sync::Arc::new(plane)))
@@ -1280,7 +1314,7 @@ pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
         });
         if let Err(refusal) = refused {
             eprintln!("busbar: {refusal}");
-            std::process::exit(2);
+            crate::root::exit::exit(2);
         }
     }
     let _ = DOOR_PLANES.set(bound);
@@ -1326,7 +1360,7 @@ pub fn dropped_transports(
     }
     let opened = open_dropped_transports(settings).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     });
     let retained = {
         let mut wires = WIRES.lock().unwrap_or_else(|p| p.into_inner());

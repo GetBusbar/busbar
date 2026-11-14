@@ -1,0 +1,6 @@
+# FIRST-START-TAKEOVER §9a: every exit goes through `root::exit::exit`, which hands an unpublished
+# first start over before the process ends; every exec will go through `root::exit::exec`.
+disallowed-methods = [
+    { path = "std::process::exit", reason = "exit through root::exit::exit so an unpublished first start is handed over (FIRST-START-TAKEOVER §2.7)" },
+    { path = "std::os::unix::process::CommandExt::exec", reason = "exec through root::exit::exec (FIRST-START-TAKEOVER §2.9 (d))", allow-invalid = true },
+]

@@ -273,7 +273,7 @@ pub fn seal_or_exit(linked: &Linked, settings: TransportSettings) -> BootRegistr
     let dropped = crate::root::boot::dropped_transports(&settings);
     seal(linked, dropped, settings).unwrap_or_else(|refusal| {
         eprintln!("busbar: the composition root did not seal: {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     })
 }
 
