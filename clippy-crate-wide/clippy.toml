@@ -1,0 +1,11 @@
+# Core's CRATE-WIDE clippy rows: they bind every workspace member and target. Source:
+# GetBusbar/busbar-release ci/core-crate-wide-clippy-bans.toml (busbar-release 1f82bea22db37d5250604161f20d42c7fc2b4735), byte for byte
+# below this header. The root clippy.toml holds the request-path rows, which the workspace lints turn
+# off outside the request-path marker; these run as a second clippy pass with this directory as the
+# configuration and the disallowed lints raised on the command line (outranking [workspace.lints]):
+#   CLIPPY_CONF_DIR=clippy-crate-wide cargo clippy --locked --workspace --all-targets --all-features -- -D clippy::disallowed_macros -D clippy::disallowed_methods -D clippy::disallowed_types
+
+disallowed-methods = [
+  # R53, TRANSPORT-TLS ring-write-queue (decision 291): core tls/lints-transport 43a35d30ec, clippy.toml.
+  { path = "std::collections::VecDeque::as_slices", reason = "a wrapped ring writes twice and drain leaves released bytes unwiped; queue bytes in busbar_core_connector::secure_vec::SecureVec (TRANSPORT-TLS ring-write-queue)" },
+]
