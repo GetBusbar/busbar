@@ -1625,6 +1625,10 @@ mod limits_tests;
 mod budget_cell_tests;
 
 #[cfg(test)]
+#[path = "tests/unit_checkpoint_race_tests.rs"]
+mod unit_checkpoint_race_tests;
+
+#[cfg(test)]
 #[path = "../tests/key_expires_at_tests.rs"]
 mod key_expires_at_tests;
 
