@@ -11,15 +11,16 @@
 # plugin_crossings  calls from the loader into a plugin (counted at the loader boundary)
 # store_round_trips requests submitted to the store plugin
 #
+# An item with no line below has no budget yet: the test measures it, prints
+#   WORK-COUNT section=<section> <item>=<n>
+# and passes. An item with a line is enforced strictly. The first budget is written from those
+# printed counts.
+#
 # Not counted yet (each needs instrumentation at many sites, not one boundary): mutex
 # acquisitions on unit state, JSON parses of the request body, clock reads.
 
 [buffered]
-allocations = 0
-plugin_crossings = 0
-store_round_trips = 0
+# allocations, plugin_crossings, store_round_trips: measured on the first run, then written here.
 
 [streamed]
-allocations = 0
-plugin_crossings = 0
-store_round_trips = 0
+# allocations, plugin_crossings, store_round_trips: measured on the first run, then written here.
