@@ -90,7 +90,6 @@ pub mod plane_driver;
 pub mod probe;
 pub mod pump;
 pub mod registry;
-pub mod scratch;
 pub mod seal;
 mod settlement;
 pub mod teller;

@@ -13,7 +13,6 @@ path = "src/lib.rs"
 
 [dependencies]
 sha2 = { workspace = true }
-bumpalo = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
@@ -82,7 +81,6 @@ futures = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
 rcgen = { workspace = true, features = ["pem"] }
-criterion = { workspace = true }
 # Member `test-support` features are enabled here, never in a release build.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
 
@@ -93,23 +91,6 @@ tikv-jemalloc-sys = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true }
 tikv-jemalloc-sys = { workspace = true }
 libc = { workspace = true }
-
-[[bench]]
-name = "pool_upstream_creds"
-harness = false
-
-[[bench]]
-name = "plane_host_vtable_perf"
-harness = false
-
-[[bench]]
-name = "plane_host_vtable_alloc"
-harness = false
-
-[[bench]]
-name = "request_debug_overhead"
-harness = false
-required-features = ["test-support"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(txn_fence_red)'] }
