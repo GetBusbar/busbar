@@ -152,7 +152,8 @@ pub(crate) mod settings_json;
 )]
 pub(crate) mod write;
 
-use zeroize::{Zeroize, Zeroizing};
+use crate::secure::SecureVec;
+use zeroize::Zeroize;
 
 pub use form_body::{FormBody, FormValue};
 pub use protected_json::{json_text_members, select_json, SelectedJson};
@@ -164,7 +165,7 @@ pub use settings_json::{settings_document, SettingsValue};
 pub(crate) use write::confirm_secure;
 pub use write::{Parts, SealedWrite};
 
-/// Zeroizing material with no way out of this crate: no getter, no `Debug`, no `Display`, no
+/// Wiped material with no way out of this crate: no getter, no `Debug`, no `Display`, no
 #[expect(
     missing_debug_implementations,
     reason = "holds secret bytes: no Debug, so none can print"
@@ -208,7 +209,7 @@ impl<T: Zeroize + AsRef<[u8]>> PartialEq for Held<T> {
 
 impl<T: Zeroize + AsRef<[u8]>> Eq for Held<T> {}
 
-type Bytes = Zeroizing<Vec<u8>>;
+type Bytes = SecureVec;
 
 /// A credential this plugin was configured with. It performs auth steps (`abi::sdk::chip`); its
 /// bytes never leave it. See the module docs.
@@ -224,7 +225,7 @@ pub struct Cred {
 
 impl Cred {
     /// A credential this plugin captured itself (a token from a reply it decoded), taken by value so
-    pub fn captured(bytes: Zeroizing<Vec<u8>>) -> Self {
+    pub fn captured(bytes: SecureVec) -> Self {
         Self {
             held: std::sync::Arc::new(Held::new(bytes)),
             secure: false,
@@ -262,7 +263,7 @@ impl Cred {
 
     /// No credential (an empty password): every recipe answers as the protocol does for one.
     pub fn empty() -> Self {
-        Self::from_bytes(Zeroizing::new(Vec::new()))
+        Self::from_bytes(SecureVec::new())
     }
 
     pub(crate) fn from_bytes(bytes: Bytes) -> Self {

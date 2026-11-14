@@ -6,7 +6,7 @@
 /// A credential holding `text`, as a test configures one.
 #[must_use]
 pub fn cred(text: &str) -> crate::abi::sdk::cred::Cred {
-    crate::abi::sdk::cred::Cred::captured(zeroize::Zeroizing::new(text.as_bytes().to_vec()))
+    crate::abi::sdk::cred::Cred::captured(crate::secure::SecureVec::from(text.as_bytes().to_vec()))
 }
 
 /// Drive `w` over a test's own stand-in for the host's wire: `write` takes bytes and says how many

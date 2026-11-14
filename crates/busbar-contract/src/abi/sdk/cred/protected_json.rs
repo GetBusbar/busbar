@@ -15,8 +15,9 @@
 
 use std::ops::Range;
 
+use crate::abi::sdk::wipe::wipe_bytes;
+use crate::secure::{SecureString, SecureVec};
 use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
-use zeroize::Zeroizing;
 
 use super::{Held as Opaque, JsonReplyError};
 
@@ -105,7 +106,7 @@ pub fn select_json(body: Opaque<Vec<u8>>, path: &[&str]) -> Result<SelectedJson,
 pub fn json_text_members<const N: usize>(
     body: &[u8],
     names: [&str; N],
-) -> Result<[Option<Zeroizing<String>>; N], JsonReplyError> {
+) -> Result<[Option<SecureString>; N], JsonReplyError> {
     let view = masked(body, Unwatched);
     let doc = Doc {
         body,
@@ -124,7 +125,7 @@ struct TextMembers<'a, C, const N: usize> {
 }
 
 impl<'de, C: Custody, const N: usize> Visitor<'de> for TextMembers<'_, C, N> {
-    type Value = [Option<Zeroizing<String>>; N];
+    type Value = [Option<SecureString>; N];
 
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("a JSON object")
@@ -153,7 +154,7 @@ impl<'de, C: Custody, const N: usize> Visitor<'de> for TextMembers<'_, C, N> {
 struct TextMember<'a, C>(Doc<'a, C>);
 
 impl<'de, C: Custody> DeserializeSeed<'de> for TextMember<'_, C> {
-    type Value = Option<Zeroizing<String>>;
+    type Value = Option<SecureString>;
 
     fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         de.deserialize_any(self)
@@ -161,7 +162,7 @@ impl<'de, C: Custody> DeserializeSeed<'de> for TextMember<'_, C> {
 }
 
 impl<'de, C: Custody> Visitor<'de> for TextMember<'_, C> {
-    type Value = Option<Zeroizing<String>>;
+    type Value = Option<SecureString>;
 
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("a string or null")
@@ -198,8 +199,8 @@ fn select_with<C: Custody>(
 }
 
 /// A copy of `body` with every byte inside a string (escapes included) replaced by `x`.
-pub(super) fn masked<C: Custody>(body: &[u8], custody: C) -> Zeroizing<Vec<u8>> {
-    let mut view = Zeroizing::new(body.to_vec());
+pub(super) fn masked<C: Custody>(body: &[u8], custody: C) -> SecureVec {
+    let mut view = SecureVec::from(body);
     custody.held(Held::View, &view);
     let mut inside = false;
     let mut escaped = false;
@@ -239,14 +240,10 @@ impl<'a, C: Custody> Doc<'a, C> {
     }
 
     /// The string serde read as `masked`, decoded from the real bytes into a guarded buffer.
-    pub(super) fn decoded<E: Error>(
-        self,
-        masked: &str,
-        what: Held,
-    ) -> Result<Zeroizing<String>, E> {
+    pub(super) fn decoded<E: Error>(self, masked: &str, what: Held) -> Result<SecureString, E> {
         let raw = self.raw::<E>(masked)?;
-        let mut decoded = Zeroizing::new(String::with_capacity(raw.len()));
-        let result = decode(raw, &mut *decoded);
+        let mut decoded = SecureString::with_capacity(raw.len());
+        let result = decode(raw, &mut decoded);
         self.custody.held(what, decoded.as_bytes());
         result.map_err(E::custom)?;
         Ok(decoded)
@@ -579,11 +576,11 @@ impl<'de, C: Custody> Visitor<'de> for Render<'_, '_, C> {
 
 /// A buffer whose growth wipes the allocation it leaves, so no partial copy of what it holds is
 /// freed unwiped; dropping it wipes it too.
-struct Guarded<C: Custody>(Zeroizing<Vec<u8>>, C);
+struct Guarded<C: Custody>(Vec<u8>, C);
 
 impl<C: Custody> Guarded<C> {
     fn empty(custody: C) -> Self {
-        Self(Zeroizing::new(Vec::new()), custody)
+        Self(Vec::new(), custody)
     }
 
     fn len(&self) -> usize {
@@ -600,7 +597,13 @@ impl<C: Custody> Guarded<C> {
             // The block `append` is about to retire, recorded while it still holds the value.
             self.1.held(Held::Value, &self.0);
         }
-        crate::secure::append(&mut self.0, bytes);
+        if needed > self.0.capacity() {
+            let mut next = Vec::with_capacity(needed.max(self.0.capacity().saturating_mul(2)));
+            next.extend_from_slice(&self.0);
+            let mut old = std::mem::replace(&mut self.0, next);
+            wipe_bytes(&mut old);
+        }
+        self.0.extend_from_slice(bytes);
     }
 
     /// Write `value` as `serde_json` writes it.
@@ -609,17 +612,17 @@ impl<C: Custody> Guarded<C> {
     }
 
     /// The text in a buffer of exactly its length; this one is reported to `custody`, then wiped.
-    fn exact(self) -> Zeroizing<Vec<u8>> {
-        let mut text = Vec::with_capacity(self.0.len());
-        text.extend_from_slice(&self.0);
+    fn exact(self) -> SecureVec {
+        let text = SecureVec::from(self.0.as_slice());
         self.1.held(Held::Value, &text);
-        Zeroizing::new(text)
+        text
     }
 }
 
 impl<C: Custody> Drop for Guarded<C> {
     fn drop(&mut self) {
         self.1.held(Held::Value, &self.0);
+        wipe_bytes(&mut self.0);
     }
 }
 
@@ -688,7 +691,7 @@ impl<'de, C: Custody> Visitor<'de> for Skip<'_, C> {
     fn visit_string<E: Error>(self, value: String) -> Result<(), E> {
         // Only serde_json's already-validated numeric token is owned; masked document
         // strings are borrowed and validated above, without decoding allocations.
-        drop(Zeroizing::new(value));
+        drop(SecureString::from(value));
         Ok(())
     }
 
@@ -709,7 +712,7 @@ impl<'de, C: Custody> Visitor<'de> for Skip<'_, C> {
 /// Actual keys always borrow from the masked view. Checking that provenance before the tag
 /// prevents a document key with serde's private spelling from impersonating a number.
 pub(super) enum ObjectKey {
-    Text(Zeroizing<String>),
+    Text(SecureString),
     Number,
 }
 
@@ -765,7 +768,7 @@ impl<'de> Visitor<'de> for NumberText {
     }
 
     fn visit_string<E: Error>(self, value: String) -> Result<Self::Value, E> {
-        self.visit_str(&Zeroizing::new(value))
+        self.visit_str(&SecureString::from(value))
     }
 }
 
@@ -775,6 +778,12 @@ trait Sink {
 }
 
 impl Sink for String {
+    fn put(&mut self, text: &str) {
+        self.push_str(text);
+    }
+}
+
+impl Sink for SecureString {
     fn put(&mut self, text: &str) {
         self.push_str(text);
     }

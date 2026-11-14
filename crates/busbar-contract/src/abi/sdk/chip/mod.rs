@@ -13,8 +13,8 @@ mod scheme;
 pub use operations::{rsa_public_key_sha256, CredentialPart, Digest, SealedValue};
 
 use crate::abi::sdk::cred::{Cred, Seal};
+use crate::secure::{SecureArray, SecureVec};
 use base64::Engine as _;
-use zeroize::Zeroizing;
 
 /// Why a recipe refused: a sentence with no material in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,10 +28,10 @@ impl core::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-type Bytes = Zeroizing<Vec<u8>>;
+type Bytes = SecureVec;
 
 fn b64(bytes: &[u8]) -> Bytes {
-    Zeroizing::new(
+    SecureVec::from(
         base64::engine::general_purpose::STANDARD
             .encode(bytes)
             .into_bytes(),
@@ -43,8 +43,8 @@ fn pbkdf2_sha256(
     password: &[u8],
     salt: &[u8],
     iterations: u32,
-) -> Result<Zeroizing<[u8; 32]>, Refused> {
-    let mut out = Zeroizing::new([0_u8; 32]);
+) -> Result<SecureArray<32>, Refused> {
+    let mut out = SecureArray::<32>::zeroed();
     crate::crypto::pbkdf2_hmac_sha256(password, salt, iterations, &mut out[..]).map_err(
         |e| match e {
             crate::crypto::Error::Unsupported(u) => Refused(u.reason),
@@ -57,13 +57,13 @@ fn pbkdf2_sha256(
 impl Cred {
     /// The credential as a field value, unchanged (an API key header).
     pub fn field(&self) -> Seal {
-        self.seal(Zeroizing::new(self.wire().to_vec()))
+        self.seal(SecureVec::from(self.wire().to_vec()))
     }
 
     /// `Bearer <credential>`.
     pub fn bearer(&self) -> Seal {
         // Exact size in one allocation (`concat`): the wiping buffer never grows (LR-117).
-        self.seal(Zeroizing::new(
+        self.seal(SecureVec::from(
             [b"Bearer ".as_slice(), self.wire()].concat(),
         ))
     }
@@ -71,8 +71,8 @@ impl Cred {
     /// `Basic base64(user:credential)` (RFC 7617; the user's octets as they are).
     pub fn basic(&self, user: impl AsRef<[u8]>) -> Seal {
         let user = user.as_ref();
-        let pair = Zeroizing::new([user, b":", self.wire()].concat());
-        self.seal(Zeroizing::new(
+        let pair = SecureVec::from([user, b":", self.wire()].concat());
+        self.seal(SecureVec::from(
             [b"Basic ".as_slice(), b64(&pair).as_slice()].concat(),
         ))
     }

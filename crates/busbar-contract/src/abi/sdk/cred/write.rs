@@ -5,7 +5,8 @@
 
 use std::task::Poll;
 
-use zeroize::{Zeroize, Zeroizing};
+use crate::secure::SecureVec;
+use zeroize::Zeroize;
 
 use super::Seal;
 use crate::abi::host::conn::connector::RequestPiece;
@@ -71,7 +72,7 @@ impl Parts {
     reason = "holds secret bytes: no Debug, so none can print"
 )]
 pub struct SealedWrite {
-    pub(crate) buf: Zeroizing<Vec<u8>>,
+    pub(crate) buf: SecureVec,
     pub(crate) done: usize,
     /// It carries a credential that goes out only secured ([`super::Cred::secure_required`]).
     pub(crate) secure: bool,
@@ -102,11 +103,12 @@ pub(crate) fn confirm_secure<K: crate::plugin::KindMarker>(
 impl SealedWrite {
     /// The assembled wire.
     pub fn new(wire: Parts) -> Self {
-        let mut buf = Zeroizing::new(Vec::with_capacity(wire.len()));
+        // Exact size: the buffer never grows.
+        let mut buf = SecureVec::from(Vec::with_capacity(wire.len()));
         for p in &wire.parts {
             match p {
-                Part::Public(b) => crate::secure::append(&mut buf, b),
-                Part::Sealed(s) => crate::secure::append(&mut buf, s.wire()),
+                Part::Public(b) => buf.extend_from_slice(b),
+                Part::Sealed(s) => buf.extend_from_slice(s.wire()),
             }
         }
         // The parts are consumed: their seals are wiped as soon as the wire holds them.
@@ -121,7 +123,7 @@ impl SealedWrite {
         }
     }
 
-    pub(crate) fn from_bytes(buf: Zeroizing<Vec<u8>>, secure: bool) -> Self {
+    pub(crate) fn from_bytes(buf: SecureVec, secure: bool) -> Self {
         Self {
             buf,
             done: 0,

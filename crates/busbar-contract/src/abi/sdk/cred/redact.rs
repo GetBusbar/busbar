@@ -72,13 +72,12 @@ pub fn redact_encoded_echoes(text: &str, credentials: &[&Cred]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeroize::Zeroizing;
 
     #[test]
     fn mixed_encodings_longest_spellings_and_unicode_are_preserved() {
-        let short = Cred::captured(Zeroizing::new(b"a/".to_vec()));
-        let long = Cred::captured(Zeroizing::new(b"a/b c".to_vec()));
-        let unicode = Cred::captured(Zeroizing::new("é".as_bytes().to_vec()));
+        let short = Cred::captured(crate::secure::SecureVec::from(b"a/".to_vec()));
+        let long = Cred::captured(crate::secure::SecureVec::from(b"a/b c".to_vec()));
+        let unicode = Cred::captured(crate::secure::SecureVec::from("é".as_bytes().to_vec()));
         assert_eq!(
             redact_encoded_echoes(
                 "a%2Fb+c a/b%20c a%2fb c a/ é %c3%a9 untouched",
@@ -88,7 +87,7 @@ mod tests {
         );
         let empty = Cred::empty();
         assert_eq!(redact_encoded_echoes("é", &[&empty]), "é");
-        let partial = Cred::captured(Zeroizing::new(vec![0xc3]));
+        let partial = Cred::captured(crate::secure::SecureVec::from(vec![0xc3]));
         assert_eq!(redact_encoded_echoes("é", &[&partial]), "é");
     }
 }

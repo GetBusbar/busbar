@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use zeroize::Zeroizing;
-
 use super::{to_vec, REFUSED};
 use crate::abi::sdk::cred::Cred;
 
 fn cred(s: &str) -> Cred {
-    Cred::captured(Zeroizing::new(s.as_bytes().to_vec()))
+    Cred::captured(crate::secure::SecureVec::from(s.as_bytes().to_vec()))
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -103,7 +101,7 @@ fn the_scope_closes_when_the_record_fails() {
 fn a_credential_that_is_not_text_has_no_record_form() {
     let r = Row {
         scheme: "Bearer".into(),
-        credentials: Cred::captured(Zeroizing::new(vec![0xff, 0xfe])),
+        credentials: Cred::captured(crate::secure::SecureVec::from(vec![0xff, 0xfe])),
     };
     assert!(to_vec(&r).is_err());
 }
