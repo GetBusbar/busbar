@@ -650,6 +650,70 @@ impl RootHost {
         crate::root::boot::registry(Vec::new(), Some(&cfg), None, &mut |_| {})
             .map_err(|_| Unobtainable::NotAdmitted)
     }
+
+    /// Check converted settings with the current plugin, keeping apart a plugin the host could
+    /// not obtain from one that refused them.
+    fn check(&self, kind: &str, module: &str, settings: &serde_json::Value) -> Result<(), Checked> {
+        // Planes receive an owned-plus-borrowed migration envelope, not their lifecycle
+        // settings blob. Full effective plane validation remains the ordinary boot reader's.
+        if kind == busbar_contract::abi::mechanism::kind::PLANE
+            || (kind == busbar_contract::abi::mechanism::kind::AUTH
+                && busbar_kernel::config::is_builtin_identity_module(module))
+        {
+            return Ok(());
+        }
+        let refused = |text: &str| Checked::Refused(text.to_owned());
+        if let Some((_, door)) = Self::linked_door(kind, module) {
+            let row = crate::root::loader::dispatch::LinkedRow::of(door)
+                .map_err(|_| refused("current migration plugin statement is unavailable"))?;
+            let statement = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+                .map_err(|_| refused("current migration plugin statement is invalid"))?;
+            let probe = self
+                .validation_probe(settings, &statement)
+                .map_err(Checked::Refused)?;
+            return crate::root::loader::dispatch::migrate::validate_migrated_door(
+                crate::root::loader::dispatch::load::raw(door),
+                &probe,
+            )
+            .map_err(Checked::Refused);
+        }
+        let local = self.local();
+        if let Some(row) = local
+            .resolve(module)
+            .filter(|row| row.manifest.kind == kind)
+        {
+            let statement = row
+                .statement()
+                .ok_or_else(|| refused("current migration plugin statement is unavailable"))?;
+            let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
+                .map_err(|_| refused("current migration plugin statement is invalid"))?;
+            let probe = self
+                .validation_probe(settings, &statement)
+                .map_err(Checked::Refused)?;
+            return row.validate_migrated(&probe).map_err(Checked::Refused);
+        }
+        let fetched = self.fetch(kind, module).map_err(Checked::Unavailable)?;
+        let row = fetched
+            .resolve(module)
+            .filter(|row| row.manifest.kind == kind)
+            .ok_or(Checked::Unavailable(Unobtainable::NotServed))?;
+        let statement = row
+            .statement()
+            .ok_or_else(|| refused("current migration plugin statement is unavailable"))?;
+        let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .map_err(|_| refused("current migration plugin statement is invalid"))?;
+        let probe = self
+            .validation_probe(settings, &statement)
+            .map_err(Checked::Refused)?;
+        row.validate_migrated(&probe).map_err(Checked::Refused)
+    }
+}
+
+/// A current-plugin check that did not pass: the plugin could not be obtained, or it (or the
+/// host's probe of its statement) refused the settings with this text.
+enum Checked {
+    Unavailable(Unobtainable),
+    Refused(String),
 }
 
 impl RootHost {
@@ -706,56 +770,29 @@ impl MigrateHost for RootHost {
         kind: &str,
         module: &str,
         settings: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.check(kind, module, settings)
+            .map_err(|answer| match answer {
+                Checked::Unavailable(Unobtainable::NotServed) => {
+                    "current migration plugin is unavailable for validation".to_owned()
+                }
+                Checked::Unavailable(why) => why.to_string(),
+                Checked::Refused(text) => text,
+            })
+    }
+
+    fn validate_current(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
     ) -> Result<(), Unvalidated> {
-        // Planes receive an owned-plus-borrowed migration envelope, not their lifecycle
-        // settings blob. Full effective plane validation remains the ordinary boot reader's.
-        if kind == busbar_contract::abi::mechanism::kind::PLANE
-            || (kind == busbar_contract::abi::mechanism::kind::AUTH
-                && busbar_kernel::config::is_builtin_identity_module(module))
-        {
-            return Ok(());
-        }
         // The plugin's own refusal text may echo settings: it is never carried.
-        let refused = |_: String| Unvalidated::Refused;
-        if let Some((_, door)) = Self::linked_door(kind, module) {
-            let row = crate::root::loader::dispatch::LinkedRow::of(door)
-                .map_err(|_| Unvalidated::Refused)?;
-            let statement = busbar_contract::abi::mechanism::rendering::read(&row.statement)
-                .map_err(|_| Unvalidated::Refused)?;
-            let probe = self
-                .validation_probe(settings, &statement)
-                .map_err(refused)?;
-            return crate::root::loader::dispatch::migrate::validate_migrated_door(
-                crate::root::loader::dispatch::load::raw(door),
-                &probe,
-            )
-            .map_err(refused);
-        }
-        let local = self.local();
-        if let Some(row) = local
-            .resolve(module)
-            .filter(|row| row.manifest.kind == kind)
-        {
-            let statement = row.statement().ok_or(Unvalidated::Refused)?;
-            let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .map_err(|_| Unvalidated::Refused)?;
-            let probe = self
-                .validation_probe(settings, &statement)
-                .map_err(refused)?;
-            return row.validate_migrated(&probe).map_err(refused);
-        }
-        let fetched = self.fetch(kind, module).map_err(Unvalidated::Unavailable)?;
-        let row = fetched
-            .resolve(module)
-            .filter(|row| row.manifest.kind == kind)
-            .ok_or(Unvalidated::Unavailable(Unobtainable::NotServed))?;
-        let statement = row.statement().ok_or(Unvalidated::Refused)?;
-        let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .map_err(|_| Unvalidated::Refused)?;
-        let probe = self
-            .validation_probe(settings, &statement)
-            .map_err(refused)?;
-        row.validate_migrated(&probe).map_err(refused)
+        self.check(kind, module, settings)
+            .map_err(|answer| match answer {
+                Checked::Unavailable(why) => Unvalidated::Unavailable(why),
+                Checked::Refused(_) => Unvalidated::Refused,
+            })
     }
 
     fn externalize_secret(

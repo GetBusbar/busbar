@@ -955,7 +955,7 @@ impl MigrateHost for BrowserProjection {
         kind: &str,
         _: &str,
         settings: &serde_json::Value,
-    ) -> Result<(), super::Unvalidated> {
+    ) -> Result<(), String> {
         assert_eq!(kind, "auth");
         if settings
             .get("client_id")
@@ -964,7 +964,7 @@ impl MigrateHost for BrowserProjection {
         {
             Ok(())
         } else {
-            Err(super::Unvalidated::Refused)
+            Err("missing effective client identifier".into())
         }
     }
     fn migrate(
@@ -1185,7 +1185,7 @@ const GOVERNANCE_14: &str = "governance: {enabled: true, db_path: busbar-governa
 struct StoreCheck(super::Unvalidated);
 
 impl MigrateHost for StoreCheck {
-    fn validate_migrated(
+    fn validate_current(
         &self,
         kind: &str,
         module: &str,
@@ -1215,15 +1215,16 @@ impl MigrateHost for StoreCheck {
 
 #[test]
 fn a_store_whose_current_plugin_cannot_be_obtained_says_why() {
-    let line = migrate_config_with(
+    let Err(line) = migrate_config_with(
         GOVERNANCE_14,
         &StoreCheck(super::Unvalidated::Unavailable(
             super::Unobtainable::IndexUnreachable {
                 source: super::Shown::of("idx.json"),
             },
         )),
-    )
-    .expect_err("an unchecked Store is not emitted");
+    ) else {
+        panic!("an unchecked Store is not emitted");
+    };
     assert_eq!(
         line,
         "store.settings: the current store plugin 'sqlite' could not be obtained to check these \
@@ -1241,11 +1242,12 @@ fn a_store_whose_current_plugin_cannot_be_obtained_says_why() {
 fn a_plugin_refusal_prints_no_plugin_text() {
     // `Refused` carries no plugin text by type; the refused settings themselves hold the
     // sentinel, so the line must not echo them either.
-    let line = migrate_config_with(
+    let Err(line) = migrate_config_with(
         "governance: {enabled: true, db_path: LEAK-sk-123.db}\n",
         &StoreCheck(super::Unvalidated::Refused),
-    )
-    .expect_err("refused settings are not emitted");
+    ) else {
+        panic!("refused settings are not emitted");
+    };
     assert_eq!(
         line,
         "store.settings: current plugin validation refused unchanged settings; install the \

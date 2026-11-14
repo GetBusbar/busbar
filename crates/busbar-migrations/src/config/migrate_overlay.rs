@@ -37,13 +37,16 @@ impl MigrateHost for OverlayHost<'_> {
     fn admit_config_profile(&self, proof: &super::HistoricalConfigProof) -> Result<(), String> {
         self.0.admit_config_profile(proof)
     }
-    fn validate_migrated(
+    fn validate_migrated(&self, kind: &str, module: &str, settings: &Value) -> Result<(), String> {
+        self.0.validate_migrated(kind, module, settings)
+    }
+    fn validate_current(
         &self,
         kind: &str,
         module: &str,
         settings: &Value,
     ) -> Result<(), super::migrate_plugins::Unvalidated> {
-        self.0.validate_migrated(kind, module, settings)
+        self.0.validate_current(kind, module, settings)
     }
     fn migrating_from(&self) -> &str {
         "1.5.5"
