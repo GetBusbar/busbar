@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! # busbar-kernel-identity — the chain walk and the identity types around it
+//! # busbar-kernel-identity — the identity types around the kernel's auth chain
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -9,14 +9,16 @@
 
 /// The caller reference a plane attributes a request with, in place of the principal.
 pub mod caller_ref;
-pub mod chain;
-pub mod module;
 pub mod operator;
 pub mod principal;
 
-pub use chain::{AuthChain, ChainEntry, ChainVerdict, KeyVerifier, ResolvedKey, RevocationView};
-pub use module::{AuthModule, AuthOutcome};
-pub use principal::{Principal, ANONYMOUS};
+pub use principal::ANONYMOUS;
+
+/// The revocation set, as the kernel derives it from the journal tail.
+pub trait RevocationView: Send + Sync {
+    /// Whether this credential is revoked as of the current policy epoch.
+    fn is_revoked(&self, credential: &str) -> bool;
+}
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]
