@@ -2460,6 +2460,11 @@ impl Dispatcher {
 
     #[cfg(test)]
     pub(crate) fn installed_runtime(&self) -> Option<&tokio::runtime::Handle> {
+        self.runtime_handle()
+    }
+
+    /// The runtime the host installed on this dispatcher, if any.
+    pub(crate) fn runtime_handle(&self) -> Option<&tokio::runtime::Handle> {
         self.pool.env.runtime.get()
     }
 

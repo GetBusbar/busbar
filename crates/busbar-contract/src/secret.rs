@@ -150,6 +150,24 @@ pub trait SecretCalls: Send + Sync {
     /// `resolve` one reference's `settings` object (JSON bytes) to the secret's material, which the
     fn resolve(&self, settings: &[u8]) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused>;
 
+    /// Whether this instance was opened with secret material lent from its own references, so a
+    /// [`Self::relend`] can find it rotated (the host polls only such instances).
+    fn relends(&self) -> bool {
+        false
+    }
+
+    /// RE-LEND: re-resolve the references this instance was opened with through `resolve` and,
+    /// when the material changed, hand it to the plugin's `refresh` (or, for a plugin with no
+    /// `refresh`, open a new instance from the same artifact for the caller to swap in). A refusal
+    /// leaves this instance exactly as it was.
+    fn relend(
+        &self,
+        resolve: &dyn Fn(&SecretRef) -> Result<SecretBytes, String>,
+    ) -> Result<SecretRelent, RelendRefused> {
+        let _ = resolve;
+        Ok(SecretRelent::Unchanged)
+    }
+
     /// `resolve` at CONFIG TIME, with its proof ([`ConfigScope`](crate::config_time::ConfigScope)):
     fn resolve_at_config(
         &self,
@@ -190,4 +208,68 @@ pub trait SecretAxis: Send + Sync {
         settings: Option<&crate::plugin_settings::Settings>,
         resolve: &dyn Fn(&SecretRef) -> Result<SecretBytes, String>,
     ) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
+}
+
+/// What a secret instance's [`SecretCalls::relend`] did.
+pub enum SecretRelent {
+    /// The lent material is unchanged: nothing was called.
+    Unchanged,
+    /// The plugin's `refresh` adopted the new material in place.
+    Refreshed,
+    /// The plugin has no `refresh`: a new instance from the same artifact opened over the new
+    /// material, for the caller to swap in (the old one closes when its last caller lets go).
+    Reopened(std::sync::Arc<dyn SecretCalls>),
+}
+
+impl std::fmt::Debug for SecretRelent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unchanged => "Unchanged",
+            Self::Refreshed => "Refreshed",
+            Self::Reopened(_) => "Reopened",
+        })
+    }
+}
+
+/// What an auth instance's re-lend did (`auth_calls::AuthCalls::relend`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthRelent {
+    /// The lent material is unchanged: nothing was called.
+    Unchanged,
+    /// The plugin's `refresh` adopted the new material in place.
+    Refreshed,
+    /// The plugin has no `refresh`: the caller opens a new instance and swaps it in.
+    NotRefreshed,
+}
+
+/// Why a re-lend did not apply; the running instance is kept as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelendRefused {
+    /// Which step refused.
+    pub cause: RelendCause,
+    /// The operator's words (never secret material).
+    pub text: String,
+}
+
+/// The step of a re-lend that refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelendCause {
+    /// A reference could not be re-resolved.
+    Unresolvable,
+    /// The plugin's `refresh` refused the new material.
+    Refused,
+    /// The new instance (a plugin with no `refresh`) did not open.
+    ReopenFailed,
+}
+
+impl RelendCause {
+    /// The cause as the diagnostic's `cause` field spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unresolvable => "unresolvable",
+            Self::Refused => "refused",
+            Self::ReopenFailed => "reopen-failed",
+        }
+    }
 }

@@ -649,7 +649,9 @@ pub struct AuthInstance {
 
     settings: zeroize::Zeroizing<Vec<u8>>,
 
-    secrets: KeptSecrets,
+    /// What the instance was lent (re-lent on rotation), and that material's fingerprint.
+    secrets: Mutex<Arc<KeptSecrets>>,
+    lent_fingerprint: Mutex<[u8; 32]>,
     label: String,
     lifecycle: Mutex<()>,
 
@@ -684,6 +686,18 @@ pub(crate) struct KeptSecrets(Vec<busbar_contract::Secret<Vec<u8>>>);
 impl KeptSecrets {
     fn new(secrets: Vec<busbar_contract::Secret<Vec<u8>>>) -> Self {
         Self(secrets)
+    }
+
+    fn fingerprint(
+        &self,
+        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+    ) -> [u8; 32] {
+        match seal {
+            Some(seal) => busbar_contract::redacted::fingerprint(
+                self.0.iter().map(|s| s.expose(seal).as_slice()),
+            ),
+            None => busbar_contract::redacted::fingerprint(std::iter::empty()),
+        }
     }
 
     fn blobs(
@@ -808,6 +822,70 @@ impl AuthInstance {
         })
     }
 
+    /// REFRESH the instance with its settings and `secrets` under the next generation; the caller
+    /// holds the lifecycle lock. A refusal answers the plugin's error bytes and the reason.
+    fn refresh_lent(&self, secrets: &KeptSecrets) -> Result<u64, (Option<Vec<u8>>, String)> {
+        let generation = {
+            let mut metadata = self
+                .metadata
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let generation = metadata
+                .generation
+                .max(metadata.attempted_generation)
+                .checked_add(1)
+                .ok_or((None, "auth lifecycle generation exhausted".to_string()))?;
+            metadata.attempted_generation = generation;
+            generation
+        };
+        self.sink.0.flushed.store(0, Ordering::Release);
+        let blobs = secrets
+            .blobs(self.shared.dispatcher.seal())
+            .map_err(|e| (None, e))?;
+        let mut f = Frame::new(
+            RefreshIn {
+                head: in_head(),
+                generation,
+                settings: blob(&self.settings, BLOB_JSON, 0),
+                secrets: if blobs.is_empty() {
+                    std::ptr::null()
+                } else {
+                    blobs.as_ptr()
+                },
+                secrets_len: blobs.len(),
+            },
+            out_head(),
+        );
+
+        let was_valid = self.metadata_valid.load(Ordering::Acquire);
+        let called = self.shared.plugin.call(lc::REFRESH, &mut f);
+        let _lease = AnswerLease::new(&self.shared.plugin, called.lease);
+        if called.outcome != Outcome::Ready {
+            self.metadata_valid.store(
+                was_valid && matches!(called.outcome, Outcome::Refused | Outcome::Failed),
+                Ordering::Release,
+            );
+            let bytes = called.error.clone();
+            return Err((bytes, why(called.outcome, called.error)));
+        }
+        let current = self.carriers();
+        let metadata = instance_metadata(f.out.extensions, &current, &self.facts, generation);
+        match metadata {
+            Ok(metadata) => {
+                *self
+                    .metadata
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = metadata;
+                self.metadata_valid.store(true, Ordering::Release);
+            }
+            Err(error) => {
+                self.metadata_valid.store(false, Ordering::Release);
+                return Err((None, error));
+            }
+        }
+        Ok(self.sink.0.flushed.load(Ordering::Acquire))
+    }
+
     pub fn open(
         plugin: Plugin<Auth>,
         sink: AuthSink,
@@ -817,6 +895,7 @@ impl AuthInstance {
         secrets: Vec<busbar_contract::Secret<Vec<u8>>>,
     ) -> Result<Self, String> {
         let secrets = KeptSecrets::new(secrets);
+        let lent_fingerprint = secrets.fingerprint(dispatcher.seal());
         let facts = plugin.context::<AuthFacts>().cloned().unwrap_or_default();
         *sink.0.family.lock().unwrap_or_else(|e| e.into_inner()) = facts.cache_family;
         let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
@@ -853,7 +932,7 @@ impl AuthInstance {
 
         let plugin = Arc::new(plugin);
         let schedule =
-            crate::dispatch::auth_ticks::spawn(Arc::clone(&plugin), dispatcher.clone(), 0);
+            crate::dispatch::ticks::spawn(Arc::clone(&plugin), dispatcher.clone(), 0);
         Ok(Self {
             shared: Arc::new(Shared {
                 plugin,
@@ -865,7 +944,8 @@ impl AuthInstance {
             metadata: Mutex::new(metadata),
             metadata_valid: AtomicBool::new(true),
             settings: zeroize::Zeroizing::new(settings.to_vec()),
-            secrets,
+            secrets: Mutex::new(Arc::new(secrets)),
+            lent_fingerprint: Mutex::new(lent_fingerprint),
             label: label.to_string(),
             lifecycle: Mutex::new(()),
             schedule,
@@ -888,8 +968,8 @@ impl AuthInstance {
     }
 
     #[cfg(test)]
-    pub(crate) fn kept_secrets(&self) -> &KeptSecrets {
-        &self.secrets
+    pub(crate) fn kept_secrets(&self) -> Arc<KeptSecrets> {
+        Arc::clone(&self.secrets.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     #[cfg(test)]
@@ -1019,62 +1099,56 @@ impl AuthCalls for AuthInstance {
                 ));
             }
         };
-        let generation = {
-            let mut metadata = self
-                .metadata
+        let secrets = Arc::clone(
+            &self
+                .secrets
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let generation = metadata
-                .generation
-                .max(metadata.attempted_generation)
-                .checked_add(1)
-                .ok_or("auth lifecycle generation exhausted")?;
-            metadata.attempted_generation = generation;
-            generation
-        };
-        self.sink.0.flushed.store(0, Ordering::Release);
-        let blobs = self.secrets.blobs(self.shared.dispatcher.seal())?;
-        let mut f = Frame::new(
-            RefreshIn {
-                head: in_head(),
-                generation,
-                settings: blob(&self.settings, BLOB_JSON, 0),
-                secrets: if blobs.is_empty() {
-                    std::ptr::null()
-                } else {
-                    blobs.as_ptr()
-                },
-                secrets_len: blobs.len(),
-            },
-            out_head(),
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+        self.refresh_lent(&secrets).map_err(|(_, why)| why)
+    }
 
-        let was_valid = self.metadata_valid.load(Ordering::Acquire);
-        let called = self.shared.plugin.call(lc::REFRESH, &mut f);
-        let _lease = AnswerLease::new(&self.shared.plugin, called.lease);
-        if called.outcome != Outcome::Ready {
-            self.metadata_valid.store(
-                was_valid && matches!(called.outcome, Outcome::Refused | Outcome::Failed),
-                Ordering::Release,
-            );
-            return Err(why(called.outcome, called.error));
+    fn relend(
+        &self,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
+    ) -> Result<busbar_contract::secret::AuthRelent, String> {
+        use busbar_contract::secret::AuthRelent;
+        let (_, secrets) = split_secrets(&self.shared.plugin, settings);
+        let secrets = KeptSecrets::new(secrets);
+        let fingerprint = secrets.fingerprint(self.shared.dispatcher.seal());
+        let unchanged = busbar_contract::redacted::constant_time_eq(
+            &*self
+                .lent_fingerprint
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &fingerprint,
+        );
+        if unchanged {
+            return Ok(AuthRelent::Unchanged);
         }
-        let current = self.carriers();
-        let metadata = instance_metadata(f.out.extensions, &current, &self.facts, generation);
-        match metadata {
-            Ok(metadata) => {
+        let Ok(_one) = self.lifecycle.try_lock() else {
+            // An operator's refresh is in flight; the next poll re-lends.
+            return Ok(AuthRelent::Unchanged);
+        };
+        match self.refresh_lent(&secrets) {
+            Ok(_) => {
                 *self
-                    .metadata
+                    .secrets
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = metadata;
-                self.metadata_valid.store(true, Ordering::Release);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(secrets);
+                *self
+                    .lent_fingerprint
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = fingerprint;
+                Ok(AuthRelent::Refreshed)
             }
-            Err(error) => {
-                self.metadata_valid.store(false, Ordering::Release);
-                return Err(error);
+            Err((Some(error), _))
+                if error == busbar_contract::abi::sdk::life::NOT_REFRESHED.as_bytes() =>
+            {
+                Ok(AuthRelent::NotRefreshed)
             }
+            Err((_, why)) => Err(why),
         }
-        Ok(self.sink.0.flushed.load(Ordering::Acquire))
     }
 
     fn login_presentation(&self) -> Option<busbar_contract::auth_calls::LoginPresentation> {

@@ -3544,7 +3544,11 @@ fn upstream_credential_binding(
 ) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
     Ok(
         upstream_credential(member_name, registration, reach, scope)?.map(|(binding, per)| {
-            refresher::keep(&per);
+            let first = per.first_due(std::time::Instant::now(), busbar_kernel::retry::unit());
+            busbar_kernel::refresh::keep(
+                Arc::downgrade(&per) as std::sync::Weak<dyn busbar_kernel::refresh::Refreshable>,
+                first,
+            );
             binding
         }),
     )
@@ -3623,16 +3627,15 @@ fn upstream_credential(
         })?;
     let settings = placement_settings(header.as_deref());
 
-    let credential = reach
-        .secrets
-        .resolve_string_at_config(&secret, scope)
-        .map_err(|e| {
-            format!(
-                "member '{member_name}': busbar's own upstream credential for it cannot \
-                 resolve: {e}"
-            )
-        })?
-        .into_bytes();
+    let credential =
+        busbar_kernel::config::secret::resolve_text_refusing(reach.secrets.as_ref(), &secret, scope)
+            .map_err(|e| {
+                format!(
+                    "member '{member_name}': busbar's own upstream credential for it cannot \
+                     resolve: {}",
+                    e.text
+                )
+            })?;
     let (auth, decl) = reach.auths.serving(style, &settings)?.ok_or_else(|| {
         format!(
             "member '{member_name}': no linked or dropped-in auth plugin serves the style \
@@ -3645,21 +3648,21 @@ fn upstream_credential(
         .open_outbound(style, credential.expose(&seal), &settings)
         .map_err(|e| format!("member '{member_name}' {e}"))?;
 
-    let per = Arc::new(PerHop {
-        secret,
-        secrets: Arc::clone(&reach.secrets),
-        auth: Arc::clone(&auth),
-        style,
-        header,
-        lease,
-        held: arc_swap::ArcSwapOption::from_pointee(Held {
-            digest: busbar_contract::abi::sdk::digest::sha256(credential.expose(&seal)),
-            handle,
-            expires_at: minted + lease,
-        }),
-        refreshing: Mutex::new(()),
-        lapsed: std::sync::atomic::AtomicBool::new(false),
-    });
+    let per = Arc::new(PerHop::new(
+        Lent {
+            member: member_name.to_string(),
+            secret,
+            secrets: Arc::clone(&reach.secrets),
+            auth: Arc::clone(&auth),
+            style,
+            header,
+            lease,
+        },
+        busbar_kernel::refresh::fingerprint([credential.expose(&seal).as_slice()]),
+        handle,
+        minted,
+        &busbar_kernel::refresh::HOST_REPORT,
+    ));
     drop(credential);
     Ok(Some((
         busbar_kernel::plane_driver::AuthBinding {
@@ -3683,76 +3686,542 @@ fn placement_settings(header: Option<&str>) -> serde_json::Value {
     )
 }
 
+/// What a member's credential is presented as now: the outbound handle its value opened, the
+/// value's fingerprint (never the value) and when its lease runs out.
 struct Held {
     digest: [u8; 32],
     handle: u64,
     expires_at: std::time::Instant,
 }
 
+/// How often a held credential is renewed: half its lease, at most every five minutes (so a very
+/// long lease still re-checks its source), never more often than the host's retry floor.
 fn renew_every(lease: std::time::Duration) -> std::time::Duration {
-    (lease / 2).max(std::time::Duration::from_millis(1))
+    (lease / 2)
+        .min(std::time::Duration::from_secs(300))
+        .max(busbar_kernel::retry::FLOOR)
 }
 
-struct PerHop {
+/// The retry backoff for one lease: base 1 s, cap `clamp(lease/8, 1 s, 30 s)`.
+fn lease_backoff(lease: std::time::Duration) -> busbar_kernel::retry::Backoff {
+    const BASE: std::time::Duration = std::time::Duration::from_secs(1);
+    busbar_kernel::retry::Backoff::new(
+        BASE,
+        (lease / 8).clamp(BASE, std::time::Duration::from_secs(30)),
+    )
+}
+
+/// WHAT ONE REFRESH ATTEMPT LEADS TO NEXT, for [`next_due`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Next {
+    /// It renewed or rotated: the next renewal.
+    Renew,
+    /// A definitive answer (not found, denied) that a re-read must confirm.
+    Confirm,
+    /// Failure `n` (1-based) of a streak.
+    Retry(u32),
+}
+
+/// WHEN A MEMBER'S CREDENTIAL IS NEXT REFRESHED, as a pure function of its lease, what the last
+/// attempt led to, when what it holds runs out and one uniform draw `unit` in `[0, 1)`:
+///
+/// - renewal: `renew_every(lease)` ± 10 %;
+/// - a definitive answer's confirmation: 1 s;
+/// - failure `n`: full-jitter backoff (`lease_backoff`), never past the held value's expiry while
+///   one is held — a wait that would reach it is halved toward it, so attempts keep landing before
+///   expiry without spinning (the floor is 100 ms);
+/// - past expiry (or with nothing held): a steady retry uniform in `[cap/2, cap]`.
+fn next_due(
+    lease: std::time::Duration,
+    next: Next,
+    expires_at: Option<std::time::Instant>,
+    now: std::time::Instant,
+    unit: f64,
+) -> std::time::Instant {
+    use busbar_kernel::retry::{spread, FLOOR};
+    let backoff = lease_backoff(lease);
+    let wait = match next {
+        Next::Renew => spread(renew_every(lease), 0.1, unit),
+        Next::Confirm => backoff.base,
+        Next::Retry(failures) => match expires_at.filter(|at| *at > now) {
+            None => backoff.steady(unit),
+            Some(at) => {
+                let left = at - now;
+                let wait = backoff.delay(failures, unit);
+                if wait < left {
+                    wait
+                } else {
+                    (left / 2).max(FLOOR)
+                }
+            }
+        },
+    };
+    now + wait
+}
+
+/// What a member's credential refresh needs, apart from what it holds.
+struct Lent {
+    member: String,
     secret: busbar_contract::secret_ref::SecretRef,
     secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     auth: Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
     style: &'static str,
     header: Option<String>,
-
     lease: std::time::Duration,
+}
+
+/// The refresh's own state, behind its single-flight lock.
+#[derive(Default)]
+struct Streak {
+    /// Failures since the last success.
+    failures: u32,
+    /// A definitive kind (not found, denied) the next re-read must answer again to drop.
+    confirming: Option<u32>,
+    /// When this member last reported 8026.
+    warned: Option<std::time::Instant>,
+    /// Whether this streak's last-attempt-before-expiry report was made.
+    warned_final: bool,
+    /// The previous `(fingerprint, handle)` pair: a source flapping between two values reuses its
+    /// handle instead of opening a new one per flip.
+    prior: Option<([u8; 32], u64)>,
+    /// Whether the held value was dropped (a confirmed revocation).
+    dropped: bool,
+    /// When the next attempt is due, as last scheduled.
+    due: Option<std::time::Instant>,
+}
+
+/// One member's upstream credential, held on its lease and renewed off the request path.
+struct PerHop {
+    lent: Lent,
     held: arc_swap::ArcSwapOption<Held>,
 
-    refreshing: Mutex<()>,
+    refreshing: Mutex<Streak>,
 
     lapsed: std::sync::atomic::AtomicBool,
+    report: &'static dyn busbar_kernel::refresh::Report,
+}
+
+/// What one refresh attempt did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Attempt {
+    /// Another refresh of this member was in flight; nothing was done.
+    Busy,
+    /// The value is unchanged; its lease was renewed.
+    Renewed,
+    /// The value changed and the new one is presented.
+    Rotated,
+    /// The source answered a definitive kind once; a re-read confirms it.
+    Confirming { error_kind: u32 },
+    /// The source confirmed a definitive kind: the held credential was dropped.
+    Dropped { error_kind: u32 },
+    /// The source could not be read (an outage): the held credential is kept until it expires.
+    Failed { error_kind: u32 },
+    /// The value changed and the auth plugin refused the new one: the old one is kept.
+    Refused,
+}
+
+const UPSTREAM_REFRESH_ACTION: &str = "upstream_credential.refresh";
+
+fn definitive(error_kind: u32) -> bool {
+    use busbar_contract::abi::secret::{ERROR_KIND_DENIED, ERROR_KIND_NOT_FOUND};
+    matches!(error_kind, ERROR_KIND_NOT_FOUND | ERROR_KIND_DENIED)
+}
+
+fn millis(d: std::time::Duration) -> String {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX).to_string()
 }
 
 impl PerHop {
-    fn refresh(&self, scope: &busbar_contract::config_time::ConfigScope) {
-        let _one = self
-            .refreshing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        let expires_at = std::time::Instant::now() + self.lease;
-        let Ok(value) = self.secrets.resolve_string_at_config(&self.secret, scope) else {
-            self.held.store(None);
-            return;
-        };
-        let value = value.into_bytes();
-
-        let seal = busbar_kernel::seal::lend();
-        let digest = busbar_contract::abi::sdk::digest::sha256(value.expose(&seal));
-        let unchanged = self.held.load().as_ref().and_then(|held| {
-            busbar_contract::redacted::constant_time_eq(&held.digest, &digest)
-                .then_some(held.handle)
-        });
-        if let Some(handle) = unchanged {
-            self.held.store(Some(Arc::new(Held {
+    fn new(
+        lent: Lent,
+        digest: [u8; 32],
+        handle: u64,
+        minted: std::time::Instant,
+        report: &'static dyn busbar_kernel::refresh::Report,
+    ) -> Self {
+        let expires_at = minted + lent.lease;
+        Self {
+            lent,
+            held: arc_swap::ArcSwapOption::from_pointee(Held {
                 digest,
                 handle,
                 expires_at,
-            })));
-            self.lapsed
-                .store(false, std::sync::atomic::Ordering::Relaxed);
+            }),
+            refreshing: Mutex::new(Streak::default()),
+            lapsed: std::sync::atomic::AtomicBool::new(false),
+            report,
+        }
+    }
+
+    /// When the refresher first renews a credential just bound at `now`.
+    fn first_due(&self, now: std::time::Instant, unit: f64) -> std::time::Instant {
+        next_due(self.lent.lease, Next::Renew, None, now, unit)
+    }
+
+    fn resource(&self) -> String {
+        format!("member:{}", self.lent.member)
+    }
+
+    fn fields(&self, extra: Vec<(&'static str, String)>) -> Vec<(&'static str, String)> {
+        let mut fields = vec![
+            ("member", self.lent.member.clone()),
+            ("reference", self.lent.secret.describe()),
+            ("style", self.lent.style.to_string()),
+        ];
+        if let Some(header) = &self.lent.header {
+            fields.push(("header", header.clone()));
+        }
+        fields.extend(extra);
+        fields
+    }
+
+    /// Refresh now, on the calling thread (a test's lever and the refresher's one step).
+    fn refresh(&self, scope: &busbar_contract::config_time::ConfigScope) -> Attempt {
+        self.refresh_with(scope, std::time::Instant::now(), busbar_kernel::retry::unit())
+            .0
+    }
+
+    /// One attempt at `now` with the draw `unit`: what it did and when the next is due.
+    fn refresh_with(
+        &self,
+        scope: &busbar_contract::config_time::ConfigScope,
+        now: std::time::Instant,
+        unit: f64,
+    ) -> (Attempt, std::time::Instant) {
+        let mut streak = match self.refreshing.try_lock() {
+            Ok(streak) => streak,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return (
+                    Attempt::Busy,
+                    now + busbar_kernel::retry::FLOOR.max(std::time::Duration::from_secs(1)),
+                );
+            }
+        };
+        let resolved = busbar_kernel::config::secret::resolve_text_refusing(
+            self.lent.secrets.as_ref(),
+            &self.lent.secret,
+            scope,
+        );
+        let stopping = busbar_kernel::refresh::stopping();
+        let value = match resolved {
+            Ok(value) => value,
+            Err(refused) => {
+                return self.failed(&mut streak, refused, now, unit, stopping);
+            }
+        };
+        let expires_at = now + self.lent.lease;
+        let seal = busbar_kernel::seal::lend();
+        let digest = busbar_kernel::refresh::fingerprint([value.expose(&seal).as_slice()]);
+        let held = self.held.load_full();
+        let same = |d: &[u8; 32]| busbar_contract::redacted::constant_time_eq(d, &digest);
+        let reuse = match held.as_deref() {
+            Some(held) if same(&held.digest) => Some((held.handle, false)),
+            _ => streak
+                .prior
+                .filter(|(d, _)| same(d))
+                .map(|(_, handle)| (handle, held.is_some())),
+        };
+        let (handle, rotated) = match reuse {
+            Some(found) => found,
+            None if stopping => return (Attempt::Busy, now + renew_every(self.lent.lease)),
+            None => {
+                let opened = self.lent.auth.open_outbound(
+                    self.lent.style,
+                    value.expose(&seal),
+                    &placement_settings(self.lent.header.as_deref()),
+                );
+                drop(value);
+                match opened {
+                    Ok(handle) => (handle, true),
+                    Err(text) => return self.refused(&mut streak, &text, now, unit),
+                }
+            }
+        };
+        if let Some(held) = held.as_deref().filter(|_| rotated) {
+            streak.prior = Some((held.digest, held.handle));
+        }
+        self.held.store(Some(Arc::new(Held {
+            digest,
+            handle,
+            expires_at,
+        })));
+        let was_lapsed = self
+            .lapsed
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        if streak.failures > 0 || was_lapsed || streak.dropped {
+            self.report.info(
+                "busbar's upstream credential for this member refreshed again",
+                &self.fields(vec![("failures", streak.failures.to_string())]),
+            );
+            self.report.audit(
+                UPSTREAM_REFRESH_ACTION,
+                &self.resource(),
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+            );
+        }
+        let (prior, due) = (streak.prior, next_due(self.lent.lease, Next::Renew, None, now, unit));
+        *streak = Streak {
+            prior,
+            due: Some(due),
+            ..Streak::default()
+        };
+        (
+            if rotated {
+                Attempt::Rotated
+            } else {
+                Attempt::Renewed
+            },
+            due,
+        )
+    }
+
+    fn failed(
+        &self,
+        streak: &mut Streak,
+        refused: busbar_kernel::config::secret::SecretRefused,
+        now: std::time::Instant,
+        unit: f64,
+        stopping: bool,
+    ) -> (Attempt, std::time::Instant) {
+        let kind = refused.error_kind;
+        streak.failures = streak.failures.saturating_add(1);
+        let held = self.held.load_full();
+        let expires_at = held.as_deref().map(|h| h.expires_at);
+        if definitive(kind) && !stopping {
+            if streak.confirming == Some(kind) {
+                streak.confirming = None;
+                if let Some(dropped) = held.as_deref() {
+                    streak.prior = Some((dropped.digest, dropped.handle));
+                    self.held.store(None);
+                    streak.dropped = true;
+                    self.lapsed
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    let due = next_due(self.lent.lease, Next::Retry(streak.failures), None, now, unit);
+                    streak.due = Some(due);
+                    self.report.diag(
+                        &busbar_kernel::diagnostics::UPSTREAM_CREDENTIAL_LAPSED,
+                        tracing::Level::ERROR,
+                        "the source of busbar's upstream credential for this member confirmed it \
+                         is gone or no longer readable (revoked at source): the credential is \
+                         dropped and each hop on the member is refused (credential_unavailable) \
+                         until a refresh reads it again",
+                        &self.fields(vec![
+                            ("cause", "revoked-at-source".into()),
+                            ("error_kind", kind.to_string()),
+                            ("error", refused.text.clone()),
+                            ("retry_in_ms", millis(due - now)),
+                        ]),
+                    );
+                    self.report.audit(
+                        UPSTREAM_REFRESH_ACTION,
+                        &self.resource(),
+                        busbar_kernel::audit_ring::OUTCOME_REJECTED,
+                    );
+                    return (Attempt::Dropped { error_kind: kind }, due);
+                }
+            } else {
+                streak.confirming = Some(kind);
+                let due = next_due(self.lent.lease, Next::Confirm, expires_at, now, unit);
+                streak.due = Some(due);
+                self.warn_failed(streak, "resolve", kind, &refused.text, expires_at, now, due);
+                return (Attempt::Confirming { error_kind: kind }, due);
+            }
+        } else {
+            streak.confirming = None;
+        }
+        let due = next_due(
+            self.lent.lease,
+            Next::Retry(streak.failures),
+            expires_at,
+            now,
+            unit,
+        );
+        streak.due = Some(due);
+        if !stopping {
+            self.warn_failed(streak, "resolve", kind, &refused.text, expires_at, now, due);
+        }
+        (Attempt::Failed { error_kind: kind }, due)
+    }
+
+    fn refused(
+        &self,
+        streak: &mut Streak,
+        text: &str,
+        now: std::time::Instant,
+        unit: f64,
+    ) -> (Attempt, std::time::Instant) {
+        streak.failures = streak.failures.saturating_add(1);
+        streak.confirming = None;
+        let expires_at = self.held.load().as_deref().map(|h| h.expires_at);
+        let due = next_due(
+            self.lent.lease,
+            Next::Retry(streak.failures),
+            expires_at,
+            now,
+            unit,
+        );
+        streak.due = Some(due);
+        self.warn_failed(streak, "reopen", 0, text, expires_at, now, due);
+        (Attempt::Refused, due)
+    }
+
+    /// BUSBAR-8026, rate limited: the first failure of a streak, then at most one a minute per
+    /// member (also after a lapse), and always the last attempt before expiry. Within one minute
+    /// only the first member on a SOURCE reports at its level; the others report at debug and are
+    /// counted into that source's next report. A `reopen` (the auth plugin refused the rotated
+    /// value) is ERROR from the first.
+    #[allow(clippy::too_many_arguments)]
+    fn warn_failed(
+        &self,
+        streak: &mut Streak,
+        cause: &'static str,
+        error_kind: u32,
+        text: &str,
+        expires_at: Option<std::time::Instant>,
+        now: std::time::Instant,
+        due: std::time::Instant,
+    ) {
+        static PER_SOURCE: std::sync::OnceLock<busbar_kernel::refresh::Throttle> =
+            std::sync::OnceLock::new();
+        const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+        let cap = lease_backoff(self.lent.lease).cap;
+        let left = expires_at.map(|at| at.saturating_duration_since(now));
+        let lapsed = left.is_none_or(|left| left.is_zero());
+        let last_before_expiry =
+            !lapsed && expires_at.is_some_and(|at| due >= at.checked_sub(cap).unwrap_or(at));
+        let reopen = cause == "reopen";
+        let member_due = streak.failures == 1
+            || streak
+                .warned
+                .is_none_or(|at| now.saturating_duration_since(at) >= WINDOW)
+            || (last_before_expiry && !streak.warned_final)
+            || (reopen && streak.warned.is_none());
+        let forced = reopen || (last_before_expiry && !streak.warned_final);
+        let level = if reopen || lapsed || left.is_some_and(|left| left < 2 * cap) {
+            tracing::Level::ERROR
+        } else {
+            tracing::Level::WARN
+        };
+        let others = if member_due {
+            PER_SOURCE
+                .get_or_init(|| busbar_kernel::refresh::Throttle::new(WINDOW))
+                .pass(&self.lent.secret.describe(), now)
+        } else {
+            None
+        };
+        let loud = member_due && (forced || others.is_some());
+        let message = if reopen {
+            "busbar's upstream credential for this member changed at its source and the auth \
+             plugin refused the new value: the previous value is presented until its lease ends; \
+             fix the value at the source"
+        } else if lapsed {
+            "busbar's upstream credential for this member still cannot be refreshed: its lease \
+             has ended and each hop on the member is refused (credential_unavailable)"
+        } else {
+            "busbar's upstream credential for this member could not be refreshed: the value it \
+             holds is presented until its lease ends, and the refresh is retried"
+        };
+        let mut extra = vec![
+            ("cause", cause.to_string()),
+            ("error_kind", error_kind.to_string()),
+            ("error", text.to_string()),
+            ("failures", streak.failures.to_string()),
+            ("retry_in_ms", millis(due.saturating_duration_since(now))),
+        ];
+        if let Some(left) = left {
+            extra.push(("expires_in_ms", millis(left)));
+        }
+        if let Some(others) = others.filter(|n| *n > 0) {
+            extra.push(("others", others.to_string()));
+        }
+        let fields = self.fields(extra);
+        if !loud {
+            self.report.diag(
+                &busbar_kernel::diagnostics::UPSTREAM_CREDENTIAL_REFRESH_FAILED,
+                tracing::Level::DEBUG,
+                message,
+                &fields,
+            );
             return;
         }
-        let opened = self.auth.open_outbound(
-            self.style,
-            value.expose(&seal),
-            &placement_settings(self.header.as_deref()),
+        streak.warned = Some(now);
+        streak.warned_final |= last_before_expiry;
+        self.report.diag(
+            &busbar_kernel::diagnostics::UPSTREAM_CREDENTIAL_REFRESH_FAILED,
+            level,
+            message,
+            &fields,
         );
-        drop(value);
-        self.held.store(opened.ok().map(|handle| {
-            Arc::new(Held {
-                digest,
-                handle,
-                expires_at,
-            })
-        }));
-        self.lapsed
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.report.audit(
+            UPSTREAM_REFRESH_ACTION,
+            &self.resource(),
+            busbar_kernel::audit_ring::OUTCOME_DEGRADED,
+        );
+    }
+
+    /// BUSBAR-8027 once per lapse, when `now` is past what is held: reported by the refresher at
+    /// the expiry itself, whether or not a hop arrives.
+    fn check_lapse(&self, now: std::time::Instant) {
+        let Some(held) = self.held.load_full() else {
+            return;
+        };
+        if now < held.expires_at || busbar_kernel::refresh::stopping() {
+            return;
+        }
+        if self
+            .lapsed
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let failures = self
+            .refreshing
+            .try_lock()
+            .map(|s| s.failures)
+            .unwrap_or_default();
+        self.report.diag(
+            &busbar_kernel::diagnostics::UPSTREAM_CREDENTIAL_LAPSED,
+            tracing::Level::ERROR,
+            "busbar's upstream credential for this member reached the end of its lease with no \
+             successful refresh: each hop on the member is refused (credential_unavailable) until \
+             a refresh succeeds",
+            &self.fields(vec![
+                ("cause", "lease-expired".into()),
+                ("failures", failures.to_string()),
+                ("lease_ms", millis(self.lent.lease)),
+            ]),
+        );
+        self.report.audit(
+            UPSTREAM_REFRESH_ACTION,
+            &self.resource(),
+            busbar_kernel::audit_ring::OUTCOME_REJECTED,
+        );
+    }
+}
+
+impl busbar_kernel::refresh::Refreshable for PerHop {
+    fn refresh(&self, now: std::time::Instant) -> std::time::Instant {
+        self.check_lapse(now);
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let (_, due) = crate::root::measurements::configuration_refresh(|| {
+            self.refresh_with(&scope, now, busbar_kernel::retry::unit())
+        });
+        let after = std::time::Instant::now();
+        self.check_lapse(after);
+        match self.held.load().as_deref() {
+            Some(held)
+                if held.expires_at > after
+                    && !self.lapsed.load(std::sync::atomic::Ordering::Relaxed) =>
+            {
+                due.min(held.expires_at)
+            }
+            _ => due,
+        }
+    }
+
+    fn deadline(&self) -> Option<std::time::Instant> {
+        self.held.load().as_deref().map(|held| held.expires_at)
     }
 }
 
@@ -3760,32 +4229,23 @@ impl std::fmt::Debug for PerHop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let handle = self.held.load().as_ref().map(|held| held.handle);
         f.debug_struct("PerHop")
+            .field("member", &self.lent.member)
             .field("secret", &"<redacted; refreshed once per lease>")
-            .field("style", &self.style)
-            .field("carried_in", &self.header)
-            .field("lease", &self.lease)
+            .field("style", &self.lent.style)
+            .field("carried_in", &self.lent.header)
+            .field("lease", &self.lent.lease)
             .field("handle", &handle)
             .finish_non_exhaustive()
     }
 }
 
 impl PerHop {
+    /// The handle a hop at `now` presents: none once what is held is past its lease or was dropped.
+    /// No lock, no resolution and no report on the hop path (the refresher reports the lapse).
     fn handle_at(&self, now: std::time::Instant) -> Option<u64> {
         let held = self.held.load();
         let held = held.as_ref()?;
-        if now < held.expires_at {
-            return Some(held.handle);
-        }
-        if !self.lapsed.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            tracing::warn!(
-                style = self.style,
-                header = self.header.as_deref(),
-                lease_ms = u64::try_from(self.lease.as_millis()).unwrap_or(u64::MAX),
-                "an upstream credential's lease ran out before a refresh renewed it: each hop on \
-                 it is refused (credential_unavailable) until one does"
-            );
-        }
-        None
+        (now < held.expires_at).then_some(held.handle)
     }
 }
 
@@ -3795,117 +4255,10 @@ impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
     }
 }
 
-mod refresher {
-    use super::PerHop;
-    use std::sync::{Arc, Condvar, Mutex, Once, Weak};
-    use std::time::Instant;
-
-    struct Kept {
-        per: Weak<PerHop>,
-        due: Instant,
-    }
-
-    struct Book {
-        kept: Mutex<Vec<Kept>>,
-        woken: Condvar,
-    }
-
-    static BOOK: Book = Book {
-        kept: Mutex::new(Vec::new()),
-        woken: Condvar::new(),
-    };
-
-    fn kept_book() -> &'static Book {
-        static STARTED: Once = Once::new();
-        STARTED.call_once(|| {
-            std::thread::Builder::new()
-                .name("busbar-cred-refresh".into())
-                .spawn(|| run(&BOOK))
-                .unwrap_or_else(|e| {
-                    eprintln!("busbar: the credential refresher did not start: {e}");
-                    std::process::exit(2);
-                });
-        });
-        &BOOK
-    }
-
-    pub(super) fn keep(per: &Arc<PerHop>) {
-        let book = kept_book();
-        book.kept
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(Kept {
-                per: Arc::downgrade(per),
-                due: Instant::now() + super::renew_every(per.lease),
-            });
-        book.woken.notify_one();
-    }
-
-    fn run(book: &'static Book) {
-        let mut kept = book
-            .kept
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        loop {
-            let now = Instant::now();
-            kept.retain(|k| k.per.strong_count() > 0);
-            let mut due = Vec::new();
-            for k in kept.iter_mut().filter(|k| k.due <= now) {
-                if let Some(per) = k.per.upgrade() {
-                    k.due = now + super::renew_every(per.lease);
-                    due.push(per);
-                }
-            }
-            if !due.is_empty() {
-                drop(kept);
-
-                let scope = busbar_contract::config_time::ConfigScope::config_time();
-                for per in due {
-                    crate::root::measurements::configuration_refresh(|| per.refresh(&scope));
-                }
-                kept = book
-                    .kept
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                continue;
-            }
-            let next = kept.iter().map(|k| k.due).min();
-            kept = match next {
-                Some(at) => {
-                    book.woken
-                        .wait_timeout(kept, at.saturating_duration_since(now))
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .0
-                }
-                None => book
-                    .woken
-                    .wait(kept)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            };
-        }
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn refresh_all() {
-        let live: Vec<Arc<PerHop>> = kept_book()
-            .kept
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter_map(|k| k.per.upgrade())
-            .collect();
-        let scope = busbar_contract::config_time::ConfigScope::config_time();
-        for per in live {
-            per.refresh(&scope);
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) fn refresh_credentials() {
-    refresher::refresh_all();
+    busbar_kernel::refresh::process().refresh_all_now();
 }
 
 pub fn bind_member_fetches(
