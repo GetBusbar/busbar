@@ -352,14 +352,14 @@ fn entry_request_fields(span: &Span) -> Vec<(String, String)> {
             "code.module.name" => {
                 matches!(value, Some(AnyValue::StringValue(module)) if module == "busbar_kernel::observability::arrival")
             }
-            "target" => {
+            "busbar.target" => {
                 matches!(value, Some(AnyValue::StringValue(target)) if target == "busbar::ingress")
             }
             "code.line.number" | "thread.id" => {
                 matches!(value, Some(AnyValue::IntValue(number)) if *number > 0)
             }
             "thread.name" => matches!(value, Some(AnyValue::StringValue(name)) if !name.is_empty()),
-            "busy_ns" | "idle_ns" => {
+            "busbar.busy_ns" | "busbar.idle_ns" => {
                 matches!(value, Some(AnyValue::IntValue(number)) if *number >= 0)
             }
             _ => {
@@ -379,9 +379,9 @@ fn entry_request_fields(span: &Span) -> Vec<(String, String)> {
         "code.module.name",
         "code.line.number",
         "thread.id",
-        "target",
-        "busy_ns",
-        "idle_ns",
+        "busbar.target",
+        "busbar.busy_ns",
+        "busbar.idle_ns",
     ] {
         assert!(
             envelope.contains(required),
@@ -494,8 +494,8 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
         let ingress = row.ingress;
         let found = spans.iter().any(|s| {
             s.name == "forward"
-                && attribute(s, "ingress").as_deref() == ingress
-                && attribute(s, "op").as_deref() == Some("chat")
+                && attribute(s, "busbar.ingress").as_deref() == ingress
+                && attribute(s, "busbar.op").as_deref() == Some("chat")
                 && match row.entry {
                     Some(entry) => under(&spans, s, &[entry]),
                     None => !under(&spans, s, &entries),
