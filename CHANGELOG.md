@@ -877,11 +877,29 @@ each dialect translates, field by field, is listed in the generated
   (`unitemized_tokens`), a per-image answer's `images`, a transcription's reported duration
   (`audio_ms`, whole milliseconds) and each Bedrock guardrail policy-unit count (`guardrail_*`),
   each priced by the rate card (absent card: 0). The token classes, their figures and every
-  `tokens:` cap count exactly what 1.5.5 counted, with one correction: an OpenAI transcription
+  `tokens:` cap count exactly what 1.5.5 counted, with two corrections: an OpenAI transcription
   answered in its own dialect is now metered as a translated one always was (whisper's duration
   as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it
-  nothing. A Bedrock guardrail usage count that is present but not a count is refused, like every
+  nothing; and a Cohere turn counts Cohere's `billed_units` token counts, the quantity Cohere
+  invoices, where 1.5.5 counted the raw `tokens` bucket. A Bedrock guardrail usage count that is present but not a count is refused, like every
   other billed count.
+- **A Cohere turn is ledgered at what Cohere invoices.** Where a Cohere chat answer reports
+  `usage.billed_units`, input and output record `billed_units.{input,output}_tokens` (Cohere's
+  invoiced counts, docs.cohere.com/reference/chat), not the raw `tokens` bucket, and every
+  `tokens:` cap, budget and quota counts them. Cohere publishes no cached-token price, so on such
+  a turn `cached_tokens` sits inside the billed input and no Cohere `cache_read` is ledgered: an
+  operator with a Cohere `cache_read` rate sees that class stop and its spend move to the input
+  rate, matching Cohere's invoice. A rate card tuned to absorb the raw/billed gap should be
+  reviewed. When a billed member is absent, its raw count (and the raw-space cache split) is
+  recorded as before, with a warning; a billed member that is present and not a count is refused,
+  never replaced by the raw count; an unreadable `cached_tokens` on a billed turn no longer
+  refuses metering. Translated answers carry the billed counts too (example: tokens 1000/100,
+  billed 940/90, cached 50): an OpenAI-dialect client sees `prompt_tokens` 940,
+  `completion_tokens` 90, `total_tokens` 1030 and no `prompt_tokens_details.cached_tokens`; an
+  Anthropic-dialect client sees `input_tokens` 940, `output_tokens` 90 and no
+  `cache_read_input_tokens`; a Cohere client through the translated writer sees `tokens` 940/90,
+  no `cached_tokens`, and `billed_units` as reported. Same-dialect Cohere answers are passed
+  through byte for byte, `cached_tokens` included.
 - **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
   retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
   provider or model block is touched.
