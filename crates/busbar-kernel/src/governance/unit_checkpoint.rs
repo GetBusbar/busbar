@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use busbar_contract::abi::sdk::expiry::Counted;
 use busbar_contract::Count;
 use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
 use serde::{Deserialize, Serialize};
@@ -103,7 +104,7 @@ pub trait UnitCheckpointSink: Send + Sync {
 #[derive(Default)]
 pub(super) struct UnitCheckpointBook {
     sink: OnceLock<Arc<dyn UnitCheckpointSink>>,
-    pending: Mutex<BTreeMap<[u8; 16], Pending>>,
+    pending: Mutex<Counted<BTreeMap<[u8; 16], Pending>>>,
     flushing: tokio::sync::Mutex<()>,
 }
 
@@ -437,6 +438,15 @@ impl GovState {
                         .iter()
                         .any(|target| target.bucket == bucket && target.window == window)
             })
+    }
+
+    /// Entries the book has visited so far.
+    pub(crate) fn unit_checkpoint_visits(&self) -> u64 {
+        self.unit_checkpoints
+            .pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .visits()
     }
 }
 

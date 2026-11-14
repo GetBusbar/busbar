@@ -368,3 +368,88 @@ async fn recovered_index_matches_book_after_every_mutation() {
     );
     assert_eq!(admit(&a), Ok(()), "A admits again once its custody settles");
 }
+
+/// `A` and `B` each sit under the same seven ancestors: eight budget buckets per admission.
+fn chain_cost() -> crate::cost::CostModel {
+    use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    let group = |parent: Option<&str>| crate::config::GroupCfg {
+        parent: parent.map(String::from),
+        enabled: true,
+        limits: vec![LimitCfg {
+            metric: LimitMetric::Budget,
+            amount: u64::MAX / 4,
+            per: Some(LimitWindow::Total),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        }],
+        ..Default::default()
+    };
+    let mut groups = std::collections::BTreeMap::new();
+    groups.insert("P1".to_string(), group(None));
+    for n in 2..=7 {
+        groups.insert(format!("P{n}"), group(Some(&format!("P{}", n - 1))));
+    }
+    groups.insert("A".to_string(), group(Some("P7")));
+    groups.insert("B".to_string(), group(Some("P7")));
+    crate::cost::CostModel::resolve_parts(None, 0, &groups)
+}
+
+/// Book visits of one admission of `B` (and of `A`, refused, when a recovered unit blocks it).
+async fn admission_visits(live: usize, recovered_unit: bool) -> u64 {
+    let replay = if recovered_unit {
+        vec![recovered(1, "group:A@total")]
+    } else {
+        Vec::new()
+    };
+    let (gov, _sink) = gov(replay).await;
+    stage_live(&gov, 1_000, live);
+    let cost = chain_cost();
+    let (a, b) = (key("A"), key("B"));
+    let expected = std::collections::BTreeMap::new();
+    let before = gov.unit_checkpoint_visits();
+    assert_eq!(
+        gov.try_admit_estimated_counts(&cost, &b, "", AT, &[], &expected)
+            .map(drop),
+        Ok(())
+    );
+    if recovered_unit {
+        assert_eq!(
+            gov.try_admit_estimated_counts(&cost, &a, "", AT, &[], &expected)
+                .map(drop),
+            Err(budget_refusal("A"))
+        );
+    }
+    gov.unit_checkpoint_visits() - before
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admission_visits_flat() {
+    assert_eq!(
+        admission_visits(10, false).await,
+        admission_visits(100_000, false).await
+    );
+    assert_eq!(
+        admission_visits(10, true).await,
+        admission_visits(100_000, true).await
+    );
+}
+
+async fn stage_finish_visits(live: usize) -> u64 {
+    let (gov, _sink) = gov(Vec::new()).await;
+    stage_live(&gov, 1_000, live);
+    let before = gov.unit_checkpoint_visits();
+    gov.stage_unit_checkpoint(unit(7, 7, &[], &[]));
+    assert!(gov.finish_unit_checkpoint(unit(7, 7, &[], &[])));
+    gov.unit_checkpoint_visits() - before
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_finish_visits_flat() {
+    assert_eq!(
+        stage_finish_visits(10).await,
+        stage_finish_visits(100_000).await
+    );
+}
