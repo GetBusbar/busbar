@@ -11,10 +11,13 @@
 use crate::*;
 
 fn h(s: &str) -> Vec<u8> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-        .collect()
+    let mut out = Vec::with_capacity(s.len() / 2);
+    out.extend(
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()),
+    );
+    out
 }
 
 fn a<const N: usize>(s: &str) -> [u8; N] {
@@ -52,16 +55,16 @@ pub fn backend_const() {
 /// SHA-2, the audit link, constant-time comparison.
 pub fn hash() {
     assert_eq!(
-        sha256(b"abc").to_vec(),
-        h("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        sha256(b"abc"),
+        a::<32>("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
     );
     assert_eq!(
-        sha384(b"abc").to_vec(),
-        h("cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7")
+        sha384(b"abc"),
+        a::<48>("cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7")
     );
     assert_eq!(
-        sha512(b"abc").to_vec(),
-        h("ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")
+        sha512(b"abc"),
+        a::<64>("ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")
     );
     let mut s = Sha256::new();
     s.update(b"a");
@@ -69,17 +72,17 @@ pub fn hash() {
     assert_eq!(s.finish(), sha256(b"abc"));
     assert_eq!(sha256_parts(&[b"a", b"", b"bc"]), sha256(b"abc"));
 
-    let empty = link::Hasher::new().finish().to_vec();
+    let empty = link::Hasher::new().finish();
     match link::RECIPE {
         // BLAKE3 of the empty input.
         "busbar.audit.digest.v7" => assert_eq!(
             empty,
-            h("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+            a::<32>("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
         ),
         // SHA-256 of the empty input.
         "busbar.audit.digest.v7-sha256" => assert_eq!(
             empty,
-            h("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+            a::<32>("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
         ),
         other => panic!("unknown link recipe {other}"),
     }
@@ -97,8 +100,8 @@ pub fn hash() {
 pub fn hmac() {
     let t = hmac_sha256(&[0x0b; 20], b"Hi There").unwrap();
     assert_eq!(
-        t.to_vec(),
-        h("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+        t,
+        a::<32>("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
     );
     hmac_sha256_verify(&[0x0b; 20], b"Hi There", &t).unwrap();
     assert_eq!(
@@ -111,15 +114,15 @@ pub fn hmac() {
     k.verify(b"Hi There", &t).unwrap();
     assert_eq!(k.verify(b"Hi there", &t), Err(Error::Mismatch));
     assert_eq!(
-        hmac_sha512(&[0x0b; 20], b"Hi There").unwrap().to_vec(),
-        h("87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854")
+        hmac_sha512(&[0x0b; 20], b"Hi There").unwrap(),
+        a::<64>("87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854")
     );
     // RFC 4231 TC2: a 4-byte key, below a FIPS backend's 112-bit minimum.
     let jefe = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
     if supports(alg::HMAC_KEY_SHORT) {
         assert_eq!(
-            jefe.unwrap().to_vec(),
-            h("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+            jefe.unwrap(),
+            a::<32>("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
         );
     } else {
         assert!(refused(&jefe, "HMAC"));
@@ -138,8 +141,10 @@ pub fn kdf() {
     )
     .unwrap();
     assert_eq!(
-        okm.to_vec(),
-        h("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865")
+        okm,
+        a::<42>(
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+        )
     );
     // RFC 7914 §11 (c = 1, a 4-byte salt): outside SP 800-132, so a FIPS backend refuses it.
     let mut dk = [0_u8; 64];
@@ -147,8 +152,8 @@ pub fn kdf() {
     if !refused(&r, "PBKDF2") {
         r.unwrap();
         assert_eq!(
-            dk.to_vec(),
-            h("55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783")
+            dk,
+            a::<64>("55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783")
         );
     }
     // Inside SP 800-132: every backend answers, bit for bit.
@@ -161,8 +166,8 @@ pub fn kdf() {
     )
     .unwrap();
     assert_eq!(
-        dk.to_vec(),
-        h("a69b179e3add3c1e0aaf227a0eb3aa2aa8645ab86fecf6ca00c17512697c719e")
+        dk,
+        a::<32>("a69b179e3add3c1e0aaf227a0eb3aa2aa8645ab86fecf6ca00c17512697c719e")
     );
 }
 
@@ -204,8 +209,8 @@ pub fn aead() {
     if refused(&r, "GCM") {
         assert_eq!(buf, [0; 16], "a refused seal must not touch the buffer");
     } else {
-        assert_eq!(r.unwrap().to_vec(), h("ab6e47d42cec13bdf53a67b21257bddf"));
-        assert_eq!(buf.to_vec(), h("0388dace60b6a392f328c2b971b2fe78"));
+        assert_eq!(r.unwrap(), a::<16>("ab6e47d42cec13bdf53a67b21257bddf"));
+        assert_eq!(buf, a::<16>("0388dace60b6a392f328c2b971b2fe78"));
     }
     let mut buf = *b"seal with a module-made nonce!!!";
     let (nonce, tag) = k256.seal_random_nonce(b"aad", &mut buf).unwrap();
@@ -223,7 +228,7 @@ pub fn aead() {
         &a("3243f6a8885a308d313198a2e0370734"),
     )
     .unwrap();
-    assert_eq!(out.to_vec(), h("3925841d02dc09fbdc118597196a0b32"));
+    assert_eq!(out, a::<16>("3925841d02dc09fbdc118597196a0b32"));
 }
 
 /// Ed25519 (RFC 8032, small order, non-canonical S), ECDSA P-256, RSA, ECDH and the signer seam.
@@ -234,13 +239,13 @@ pub fn signatures() {
     .unwrap();
     let vk = sk.verifying_key();
     assert_eq!(
-        vk.to_bytes().to_vec(),
-        h("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+        vk.to_bytes(),
+        a::<32>("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
     );
     let sig = sk.sign(b"");
     assert_eq!(
-        sig.to_vec(),
-        h("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
+        sig,
+        a::<64>("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
     );
     assert_eq!(
         *sk.seed(),
@@ -311,8 +316,8 @@ pub fn signatures() {
     assert!(!ecdsa_p256::is_low_s(&s_half));
     ecdsa_p256::normalize_low_s(&mut s_half);
     assert_eq!(
-        s_half[32..].to_vec(),
-        h("7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8")
+        s_half[32..],
+        a::<32>("7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8")
     );
     for _ in 0..8 {
         let mut sig = kp.sign_fixed(MSG).unwrap();
@@ -327,8 +332,8 @@ pub fn signatures() {
     let pubk = key.public_key();
     assert_eq!(key.modulus_len(), 256);
     let ossl = include_bytes!("../fixtures/rsa_pkcs1.sig");
-    assert_eq!(rsa::sign_pkcs1_sha256(pk8, MSG).unwrap(), ossl.to_vec());
-    assert_eq!(key.sign_pkcs1_sha256(MSG).unwrap(), ossl.to_vec());
+    assert_eq!(rsa::sign_pkcs1_sha256(pk8, MSG).unwrap(), ossl);
+    assert_eq!(key.sign_pkcs1_sha256(MSG).unwrap(), ossl);
     rsa::verify_pkcs1_sha256(&pubk, MSG, ossl).unwrap();
     let pss = include_bytes!("../fixtures/rsa_pss.sig");
     rsa::verify_pss_sha256(&pubk, MSG, pss).unwrap();
@@ -343,7 +348,10 @@ pub fn signatures() {
         ecdh_p256::EphemeralKey::generate().unwrap(),
         ecdh_p256::EphemeralKey::generate().unwrap(),
     );
-    let (px, py) = (x.public_key().to_vec(), y.public_key().to_vec());
+    // `agree` consumes the key, so copy each public key out first.
+    let (mut px, mut py) = (Vec::new(), Vec::new());
+    px.extend_from_slice(x.public_key());
+    py.extend_from_slice(y.public_key());
     assert_eq!(
         ecdh_p256::agree(x, &py).unwrap(),
         ecdh_p256::agree(y, &px).unwrap()
@@ -379,19 +387,17 @@ pub fn legacy_algs() {
     let sha1 = legacy::sha1(b"abc");
     if !refused(&sha1, "SHA") {
         assert_eq!(
-            sha1.unwrap().to_vec(),
-            h("a9993e364706816aba3e25717850c26c9cd0d89d")
+            sha1.unwrap(),
+            a::<20>("a9993e364706816aba3e25717850c26c9cd0d89d")
         );
     }
     assert_eq!(
-        legacy::hmac_sha1(&[0x0b; 20], b"Hi There")
-            .unwrap()
-            .to_vec(),
-        h("b617318655057264e28bc0b6fb378c8ef146be00")
+        legacy::hmac_sha1(&[0x0b; 20], b"Hi There").unwrap(),
+        a::<20>("b617318655057264e28bc0b6fb378c8ef146be00")
     );
     let md5 = legacy::md5(b"abc");
     if supports(alg::MD5) {
-        assert_eq!(md5.unwrap().to_vec(), h("900150983cd24fb0d6963f7d28e17f72"));
+        assert_eq!(md5.unwrap(), a::<16>("900150983cd24fb0d6963f7d28e17f72"));
     } else {
         assert!(refused(&md5, "MD5"));
     }
@@ -420,18 +426,19 @@ pub fn tls_handshake() {
     let mut roots = rustls::RootCertStore::empty();
     roots
         .add(CertificateDer::from(
-            include_bytes!("../fixtures/ca.der").to_vec(),
+            include_bytes!("../fixtures/ca.der").as_slice(),
         ))
         .unwrap();
     let chain = vec![
-        CertificateDer::from(include_bytes!("../fixtures/leaf.der").to_vec()),
-        CertificateDer::from(include_bytes!("../fixtures/ca.der").to_vec()),
+        CertificateDer::from(include_bytes!("../fixtures/leaf.der").as_slice()),
+        CertificateDer::from(include_bytes!("../fixtures/ca.der").as_slice()),
     ];
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-        include_bytes!("../fixtures/leaf.key.der").to_vec(),
+        include_bytes!("../fixtures/leaf.key.der").as_slice(),
     ));
     assert!(tls::signing_key(&key).is_ok());
-    let tickets = tls::ListenerTickets::new("conformance").unwrap();
+    // One handshake needs no passing time: the clock stands still at one reading.
+    let tickets = tls::ListenerTickets::new("conformance", || 1).unwrap();
     let sc = tls::server_config(|b| {
         let mut c = b.with_no_client_auth().with_single_cert(chain, key)?;
         tickets.install(&mut c);

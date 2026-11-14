@@ -109,11 +109,10 @@ pub fn open_matches<O>(inspection: &lifecycle::Inspection<O>, binding: &OpenBind
             source,
             admission_marker_digest,
         } => {
-            use crate::crypto::Sha256;
             inspection.state == InspectionState::Current
                 && inspection.source.as_ref() == Some(source)
                 && inspection.admission_marker.as_ref().is_some_and(|marker| {
-                    <[u8; 32]>::from(crate::crypto::sha256(&marker.0)) == *admission_marker_digest
+                    crate::crypto::sha256(&marker.0) == *admission_marker_digest
                 })
         }
         OpenBinding::Recovery(_) => false,
