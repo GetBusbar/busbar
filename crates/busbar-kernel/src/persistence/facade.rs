@@ -244,7 +244,7 @@ impl CoreStore {
                     .filter(|entry| !entry.driving && entry.attempt.state() == State::Uncertain)
                     .map(|entry| (entry.slot, entry.attempt.clone())),
             );
-            doubt.sort_unstable_by_key(|(slot, _)| *slot);
+            doubt.sort_by_key(|(slot, _)| *slot);
             let start = doubt.partition_point(|(slot, _)| *slot < pending.settle_cursor);
             let take = limit.min(doubt.len());
             let mut batch = Vec::new();

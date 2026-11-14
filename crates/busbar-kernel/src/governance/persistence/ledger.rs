@@ -229,7 +229,7 @@ pub fn migration_usage(
     let build = || -> Result<_> {
         let mut row = row.clone();
         row.normalize_scale6()?;
-        row.models.sort_unstable_by(|a, b| a.model.cmp(&b.model));
+        row.models.sort_by(|a, b| a.model.cmp(&b.model));
         if row
             .models
             .windows(2)
@@ -818,7 +818,7 @@ impl Ledger<'_> {
                 .map_err(|_| invalid("ledger scan allocation exhausted"))?;
             result.push(row);
         }
-        result.sort_unstable_by(|a, b| {
+        result.sort_by(|a, b| {
             (
                 &a.key_id,
                 &a.model,

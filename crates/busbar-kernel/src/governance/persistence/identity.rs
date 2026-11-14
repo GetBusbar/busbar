@@ -1237,7 +1237,7 @@ impl Identity<'_> {
                         }
                         keys.push(key);
                     }
-                    keys.sort_unstable_by_key(|key| key.revision);
+                    keys.sort_by_key(|key| key.revision);
                 } else {
                     for (at, value) in tx.scan(vec![b'K']).await? {
                         let key = key_decode(&value)?;
@@ -1246,7 +1246,7 @@ impl Identity<'_> {
                         }
                         keys.push(key);
                     }
-                    keys.sort_unstable_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+                    keys.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
                 }
                 Output::Keys(keys)
             }
@@ -1261,7 +1261,7 @@ impl Identity<'_> {
                     }
                     metas.push(meta);
                 }
-                metas.sort_unstable_by(|a, b| (&a.kind, a.slot).cmp(&(&b.kind, b.slot)));
+                metas.sort_by(|a, b| (&a.kind, a.slot).cmp(&(&b.kind, b.slot)));
                 Output::Metadata(metas)
             }
             Query::CredentialsSince(since) => {
@@ -1274,7 +1274,7 @@ impl Identity<'_> {
                     }
                     credentials.push(credential);
                 }
-                credentials.sort_unstable_by_key(|c| c.meta.revision);
+                credentials.sort_by_key(|c| c.meta.revision);
                 Output::Credentials(credentials)
             }
             Query::Denylist => {
@@ -1287,7 +1287,7 @@ impl Identity<'_> {
                     }
                     subjects.push(denied.subject);
                 }
-                subjects.sort_unstable();
+                subjects.sort();
                 Output::Denied(subjects)
             }
         };

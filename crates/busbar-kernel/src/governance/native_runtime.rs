@@ -84,7 +84,7 @@ impl GovState {
         // Lane names are unique in `by_lane`: order it by name (the answer's order) and merge the
         // observed lanes in place rather than rebuilding it through a map.
         let mut by_lane = by_lane;
-        by_lane.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        by_lane.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (lane, units) in observed.units {
             let at = match by_lane.binary_search_by(|(name, _)| name.as_str().cmp(&lane)) {
                 Ok(at) => at,

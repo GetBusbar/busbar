@@ -367,7 +367,7 @@ mod tests {
         let p: Result<Ports, String> = Ports::reserve(4);
         let p = p.expect("loopback ports");
         let mut seen = p.ports.clone();
-        seen.sort_unstable();
+        seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), 4);
         assert!(p.ports.iter().all(|&port| port != 0));
