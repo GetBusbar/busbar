@@ -185,6 +185,7 @@ impl busbar_contract::persistence::PersistenceBackend for ReplayBackend {
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
         Box::pin(async move {
             let replay = candidate.candidate().mutations.iter().any(|mutation| {
@@ -209,7 +210,7 @@ impl busbar_contract::persistence::PersistenceBackend for ReplayBackend {
                     *original = Some(fingerprint);
                 }
             }
-            let result = self.inner.commit(candidate).await?;
+            let result = self.inner.commit(candidate, key).await?;
             if replay
                 && self.lose.swap(false, std::sync::atomic::Ordering::SeqCst)
                 && matches!(result, busbar_contract::persistence::Decision::Applied(_))

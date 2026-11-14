@@ -80,7 +80,11 @@ impl PersistenceBackend for Backend {
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async { Err(Failure::Unavailable) })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        _key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         self.sent.lock().unwrap().push(candidate.fingerprint());
         let reply = self
             .replies

@@ -128,7 +128,11 @@ impl PersistenceBackend for Backend {
         })
     }
 
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        _key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let hold = {
                 let mut native = self.0.lock().unwrap();

@@ -10,8 +10,9 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use busbar_contract::caps::MigrationGrant;
 use busbar_contract::persistence::{
-    BackendInfo, Decision, Failure, PersistenceBackend, PreparedCandidate,
+    BackendInfo, CommitKey, CommitRoot, Decision, Failure, PersistenceBackend, PreparedCandidate,
 };
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::Secret;
@@ -19,6 +20,50 @@ use busbar_contract::Secret;
 use super::candidate_codec::{self, CodecError};
 
 const REPLAY_HORIZON: Duration = Duration::from_secs(24 * 60 * 60);
+
+// THE ONE COMMIT CROSSING (LINT-RULES R9). Every `PersistenceBackend::commit` takes a `CommitKey`;
+// the kernel mints one per crossing, in `Attempt::submit` only, from the root below, which reaches
+// this module through `__busbar_commit_root` (a symbol only this crate defines) and is held here,
+// private. `Attempt` itself is built by the kernel's store facade, startup and import target
+// (`Attempt::new`, crate-private) or by a migration step holding its `MigrationGrant`.
+
+#[cfg(not(test))]
+struct Held(CommitRoot);
+
+#[cfg(not(test))]
+fn acquire() -> CommitRoot {
+    match CommitRoot::deliver().downcast::<Held>() {
+        Ok(held) => {
+            let Held(root) = *held;
+            root
+        }
+        Err(_) => unreachable!("the commit root symbol answered with something not the kernel's"),
+    }
+}
+
+#[cfg(test)]
+fn acquire() -> CommitRoot {
+    CommitRoot::acquire_for_tests()
+}
+
+// `no_mangle` is an unsafe attribute (a second definition of the name is a duplicate symbol the
+// linker refuses), so the crate's `deny(unsafe_code)` is lifted for this item only, as for
+// `seal::__busbar_kernel_root`.
+// SAFETY: the signature is exactly the declaration in `busbar-contract/src/abi/mod.rs`
+// (`fn __busbar_commit_root(root: CommitRoot) -> Box<dyn Any + Send + Sync>`), built by the same
+// compiler in the same workspace; the body touches no state.
+#[cfg(not(test))]
+#[allow(unsafe_code)]
+#[no_mangle]
+pub fn __busbar_commit_root(root: CommitRoot) -> Box<dyn std::any::Any + Send + Sync> {
+    Box::new(Held(root))
+}
+
+/// The key for one crossing.
+fn key() -> CommitKey {
+    static ROOT: std::sync::OnceLock<CommitRoot> = std::sync::OnceLock::new();
+    ROOT.get_or_init(acquire).key()
+}
 
 /// Content-free rejection of an attempt aimed at another dataset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +130,13 @@ struct Inner {
 /// Retain this owner while unresolved. Dropping a submission future relinquishes
 /// its waiter, marks the attempt uncertain, and does not drop its candidate.
 /// Replacing the application's backend cannot retarget this owner.
+///
+/// Only the kernel and the migration library build one (LINT-RULES R9); anyone else is refused:
+///
+/// ```compile_fail,E0624
+/// use busbar_kernel::persistence::commit::Attempt;
+/// let _ = Attempt::new(todo!(), todo!());
+/// ```
 pub struct Attempt {
     candidate: PreparedCandidate,
     backend: Arc<dyn PersistenceBackend>,
@@ -93,8 +145,20 @@ pub struct Attempt {
 }
 
 impl Attempt {
-    /// Bind validated input to one opened backend before any native crossing.
-    pub fn new(
+    /// Bind validated input to one opened backend before any native crossing, for a migration
+    /// step: its candidate is self-fenced (applies at most once), and `grant` proves the caller is
+    /// the migration library.
+    pub fn migration(
+        candidate: PreparedCandidate,
+        backend: Arc<dyn PersistenceBackend>,
+        _grant: &MigrationGrant,
+    ) -> Result<Self, DatasetMismatch> {
+        Self::new(candidate, backend)
+    }
+
+    /// Bind validated input to one opened backend before any native crossing. Crate-private: the
+    /// store facade, startup and the import target hold the kernel's attempts.
+    pub(crate) fn new(
         candidate: PreparedCandidate,
         backend: Arc<dyn PersistenceBackend>,
     ) -> Result<Self, DatasetMismatch> {
@@ -200,7 +264,7 @@ impl Attempt {
             attempt: self,
             armed: true,
         };
-        let reply = self.backend.commit(self.candidate.clone()).await;
+        let reply = self.backend.commit(self.candidate.clone(), key()).await;
         let (phase, result) = match reply {
             Ok(Decision::Applied(value)) if value == self.candidate.candidate().result => {
                 let decision = Arc::new(Decision::Applied(value));

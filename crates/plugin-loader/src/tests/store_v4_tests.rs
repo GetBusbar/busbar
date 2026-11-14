@@ -841,7 +841,12 @@ mod linked {
         })
         .unwrap();
         assert!(matches!(
-            backend.commit(candidate).await,
+            backend
+                .commit(
+                    candidate,
+                    busbar_contract::persistence::CommitKey::for_tests()
+                )
+                .await,
             Err(Failure::Unknown)
         ));
     }

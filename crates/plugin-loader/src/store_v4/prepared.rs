@@ -651,8 +651,12 @@ impl PersistenceBackend for Target {
     fn scan(&self, request: Arc<owned::Scan>) -> owned::Call<'_, owned::Page> {
         self.backend.scan(request)
     }
-    fn commit(&self, candidate: owned::PreparedCandidate) -> owned::Call<'_, owned::Decision> {
-        self.backend.commit(candidate)
+    fn commit(
+        &self,
+        candidate: owned::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> owned::Call<'_, owned::Decision> {
+        self.backend.commit(candidate, key)
     }
     fn clock(&self, dataset: owned::DatasetId) -> owned::Call<'_, owned::ClockObservation> {
         self.backend.clock(dataset)

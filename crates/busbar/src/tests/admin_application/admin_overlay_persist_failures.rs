@@ -26,7 +26,11 @@ impl PersistenceBackend for OverlayWriteOutage {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         self.actual.scan(request)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let overlay = candidate.candidate().mutations.iter().any(|mutation| {
                 let key = match mutation {
@@ -40,7 +44,7 @@ impl PersistenceBackend for OverlayWriteOutage {
                 self.failures.fetch_add(1, Ordering::SeqCst);
                 return Err(Failure::Refused);
             }
-            self.actual.commit(candidate).await
+            self.actual.commit(candidate, key).await
         })
     }
 }

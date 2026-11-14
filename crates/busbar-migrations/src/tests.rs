@@ -61,7 +61,11 @@ impl PersistenceBackend for Backend {
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async { panic!("no client clock") })
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        _key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let mut inner = self.0.lock().unwrap();
             let candidate = prepared.candidate();
@@ -1007,7 +1011,13 @@ async fn durable_intent_read_resolves_lost_reply_and_closed_guard_fences_delayed
     assert_eq!(outstanding.prepared_at.unix_seconds, 1);
     assert_eq!(outstanding.replay_deadline, 86401);
     assert!(matches!(
-        backend.commit(candidate.clone()).await.unwrap(),
+        backend
+            .commit(
+                candidate.clone(),
+                busbar_contract::persistence::CommitKey::for_tests()
+            )
+            .await
+            .unwrap(),
         Decision::Applied(_)
     ));
     let resolution = IntentResolution {
@@ -1035,11 +1045,23 @@ async fn durable_intent_read_resolves_lost_reply_and_closed_guard_fences_delayed
         });
     }
     assert!(matches!(
-        backend.commit(candidate).await.unwrap(),
+        backend
+            .commit(
+                candidate,
+                busbar_contract::persistence::CommitKey::for_tests()
+            )
+            .await
+            .unwrap(),
         Decision::ConditionConflict
     ));
     assert!(matches!(
-        backend.commit(old_journal_put).await.unwrap(),
+        backend
+            .commit(
+                old_journal_put,
+                busbar_contract::persistence::CommitKey::for_tests()
+            )
+            .await
+            .unwrap(),
         Decision::ConditionConflict
     ));
     assert!(!restored.pending(migration).await.unwrap());
@@ -1379,7 +1401,13 @@ async fn fenced_recovery_missing_witness_keeps_debt_and_never_first_executes() {
     );
     assert!(owner.pending(migration).await.unwrap());
     assert!(matches!(
-        backend.commit(candidate).await.unwrap(),
+        backend
+            .commit(
+                candidate,
+                busbar_contract::persistence::CommitKey::for_tests()
+            )
+            .await
+            .unwrap(),
         Decision::ExpiredUnknown
     ));
     assert!(!backend.0.lock().unwrap().rows.contains_key(&Address {
@@ -1567,7 +1595,13 @@ async fn fenced_no_effect_requires_unchanged_native_generation_and_prior_checkpo
             })
             .unwrap();
             assert!(matches!(
-                backend.commit(external).await.unwrap(),
+                backend
+                    .commit(
+                        external,
+                        busbar_contract::persistence::CommitKey::for_tests()
+                    )
+                    .await
+                    .unwrap(),
                 Decision::Applied(_)
             ));
         }

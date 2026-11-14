@@ -460,7 +460,11 @@ impl PersistenceBackend for LoadedPersistence {
             .await
         })
     }
-    fn commit(&self, candidate: owned::PreparedCandidate) -> owned::Call<'_, owned::Decision> {
+    fn commit(
+        &self,
+        candidate: owned::PreparedCandidate,
+        _key: busbar_contract::persistence::CommitKey,
+    ) -> owned::Call<'_, owned::Decision> {
         Box::pin(async move {
             if candidate.candidate().id.dataset != self.info.dataset {
                 return Err(Failure::Refused);
