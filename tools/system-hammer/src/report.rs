@@ -140,6 +140,20 @@ pub fn hammer_git_sha() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// One file-name-safe stem component: [A-Za-z0-9._-] only, at most `max` chars.
+pub fn stem_part(s: &str, max: usize) -> String {
+    s.chars()
+        .take(max)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 fn f(v: f64) -> String {
     if v == 0.0 {
         "-".into()
@@ -159,7 +173,7 @@ pub fn table(r: &RunReport) -> String {
         r.tool_version,
         r.label,
         r.binary.version.trim_start_matches("busbar "),
-        &r.binary.git_sha[..r.binary.git_sha.len().min(12)],
+        stem_part(&r.binary.git_sha, 12),
         r.binary.pgo,
         r.host.hostname,
         r.host.arch,
@@ -308,4 +322,66 @@ pub fn table(r: &RunReport) -> String {
         r.wall_seconds
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn stem_part_is_char_safe_and_path_safe() {
+        assert_eq!(super::stem_part("abcdefghiéx", 10), "abcdefghi-");
+        assert_eq!(
+            super::stem_part("busbar 1.6/../x\n", 64),
+            "busbar-1.6-..-x-"
+        );
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    fn report_with_sha(git_sha: &str) -> RunReport {
+        RunReport {
+            tool: "busbar-system-hammer",
+            tool_version: "0",
+            hammer_git_sha: String::new(),
+            started_unix: 0,
+            label: String::new(),
+            suite: String::new(),
+            long: false,
+            windows: crate::run::Windows::short(),
+            host: Host {
+                hostname: String::new(),
+                os: String::new(),
+                arch: String::new(),
+                cpus: 1,
+                cpu_model: String::new(),
+                load_avg_1m: 0.0,
+            },
+            binary: BinaryInfo {
+                path: String::new(),
+                sha256: String::new(),
+                version: "busbar 1.6.0".into(),
+                build_info: String::new(),
+                pgo: "unknown".into(),
+                git_sha: git_sha.into(),
+            },
+            driver_threads: 1,
+            mock_threads: 1,
+            driver_ceiling: None,
+            wall_seconds: 0.0,
+            results: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn table_header_sha_is_char_safe_and_sanitised() {
+        // The 12th byte falls inside 'é': a byte slice at 12 panics.
+        let t = table(&report_with_sha("abcdefghijké"));
+        assert!(t.contains(" sha abcdefghijk- pgo="), "{t}");
+        let t = table(&report_with_sha("0123456789abcdef\n|x"));
+        assert!(t.contains(" sha 0123456789ab pgo="), "{t}");
+        let t = table(&report_with_sha("ab\ncd"));
+        assert!(t.contains(" sha ab-cd pgo="), "{t}");
+    }
 }
