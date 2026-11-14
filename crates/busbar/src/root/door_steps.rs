@@ -21,7 +21,9 @@ use busbar_contract::section::{
 use busbar_contract::MeterClassId;
 use busbar_kernel::config::groups::ExhaustionMode;
 use busbar_kernel::governance::{AdmitGrant, LimitBlocked, PLANE_LANE_SEP};
-use busbar_kernel::plane_driver::{DriverSteps, FeeRefund, ParentMoney, PlaneMoney, UnitMoney};
+#[cfg(test)]
+use busbar_kernel::plane_driver::ParentMoney;
+use busbar_kernel::plane_driver::{DriverSteps, FeeRefund, PlaneMoney, UnitMoney};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::state::App;
 use busbar_kernel::teller::UnitCtx;
@@ -581,6 +583,7 @@ pub struct DoorSteps<'s> {
     ticket_instance: Option<Arc<()>>,
     ticket_lineage: Mutex<Option<busbar_kernel::plane_driver::ReservedRequestLineage>>,
     parent: Option<&'s busbar_contract::caps::HoldCell>,
+    #[cfg(test)]
     parent_admission: Option<&'s ParentAdmission<'s>>,
     child_constraints: Option<busbar_kernel::hook_child::Constraints>,
     unit: Mutex<DoorUnit>,
@@ -618,7 +621,9 @@ pub struct DoorCaller {
     pub ticket: Option<Vec<u8>>,
 }
 
-/// Host-owned proof of the actual live parent cell and its retained monetary admission.
+/// Host-owned proof of the actual live parent cell and its retained monetary admission. No
+/// production path opens one yet (only `under_admission`'s tests do), so it is test-only.
+#[cfg(test)]
 pub struct ParentAdmission<'a> {
     cell: &'a busbar_contract::caps::HoldCell,
     money: &'a PlaneMoney,
@@ -654,6 +659,7 @@ impl<'s> DoorSteps<'s> {
             ticket_instance: None,
             ticket_lineage: Mutex::new(None),
             parent: None,
+            #[cfg(test)]
             parent_admission: None,
             child_constraints: None,
             unit: Mutex::new(DoorUnit::default()),
@@ -709,6 +715,7 @@ impl<'s> DoorSteps<'s> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn parent_admission<'a>(
         &'a self,
         ctx: &UnitCtx,
@@ -735,11 +742,22 @@ impl<'s> DoorSteps<'s> {
         Ok(ParentAdmission { cell, money, token })
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn under_admission(mut self, parent: &'s ParentAdmission<'s>) -> Self {
         self.parent = Some(parent.cell);
         self.parent_admission = Some(parent);
         self
+    }
+
+    #[cfg(test)]
+    fn parented(&self) -> bool {
+        self.parent_admission.is_some()
+    }
+
+    #[cfg(not(test))]
+    fn parented(&self) -> bool {
+        false
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, DoorUnit> {
@@ -1208,7 +1226,7 @@ impl DriverSteps for DoorSteps<'_> {
         self.child_live()?;
         // These paths consume an existing host reservation, or perform a free local
         // operation. They do not acquire a second budget admission here.
-        if self.host_ticket_admission.is_some() || self.parent_admission.is_some() {
+        if self.host_ticket_admission.is_some() || self.parented() {
             return Ok(());
         }
         let (Some(gov), Some(key)) = (self.app.governance.as_ref(), self.key.as_ref()) else {
@@ -1258,7 +1276,7 @@ impl DriverSteps for DoorSteps<'_> {
     ) -> Result<busbar_contract::caps::Admission, Refusal> {
         self.child_live()?;
         if self.child_constraints.is_some()
-            && (self.host_ticket_admission.is_some() || self.parent_admission.is_some())
+            && (self.host_ticket_admission.is_some() || self.parented())
         {
             return Err(Refusal::new(ReasonCode::Unpriced));
         }
@@ -1355,6 +1373,7 @@ impl DriverSteps for DoorSteps<'_> {
                 }
             }
         }
+        #[cfg(test)]
         if let (Some(parent), Some(key)) = (self.parent_admission, self.key.as_ref()) {
             if !admit.bound_to(ctx.call) {
                 return Err(Refusal::new(ReasonCode::Replayed));
@@ -1413,7 +1432,7 @@ impl DriverSteps for DoorSteps<'_> {
             Admission::Keyed | Admission::Anonymous => {}
         }
 
-        if self.parent_admission.is_none() {
+        if !self.parented() {
             if let Some(cell) = self.parent {
                 if let Ok(accrual) = cell.accrue_child(principal, admit) {
                     return Ok(busbar_contract::caps::Admission::Accrual(accrual));
@@ -1441,6 +1460,7 @@ impl DriverSteps for DoorSteps<'_> {
         ctx: &UnitCtx,
         _accrual: &busbar_contract::caps::HoldAccrual,
     ) -> Result<(), Refusal> {
+        #[cfg(test)]
         if let (Some(parent), Some(key)) = (self.parent_admission, self.key.as_ref()) {
             return parent
                 .money
@@ -2026,6 +2046,7 @@ impl Rules {
             .map_err(|_| "listener topology was already installed".into())
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn hearing(guard: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Self {
         Self {
@@ -3886,7 +3907,6 @@ mod refresher {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn refresh_all() {
         let live: Vec<Arc<PerHop>> = kept_book()
             .kept
@@ -3903,7 +3923,6 @@ mod refresher {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) fn refresh_credentials() {
     refresher::refresh_all();
 }

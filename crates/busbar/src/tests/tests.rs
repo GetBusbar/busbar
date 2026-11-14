@@ -972,3 +972,57 @@ fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
     ));
     assert!(!line_serve_requested(&[planted], args(&["busbar"])));
 }
+
+/// The crate root denies `dead_code`, `unused_imports` and `unused_macros` outside tests. An
+/// item-level `allow` or `expect` naming one of them would silence that, so every such escape in
+/// this crate's source, build script and generators is listed here by file, and each listed one is
+/// test-only. A new site fails this test; adding one to the list needs owner review.
+#[test]
+fn no_dead_code_escape_outside_the_listed_test_only_sites() {
+    const LISTED: &[(&str, usize)] = &[
+        // owner test-source re-exports, `owner_test_sources!`, `door_cells_secret_driven`,
+        // `DOOR_BLACKBOX`, `DRIVER_WORDS` (3), and the linked-transport integration-test items (5)
+        ("build.rs", 12),
+        ("src/test_source_gen_tests.rs", 1),
+        ("src/root/tests/door_rig.rs", 1),
+        ("src/root/tests/test_plugins.rs", 1),
+    ];
+    let lints = ["dead_code", "unused_imports", "unused_macros"];
+    let escapes = ["allow(", "expect("];
+    let krate = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/busbar");
+    let mut files = vec![krate.join("build.rs")];
+    let mut dirs = vec![krate.join("src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read the busbar source tree") {
+            let path = entry.expect("read a source entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for path in files {
+        let text = std::fs::read_to_string(&path).expect("read a source file");
+        let count = text
+            .lines()
+            .filter(|l| {
+                escapes.iter().any(|e| l.contains(e)) && lints.iter().any(|n| l.contains(n))
+            })
+            .count();
+        let rel = path
+            .strip_prefix(&krate)
+            .expect("under the crate")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let listed = LISTED
+            .iter()
+            .find(|(f, _)| *f == rel)
+            .map_or(0, |(_, n)| *n);
+        if count != listed {
+            found.push(format!("{rel}: {count} escape lines, {listed} listed"));
+        }
+    }
+    assert!(found.is_empty(), "dead-code escapes changed: {found:?}");
+}

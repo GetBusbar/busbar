@@ -187,9 +187,15 @@ async fn body_read_timeout_trips_on_stalled_body() {
             "/echo",
             axum::routing::post(|body: String| async move { body }),
         );
-        super::serve_plain(listener, router, shutdown, None)
-            .await
-            .unwrap();
+        super::serve_admitted(
+            super::SocketAdmits::new(listener),
+            router,
+            None,
+            shutdown,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -321,9 +327,15 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
             "/echo",
             axum::routing::post(|body: String| async move { body }),
         );
-        super::serve_plain(listener, router, shutdown, None)
-            .await
-            .unwrap();
+        super::serve_admitted(
+            super::SocketAdmits::new(listener),
+            router,
+            None,
+            shutdown,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -373,9 +385,15 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
             "/echo",
             axum::routing::post(|body: String| async move { body }),
         );
-        super::serve_plain(listener, router, shutdown, None)
-            .await
-            .unwrap();
+        super::serve_admitted(
+            super::SocketAdmits::new(listener),
+            router,
+            None,
+            shutdown,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     let sock = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -455,9 +473,15 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
             "/echo",
             axum::routing::post(|body: bytes::Bytes| async move { body.len().to_string() }),
         );
-        super::serve_plain(listener, router, shutdown, None)
-            .await
-            .unwrap();
+        super::serve_admitted(
+            super::SocketAdmits::new(listener),
+            router,
+            None,
+            shutdown,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     let body = vec![b'x'; 200_000];
@@ -538,9 +562,15 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
             "/echo",
             axum::routing::post(|body: String| async move { body }),
         );
-        super::serve_plain(listener, router, shutdown, None)
-            .await
-            .unwrap();
+        super::serve_admitted(
+            super::SocketAdmits::new(listener),
+            router,
+            None,
+            shutdown,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     let sock = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -1076,9 +1106,15 @@ async fn a_listener_states_its_scheme_on_every_request() {
         let shutdown = async {
             let _ = rx.await;
         };
-        super::serve_plain(listener, scheme_router(), shutdown, None)
-            .await
-            .unwrap();
+        super::serve_admitted(
+            super::SocketAdmits::new(listener),
+            scheme_router(),
+            None,
+            shutdown,
+            None,
+        )
+        .await
+        .unwrap();
     });
     let got = body(&healthz_after(plain, b"").await);
     assert!(got.ends_with(&format!("scheme={SCHEME_PLAIN}")), "{got}");
@@ -1104,9 +1140,15 @@ async fn an_oversize_body_sent_slowly_still_reads_its_413() {
                 ),
             )
             .layer(axum::extract::DefaultBodyLimit::max(1024));
-        super::serve_plain(listener, router, shutdown, None)
-            .await
-            .unwrap();
+        super::serve_admitted(
+            super::SocketAdmits::new(listener),
+            router,
+            None,
+            shutdown,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     const CHUNK: usize = 64 * 1024;

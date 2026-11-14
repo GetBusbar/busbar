@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+#[cfg(test)]
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditKeySet, AuditRecord,
@@ -10,7 +11,9 @@ use busbar_kernel_audit::{
 };
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, OpenError, RecordClass};
 
-use busbar_kernel::persistence::journal::runtime::{BufferBudget, RuntimeJournal, StagedRun};
+#[cfg(test)]
+use busbar_kernel::persistence::journal::runtime::StagedRun;
+use busbar_kernel::persistence::journal::runtime::{BufferBudget, RuntimeJournal};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -89,8 +92,6 @@ pub struct Durability {
 
     pub voided_claims: Vec<String>,
 
-    pub quarantined: Vec<busbar_kernel_wal::Quarantine>,
-
     amendments_through: Option<u64>,
 
     history_budget: BufferBudget,
@@ -139,6 +140,7 @@ impl std::fmt::Debug for Durability {
 }
 
 impl Durability {
+    #[cfg(test)]
     #[must_use]
     pub fn on_disk(&self) -> bool {
         false
@@ -174,26 +176,23 @@ impl Durability {
             self.history_budget,
         )
     }
+    #[cfg(test)]
     #[must_use]
     pub fn durable_in_store(&self) -> bool {
         true
     }
+    #[cfg(test)]
     #[must_use]
     pub fn refuses_money(&self) -> Option<String> {
         self.journal.refuses_money()
     }
-    /// Capture this owner under the book lock, then await outside the lock.
-    pub async fn offer_held_back(journal: &Arc<RuntimeJournal>) -> Result<(), String> {
-        journal
-            .flush()
-            .await
-            .map_err(|error| format!("native journal flush failed: {error:?}"))
-    }
+    #[cfg(test)]
     pub fn stage_entries(&self, entries: &[Entry]) -> Result<Arc<StagedRun>, String> {
         self.journal
             .stage_run(entries)
             .map_err(|error| format!("native journal stage failed: {error:?}"))
     }
+    #[cfg(test)]
     pub async fn journal_claim(
         book: &Arc<std::sync::Mutex<Self>>,
         claim: ClaimBalance,
@@ -290,6 +289,7 @@ pub struct ClaimKey {
     pub scope: (u64, String),
 }
 
+#[cfg(test)]
 /// What a claim is taken as: the claim itself, the balance and the window it is journalled on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimBalance {
@@ -301,6 +301,7 @@ pub struct ClaimBalance {
     pub window: u64,
 }
 
+#[cfg(test)]
 /// When a claim was taken: whole seconds, and the node's monotonic reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClaimStamp {
@@ -425,6 +426,7 @@ pub struct NodeBook {
     pub verb_store: crate::root::kernel::VerbStoreHandle,
 }
 impl NodeBook {
+    #[cfg(test)]
     pub fn runtime_journal(&self) -> Arc<RuntimeJournal> {
         self.runtime_journal.clone()
     }
@@ -434,6 +436,7 @@ fn native_open_error(error: impl std::fmt::Debug) -> OpenError {
     OpenError::Io(std::io::Error::other(format!("native journal: {error:?}")))
 }
 
+#[cfg(test)]
 /// The root opens one native owner and shares this exact Arc with every
 /// journal-writing service. There is no legacy shipper or second live sealer.
 pub async fn node_book(
@@ -479,18 +482,16 @@ pub async fn build_on_store(
         incarnation: 0,
         restart_findings: Vec::new(),
         voided_claims: Vec::new(),
-        quarantined: Vec::new(),
         amendments_through: None,
         history_budget,
         resumed: true,
     };
     let mut findings = Vec::new();
     if let Some(cards) = cards {
-        let refused = cards
+        cards
             .rebuild_from_chain(&mut durability, Some(&records))
             .await
             .map_err(|error| native_open_error(error.to_string()))?;
-        findings.extend(refused.into_iter().map(|refused| refused.to_string()));
     }
     durability.resume_audit(&records);
     findings.extend(

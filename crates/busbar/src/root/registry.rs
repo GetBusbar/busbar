@@ -6,7 +6,9 @@ use std::sync::Arc;
 use busbar_contract::transport::TransportSettings;
 use busbar_contract::{check_composition, CompositionError, Plugin, Registered};
 use busbar_core_connector::wire::HostWire;
-use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
+#[cfg(test)]
+use busbar_kernel::registry::ResolvedOverlap;
+use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry};
 
 use crate::root::linked::{Linked, LinkedClaims, LinkedTransport};
 
@@ -61,21 +63,22 @@ impl std::fmt::Display for BootRefusal {
 
 impl std::error::Error for BootRefusal {}
 
+/// What a sealed composition root registered. Boot only needs the seal's refusals; the rows are
+/// read by tests.
 pub struct BootRegistry {
+    #[cfg(test)]
     pub registry: Registry,
-
+    #[cfg(test)]
     pub claims: Vec<PlaneClaim>,
-
+    #[cfg(test)]
     pub precedence: Vec<usize>,
-
+    #[cfg(test)]
     pub resolved: Vec<ResolvedOverlap>,
-
+    #[cfg(test)]
     pub registered: Vec<Registered>,
-
+    #[cfg(test)]
     pub dropped: Vec<&'static str>,
 }
-
-impl BootRegistry {}
 
 fn core_claims() -> impl Iterator<Item = PlaneClaim> {
     busbar_core_admin::admin_codec::claims::CLAIMS
@@ -150,6 +153,7 @@ pub struct Dropped {
 }
 
 impl Dropped {
+    #[cfg(test)]
     pub const NONE: Self = Self {
         doors: std::borrow::Cow::Borrowed(&[]),
     };
@@ -244,7 +248,7 @@ pub fn seal(
         .into_iter()
         .map(|(row, _)| row)
         .collect();
-    let registry = register_all(&registered, linked.claims)?;
+    let _registry = register_all(&registered, linked.claims)?;
 
     let claims = plane_claims(linked.claims);
     let sealed = seal_claims(&claims);
@@ -260,11 +264,17 @@ pub fn seal(
     check_claim_transports(&claims, &registered)?;
 
     Ok(BootRegistry {
-        registry,
+        #[cfg(test)]
+        registry: _registry,
+        #[cfg(test)]
         claims,
+        #[cfg(test)]
         precedence: sealed.order,
+        #[cfg(test)]
         resolved: sealed.resolved,
+        #[cfg(test)]
         registered,
+        #[cfg(test)]
         dropped: dropped.doors.iter().map(|d| d.key).collect(),
     })
 }

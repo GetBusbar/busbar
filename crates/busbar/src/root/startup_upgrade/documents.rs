@@ -388,14 +388,6 @@ impl Documents {
         Ok(())
     }
 
-    pub fn native_source_established(&self) -> Result<bool, String> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| "configuration custody failed")?;
-        Ok(state.source_profile.is_some())
-    }
-
     /// Interpolate retained normalization output under only this startup's captured references.
     pub fn interpolate_captured(&self, raw: &str) -> Result<Zeroizing<String>, String> {
         let state = self

@@ -55,6 +55,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+#[cfg(any(test, not(unix)))]
 use busbar_kernel::diagnostics::{diag_warn, TLS_ACCEPT_PERSISTENT_FAILURE};
 use std::time::{Duration, Instant};
 
@@ -88,6 +89,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use hyper_util::server::graceful::{GracefulShutdown, Watcher};
 use hyper_util::service::TowerToHyperService;
+#[cfg(any(test, not(unix)))]
 use tokio::net::TcpListener;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
@@ -105,10 +107,12 @@ use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 ///
 /// So the second kind backs off, exponentially and capped. The cap is deliberately well under a
 /// second: it bounds both the CPU burn and how long a shutdown request can sit behind a sleep.
+#[cfg(any(test, not(unix)))]
 struct AcceptBackoff {
     delay: Option<std::time::Duration>,
 }
 
+#[cfg(any(test, not(unix)))]
 impl AcceptBackoff {
     const FIRST: std::time::Duration = std::time::Duration::from_millis(5);
     const CAP: std::time::Duration = std::time::Duration::from_millis(250);
@@ -155,12 +159,14 @@ impl AcceptBackoff {
 
 pub const REQUEST_WIRE: &str = busbar_core_admin::admin_codec::claims::TRANSPORT;
 
+#[cfg(any(test, not(unix)))]
 pub struct SocketAdmits {
     listener: TcpListener,
     backoff: AcceptBackoff,
     scheme: &'static str,
 }
 
+#[cfg(any(test, not(unix)))]
 impl SocketAdmits {
     #[must_use]
     pub fn new(listener: TcpListener) -> Self {
@@ -172,6 +178,7 @@ impl SocketAdmits {
     }
 }
 
+#[cfg(any(test, not(unix)))]
 impl Admits for SocketAdmits {
     async fn admit(&mut self) -> Admitted {
         loop {
@@ -287,6 +294,7 @@ impl Drop for ConnCountGuard {
     }
 }
 
+#[cfg(test)]
 pub async fn serve(
     listener: TcpListener,
     router: Router,
@@ -655,20 +663,6 @@ fn hardened_conn_builder() -> ConnBuilder<TokioExecutor> {
         .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(std::time::Duration::from_secs(30));
     builder
-}
-
-pub async fn serve_plain(
-    listener: TcpListener,
-    router: Router,
-    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-    balancer: Option<ConnBalancer>,
-) -> io::Result<()> {
-    let admits = SocketAdmits {
-        listener,
-        backoff: AcceptBackoff::new(),
-        scheme: REQUEST_WIRE,
-    };
-    accept_loop(admits, shutdown, balancer, Served::new(router, None)).await
 }
 
 /// What one listener serves every connection with: the hardened builder (see

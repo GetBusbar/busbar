@@ -40,6 +40,7 @@ impl PinnedHistory {
         self.history.snapshot(self.at)
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn view_at(
         &self,
@@ -48,6 +49,7 @@ impl PinnedHistory {
         self.history.snapshot(at.min(self.at))
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn seq(&self) -> busbar_kernel_ledger::cost::EntryKey {
         self.at
@@ -116,6 +118,7 @@ pub struct RootHistory {
     /// boot resolution is epoch 0 and each apply after it is the next, which is a true statement
     /// about which generation of the deployment's configuration produced the entry. The day the seam
     /// carries the engine's own epoch, this counter is what it replaces.
+    #[cfg(test)]
     resolutions: std::sync::atomic::AtomicU64,
     /// One append at a time — a config apply or a signed correction — so an entry's number on the
     /// history and its record's position on the chain are the same order.
@@ -161,17 +164,6 @@ impl std::fmt::Display for CardBootError {
 /// one that was (MONEY-AUDIT D-6).
 #[derive(Debug)]
 pub enum CardRefused {
-    /// The journal could not make the applied card durable, and the card is IN DOUBT: the journal
-    /// chained its record before the log was asked to take it, and the log retained the refused
-    /// batch and offers it again, in order, on the next append (`busbar-kernel-wal`
-    /// `Journal::append`, `Wal::append_batch`). So the record may yet land, and the holder put the
-    /// card in force back on the journal behind it at the same instant .
-    Lost(busbar_contract::caps::DurabilityLost),
-    /// The log neither holds nor owes the card, so the record can never land: nothing is published
-    /// and nothing is put back — the node fails closed. Every arm of `Wal::append_batch` retains
-    /// the batch it was handed, a failed roll onto a fresh segment included (kernel-wal finding 4),
-    /// so a log that keeps that rule never answers this; it is the answer should one not.
-    Dropped(busbar_contract::caps::DurabilityLost),
     /// The boot's book has rebuilt the history but its handle is not bound yet: there is no journal
     /// the card could go on.
     Unbound,
@@ -231,6 +223,7 @@ impl RootHistory {
         self.store.get().is_some()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn pending_refusal(&self) -> Option<String> {
         self.card_store().and_then(|s| s.pending_refusal())
@@ -291,6 +284,7 @@ impl RootHistory {
             .await
     }
 
+    #[cfg(test)]
     pub fn apply(
         &self,
         card: busbar_kernel_ledger::cost::RateCard,
@@ -303,6 +297,7 @@ impl RootHistory {
         self.append_config(card, now_ms, policy_epoch)
     }
 
+    #[cfg(test)]
     fn append_config(
         &self,
         card: busbar_kernel_ledger::cost::RateCard,
@@ -345,6 +340,7 @@ impl RootHistory {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn restore(
         journalled: Vec<JournalledCard>,
         held: Vec<CardApplied>,
@@ -435,16 +431,16 @@ impl RootHistory {
         &'static self,
         _durability: &mut crate::root::durability::Durability,
         records: Option<&[busbar_kernel_wal::JournalRecord]>,
-    ) -> Result<Vec<CorrectionRefused>, CardBootError> {
+    ) -> Result<(), CardBootError> {
         let store = self.store.get().ok_or_else(|| {
             CardBootError::Store("canonical price history requires the configured CoreStore".into())
         })?;
         self.boot_store(store, records)
             .await
-            .map_err(CardBootError::Store)?;
-        Ok(Vec::new())
+            .map_err(CardBootError::Store)
     }
 
+    #[cfg(test)]
     pub async fn amend<E>(
         &self,
         correction: &Correction,
@@ -701,8 +697,10 @@ pub(crate) fn register_classes(rates: &busbar_kernel::rate_apply::RawRates<'_>) 
     }
 }
 
+#[cfg(test)]
 pub const CARD_APPLIED_TAG: &str = "busbar/rate-card-applied/v1";
 
+#[cfg(test)]
 const RESERVED_CLASSES: [&str; 4] = [
     busbar_kernel_ledger::cost::CLASS_INPUT,
     busbar_kernel_ledger::cost::CLASS_OUTPUT,
@@ -710,6 +708,7 @@ const RESERVED_CLASSES: [&str; 4] = [
     busbar_kernel_ledger::cost::CLASS_CACHE_WRITE,
 ];
 
+#[cfg(test)]
 /// **ONE APPLIED CARD, IN INTEGERS** — what the card priced, read off the card the apply built, so a
 /// restart rebuilds the same card without a configured decimal ever crossing the journal (#44: the
 /// float-to-integer conversion happens once, at the intake, and never again).
@@ -734,7 +733,9 @@ pub struct CardForm {
     planes: Vec<(String, u64, u64)>,
 }
 
+#[cfg(test)]
 impl CardForm {
+    #[cfg(test)]
     #[must_use]
     pub fn of(
         rates: &busbar_kernel::rate_apply::RawRates<'_>,
@@ -783,6 +784,7 @@ impl CardForm {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn card(&self) -> busbar_kernel_ledger::cost::RateCard {
         use busbar_kernel_ledger::cost::{LaneClass, PlaneFees, RateCard, TierRates};
@@ -827,7 +829,9 @@ impl CardForm {
     }
 }
 
+#[cfg(test)]
 impl CardForm {
+    #[cfg(test)]
     #[must_use]
     pub fn to_fields(&self) -> busbar_kernel::config::card::CardFields {
         let unpriced: std::collections::BTreeSet<&str> = self
@@ -921,6 +925,7 @@ pub(crate) fn cells_onto(
     )
 }
 
+#[cfg(test)]
 /// **ONE CONFIG APPLY, JOURNALLED**: the card and the instant it took effect from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CardApplied {
@@ -935,7 +940,9 @@ pub struct CardApplied {
     pub form: CardForm,
 }
 
+#[cfg(test)]
 impl CardApplied {
+    #[cfg(test)]
     pub(crate) fn draft(&self) -> busbar_kernel_ledger::cost::CardEntryDraft {
         busbar_kernel_ledger::cost::CardEntryDraft {
             effective_from: self.effective_from,
@@ -948,6 +955,7 @@ impl CardApplied {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
         let form = &self.form;
@@ -980,6 +988,7 @@ impl CardApplied {
         body.finish()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn from_body(bytes: &[u8]) -> Option<CardApplied> {
         let mut body = busbar_kernel_wal::BodyReader::new(bytes);
@@ -1034,6 +1043,7 @@ impl CardApplied {
     }
 }
 
+#[cfg(test)]
 pub(crate) enum JournalledCard {
     Applied(CardApplied),
 
@@ -1088,6 +1098,7 @@ impl Correction {
         ))
     }
 
+    #[cfg(test)]
     pub fn rebuild_over(
         &self,
         history: &busbar_kernel_ledger::cost::History,
@@ -1101,6 +1112,7 @@ impl Correction {
         }
     }
 
+    #[cfg(test)]
     fn rebuild_over_key(
         &self,
         history: &busbar_kernel_ledger::cost::History,
@@ -1123,6 +1135,7 @@ impl Correction {
             .ok_or(BaseMismatch::NoCardForCells)
     }
 
+    #[cfg(test)]
     pub(crate) fn rebuild_from_original_chain(
         &self,
         history: &busbar_kernel_ledger::cost::History,
@@ -1170,6 +1183,7 @@ pub enum CorrectionBase {
         card_digest: [u8; 32],
     },
     /// An old v3 record, resolved only through its original journal chain.
+    #[cfg(test)]
     LegacyOrdinal {
         /// The original chain-local position, never a current fleet position.
         seq: busbar_kernel_ledger::cost::HistorySeq,
@@ -1182,6 +1196,7 @@ impl std::fmt::Display for CorrectionBase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Key { key, .. } => write!(f, "{key}"),
+            #[cfg(test)]
             Self::LegacyOrdinal { seq, .. } => write!(f, "legacy ordinal {seq}"),
         }
     }
@@ -1193,6 +1208,7 @@ impl std::fmt::Display for CorrectionBase {
 /// no operator signed, so it is not rebuilt. The refusal is a named restart finding
 /// ([`crate::root::durability::JournalDisagreement::CorrectionRefused`]), as a set-aside amendment
 /// record or a quarantined segment is, and never only a log line.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorrectionRefused {
     /// Start of the refused correction's window, milliseconds.
@@ -1208,6 +1224,7 @@ pub struct CorrectionRefused {
 }
 
 /// How the rebuilt history fails a correction's [`CorrectionBase`].
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaseMismatch {
     /// The rebuilt history holds no entry at the base's number when the correction is reached: an
@@ -1221,6 +1238,7 @@ pub enum BaseMismatch {
     NoCardForCells,
 }
 
+#[cfg(test)]
 impl std::fmt::Display for CorrectionRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let window = match self.effective_until {
@@ -1275,6 +1293,7 @@ pub enum AmendRefused<E> {
     Store(String),
 }
 
+#[cfg(test)]
 pub(crate) struct RestoredHistory {
     pub(crate) history: busbar_kernel_ledger::cost::History,
     write: Vec<CardApplied>,
@@ -1283,6 +1302,7 @@ pub(crate) struct RestoredHistory {
     refused: Vec<CorrectionRefused>,
 }
 
+#[cfg(test)]
 pub(crate) fn journalled_cards(
     records: &[busbar_kernel_wal::JournalRecord],
 ) -> Vec<JournalledCard> {
@@ -1297,6 +1317,7 @@ pub(crate) fn journalled_cards(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn journalled_cards_at(
     records: &[busbar_kernel_wal::JournalRecord],
 ) -> Vec<(u64, Vec<u8>, JournalledCard)> {
@@ -1312,6 +1333,7 @@ pub(crate) fn journalled_cards_at(
         .collect()
 }
 
+#[cfg(test)]
 #[cfg(feature = "root-admin")]
 fn journalled_amendment(body: &[u8]) -> Option<JournalledCard> {
     let amendment = crate::root::units_admin::amendment_from_body(body)?;
@@ -1402,6 +1424,7 @@ impl busbar_kernel::rate_apply::RateEpoch for RootHistory {
     }
 }
 
+#[cfg(any(test, distribution_root))]
 pub fn install_card_repricer() {}
 
 /// The admission unit, standing at the in-flight table's arrival door.
@@ -1426,6 +1449,7 @@ pub type VerbStoreHandle =
 pub struct ProductionUnits {
     pub auth_bindings: auth_bindings::AuthBindings,
 
+    #[cfg(test)]
     pub arrival_door: AdmissionDoor,
 
     pub durability: Arc<Mutex<crate::root::durability::Durability>>,
@@ -1439,6 +1463,7 @@ pub struct ProductionUnits {
 }
 
 impl ProductionUnits {
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -1466,6 +1491,7 @@ impl ProductionUnits {
     ) -> Self {
         ProductionUnits {
             auth_bindings: auth_bindings::AuthBindings::without_directory(),
+            #[cfg(test)]
             arrival_door: AdmissionDoor,
             durability,
             #[cfg(feature = "root-admin")]
