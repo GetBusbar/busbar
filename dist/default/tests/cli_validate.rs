@@ -163,15 +163,33 @@ fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
 }
 
 #[test]
-fn safe_mode_as_the_first_flag_proceeds_to_the_requested_configuration() {
-    let dir = fixture_dir("safe-first-missing");
-    let (code, _, error) = run_busbar(&dir, &["--safe-mode"]);
+fn ignore_overlay_as_the_first_flag_proceeds_to_the_requested_configuration() {
+    let dir = fixture_dir("ignore-first-missing");
+    let (code, _, error) = run_busbar(&dir, &["--ignore-overlay"]);
     assert_eq!(
         code, 1,
         "must reach missing configuration, not usage refusal: {error}"
     );
     assert!(!error.contains("unrecognized argument"), "{error}");
     assert!(error.contains("config.yaml"), "{error}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn safe_mode_is_refused_as_usage_in_any_position() {
+    let dir = fixture_dir("safe-mode-removed");
+    for args in [
+        vec!["--safe-mode"],
+        vec!["--validate", "--safe-mode"],
+        vec!["--ignore-overlay", "--safe-mode"],
+    ] {
+        let (code, _, error) = run_busbar(&dir, &args);
+        assert_eq!(code, 2, "{args:?}: {error}");
+        assert!(
+            error.contains("unrecognized argument '--safe-mode'"),
+            "{args:?}: {error}"
+        );
+    }
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -183,7 +201,7 @@ fn a_missing_config_or_provider_flag_value_is_a_usage_error_before_boot() {
         vec!["-c"],
         vec!["--providers"],
         vec!["--validate", "--config"],
-        vec!["--safe-mode", "--providers"],
+        vec!["--ignore-overlay", "--providers"],
         vec!["--migrate-config", "legacy.yaml", "--providers"],
     ] {
         let (code, _, error) = run_busbar(&dir, &args);
@@ -217,11 +235,11 @@ fn commands_after_boot_options_exit_without_starting_the_gateway() {
     std::fs::write(&providers, "").unwrap();
     for options in [
         vec!["-c".to_owned(), config.display().to_string()],
-        vec!["--safe-mode".to_owned()],
+        vec!["--ignore-overlay".to_owned()],
         vec![
             "--providers".to_owned(),
             providers.display().to_string(),
-            "--safe-mode".to_owned(),
+            "--ignore-overlay".to_owned(),
         ],
         vec![
             format!("--config={}", config.display()),
@@ -262,7 +280,7 @@ fn commands_after_boot_options_exit_without_starting_the_gateway() {
     let legacy = dir.join("legacy.yaml");
     std::fs::write(&legacy, "listen: '127.0.0.1:0'\nstore: {module: memory}\n").unwrap();
     let mut child = command(&dir)
-        .args(["--safe-mode", "--migrate-config"])
+        .args(["--ignore-overlay", "--migrate-config"])
         .arg(&legacy)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1025,7 +1043,7 @@ fn validate_refuses_retired_overlay_selectors_without_file_effects() {
         r#"{"version":1,"root":{"limits":{"reasoning_effort_budgets":{"minimal":16384,"low":8192,"medium":4096,"high":1024}}}}"#,
     ).unwrap();
     write_legacy_overlay_selector(&dir, &overlay);
-    for args in [vec!["--validate"], vec!["--validate", "--safe-mode"]] {
+    for args in [vec!["--validate"], vec!["--validate", "--ignore-overlay"]] {
         let before = overlay_validation_tree(&dir);
         let (code, _, stderr) = run_busbar_with_overlay(&dir, &overlay, &args);
         assert_eq!(
@@ -1043,7 +1061,7 @@ fn validate_refuses_retired_overlay_selectors_without_file_effects() {
         &dir,
         "limits:\n  reasoning_effort_budgets: {minimal: 16384, low: 8192, medium: 4096, high: 1024}\n",
     );
-    for args in [vec!["--validate"], vec!["--validate", "--safe-mode"]] {
+    for args in [vec!["--validate"], vec!["--validate", "--ignore-overlay"]] {
         let before = overlay_validation_tree(&dir);
         let (code, _, stderr) = run_busbar(&dir, &args);
         assert_eq!(
