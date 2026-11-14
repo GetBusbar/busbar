@@ -2205,3 +2205,7 @@ mod secret_shorthand_declared_tests;
 #[cfg(test)]
 #[path = "tests/credential_echo_tests.rs"]
 mod credential_echo_tests;
+
+#[cfg(test)]
+#[path = "tests/boot_advice_tests.rs"]
+mod boot_advice_tests;
