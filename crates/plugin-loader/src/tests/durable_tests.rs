@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[cfg(unix)]
+use crate::durable::hooks::plant_link_arm;
 use crate::durable::hooks::{
     fault_arm, fault_reset, parent_fsynced as fault_parent_fsynced,
     parents_fsynced as fault_parents_fsynced, plant_decoy_arm, FaultStep,
@@ -216,6 +218,37 @@ fn exclusive_pre_removal_clears_a_temp_left_by_a_crashed_run() {
         !sc.has_durable_temp("signing.key"),
         "the temp was consumed by the rename; nothing leaks"
     );
+}
+
+/// A writer of the holding directory plants a symlink at the next temp name, pointing at a file
+/// outside it. The default publish must never write through that link: the outside file keeps
+/// its bytes and the published name is a regular file holding ours.
+#[test]
+#[cfg(unix)]
+fn default_write_never_follows_a_symlink_planted_at_its_temp_name() {
+    let sc = Scratch::new("planted-link");
+    let outside = Scratch::new("planted-link-target");
+    let victim = outside.path("service-state.json");
+    std::fs::write(&victim, b"service state").unwrap();
+    let target = sc.path("plugin-1.0.0.tar.gz");
+    fault_reset();
+
+    plant_link_arm(&victim);
+    write(&target, b"admitted archive").expect("the publish succeeds without the planted link");
+    assert_eq!(
+        std::fs::read(&victim).unwrap(),
+        b"service state",
+        "the planted link's target outside the directory is untouched"
+    );
+    assert!(
+        !std::fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the published name is not the planted link"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"admitted archive");
+    assert!(!sc.has_durable_temp("plugin-1.0.0.tar.gz"));
 }
 
 #[test]
