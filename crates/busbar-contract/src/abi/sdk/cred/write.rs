@@ -25,6 +25,8 @@ pub(crate) enum Part {
 pub struct Parts {
     pub(crate) parts: Vec<Part>,
     secure: bool,
+    /// The total length of `parts`, kept current on every append (LINT-RULES LR-108, BP04).
+    len: usize,
 }
 
 impl Parts {
@@ -36,6 +38,7 @@ impl Parts {
     /// Append public bytes.
     #[must_use]
     pub fn public(mut self, bytes: &[u8]) -> Self {
+        self.len += bytes.len();
         self.parts.push(Part::Public(bytes.to_vec()));
         self
     }
@@ -44,19 +47,14 @@ impl Parts {
     #[must_use]
     pub fn sealed(mut self, seal: Seal) -> Self {
         self.secure |= seal.secure_required();
+        self.len += seal.len();
         self.parts.push(Part::Sealed(seal));
         self
     }
 
     /// The total length in bytes.
     pub fn len(&self) -> usize {
-        self.parts
-            .iter()
-            .map(|p| match p {
-                Part::Public(b) => b.len(),
-                Part::Sealed(s) => s.len(),
-            })
-            .sum()
+        self.len
     }
 
     /// Whether it is empty.

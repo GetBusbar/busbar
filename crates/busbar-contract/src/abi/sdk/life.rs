@@ -55,7 +55,7 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::task::Poll;
 
@@ -198,6 +198,9 @@ enum Lease {
 pub struct Leases {
     next: AtomicU64,
     held: Mutex<BTreeMap<(u64, u32), Lease>>,
+    /// How many leases `held` holds (its `(lease, 0)` heads), changed only under its lock
+    /// (LINT-RULES LR-108, BP04).
+    leases: AtomicUsize,
     /// Alive while this table is: an answer that leased from it is FAULT when the table is gone
     /// by the time the body returns (`abi::sdk::out::Holders`).
     pub(crate) alive: crate::abi::sdk::out::Alive,
@@ -233,7 +236,9 @@ impl Leases {
             }
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        held.insert((id, 0), lease);
+        if held.insert((id, 0), lease).is_none() {
+            self.leases.fetch_add(1, Ordering::Relaxed);
+        }
         head.lease = id;
         id
     }
@@ -311,6 +316,9 @@ impl Leases {
         {
             retired.reserve(1);
             if let Some(part) = held.remove(&key) {
+                if key.1 == 0 {
+                    self.leases.fetch_sub(1, Ordering::Relaxed);
+                }
                 retired.push(part);
             }
         }
@@ -327,7 +335,7 @@ impl Leases {
     /// How many leases are held (a chained answer is one lease).
     #[must_use]
     pub fn held(&self) -> usize {
-        self.lock().keys().filter(|k| k.1 == 0).count()
+        self.leases.load(Ordering::Relaxed)
     }
 }
 

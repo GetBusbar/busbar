@@ -182,6 +182,8 @@ pub struct Connection {
     unflushed: bool,
     /// Frame pieces the caller has not taken.
     inbox: VecDeque<Got>,
+    /// The bytes `inbox` holds, kept current wherever it changes (LINT-RULES LR-108, BP04).
+    inbox_bytes: usize,
     receive_held: usize,
     /// The first message, sent once the framing begins.
     opening: Option<Opening>,
@@ -191,6 +193,8 @@ pub struct Connection {
     head_words: HeadWords,
     /// Writes held back, in order: those the caller made before the framing began, and those on a
     early: Vec<Early>,
+    /// The bytes `early` holds, kept current wherever it changes (LINT-RULES LR-108, BP04).
+    early_bytes: usize,
     /// Every byte the carrier has taken, for the life of the connection.
     flushed: u64,
     /// The far side ENDED its stream (a read answered end of file) and the framer was told, once.
@@ -750,10 +754,12 @@ impl Connection {
             queued: 0,
             unflushed: false,
             inbox: VecDeque::new(),
+            inbox_bytes: 0,
             receive_held: 0,
             opening: dial.opening.take(),
             head_words: std::mem::take(&mut dial.head_words),
             early: Vec::new(),
+            early_bytes: 0,
             flushed: 0,
             read_end: false,
 
@@ -847,10 +853,12 @@ impl Connection {
             queued: 0,
             unflushed: false,
             inbox: VecDeque::new(),
+            inbox_bytes: 0,
             receive_held: 0,
             opening: dial.opening.take(),
             head_words: std::mem::take(&mut dial.head_words),
             early: Vec::new(),
+            early_bytes: 0,
             flushed: 0,
             read_end: false,
             open_deadline: Instant::now().checked_add(dial.open_timeout),
@@ -888,6 +896,7 @@ impl Connection {
             Phase::Ended => return Err(Failure::Closed),
             Phase::Open => self.put(EXCHANGE_STREAM, bytes, true, false)?,
             Phase::Connecting | Phase::Handshaking => {
+                self.early_bytes += bytes.len();
                 self.early
                     .push(Early::of(EXCHANGE_STREAM, bytes, true, false));
             }
@@ -954,10 +963,12 @@ impl Connection {
             queued: 0,
             unflushed: false,
             inbox: VecDeque::new(),
+            inbox_bytes: 0,
             receive_held: 0,
             opening: None,
             head_words: HeadWords::default(),
             early: Vec::new(),
+            early_bytes: 0,
             flushed: 0,
             read_end: false,
             open_deadline: Instant::now().checked_add(accept.handshake_timeout),
@@ -1092,11 +1103,14 @@ impl Connection {
                 self.put_opening_marked(stream, &message, true, false, body_len, sensitive)?;
                 self.sealed_sent(stream)?;
             }
-            _ => self.early.push(Early {
-                body_len,
-                sensitive,
-                ..Early::of(stream, &message, true, false)
-            }),
+            _ => {
+                self.early_bytes += message.len();
+                self.early.push(Early {
+                    body_len,
+                    sensitive,
+                    ..Early::of(stream, &message, true, false)
+                });
+            }
         }
         if let Err(f) = self.drive(cx) {
             self.fail(f.clone());
@@ -1177,6 +1191,7 @@ impl Connection {
     ) -> Result<(), Failure> {
         if let Some(framing) = self.framing.as_ref() {
             if framing.holds(stream) || self.early.iter().any(|e| e.stream == stream) {
+                self.early_bytes += bytes.len();
                 self.early.push(Early {
                     body_len,
                     sensitive,
@@ -1250,6 +1265,7 @@ impl Connection {
             if unread_above || !self.inbox.is_empty() {
                 let f = Failure::Refused(UPGRADE_OVER_CLEAR_BYTES.into());
                 self.inbox.clear();
+                self.inbox_bytes = 0;
                 self.fail(f.clone());
                 return Poll::Ready(Err(f));
             }
@@ -1369,6 +1385,7 @@ impl Connection {
     pub fn poll_piece(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Got>, Failure>> {
         loop {
             if let Some(p) = self.inbox.pop_front() {
+                self.inbox_bytes -= p.bytes.len();
                 return Poll::Ready(Ok(Some(p)));
             }
             match &self.phase {
@@ -1457,7 +1474,7 @@ impl Connection {
 
     /// The bytes held for the socket: early writes and framed bytes it has not taken.
     fn buffered(&self) -> usize {
-        self.out.len() + self.early.iter().map(|e| e.bytes.len()).sum::<usize>()
+        self.out.len() + self.early_bytes
     }
 
     /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete, `text` =
@@ -1519,6 +1536,7 @@ impl Connection {
             Phase::Ended if self.framing.is_none() => return Err(Failure::Closed),
             Phase::Open | Phase::Ended => self.put(stream, bytes, end, text)?,
             Phase::Connecting | Phase::Handshaking => {
+                self.early_bytes += bytes.len();
                 self.early.push(Early::of(stream, bytes, end, text));
             }
         }
@@ -1631,10 +1649,10 @@ impl Connection {
 
     /// Undelivered input held here or by the current framer. Line-owned pieces are accounted
     pub(crate) fn buffered_input(&self) -> usize {
-        self.inbox.iter().fold(
-            self.framing.as_ref().map_or(0, Framing::retained_input),
-            |n, g| n.saturating_add(g.bytes.len()),
-        )
+        self.framing
+            .as_ref()
+            .map_or(0, Framing::retained_input)
+            .saturating_add(self.inbox_bytes)
     }
 
     pub(crate) fn set_receive_held(&mut self, bytes: usize) {
@@ -1809,6 +1827,7 @@ impl Connection {
 
     /// Hand the writes held back to the framing, in order; a write on a stream still held waits
     fn put_early(&mut self) -> Result<(), Failure> {
+        self.early_bytes = 0;
         for e in std::mem::take(&mut self.early) {
             self.put_opening_marked(e.stream, &e.bytes, e.end, e.text, e.body_len, e.sensitive)?;
             self.sealed_sent(e.stream)?;
@@ -1873,6 +1892,7 @@ impl Connection {
             let message = Zeroizing::new(message);
 
             let held = std::mem::take(&mut self.early);
+            let held_bytes = std::mem::take(&mut self.early_bytes);
             let sent = self.put_opening_marked(
                 EXCHANGE_STREAM,
                 &message,
@@ -1883,6 +1903,7 @@ impl Connection {
             );
             let sealed = sent.and_then(|()| self.sealed_sent(EXCHANGE_STREAM));
             self.early.extend(held);
+            self.early_bytes += held_bytes;
             sealed?;
         } else {
             self.sealed_sent(EXCHANGE_STREAM)?;
@@ -2036,6 +2057,7 @@ impl Connection {
             }
 
             if !bytes.is_empty() || end_of_frame {
+                self.inbox_bytes += bytes.len();
                 self.inbox.push_back(Got {
                     stream: 0,
                     bytes: bytes.to_vec(),
@@ -2118,8 +2140,19 @@ impl Connection {
             self.full.remove(&g.stream);
             if g.failed {
                 self.seals.clear_on(g.stream);
-                self.early.retain(|early| early.stream != g.stream);
+                let mut dropped = 0;
+                self.early.retain(|early| {
+                    let keep = early.stream != g.stream;
+                    if !keep {
+                        dropped += early.bytes.len();
+                    }
+                    keep
+                });
+                self.early_bytes -= dropped;
             }
+        }
+        for g in &y.pieces {
+            self.inbox_bytes += g.bytes.len();
         }
         self.inbox.extend(std::mem::take(&mut y.pieces));
         self.framer_deadline = y.deadline_ns.map(framer::instant_of);
