@@ -52,7 +52,7 @@ async fn an_unreadable_old_audit_window_is_never_answered_empty() {
     for unit in 1..=(AUDIT_RING + 5) as u64 {
         seal(&book, unit).await;
     }
-    assert!(book.lock().unwrap().audit_records[0].seq > 1);
+    assert!(book.lock().unwrap().audit_records()[0].seq > 1);
     fixture.faults.unreadable.store(true, Ordering::Release);
     let mut answered = None;
     NodeAudit::new(book)
@@ -75,7 +75,7 @@ async fn corrupt_original_refuses_boot_amendments_and_keyset_without_second_boot
     seal(&book, 1).await;
     seal(&book, 2).await;
     let mut reopened = fixture.reopen().await;
-    assert_eq!(reopened.audit_records.len(), 2);
+    assert_eq!(reopened.audit_records().len(), 2);
     let next = reopened.journal.next_seq();
     fixture.corrupt_original(1).await;
     assert!(RuntimeJournal::open(fixture.core.clone(), 47, BUDGET)

@@ -196,7 +196,7 @@ async fn a_third_claim_dispatches_opaque_heads_through_the_governed_plane_once()
     assert_eq!(g.money.open_units(), 0, "money settled exactly once");
     assert_eq!(g.post.open_units(), 0, "the governed node completed");
     assert_eq!(
-        g.book.lock().unwrap().audit_records.len(),
+        g.book.lock().unwrap().audit_records().len(),
         1,
         "one fixed audit record"
     );
@@ -221,7 +221,7 @@ async fn a_revoked_admission_cannot_enter_the_neutral_plane_dispatcher() {
         .await
         .is_err());
     assert_eq!(g.money.open_units(), 0);
-    assert!(g.book.lock().unwrap().audit_records.is_empty());
+    assert!(g.book.lock().unwrap().audit_records().is_empty());
 }
 
 #[tokio::test]
@@ -345,7 +345,7 @@ async fn neutral_auth_refusal(target: &str, expected_status: u32) {
         "one completion tap per auth refusal"
     );
     assert_eq!(g.money.open_units(), 0);
-    assert!(g.book.lock().unwrap().audit_records.is_empty());
+    assert!(g.book.lock().unwrap().audit_records().is_empty());
 }
 
 #[path = "serve_inbound_audit.rs"]

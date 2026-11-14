@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "b72ac652b5d4544d6cdeaab8f091194bd54d853b",
+      "commit": "e179d431cdf509a05b1261cc1f56111a274ecae9",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -191,7 +191,7 @@
     {
       "repo": "busbar-transport-webrtc",
       "url": "https://github.com/GetBusbar/busbar-transport-webrtc",
-      "commit": "a55f1b4e45d2100e7c6604c7e4897f30d1f267df",
+      "commit": "640b931700f4ab13daf49eac69fea0bb8e91dabb",
       "package": "busbar-transport-webrtc-plugin",
       "kind": "transport",
       "alias": "webrtc",
@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "7909d6846eb814ddac1926ffe22fb700307fd19a",
+      "commit": "e83958e5b002e796ce08f339eec153d19f05c1ca",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -290,7 +290,7 @@
     {
       "repo": "busbar-plane-decisions",
       "url": "https://github.com/GetBusbar/busbar-plane-decisions",
-      "commit": "224c0dab11ff2382b6489bccf48a45790f8eda09",
+      "commit": "07ba253fe248e7159d70f12064b2ea8e640711f3",
       "package": "busbar-plane-decisions-plugin",
       "kind": "plane",
       "alias": "decisions",
@@ -301,7 +301,7 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://github.com/GetBusbar/busbar-plane-mcp",
-      "commit": "c5427d2728acfdceacdcdf8124919ed1fcdb7588",
+      "commit": "90b00acd3589682b53e4b83e479b891491c18e07",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
@@ -312,7 +312,7 @@
     {
       "repo": "busbar-plane-streaming",
       "url": "https://github.com/GetBusbar/busbar-plane-streaming",
-      "commit": "a27ecaf51f34a170e0f145e8aef146db53fc8f43",
+      "commit": "6191dba5e321bf1f8609b0034779d978f51948fe",
       "package": "busbar-plane-streaming-plugin",
       "kind": "plane",
       "alias": "streaming",

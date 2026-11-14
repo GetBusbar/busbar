@@ -919,7 +919,7 @@ busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postg
 # THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is
 # e154678 plus its held-cell test reading the rig's node journal (busbar #1427: the node amendment
 # journal is an instance the node owns; `node_recent` is gone).
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "b72ac652b5d4544d6cdeaab8f091194bd54d853b" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "e179d431cdf509a05b1261cc1f56111a274ecae9" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "8955d19a3443434939c5a1f78968be1ce5b2eecc" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "8955d19a3443434939c5a1f78968be1ce5b2eecc" }
@@ -1006,7 +1006,7 @@ busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-
 # (`busbar-transport-webrtc-plugin`), the published suite's datagram script and its gates live in that
 # repo's plugin CI; busbar's gates read the pinned crate through the base layer. Its media stack (str0m,
 # aes) is pinned in that repo's own manifest: no member here inherits it.
-busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "a55f1b4e45d2100e7c6604c7e4897f30d1f267df" }
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "640b931700f4ab13daf49eac69fea0bb8e91dabb" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its tests link the external testkit's R-FIX3
@@ -1023,27 +1023,27 @@ busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory"
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "c5427d2728acfdceacdcdf8124919ed1fcdb7588" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "90b00acd3589682b53e4b83e479b891491c18e07" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "224c0dab11ff2382b6489bccf48a45790f8eda09" }
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "07ba253fe248e7159d70f12064b2ea8e640711f3" }
 # THE A2A PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the a2a
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "7909d6846eb814ddac1926ffe22fb700307fd19a" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "e83958e5b002e796ce08f339eec153d19f05c1ca" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "a27ecaf51f34a170e0f145e8aef146db53fc8f43" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "6191dba5e321bf1f8609b0034779d978f51948fe" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
 # (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
 # busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
 # lock it carried the plane repo's busbar pin, whose plane ops table is not the host's, and every
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
-busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "a27ecaf51f34a170e0f145e8aef146db53fc8f43" }
+busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "6191dba5e321bf1f8609b0034779d978f51948fe" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
