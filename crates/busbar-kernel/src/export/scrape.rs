@@ -80,7 +80,7 @@ async fn whole(app: Option<&App>) -> Snapshot {
         if let Err(error) = crate::snapshot::refresh_scrape_gauges(app).await {
             return Snapshot::Refused(error);
         }
-        super::plugin::status();
+        super::plugin::status_if_stale();
     }
     crate::snapshot::snapshot().map_or(Snapshot::NotReady, Snapshot::Families)
 }
