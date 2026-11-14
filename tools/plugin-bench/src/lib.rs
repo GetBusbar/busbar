@@ -106,11 +106,11 @@ const USAGE: &str = "\
 busbar-plugin-bench: load ONE busbar plugin and hammer it (report only, never a gate)
 
 USAGE:
-  busbar-plugin-bench --kind <store|plane> [--plugin <path/to/libX.{so,dylib}>] [options]
+  busbar-plugin-bench --kind <store|plane|secret|auth|hook|export|transport> [--plugin <path/to/libX.{so,dylib}>] [options]
 
 OPTIONS:
   --plugin <path>        a dropped-in cdylib (default: the door linked into this binary)
-  --kind <kind>          the plugin's kind: store | plane
+  --kind <kind>          store | plane | secret | auth | hook | export | transport
   --ops <n>              calls per op (default 1000000, split over the threads)
   --threads <list>       thread counts to run, e.g. 1,4 (default 1,4)
   --budget-secs <s>      wall budget per scenario and thread count (default 10); a run that hits
