@@ -914,8 +914,6 @@ impl Tail {
 pub mod cancel {
     /// The pending op was aborted before it produced anything (deliver: the batch was not
     pub const ABORTED: u32 = 0;
-    /// The op had already completed when the cancel arrived (a race with the deadline); its
-    pub const RACED_TO_COMPLETION: u32 = 1;
 }
 
 // THE SDK's VIEW OF THE EXPORT TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated next to

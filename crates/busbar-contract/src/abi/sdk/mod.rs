@@ -32,7 +32,7 @@ pub mod capture;
 #[macro_use]
 pub mod lent;
 pub mod safe;
-pub use lent::{open_failed, HostBuf, Lent, LentList, SignalScalar};
+pub use lent::{open_failed, HostBuf, Lent, LentList};
 
 pub mod generation;
 pub use generation::Gen;
