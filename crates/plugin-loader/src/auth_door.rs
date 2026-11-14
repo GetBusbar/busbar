@@ -973,9 +973,18 @@ impl AuthInstance {
         }
 
         let plugin = Arc::new(plugin);
-        let schedule =
-            crate::dispatch::ticks::spawn(Arc::clone(&plugin), dispatcher.clone(), 0);
-        Ok(Self {
+        let tick_failed = Arc::new(AtomicBool::new(false));
+        let schedule = crate::dispatch::ticks::spawn(
+            Arc::clone(&plugin),
+            dispatcher.clone(),
+            0,
+            Arc::clone(&tick_failed),
+        );
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an opened auth instance keeps its settings and label"
+        )]
+        let opened = Self {
             shared: Arc::new(Shared {
                 plugin,
                 dispatcher,
@@ -991,6 +1000,7 @@ impl AuthInstance {
             label: label.to_string(),
             lifecycle: Mutex::new(()),
             schedule,
+            tick_failed,
         };
         Ok(opened)
     }
@@ -1013,7 +1023,12 @@ impl AuthInstance {
 
     #[cfg(test)]
     pub(crate) fn kept_secrets(&self) -> Arc<KeptSecrets> {
-        Arc::clone(&self.secrets.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        Arc::clone(
+            &self
+                .secrets
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     #[cfg(test)]
