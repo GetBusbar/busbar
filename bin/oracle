@@ -365,10 +365,13 @@ if [ "${1:-}" = "ci-run" ]; then
     exit 1
   fi
   if [ -n "$j" ]; then printf '%s\n' "$j"; fi
-  if [ -n "${MODERNCI_TO_SHA:-}" ] && git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
-    "$me" golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+  # The add-only base: ORACLE_BASE_SHA (GitLab's core-oracle job: the merge request's diff base or
+  # the push's previous head), else ModernCI's MODERNCI_TO_SHA.
+  gbase="${ORACLE_BASE_SHA:-${MODERNCI_TO_SHA:-}}"
+  if [ -n "$gbase" ] && git cat-file -e "$gbase:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
+    "$me" golden-guard --repo . --base "$gbase" --head HEAD
   else
-    echo "golden-guard: the target (${MODERNCI_TO_SHA:-none}) holds no golden/1.5.5; nothing to hold add-only"
+    echo "golden-guard: the target (${gbase:-none}) holds no golden/1.5.5; nothing to hold add-only"
   fi
   ts judge+golden-guard
   spec="$(shard_spec)" || exit 2
@@ -394,7 +397,7 @@ PY
   svc=testing/shadow-oracle/scripts/oracle-box-store-services.sh
   [ -z "$PREPARE_OUT" ] || stores=no
   if [ "$stores" = yes ]; then
-    sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-local}")-$$"
+    sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-${CI_COMMIT_SHA:-local}}")-$$"
     free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
     export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
     ORACLE_PG_PORT="$(free_port)"; ORACLE_MY_PORT="$(free_port)"; ORACLE_VK_PORT="$(free_port)"
