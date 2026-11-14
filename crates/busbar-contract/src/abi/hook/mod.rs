@@ -143,8 +143,8 @@ pub mod validate;
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
-/// The hook kind's ABI version: `2` (the version before this layout was `1`).
-pub const ABI_VERSION: u32 = 2;
+/// The hook kind's ABI version: v1.5.5 shipped `1`, so 1.6.0 ships `2`.
+pub const ABI_VERSION: u32 = super::versions::HOOK.raw();
 
 /// The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x554fa343936df174;
