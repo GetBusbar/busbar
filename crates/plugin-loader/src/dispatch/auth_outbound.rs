@@ -300,6 +300,7 @@ fn security_requirement(blob: Blob) -> Option<bool> {
 }
 
 fn copy(r: &FieldsRequest) -> FieldsRequest {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AuthFieldsCopy);
     FieldsRequest {
         point: r.point,
         conn: r.conn,
