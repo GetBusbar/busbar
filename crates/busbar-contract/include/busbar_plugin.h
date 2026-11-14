@@ -101,7 +101,7 @@ extern "C" {
 #define BB_MECH_KIND_EXPORT "export" /* `abi/export/`. */
 #define BB_MECH_KIND_PLANE "plane" /* `abi/plane/`. */
 #define BB_MECH_KIND_TRANSPORT "transport" /* `abi/transport/`. */
-#define BB_MECH_MECHANISM_VERSION UINT32_C(4) /* The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`. */
+#define BB_MECH_MECHANISM_VERSION UINT32_C(2) /* The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`. */
 #define BB_MECH_DOOR_MAGIC UINT64_C(0x4c50524142535542) /* ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired */
 #define BB_MECH_DOOR_SYMBOL "busbar_plugin_door" /* The ONE symbol a plugin exports, NUL-terminated for `dlsym`. */
 
@@ -238,7 +238,7 @@ extern "C" {
 #define BB_AUTH_POINT_FRAME UINT32_C(8) /* [`AuthPoints`] bit of [`AuthPoint::Frame`]: RESERVED. No set may hold it yet */
 
 /* hook */
-#define BB_HOOK_ABI_VERSION UINT32_C(2) /* The hook kind's ABI version: `2` (the version before this layout was `1`). */
+#define BB_HOOK_ABI_VERSION UINT32_C(2) /* The hook kind's ABI version: v1.5.5 shipped `1`, so 1.6.0 ships `2`. */
 #define BB_HOOK_LAYOUT_FINGERPRINT UINT64_C(0x554fa343936df174) /* The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_HOOK_SLOT_DECIDE UINT32_C(9) /* `decide`. */
 #define BB_HOOK_SLOT_TRANSFORM UINT32_C(10) /* `transform`. */
@@ -313,7 +313,7 @@ extern "C" {
 #define BB_HOOK_HARD_MAX_SIGNALS UINT64_C(1024) /* The most signal entries one view may carry (a FAULT ceiling: the catalog holds ten signals). */
 
 /* export */
-#define BB_EXPORT_ABI_VERSION UINT32_C(4) /* The export kind's ABI version. Version 4 carries raw metric text; version 3 supplied */
+#define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version: v1.5.5 shipped `2`, so 1.6.0 ships `3`. */
 #define BB_EXPORT_LAYOUT_FINGERPRINT UINT64_C(0xfe016c85b529734e) /* The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_EXPORT_SLOT_DELIVER UINT32_C(9) /* `deliver`. */
 #define BB_EXPORT_SLOT_SCRAPE UINT32_C(10) /* `scrape`. */
