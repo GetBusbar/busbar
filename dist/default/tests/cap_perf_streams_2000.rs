@@ -39,6 +39,11 @@ fn cap_perf_streams_2000() {
          if [ \"$n\" != unlimited ] && [ \"$n\" -lt {need} ]; then \
            echo \"cap.perf.streams-2000: this host allows $n open files, the cell needs {need}\" >&2; exit 3; \
          fi; \
+         ulimit -u \"$(ulimit -Hu)\" 2>/dev/null || ulimit -p \"$(ulimit -Hp)\" 2>/dev/null || true; \
+         p=\"$(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo max)\"; \
+         if [ \"$p\" != max ] && [ \"$p\" -lt {need} ]; then \
+           echo \"cap.perf.streams-2000: this host's cgroup allows $p tasks, the cell needs {need} threads\" >&2; exit 3; \
+         fi; \
          exec \"$0\" --exact cap_perf_streams_2000 --nocapture",
         need = STREAMS * 2 + 512
     );
