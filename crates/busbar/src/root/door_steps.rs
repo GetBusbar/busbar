@@ -67,19 +67,11 @@ impl DoorPools {
         let Some(map) = section.as_mapping() else {
             return Ok(Self::default());
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a section's keys are spelled once per generation"
-        )]
         let key = |k: &busbar_contract::yaml::Value| k.as_str().map(str::to_owned);
 
         let models = map
             .get_key(RESERVED_MODELS_KEY)
             .and_then(busbar_contract::yaml::Value::as_mapping);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a section's entries are gathered once per generation"
-        )]
         let entries: Vec<String> = match models {
             Some(models) => models.keys().filter_map(key).collect(),
             None => map
@@ -103,29 +95,13 @@ impl DoorPools {
             let Some(name) = key(name) else {
                 continue;
             };
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when a pool's members are refused"
-            )]
             let listed = members(pool).map_err(|e| format!("pool '{name}': {e}"))?;
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a pool's members are gathered once per generation"
-            )]
             pools.insert(
                 name.clone(),
                 listed.iter().map(|(m, _)| m.clone()).collect(),
             );
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a pool's tiers are gathered once per generation"
-            )]
             tiers.insert(name, listed.into_iter().map(|(_, t)| t).collect());
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the pools' fallbacks are gathered once per generation"
-        )]
         let fallbacks = map
             .get_key(RESERVED_POOLS_KEY)
             .and_then(busbar_contract::yaml::Value::as_mapping)
@@ -142,10 +118,6 @@ impl DoorPools {
                     .collect()
             })
             .unwrap_or_default();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the member-granted pools are gathered once per generation"
-        )]
         let member_granted = map
             .get_key(RESERVED_POOLS_KEY)
             .and_then(busbar_contract::yaml::Value::as_mapping)
@@ -162,10 +134,6 @@ impl DoorPools {
             })
             .unwrap_or_default();
 
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the pools' breakers are gathered once per generation"
-        )]
         let breakers = map
             .get_key(RESERVED_POOLS_KEY)
             .and_then(busbar_contract::yaml::Value::as_mapping)
@@ -181,10 +149,6 @@ impl DoorPools {
             .unwrap_or_default();
 
         let registration_default = busbar_contract::section::default_entry_timeout_ms(declared);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the entries' timeouts are gathered once per generation"
-        )]
         let timeouts = entries
             .iter()
             .filter_map(|entry| {
@@ -218,12 +182,7 @@ impl DoorPools {
     }
 
     fn entry_set(entries: &[String]) -> std::collections::BTreeSet<String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a section's entries are indexed once per generation"
-        )]
-        let set = entries.iter().cloned().collect();
-        set
+        entries.iter().cloned().collect()
     }
 
     fn member_pools(
@@ -419,14 +378,9 @@ fn members(pool: &busbar_contract::yaml::Value) -> Result<Vec<(String, u32)>, St
     else {
         return Ok(Vec::new());
     };
-    // busbar:expect(bp::fresh_buffer, reason = "config: a pool's members are read once per generation")
     let mut out = Vec::with_capacity(list.len());
     for (i, m) in list.iter().enumerate() {
         if let Some(name) = m.as_str() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a pool's members are read once per generation"
-            )]
             out.push((name.to_owned(), 0));
             continue;
         }
@@ -443,27 +397,15 @@ fn members(pool: &busbar_contract::yaml::Value) -> Result<Vec<(String, u32)>, St
             ));
         };
         let Some(written) = m.get(POOL_MEMBER_TIER_KEY) else {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a pool's members are read once per generation"
-            )]
             out.push((name.to_owned(), 0));
             continue;
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when a member's tier is refused"
-        )]
         let tier = written
             .as_u64()
             .and_then(|t| u32::try_from(t).ok())
             .ok_or_else(|| {
                 format!("member '{name}' has tier {written:?}, which is no unsigned integer that fits u32")
             })?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a pool's members are read once per generation"
-        )]
         out.push((name.to_owned(), tier));
     }
     Ok(out)
@@ -1849,13 +1791,8 @@ impl DriverSteps for DoorSteps<'_> {
             .named
             .as_ref()
             .is_some_and(|(class, _)| *class == ROUTE_SCOPE || *class == ROUTE_SCOPE_LOCAL);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the reachable entries are spelled only into a no-destination refusal"
-        )]
-        let words = (reason == ReasonCode::NoDestination && scoped)
-            .then(|| u.reachable.join(ROUTE_SCOPE_SEPARATOR).into_bytes());
-        words
+        (reason == ReasonCode::NoDestination && scoped)
+            .then(|| u.reachable.join(ROUTE_SCOPE_SEPARATOR).into_bytes())
     }
 
     fn counterparty(&self, _ctx: &UnitCtx, counterparty: &[u8]) {
@@ -1891,18 +1828,9 @@ pub fn door_facts(
     audit_kind: &'static str,
     keeps: Vec<busbar_kernel::plane_driver::ResponseKeep>,
 ) -> DoorFacts {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane's class index is built once, at bind"
-    )]
     let index: foldhash::HashMap<&str, u32> =
         classes.iter().zip(0u32..).map(|(c, i)| (*c, i)).collect();
-    // busbar:expect(bp::into_alloc, reason = "config: a plane's facts are built once, at bind")
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane's facts are built once, at bind"
-    )]
-    let facts = DoorFacts {
+    DoorFacts {
         plane: plane.to_string(),
         scope_kind: scope_kinds.first().map(|k| (*k).to_string()),
         secondary_scopes: BTreeMap::new(),
@@ -1920,8 +1848,7 @@ pub fn door_facts(
         bench_below_trip_threshold: None,
         metric_lanes: Vec::new(),
         stream_ceiling_secs: 0,
-    };
-    facts
+    }
 }
 
 #[must_use]
@@ -1932,16 +1859,10 @@ pub fn label_bound(
 ) -> crate::root::egress_ports::LabelBound {
     let mut bound = crate::root::egress_ports::LabelBound::new(vocabulary.iter().cloned());
     for label in pools.pools().keys() {
-        // busbar:expect(bp::fresh_buffer, reason = "config: a pool's label bound is built once per generation")
         let mut labels = Vec::new();
-        // busbar:expect(bp::fresh_buffer, reason = "config: a pool's label bound is built once per generation")
         let mut entries = Vec::new();
         let mut at = Some(label.as_str());
         while let Some(pool) = at.filter(|p| !labels.iter().any(|l: &String| l == p)) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a pool's label bound is built once per generation"
-            )]
             labels.push(pool.to_string());
             entries.extend(pools.pools().get(pool).into_iter().flatten().cloned());
             at = pools.fallback(pool);
@@ -1970,12 +1891,7 @@ pub fn compose_egress(
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     use busbar_kernel_egress::{Member, OnExhausted, Pool};
     let mut members: BTreeMap<String, Member> = BTreeMap::new();
-    #[expect(
-        clippy::disallowed_types,
-        reason = "config: a plane's egress is composed once per generation"
-    )]
     let mut sealed = std::collections::HashMap::new();
-    // busbar:expect(bp::fresh_buffer, reason = "config: a plane's egress is composed once per generation")
     let mut names = Vec::new();
     for (entry, id) in pools.entries().iter().zip(0u64..) {
         let Some(route) = routes.get(entry) else {
@@ -1996,10 +1912,6 @@ pub fn compose_egress(
         }
 
         for (need, base_url) in ridden(&route) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when a member's trust anchors are refused"
-            )]
             conns
                 .anchor(
                     caller,
@@ -2012,10 +1924,6 @@ pub fn compose_egress(
                     format!("member '{entry}': its trust anchors could not be sealed: {e}")
                 })?;
 
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when a member's private reach is refused"
-            )]
             conns
                 .seal_reach(
                     caller,
@@ -2037,16 +1945,8 @@ pub fn compose_egress(
         sealed.insert(destination, route);
         names.push((destination, name));
     }
-    #[expect(
-        clippy::disallowed_types,
-        reason = "config: a plane's egress is composed once per generation"
-    )]
     let mut built: std::collections::HashMap<String, Pool> = std::collections::HashMap::new();
     for (label, entries) in pools.pools() {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a pool's members are composed once per generation; its refusal is spelled only on failure"
-        )]
         let list = entries
             .iter()
             .enumerate()
@@ -2060,10 +1960,6 @@ pub fn compose_egress(
             .collect::<Result<Vec<_>, String>>()?;
         let mut pool = Pool::new(label.clone(), list);
         if let Some(fallback) = pools.fallback(label) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a pool's fallback is composed once per generation"
-            )]
             let fallback = fallback.to_string();
             pool.on_exhausted = OnExhausted::FallbackPool(fallback);
         }
@@ -2160,10 +2056,6 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
         }
         sections
     });
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a generation's door config is projected once, as it is built"
-    )]
     let config = DoorConfig {
         listener_routes: std::sync::OnceLock::new(),
         listeners: sections
@@ -2199,34 +2091,23 @@ pub fn listener_needs(
 fn raw_sections(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> BTreeMap<&'static str, busbar_contract::yaml::Value> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a generation's raw sections are gathered once, as it is built"
-    )]
-    let raw = cfg
-        .endpoint_resources
+    cfg.endpoint_resources
         .values()
         .filter_map(|r| r.downcast_ref::<(&'static str, busbar_contract::yaml::Value)>())
         .filter(|(_, v)| !v.is_null())
         .map(|(k, v)| (*k, v.clone()))
-        .collect();
-    raw
+        .collect()
 }
 
 pub fn owned_anchor_refusal(at: &str, written: &str) -> Result<(), String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when the trust anchor is refused"
-    )]
-    let checked = busbar_core_connector::tls::client::operator_ca_config(written.as_bytes())
+    busbar_core_connector::tls::client::operator_ca_config(written.as_bytes())
         .map(|_| ())
         .map_err(|_| {
             format!(
                 "`{at}` is not a usable trust anchor: it must be one or more PEM certificates the \
                  TLS stack takes as a trust anchor"
             )
-        });
-    checked
+        })
 }
 
 pub fn owned_anchors_refusal<P: AsRef<str>>(
@@ -2374,19 +2255,14 @@ pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) 
 #[must_use]
 pub fn unloaded_doors() -> Vec<crate::root::loader::boot::Candidate> {
     let bound = crate::root::boot::door_planes();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the unloaded door candidates are listed once per configuration check"
-    )]
-    let unloaded = crate::root::boot::DOOR_CANDIDATES
+    crate::root::boot::DOOR_CANDIDATES
         .get()
         .map_or(&[][..], Vec::as_slice)
         .iter()
         .filter(|c| c.kind == busbar_contract::abi::mechanism::KindCode::Plane)
         .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
         .cloned()
-        .collect();
-    unloaded
+        .collect()
 }
 
 #[must_use]
@@ -2394,19 +2270,11 @@ pub fn unloaded_plane_refusal(
     unloaded: &[crate::root::loader::boot::Candidate],
     keys: &[&str],
 ) -> Option<String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the configuration's section keys are spelled once per check"
-    )]
     let uses = crate::root::loader::boot::Uses {
         roots: keys.iter().map(|k| (*k).to_string()).collect(),
         ..Default::default()
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when a first section of an unloaded plane is refused"
-    )]
-    let refusal = unloaded.iter().find_map(|c| {
+    unloaded.iter().find_map(|c| {
         crate::root::loader::boot::plane_use(&uses, c).map(|section| {
             format!(
                 "`{section}:` is the section of the `{plane}` plane, which this process did not \
@@ -2416,8 +2284,7 @@ pub fn unloaded_plane_refusal(
                 plane = c.name
             )
         })
-    });
-    refusal
+    })
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
@@ -2464,10 +2331,6 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 
     fn planes_awaiting_restart(&self, cfg: &busbar_kernel::config::RootCfg) -> Vec<&'static str> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the planes awaiting a restart are listed once per configuration check"
-        )]
         let mut out: Vec<&'static str> = self
             .unopened
             .lock()
@@ -2489,7 +2352,6 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             .clone();
         let sections = raw_sections(cfg);
         owned_anchors_refusal(&anchors, &sections)?;
-        // busbar:expect(bp::state_scan, reason = "config: the held member TLS sections are judged once per configuration check")
         for section in self
             .member_tls_sections
             .lock()
@@ -2512,10 +2374,6 @@ impl busbar_kernel::appbuild::RootRules for Rules {
 
 /// The composition root's rules that read only the resolved config: no I/O, no loaded plugin
 /// state. Boot/apply (`Rules::check`) and `--validate` both run exactly this, so they agree.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the single shared root rule; boot/apply and --validate reach validate_public_url only through here"
-)]
 pub fn offline_root_rules(cfg: &busbar_kernel::config::RootCfg) -> Result<(), Vec<String>> {
     kernel_sections(cfg).map_err(|e| vec![e])?;
     if let Some(url) = cfg.public_url.as_deref() {
@@ -2540,10 +2398,6 @@ pub fn kernel_sections(
     for (name, p) in &cfg.providers {
         let mut m = Pairs::new();
         for (key, value) in &p.table {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a provider's table is projected once, when the configuration is built"
-            )]
             m.insert_key(
                 Value::from(key.clone()),
                 provider_yaml(value, &format!("providers.{name}.{key}"))?,
@@ -2581,7 +2435,6 @@ pub fn kernel_sections(
             "prompt_caching",
             model.prompt_caching.map(Value::from),
         );
-        // busbar:expect(bp::clone_alloc, reason = "config: a model's protocol is projected once, when the configuration is built")
         opt(
             &mut m,
             MODEL_PROTOCOL_KEYS[0],
@@ -2591,10 +2444,6 @@ pub fn kernel_sections(
     }
     let mut pools = Pairs::new();
     for (name, pool) in &cfg.pools {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a pool's members are projected once, when the configuration is built"
-        )]
         let members = pool
             .members
             .iter()
@@ -2687,10 +2536,6 @@ pub fn kernel_sections(
 fn section_map<const N: usize>(
     entries: [(&str, busbar_contract::yaml::Value); N],
 ) -> busbar_contract::yaml::Value {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a section map is projected once, when the configuration is built"
-    )]
     let map = entries
         .into_iter()
         .map(|(key, value)| (busbar_contract::yaml::Value::from(key), value))
@@ -2785,10 +2630,6 @@ fn decimal_parts(text: &str) -> Option<(bool, String, i64)> {
     let fraction = mantissa
         .split_once('.')
         .map_or(0, |(_, fraction)| fraction.len());
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a provider number's digits are read once, when the configuration is projected"
-    )]
     let digits = mantissa.replace('.', "");
     let digits = digits.trim_start_matches('0');
     if digits.is_empty() {
@@ -2800,10 +2641,6 @@ fn decimal_parts(text: &str) -> Option<(bool, String, i64)> {
         .ok()?
         .checked_sub(i64::try_from(fraction).ok()?)?
         .checked_add(i64::try_from(digits.len() - significant.len()).ok()?)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a provider number's digits are read once, when the configuration is projected"
-    )]
     let significant = significant.to_string();
     Some((negative, significant, exponent))
 }
@@ -2909,19 +2746,14 @@ struct RouteFacts<'a> {
 
 impl<'a> RouteFacts<'a> {
     fn of(provider: &'a busbar_kernel::config::ResolvedProvider) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a provider's route facts are read once, when the configuration is projected"
-        )]
-        let facts = Self {
+        Self {
             provider,
             protocol: provider.dialect().to_string(),
             error_map: provider
                 .error_map()
                 .map(|(code, class)| (code.to_string(), class.to_string()))
                 .collect(),
-        };
-        facts
+        }
     }
 }
 
@@ -2974,7 +2806,6 @@ pub fn dialect_facts(
     providers: &BTreeMap<String, ProviderRoute>,
 ) -> Vec<busbar_contract::plane_calls::DialectFacts> {
     busbar_contract::plane_calls::dialect_facts(section, |name| {
-        // busbar:expect(bp::clone_alloc, reason = "config: a plane's dialect facts are read once, when it is bound")
         providers
             .get(name)
             .map(|p| (p.protocol.clone(), p.error_map.clone()))
@@ -3055,10 +2886,6 @@ impl OutboundAuths {
         conns: crate::root::loader::dispatch::ConnTable,
         catalogue: busbar_kernel::diagnostics::Catalogue,
     ) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the process's outbound auths are built once, at first use"
-        )]
         let linked = linked.to_vec();
         Self {
             dispatcher,
@@ -3091,7 +2918,6 @@ impl OutboundAuths {
                 |s| Arc::new(s) as Arc<dyn EnvelopeSink>,
             );
         let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink, self.catalogue));
-        // busbar:expect(bp::into_alloc, reason = "config: an auth plugin's instance name is shared once, when it is bound")
         crate::root::loader::dispatch::Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
@@ -3161,11 +2987,7 @@ impl OutboundAuths {
     fn linked_facts(&self) -> &[AuthRowFacts] {
         use crate::root::loader::dispatch::kinds::auth::stated_facts;
         use crate::root::loader::dispatch::LinkedRow;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the linked auths' facts are read once, at first use"
-        )]
-        let facts = self.linked_facts.get_or_init(|| {
+        self.linked_facts.get_or_init(|| {
             self.linked
                 .iter()
                 .enumerate()
@@ -3185,17 +3007,12 @@ impl OutboundAuths {
                     })
                 })
                 .collect()
-        });
-        facts
+        })
     }
 
     fn dropped_facts(&self) -> &[AuthRowFacts] {
         use crate::root::loader::dispatch::kinds::auth::rendered_facts;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the dropped-in auths' facts are read once, at first use"
-        )]
-        let facts = self.dropped_facts.get_or_init(|| {
+        self.dropped_facts.get_or_init(|| {
             self.dropped
                 .map_or(&[][..], |r| r.loadable())
                 .iter()
@@ -3214,8 +3031,7 @@ impl OutboundAuths {
                     })
                 })
                 .collect()
-        });
-        facts
+        })
     }
 
     pub fn serving(
@@ -3859,10 +3675,6 @@ fn token_exchange_binding(
     let Some(block) = registration.get(TOKEN_EXCHANGE_KEY) else {
         return Ok(None);
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal texts are spelled only when a member's subject token is refused"
-    )]
     let subject: busbar_contract::secret_ref::SecretRef = block
         .get(SUBJECT_TOKEN_KEY)
         .cloned()
@@ -3874,20 +3686,12 @@ fn token_exchange_binding(
             )
             .map_err(|e| format!("member '{entry}': its subject token reference: {e}"))
         })?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when a member's subject token cannot resolve"
-    )]
     let credential = reach
         .secrets
         .resolve_at_config(&subject, scope)
         .map_err(|e| {
             format!("member '{entry}': busbar's own subject token for it cannot resolve: {e}")
         })?;
-    #[expect(
-        clippy::disallowed_types,
-        reason = "config: a token exchange's settings are built once, when its member is bound"
-    )]
     let mut settings = serde_json::Map::new();
     for (key, value) in [
         ("token_url", entry_text(block, TOKEN_URL_KEY)),
@@ -3898,18 +3702,10 @@ fn token_exchange_binding(
         ("resource", entry_text(registration, AUDIENCE_KEY)),
     ] {
         if let Some(v) = value {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a token exchange's settings are built once, when its member is bound"
-            )]
             settings.insert(key.to_string(), serde_json::Value::String(v.to_string()));
         }
     }
     let settings = serde_json::Value::Object(settings);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when no auth plugin serves the token exchange"
-    )]
     let (auth, decl) = reach
         .auths
         .serving(TOKEN_EXCHANGE_STYLE, &settings)?
@@ -3919,10 +3715,6 @@ fn token_exchange_binding(
                  '{TOKEN_EXCHANGE_STYLE}' a token-exchange registration is bound under"
             )
         })?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when the token exchange's outbound auth refuses to open"
-    )]
     let handle = auth
         .open_outbound(
             TOKEN_EXCHANGE_STYLE,
@@ -3975,10 +3767,6 @@ fn upstream_credential(
     let Some(block) = registration.get(UPSTREAM_CREDENTIAL_KEY) else {
         return Ok(None);
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal texts are spelled only when a member's upstream credential is refused"
-    )]
     let secret: busbar_contract::secret_ref::SecretRef = block
         .get(CREDENTIAL_SECRET_KEY)
         .cloned()
@@ -4002,10 +3790,6 @@ fn upstream_credential(
                 )
             })
         })?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a member's credential placement is read once, when it is bound; its refusal is spelled only on failure"
-    )]
     let (style, header) = match block.get(CREDENTIAL_PLACEMENT_KEY) {
         None => (BEARER_STYLE, None),
         Some(p) if p.as_str() == Some(PLACEMENT_BEARER) => (BEARER_STYLE, None),
@@ -4023,15 +3807,7 @@ fn upstream_credential(
         },
     };
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a member's credential lease is dated once, when it is bound"
-    )]
     let minted = std::time::Instant::now();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when a member's credential lease is refused"
-    )]
     let lease = block
         .get(CREDENTIAL_LEASE_TTL_KEY)
         .and_then(busbar_contract::yaml::Value::as_u64)
@@ -4067,10 +3843,6 @@ fn upstream_credential(
     })?;
 
     let seal = busbar_kernel::seal::lend();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when the member's outbound auth refuses to open"
-    )]
     let handle = auth
         .open_outbound(style, credential.expose(&seal), &settings)
         .map_err(|e| format!("member '{member_name}' {e}"))?;
@@ -4740,10 +4512,6 @@ pub fn bind_member_fetches(
 fn member_target_needs(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
 ) -> Vec<(busbar_contract::conn::NeedId, &'static str)> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane's member target needs are read once per generation"
-    )]
     served
         .need_targets
         .iter()
@@ -4759,10 +4527,6 @@ fn member_target_needs(
 fn ridden(
     route: &busbar_kernel::plane_driver::MemberRoute,
 ) -> Vec<(busbar_contract::conn::NeedId, String)> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a member's ridden needs are read once, when its egress is composed"
-    )]
     std::iter::once(route.need)
         .chain(route.rides.iter().map(|(need, _)| *need))
         .filter_map(|need| {
@@ -4789,7 +4553,6 @@ pub fn member_routes(
 
         params: &'static [u8],
     }
-    // busbar:expect(bp::fresh_buffer, reason = "config: a plane's member routes are resolved once per generation")
     let mut resolved = Vec::new();
     let mut registered = BTreeMap::new();
 
@@ -4812,17 +4575,10 @@ pub fn member_routes(
                 {
                     let anchors =
                         registration_anchors(entry, registration, need, served, &*reach.secrets)?;
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: a registered member's origin is spelled once per generation"
-                    )]
                     let base_url = origin_of(target).to_string();
 
-                    // busbar:expect(bp::fresh_buffer, reason = "config: a registered member's rides are read once per generation")
                     let mut rides = Vec::new();
-                    // busbar:expect(bp::fresh_buffer, reason = "config: a registered member's spelled origins are read once per generation")
                     let mut spelled = Vec::new();
-                    // busbar:expect(bp::fresh_buffer, reason = "config: a registered member's ride anchors are read once per generation")
                     let mut ride_anchors = Vec::new();
                     for (other, key) in member_targets.iter().skip(1) {
                         let Some(at) = entry_text(registration, key).filter(|t| !t.is_empty())
@@ -4831,10 +4587,6 @@ pub fn member_routes(
                         };
                         rides.push(*other);
                         if origin_of(at) != base_url {
-                            #[expect(
-                                clippy::disallowed_methods,
-                                reason = "config: a registered member's spelled origins are read once per generation"
-                            )]
                             spelled.push((*other, origin_of(at).to_string()));
                             // A separately declared destination does not inherit another peer's
                             // certificate pin, client identity or private-network reach.
@@ -4862,16 +4614,8 @@ pub fn member_routes(
             }
             continue;
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when a member names no provider"
-        )]
         let name = entry_text(member, MODEL_PROVIDER_KEY)
             .ok_or_else(|| format!("member '{entry}' names no provider"))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when a member's provider is not configured"
-        )]
         let provider = reach.providers.get(name).ok_or_else(|| {
             format!("member '{entry}' names provider '{name}', which is not configured")
         })?;
@@ -4879,10 +4623,6 @@ pub fn member_routes(
             .iter()
             .find_map(|k| entry_text(member, k))
             .unwrap_or(&provider.protocol);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a dialect's default auth style is read once per generation"
-        )]
         let default_of = |dialect: &str| {
             let at = served.dialects.iter().position(|d| *d == dialect)?;
             let at = u32::try_from(at).ok()?;
@@ -4900,20 +4640,12 @@ pub fn member_routes(
             (None, Some((style, params))) => (Some(style), params),
             (None, None) => (None, &[][..]),
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when a member has no auth style"
-        )]
         let style = style.ok_or_else(|| {
             format!(
                 "member '{entry}': provider '{name}' states no `auth:` and its plane declares no \
                  default style for the dialect '{dialect}'"
             )
         })?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a plane's member routes are resolved once per generation"
-        )]
         resolved.push(Resolved {
             entry: entry.clone(),
             name: name.to_string(),
@@ -4922,10 +4654,6 @@ pub fn member_routes(
             params,
         });
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane's needs are read once per generation"
-    )]
     let needs: Vec<ReadNeed> = served
         .need_auths
         .iter()
@@ -4949,10 +4677,6 @@ pub fn member_routes(
             deny_response_headers: Vec::new(),
         })
         .collect();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane's member auths are gathered once per generation"
-    )]
     let members: Vec<MemberAuth<'_>> = resolved
         .iter()
         .map(|r| MemberAuth {
@@ -4960,10 +4684,6 @@ pub fn member_routes(
             auth: &r.style,
         })
         .collect();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when the members' needs cannot be resolved"
-    )]
     let dialled = resolve_member_needs(&needs, &members).map_err(|e| e.to_string())?;
     let mut routes = BTreeMap::new();
 
@@ -4978,12 +4698,6 @@ pub fn member_routes(
         let auth = if mode == Some("connection") {
             None
         } else if mode == Some(PASSTHROUGH) {
-            #[expect(
-                clippy::disallowed_macros,
-                clippy::disallowed_types,
-                clippy::disallowed_methods,
-                reason = "config: a passthrough member is bound once per generation; its refusal is spelled only on failure"
-            )]
             let (auth, decl) = reach
                 .auths
                 .serving(PASSTHROUGH_STYLE, &serde_json::json!({}))?
@@ -4994,12 +4708,6 @@ pub fn member_routes(
                          credential under"
                     )
                 })?;
-            #[expect(
-                clippy::disallowed_macros,
-                clippy::disallowed_types,
-                clippy::disallowed_methods,
-                reason = "config: a passthrough member is bound once per generation; its refusal is spelled only on failure"
-            )]
             let handle = auth
                 .open_outbound(PASSTHROUGH_STYLE, &[], &serde_json::json!({}))
                 .map_err(|e| format!("member '{entry}' {e}"))?;
@@ -5022,10 +4730,6 @@ pub fn member_routes(
                 None => None,
             }
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a registered member's route is sealed once per generation"
-        )]
         routes.insert(
             entry.clone(),
             MemberRoute {
@@ -5070,10 +4774,6 @@ pub fn member_routes(
     let mut by_provider: std::collections::HashMap<String, busbar_kernel::config::secret::Held> =
         std::collections::HashMap::new();
     for r in resolved {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when a provider's credential cannot resolve"
-        )]
         let credential = if r.provider.credential.is_none() {
             busbar_kernel::config::secret::Held::default()
         } else if let Some(held) = by_provider.get(&r.name) {
@@ -5094,52 +4794,28 @@ pub fn member_routes(
         let credential = credential.expose(&seal);
         let settings =
             sealed_params(&r.name, &r.style, from_credential, r.provider, credential)?.to_json();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when no auth plugin serves the member's style"
-        )]
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
                 "member '{}': no linked or dropped-in auth plugin serves the style '{}'",
                 r.entry, r.style
             )
         })?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when the member's settings are refused"
-        )]
         let settings = sealed_settings(r.params, &r.provider.base_url, &settings)
             .map_err(|e| format!("member '{}': {e}", r.entry))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when the member's outbound auth refuses to open"
-        )]
         let handle = auth
             .open_outbound(&r.style, credential, &settings)
             .map_err(|e| format!("provider '{}' {e}", r.name))?;
 
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when a member dials no need"
-        )]
         let bound = dialled
             .get(&r.entry)
             .filter(|b| !b.is_empty())
             .ok_or_else(|| format!("member '{}' dials no need", r.entry))?;
         let need = bound[0];
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a member's rides are sealed once per generation"
-        )]
         let rides = bound[1..]
             .iter()
             .map(|n| (*n, busbar_kernel::plane_driver::ResponseKeep::default()))
             .collect();
 
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a member's spelled origins are sealed once per generation"
-        )]
         let spelled = bound
             .iter()
             .filter_map(|n| {
@@ -5153,7 +4829,6 @@ pub fn member_routes(
             .and_then(|entry| entry_text(entry, busbar_contract::section::UPSTREAM_CREDENTIALS_KEY))
             .or(section_default)
             == Some("connection");
-        // busbar:expect(bp::clone_alloc, reason = "config: a resolved member's route is sealed once per generation")
         routes.insert(
             r.entry,
             MemberRoute {
@@ -5238,10 +4913,6 @@ fn base_url_host(base_url: &str) -> &str {
 
 fn host_label<'h>(host: &'h str, after: &[&str]) -> Option<&'h str> {
     let shaped = |label: &str| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a provider host's labels are read once, when its params are sealed"
-        )]
         let parts: Vec<&str> = label.split('-').collect();
         let Some((last, leading)) = parts.split_last() else {
             return false;
@@ -5253,10 +4924,6 @@ fn host_label<'h>(host: &'h str, after: &[&str]) -> Option<&'h str> {
                 .iter()
                 .all(|p| p.bytes().all(|b| b.is_ascii_alphabetic()))
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a provider host's labels are read once, when its params are sealed"
-    )]
     let labels: Vec<&str> = host.split('.').collect();
     labels.iter().enumerate().find_map(|(i, label)| {
         if !after.contains(label) {
@@ -5283,10 +4950,6 @@ fn sealed_params(
     let Ok(token_uri) = busbar_kernel::config_validate::service_account_token_uri(text) else {
         return Ok(params);
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when a provider's token URI is refused"
-    )]
     busbar_kernel::config_validate::vet_token_uri(&token_uri, &provider.metadata)
         .map_err(|e| format!("provider '{name}' ({style} auth): {e}"))?;
     params.token_uri = Some(token_uri);
@@ -5298,18 +4961,13 @@ pub fn spelled_for(base_url: &str, transport: &str, upgrades: &[&str]) -> Option
     if !upgrades.contains(&transport) {
         return None;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a member's upgraded origin is spelled once, when its route is sealed"
-    )]
-    let spelled = if let Some(rest) = base_url.strip_prefix("https://") {
+    if let Some(rest) = base_url.strip_prefix("https://") {
         Some(format!("{transport}s://{rest}"))
     } else {
         base_url
             .strip_prefix("http://")
             .map(|rest| format!("{transport}://{rest}"))
-    };
-    spelled
+    }
 }
 
 fn registration_anchors(
@@ -5319,10 +4977,6 @@ fn registration_anchors(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     secrets: &dyn busbar_contract::secret::SecretResolve,
 ) -> Result<busbar_contract::transport::trust::Anchors, String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a registration's location is spelled once per generation for its refusals"
-    )]
     let at = format!("`{}.{entry}`", served.section);
     let pin = busbar_kernel::trust::section::parse_entry(&at, registration, &served.trust_keys)?
         .pin
@@ -5352,10 +5006,6 @@ fn registration_anchors(
     {
         None => None,
         Some((key, identity)) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal texts are spelled only when a member's client identity is refused"
-            )]
             let reference = |half: &str| {
                 identity
                     .get(half)
@@ -5375,10 +5025,6 @@ fn registration_anchors(
                     })
             };
             let (cert, private) = (reference("cert")?, reference("key")?);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when a member's client identity cannot be loaded"
-            )]
             let identity = busbar_core_connector::tls::client_identity(secrets, &cert, &private)
                 .map_err(|e| format!("member '{entry}': `{key}`: {e}"))?;
             Some(identity)
@@ -5426,10 +5072,6 @@ fn registration_ca_anchors(
     let Some(tls) = registration.get("tls").filter(|v| !v.is_null()) else {
         return Ok(Vec::new());
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when a member's tls block is refused"
-    )]
     let invalid = || {
         format!("member '{entry}': `tls` must contain only optional `ca_cert_pem` certificate PEM")
     };
@@ -5444,17 +5086,11 @@ fn registration_ca_anchors(
         .as_str()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(invalid)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when a member's CA bundle is refused"
-    )]
-    let anchors =
-        busbar_core_connector::tls::client::operator_ca_anchors(pem.as_bytes()).map_err(|_| {
-            format!(
-                "member '{entry}': `tls.ca_cert_pem` must be a nonempty valid certificate PEM bundle"
-            )
-        });
-    anchors
+    busbar_core_connector::tls::client::operator_ca_anchors(pem.as_bytes()).map_err(|_| {
+        format!(
+            "member '{entry}': `tls.ca_cert_pem` must be a nonempty valid certificate PEM bundle"
+        )
+    })
 }
 
 fn peer_key_pin_refusal(at: &str, keys: &[busbar_contract::plane::TrustKeyDecl]) -> String {
@@ -5462,16 +5098,11 @@ fn peer_key_pin_refusal(at: &str, keys: &[busbar_contract::plane::TrustKeyDecl])
         .iter()
         .find(|k| k.role == busbar_contract::plane::TrustRole::Pin)
         .map_or("pin", |k| k.key);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: the refusal text is spelled only when a key pin is refused"
-    )]
-    let refusal = format!(
+    format!(
         "{at}: `{k}.key:` is not a key pin. Write `sha256/<base64>`: the standard, padded base64 \
          of the 32-byte SHA-256 digest of the far end's certificate SubjectPublicKeyInfo (the \
          plain `<base64>` of the same digest is also accepted)."
-    );
-    refusal
+    )
 }
 
 #[cfg(test)]
