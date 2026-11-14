@@ -103,7 +103,14 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    let mut facts = super::door_facts("p", &[], &["input", "output"], &[], "a", Vec::new());
+    let mut facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &[],
+        &["input", "output"],
+        &[],
+        "a",
+        Vec::new(),
+    );
     facts.route_cost = vec![(0, 0.5), (1, 0.5)];
     let p = pools("a: {}");
     let card = BTreeMap::from([(
@@ -221,7 +228,14 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    let mut facts = super::door_facts("p", &[], &["frames", "seconds"], &[], "a", Vec::new());
+    let mut facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &[],
+        &["frames", "seconds"],
+        &[],
+        "a",
+        Vec::new(),
+    );
     facts.route_cost = vec![(0, 2.5), (1, 0.0), (0, 1.0)];
     let p = pools("a: {}");
     let generation_store = crate::root::real_store::core().await;
@@ -816,19 +830,30 @@ fn an_anonymous_unit_never_reaches_a_billed_path() {
 #[test]
 fn the_door_facts_index_the_fee_units_among_the_billable_classes() {
     let f = super::door_facts(
-        "p",
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
         &["grant"],
         &["a", "fee", "b"],
         &["fee", "nowhere"],
         "audit",
         Vec::new(),
     );
-    assert_eq!(f.plane, "p");
+    assert_eq!(
+        f.plane,
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap()
+    );
     assert_eq!(f.scope_kind.as_deref(), Some("grant"));
     assert_eq!(&*f.fee_units, &[1]);
     assert_eq!(f.classes.len(), 3);
     assert_eq!(
-        super::door_facts("p", &[], &[], &[], "a", Vec::new()).scope_kind,
+        super::door_facts(
+            busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+            &[],
+            &[],
+            &[],
+            "a",
+            Vec::new()
+        )
+        .scope_kind,
         None
     );
 }
@@ -884,7 +909,14 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
     use busbar_kernel::host_units::UnitRecords;
     use busbar_kernel::plane_driver::DriverSteps;
     use busbar_kernel::teller::UnitCtx;
-    let facts = super::door_facts("p", &[], &[], &[], "a", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &[],
+        &[],
+        &[],
+        "a",
+        Vec::new(),
+    );
     let pools = DoorPools::default();
     let records = std::sync::Arc::new(UnitRecords::default());
     let key = std::sync::Arc::new(busbar_contract::records::VirtualKey {
@@ -1198,7 +1230,14 @@ fn charge_once_at(
     arrived: u64,
 ) -> Charged {
     use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, PlaneMoney};
-    let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
+        &["pool"],
+        &[],
+        &[],
+        "door",
+        Vec::new(),
+    );
     let gov = std::sync::Arc::clone(app.governance.as_ref().expect("a governed generation"));
     let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(
         std::sync::Arc::new(crate::root::plane_node::Node::new()),
@@ -1265,7 +1304,7 @@ async fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
     .await;
     let pools = pools(DOWNGRADE_SECTION);
     let facts = super::door_facts(
-        "",
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
         &["pool"],
         &["input", "per_request"],
         &["per_request"],
@@ -3734,7 +3773,14 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
     );
     let section: serde_yaml::Value =
         serde_yaml::from_str("fs: {url: \"https://far.example/rpc\"}").expect("yaml");
-    let facts = super::door_facts("p", &[], &[], &[], "audit", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &[],
+        &[],
+        &[],
+        "audit",
+        Vec::new(),
+    );
     let node = std::sync::Arc::new(crate::root::plane_node::Node::new());
     let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(node));
     super::compose_egress(
@@ -3772,7 +3818,14 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
     use busbar_kernel::config::limits::{BuildScope, LimitsResolved};
     use std::sync::Arc;
 
-    let facts = super::door_facts("error-cap", &[], &[], &[], "audit", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("error-cap").unwrap(),
+        &[],
+        &[],
+        &[],
+        "audit",
+        Vec::new(),
+    );
     let section = serde_yaml::from_str("{}").expect("empty section");
     let pools = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("empty pools");
     let serving = ModelServing {
@@ -3988,7 +4041,14 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
     use busbar_contract::records::{ScopeRef, VirtualKey};
     use busbar_kernel::plane_driver::DriverSteps;
     use busbar_kernel::teller::UnitCtx;
-    let facts = super::door_facts("p", &["seat"], &[], &[], "a", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &["seat"],
+        &[],
+        &[],
+        "a",
+        Vec::new(),
+    );
     let p = pools("a: {}\nb: {}\npools:\n  both:\n    members: [a, b]\n    member_granted: true");
     let ctx = UnitCtx {
         call: busbar_contract::caps::CallId::UNBOUND,

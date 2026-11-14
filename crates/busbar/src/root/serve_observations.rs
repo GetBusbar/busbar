@@ -71,7 +71,7 @@ pub(super) fn parse(
         let rated_subjects = policy
             .rated_subjects
             .iter()
-            .map(|lane| crate::root::door_steps::plane_lane(&facts.plane, lane))
+            .map(|lane| crate::root::door_steps::plane_lane(facts.plane.lane_prefix(), lane))
             .collect();
         #[expect(
             clippy::disallowed_methods,

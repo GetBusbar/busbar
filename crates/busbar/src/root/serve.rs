@@ -1246,7 +1246,12 @@ impl DoorApply {
         }
         let now = self.current();
 
-        let section = applied_section(app, &self.facts.plane, self.served_facts.section, &now);
+        let section = applied_section(
+            app,
+            self.facts.plane.plane_key(),
+            self.served_facts.section,
+            &now,
+        );
 
         let config = app
             .config_projection
@@ -1257,7 +1262,7 @@ impl DoorApply {
             Some(Err(error)) => {
                 tracing::error!(%error, "refusing invalid plane configuration projection");
                 app.plane_refresh.record(
-                    &self.facts.plane,
+                    self.facts.plane.plane_key(),
                     self.served_facts.section,
                     now.generation,
                     Some(busbar_kernel::state::activation::RefreshFailure::InvalidProjection),
@@ -1274,7 +1279,7 @@ impl DoorApply {
             Err(error) => {
                 tracing::error!(%error, "refusing invalid plane source projection");
                 app.plane_refresh.record(
-                    &self.facts.plane,
+                    self.facts.plane.plane_key(),
                     self.served_facts.section,
                     now.generation,
                     Some(busbar_kernel::state::activation::RefreshFailure::InvalidProjection),
@@ -1309,7 +1314,7 @@ impl DoorApply {
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(next);
                 app.plane_refresh.record(
-                    &self.facts.plane,
+                    self.facts.plane.plane_key(),
                     self.served_facts.section,
                     installed_generation,
                     None,
@@ -1323,13 +1328,13 @@ impl DoorApply {
             }
             Err(e) => {
                 app.plane_refresh.record(
-                    &self.facts.plane,
+                    self.facts.plane.plane_key(),
                     self.served_facts.section,
                     now.generation,
                     Some(e.classification()),
                 );
                 tracing::warn!(
-                    plane = self.facts.plane.as_str(),
+                    plane = self.facts.plane.plane_key(),
                     config_version = app.config_version,
                     retained_generation = now.generation,
                     error = %e,
@@ -1379,7 +1384,7 @@ impl DoorApply {
             reason = "config: a plane is refreshed once per configuration apply"
         )]
         let pools = DoorPools::of(&table, self.served_facts.section)
-            .map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
+            .map_err(|e| format!("{}: {e}", self.facts.plane.lane_prefix()))?;
         let mut facts = self.facts.clone();
         seal_secondary_scopes(
             &mut facts,
@@ -7100,7 +7105,7 @@ impl DataRoutes {
             },
         );
 
-        if live.facts.plane.is_empty() {
+        if live.facts.plane.lane_prefix().is_empty() {
             let decoded = units.decoded();
             let counted = decoded.is_some()
                 || units.declined_unsupported_action()
