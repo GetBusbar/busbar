@@ -331,8 +331,12 @@ fn structural_shapes_match(
                     .zip(sb.iter())
                     .all(|(va, vb)| structural_shapes_match(va, vb, depth + 1))
         }
+        (Value::Tag(ta, va), Value::Tag(tb, vb)) => {
+            ta == tb && structural_shapes_match(va, vb, depth + 1)
+        }
         (Value::Map(_), _) | (_, Value::Map(_)) => false,
         (Value::Array(_), _) | (_, Value::Array(_)) => false,
+        (Value::Tag(..), _) | (_, Value::Tag(..)) => false,
 
         _ => true,
     }

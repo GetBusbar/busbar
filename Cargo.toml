@@ -99,6 +99,8 @@ serde_urlencoded = "0.7"
 # busbar-contract's git consumers (the plugins) inherit both through these rows.
 serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
 ciborium = "0.2.2"
+# Names the failing node's path in a YAML error (`a.b[0].c: ...`), as serde_yaml did.
+serde_path_to_error = "0.1.20"
 sha2 = "0.10"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }

@@ -1186,6 +1186,7 @@ serde_urlencoded = "0.7"
 # the untyped tree).
 serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
 ciborium = "0.2.2"
+serde_path_to_error = "0.1.20"
 # 0.10, the line every dependency that carries RustCrypto ships (oauth-as, sha1 via axum/tungstenite).
 # busbar's own digests and MACs are on ring (the one crypto backend); sha2 stays only where ring
 # would be a new backend in a plugin's closure (busbar-contract) and as the independent witness the

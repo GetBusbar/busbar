@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use busbar_contract::yaml::ValueExt;
+use busbar_contract::yaml::{MappingExt, ValueExt};
 use busbar_kernel::governance::GovState;
 use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
@@ -354,10 +354,11 @@ test_plane_owned:
         &mut Vec::new(),
     )
     .expect("interpolates");
-    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&text).expect("parses");
+    let doc: busbar_contract::yaml::Mapping =
+        busbar_contract::yaml::mapping_from_str(&text).expect("parses");
     let mut sections = BTreeMap::new();
     for key in ["test_plane", "test_plane_owned"] {
-        sections.insert(key, doc.get(key).cloned().expect("written"));
+        sections.insert(key, doc.get_key(key).cloned().expect("written"));
     }
     let dispatcher = Arc::new(Dispatcher::new(
         DispatchConfig::default(),

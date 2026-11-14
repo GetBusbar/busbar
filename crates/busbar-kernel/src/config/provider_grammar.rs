@@ -210,19 +210,6 @@ impl<'de> Visitor<'de> for Fields<'_> {
     }
 }
 
-/// A refusal's wording with the YAML reader's rendering differences between serde's
-/// `unknown_field`/`unknown_variant` hooks and a visitor's own `custom` text taken out: the
-/// position suffix, backticks round listed names, and `one of`/`or` list phrasing. What remains
-/// (which key, which value, what was expected) must agree between the two readers.
-#[cfg(test)]
-fn refusal_words(error: &busbar_contract::yaml::Error) -> String {
-    let text = error.to_string();
-    let text = text.split(" at line ").next().unwrap_or_default();
-    text.replace('`', "")
-        .replace("expected one of ", "expected ")
-        .replace(" or ", ", ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,14 +423,14 @@ mod legacy_refusals {
             "[{globs: [], unknown: true}]",
             "[{globs: [], enabled: true, enabled: false}]",
         ] {
-            let legacy =
-                refusal_words(&busbar_contract::yaml::from_str::<Vec<Rule>>(text).unwrap_err());
-            let descriptor = refusal_words(
-                &busbar_contract::yaml::with_deserializer(text, |d| {
-                    ValueSeed::field(&key).deserialize(d)
-                })
-                .unwrap_err(),
-            );
+            let legacy = busbar_contract::yaml::from_str::<Vec<Rule>>(text)
+                .unwrap_err()
+                .to_string();
+            let descriptor = busbar_contract::yaml::with_deserializer(text, |d| {
+                ValueSeed::field(&key).deserialize(d)
+            })
+            .unwrap_err()
+            .to_string();
             assert_eq!(descriptor, legacy, "{text}");
         }
     }
@@ -507,15 +494,14 @@ mod actual_plane_legacy_grammar {
                 "[{models: [], unknown: true}]",
                 "[{models: [], reasoning_none: true, reasoning_none: false}]",
             ] {
-                let legacy = refusal_words(
-                    &busbar_contract::yaml::from_str::<Vec<ModelCapabilities>>(text).unwrap_err(),
-                );
-                let actual = refusal_words(
-                    &busbar_contract::yaml::with_deserializer(text, |d| {
-                        ValueSeed::field(key).deserialize(d)
-                    })
-                    .unwrap_err(),
-                );
+                let legacy = busbar_contract::yaml::from_str::<Vec<ModelCapabilities>>(text)
+                    .unwrap_err()
+                    .to_string();
+                let actual = busbar_contract::yaml::with_deserializer(text, |d| {
+                    ValueSeed::field(key).deserialize(d)
+                })
+                .unwrap_err()
+                .to_string();
                 assert_eq!(actual, legacy, "{text}");
             }
         }

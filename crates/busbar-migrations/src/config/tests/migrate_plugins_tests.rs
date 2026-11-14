@@ -72,29 +72,11 @@ fn doc(text: &str) -> Value {
         .filter(|l| !l.starts_with('#'))
         .collect::<Vec<_>>()
         .join("\n");
-    sorted(yaml::from_str(&body).expect("the migrated document parses"))
+    yaml::from_str(&body).expect("the migrated document parses")
 }
 
 fn yaml(text: &str) -> Value {
-    sorted(yaml::from_str(text).expect("YAML"))
-}
-
-/// serde_yaml's `Mapping` compared equal in any key order (an `IndexMap`); `Value`'s `==` is
-/// order-sensitive. Every tree these tests compare is read with each mapping's keys sorted, so the
-/// assertions keep comparing content, not the order the migration happened to write keys in.
-fn sorted(value: Value) -> Value {
-    match value {
-        Value::Map(entries) => {
-            let mut entries: Mapping = entries
-                .into_iter()
-                .map(|(key, value)| (sorted(key), sorted(value)))
-                .collect();
-            entries.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            Value::Map(entries)
-        }
-        Value::Array(items) => Value::Array(items.into_iter().map(sorted).collect()),
-        other => other,
-    }
+    yaml::from_str(text).expect("YAML")
 }
 
 #[test]
@@ -403,7 +385,7 @@ fn run(text: &str, host: &Witness) -> (Value, Vec<String>, Vec<String>) {
         },
         &[witness()],
     );
-    (sorted(Value::Map(root)), changes, todos)
+    (Value::Map(root), changes, todos)
 }
 
 const PLANE_DOC: &str = "\
@@ -1035,7 +1017,7 @@ fn browser_client_id_validation_matches_open_without_rewriting_authored_settings
             ("expected", "{old: true}"),
         ] {
             let raw = format!("identity-providers:\n  neutral:\n    module: neutral\n    browser_login: {{client_id: {browser}}}\n    settings: {settings}\n");
-            let mut root: Mapping = yaml::mapping_from_str(&raw).unwrap();
+            let mut root = yaml(&raw).as_mapping().unwrap().clone();
             let (mut changes, mut todos, mut failures) = (Vec::new(), Vec::new(), Vec::new());
             let mut ledger = Ledger {
                 changes: &mut changes,
@@ -1068,7 +1050,7 @@ fn browser_client_id_validation_matches_open_without_rewriting_authored_settings
 #[test]
 fn browser_client_id_projection_does_not_override_an_explicit_invalid_setting() {
     let raw = "identity-providers:\n  neutral:\n    module: neutral\n    browser_login: {client_id: expected}\n    settings: {client_id: invalid}\n";
-    let mut root: Mapping = yaml::mapping_from_str(raw).unwrap();
+    let mut root = yaml(raw).as_mapping().unwrap().clone();
     let (mut changes, mut todos, mut failures) = (Vec::new(), Vec::new(), Vec::new());
     super::migrate_recognized(
         &mut root,
@@ -1080,7 +1062,7 @@ fn browser_client_id_projection_does_not_override_an_explicit_invalid_setting() 
         },
     );
     assert_eq!(todos.len(), 1);
-    assert_eq!(sorted(Value::Map(root)), yaml(raw));
+    assert_eq!(Value::Map(root), yaml(raw));
 }
 
 #[test]
@@ -1193,16 +1175,15 @@ fn cold_reference_discovery_preserves_owner_scope_and_never_selects_or_rewrites_
             consumes: &["providers"],
         }],
     );
-    let (root_tree, before_tree) = (sorted(Value::Map(root.clone())), sorted(Value::Map(before)));
     assert_ne!(
-        root_tree.at("providers").at("selected"),
-        before_tree.at("providers").at("selected")
+        root.get_key("providers").unwrap().at("selected"),
+        before.get_key("providers").unwrap().at("selected")
     );
     assert_eq!(
-        root_tree.at("providers").at("failed"),
-        before_tree.at("providers").at("failed")
+        root.get_key("providers").unwrap().at("failed"),
+        before.get_key("providers").unwrap().at("failed")
     );
-    assert_eq!(root_tree.at("unrelated"), before_tree.at("unrelated"));
+    assert_eq!(root.get_key("unrelated"), before.get_key("unrelated"));
     assert!(
         !root.contains_key("pools")
             && !root.contains_key("advanced")

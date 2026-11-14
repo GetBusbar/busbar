@@ -199,3 +199,16 @@ fn from_value_reads_like_the_text() {
         }
     );
 }
+
+/// Row 5, typed: 1.5.5 refused `0644` for an integer field. serde-saphyr has no option to refuse
+/// it yet (upstream request: https://github.com/bourumir-wyngs/serde-saphyr/issues/274), so it
+/// reads as decimal 644 meanwhile (owner ACCEPT 282). When the option lands, pin it in
+/// `yaml::options()` and flip this test to `is_err()`.
+#[test]
+fn leading_zero_into_an_integer_field_reads_as_decimal_until_upstream_274() {
+    #[derive(Debug, Deserialize)]
+    struct Mode {
+        mode: u32,
+    }
+    assert_eq!(yaml::from_str::<Mode>("mode: 0644\n").unwrap().mode, 644);
+}

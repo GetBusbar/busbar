@@ -9,18 +9,26 @@ fn deployment_refusal(key: &str) -> busbar_contract::yaml::Error {
     .expect_err("a sequence where the provider key wants a scalar or a map is refused")
 }
 
-/// The refusal names the key path busbar wrote (the stable 1.5.5 part) and the position of the
-/// offending value. The parser's own wording after the path is not pinned: it is the YAML
-/// library's, not busbar's.
-fn assert_refused_at(error: &busbar_contract::yaml::Error, path: &str, line: u64, column: u64) {
+/// The refusal names 1.5.5's key path, the YAML library's error kind (its exact sentence is the
+/// library's wording, not busbar's) and 1.5.5's position of the offending value.
+fn assert_refused_at(
+    error: &busbar_contract::yaml::Error,
+    path: &str,
+    kind: &str,
+    line: u64,
+    column: u64,
+) {
     let message = error.to_string();
     assert!(message.starts_with(&format!("{path}: ")), "{message}");
-    let placed = error.location().map(|at| (at.line(), at.column())) == Some((line, column))
-        || message.contains(&format!("line {line}, column {column}"))
-        || message.contains(&format!("line {line} column {column}"));
+    assert!(message.contains(kind), "{message}");
     assert!(
-        placed,
-        "the refusal must carry line {line} column {column}: {message}"
+        message.ends_with(&format!(" at line {line} column {column}")),
+        "{message}"
+    );
+    assert_eq!(
+        error.location().map(|at| (at.line(), at.column())),
+        Some((line, column)),
+        "{message}"
     );
 }
 
@@ -29,6 +37,7 @@ fn a_deployment_protocol_of_the_wrong_type_is_refused_as_1_5_5_did() {
     assert_refused_at(
         &deployment_refusal("protocol"),
         "providers.p.protocol",
+        "invalid type",
         4,
         15,
     );
@@ -39,6 +48,7 @@ fn a_deployment_error_map_of_the_wrong_type_is_refused_as_1_5_5_did() {
     assert_refused_at(
         &deployment_refusal("error_map"),
         "providers.p.error_map",
+        "invalid type",
         4,
         16,
     );
@@ -46,7 +56,13 @@ fn a_deployment_error_map_of_the_wrong_type_is_refused_as_1_5_5_did() {
 
 #[test]
 fn a_deployment_path_of_the_wrong_type_is_refused_as_1_5_5_did() {
-    assert_refused_at(&deployment_refusal("path"), "providers.p.path", 4, 11);
+    assert_refused_at(
+        &deployment_refusal("path"),
+        "providers.p.path",
+        "invalid type",
+        4,
+        11,
+    );
 }
 
 #[test]
@@ -54,6 +70,7 @@ fn a_deployment_path_base_of_the_wrong_type_is_refused_as_1_5_5_did() {
     assert_refused_at(
         &deployment_refusal("path_base"),
         "providers.p.path_base",
+        "invalid type",
         4,
         16,
     );
@@ -65,11 +82,7 @@ fn a_catalog_entry_with_no_protocol_is_refused_as_1_5_5_did() {
         "p:\n  base_url: https://x.example\n",
     )
     .expect_err("a catalog entry must name its protocol");
-    assert!(
-        e.to_string().starts_with("p: missing field `protocol`"),
-        "{e}"
-    );
-    assert_refused_at(&e, "p", 2, 3);
+    assert_refused_at(&e, "p", "missing field `protocol`", 2, 3);
 }
 
 fn composed_refusals() -> Vec<String> {
