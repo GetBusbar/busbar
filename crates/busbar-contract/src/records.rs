@@ -223,7 +223,7 @@ pub struct VirtualKey {
     /// token's `generation` claim and detect a stale (pre-rotation) token. It is never looked up
     /// BY, so it deliberately carries no uniqueness constraint. (Named `generation_hash` rather
     /// than `key_hash` for exactly this reason — the 1.4.x hashed-secret shape this field used to
-    /// double as a lookup key for was retired in 1.5.0; see `docs/migration-1.5.md`.)
+    /// double as a lookup key for was retired in 1.5.0; see `docs/upgrade-to-1.5.5.md`.)
     pub generation_hash: String,
     pub name: String,
     /// Scopes this key may target, kind-tagged (`ScopeRef`). `None` = ALL scopes of every kind (the

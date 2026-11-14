@@ -231,11 +231,11 @@ providers_file: providers.yaml  # provider catalog pointer (overridden by the --
 
 - **[Minting keys](admin-api.md)**: `POST /api/v1/admin/keys`. The signed token is shown once and
   expires (default 90 days). Requires `full` scope.
-- **[Migrating from 1.4.x](migration-1.5.md)**: `busbar --migrate-config old.yaml` prints the
-  converted config with TODO/WARNING comments; a 1.x config refuses to boot with a named error.
+- **Upgrading**: from 1.5.5, see [Upgrade from 1.5.5 to 1.6.0](migration-1.6.md); from anything
+  older, [Upgrade to 1.5.5](upgrade-to-1.5.5.md) first.
 - **Upgrading from 1.5.5**: a 1.5.5 `rate_card:` that priced only the four reserved token tiers now
   FAILS BOOT — every plane whose section carries a card must configure every billable class that
-  plane declares. The fix is additive: add the `units:` map above (every LLM open class at `0`) to
+  plane declares. The 1.6.0 upgrade adds the missing units at `0` for you; by hand, add the `units:` map above (every LLM open class at `0`) to
   any one entry of the flat/`pools` card (declared classes per plane: `pools` = `input`, `output`,
   `cache_read`, `cache_write`, `search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, `guardrail_automated_reasoning_policies`, `guardrail_automated_reasoning_policy_units`, `guardrail_content_policy_image_units`, `guardrail_content_policy_units`, `guardrail_contextual_grounding_policy_units`, `guardrail_sensitive_information_policy_free_units`, `guardrail_sensitive_information_policy_units`, `guardrail_topic_policy_units`, `guardrail_word_policy_units` · `tools` = `tool_calls`, `bytes` · `agents` = `bytes` ·
   `decisions` = `decision`, `input_tokens`, `output_tokens` · `streams` = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`,

@@ -1,13 +1,6 @@
-# Migrating from 1.5.x to 1.6.0
+# Upgrade from 1.5.5 to 1.6.0
 
-**Run `busbar --migrate-config` once and review its output.** It converts the supported 1.5.5
-configuration shape for 1.6.0 and prints one line for every change it makes, saying what changed
-and why. Core migrates its own keys; each plugin migrates its own settings section through its own
-`migrate`, and the lines it reports are printed under its name. Existing keys and durable Store
-state require the principal-continuity procedure when an auth plugin changes its principal format;
-see [principal transition](operations/principal-transition.md)
-before starting an OIDC-v2 deployment against a retained 1.5.5 Store. Configuration migration
-does not authorize that identity transition. What the migration does:
+**On an older version? [Upgrade to 1.5.5](upgrade-to-1.5.5.md) first.**
 
 - adds the `store:` block a 1.5.5 config left implicit (`store: {module: memory}`);
 - pins, in `plugins.fetch`, the 1.6.0 release of each plugin the config uses that this binary does
@@ -29,148 +22,106 @@ does not authorize that identity transition. What the migration does:
   tighten it;
 - rewrites the old hook spellings `plugin:` and `at:`.
 
-The migration cannot supply operator authorization for a new native archive. It also cannot
-rebuild a plugin someone else built for 1.5.5, invent a provider key whose reference does not resolve
-where Busbar runs (it prints a TODO naming each one), turn a `file:` secret that is a directory,
-device or pipe into a file, or repoint
-an identity provider whose discovery redirects to a private address. Compatibility must be checked
-against the published 1.5.5 binary with the accepted differences in [the changelog](../CHANGELOG.md)
-and design. This guide does not certify an untested development revision.
-
-Install the intended binary and signed plugin archives, authorize the native archive hashes,
-run migration, validate the migrated file, then start and check readiness and supported flows.
-`--validate` does not open the Store, recover its overlay or prove backend readiness. What follows
-is what you may notice afterwards, and what is new to write if you want it.
+**Which page do I need?** On 1.5.5: this page. On anything older: [Upgrade to 1.5.5](upgrade-to-1.5.5.md)
+first, run 1.5.5 once so it converts your data, then come back here.
 
 ---
 
-## The `store:` block is required
+## Before you start
 
-A 1.6.0 config must carry a `store:` block, even for the in-memory store. `busbar --validate`
-refuses a config without one, and boot refuses it too, telling you to add one. This is an
-owner-signed, customer-visible change from 1.5.5 (1.5.5 defaulted to `memory` when the block was
-absent); the reason is that config now says what loads.
+- **Get 1.6.0 builds of your plugins.** A plugin built for 1.5.5 does not load in 1.6.0. That
+  includes the first-party stores (SQLite, Postgres, MySQL, Valkey), sign-in plugins, the Vault
+  secret plugin and the web-request hook. Install their 1.6.0 releases. On a host with no network,
+  copy the signed 1.6.0 archives into `plugins.dir`. A drop-in native archive needs its SHA-256 in
+  its `plugins.fetch` entry ([how plugins are secured](plugins.md#how-plugins-are-secured)). A
+  plugin someone else built must be rebuilt by its author with
+  [the plugin SDK guide](plugin-sdk-migration-1.6.md).
+- **Check provider credentials.** In 1.6.0 a provider `api_key` that does not resolve stops startup
+  (1.5.5 started the provider with an empty key). Fix the reference, or write `api_key: none` for a
+  provider that takes no key. See [credentials](#a-provider-credential-that-cannot-resolve-refuses-startup).
+- **Using OIDC with a principal format change?** Read [principal transition](operations/principal-transition.md)
+  before starting 1.6.0 on a kept 1.5.5 store.
 
-```sh
-busbar --migrate-config config.yaml > config-1.6.yaml   # inserts `store: {module: memory}`
-busbar --validate
-```
+## Upgrade
 
-`--migrate-config` inserts exactly `store: {module: memory}`, which is what an absent block meant in
-1.5.5, so behaviour does not change. A config that already names a store is left as written.
+1. **Stop every 1.5.5 instance.** 1.6.0 detects a 1.5.5 instance still writing to the store and
+   refuses to migrate.
+   <!-- TODO(migrate-design): Valkey residual and Kubernetes rollout strategy (Recreate, zero
+   replicas) per MIGRATE-ON-BOOT Q2; add only once decided. -->
+2. **Back up your store** (database dump or snapshot) and your config directory.
+3. **Start 1.6.0** with the same config, environment and working directory that 1.5.5 used.
+   Migration runs automatically at boot; there is no separate command.
+   - Config files are rewritten once to the 1.6.0 shape. The original is kept beside each one as
+     `<file>.1.5.5`, and the new file is stamped `config_version: N`.
+   - Your store's 1.5.5 records are converted to 1.6.0.
+   - Each plugin upgrades its own data and settings when it first loads.
+   - Busbar logs what it changed and anything you should review.
+   <!-- TODO(migrate-design): read-only config files (ConfigMap, config.locked) and whether an
+   offline `busbar migrate-config` remains; document only once decided. -->
+4. **Check it.** Read the migration log lines, especially warnings. Confirm readiness and your
+   usual traffic. Then remove the [retired environment variables](#retired-environment-variables)
+   from your launcher.
 
-## A plugin built for 1.5.5 does not load
+**If startup refuses**, the message explains what is wrong and nothing has been changed. Fix it
+and start 1.6.0 again.
 
-The published 1.5.5 plugins spoke a JSON contract. 1.6.0 plugins speak the memory ABI only, so boot
-refuses a 1.5.5 plugin with a message naming the rebuild against the 1.6.0 SDK. That includes the
-four published store plugins (sqlite, postgres, mysql, valkey). `busbar --migrate-config` pins the
-1.6.0 release of each first-party plugin your config uses in `plugins.fetch` (it asks the release
-index which release matches this binary), and rewrites a 1.5.5-era pin. A 1.5.5 build left in
-`plugins.dir` beside its 1.6.0 build is skipped with one warning instead of stopping the boot. A host
-with no network needs the 1.6.0 tarball copied into `plugins.dir` instead. A third-party plugin must
-be rebuilt by its author with [the SDK migration note](plugin-sdk-migration-1.6.md). Your data carries
-over: a rebuilt store plugin opens its own database and upgrades it with its own `migrate()`. See
-[Plugins](plugins.md#plugins-and-160).
+**Every boot after that** sees a matching `config_version` and does no migration work.
 
-### Authorize native bootstrap, checks and migration
+## Rolling back
 
-Before a dropped-in Store, required secret plugin, transport or early plane grammar probe can
-execute before Store recovery, put the exact SHA-256 of its complete signed `.tar.gz` archive in
-the matching `plugins.fetch[].sha256` entry of the operator's base input. The filename must match
-the archive selected by that fetch entry. The library digest inside the manifest is not this hash.
-Linked plugins are bound to the binary and need no archive pin.
+Stop 1.6.0, restore your store backup and the `.1.5.5` config files, and start 1.5.5. Changes
+made while 1.6.0 was running are not carried back.
+<!-- TODO(migrate-design): the store unfence/rollback step (MIGRATE-ON-BOOT §10) and its command
+name; add here once decided. -->
 
-This also applies to dropped native checks in `--validate` and migrators in `--migrate-config`,
-including migrators downloaded from the release index. A release tag or valid signature does not
-replace operator authorization. Missing or mismatched pins refuse execution. Install the intended
-archive and update the base hash together when replacing a bootstrap dependency; an old hash must
-not be carried over to different bytes. On an offline host, copy the same authorized archives into
-`plugins.dir`. See [the bootstrap trust contract](plugins.md#how-plugins-are-secured).
+---
 
-## 1. No other config changes required
+## What the migration changes for you
 
-- **Every 1.5.5 key means what it meant.** Pool members stay as you wrote them — `- model: x`
-  with an optional `weight:` and per-member capabilities is the canonical form (a bare-name list
-  plus a pool-level `weights:` map is accepted as an equivalent shorthand; see
-  [Pools](pools.md#config-reference)). `busbar --migrate-config` on a 1.5.5 config prints the
-  same output the 1.5.5 migrator printed, plus the `store:` block when the config has none, and
-  with hook `plugin:` / `at:` keys rewritten to `module:` / `phase:` (see [§5](#5-retired-15x-spellings-rewritten-for-you));
-  it does not rewrite members or add `TODO` comments.
-- **Keys carry over.** `auth.signing_key` is read as before, so every outstanding minted key
-  keeps verifying; nothing is re-minted.
-- **Stores carry over.** A `sqlite`, `postgres`, `mysql` or `valkey` store opens on its 1.5.5
-  contents: keys, groups, audit rows and usage history are all read as they were written. The
-  usage ledger's on-disk shape is re-folded into 1.6.0's representation on first read through a
-  versioned, idempotent migration (a partial run followed by a rerun yields the same totals as a
-  clean one); nothing is dropped and recreated.
-- **Store plugins are replaced, not carried.** The four published 1.5.5 store plugins
-  (`abi_version: 2`) do not load; `--migrate-config` pins their 1.6.0 releases, which open the same
-  database. See [Plugins](plugins.md#plugins-and-160).
-- **Validation remains offline.** `--validate` checks the selected config and provider catalog,
-  semantic rules, plugin declarations and local artifacts, and built-in `env:` / `file:` secret
-  references. It opens no Store and reads no Store-backed admin overlay. Boot separately recovers
-  that overlay, validates the effective configuration, and opens runtime dependencies. An offline
-  pass is useful in CI; it does not prove overlay compatibility, plugin readiness or backend access.
-- **The reserved name `admin`** is still refused for a model, pool or provider, with the 1.5.5
-  message.
+Your keys, groups, audit records and usage history carry over. `auth.signing_key` is read as
+before, so every outstanding key keeps verifying; nothing is re-minted. Pools, members, weights,
+providers and models are left as you wrote them. Where a decision belongs to you, the migration
+reports it instead of guessing.
 
-What the migration changes for you, and the one edit it leaves to you:
+The config migration:
 
-- a provider whose `api_key` reference does not resolve no longer starts with an empty credential.
-  If you were relying on that — most often to run a keyless local ollama or vLLM — you need one
-  edit; `--migrate-config` names each such provider in a TODO and `--validate` refuses it. See
-  [§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot).
-- a config with a `rate_card:` must price every billable unit the plane counts, and a 1.5.5 card
-  never priced the units a provider reports beside its tokens (`search_units`, `classifications`,
-  `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, the Bedrock `guardrail_*`
-  units). `--migrate-config` adds them at `0`, which is what 1.5.5 billed. See
-  [§7](#a-card-must-configure-every-billable-unit-its-plane-counts).
-- `advanced.block_private_addresses` now defaults to `true`. A provider whose `base_url` or
-  `token_url` is on a private or loopback address (a local ollama or vLLM, an in-cluster gateway)
-  is refused when dialled unless `advanced.allow_destinations` names it. `--migrate-config` adds
-  exactly the hosts the provider's plane and your sign-in plugins report, and `--validate` names a
-  provider URL the guard will refuse (BUSBAR-3025). Cloud metadata addresses are refused either way.
-- a signed-in user that no role binding grants is refused (401); 1.5.5 let such a user through with
-  no pool limit and no budget. `--migrate-config` writes `role_bindings.<provider>."*": {}` for each
-  data-plane provider whose users 1.5.5 admitted that way, and warns: it keeps 1.5.5's access, and
-  you should tighten it.
+- adds `store: {module: memory}` when the config has no `store:` block (what 1.5.5 used in that
+  case). 1.6.0 requires the block;
+- points `plugins.fetch` at the 1.6.0 release of each plugin your config uses;
+  <!-- TODO(migrate-design): confirm plugins.fetch pinning stays in the boot migration. -->
+- adds `units:` at `0` to each `rate_card:` entry for every billable unit 1.5.5 never billed, so
+  your bill does not change ([rate cards](#rate-cards));
+- adds to `advanced.allow_destinations` exactly the private or loopback hosts your providers and
+  sign-in plugins use, because 1.6.0 blocks private addresses by default;
+- writes `role_bindings.<provider>."*": {}` for each sign-in provider whose users 1.5.5 let in with
+  no grant, and warns you to tighten it. Without it, 1.6.0 refuses those users (401);
+- removes metadata block-list entries that name no usable host (they never matched anything);
+- removes a webhook exporter's auth header that 1.5.5 never sent;
+- rewrites hook `plugin:` to `module:` and `at: <stage>` to `phase: [<stage>]`;
+- turns a `jwt-bearer` credential that held a filename into an explicit `{ file: /path }`
+  reference (relative names resolve against the 1.5.5 working directory). If the file cannot be
+  found, the old reference is kept and reported;
+- captures the retired environment variables below.
 
-## 2. Migrate retired operational environment variables before starting 1.6
+### Retired environment variables
 
-**1.6.0 no longer applies `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`,
-`BUSBAR_UPSTREAM_HTTP1_ONLY` or `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` at runtime.**
-Run migration with the old deployment's environment and working directory, then deploy its output:
+1.6.0 no longer reads these at runtime. The first 1.6.0 boot copies their values into config, so
+keep them set for that boot and remove them afterwards.
 
-```sh
-busbar --migrate-config /etc/busbar/config.yaml > /etc/busbar/config.migrated.yaml
-busbar --config /etc/busbar/config.migrated.yaml --validate
-```
-
-Keep the migrated file beside the original so existing config-relative catalog and secret paths
-continue to resolve. The migrator captures the old effective overrides into current configuration:
-
-| Retired env var | Current config key |
+| Retired env var | Config key |
 |---|---|
 | `BUSBAR_PROVIDERS` | `providers_file:` |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
 | `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
+| `BUSBAR_CONFIG_OVERLAY` | none; the overlay is imported into the store (below) |
 
-The old environment wins over configured values during this one-time conversion. A `--providers`
-flag wins over `BUSBAR_PROVIDERS`; both launch-relative paths become absolute `providers_file`
-paths. An empty provider override is ignored. Worker counts retain the old positive-integer parsing
-and 128-worker cap; invalid values are reported and leave the configured/Tokio fallback intact.
-For the upstream switches, empty or `0` becomes false and every other supplied value becomes true,
-including the old string `false`. These are migration rules; serving uses the configured booleans.
-Remove the retired variables from launchers after conversion. The current `--providers` flag remains
-supported. A missing selected catalog remains an error during normal validation/startup.
+`BUSBAR_CONFIG`, secret `{ env: NAME }` references, `RUST_LOG`, `TOKIO_WORKER_THREADS` and the
+`--providers` flag are unchanged.
 
 **Containers.** The 1.5.x image set `BUSBAR_PROVIDERS=/etc/busbar/providers.yaml`; the 1.6.0 image
-does not set it. With `config.yaml` at the image's default `/etc/busbar/config.yaml` the catalog
-still resolves to the image's `/etc/busbar/providers.yaml`, so nothing changes. If you mounted
-`config.yaml` somewhere else (with `BUSBAR_CONFIG` or `-c`), run `--migrate-config` with
-`-e BUSBAR_PROVIDERS=/etc/busbar/providers.yaml` so the migrated file records that catalog as
-`providers_file:`, or put a `providers.yaml` beside the mounted config.
+does not. With `config.yaml` at the default `/etc/busbar/config.yaml` nothing changes. If you
+mounted it elsewhere, set `BUSBAR_PROVIDERS` for the first boot or put `providers.yaml` beside it.
 
 `BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; serving never reads it.
 The old `config.overlay` file/boolean field is refused by `--validate` (the current reader); serving
@@ -184,52 +135,19 @@ state). Selectors and `BUSBAR_CONFIG_OVERLAY` that hold nothing get a warning (B
 `TOKIO_WORKER_THREADS` fallback are unchanged. Preserve existing signing-key material and Store
 records when upgrading 1.5.5: existing signed keys do not need to be reminted merely for this upgrade.
 
-## 3. What you will notice after the upgrade
+In 1.6.0, changes made through the admin API are stored in the store, not in an overlay file. The
+first boot imports your 1.5.5 overlay file (`config.overlay.file`, else `BUSBAR_CONFIG_OVERLAY`,
+else `busbar-overlay.json` beside the config) into the store once:
 
-None of these need action; they are listed so what you see is expected.
+- hooks, wiring, groups, root controls, named definitions and plugin floors are kept;
+- if the overlay chose the store, that choice is written into `config.yaml`;
+- with `config.locked: true` the overlay is ignored, as it was in 1.5.5 (`locked` itself is kept);
+- the import needs a durable store; an overlay with the memory store is refused;
+- an unknown or invalid overlay is refused, never partly imported;
+- the old file is not read again after import.
+<!-- TODO(migrate-design): whether the imported overlay file is renamed (design: <file>.imported-1.5.5). -->
 
-- **Diagnostic codes on error and warning lines.** `[error]`, `[warn]` and `warning:` lines are
-  prefixed `BUSBAR-NNNN:` and boot log lines carry `diag=BUSBAR-NNNN`; the text after the code is
-  unchanged. A few `[warn]` lines are still uncoded (two deprecated env vars, jemalloc, memfd). If a log pipeline matches on the leading text of those lines,
-  allow for the code. See [the diagnostics reference](diagnostics.md).
-- **The jemalloc background-purge line is `[info]` on macOS**, not `[warn]`.
-- **One new `/metrics` series** on an unchanged config, `busbar_metering_pending_coalesced_total`.
-  No 1.5.5 series changed shape or labels; in particular `busbar_requests_total` and
-  `busbar_request_duration_seconds` are byte-identical (MCP and A2A traffic is on the separate
-  `busbar_plane_*` families). See [Observability](observability.md).
-- **`busbar_lane_state` reads each pool's own breaker.** When one lane is shared by several
-  pools, the gauge for a pool now reflects that pool's own breaker only. On 1.5.5 a pool whose
-  breaker had tripped read `1` as long as another pool could still reach the same lane; it now
-  reads `2`, matching `busbar_lane_available` = `0` on the same labels. `1` now means only that a
-  recovery probe is in flight on that pool's breaker. Some series that read `1` on 1.5.5 therefore
-  read `2`; an alert on `busbar_lane_state == 2` fires for a pool that cannot send, whatever its
-  neighbours do. The gauge also gains series for MCP and A2A destinations (`pool` is the
-  plane-qualified target or pool key such as `tool:<server>`, `lane` the member position), which
-  appear once a request has been sent to them.
-- **Admin views gained fields.** Hook objects carry `fires_at`, `groups` and `phase`; the
-  unknown-overlay-section 400 lists the sections that now exist; `openapi.json` describes the new planes.
-  Supported existing fields, including the lane `limit` alias on `/stats`, remain. The retired
-  mutation fields listed below require the documented client updates.
-- **`--help` is longer and `--version` prints two lines** (the second is a `build:` provenance
-  stamp). `-c`/`--config` and `--providers` are new, additive flags.
-- **Streams through a fallback or least-bad hop to an OpenAI Chat Completions lane are now
-  billed** their real tokens (1.5.5 billed them zero). If a key's traffic routinely fails over,
-  its spend rises to what it actually used.
-- **Two cross-protocol stream shapes match the provider's spec** where 1.5.5 did not: Bedrock text
-  blocks no longer open with an empty `contentBlockStart`, and Responses streams carry the
-  `content_part` / `output_text.done` lifecycle frames. See
-  [Protocols → Spec fidelity](protocols.md#spec-fidelity).
-- **Thread-per-core data plane (unix).** N threads named `busbar-core-0` … `busbar-core-N-1`, N
-  listen sockets on the data port via `SO_REUSEPORT`, and one `busbar listening` log line per
-  listener. `advanced.worker_threads` now sizes that worker count (default one per core;
-  `TOKIO_WORKER_THREADS` still works as a fallback). Non-unix builds are unchanged.
-- **A configured voice/streams `session_fee` now draws.** It never drew in 1.5.x (a defect, not a
-  tariff); on 1.6.0 it charges once per session, exactly as configured, the first time a leg
-  genuinely opens. See [1.6.0 advisories](advisories/1.6.0/voice-session-fee-draws-once-per-session.md).
-- **The published MySQL store plugin's request-count durability is fixed.** A rare split-flush
-  (about 1 run in 40 at the default cadence) could silently drop a key's requests counter across
-  a restart on 1.5.x; token/spend accounting was never affected. See
-  [1.6.0 advisories](advisories/1.6.0/mysql-store-split-flush-request-count-loss.md).
+### Credentials moved to files
 
 See [the full 1.6.0 advisories index](advisories/1.6.0/README.md) for these and two further
 disclosures (an upstream-429-as-503 status-code clarification, and a fee defect on a refund that
@@ -321,88 +239,73 @@ once and update clients that submit or read retired fields.
 
 ---
 
-## 6. A provider credential that cannot resolve refuses boot
+## What you must decide
 
-**What changed.** 1.5.5 resolved each provider's `api_key` reference at boot and, when that failed,
-logged `[warn] provider <name> api_key (<reference>) empty` and started the lane with an EMPTY
-credential. 1.6.0 refuses: an `api_key` reference that does not resolve — unset variable, missing or
-empty file, unknown module, secret-plugin error — stops boot under `BUSBAR-8020`, and stops an admin
-apply/reload the same way. The diagnostic names the provider and the reference (`env:VAR`,
-`file:/path`) and never the value.
+The migration does not guess these.
 
-**Why.** The degraded lane could not work. It booted "healthy", the health prober skipped it (no
-key, no probe), and every request routed to it came back as a 401 from the upstream — with one
-warning line at boot as the only signal. Every other secret in busbar is fail-closed; the provider
-credential was the exception, and the exception bought nothing but a slower, more confusing failure.
-`busbar --validate` has refused exactly this since 1.5.3, so boot and validate now agree.
+### A provider credential that cannot resolve refuses startup
 
-**Keyless upstreams are DECLARED.** A local ollama or vLLM genuinely takes no credential. Say so:
+1.5.5 started a provider whose `api_key` did not resolve with an empty key; every request to it
+then failed upstream with a 401. 1.6.0 refuses at startup and on an admin reload, naming the
+provider and the reference, never the value. For each one:
+
+- if it should resolve: set the variable, mount the file, or install the secret plugin;
+- if the upstream takes no key (a local ollama or vLLM), declare it:
 
 ```yaml
 providers:
   ollama:
-    api_key: none          # this upstream takes NO credential
+    api_key: none          # this upstream takes no credential
 ```
 
-`none` is a plain scalar (there is no `{ none: … }` form) and is accepted only on a provider
-`api_key`. A TLS cert, `auth.signing_key`, the authorization server's signing key, an admin token or
-an OIDC client secret has no credential-free mode, and `auth: jwt-bearer` / `auth:
-oauth-client-credentials` mint their token FROM the credential, so `none` is refused in all of those
-places. A lane declaring `none` starts, sends NO auth header upstream, and is skipped by the health
-prober — exactly what the empty-credential lane did, now on purpose.
+`none` is accepted only on a provider `api_key`. Such a provider sends no auth header and is not
+health-probed.
 
-**What to do.** Run `busbar --validate` before upgrading; it names any provider that would now
-refuse.
+### Other items
 
-- If the reference should resolve, fix it: set the variable, mount the file, install and trust the
-  secret plugin.
-- If the upstream takes no credential, change the reference to `api_key: none`.
-
-`busbar --migrate-config` does NOT insert `none` for you. Whether an upstream needs a credential is
-a fact about your deployment, not something a migration can read off the config file — guessing
-wrong would silently disarm a provider that does need one.
+- A `file:` secret that is a directory, device or pipe is refused. Point it at a regular file.
+- An identity provider whose discovery or key URL redirects to a private address fails sign-in.
+  Point the issuer at the address it finally serves from.
+- A third-party plugin built for 1.5.5 needs a 1.6.0 build from its author.
 
 ---
 
-## 7. Rate cards became a dated history, and `GET /admin/usage` prices by it
+## What you will notice
 
-**What shipped.** A rate card is no longer a single mutable price. Cards are an append-only DATED
-HISTORY: each entry carries an `effective_from`, publishing one never touches the window before that
-date, and a back-dated correction reprices exactly the window it names —
-`[effective_from, effective_until)` — as an attributed append rather than an edit to a booked row.
-The back-dated correction is served at `POST /api/v1/admin/ledger/amend-rate-history`.
+None of these need action.
 
-**`GET /admin/usage` prices each row at the card in force when it was earned.** The endpoint still
-stores raw token quantities and derives spend at read time, but it no longer derives it off the
-newest card. Each row resolves through the dated history at the instant it was earned, so publishing
-a card leaves every figure before its `effective_from` where it was, and a back-dated
-correction moves exactly the window it names. A card edit in the middle of a day splits that day
-at the edit rather than repricing all of it. If you relied on 1.5.5's behaviour — a
-`PUT /api/v1/admin/config/settings` rate-card edit repricing every past row on the next read — that
-no longer happens: past rows keep the price they were earned at.
+- **Diagnostic codes.** `[error]`, `[warn]` and `warning:` lines start with `BUSBAR-NNNN:`, and boot
+  log lines carry `diag=BUSBAR-NNNN`. If a log pipeline matches the start of those lines, allow for
+  the code. See [diagnostics](diagnostics.md).
+- **Plugin logs** go to each plugin's own file under `plugins.logs.dir` (default `logs/plugins/`).
+- **`/metrics`.** One new series on an unchanged config, `busbar_metering_pending_coalesced_total`.
+  `busbar_lane_state` now reads each pool's own breaker: a pool whose breaker tripped reads `2`
+  even if another pool can still reach the same lane. See [observability](observability.md).
+- **Admin API views gained fields.** Hooks carry `fires_at`, `groups` and `phase`.
+- **`--version` prints two lines** (the second is a build stamp). `-c`/`--config` is a new flag.
+- **Streams that fail over to an OpenAI Chat Completions lane are billed** their real tokens
+  (1.5.5 billed them zero).
+- **Bedrock and Responses streams** match the provider's spec more closely. See
+  [protocols](protocols.md#spec-fidelity).
+- **Thread-per-core data plane** on unix: one `busbar-core-N` thread and listener per core;
+  `advanced.worker_threads` sets the count.
+- **A configured voice `session_fee` now charges** once per session (it never charged in 1.5.x).
 
-`GET /admin/usage` also accepts an optional `as_of` query parameter naming a snapshot of the dated
-history (an entry number). A read at the same snapshot answers the same figures every time, which is
-how an invoice is re-derived; a snapshot above the history's newest entry is refused, never answered
-at the newest. The `as_of` field in the response is unchanged: it is still the instant the read was
-taken.
+See the [1.6.0 advisories](advisories/1.6.0/README.md) for the full disclosures.
 
-**Every plane has its own card and its own fees.** The top-level `rate_card:` and
-`per_request_fee:` price the LLM plane exactly as they did in 1.5.5. Any other plane can carry its
-own `rate_card:` and a `fees:` block (`per_request`, `per_session`) inside its own section; a plane
-with no card of its own prices its usage at zero and bills only the fees it configured, whatever
-another plane's card says. A card that is present and does not price a class the traffic hit refuses
-it rather than answering zero. `/usage` prices each row with the card and fees of the plane that
-served it, and every plane's card and fees are dated in the same history.
+## Admin API client changes
 
-### A card must configure every billable unit its plane counts
+- Hook writes require `module:` (not `plugin:`) and `phase: [...]` (not `at:`). Hook reads no longer
+  return `at`; read `fires_at` and `phase`.
+- Remove `persist` from `PUT /api/v1/admin/config/settings` requests; it is refused with 400.
+  Every successful change is saved to the store.
+- A `rate_card` written through the admin API must include the `units:` map below.
 
-A plane's card that is present must give a rate — `0` is a rate — for every billable unit the plane
-counts, or boot and `--validate` refuse, naming the section and each missing unit:
+## Rate cards
 
-```
-pools.rate_card does not configure billable unit(s) search_units, classifications, ... declared by this plane; add them (0 to make them free)
-```
+**Every billable unit must have a rate.** A `rate_card:` must price every unit its plane counts
+(`0` is a rate), or startup refuses and names the missing units. The migration adds these at `0`,
+which is what 1.5.5 billed:
 
 **This is the one edit a 1.5.5 config with a `rate_card:` needs.** Every count a provider reports
 is a ledger line under its own unit (owner ruling LEDGER-100). The LLM plane counts `input`,
@@ -442,23 +345,18 @@ rate_card:
                             guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }
 ```
 
-None of the open units counts toward a `tokens:` cap, so caps count what they counted in 1.5.5.
+Put the map on every entry: an entry silent about a unit refuses that traffic. Set a real rate when
+you want to bill a unit. These units do not count toward `tokens:` caps.
 
-The same holds for a card written at run time: `PUT /api/v1/admin/config/settings` with a
-`rate_card` that leaves an open unit out is refused (400) with the same message, where 1.5.5
-applied it. A script or dashboard that writes cards through the admin API needs the same `"units"`
-map on each entry.
+**Rate cards are a dated history.** Changing a card prices only what comes after the change; past
+usage keeps the price it was earned at (1.5.5 repriced everything on the next read). To fix a
+wrong past rate, post a correction to `POST /api/v1/admin/ledger/amend-rate-history` naming the
+window. `GET /admin/usage` accepts `as_of` to read figures at a past history point. Figures are
+cost units with no currency. See [card history](store-card-history.md).
 
-Put it on every entry, not just one: boot is satisfied by any entry, but a lane whose own entry is
-silent about a unit it serves refuses that traffic rather than pricing it at zero. Write a real rate
-instead of `0` to start billing reranks (`units:` rates are micro-units per unit). The other planes
-are new in 1.6.0, so their cards are new config; the same rule holds for each (`tools.rate_card`:
-`tool_calls`, `bytes`; `agents.rate_card`: `bytes`; `streams.rate_card`: the seven voice units;
-`decisions.rate_card`: `decision`, `input_tokens`, `output_tokens`), and `--validate` names whatever your build counts.
+## New, optional sections
 
-Likewise, a nonzero `<section>.fees` key for a unit the plane does not count (for example
-`streams.fees.per_request`: a voice session pays `per_session`) refuses boot, naming the key and the
-units the plane counts. `fees:` is 1.6.0 config, so no 1.5.5 config is affected.
+None is added by the migration; write one to turn a plane on.
 
 **Card-history durability follows the Store.** Applied rate cards and their dated history are
 Store-backed; no `data_dir` or host journal file participates in their recovery. A durable Store

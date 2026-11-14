@@ -1,21 +1,70 @@
-# Migrating from 1.4.x to 1.5.0
+# Upgrade to 1.5.5
 
-1.5.0 is the config / identity / cost REDESIGN. The `config.yaml` changed shape, so this is a
-**clean cut**: a 1.4.x config does not boot. Busbar detects the old structural markers and refuses
-to start with a message naming what to write instead, and `busbar --migrate-config <old.yaml>`
-mechanically rewrites the deterministic changes (printing the new YAML to stdout and a TODO/WARNING
-summary to stderr. Review every one, especially each `allowed_pools: []`, whose meaning flipped
-from *all pools* to *none*). Two changes are not just config: **every 1.4.x virtual key stops
-working and must be re-minted** (keys are now signed tokens that expire), and a durable store is
-dropped and recreated on first open (usage history resets). This guide covers every config change.
+For anyone on 1.3, 1.4 or 1.5.0 to 1.5.4 (1.2.x configs convert too).
 
-The recommended path: `busbar --migrate-config old.yaml > config-1.5.yaml`, review the TODO/WARNING
-comments, `busbar --validate`, then re-mint keys. If Busbar boots, you're done. There are no silent
-fallbacks.
+The upgrade path is: any older version → 1.5.5 → 1.6.0. 1.6.0 converts only 1.5.5 data and
+config. 1.5.5 has been the stable release for three months, so going through it means every
+upgrade runs on proven code.
+
+**Which page do I need?** On 1.5.5: [Upgrade from 1.5.5 to 1.6.0](migration-1.6.md). On anything
+older: this page first, run 1.5.5 once so it converts your data, then the 1.6.0 page.
 
 ---
 
-## 1. Static token auth: `auth.client_tokens` / `BUSBAR_CLIENT_TOKEN` → signed minted keys
+## Upgrade
+
+1. **Install 1.5.5.** Durable stores are signed plugins: install the 1.5.5 build of each one you use.
+2. **Convert the config** with the 1.5.5 binary:
+
+   ```sh
+   busbar --migrate-config old.yaml > config.yaml
+   ```
+
+   It prints the new YAML on stdout and a TODO/WARNING summary on stderr, and takes a config from
+   1.2.x onward all the way to the 1.5.5 shape. Review every line, especially each
+   `allowed_pools: []`, whose meaning flipped from *all pools* to *none* in 1.5.0. An unconverted
+   config refuses to start with a message naming what to write instead.
+3. **Do the steps for the version you are leaving:**
+   - **1.4.x or older:** every virtual key stops working; re-mint keys after starting
+     ([static token auth](#1-static-token-auth-authclient_tokens--busbar_client_token--signed-minted-keys)).
+     A durable store is dropped and recreated on first open, so usage history resets.
+   - **1.5.0:** set `auth.signing_key` explicitly ([1.5.0 to 1.5.1](#from-150-151)).
+   - **1.5.2 or older:** a CI job that runs `busbar --validate` needs the secret references it
+     names ([`--validate` resolves secrets](#153-behavior-change-busbar---validate-resolves-secret-references)).
+   - **Read-only config directory (1.5.2 or older):** choose an overlay path or `config.locked: true`
+     ([read-only config](#upgrade-action-for-read-only-config-deployments)).
+4. **Validate and start.** `busbar --validate`, then start 1.5.5 and let it run once, so it
+   converts your store. If Busbar starts, the upgrade is complete; there are no silent fallbacks.
+
+The sections below list every change by release.
+
+---
+
+## From 1.2.x: routing, hooks and auth (1.3)
+
+1.3 moved routing and hooks into one per-pool `hooks:` list and replaced `auth.mode`.
+`busbar --migrate-config` rewrites all of these; the 1.5.5 shape is shown.
+
+| 1.2.x | 1.5.5 |
+|---|---|
+| pool `route: <weighted\|cheapest\|fastest\|least_busy\|usage>` | pool `hooks: [<same>]` (`weighted` is the default; just delete `route: weighted`) |
+| `route: socket\|webhook` with a `policy:` block | a `kind: hook` plugin in the top-level `hooks:` map, named in the pool's `hooks:` list ([hooks](#2-hooks-the-top-level-hooks-registry--built-in-socketwebhook-transports--kind-hook-plugins)) |
+| `policy.send_prompt: true` | hook `prompt: ro` (or `rw` to allow a rewrite) |
+| `policy.send_user: true` | hook `user: ro` |
+| `route: script` (embedded Rhai) | removed; write a `kind: hook` plugin |
+| `auth.mode: token` | `auth.chain: [keys]` with minted keys ([static token auth](#1-static-token-auth-authclient_tokens--busbar_client_token--signed-minted-keys)) |
+| `auth.mode: none` | `auth.chain: []` |
+| `auth.mode: passthrough` | `auth.chain: []` and `pools.upstream_credentials: passthrough` |
+
+A pool may name several gates; they run together, any reject wins and restrictions intersect.
+
+---
+
+## From 1.4.x (1.5.0)
+
+1.5.0 redesigned config, identity and cost.
+
+### 1. Static token auth: `auth.client_tokens` / `BUSBAR_CLIENT_TOKEN` → signed minted keys
 
 The static-token allowlist is **removed**. The `tokens` / `static-tokens` module and
 `auth.client_tokens` no longer authenticate anyone. Data-plane auth is now the built-in `keys`
@@ -51,7 +100,7 @@ guards the Admin API is the built-in `admin-tokens` module, whose `token` is a s
 
 ---
 
-## 2. Hooks: the top-level `hooks:` registry + built-in `socket`/`webhook` transports → `kind: hook` plugins
+### 2. Hooks: the top-level `hooks:` registry + built-in `socket`/`webhook` transports → `kind: hook` plugins
 
 The 1.4.x `hooks:` REGISTRY block is **gone**, and the built-in `socket`/`webhook` hook transports
 are retired. A hook is now a signed `kind: hook` plugin and requires `plugins.enabled: true`. For the
@@ -98,7 +147,7 @@ The `global:` / `default:` flags on a hook are gone. The two bare-name lists (th
 
 ---
 
-## 3. Governance: the `governance:` block → `groups:`, `rate_card`, `per_request_fee`, `store`
+### 3. Governance: the `governance:` block → `groups:`, `rate_card`, `per_request_fee`, `store`
 
 The `governance:` block dissolved; its contents moved to owning top-level keys:
 
@@ -139,7 +188,7 @@ inert-keys advisory (recomputed from the chain shape, not the admin token).
 
 ---
 
-## 4. Per-key limits → the `groups:` limit tree
+### 4. Per-key limits → the `groups:` limit tree
 
 The per-key cap fields are **removed** from mint, `PATCH`, the store schema, and key metadata:
 `rpm_limit`, `tpm_limit`, `max_budget_cents`, `budget_period`. A **key is pure auth**; every limit
@@ -163,9 +212,7 @@ from the token ledger × the current `rate_card` + the flat `per_request_fee`. M
 
 ---
 
-## 5. Store: durable backends are signed plugins; `memory` is the compiled-in one
-
-> **1.6.0 update:** the `store:` block is now **required**. `busbar --validate` refuses a config without it, and `busbar --migrate-config` inserts `store: {module: memory}`. See [Migrating to 1.6.0](migration-1.6.md#the-store-block-is-required).
+### 5. Store: durable backends are signed plugins; `memory` is the compiled-in one
 
 In 1.5.x the store defaulted to `memory`, the compiled-in **ephemeral** RAM store (keys, usage, audit
 reset on restart). Every durable backend (`sqlite` / `postgres` / `valkey`) is a signed plugin
@@ -186,7 +233,7 @@ See [Configuration → `store`](configuration.md#store) and [plugins.md](plugins
 
 ---
 
-## 6. TLS: `cert_file` / `key_file` / `client_ca_file` → secret references
+### 6. TLS: `cert_file` / `key_file` / `client_ca_file` → secret references
 
 The plaintext path keys are gone. Each TLS field (`cert`, `key`, `client_ca`) is now a **secret
 reference**, taking `{ file: /path }`, `{ env: VAR }`, or `{ module: <secret-plugin>, settings:
@@ -214,7 +261,7 @@ See [Configuration → `tls`](configuration.md#tls) and [operations.md](operatio
 
 ---
 
-## 7. Provider credentials: `api_key_env:` → `api_key: { env: VAR }`
+### 7. Provider credentials: `api_key_env:` → `api_key: { env: VAR }`
 
 Every secret in config is now a reference; there are no `*_env` suffix fields. A provider's
 credential moves from `api_key_env` to a secret reference under `api_key`.
@@ -241,7 +288,7 @@ The same conversion applies to `auth.signing_key` and the admin token. See
 
 ---
 
-## 8. Retired config aliases
+### 8. Retired config aliases
 
 Along with the above, these one-name-each renames are enforced (unknown keys fail boot):
 
@@ -257,24 +304,9 @@ Along with the above, these one-name-each renames are enforced (unknown keys fai
 
 ---
 
-## Quick checklist
-
-- [ ] `busbar --migrate-config old.yaml > config-1.5.yaml`; review every TODO/WARNING (esp. each `allowed_pools: []`, whose meaning flipped to *none*)
-- [ ] `auth.client_tokens` / `BUSBAR_CLIENT_TOKEN` → `auth.chain: [keys]` + `admin_auth: [admin-tokens]` (`BUSBAR_ADMIN_TOKEN`)
-- [ ] 1.4.x `hooks:` REGISTRY + `socket`/`webhook` transports → a 1.5.3 `hooks:` DEFINITION map of `kind: hook` plugins (`busbar-hook-webrequest` for the HTTP sidecar), referenced by bare name
-- [ ] `governance:` → `groups:` + `rate_card:` + `per_request_fee:` + `store:`
-- [ ] per-key `rpm_limit`/`tpm_limit`/`max_budget_cents`/`budget_period` → group `limits:`
-- [ ] durable store → `store: { module: sqlite|postgres|valkey }` + `plugins.enabled: true` (`store:` is required in 1.6.0; `store: {module: memory}` is ephemeral)
-- [ ] tls `cert_file`/`key_file`/`client_ca_file` → `cert`/`key`/`client_ca` secret references
-- [ ] provider `api_key_env:` → `api_key: { env: VAR }`
-- [ ] `busbar --validate`, then **re-mint every virtual key** (1.4.x keys no longer authenticate)
-
-If Busbar starts and `--validate` passes, the migration is complete. There are no silent fallbacks,
-so a clean boot means a fully migrated config.
-
 ---
 
-## Migrating from 1.5.0 to 1.5.1
+## From 1.5.0 (1.5.1)
 
 1.5.1 is a small, targeted breaking change on top of 1.5.0: **busbar no longer auto-generates a
 signing key at boot.**
@@ -346,23 +378,13 @@ sourced from a central vault, etc.). Do not run `busbar --generate-signing-key` 
 node. Rotating the key revokes every outstanding key fleet-wide, since every node stops being able to
 verify tokens signed with the old secret.
 
-### Quick checklist
-
-- [ ] Does `auth.chain` name `keys`? If not, no action needed.
-- [ ] `busbar --generate-signing-key > /path/to/secret` (or capture the stdout value into your
-      secret manager / env var)
-- [ ] Set `auth.signing_key: { file: /path/to/secret }` or `{ env: VAR }`
-- [ ] Distribute the same secret value to every node in the fleet
-- [ ] `busbar --validate`
-
 ---
 
-## Migrating from 1.5.2 to 1.5.3
+## From 1.5.2 or older (1.5.3)
 
 1.5.3 is the **break-once config-stability release**. Two independent changes ship in it: a
 **grammar lock** (breaking, mechanical, migrated for you) and a **config consolidation** (soft,
-env-var deprecations). After 1.5.3 the config grammar is frozen and additive-only forever, enforced
-by a CI gate.
+env-var deprecations). After 1.5.3 the config grammar is frozen and additive-only for the rest of 1.5.x.
 
 ### The 1.5.3 config grammar lock
 
@@ -470,35 +492,10 @@ purpose.
 
 **Terminology:** "auth module" is now "identity provider" throughout config and docs.
 
-#### Quick checklist
-
-- [ ] `busbar --migrate-config config.yaml > config-1.5.3.yaml`, then `busbar --validate`
-- [ ] `global_hooks:` + every inline hook instance → a top-level `hooks:` definition map + bare-name `pools.hooks:` / `pools.<p>.hooks:` lists
-- [ ] every inline `auth.chain` / `auth.admin_auth` entry and every `auth.methods:` / `auth.modules:` entry → an `identity-providers:` definition, referenced by bare name (`max_admin_scope:` belongs on the definition; its only accepted values are `read-only` and `full`. For an external IdP, OMIT it and get the most restrictive default, `read-only`)
-- [ ] `observability:` + top-level `metrics:` → `export:` instances (`prometheus` / `otlp` / `request-log-webhook` / `request-log-file`)
-- [ ] `observability.emit_server_timing` → `advanced.response_headers.server_timing`
-- [ ] `admin_insecure: true` → `admin_require_mtls: false` (or drop it and keep the safe default)
-- [ ] `auth.upstream_credentials:` → `pools.upstream_credentials:` (+ per-pool overrides)
-- [ ] tap `at: route|attempt|completion` → hook `phase: [candidate|routing|response]`
-- [ ] check no pool is named `hooks` or `upstream_credentials`
-
 ### 1.5.3 config consolidation
 
-**For a deployment moving to 1.6.0:** runtime config persists exclusively through the operator's
-base Store, not the overlay files described in this historical 1.5.3 section. A durable Store
-preserves runtime changes across restart; memory is ephemeral. `config.overlay` file/boolean
-selectors are refused by current parsing, and serving does not read `BUSBAR_CONFIG_OVERLAY`.
-One-time migration removes the old selector while preserving `config.locked` and imports old file
-state separately. A read-only config directory has no effect on Store persistence. Set `config.locked: true` to refuse runtime
-mutations, or use a Store with the required atomic conditional-record support. Failed Store
-persistence refuses the mutation before generation publication; failed overlay recovery refuses
-boot unless explicitly quarantined with `--safe-mode`. See [current operations](operations.md#config-mutability-locked--overlay).
-
 1.5.3 also moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
-config mutability explicit and **durable by default**. The file-overlay examples below describe
-1.5.3; the 1.6.0 Store-only rule above supersedes their persistence and read-only-directory advice.
-Other migrated operational environment inputs remain deprecated compatibility inputs with warnings.
-
+config mutability explicit and **durable by default**. 
 #### Env var → config.yaml (deprecated since 1.5.3, still honored)
 
 | Deprecated env var | New home in config.yaml |
@@ -570,13 +567,6 @@ Either resolves the boot refusal. Busbar never silently falls back to the old lo
 
 ### 1.5.3 behavior change: `busbar --validate` resolves secret references
 
-**1.6.0 supersedes the warn-and-continue behavior below.** A configured provider credential that
-does not resolve refuses boot and a replacement config cannot publish with an unresolved required
-credential. Declare `api_key: none` only for a provider that takes no credential. Offline
-`--validate` resolves built-in `env:` / `file:` references and checks configured plugin references;
-it does not prove external secret-backend reachability, application Store recovery or readiness.
-See [the 1.6.0 upgrade guide](migration-1.6.md#6-a-provider-credential-that-cannot-resolve-refuses-boot).
-
 **What changed.** Through 1.5.2, `--validate` checked that a secret reference was well FORMED and
 stopped there: a config saying `api_key: { env: ANTHROPIC_KEY }` with `ANTHROPIC_KEY` unset printed
 `ok: config valid` and exited `0`. From 1.5.3 it RESOLVES every built-in `env:` and `file:`
@@ -620,3 +610,7 @@ will go red on the first upgraded run. Pick one:
 
 Do NOT work around it by dropping `--validate` from the pipeline. The exit code is now telling you
 something true that it used to hide.
+
+---
+
+**Next: [upgrade to 1.6.0](migration-1.6.md).**

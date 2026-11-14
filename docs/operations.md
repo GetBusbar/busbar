@@ -28,10 +28,10 @@ never silent.
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
 
-**Operational environment overrides are retired in 1.6.0.** Run `--migrate-config` with the old
-deployment environment and working directory before starting the new binary. It writes the old
-effective provider, worker-count and upstream HTTP overrides into current config keys. Remove the
-retired variables from the launcher after conversion; see [the migration guide](migration-1.6.md#2-migrate-retired-operational-environment-variables-before-starting-16).
+**Operational environment overrides are retired in 1.6.0.** The first 1.6.0 boot on a 1.5.5
+config copies the old provider, worker-count and upstream HTTP overrides into current config keys,
+so keep them set for that boot and remove them from the launcher afterwards; see
+[the upgrade guide](migration-1.6.md#retired-environment-variables).
 
 | Retired env var | Migration destination |
 |---|---|
@@ -313,7 +313,7 @@ Three things are worth understanding before you scale out:
   spread its affinity too. If you depend on affinity, enable **sticky sessions** at the
   LB (e.g. by the affinity header / a cookie) so a session lands on the same instance.
 - **Governance state in `store: memory` is per-instance; enforcement is per-node either
-  way.** The `store:` block is required in 1.6.0 (`busbar --migrate-config` inserts `store: {module: memory}`); `memory` is ephemeral RAM per instance. A cluster-shared
+  way.** The `store:` block is required in 1.6.0 (the 1.6.0 upgrade inserts `store: {module: memory}`); `memory` is ephemeral RAM per instance. A cluster-shared
   store (postgres/mysql/valkey) genuinely shares keys and the token ledger across N nodes (but
   NOT the durable audit log - see below), and each node's write-behind flush ships
   ADDITIVE per-(model, tier) token deltas so the store converges on the true fleet
