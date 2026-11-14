@@ -1,26 +1,36 @@
-# Core copy of the fleet bad-pattern rule block. The source is GetBusbar/busbar-release template/clippy.toml;
-# this block is byte-identical to it and changes only together with it.
+# Core copy of the fleet bad-pattern rule block (request-path rows, marker-gated). The source is
+# GetBusbar/busbar-release ci/core-clippy-bans.toml (busbar-release 638de70294dd033a4cea0101fd86897bbc6c8050); this block is a
+# byte-identical copy of it below its header. Crate-wide rows are in clippy-crate-wide/clippy.toml.
 
-# --- Fleet bad-pattern rules (one source: GetBusbar/busbar-release template/clippy.toml; core's clippy.toml
-# is a byte-identical copy of this block). A known-bad pattern must not pass CI.
+# --- Fleet bad-pattern rules. One list: GetBusbar/busbar-release LINT-RULES.md (every row, its reason
+# and its scope); this block and core's root clippy.toml carry its clippy rows, and busbar-release's
+# crates/busbar-release-plugin/tests/lint_rules.rs fails when either drifts from it or a row has no
+# red-proof fixture that clippy flags. A known-bad pattern must not pass CI.
 # Inert unless a module tree carries the request-path marker: [workspace.lints.clippy] sets the three
 # disallowed_* lints to "allow" and the marker raises them to deny:
 #   #[cfg_attr(not(test), deny(clippy::disallowed_macros, clippy::disallowed_methods, clippy::disallowed_types, clippy::redundant_clone, clippy::format_push_string, clippy::needless_collect, clippy::or_fun_call, clippy::needless_pass_by_value, clippy::allow_attributes, clippy::allow_attributes_without_reason))]
 #   mod door;
-# busbar-bad-patterns (busbar-release tools/bad-patterns, run by CI beside clippy) checks what this list
-# cannot express (allocating clone/From/Into, fresh per-call buffers, scans over state, repeated clock
-# reads) and the shape of every escape: one #[expect(<lint>, reason = "error|boot|config: ..")] on a
-# single cold statement, never on a module, fn or impl.
+#   mod cold;
+# Scope is module-level. Cold code the request path needs (refusal text, rare off-path sweeps of
+# state) lives in the ONE sanctioned cold module, `cold`, a sibling of the marked module and outside
+# the marker; the request path calls into it. Every fn in `cold` is #[cold] or #[inline(never)], and
+# it holds no while/loop and no loop or iterator sweep over request data (busbar-bad-patterns BP17).
+# Escapes are forbidden (coordinator ruling 308): no #[allow], #[expect] or cfg_attr(.., allow/expect)
+# of these lints anywhere, reasoned or not. Fix the site; a ban that is wrong for a case is narrowed
+# here and in LINT-RULES.md together, with a written justification. busbar-bad-patterns
+# (busbar-release tools/bad-patterns, run by CI beside clippy) refuses every escape (BP06) and checks
+# what this list cannot express (allocating clone/From/Into, fresh per-call buffers, scans over state,
+# repeated clock reads).
 disallowed-macros = [
   { path = "serde_json::json", reason = "builds a Value tree per call; serialize a borrowed #[derive(Serialize)] struct into the op's reused buffer", allow-invalid = true },
   { path = "anyhow::anyhow", reason = "formats and boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
   { path = "anyhow::bail", reason = "formats and boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
   { path = "anyhow::format_err", reason = "formats and boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
   { path = "anyhow::ensure", reason = "formats and boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
+  { path = "alloc::format", reason = "format! allocates a String per call; write! into the op's reused buffer, or use a &'static str" },
 ]
 disallowed-methods = [
-  # Text and bytes allocated per call. format! and std::fmt::format(format_args!(..)) both land here.
-  { path = "alloc::fmt::format", reason = "format!/fmt::format allocate a String per call; write! into the op's reused buffer, or use a &'static str" },
+  { path = "alloc::fmt::format", reason = "fmt::format allocates a String per call; write! into the op's reused buffer, or use a &'static str" },
   { path = "alloc::string::ToString::to_string", reason = "allocates a String per call; borrow the &str, use a &'static str, or write! into the op's reused buffer" },
   { path = "alloc::borrow::ToOwned::to_owned", reason = "allocates an owned copy per call; borrow it (&str, &[u8], Cow::Borrowed)" },
   { path = "slice::to_vec", reason = "allocates a Vec copy per call; borrow the slice, or extend the op's reused buffer" },
@@ -43,18 +53,16 @@ disallowed-methods = [
   { path = "core::iter::Iterator::collect", reason = "allocates a collection per call; iterate lazily, or extend the op's reused buffer (clear + extend)" },
   { path = "core::iter::FromIterator::from_iter", reason = "allocates a collection per call; iterate lazily, or extend the op's reused buffer" },
   { path = "anyhow::Error::msg", reason = "boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
-  # JSON DOM and fresh serializer output.
   { path = "serde_json::to_value", reason = "builds a Value tree per call; serialize the borrowed struct directly", allow-invalid = true },
   { path = "serde_json::from_value", reason = "walks a Value tree; deserialize the bytes straight into the target type", allow-invalid = true },
   { path = "serde_json::to_vec", reason = "allocates a fresh Vec per call; serde_json::to_writer into the op's reused buffer", allow-invalid = true },
   { path = "serde_json::to_string", reason = "allocates a fresh String per call; serde_json::to_writer into the op's reused buffer", allow-invalid = true },
   { path = "serde_json::to_vec_pretty", reason = "allocates a fresh Vec per call; to_writer into the op's reused buffer", allow-invalid = true },
   { path = "serde_json::to_string_pretty", reason = "allocates a fresh String per call; to_writer into the op's reused buffer", allow-invalid = true },
-  # Stable sorts allocate scratch; O(n) sweeps over state.
-  { path = "slice::sort", reason = "stable sort allocates a scratch buffer; sort_unstable" },
-  { path = "slice::sort_by", reason = "stable sort allocates a scratch buffer; sort_unstable_by" },
-  { path = "slice::sort_by_key", reason = "stable sort allocates a scratch buffer; sort_unstable_by_key" },
-  { path = "slice::sort_by_cached_key", reason = "allocates a key buffer per call; sort_unstable_by_key" },
+  { path = "slice::sort", reason = "a sort per call on the request path (stable: also a scratch buffer); keep the data ordered on insert, or sort once in the tick" },
+  { path = "slice::sort_by", reason = "a sort per call on the request path (stable: also a scratch buffer); keep the data ordered on insert, or sort once in the tick" },
+  { path = "slice::sort_by_key", reason = "a sort per call on the request path (stable: also a scratch buffer); keep the data ordered on insert, or sort once in the tick" },
+  { path = "slice::sort_by_cached_key", reason = "a sort per call plus a key buffer per call; keep the data ordered on insert, or sort once in the tick" },
   { path = "alloc::vec::Vec::retain", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
   { path = "alloc::vec::Vec::retain_mut", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
   { path = "alloc::vec::Vec::remove", reason = "O(n) shift per call; swap_remove, VecDeque::pop_front, or a map keyed by id" },
@@ -65,8 +73,12 @@ disallowed-methods = [
   { path = "std::collections::HashSet::retain", reason = "O(n) sweep in a request-path op; remove by key, or expire in the tick" },
   { path = "alloc::collections::BTreeMap::retain", reason = "O(n) sweep in a request-path op; remove by key or range, or expire in the tick" },
   { path = "alloc::collections::BTreeSet::retain", reason = "O(n) sweep in a request-path op; remove by key or range, or expire in the tick" },
-  # Raw OS clock reads. Read the shared clock once at the op's entry and pass the value down
-  # (busbar-bad-patterns BP05 then allows one shared-clock read per fn, none inside a loop).
+  { path = "alloc::vec::Vec::extract_if", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
+  { path = "alloc::collections::LinkedList::extract_if", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
+  { path = "std::collections::HashMap::extract_if", reason = "O(n) sweep in a request-path op; remove by key, or expire in the tick" },
+  { path = "std::collections::HashSet::extract_if", reason = "O(n) sweep in a request-path op; remove by key, or expire in the tick" },
+  { path = "alloc::collections::BTreeMap::extract_if", reason = "O(n) sweep in a request-path op; remove by key or range, or expire in the tick" },
+  { path = "alloc::collections::BTreeSet::extract_if", reason = "O(n) sweep in a request-path op; remove by key or range, or expire in the tick" },
   { path = "std::time::Instant::now", reason = "OS clock read on the request path; take the op's one shared-clock reading passed down" },
   { path = "std::time::Instant::elapsed", reason = "reads the OS clock; subtract from the op's one shared-clock reading" },
   { path = "std::time::SystemTime::now", reason = "OS clock read on the request path; take the op's one shared-clock reading passed down" },
@@ -76,25 +88,31 @@ disallowed-methods = [
   { path = "chrono::Utc::now", reason = "OS clock read on the request path; take the op's one shared-clock reading", allow-invalid = true },
   { path = "chrono::Local::now", reason = "OS clock read and a time-zone lookup per call; take the op's one shared-clock reading", allow-invalid = true },
   { path = "time::OffsetDateTime::now_utc", reason = "OS clock read on the request path; take the op's one shared-clock reading", allow-invalid = true },
-  # Kernel entropy per call.
   { path = "getrandom::fill", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
   { path = "getrandom::getrandom", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
   { path = "getrandom::u32", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
   { path = "getrandom::u64", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
-  # UPG-A26c: a stream-terminal frame must not mint an identity the stream already stated. The paths
-  # resolve only inside busbar-plane-llm (allow-invalid: inert in core and every other crate).
+  { path = "zeroize::Zeroize::zeroize", reason = "wipes the whole capacity byte by byte per call; use busbar_contract::secure (wipe, wipe_string, Secure* types)", allow-invalid = true },
+  { path = "digest::Digest::digest", reason = "software SHA-256 on the request path; go through busbar_contract::crypto (crypto::sha256 / crypto::Sha256)", allow-invalid = true },
+  # core only (LINT-RULES.md scope `core`), from core commit ecf6147283 (lint/bad-patterns-config), moved
+  # there from fix/upg-a26c. busbar-plane-llm owns both items; allow-invalid, so no fixture here can
+  # resolve them (lint_rules.rs leaves them out of the fixture run, named).
   { path = "busbar_plane_llm::codec::anthropic::ids::synth_request_id", allow-invalid = true, reason = "UPG-A26c: a stream's error frame names the request id its head stated; mint only through AnthropicWriter::carried_request_id or a stream-less envelope (anthropic/auth.rs)" },
   { path = "busbar_plane_llm::codec::openai_responses::synthesize_response_id", allow-invalid = true, reason = "UPG-A26c: a stream's terminal frame continues the response id it opened with; mint only at MessageStart, in carried_or_mint_response_id, or in the whole-body writer" },
+  # core only, UPG-A27c (core fix/upg-a27c-admin-usage-lags-seconds-behind-ser, root clippy.toml): live
+  # (request-path) code proves the journal head with RuntimeJournal; boot recovery and tests may replay.
+  # busbar-kernel owns both items (pub(crate)); allow-invalid, no fixture here can resolve them.
+  { path = "busbar_kernel::persistence::journal::StoreJournal::historical_replay", allow-invalid = true, reason = "O(journal); live paths use RuntimeJournal::live_proof / locate" },
+  { path = "busbar_kernel::persistence::journal::StoreJournal::read_verified_record", allow-invalid = true, reason = "O(journal); live paths use RuntimeJournal::live_proof / locate" },
 ]
 disallowed-types = [
-  # SipHash by default, in every spelling (new, default, from, collect, with_capacity): naming the std
-  # type is what is banned. foldhash::HashMap/HashSet are the shared aliases (per-process seeded).
   { path = "std::collections::HashMap", reason = "default SipHash hasher; use foldhash::HashMap (HashMapExt::new / ::default)" },
   { path = "std::collections::HashSet", reason = "default SipHash hasher; use foldhash::HashSet (HashSetExt::new / ::default)" },
   { path = "std::hash::RandomState", reason = "SipHash; use foldhash::fast::RandomState" },
   { path = "std::hash::DefaultHasher", reason = "SipHash; use foldhash::fast::FoldHasher" },
   { path = "serde_json::Value", reason = "a JSON DOM per call; deserialize into a borrowed struct, or RawValue for pass-through", allow-invalid = true },
   { path = "serde_json::Map", reason = "a JSON DOM per call; serialize a borrowed struct", allow-invalid = true },
-  { path = "rand::rngs::OsRng", reason = "a getrandom syscall per draw; a per-thread userspace CSPRNG seeded once", allow-invalid = true },
   { path = "rand_core::OsRng", reason = "a getrandom syscall per draw; a per-thread userspace CSPRNG seeded once", allow-invalid = true },
+  { path = "zeroize::Zeroizing", reason = "wipes the whole capacity on drop and leaves un-wiped copies when it grows; secret bytes live in busbar_contract::secure SecureVec/SecureString/SecureBuf/SecureArray", allow-invalid = true },
+  { path = "sha2::Sha256", reason = "software SHA-256 on the request path; go through busbar_contract::crypto (crypto::sha256 / crypto::Sha256)", allow-invalid = true },
 ]
