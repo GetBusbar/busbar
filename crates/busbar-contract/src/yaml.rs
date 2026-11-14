@@ -41,7 +41,17 @@ pub mod prelude {
 /// The parser options, pinned to 1.5.5's meaning. The one place they are set.
 #[must_use]
 pub fn options() -> serde_saphyr::Options {
+    use serde_saphyr::{DuplicateKeyPolicy, MergeKeyPolicy, NonFiniteFloatPolicy};
     serde_saphyr::options! {
+        duplicate_keys: DuplicateKeyPolicy::Error,
+        merge_keys: MergeKeyPolicy::AsOrdinary,
+        strict_booleans: true,
+        legacy_octal_numbers: false,
+        leading_zero_numbers_as_strings: true,
+        underscored_numbers_as_strings: true,
+        ignore_binary_tag_for_string: true,
+        reject_unsupported_tags: true,
+        non_finite_float_policy: NonFiniteFloatPolicy::PassThrough,
         with_snippet: false,
     }
 }
