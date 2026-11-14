@@ -113,3 +113,7 @@ required-features = ["test-support"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(txn_fence_red)'] }
+
+[[bench]]
+name = "percent"
+harness = false

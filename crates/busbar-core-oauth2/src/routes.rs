@@ -727,3 +727,7 @@ mod local_path_tests;
 #[cfg(test)]
 #[path = "tests/consent_resolution_tests.rs"]
 mod consent_resolution_tests;
+
+#[cfg(test)]
+#[path = "tests/form_codec_tests.rs"]
+mod form_codec_tests;
