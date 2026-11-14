@@ -472,6 +472,9 @@ fn reqs(
     specs: &[ReqSpec],
     vars: &BTreeMap<String, String>,
 ) -> Result<(Listener, Vec<driver::Req>), String> {
+    if specs.is_empty() {
+        return Err("a case needs at least one request".into());
+    }
     let l = specs.first().map_or(Listener::Data, |r| r.listener);
     let mut out = Vec::new();
     for r in specs {
