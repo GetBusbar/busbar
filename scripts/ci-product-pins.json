@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "163daa7b0fd49872d2acd72c8f6eeb07d4e63742",
+      "commit": "28a9bccc8c47ec807fa550d746941ddf7a12221d",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -301,7 +301,7 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://github.com/GetBusbar/busbar-plane-mcp",
-      "commit": "c135451ef60d184e15e9d5c361b7f014e376312a",
+      "commit": "ff9f19d7b053fe67ee556ca5db8d45cb13320740",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
