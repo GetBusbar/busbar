@@ -739,11 +739,14 @@ impl NodeAmendments {
             let confirmation = sink.sealed_many(&amendments)?;
             // Commit only after exact original custody is retained; refused
             // memory admission must not create an amendment-chain hole.
-            held.journal.chain.tail_hash.clone_from(&amendment.hash);
-            held.journal.chain.next_seq = next;
-            if held.journal.recent.len() == AMENDMENTS_RETAINED {
-                held.journal.recent.pop_front();
-                held.journal.released = held.journal.released.saturating_add(1);
+            held.journal.chain.tail_hash = tail;
+            held.journal.chain.next_seq = seq;
+            for amendment in &amendments {
+                if held.journal.recent.len() == AMENDMENTS_RETAINED {
+                    held.journal.recent.pop_front();
+                    held.journal.released = held.journal.released.saturating_add(1);
+                }
+                held.journal.recent.push_back(amendment.clone());
             }
             (amendments, confirmation)
         };
