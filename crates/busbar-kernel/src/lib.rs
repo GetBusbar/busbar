@@ -401,6 +401,7 @@ pub mod host_services;
 )]
 pub mod json;
 pub mod limits;
+pub mod rt;
 // jemalloc control for the binary and the allocation tests.
 #[cfg(not(target_env = "msvc"))]
 #[allow(unsafe_code)]

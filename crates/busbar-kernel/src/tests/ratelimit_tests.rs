@@ -316,3 +316,54 @@ fn ratelimit_check_constant() {
     };
     assert_eq!(cost(10), cost(100_000));
 }
+
+#[test]
+fn every_mutation_class_names_itself_to_the_audit_row() {
+    assert_eq!(MutationClass::Config.label(), "config");
+    assert_eq!(MutationClass::Crud.label(), "crud");
+    assert_eq!(MutationClass::PluginInspect.label(), "plugin-inspect");
+    assert_eq!(MutationClass::Forbidden.label(), "forbidden");
+
+    let labels = [
+        MutationClass::Config,
+        MutationClass::Crud,
+        MutationClass::PluginInspect,
+        MutationClass::Forbidden,
+    ]
+    .map(MutationClass::label);
+    let mut sorted = labels.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        labels.len(),
+        "two classes share one audit label"
+    );
+    assert!(
+        !labels.iter().any(|l| l.is_empty()),
+        "a class has no audit label at all"
+    );
+}
+
+#[test]
+fn the_four_budgets_are_the_spec_defaults_and_forbidden_admits_nothing() {
+    assert_eq!(MutationClass::Config.limit(), 10);
+    assert_eq!(MutationClass::Crud.limit(), 60);
+    assert_eq!(MutationClass::PluginInspect.limit(), 30);
+    assert_eq!(MutationClass::Forbidden.limit(), 0);
+
+    let limiter = MutationLimiter::new();
+    assert!(
+        !limiter
+            .check(
+                "alice",
+                MutationClass::Forbidden,
+                7 * MUTATION_RATE_WINDOW_SECS
+            )
+            .admitted(),
+        "a Forbidden attempt drew on a budget"
+    );
+
+    assert!(MutationClass::Config.limit() < MutationClass::PluginInspect.limit());
+    assert!(MutationClass::PluginInspect.limit() < MutationClass::Crud.limit());
+}
