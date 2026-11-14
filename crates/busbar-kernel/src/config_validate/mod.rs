@@ -1377,8 +1377,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
-    // Absence is advisory too: installed planes declare the classes, while their
-    // configured definitions enumerate the lanes whose counts can be priced.
+    // Entry absence under a present card refuses (with the 1.5.5 stub); class absence within an
+    // entry is advisory. Planes declare the classes; configured definitions enumerate the lanes.
     let empty = std::collections::BTreeMap::new();
     let card = cfg.rate_card.as_ref().unwrap_or(&empty);
     let flat_card = cfg.rate_card.is_some()
