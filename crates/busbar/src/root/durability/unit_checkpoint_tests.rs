@@ -1529,8 +1529,9 @@ impl PersistenceBackend for AppendDuringReplay {
     fn commit(
         &self,
         candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, Decision> {
-        self.actual.commit(candidate)
+        self.actual.commit(candidate, key)
     }
     fn read(&self, request: Arc<Read>) -> busbar_contract::persistence::Call<'_, ReadResult> {
         Box::pin(async move {
@@ -1612,4 +1613,14 @@ async fn actual_store_checkpoint_persists_while_request_audits_append() {
     .await
     .expect("no hang");
     stop(&book);
+}
+
+/// A slotted key for a raw commit a test sends past the store facade.
+fn test_commit_key() -> busbar_contract::persistence::CommitKey {
+    busbar_contract::persistence::CommitKey::slotted(
+        0,
+        1,
+        &busbar_contract::caps::SlotSeal::acquire_for_tests(),
+    )
+    .expect("slot 0, seq 1 is a valid key")
 }
