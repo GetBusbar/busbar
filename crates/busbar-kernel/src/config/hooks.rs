@@ -100,7 +100,7 @@ impl<'de> Deserialize<'de> for OnErrorCfg {
             hook: String,
         }
 
-        let value = busbar_contract::yaml::Value::deserialize(deserializer)?;
+        let value = busbar_contract::yaml::untyped(deserializer)?;
         match value {
             busbar_contract::yaml::Value::Text(word) => {
                 if on_error_terminal(&word).is_some() {

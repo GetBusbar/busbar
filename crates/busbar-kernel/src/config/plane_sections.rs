@@ -3,7 +3,6 @@
 
 use busbar_contract::plugin::Kind;
 use busbar_contract::yaml::{MappingExt, Value, ValueExt};
-use serde::Deserialize;
 
 /// A PLANE'S TOP-LEVEL CONFIG SECTION, CAPTURED RAW — the neutral carrier `DeployCfg`/`RootCfg` use
 /// for a plane's section in a build where the plane that would LOWER it is compiled out.
@@ -36,7 +35,7 @@ impl<'de> serde::Deserialize<'de> for RawPlaneSection {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = Value::deserialize(deserializer)?;
+        let value = busbar_contract::yaml::untyped(deserializer)?;
         let raw = if value.is_null() { None } else { Some(value) };
         Ok(RawPlaneSection { raw })
     }
@@ -117,7 +116,7 @@ fn deserialize_plane_section<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    let value = Value::deserialize(deserializer)?;
+    let value = busbar_contract::yaml::untyped(deserializer)?;
     let decl = crate::plane_driver::registry::plane_decl_for_config_section(config_section);
     match decl.and_then(|d| d.parse_section.map(|parse| (d, parse))) {
         Some((d, parse)) => {
@@ -145,7 +144,7 @@ fn deserialize_plane_endpoint<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    let value = Value::deserialize(deserializer)?;
+    let value = busbar_contract::yaml::untyped(deserializer)?;
     if value.is_null() {
         return Ok(None);
     }
