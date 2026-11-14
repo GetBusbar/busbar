@@ -139,11 +139,12 @@ impl ObservationSink for Output<'_> {
     }
     fn text_cut(
         &self,
-        _field: busbar_contract::hook_wire::reply::TextField,
-        _cap: usize,
-        _count: u32,
-        _max_sanitised: usize,
+        field: busbar_contract::hook_wire::reply::TextField,
+        cap: usize,
+        count: u32,
+        max_sanitised: usize,
     ) {
+        busbar_kernel::hooks::text_cut::report(self.0, field, cap, count, max_sanitised);
     }
 }
 

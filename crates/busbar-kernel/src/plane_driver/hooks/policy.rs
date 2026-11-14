@@ -89,7 +89,24 @@ fn unanswered<O>(name: &str, budget: Duration, a: Answered<O>) -> String {
     }
 }
 
+/// The hook's reject message, sanitised and capped as 1.5.5 did, with a cut reported against
+/// `hook`. `reject_of` caps it again; at most 300 chars already, that is the identity.
+fn reported_reject(hook: &str, raw: &str) -> String {
+    let (message, cut) = wire::sanitize_reject_message_counted(raw);
+    if let Some(sanitised_chars) = cut {
+        crate::hooks::text_cut::report(
+            hook,
+            wire::TextField::RejectMessage,
+            wire::REJECT_MESSAGE_MAX_CHARS,
+            1,
+            sanitised_chars,
+        );
+    }
+    message
+}
+
 fn lower_decide(
+    hook: &str,
     out: &busbar_contract::abi::hook::DecideOut,
     frame: &DecideFrame,
     candidates: &[Candidate<'_>],
@@ -97,7 +114,7 @@ fn lower_decide(
     decision(
         out.verbs,
         out.reject_status,
-        || frame.reject_message(out.reject_message_written),
+        || reported_reject(hook, &frame.reject_message(out.reject_message_written)),
         || frame.restrict_tags(out.restrict_tags_written),
         || frame.order(out.order_written),
         candidates,
@@ -137,13 +154,14 @@ pub(super) fn decision(
 }
 
 fn lower_transform(
+    hook: &str,
     out: &busbar_contract::abi::hook::TransformOut,
     frame: &DecideFrame,
 ) -> TransformOutcome {
     transformed(
         out.verbs,
         out.reject_status,
-        || frame.reject_message(out.reject_message_written),
+        || reported_reject(hook, &frame.reject_message(out.reject_message_written)),
         || frame.rewrite(out.rewrite_written),
     )
 }
@@ -199,7 +217,7 @@ impl RoutingPolicy for HookPolicy {
                 out,
                 frame,
                 ..
-            } => Ok(lower_decide(&out, &frame, candidates)),
+            } => Ok(lower_decide(&self.name, &out, &frame, candidates)),
 
             other => Err(PolicyError::from(unanswered(&self.name, budget, other))),
         }
@@ -232,7 +250,7 @@ impl RoutingPolicy for HookPolicy {
                 out,
                 frame,
                 ..
-            } => lower_transform(&out, &frame),
+            } => lower_transform(&self.name, &out, &frame),
             Answered::Answer { error, .. } => TransformOutcome::Failed {
                 message: error.unwrap_or_default(),
             },

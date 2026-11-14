@@ -142,21 +142,22 @@ pub fn valid_metric_name(name: &str) -> bool {
 
 /// Char-boundary-safe sanitize + cap (`String::truncate` takes BYTES and panics off a
 pub fn sanitize_cap(raw: &str, n: usize) -> String {
-    raw.chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(
-                    *c,
-                    '\u{2028}'
-                        | '\u{2029}'
-                        | '\u{200B}'..='\u{200F}'
-                        | '\u{202A}'..='\u{202E}'
-                        | '\u{2066}'..='\u{2069}'
-                        | '\u{FEFF}'
-                )
-        })
-        .take(n)
-        .collect()
+    sanitize_cap_counted(raw, n).0
+}
+
+/// The characters [`sanitize_cap`] keeps: no control characters, no line/paragraph separators,
+/// zero-width or bidi-override formatting, and no BOM.
+fn kept(c: &char) -> bool {
+    !c.is_control()
+        && !matches!(
+            *c,
+            '\u{2028}'
+                | '\u{2029}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
 }
 
 /// Which plugin-supplied text a cap applies to. A closed set, so it is safe as a metric label.
@@ -242,24 +243,49 @@ impl TextCuts {
 }
 
 /// [`sanitize_cap`], also returning the sanitised length in chars when it was over `n` (the value
-/// was cut), else `None`.
+/// was cut), else `None`. One pass: the first `n` kept chars are collected, the rest only counted.
 pub fn sanitize_cap_counted(raw: &str, n: usize) -> (String, Option<usize>) {
-    (sanitize_cap(raw, n), None)
+    let mut out = String::new();
+    let mut sanitised = 0usize;
+    for c in raw.chars().filter(kept) {
+        if sanitised < n {
+            out.push(c);
+        }
+        sanitised += 1;
+    }
+    (out, (sanitised > n).then_some(sanitised))
 }
 
 /// [`sanitize_reject_message`], also returning the sanitised length in chars when it was over
-/// [`REJECT_MESSAGE_MAX_CHARS`], else `None`.
+/// [`REJECT_MESSAGE_MAX_CHARS`], else `None`. A cut is reported even when the kept text is all
+/// whitespace and the default message is returned instead.
 pub fn sanitize_reject_message_counted(raw: &str) -> (String, Option<usize>) {
-    (sanitize_reject_message(raw), None)
+    let (message, cut) = sanitize_cap_counted(raw, REJECT_MESSAGE_MAX_CHARS);
+    if message.trim().is_empty() {
+        (REJECT_MESSAGE_DEFAULT.to_string(), cut)
+    } else {
+        (message, cut)
+    }
 }
 
-/// [`parse_status_metrics`], also returning the cuts it made to the metrics it kept.
-pub fn parse_status_metrics_counted(raw: &[serde_json::Value]) -> (Vec<HookMetric>, TextCuts) {
-    (parse_status_metrics(raw), TextCuts::default())
+/// [`sanitize_cap_counted`], noting a cut of `field` in `cuts`.
+fn cap_noting(cuts: &mut TextCuts, field: TextField, raw: &str, n: usize) -> String {
+    let (value, cut) = sanitize_cap_counted(raw, n);
+    if let Some(sanitised_chars) = cut {
+        cuts.record(field, sanitised_chars);
+    }
+    value
 }
 
 /// Parse + validate the metrics ARRAY of a `status` reply FAIL-OPEN: a malformed entry (bad
 pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
+    parse_status_metrics_counted(raw).0
+}
+
+/// [`parse_status_metrics`], also returning the cuts it made to the metrics it kept. Only label
+/// values that are kept (within [`MAX_METRIC_LABELS`]) are counted.
+pub fn parse_status_metrics_counted(raw: &[serde_json::Value]) -> (Vec<HookMetric>, TextCuts) {
+    let mut cuts = TextCuts::default();
     let mut out = Vec::new();
     for v in raw {
         if out.len() >= MAX_HOOK_METRICS {
@@ -280,7 +306,15 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
             labels
                 .into_iter()
                 .filter(|(k, _)| valid_metric_name(k))
-                .map(|(k, val)| (k, sanitize_cap(&val, MAX_METRIC_LABEL_CHARS)))
+                .map(|(k, val)| {
+                    let val = cap_noting(
+                        &mut cuts,
+                        TextField::MetricLabelValue,
+                        &val,
+                        MAX_METRIC_LABEL_CHARS,
+                    );
+                    (k, val)
+                })
                 .take(MAX_METRIC_LABELS)
                 .collect()
         });
@@ -318,11 +352,20 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
                 m.ci_high = None;
             }
         }
-        m.help = m.help.map(|h| sanitize_cap(&h, MAX_METRIC_HELP_CHARS));
-        m.label = m.label.map(|l| sanitize_cap(&l, MAX_METRIC_LABEL_CHARS));
+        m.help = m
+            .help
+            .map(|h| cap_noting(&mut cuts, TextField::MetricHelp, &h, MAX_METRIC_HELP_CHARS));
+        m.label = m.label.map(|l| {
+            cap_noting(
+                &mut cuts,
+                TextField::MetricLabel,
+                &l,
+                MAX_METRIC_LABEL_CHARS,
+            )
+        });
         m.unit = m
             .unit
-            .map(|u| sanitize_cap(&u, MAX_METRIC_UNIT_CHARS))
+            .map(|u| cap_noting(&mut cuts, TextField::MetricUnit, &u, MAX_METRIC_UNIT_CHARS))
             .filter(|s| !s.is_empty());
         m.viz = m.viz.filter(|v| {
             matches!(
@@ -333,7 +376,7 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
         m.max = m.max.filter(|v| v.is_finite());
         out.push(m);
     }
-    out
+    (out, cuts)
 }
 
 use crate::hooks::RewriteReply;
@@ -369,12 +412,7 @@ pub const REJECT_MESSAGE_DEFAULT: &str = "Request rejected by the routing policy
 
 /// Sanitize a reject message for the client error body AND the operator log line: strip control
 pub fn sanitize_reject_message(raw: &str) -> String {
-    let message = sanitize_cap(raw, REJECT_MESSAGE_MAX_CHARS);
-    if message.trim().is_empty() {
-        REJECT_MESSAGE_DEFAULT.to_string()
-    } else {
-        message
-    }
+    sanitize_reject_message_counted(raw).0
 }
 
 #[cfg(test)]
