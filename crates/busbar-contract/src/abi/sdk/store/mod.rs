@@ -3,6 +3,7 @@
 
 //! Primitive Store adapter and shared native connection mechanics.
 
+pub mod clock;
 pub mod v4;
 pub mod wire;
 

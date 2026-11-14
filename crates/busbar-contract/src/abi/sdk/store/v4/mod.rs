@@ -9,6 +9,9 @@
 
 pub mod backend;
 pub mod bootstrap;
+// LR-118's store cases, which every store's suite runs against itself.
+#[cfg(any(test, feature = "test-support"))]
+pub mod conformance;
 pub mod decode;
 pub mod door;
 pub mod encode;
