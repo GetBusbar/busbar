@@ -93,6 +93,9 @@ pub(crate) struct TicketCustody {
     closed: std::sync::atomic::AtomicBool,
     sources: Mutex<foldhash::HashMap<busbar_contract::UnitKey, Arc<TicketSource>>>,
     entries: Mutex<TicketEntries>,
+    /// Store reads the custody sweep issued.
+    #[cfg(test)]
+    sweep_reads: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -174,6 +177,8 @@ impl TicketCustody {
             closed: std::sync::atomic::AtomicBool::new(false),
             sources: Mutex::new(foldhash::HashMap::default()),
             entries: Mutex::new(TicketEntries::default()),
+            #[cfg(test)]
+            sweep_reads: std::sync::atomic::AtomicU64::new(0),
         });
         let mut nodes = TICKET_NODES
             .lock()
@@ -424,6 +429,9 @@ impl TicketCustody {
         for (id, version, expiry, store) in snapshots {
             // An unavailable or malformed observation cannot release custody.
             // The native owner evaluates expiry against the Store's clock.
+            #[cfg(test)]
+            self.sweep_reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if matches!(
                 busbar_kernel::governance::ticket_record_live(store, &id, expiry).await,
                 Ok(false)
