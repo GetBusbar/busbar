@@ -393,6 +393,40 @@ fn clock(now: &mut Option<Instant>) -> Instant {
     })
 }
 
+#[cfg(test)]
+pub(crate) mod tls_probe {
+    //! T6 test hooks: `ingest` calls counted per thread, and an injected disagreement between the
+    //! plaintext count rustls states and what its reader gives.
+    use std::cell::Cell;
+
+    thread_local! {
+        static INGESTS: Cell<u64> = const { Cell::new(0) };
+        static ENDS: Cell<u64> = const { Cell::new(0) };
+        static INFLATE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn ingested(end: bool) {
+        INGESTS.with(|n| n.set(n.get() + 1));
+        if end {
+            ENDS.with(|n| n.set(n.get() + 1));
+        }
+    }
+
+    /// `(ingest calls, of which ended)` on this thread so far.
+    pub(crate) fn ingests() -> (u64, u64) {
+        (INGESTS.with(Cell::get), ENDS.with(Cell::get))
+    }
+
+    /// While set, `feed` believes one plaintext byte more than rustls holds (only when it holds any).
+    pub(crate) fn inflate(on: bool) {
+        INFLATE.with(|f| f.set(on));
+    }
+
+    pub(crate) fn inflation(plaintext: usize) -> usize {
+        usize::from(plaintext > 0 && INFLATE.with(Cell::get))
+    }
+}
+
 /// What the drives on this thread did with the clock (tests only): how many drives ran, how many
 /// clock reads they made, and the most any one drive made.
 #[cfg(test)]
@@ -2136,6 +2170,8 @@ impl Connection {
         // exactly: no doubling `Vec`, no 16 KiB stack buffer, and the guard wipes it on every exit.
         let mut plain = Scratch::take(&TLS_PLAIN);
         let mut closed = false;
+        #[cfg(test)]
+        let plaintext = plaintext + tls_probe::inflation(plaintext);
         if let Some(tls) = self.tls.as_mut() {
             if plaintext > 0 {
                 match plain
@@ -2179,6 +2215,8 @@ impl Connection {
     }
 
     fn ingest(&mut self, bytes: &[u8], end: bool, end_of_frame: bool) -> Result<(), Failure> {
+        #[cfg(test)]
+        tls_probe::ingested(end);
         if self.begin_parked() {
             self.unfed.push_back((bytes.to_vec(), end, end_of_frame));
             return Ok(());
@@ -2343,3 +2381,7 @@ mod read_tests;
 #[cfg(test)]
 #[path = "tests/compose_tls_tests.rs"]
 mod tls_tests;
+
+#[cfg(test)]
+#[path = "tests/compose_tls_accept_tests.rs"]
+mod tls_accept_tests;
