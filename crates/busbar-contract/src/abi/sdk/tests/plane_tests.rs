@@ -363,3 +363,37 @@ fn piece_settlement_is_atomic_when_any_buffer_is_short() {
         );
     }
 }
+
+#[test]
+fn the_dealt_section_reads_each_number_token_as_the_typed_parser_reads_it() {
+    for token in [
+        "-0",
+        "0",
+        "1",
+        "-1",
+        "1.0",
+        "1e0",
+        "-0.0",
+        "18446744073709551615",
+        "18446744073709551616",
+    ] {
+        let blob = format!(r#"{{"tools":{{"x":{token}}}}}"#);
+        let section = dealt_section(blob.as_bytes(), "tools")
+            .expect(token)
+            .expect(token);
+        assert_eq!(
+            section["x"].as_u64(),
+            serde_json::from_str::<u64>(token).ok(),
+            "{token}"
+        );
+        assert_eq!(
+            section["x"].as_i64(),
+            serde_json::from_str::<i64>(token).ok(),
+            "{token}"
+        );
+    }
+    let section = dealt_section(br#"{"tools":{"x":-0}}"#, "tools")
+        .expect("well-formed")
+        .expect("dealt");
+    assert_eq!(section["x"].as_i64(), None, "-0 is no integer setting");
+}
