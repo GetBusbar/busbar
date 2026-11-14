@@ -33,7 +33,9 @@ use busbar_contract::abi::hook::{
     MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome as AbiOutcome, Span};
-use busbar_contract::abi::plane::{ProjectIn, ProjectOut, CLAIM_PROBE, SPAN_ABSENT};
+use busbar_contract::abi::plane::{
+    ProjectIn, ProjectOut, CLAIM_PROBE, PROJECT_IN_OBSERVE_ONLY, SPAN_ABSENT,
+};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::hooks::{
@@ -243,6 +245,24 @@ impl UnitHooks {
             && self.gates.is_empty()
             && self.policy.is_none()
             && self.taps.is_empty()
+    }
+
+    /// No bound hook stops, changes or routes the request on its content: no rewrite, no gate,
+    /// and at most a content-blind policy ([`ResolvedPolicy::reads_request`]). Taps of any stage
+    /// only observe. What `project` states to the plane as
+    /// [`busbar_contract::abi::plane::PROJECT_IN_OBSERVE_ONLY`].
+    #[must_use]
+    pub fn observe_only(&self) -> bool {
+        self.rewrites.is_empty()
+            && self.gates.is_empty()
+            && self.policy.as_ref().is_none_or(|p| !p.reads_request())
+    }
+
+    /// No rewrite, gate or policy is bound: an unreadable first view leaves the unit to its
+    /// ordinary protocol handling. Implies [`Self::observe_only`], never the reverse.
+    #[must_use]
+    pub fn idle(&self) -> bool {
+        self.rewrites.is_empty() && self.gates.is_empty() && self.policy.is_none()
     }
 }
 
@@ -1068,6 +1088,7 @@ impl Asked<'_> {
             send_prompt,
             send_user,
             on_empty,
+            content_blind: _,
         } = resolved;
         if self.named && self.candidates.is_empty() {
             return (Decided::Weighted, None);
@@ -1415,6 +1436,10 @@ mod project_arena_custody_tests;
 #[path = "tests/project_copy_tests.rs"]
 mod project_copy_tests;
 
+#[cfg(test)]
+#[path = "tests/observe_only_tests.rs"]
+mod observe_only_tests;
+
 const SIGNALS_CAP: usize = 16;
 const MESSAGES_CAP: usize = 64;
 
@@ -1641,6 +1666,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             messages_buf: bufs.messages.as_mut_ptr(),
             messages_cap: bufs.messages.len(),
             unit,
+            flags: if observe_only {
+                PROJECT_IN_OBSERVE_ONLY
+            } else {
+                0
+            },
             ..blank_in()
         };
         let mut o: ProjectOut = blank_out();
