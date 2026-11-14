@@ -373,13 +373,6 @@ fn main() {
         }
     }
 
-    if busbar_kernel::profile::enabled() {
-        std::thread::spawn(|| loop {
-            std::thread::sleep(std::time::Duration::from_secs(20));
-            busbar_kernel::profile::dump();
-        });
-    }
-
     let (_, warnings) = &*WORKERS;
     for w in warnings {
         eprintln!("{w}");

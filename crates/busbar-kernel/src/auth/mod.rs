@@ -2235,7 +2235,6 @@ pub(crate) async fn auth_middleware(
         .as_ref()
         .map(|admission| crate::inbound::header_map(&admission.inner.original));
 
-    let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
     let admission = inbound.as_ref().map_or_else(
         || {
@@ -2261,7 +2260,6 @@ pub(crate) async fn auth_middleware(
     if let Some(auth) = core_routes.declared_auth(&path, req.method()) {
         match auth {
             busbar_contract::abi::mechanism::route::RouteAuth::None => {
-                drop(_mw.take());
                 return Ok(next.run(req).await);
             }
             busbar_contract::abi::mechanism::route::RouteAuth::Admin => {
@@ -2278,7 +2276,6 @@ pub(crate) async fn auth_middleware(
     {
         match auth {
             busbar_contract::abi::mechanism::route::RouteAuth::None => {
-                drop(_mw.take());
                 return Ok(next.run(req).await);
             }
             busbar_contract::abi::mechanism::route::RouteAuth::Admin => declared_admin = true,
@@ -2475,7 +2472,6 @@ pub(crate) async fn auth_middleware(
 
         req.extensions_mut()
             .insert(crate::governance::GovCtx::default());
-        drop(_mw.take());
         return Ok(effect::scope(Some(effect_context), next.run(req)).await);
     }
 
@@ -2662,7 +2658,6 @@ pub(crate) async fn auth_middleware(
         }
     }
 
-    drop(_mw.take());
     Ok(next.run(req).await)
 }
 

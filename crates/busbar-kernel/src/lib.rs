@@ -191,8 +191,6 @@ mod member_tests;
 mod operation_tests;
 pub mod plugin_routes;
 
-pub mod profile;
-
 pub mod ratelimit;
 
 pub mod persistence;
