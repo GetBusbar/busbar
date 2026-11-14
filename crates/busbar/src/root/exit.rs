@@ -37,10 +37,6 @@ pub fn exit(code: i32) -> ! {
     if let Some(first_start) = FIRST_START.get() {
         hand_over(first_start);
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the one exit path; retires an unpublished first start first (FIRST-START-TAKEOVER §2.7)"
-    )]
     std::process::exit(code);
 }
 

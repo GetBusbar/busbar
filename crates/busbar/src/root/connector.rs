@@ -137,7 +137,7 @@ pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
 
 /// THE OUTBOUND TLS TRUST STORE `cfg` states (`advanced.tls`), validated now. A refusal exits
 /// the process with every coded reason, before anything is dialled.
-pub fn trust_store(cfg: &RootCfg) -> Arc<busbar_core_connector::tls::store::TrustStore> {
+fn trust_store(cfg: &RootCfg) -> Arc<busbar_core_connector::tls::store::TrustStore> {
     trust_store_of(&cfg.outbound_tls).unwrap_or_else(|errors| {
         eprintln!("busbar: config errors:\n  - {}", errors.join("\n  - "));
         crate::root::exit::exit(2);

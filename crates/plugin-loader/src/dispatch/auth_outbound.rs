@@ -204,11 +204,11 @@ impl Lend {
     /// A grown resubmit's lend: the same request (its capability already in place) with larger
     /// answer buffers. The first lend is still lent to the dispatcher, so the request is copied,
     /// and its caller credential is a cloned handle on the same shared buffer, never its bytes.
-    fn regrown(previous: &Lend, bytes: usize, fields: usize) -> Box<Self> {
+    fn regrown(previous: &Lend, bytes: usize, fields: usize) -> Self {
         Self::over(copy(&previous.request), bytes, fields)
     }
 
-    fn over(request: FieldsRequest, bytes: usize, fields: usize) -> Box<Self> {
+    fn over(request: FieldsRequest, bytes: usize, fields: usize) -> Self {
         let named = request
             .headers
             .iter()

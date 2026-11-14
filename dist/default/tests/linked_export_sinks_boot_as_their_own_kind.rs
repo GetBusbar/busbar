@@ -171,7 +171,7 @@ fn every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary() {
         .filter(|(module, _)| sinks.contains(module))
         .map(|(_, line)| line.replace("{dir}", &dir.display().to_string()))
         .collect();
-    if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
+    if !LINKED_TRANSPORTS.iter().any(|(key, ..)| *key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
         });

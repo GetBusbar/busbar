@@ -370,9 +370,9 @@ impl OpenedImage {
 /// tables gets it here, so the loader stays the only load path (LINT-RULES LR-123). `Ok(None)` when
 /// the image exports no door. Unavailable in shipping builds.
 #[cfg(any(test, feature = "test-support"))]
-pub fn open_dropped_image(path: &Path) -> Result<Option<OpenedImage>, LoadError> {
+pub fn open_dropped_image(path: &std::path::Path) -> Result<Option<OpenedImage>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
-    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
+    let lib = crate::stage::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` outlives every use of it.
     let door = match unsafe { lib.get::<RawDoorFn>(DOOR_SYMBOL).map(|s| *s) } {
         Ok(door) => door,

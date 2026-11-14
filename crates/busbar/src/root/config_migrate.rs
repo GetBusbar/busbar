@@ -24,7 +24,7 @@ mod index_field {
     pub(crate) const ANSWERS_TO: &str = "answers_to";
     pub const RELEASES: &str = "releases";
     pub const TAG: &str = "tag";
-    pub const ABI_VERSION_KEY: &str = "abi_version";
+    pub(crate) const ABI_VERSION_KEY: &str = "abi_version";
 }
 
 const RELEASE_DOWNLOAD_ROOT: &str = "https://github.com/GetBusbar/busbar/releases/download";

@@ -1612,7 +1612,7 @@ impl PendingMetering {
 
     #[inline]
     fn shard_for(&self, key_id: &str) -> &std::sync::Mutex<HashMap<MeterKey, MeterCounts>> {
-        &self.shards[(busbar_kernel::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)]
+        &self.shards[(busbar_kernel::store::key_hash_u64(key_id) as usize) & (GOV_SHARDS - 1)]
     }
 
     pub fn accrue(&self, key: MeterKey, add: MeterCounts) {
