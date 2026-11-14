@@ -15,11 +15,11 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// A free loopback port (bound and released; the gateway binds it right after).
-pub fn free_port() -> u16 {
+pub fn free_port() -> Result<u16, String> {
     TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
         .map(|a| a.port())
-        .unwrap_or(0)
+        .map_err(|e| format!("free loopback port: {e}"))
 }
 
 /// The binary's version line, e.g. `(1, 6, 0)`.
