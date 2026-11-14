@@ -5,17 +5,30 @@ use super::*;
 
 #[test]
 fn duplicate_lifted_sections_and_policies_are_refused_by_the_live_reader() {
-    for yaml in [
-        "credentials: {}\ncredentials: {}\n",
-        "oauth_as: null\noauth_as: null\n",
-        "auth: {policy: {self_mint: false}, policy: {self_mint: true}}\n",
+    // The shared YAML reader refuses the repeated key itself, naming it and its position (its
+    // wording, not serde's `duplicate field`); the JSON reader below still reaches serde's own
+    // refusal.
+    for (yaml, expected) in [
+        (
+            "credentials: {}\ncredentials: {}\n",
+            "?: duplicate mapping key: credentials, set DuplicateKeyPolicy in Options if \
+             acceptable at line 2 column 1",
+        ),
+        (
+            "oauth_as: null\noauth_as: null\n",
+            "?: duplicate mapping key: oauth_as, set DuplicateKeyPolicy in Options if acceptable \
+             at line 2 column 1",
+        ),
+        (
+            "auth: {policy: {self_mint: false}, policy: {self_mint: true}}\n",
+            "auth.?: duplicate mapping key: policy, set DuplicateKeyPolicy in Options if \
+             acceptable at line 1 column 36",
+        ),
     ] {
         let error = deploy_from_yaml_str(yaml)
             .expect_err("duplicates must not replace policy")
             .to_string();
-        // The shared YAML reader refuses the repeated key itself (its wording, not serde's
-        // `duplicate field`); the JSON reader below still reaches serde's own refusal.
-        assert!(error.contains("duplicate"), "{error}");
+        assert_eq!(error, expected, "{yaml}");
     }
 
     let mut json = serde_json::Deserializer::from_str(r#"{"auth":{"policy":{},"policy":{}}}"#);
@@ -33,15 +46,17 @@ fn duplicate_provider_names_are_refused_in_deployment_and_catalog_readers() {
     let error = deploy_from_yaml_str("providers: {p: {api_key: none}, p: {api_key: none}}")
         .expect_err("a duplicate deployment must not silently replace its destination")
         .to_string();
-    assert!(
-        error.contains("duplicate") && error.contains("p"),
-        "{error}"
+    assert_eq!(
+        error,
+        "providers.?: duplicate mapping key: p, set DuplicateKeyPolicy in Options if acceptable \
+         at line 1 column 33"
     );
     let error = providers::catalog_from_str("p: {protocol: x, base_url: https://one.example}\np: {protocol: x, base_url: https://two.example}\n")
         .expect_err("a duplicate catalog name must not replace its destination").to_string();
-    assert!(
-        error.contains("duplicate") && error.contains("p"),
-        "{error}"
+    assert_eq!(
+        error,
+        "?: duplicate mapping key: p, set DuplicateKeyPolicy in Options if acceptable at line 2 \
+         column 1"
     );
 }
 

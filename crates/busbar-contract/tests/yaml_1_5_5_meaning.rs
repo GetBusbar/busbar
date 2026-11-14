@@ -7,6 +7,36 @@
 //! YAML 1.2 Core. busbar now reads it with serde-saphyr, a YAML 1.2 parser whose defaults differ.
 //! Each test pins one spelling from the YAML-1.1-versus-1.2 table (YAML-LADDER.md) to the meaning
 //! 1.5.5 gave it, through `busbar_contract::yaml`, the one place the parser options are set.
+//!
+//! The recorded config surface (`every_recorded_1_5_5_input_means_what_it_meant`):
+//! `fixtures/yaml_1_5_5/serde_yaml_ng-0.10.0-config-surface.jsonl` holds the 1,141 inputs that
+//! busbar-yaml's parity test recorded with serde_yaml_ng 0.10.0 on unsafe-libyaml 0.2.11 (the
+//! 1.5.5 stack): the oracle's whole config surface, every YAML file the repository read or
+//! shipped, and 400 seeded corruptions of oracle configs. That recording stored a SHA-256 of each
+//! `Value`'s `Debug` form; this fixture spells each value out instead (`null`, `true`, `"text"`,
+//! `[..]`, `{"int": "n"}`, `{"float": "x"}` with `.inf`/`-.inf`/`.nan`, `{"map": [[k, v], ..]}` in
+//! document order, `{"tag": "!T", "value": v}`), and every spelled-out value was checked against
+//! its recorded digest when the fixture was made: all 587 accepted inputs matched, none differ.
+//! The other 554 inputs were refused by 1.5.5 and carry `"refused": true`.
+//!
+//! Every one of the 1,141 recorded cases is ported. Excluded from each record, as crate-internal
+//! rather than meaning: the SHA-256 of the 1.5.5 re-serialization (emitter byte layout), the
+//! refusal's libyaml wording and position, and the per-document results of the multi-document
+//! `Deserializer` iterator (3 records; `busbar_contract::yaml` has no multi-document reader, and
+//! the whole-input read those records also hold, a refusal, is checked). A tagged node is
+//! compared by its value: an untyped read keeps a tagged node's value, not its tag (row 19; 1
+//! record, `mutated-oracle-config#117`, with a non-specific `!` key tag). `ACCEPTED_DIFFERENCES`
+//! names any recorded case the owner accepts reading differently; it is empty.
+//!
+//! Also ported, as ordinary tests below, the meaning cases of serde_yaml_ng's own suite that
+//! busbar-yaml carried (`test_de.rs`, `test_value.rs`, `test_error.rs`, `test_serde.rs`): what
+//! an input reads as, untyped and into typed targets, and what it refuses. Not ported: emitter
+//! output, error wording and positions, `Value`/`Number`/`Mapping` API internals, `Debug`
+//! output, seeds, `apply_merge`, the multi-document iterator and bytes (APIs this module does not
+//! offer), and the typed `0644` case, which is the owner-accepted difference pinned by
+//! `leading_zero_into_an_integer_field_reads_as_decimal_until_upstream_274` (ACCEPT 282).
+
+use std::collections::BTreeMap;
 
 use busbar_contract::yaml::{self, prelude::*};
 use serde::Deserialize;
@@ -235,4 +265,850 @@ fn application_tags_are_found_wherever_they_are() {
             .as_deref(),
         Some("!Key")
     );
+}
+
+// ---- The recorded 1.5.5 config surface ----
+
+/// Recorded cases the owner accepts reading differently from 1.5.5: (record name, why). Each is
+/// skipped by name. Empty: every recorded case is held to its 1.5.5 meaning.
+const ACCEPTED_DIFFERENCES: &[(&str, &str)] = &[];
+
+const RECORDED_CASES: usize = 1141;
+
+/// A recorded 1.5.5 value, spelled out in the fixture, as the tree it means.
+fn recorded(want: &serde_json::Value) -> Value {
+    use serde_json::Value as J;
+    match want {
+        J::Null => Value::Null,
+        J::Bool(b) => Value::Bool(*b),
+        J::String(s) => Value::Text(s.clone()),
+        J::Array(items) => Value::Array(items.iter().map(recorded).collect()),
+        J::Object(form) => {
+            if let Some(int) = form.get("int").and_then(J::as_str) {
+                return match int.parse::<u64>() {
+                    Ok(u) => Value::from(u),
+                    Err(_) => Value::from(int.parse::<i64>().expect("a recorded integer")),
+                };
+            }
+            if let Some(float) = form.get("float").and_then(J::as_str) {
+                return Value::Float(match float {
+                    ".inf" => f64::INFINITY,
+                    "-.inf" => f64::NEG_INFINITY,
+                    ".nan" => f64::NAN,
+                    finite => finite.parse().expect("a recorded float"),
+                });
+            }
+            if let Some(pairs) = form.get("map").and_then(J::as_array) {
+                return Value::Map(
+                    pairs
+                        .iter()
+                        .map(|pair| (recorded(&pair[0]), recorded(&pair[1])))
+                        .collect(),
+                );
+            }
+            if form.contains_key("tag") {
+                return recorded(&form["value"]);
+            }
+            panic!("an unknown recorded form: {want}");
+        }
+        J::Number(_) => panic!("recorded numbers are spelled out: {want}"),
+    }
+}
+
+fn brief(value: &Value) -> String {
+    let text = format!("{value:?}");
+    let mut short: String = text.chars().take(160).collect();
+    if short.len() < text.len() {
+        short.push('…');
+    }
+    short
+}
+
+/// Where `got` first differs from the 1.5.5 tree `want`: same kinds (an integer is not a float,
+/// a string is not a number), same values (NaN equals NaN), same keys in the same order.
+fn first_difference(want: &Value, got: &Value, at: &str) -> Option<String> {
+    match (want, got) {
+        (Value::Float(x), Value::Float(y)) if x == y || (x.is_nan() && y.is_nan()) => None,
+        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => x
+            .iter()
+            .zip(y)
+            .enumerate()
+            .find_map(|(i, (x, y))| first_difference(x, y, &format!("{at}[{i}]"))),
+        (Value::Map(x), Value::Map(y)) if x.len() == y.len() => {
+            x.iter().zip(y).find_map(|((xk, xv), (yk, yv))| {
+                let here = match xk {
+                    Value::Text(k) => format!("{at}.{k}"),
+                    other => format!("{at}.{}", brief(other)),
+                };
+                first_difference(xk, yk, &format!("{here} (key)"))
+                    .or_else(|| first_difference(xv, yv, &here))
+            })
+        }
+        (Value::Float(_) | Value::Array(_) | Value::Map(_), _) => Some(format!(
+            "at `{at}` 1.5.5 read {}, now {}",
+            brief(want),
+            brief(got)
+        )),
+        _ if want == got => None,
+        _ => Some(format!(
+            "at `{at}` 1.5.5 read {}, now {}",
+            brief(want),
+            brief(got)
+        )),
+    }
+}
+
+/// Every input of the recorded 1.5.5 config surface is accepted or refused as 1.5.5 did, and an
+/// accepted one reads as the same tree: the same scalar kinds and values, keys and order.
+#[test]
+fn every_recorded_1_5_5_input_means_what_it_meant() {
+    let fixture = include_str!("fixtures/yaml_1_5_5/serde_yaml_ng-0.10.0-config-surface.jsonl");
+    let (mut accepted, mut refused, mut skipped) = (0usize, 0usize, 0usize);
+    let mut failures = Vec::new();
+    for line in fixture.lines() {
+        let record: serde_json::Value = serde_json::from_str(line).expect("a fixture record");
+        let name = record["name"].as_str().expect("a name");
+        let input = record["input"].as_str().expect("an input");
+        if ACCEPTED_DIFFERENCES.iter().any(|(n, _)| *n == name) {
+            skipped += 1;
+            continue;
+        }
+        match (record.get("value"), yaml::from_str::<Value>(input)) {
+            (None, Err(_)) => refused += 1,
+            (None, Ok(got)) => failures.push(format!(
+                "{name}: 1.5.5 refused it, now read as {}",
+                brief(&got)
+            )),
+            (Some(_), Err(error)) => {
+                failures.push(format!("{name}: 1.5.5 accepted it, now refused: {error}"));
+            }
+            (Some(want), Ok(got)) => match first_difference(&recorded(want), &got, "") {
+                None => accepted += 1,
+                Some(difference) => failures.push(format!("{name}: {difference}")),
+            },
+        }
+    }
+    assert_eq!(
+        accepted + refused + skipped + failures.len(),
+        RECORDED_CASES,
+        "every recorded case is checked"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} of {RECORDED_CASES} recorded inputs differ from 1.5.5 ({accepted} read alike, \
+         {refused} refused alike, {skipped} accepted differences):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+// ---- serde_yaml_ng 0.10's own meaning cases, as busbar-yaml carried them ----
+
+/// test_de `test_tag_resolution`: the YAML 1.2 Core nulls, and an empty node, are null.
+#[test]
+fn core_nulls_are_null() {
+    assert_eq!(
+        tree("- null\n- Null\n- NULL\n- ~\n-\n"),
+        Value::Array(vec![Value::Null; 5])
+    );
+}
+
+/// test_de `test_numbers`: signed and radix-prefixed integers, and the non-finite floats in
+/// every case 1.5.5 knew, are numbers.
+#[test]
+fn signed_and_radix_numbers_are_numbers() {
+    for (word, want) in [
+        ("0xF0", 240i64),
+        ("+0xF0", 240),
+        ("-0xF0", -240),
+        ("0o70", 56),
+        ("+0o70", 56),
+        ("-0o70", -56),
+        ("0b10", 2),
+        ("+0b10", 2),
+        ("-0b10", -2),
+        ("127", 127),
+        ("+127", 127),
+        ("-127", -127),
+    ] {
+        assert_eq!(
+            tree(word),
+            Value::from(want),
+            "`{word}` must be the integer {want}"
+        );
+    }
+    for (word, want) in [
+        (".inf", f64::INFINITY),
+        (".Inf", f64::INFINITY),
+        (".INF", f64::INFINITY),
+        ("-.inf", f64::NEG_INFINITY),
+        ("-.Inf", f64::NEG_INFINITY),
+        ("-.INF", f64::NEG_INFINITY),
+        ("0.1", 0.1),
+    ] {
+        assert_eq!(
+            tree(word),
+            Value::Float(want),
+            "`{word}` must be the float {want}"
+        );
+    }
+    for word in [".nan", ".NaN", ".NAN"] {
+        assert!(
+            matches!(tree(word), Value::Float(f) if f.is_nan()),
+            "`{word}` must be NaN"
+        );
+    }
+}
+
+/// test_de `test_numbers`, test_value `test_nan` and `test_digits`: spellings 1.5.5 kept as
+/// strings although they look numeric.
+#[test]
+fn near_numbers_are_strings() {
+    for word in [
+        "0127", "+0127", "-0127", "++.inf", "+-.inf", "++1", "+-1", "-+1", "--1", "0x+1", "0x-1",
+        "-0x+1", "-0x-1", "++0x1", "+-0x1", "-+0x1", "--0x1", "-.nan", "01",
+    ] {
+        assert_eq!(tree(word), text(word), "`{word}` must stay a string");
+    }
+}
+
+/// test_de `test_nan`: there is no negative NaN in YAML.
+#[test]
+fn nan_is_positive() {
+    assert!(yaml::from_str::<f64>(".nan").unwrap().is_sign_positive());
+    assert!(yaml::from_str::<f32>(".nan").unwrap().is_sign_positive());
+}
+
+/// test_serde `test_int*`, `test_i128_small`, `test_u128_small`, `test_float*`; test_de
+/// `test_i128_big`, `test_u128_big`: typed integer and float reads, at their limits.
+#[test]
+fn typed_numbers_read_as_1_5_5_read_them() {
+    assert_eq!(yaml::from_str::<i32>("256\n").unwrap(), 256);
+    assert_eq!(
+        yaml::from_str::<u64>("18446744073709551615\n").unwrap(),
+        u64::MAX
+    );
+    assert_eq!(
+        yaml::from_str::<i64>("-9223372036854775808\n").unwrap(),
+        i64::MIN
+    );
+    assert_eq!(
+        yaml::from_str::<i64>("9223372036854775807\n").unwrap(),
+        i64::MAX
+    );
+    assert_eq!(yaml::from_str::<i128>("-256\n").unwrap(), -256);
+    assert_eq!(yaml::from_str::<u128>("256\n").unwrap(), 256);
+
+    let below_i64 = i128::from(i64::MIN) - 1;
+    assert_eq!(
+        yaml::from_str::<i128>("-9223372036854775809\n").unwrap(),
+        below_i64
+    );
+    assert_eq!(
+        yaml::from_str::<i128>("-0o1000000000000000000001\n").unwrap(),
+        below_i64
+    );
+    let above_u64 = u128::from(u64::MAX) + 1;
+    assert_eq!(
+        yaml::from_str::<u128>("18446744073709551616\n").unwrap(),
+        above_u64
+    );
+    assert_eq!(
+        yaml::from_str::<u128>("0o2000000000000000000000\n").unwrap(),
+        above_u64
+    );
+
+    assert_eq!(yaml::from_str::<f64>("25.6\n").unwrap(), 25.6);
+    assert_eq!(yaml::from_str::<f64>("25.0\n").unwrap(), 25.0);
+    assert_eq!(yaml::from_str::<f64>(".inf\n").unwrap(), f64::INFINITY);
+    assert_eq!(yaml::from_str::<f64>("-.inf\n").unwrap(), f64::NEG_INFINITY);
+    assert!(yaml::from_str::<f64>(".nan\n").unwrap().is_nan());
+    assert_eq!(yaml::from_str::<f32>("25.5\n").unwrap(), 25.5);
+    assert_eq!(yaml::from_str::<f32>(".inf\n").unwrap(), f32::INFINITY);
+    assert_eq!(yaml::from_str::<f32>("-.inf\n").unwrap(), f32::NEG_INFINITY);
+    assert!(yaml::from_str::<f32>(".nan\n").unwrap().is_nan());
+}
+
+/// test_de `test_number_as_string`, `test_number_alias_as_string`: into a `String` field a
+/// number keeps its spelling, beyond `u128` and through an alias (`1.10`, not `1.1`).
+#[test]
+fn numbers_into_string_fields_keep_their_spelling() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Num {
+        value: String,
+    }
+    let doc = "# Cannot be represented as u128\nvalue: 340282366920938463463374607431768211457\n";
+    assert_eq!(
+        yaml::from_str::<Num>(doc).unwrap().value,
+        "340282366920938463463374607431768211457"
+    );
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Versioned {
+        version: String,
+        value: String,
+    }
+    assert_eq!(
+        yaml::from_str::<Versioned>("version: &a 1.10\nvalue: *a\n").unwrap(),
+        Versioned {
+            version: "1.10".into(),
+            value: "1.10".into()
+        }
+    );
+}
+
+/// test_de `test_empty_string`: into a `String` field an empty node is `""` and `~` is `"~"`.
+#[test]
+fn empty_and_tilde_into_string_fields() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Struct {
+        empty: String,
+        tilde: String,
+    }
+    assert_eq!(
+        yaml::from_str::<Struct>("empty:\ntilde: ~\n").unwrap(),
+        Struct {
+            empty: String::new(),
+            tilde: "~".into()
+        }
+    );
+}
+
+/// test_de `test_option`, `test_option_alias`: an absent or null node is `None`, through
+/// aliases too.
+#[test]
+fn null_and_absent_options_are_none() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Data {
+        a: Option<f64>,
+        b: Option<String>,
+        c: Option<bool>,
+    }
+    assert_eq!(
+        yaml::from_str::<Data>("b:\nc: true\n").unwrap(),
+        Data {
+            a: None,
+            b: None,
+            c: Some(true)
+        }
+    );
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Aliased {
+        a: Option<f64>,
+        b: Option<String>,
+        c: Option<bool>,
+        d: Option<f64>,
+        e: Option<String>,
+        f: Option<bool>,
+    }
+    let doc = "none_f:\n  &none_f\n  ~\nnone_s:\n  &none_s\n  ~\nnone_b:\n  &none_b\n  ~\n\n\
+               some_f:\n  &some_f\n  1.0\nsome_s:\n  &some_s\n  x\nsome_b:\n  &some_b\n  true\n\n\
+               a: *none_f\nb: *none_s\nc: *none_b\nd: *some_f\ne: *some_s\nf: *some_b\n";
+    assert_eq!(
+        yaml::from_str::<Aliased>(doc).unwrap(),
+        Aliased {
+            a: None,
+            b: None,
+            c: None,
+            d: Some(1.0),
+            e: Some("x".into()),
+            f: Some(true)
+        }
+    );
+}
+
+/// test_de `test_alias`: an alias reads as its anchored node.
+#[test]
+fn aliases_read_as_their_anchor() {
+    let read: BTreeMap<String, i32> =
+        yaml::from_str("first:\n  &alias\n  1\nsecond:\n  *alias\nthird: 3\n").unwrap();
+    assert_eq!(
+        read,
+        BTreeMap::from([
+            ("first".to_owned(), 1),
+            ("second".to_owned(), 1),
+            ("third".to_owned(), 3)
+        ])
+    );
+}
+
+/// test_de `test_borrowed`, test_serde `test_string_escapes`, `test_multiline_string`,
+/// `test_strings_needing_quote`: plain, quoted, escaped and block strings.
+#[test]
+fn strings_read_as_1_5_5_read_them() {
+    assert_eq!(
+        yaml::from_str::<Vec<String>>("- plain nonàscii\n- 'single quoted'\n- \"double quoted\"\n")
+            .unwrap(),
+        ["plain nonàscii", "single quoted", "double quoted"]
+    );
+    assert_eq!(
+        yaml::from_str::<String>(r#""\0\a\b\t\n\v\f\r\e\"\\\N\L\P""#).unwrap(),
+        "\0\u{7}\u{8}\t\n\u{b}\u{c}\r\u{1b}\"\\\u{85}\u{2028}\u{2029}"
+    );
+    assert_eq!(
+        yaml::from_str::<String>(r#""\x1F\uFEFF""#).unwrap(),
+        "\u{1f}\u{feff}"
+    );
+    assert_eq!(yaml::from_str::<String>("🎉\n").unwrap(), "\u{1f389}");
+
+    let doc = tree("trailing_newline: |\n  aaa\n  bbb\nno_trailing_newline: |-\n  aaa\n  bbb\n");
+    assert_eq!(doc.at("trailing_newline"), &text("aaa\nbbb\n"));
+    assert_eq!(doc.at("no_trailing_newline"), &text("aaa\nbbb"));
+
+    let doc = tree("boolean: 'true'\ninteger: '1'\nvoid: 'null'\nleading_zeros: '007'\n");
+    for (key, word) in [
+        ("boolean", "true"),
+        ("integer", "1"),
+        ("void", "null"),
+        ("leading_zeros", "007"),
+    ] {
+        assert_eq!(doc.at(key), &text(word), "a quoted `{word}` is a string");
+    }
+}
+
+/// test_serde `test_value`: an untyped section of a typed read keeps each scalar's kind.
+#[test]
+fn untyped_sections_keep_scalar_kinds() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Instructions {
+        #[serde(rename = "type")]
+        typ: String,
+        config: Value,
+    }
+    let read: Instructions =
+        yaml::from_str("type: primary\nconfig:\n- null\n- true\n- 65535\n- 0.54321\n- s\n- {}\n")
+            .unwrap();
+    assert_eq!(read.typ, "primary");
+    assert_eq!(
+        read.config,
+        Value::Array(vec![
+            Value::Null,
+            Value::Bool(true),
+            Value::from(65535u64),
+            Value::Float(0.54321),
+            text("s"),
+            Value::Map(Vec::new()),
+        ])
+    );
+}
+
+/// test_de `test_byte_order_mark`: a leading byte order mark is not content.
+#[test]
+fn byte_order_mark_is_not_content() {
+    assert_eq!(yaml::from_str::<Vec<i32>>("\u{feff}- 0\n").unwrap(), [0]);
+}
+
+/// test_de `test_no_required_fields`: an empty document, or one of only comments, is null: an
+/// all-optional struct, an empty sequence or map, `None`, or `Null`.
+#[test]
+fn empty_documents_are_null() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct NoRequiredFields {
+        optional: Option<usize>,
+    }
+    for document in ["", "# comment\n"] {
+        assert_eq!(
+            yaml::from_str::<NoRequiredFields>(document).unwrap(),
+            NoRequiredFields { optional: None },
+            "{document:?}"
+        );
+        assert!(yaml::from_str::<Vec<String>>(document).unwrap().is_empty());
+        assert!(yaml::from_str::<BTreeMap<char, usize>>(document)
+            .unwrap()
+            .is_empty());
+        assert_eq!(yaml::from_str::<Option<String>>(document).unwrap(), None);
+        assert_eq!(yaml::from_str::<Value>(document).unwrap(), Value::Null);
+    }
+}
+
+/// test_de `test_empty_scalar`: an empty node into a sequence or mapping field is empty.
+#[test]
+fn empty_node_into_collection_fields_is_empty() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Thing<T> {
+        thing: T,
+    }
+    assert!(yaml::from_str::<Thing<Vec<Value>>>("thing:\n")
+        .unwrap()
+        .thing
+        .is_empty());
+    assert!(yaml::from_str::<Thing<BTreeMap<String, Value>>>("thing:\n")
+        .unwrap()
+        .thing
+        .is_empty());
+}
+
+/// test_de `test_python_safe_dump`: a core `!!int` tag on a block scalar reads as the integer.
+#[test]
+fn core_int_tag_on_a_block_scalar() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Frob {
+        foo: u32,
+    }
+    assert_eq!(
+        yaml::from_str::<Frob>("\"foo\": !!int |-\n    7200\n").unwrap(),
+        Frob { foo: 7200 }
+    );
+}
+
+/// test_de `test_ignore_tag`: into non-enum typed targets an application tag is ignored.
+#[test]
+fn application_tags_are_ignored_by_typed_reads() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Data {
+        struc: Struc,
+        tuple: Tuple,
+        newtype: Newtype,
+        map: BTreeMap<char, usize>,
+        vec: Vec<usize>,
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Struc {
+        x: usize,
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Tuple(usize, usize);
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Newtype(usize);
+
+    let doc =
+        "struc: !wat\n  x: 0\ntuple: !wat\n  - 0\n  - 0\nnewtype: !wat 0\nmap: !wat\n  x: 0\n\
+               vec: !wat\n  - 0\n";
+    assert_eq!(
+        yaml::from_str::<Data>(doc).unwrap(),
+        Data {
+            struc: Struc { x: 0 },
+            tuple: Tuple(0, 0),
+            newtype: Newtype(0),
+            map: BTreeMap::from([('x', 0)]),
+            vec: vec![0],
+        }
+    );
+}
+
+/// test_de `test_enum_representations`, `test_enum_alias`, test_serde `test_tagged_map_value`:
+/// into an enum, a plain name is a unit variant and `!Variant` selects the variant.
+#[test]
+fn tags_select_enum_variants() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    enum Enum {
+        Unit,
+        Tuple(i32, i32),
+        Struct { x: i32, y: i32 },
+        String(String),
+        Number(f64),
+    }
+    let doc = "- Unit\n- 'Unit'\n- !Unit\n- !Unit ~\n- !Unit null\n- !Tuple [0, 0]\n\
+               - !Tuple\n  - 0\n  - 0\n- !Struct {x: 0, y: 0}\n- !Struct\n  x: 0\n  y: 0\n\
+               - !String '...'\n- !String ...\n- !Number 0\n";
+    assert_eq!(
+        yaml::from_str::<Vec<Enum>>(doc).unwrap(),
+        [
+            Enum::Unit,
+            Enum::Unit,
+            Enum::Unit,
+            Enum::Unit,
+            Enum::Unit,
+            Enum::Tuple(0, 0),
+            Enum::Tuple(0, 0),
+            Enum::Struct { x: 0, y: 0 },
+            Enum::Struct { x: 0, y: 0 },
+            Enum::String("...".into()),
+            Enum::String("...".into()),
+            Enum::Number(0.0),
+        ]
+    );
+    assert_eq!(
+        yaml::from_str::<Vec<Enum>>("- !String\n").unwrap(),
+        [Enum::String(String::new())]
+    );
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    enum E {
+        A,
+        B(u8, u8),
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Data {
+        a: E,
+        b: E,
+    }
+    let doc = "aref:\n  &aref\n  A\nbref:\n  &bref\n  !B\n    - 1\n    - 2\n\na: *aref\nb: *bref\n";
+    assert_eq!(
+        yaml::from_str::<Data>(doc).unwrap(),
+        Data {
+            a: E::A,
+            b: E::B(1, 2)
+        }
+    );
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Bindings {
+        profile: Profile,
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    enum Profile {
+        ClassValidator { class_name: String },
+    }
+    assert_eq!(
+        yaml::from_str::<Bindings>("profile: !ClassValidator\n  class_name: ApplicationConfig\n")
+            .unwrap(),
+        Bindings {
+            profile: Profile::ClassValidator {
+                class_name: "ApplicationConfig".into()
+            }
+        }
+    );
+}
+
+/// test_de `test_enum_untagged`: an untagged enum sees `True` as a boolean and `T` as a string.
+#[test]
+fn untagged_enums_see_resolved_scalars() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(untagged)]
+    enum Untagged {
+        A {
+            r#match: bool,
+        },
+        AB {
+            r#match: String,
+        },
+        B {
+            #[serde(rename = "if")]
+            r#match: bool,
+        },
+        C(String),
+    }
+    assert_eq!(
+        yaml::from_str::<Untagged>("match: True").unwrap(),
+        Untagged::A { r#match: true }
+    );
+    assert_eq!(
+        yaml::from_str::<Untagged>("match: T").unwrap(),
+        Untagged::AB {
+            r#match: "T".into()
+        }
+    );
+    assert_eq!(
+        yaml::from_str::<Untagged>("if: True").unwrap(),
+        Untagged::B { r#match: true }
+    );
+    assert_eq!(
+        yaml::from_str::<Untagged>("match").unwrap(),
+        Untagged::C("match".into())
+    );
+}
+
+/// test_de `test_bomb`: unused aliases in fields a typed read ignores are not expanded, so the
+/// document reads.
+#[test]
+fn ignored_alias_bomb_reads() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Data {
+        expected: String,
+    }
+    let mut doc = String::from("a: &a ~\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\n");
+    for (name, previous) in ('c'..='z').zip('b'..='y') {
+        let row = vec![format!("*{previous}"); 9].join(",");
+        doc.push_str(&format!("{name}: &{name} [{row}]\n"));
+    }
+    doc.push_str("expected: string\n");
+    assert_eq!(
+        yaml::from_str::<Data>(&doc).unwrap(),
+        Data {
+            expected: "string".into()
+        }
+    );
+}
+
+/// test_error: inputs 1.5.5 refused, by kind: syntax, wrong type, missing, unknown anchor, more
+/// than one document, a core tag on a value it cannot mean, wrong length. Refusal only, not
+/// wording.
+#[test]
+#[allow(dead_code)]
+fn inputs_1_5_5_refused_are_refused() {
+    #[derive(Debug, Deserialize)]
+    struct A {
+        b: Vec<B>,
+    }
+    #[derive(Debug, Deserialize)]
+    enum B {
+        C(C),
+    }
+    #[derive(Debug, Deserialize)]
+    struct C {
+        d: bool,
+    }
+    #[derive(Debug, Deserialize)]
+    struct Basic {
+        v: bool,
+        w: bool,
+    }
+    #[derive(Debug, Deserialize)]
+    struct Wrapper {
+        c: (),
+    }
+    #[derive(Debug, Deserialize)]
+    enum E {
+        V(usize),
+    }
+    #[derive(Debug, Deserialize)]
+    struct Struct {
+        x: usize,
+        y: usize,
+    }
+    #[derive(Debug, Deserialize)]
+    struct Array {
+        x: [i32; 1],
+    }
+
+    let refused = [
+        ("scan error", yaml::from_str::<Value>(">\n@").is_err()),
+        (
+            "string into i16",
+            yaml::from_str::<i16>("---\nstr\n").is_err(),
+        ),
+        (
+            "`fase` into a nested bool",
+            yaml::from_str::<A>("b:\n  - !C\n    d: fase\n").is_err(),
+        ),
+        (
+            "empty document into String",
+            yaml::from_str::<String>("").is_err(),
+        ),
+        (
+            "missing field",
+            yaml::from_str::<Basic>("---\nv: true\n").is_err(),
+        ),
+        (
+            "unknown anchor",
+            yaml::from_str::<String>("---\n*some\n").is_err(),
+        ),
+        (
+            "unknown anchor in an ignored field",
+            yaml::from_str::<Wrapper>("b: [*a]\nc: ~\n").is_err(),
+        ),
+        (
+            "two documents",
+            yaml::from_str::<usize>("---\n0\n---\n1\n").is_err(),
+        ),
+        (
+            "untagged map into an enum",
+            yaml::from_str::<E>("\"V\": 16\n\"other\": 32\n").is_err(),
+        ),
+        (
+            "map into a newtype variant",
+            yaml::from_str::<E>("---\n!V\nvalue: 0\n").is_err(),
+        ),
+        (
+            "sequence into a struct",
+            yaml::from_str::<Struct>("[0, 0]\n").is_err(),
+        ),
+        (
+            "!!bool str",
+            yaml::from_str::<bool>("---\n!!bool str\n").is_err(),
+        ),
+        (
+            "!!int str",
+            yaml::from_str::<i64>("---\n!!int str\n").is_err(),
+        ),
+        (
+            "!!float str",
+            yaml::from_str::<f64>("---\n!!float str\n").is_err(),
+        ),
+        (
+            "!!null str",
+            yaml::from_str::<()>("---\n!!null str\n").is_err(),
+        ),
+        (
+            "short tuple",
+            yaml::from_str::<(u8, u8, u8)>("---\n[0, 0]\n").is_err(),
+        ),
+        (
+            "long tuple",
+            yaml::from_str::<(u8, u8)>("---\n[0, 0, 0]\n").is_err(),
+        ),
+        (
+            "string into an array",
+            yaml::from_str::<Array>("x: ''\n").is_err(),
+        ),
+    ];
+    let accepted: Vec<_> = refused
+        .iter()
+        .filter(|(_, is_err)| !is_err)
+        .map(|(case, _)| *case)
+        .collect();
+    assert!(accepted.is_empty(), "1.5.5 refused these: {accepted:?}");
+}
+
+/// test_error `test_infinite_recursion_*`, `test_finite_recursion_*`: a self-referencing alias,
+/// and nesting 1,000 deep, are refused rather than followed.
+#[test]
+#[allow(dead_code)]
+fn unbounded_recursion_is_refused() {
+    #[derive(Debug, Deserialize)]
+    struct Objects {
+        x: Option<Box<Objects>>,
+    }
+    #[derive(Debug, Deserialize)]
+    struct Arrays(usize, Option<Box<Arrays>>);
+    #[derive(Debug, Deserialize)]
+    struct Newtype(Option<Box<Newtype>>);
+
+    assert!(yaml::from_str::<Objects>("&a {'x': *a}").is_err());
+    assert!(yaml::from_str::<Arrays>("&a [0, *a]").is_err());
+    assert!(yaml::from_str::<Newtype>("&a [*a]").is_err());
+
+    let deep = "{'x':".repeat(1_000) + &"}".repeat(1_000);
+    assert!(yaml::from_str::<Objects>(&deep).is_err());
+    let deep = "[0, ".repeat(1_000) + &"]".repeat(1_000);
+    assert!(yaml::from_str::<Arrays>(&deep).is_err());
+}
+
+/// test_error `test_billion_laughs`: aliases a reader would expand exponentially are refused.
+#[test]
+fn billion_laughs_is_refused() {
+    struct X;
+    impl<'de> serde::de::Visitor<'de> for X {
+        type Value = X;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("exponential blowup")
+        }
+        fn visit_unit<E>(self) -> Result<X, E> {
+            Ok(X)
+        }
+        fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<X, S::Error> {
+            while let Some(X) = seq.next_element()? {}
+            Ok(X)
+        }
+    }
+    impl<'de> Deserialize<'de> for X {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<X, D::Error> {
+            d.deserialize_any(X)
+        }
+    }
+    let mut doc = String::from("a: &a ~\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\n");
+    for (name, previous) in ('c'..='i').zip('b'..='h') {
+        let row = vec![format!("*{previous}"); 9].join(",");
+        doc.push_str(&format!("{name}: &{name} [{row}]\n"));
+    }
+    assert!(yaml::from_str::<BTreeMap<String, X>>(&doc).is_err());
+}
+
+/// test_error `test_duplicate_keys`: a repeated key is refused whatever its kind: a string,
+/// null spelled two ways, an integer, an empty mapping.
+#[test]
+fn duplicate_keys_of_every_kind_are_refused() {
+    for doc in [
+        "---\nthing: true\nthing: false\n",
+        "---\nnull: true\n~: false\n",
+        "---\n99: true\n99: false\n",
+        "---\n{}: true\n{}: false\n",
+    ] {
+        assert!(
+            yaml::from_str::<Value>(doc).is_err(),
+            "{doc:?} must be refused"
+        );
+    }
 }

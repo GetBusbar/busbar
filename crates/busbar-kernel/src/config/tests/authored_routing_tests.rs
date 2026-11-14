@@ -5,17 +5,14 @@ use super::*;
 
 fn parsed_pools(text: &str) -> PoolsCfg {
     let document: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(text).unwrap();
-    let pools =
-        busbar_contract::yaml::to_string(busbar_contract::yaml::ValueExt::at(&document, "pools"))
-            .unwrap();
-    let section = busbar_contract::yaml::with_deserializer(&pools, |d| {
-        busbar_contract::section::split_section::<_, super::super::PoolCfg>(
-            d,
-            "pools",
-            "pool",
-            |_, _| Ok(()),
-        )
-    })
+    let section = busbar_contract::section::split_section::<_, super::super::PoolCfg>(
+        busbar_contract::yaml::deserializer(
+            busbar_contract::yaml::ValueExt::at(&document, "pools").clone(),
+        ),
+        "pools",
+        "pool",
+        |_, _| Ok(()),
+    )
     .unwrap();
     PoolsCfg {
         all_pool_hooks: section.hooks,
