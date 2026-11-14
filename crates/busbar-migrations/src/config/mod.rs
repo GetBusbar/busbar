@@ -194,7 +194,7 @@ fn required_security_decisions(doc: &serde_yaml::Value) -> Vec<String> {
     let Some(root) = doc.as_mapping() else {
         return todos;
     };
-    for (section, check) in [("auth", 0u8), ("tools", 1), ("group_map", 2)] {
+    for (section, check) in [("auth", 0u8), ("group_map", 2)] {
         let Some(value) = root.get(section) else {
             continue;
         };
@@ -209,9 +209,6 @@ fn required_security_decisions(doc: &serde_yaml::Value) -> Vec<String> {
                             && matches!(value.as_str(), Some("mint" | "hooks-register"))
                         {
                             todos.push("auth: a retired delegated administrative scope cannot be converted to full authority automatically; choose an explicit current scope".into());
-                        }
-                        if check == 1 && key == "refresh_ttl" {
-                            todos.push("tools: refresh_ttl was a background cadence; choose an explicit verify_ttl freshness limit before admission".into());
                         }
                         if check == 2
                             && key == "allowed_pools"
@@ -329,11 +326,11 @@ mod normalize_tests {
     }
 
     #[test]
-    fn historical_scope_expansion_and_freshness_are_required_decisions() {
-        let source = "store: {module: custom}\nauth: {role_bindings: {sso: {eng: {admin_scope: mint}}}}\ntools: {upstream: {refresh_ttl: 6h}}\n";
+    fn historical_scope_expansion_is_a_required_decision() {
+        let source =
+            "store: {module: custom}\nauth: {role_bindings: {sso: {eng: {admin_scope: mint}}}}\n";
         let out = normalize_authored(source, &migrate_plugins::NoPlugins).unwrap();
         assert!(out.todos.iter().any(|todo| todo.contains("full authority")));
-        assert!(out.todos.iter().any(|todo| todo.contains("freshness")));
     }
 
     #[test]

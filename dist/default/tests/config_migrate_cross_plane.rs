@@ -40,6 +40,9 @@ tools:
   search-us:
     url: "https://us.example/t"
     pin: { mechanism: unpinned }
+  pools:
+    search:
+      members: [search-eu, search-us]
 agents:
   planner-eu:
     url: "https://a1.example/card"
@@ -47,23 +50,20 @@ agents:
   planner-us:
     url: "https://a2.example/card"
     pin: { mechanism: unpinned }
+  pools:
+    planner:
+      members: [planner-eu, planner-us]
 pools:
   fast:
     members:
       - { model: fast-a, weight: 3 }
       - { model: fast-b }
     hooks: [audit]
-tool_pools:
-  search:
-    members: [search-eu, search-us]
-agent_pools:
-  planner:
-    members: [planner-eu, planner-us]
 "#;
 
     let out = migrate_config(raw).expect("the full legacy config migrates");
 
-    for needle in ["plugin:", "at: ", "tool_pools:", "agent_pools:"] {
+    for needle in ["plugin:", "at: "] {
         assert!(
             !out.yaml.contains(needle),
             "the migrated config still contains the deprecated spelling `{needle}`:\n{}",
@@ -101,12 +101,12 @@ agent_pools:
     let pools_of = |section: &str| cfg.plane_pools.get(section).cloned().unwrap_or_default();
     assert!(
         pools_of("tools").contains_key("search"),
-        "the moved tool pool resolves onto the `tools:` plane's failover map: {:?}",
+        "the tool pool resolves onto the `tools:` plane's failover map: {:?}",
         cfg.plane_pools
     );
     assert!(
         pools_of("agents").contains_key("planner"),
-        "the moved agent pool resolves onto the `agents:` plane's failover map: {:?}",
+        "the agent pool resolves onto the `agents:` plane's failover map: {:?}",
         cfg.plane_pools
     );
     assert!(
@@ -192,6 +192,42 @@ agents:
                 .as_ref()
                 .is_err_and(|e| e.contains(&format!("{section}.pools"))),
             "a {section} pool must refuse a member's own keys: {refused:?}"
+        );
+    }
+}
+
+#[test]
+fn unreleased_tool_and_agent_pool_keys_are_left_for_admission_to_refuse() {
+    register_planes();
+    for (key, raw) in [
+        (
+            "tool_pools",
+            "providers: {}\nmodels: {}\ntool_pools:\n  MIGRATION_PRIVATE_SENTINEL:\n    members: [a]\n",
+        ),
+        (
+            "agent_pools",
+            "providers: {}\nmodels: {}\nagent_pools:\n  MIGRATION_PRIVATE_SENTINEL:\n    members: [a]\n",
+        ),
+    ] {
+        let out = migrate_config(raw).expect("the config still parses as YAML");
+        assert!(
+            out.yaml.contains(&format!("{key}:")),
+            "`{key}:` was never written by a released Busbar, so it is not rewritten:\n{}",
+            out.yaml
+        );
+        assert!(
+            !out.changes.iter().any(|line| line.contains(key)),
+            "no rewrite is reported for `{key}`: {:?}",
+            out.changes
+        );
+        let error = deploy_from_yaml_str(&out.yaml)
+            .err()
+            .unwrap_or_else(|| panic!("`{key}:` must be refused at admission"))
+            .to_string();
+        assert!(error.contains(key), "the refusal names `{key}`: {error}");
+        assert!(
+            !error.contains("MIGRATION_PRIVATE_SENTINEL"),
+            "the refusal never echoes authored values: {error}"
         );
     }
 }
