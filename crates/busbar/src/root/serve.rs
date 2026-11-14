@@ -6235,17 +6235,10 @@ impl DataRoutes {
                     },
                     |d| d.dialect,
                 );
-                let pool = downgraded
-                    .or_else(|| {
-                        decoded
-                            .and_then(|d| d.pool)
-                            .map(|p| String::from_utf8_lossy(&p).into_owned())
-                    })
-                    .filter(|name| {
-                        live.pools.pools().contains_key(name)
-                            || live.pools.entries().iter().any(|e| e == name)
-                    })
-                    .unwrap_or_else(|| "unresolved".to_string());
+                let pool = live.pools.metric_label(
+                    downgraded.as_deref(),
+                    decoded.as_ref().and_then(|d| d.pool.as_deref()),
+                );
                 busbar_kernel::telemetry::model_request_finished(
                     &app_for_metrics,
                     served.dialects.get(dialect as usize).copied().unwrap_or(""),

@@ -4793,3 +4793,39 @@ fn settings_only_validation_requires_the_auth_declaration_capability() {
 
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(door_steps);
+
+/// OBSERVABILITY-HOT-PATH S4 (test 12): the finish path's `pool` label borrows the name it was
+/// given; it allocates only to repair invalid UTF-8, and the label bytes are unchanged.
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn the_finished_requests_pool_label_borrows_its_name() {
+    use busbar_kernel::mallctl;
+    let p = pools("m: {}\npools:\n  p0:\n    members: [m]\n  low:\n    members: [m]\n");
+    let allocated = || {
+        mallctl::thread_allocated()
+            .map(|m| m.get())
+            .expect("jemalloc's per-thread counter reads")
+    };
+    let _ = allocated();
+    let before = allocated();
+    let named = p.metric_label(None, Some(std::hint::black_box(b"p0".as_slice())));
+    let entry = p.metric_label(None, Some(std::hint::black_box(b"m".as_slice())));
+    let downgraded = p.metric_label(Some(std::hint::black_box("low")), Some(b"p0".as_slice()));
+    let unknown = p.metric_label(None, Some(std::hint::black_box(b"nope".as_slice())));
+    let none = p.metric_label(None, None);
+    let after = allocated();
+    assert_eq!(
+        (&*named, &*entry, &*downgraded, &*unknown, &*none),
+        ("p0", "m", "low", "unresolved", "unresolved")
+    );
+    assert_eq!(
+        after - before,
+        0,
+        "the pool label on the finish path allocates nothing for a valid name"
+    );
+    assert_eq!(
+        &*p.metric_label(None, Some(b"p\xff0".as_slice())),
+        "unresolved",
+        "an invalid UTF-8 name is repaired, then looked up, as before"
+    );
+}
