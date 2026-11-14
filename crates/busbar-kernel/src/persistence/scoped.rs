@@ -90,8 +90,6 @@ pub fn migration_claim_authorizes(
     super::claims::migration_authorizes(instance, kind, address)
 }
 
-/// Owned form of the existing bounded claim maintenance cursor.
-pub type ClaimSweep = super::claims::Sweep<'static>;
 pub use super::claims::SweepOutcome as ClaimSweepOutcome;
 
 #[derive(Debug)]
@@ -368,11 +366,6 @@ impl ScopedStore {
     /// Advance one registered claim scope, retaining its cursor on cancellation.
     pub async fn sweep_claims(&self) -> Result<Option<ClaimSweepOutcome>, ClaimError> {
         self.store.sweep_claim_scope().await
-    }
-
-    /// Retain this cursor across maintenance ticks and caller cancellation.
-    pub fn claim_sweeper(&self, kind: &str) -> Result<ClaimSweep, ClaimError> {
-        super::claims::owned_sweep(Arc::clone(&self.store), &self.instance, kind)
     }
 
     pub async fn redeem(

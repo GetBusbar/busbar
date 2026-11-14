@@ -1950,10 +1950,6 @@ fn admin_door_from_bindings(
     }
 }
 
-pub fn admin_door(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminDoor {
-    probe_admin_door(app, method, target, headers, true)
-}
-
 pub fn admin_verdict(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminVerdict {
     let (door, claim) = probe_admin_verdict(app, method, target, headers);
     AdminVerdict { door, claim }

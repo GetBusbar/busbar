@@ -57,9 +57,6 @@ impl View {
     pub fn facts_table(&self) -> u32 {
         self.facts
     }
-    pub fn chunks_table(&self) -> u32 {
-        self.chunks
-    }
     pub fn is_original(&self, table: u32) -> bool {
         self.original_tables.contains(&table)
     }
@@ -112,9 +109,6 @@ pub struct FactRow {
 impl FactRow {
     pub fn fact(&self) -> &HistoricalFact {
         &self.chunk.facts[0]
-    }
-    pub fn into_fact(mut self) -> HistoricalFact {
-        self.chunk.facts.remove(0)
     }
     pub fn group(&self) -> &Secret<Vec<u8>> {
         &self.chunk.group

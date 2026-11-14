@@ -116,7 +116,7 @@ impl<'a> Claims<'a> {
     /// The owner schedules calls;
     /// this cursor does no background work and is not an authorization decision.
     pub(crate) fn sweep(&self) -> Result<Sweep<'a>, Error> {
-        build_sweep(SweepStore::Borrowed(self.store), self.owner, self.kind)
+        build_sweep(self.store, self.owner, self.kind)
     }
 
     fn address(&self, token: &str) -> Result<Address, Error> {
@@ -371,7 +371,7 @@ impl<'a> Claims<'a> {
 /// itself changes membership. Inserts behind the cursor belong to the next pass.
 /// Live rows cannot repeatedly hide expired rows farther along the key range.
 pub struct Sweep<'a> {
-    store: SweepStore<'a>,
+    store: &'a CoreStore,
     state: SweepState,
 }
 
@@ -395,31 +395,11 @@ impl SweepState {
     }
 }
 
-enum SweepStore<'a> {
-    Borrowed(&'a CoreStore),
-    Owned(Arc<CoreStore>),
-}
-impl std::ops::Deref for SweepStore<'_> {
-    type Target = CoreStore;
-    fn deref(&self) -> &CoreStore {
-        match self {
-            Self::Borrowed(store) => store,
-            Self::Owned(store) => store,
-        }
-    }
-}
-fn build_sweep<'a>(store: SweepStore<'a>, owner: &str, kind: &str) -> Result<Sweep<'a>, Error> {
+fn build_sweep<'a>(store: &'a CoreStore, owner: &str, kind: &str) -> Result<Sweep<'a>, Error> {
     Ok(Sweep {
         store,
         state: SweepState::new(owner, kind)?,
     })
-}
-pub(super) fn owned_sweep(
-    store: Arc<CoreStore>,
-    owner: &str,
-    kind: &str,
-) -> Result<Sweep<'static>, Error> {
-    build_sweep(SweepStore::Owned(store), owner, kind)
 }
 
 struct SweepPage {

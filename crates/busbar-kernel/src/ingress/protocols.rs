@@ -52,8 +52,3 @@ pub fn error_parts<'a>(
         Vec::new(),
     )
 }
-
-pub fn uses_signed_ingress_auth(proto: &str) -> bool {
-    let _ = proto;
-    false
-}

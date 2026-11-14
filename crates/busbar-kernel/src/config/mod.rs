@@ -496,11 +496,6 @@ pub struct RootCfg {
 }
 
 impl RootCfg {
-    /// Lower all configured rates to the existing card builder without altering legacy presence.
-    pub fn composed_rate_card(&self) -> Option<std::collections::BTreeMap<String, RateEntryCfg>> {
-        measurement_rates::compose(self.rate_card.as_ref(), &self.plugin_rate_cards)
-    }
-
     pub fn endpoint_resource(
         &self,
         section: &str,

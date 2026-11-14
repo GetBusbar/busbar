@@ -97,15 +97,6 @@ pub fn names(op: &str, module: &str) -> bool {
             .any(|&(key, canonical, _)| key == op && canonical == module)
 }
 
-/// A TEST REGISTRY ROW: link `door` (the door of the auth plugin a test binary links for the
-pub fn install_row(words: OperatorWords, door: AuthDoor) {
-    static ROW: std::sync::OnceLock<[LinkedAuth; 1]> = std::sync::OnceLock::new();
-    install_linked(
-        ROW.get_or_init(|| [(words.provider, words.provider, door)]),
-        words,
-    );
-}
-
 /// THE OPERATOR CREDENTIAL'S REFUSALS, v1.5.5's text byte for byte with the provider read off the
 pub fn unanswered_token(op: &str) -> String {
     config_text(format_args!(
