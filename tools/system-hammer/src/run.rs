@@ -1034,11 +1034,16 @@ mod tests {
             "http://a/mcp",
         )
         .unwrap();
-        let body = e
-            .decode(t.trim_start_matches("bbk_").split('.').next().unwrap())
-            .unwrap();
+        use ring::signature::{Ed25519KeyPair, KeyPair as _, UnparsedPublicKey, ED25519};
+        let (b64, sig) = t.trim_start_matches("bbk_").split_once('.').unwrap();
+        let body = e.decode(b64).unwrap();
+        let kp = Ed25519KeyPair::from_seed_unchecked(&[0x11; 32]).unwrap();
+        UnparsedPublicKey::new(&ED25519, kp.public_key().as_ref())
+            .verify(&body, &e.decode(sig).unwrap())
+            .expect("re-signed with the deployment signing key over the new claims");
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["a"], "http://a/mcp");
         assert_eq!(v["g"], "grp");
+        assert_eq!(v["sub"], "k1");
     }
 }
