@@ -2161,7 +2161,7 @@ async fn ticket_sweep_reads_only_due_tickets_batched() {
         - before;
     assert!(
         reads <= 2,
-        "two live tickets an hour from expiry cost at most one batched backstop read over 10 \
+        "two live tickets a minute from expiry cost at most one batched backstop read over 10 \
          sweeps, not two reads per sweep: {reads} reads"
     );
     assert_eq!(
