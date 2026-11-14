@@ -2965,6 +2965,8 @@ struct KernelSide {
     peer_clean: std::sync::atomic::AtomicBool,
     /// Every framing the loader told it ended.
     ended: Mutex<Vec<u64>>,
+    /// How often the loader read a unit's secret (each read is one kernel units lock).
+    secret_reads: std::sync::atomic::AtomicUsize,
 }
 
 const SIDE_SECRET: [u64; 2] = [0x5eed, 0xc0de];
@@ -2988,6 +2990,7 @@ fn side_answer(unit: UnitRef) -> AuthCallAnswer {
 
 impl AuthHandleHost for KernelSide {
     fn unit_secret(&self, owner: u64, unit: u64) -> Option<UnitSecret> {
+        self.secret_reads.fetch_add(1, Ordering::SeqCst);
         self.units
             .lock()
             .unwrap()
@@ -3212,6 +3215,74 @@ fn red_a_presented_unit_is_verified_against_the_kernel_sides_secret() {
         side.calls.lock().unwrap().len(),
         1,
         "a bad unit reached the kernel"
+    );
+}
+
+#[test]
+fn a_presented_unit_secret_is_read_once_per_hand_in() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    side.units.lock().unwrap().push((
+        owner(&d),
+        9,
+        UnitSecret {
+            secret: SIDE_SECRET,
+            generation: generation(),
+            line: 2,
+        },
+    ));
+    let unit = mint_unit_ref(SIDE_SECRET, generation(), owner(&d), 2, 9).expect("minted");
+    let mut slot = answer_slot();
+    let hand = UnitHandInIn {
+        head: head(op::UNIT_HAND_IN, Ticket::NONE, 0, size_of::<UnitHandInIn>()),
+        auth: r,
+        unit,
+        line: 2,
+        _reserved: 0,
+        conn: 4,
+        stream: 5,
+        request: get_view(),
+        answer: &mut slot,
+    };
+    let mut o = blank();
+    let ret = unsafe {
+        HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o)
+    };
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(
+        side.hands.lock().unwrap().len(),
+        1,
+        "the unit reached the kernel"
+    );
+    assert_eq!(
+        side.secret_reads.load(Ordering::SeqCst),
+        1,
+        "the generation and the unit MAC read the one secret fetched for the hand-in"
+    );
+
+    let mut forged = UnitHandInIn {
+        unit: UnitRef {
+            mac: unit.mac ^ 1,
+            ..unit
+        },
+        answer: &mut slot,
+        ..hand
+    };
+    forged.head.handle.seq = 7;
+    let mut o = blank();
+    let ret = unsafe {
+        HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&forged).cast(), &mut o)
+    };
+    assert_eq!(
+        ret.outcome(),
+        Outcome::Refused,
+        "a forged unit MAC is refused"
+    );
+    assert_eq!(error(&o), REF_NOT_MINTED, "with today's code");
+    assert_eq!(
+        side.hands.lock().unwrap().len(),
+        1,
+        "the forgery never reached the kernel"
     );
 }
 
