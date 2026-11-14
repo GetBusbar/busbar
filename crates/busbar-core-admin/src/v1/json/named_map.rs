@@ -601,6 +601,19 @@ async fn apply(
                 busbar_kernel::state::planes_awaiting_restart_added(&installed, &snapshot),
                 export_restart,
             );
+            if let Some(store) = snapshot.overlay_path.as_deref() {
+                let own: Vec<String> = awaiting_restart.0.iter()
+                    .chain(&awaiting_restart.1)
+                    .chain(&awaiting_restart.2)
+                    .cloned()
+                    .collect();
+                if let Err(msg) = busbar_kernel::config::overlay::admit_restart_scoped(store, &own) {
+                    return Ok(Outcome::Value(Err((
+                        super::config_document::restart_unreachable(txn_section.key(), &own, msg),
+                        Cond::RestartUnreachable,
+                    ))));
+                }
+            }
 
 
 

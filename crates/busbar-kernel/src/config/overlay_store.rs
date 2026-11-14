@@ -34,6 +34,14 @@ impl OverlayStore {
         Ok(self.native.core_store_handle())
     }
 
+    /// The configured Store loses its state with the process (`BackendInfo.durability == Ephemeral`).
+    /// The same fact BUSBAR-8016 (`appbuild`) and `config migrate-overlay` read, from the same
+    /// `CoreStore`, so the three cannot disagree.
+    pub fn is_ephemeral(&self) -> bool {
+        self.native.core_store_handle().info().durability
+            == busbar_contract::persistence::Durability::Ephemeral
+    }
+
     pub async fn import_once_async(
         &self,
         source_sha256: [u8; 32],

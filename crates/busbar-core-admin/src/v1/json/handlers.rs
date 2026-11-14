@@ -2583,6 +2583,11 @@ pub(crate) async fn put_config_settings(
                 busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         }
+        if let Some(store) = current.overlay_path.as_deref() {
+            busbar_kernel::config::overlay::admit_restart_scoped(store, &pending).map_err(
+                |msg| super::config_document::restart_unreachable("config.settings", &pending, msg),
+            )?;
+        }
 
         let snapshot = current.clone();
         Ok(txn.store_write_async(async move {
@@ -2660,6 +2665,19 @@ pub(crate) async fn put_config_settings(
             .await
             .map_err(AdminError::Validation)?;
             let (mut next, gov_rotate, limits) = next;
+            if let Some(store) = snapshot.overlay_path.as_deref() {
+                let mut own = busbar_kernel::plugin_routes::paths_awaiting_restart(
+                    &next.plugin_routes,
+                    &snapshot.plugin_routes,
+                    &next.boot_route_paths,
+                );
+                own.extend(busbar_kernel::state::planes_awaiting_restart_added(
+                    &next, &snapshot,
+                ));
+                busbar_kernel::config::overlay::admit_restart_scoped(store, &own).map_err(
+                    |msg| super::config_document::restart_unreachable("config.settings", &own, msg),
+                )?;
+            }
             next.config_pending_restart.extend(pending);
             next.config_pending_restart.sort();
             next.config_pending_restart.dedup();
