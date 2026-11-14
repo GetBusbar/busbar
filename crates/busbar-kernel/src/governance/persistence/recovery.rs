@@ -439,9 +439,11 @@ struct History<'a> {
     store: &'a CoreStore,
     proofs: BTreeMap<u64, Arc<VerifiedHead>>,
     records: HistoryRecords,
-    /// Set only for a read-only observation made beside this node's live
-    /// journal owner. That owner keeps appending, so its proof is confirmed as
-    /// a prefix of the owner's current admitted head instead of being pinned.
+    /// Set for any verification made beside this node's live journal owner:
+    /// a read-only observation, or this owner's own recovery write. That owner
+    /// keeps appending (audit, usage, checkpoints), so this node's proof is
+    /// confirmed as a prefix of the owner's current admitted head instead of
+    /// being pinned. The proof itself is still a complete verified replay.
     live: Option<&'a RuntimeJournal>,
 }
 impl<'a> History<'a> {
@@ -607,7 +609,9 @@ impl<'a> History<'a> {
 /// How a verification treats this node's own selected journal head.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pin {
-    /// Prove and pin the exact head. Every write path and owned check uses it.
+    /// Prove and confirm this node's ownership. Every write path and owned
+    /// check uses it. A pinned History requires the exact head; a History
+    /// beside the live owner requires a prefix of its admitted head.
     Strict,
     /// A read-only observation beside the live journal owner, which keeps
     /// appending. Its admission is confirmed once by the caller instead.
@@ -734,12 +738,39 @@ impl StoreRecovery {
         history: &mut History<'_>,
     ) -> Result<Arc<VerifiedHead>, RecoveryError> {
         let proof = history.proof(self.node).await?;
+        self.confirm_local(history, &proof).await?;
+        Ok(proof)
+    }
+    /// Confirm this node's `proof` is owned and admitted. A pinned History
+    /// requires the exact head. A History beside this node's live owner
+    /// requires a prefix of the owner's admitted head: that owner keeps
+    /// appending on the request path, and every append is a guarded
+    /// Absent-key write by the one admitted owner, so records verified against
+    /// `proof` remain in its current history. Selection itself is guarded
+    /// separately, under the publication driver against the live head.
+    async fn confirm_local(
+        &self,
+        history: &History<'_>,
+        proof: &VerifiedHead,
+    ) -> Result<(), RecoveryError> {
+        if let Some(journal) = history.live.filter(|journal| journal.node() == self.node) {
+            return journal
+                .confirm_live_owned(Some(proof))
+                .await
+                .map_err(unavailable);
+        }
         StoreJournal::new(&self.store, self.node)
             .map_err(unavailable)?
-            .confirm_owned(&proof)
+            .confirm_owned(proof)
             .await
-            .map_err(unavailable)?;
-        Ok(proof)
+            .map_err(unavailable)
+    }
+    /// Verify a checkpoint this owner just wrote (or found already written):
+    /// complete ancestry and ownership, beside its own live journal.
+    async fn verify_written_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let mut history = History::observing(&self.store, &self.journal);
+        self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
+            .await
     }
     async fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let mut history = History::new(&self.store);
@@ -809,11 +840,7 @@ impl StoreRecovery {
         let Some(local) = local else {
             return Ok(());
         };
-        StoreJournal::new(&self.store, self.node)
-            .map_err(unavailable)?
-            .confirm_owned(&local)
-            .await
-            .map_err(unavailable)
+        self.confirm_local(history, &local).await
     }
     async fn verify_checkpoint_at(
         &self,
@@ -857,15 +884,23 @@ impl StoreRecovery {
         self.verify_origin_with_history(event, pin, history).await?;
         history.finish().await?;
         if pin == Pin::Strict {
+            // Beside the live owner, `owned_with_history` already confirmed
+            // this proof as a prefix of the admitted head; only a pinned
+            // History rechecks the exact head here.
             let proof = self.owned_with_history(history).await?;
-            check(
-                &self.store,
-                StoreJournal::new(&self.store, self.node)
-                    .map_err(unavailable)?
-                    .owned_predicates(&proof)
-                    .map_err(unavailable)?,
-            )
-            .await?;
+            if !history
+                .live
+                .is_some_and(|journal| journal.node() == self.node)
+            {
+                check(
+                    &self.store,
+                    StoreJournal::new(&self.store, self.node)
+                        .map_err(unavailable)?
+                        .owned_predicates(&proof)
+                        .map_err(unavailable)?,
+                )
+                .await?;
+            }
         }
         check(
             &self.store,
@@ -950,7 +985,9 @@ impl StoreRecovery {
         } else {
             // One preflight attempt shares immutable evidence only until the
             // staging boundary; every use still confirms live native guards.
-            let mut history = History::new(&self.store);
+            // This node's own journal keeps taking request-path appends while
+            // the proof is verified, so it is confirmed beside the live owner.
+            let mut history = History::observing(&self.store, &self.journal);
             let current = head(&self.store, &event.operation_id).await?;
             let selected = if let Some((tip, _)) = &current {
                 if tip.node != self.node {
@@ -1044,7 +1081,7 @@ impl StoreRecovery {
         if !selected {
             // A definitive no-effect may coincide with another exact selector.
             // Its complete current ancestry remains the only acceptable proof.
-            if self.verify_checkpoint_at(event, true).await.is_err() {
+            if self.verify_written_checkpoint(event).await.is_err() {
                 self.state
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -1055,7 +1092,7 @@ impl StoreRecovery {
                 ));
             }
         } else {
-            self.verify_checkpoint_at(event, true).await?;
+            self.verify_written_checkpoint(event).await?;
         }
         self.state
             .lock()
