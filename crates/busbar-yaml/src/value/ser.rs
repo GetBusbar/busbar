@@ -263,7 +263,7 @@ impl ser::Serializer for Serializer {
     }
 }
 
-pub(crate) struct SerializeArray {
+pub struct SerializeArray {
     sequence: Sequence,
 }
 
