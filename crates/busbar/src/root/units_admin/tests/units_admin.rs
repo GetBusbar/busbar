@@ -607,49 +607,16 @@ impl AdminDispatch for AnsweringDispatch {
 
 struct Denylist(bool);
 
-impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
-    fn verify(
-        &self,
-        credential: &str,
-        _now: u64,
-        _expected_aud: Option<&str>,
-    ) -> Option<crate::root::auth_bindings::KeyFacts> {
-        (credential == "admin-token").then(|| crate::root::auth_bindings::KeyFacts {
-            id: "key-admin-1".to_string(),
-            name: "the operator credential these cells present".to_string(),
-        })
-    }
-
-    fn revoked(&self, _credential: &str) -> bool {
+impl busbar_kernel_identity::RevocationView for Denylist {
+    fn is_revoked(&self, _credential: &str) -> bool {
         self.0
     }
 }
 
-struct IdentifiesOperator;
-
-impl busbar_kernel_identity::module::AuthModule for IdentifiesOperator {
-    fn name(&self) -> &'static str {
-        "identifies-operator"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some("admin-token") => busbar_kernel_identity::module::AuthOutcome::Identify(
-                busbar_kernel_identity::principal::Principal::from_id(
-                    crate::root::auth_bindings::ADMIN_PRINCIPAL_ID.to_owned(),
-                ),
-            ),
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
-}
-
-fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
-    busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-operator".to_string(),
-            module: Box::new(IdentifiesOperator),
-        }],
-        false,
+fn a_door_that_identifies_the_operator() -> AdminDoorFn {
+    door_identifying(
+        "admin-token",
+        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
     )
 }
 
@@ -699,36 +666,12 @@ async fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identi
     );
 }
 
-struct IdentifiesSomebodyElse;
-
-impl busbar_kernel_identity::module::AuthModule for IdentifiesSomebodyElse {
-    fn name(&self) -> &'static str {
-        "identifies-somebody-else"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some("a-tenants-token") => busbar_kernel_identity::module::AuthOutcome::Identify(
-                busbar_kernel_identity::principal::Principal::from_id(
-                    "acct:not-the-operator".to_owned(),
-                ),
-            ),
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
-}
-
-async fn answer_at_the_closed_door(
-    door: busbar_kernel_identity::AuthChain,
-    credential: Option<&str>,
-) -> AdminAnswer {
-    let units = crate::root::kernel::ProductionUnits::admin_only(
-        Arc::new(AnsweringDispatch),
-        door_of_chain(door),
-    )
-    .await
-    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-        Denylist(false),
-    )));
+async fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) -> AdminAnswer {
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
+        .await
+        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+            Denylist(false),
+        )));
     let mut request = a_request();
     request.credential = credential.map(str::to_string);
     AdminNode::new(crate::root::kernel::new_kernel(), units)

@@ -62,6 +62,9 @@ timing = ["dep:libc"]
 
 [dev-dependencies]
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
+# The architecture checks (tests/architecture.rs, tests/arch/) parse sources with syn; they never build core.
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
 # Integration tests use ordinary production ABI test support, never kernel fixture exports.
 # Dev-only: the test seal is absent from release builds.
 # Dev-only: the single-path count probes (SINGLE-PATH §8) count only in test builds.

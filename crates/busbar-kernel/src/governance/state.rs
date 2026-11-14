@@ -18,7 +18,7 @@ pub(super) mod native_runtime;
 pub(super) mod identity_runtime;
 
 #[path = "self_serve.rs"]
-pub(super) mod self_serve;
+mod self_serve;
 
 #[path = "ledger_adjust.rs"]
 pub(super) mod ledger_adjust;
