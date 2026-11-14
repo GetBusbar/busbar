@@ -89,12 +89,14 @@ pub mod services;
 pub mod signal;
 
 pub mod spans;
+pub mod stage_probe;
 pub mod surface;
 pub mod transport;
 pub mod unit;
 pub mod upstream;
 pub mod vocab;
 pub mod wire;
+pub mod work_count;
 /// YAML: serde-saphyr pinned to 1.5.5's meaning, with ciborium's ordered `Value` as the tree.
 pub mod yaml;
 
