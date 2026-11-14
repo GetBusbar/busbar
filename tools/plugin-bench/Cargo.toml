@@ -1,0 +1,28 @@
+[package]
+name = "busbar-plugin-bench"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "Load ONE busbar plugin (a dropped-in cdylib or a linked door) through the loader's own door discovery and hammer its kind slots inline, with no dispatcher, sealing, HTTP or router. Reports ns p50/p99, allocations, RSS growth and contention per op; never a gate."
+license = "Apache-2.0"
+
+# Its own workspace, excluded from the root's: it enables the contract's `test-seal` and the
+# loader's `test-support`, which must never unify into a root workspace build of the engine.
+[workspace]
+
+[[bin]]
+name = "busbar-plugin-bench"
+path = "src/main.rs"
+
+[dependencies]
+busbar-contract = { path = "../../crates/busbar-contract", features = ["test-seal"] }
+busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+tokio = { version = "1", features = ["rt", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+debug = "line-tables-only"
