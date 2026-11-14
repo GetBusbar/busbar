@@ -70,7 +70,7 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesTheOperator {
             Some(THE_OPERATORS_CREDENTIAL) => {
                 busbar_kernel_identity::module::AuthOutcome::Identify(
                     busbar_kernel_identity::principal::Principal::from_id(
-                        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
+                        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID.to_owned(),
                     ),
                 )
             }
@@ -1224,7 +1224,7 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
         match candidate {
             Some(THE_OPERATORS_CREDENTIAL) => {
                 busbar_kernel_identity::module::AuthOutcome::Identify(
-                    busbar_kernel_identity::principal::Principal::from_id("a-tenant"),
+                    busbar_kernel_identity::principal::Principal::from_id("a-tenant".to_owned()),
                 )
             }
             _ => busbar_kernel_identity::module::AuthOutcome::Pass,

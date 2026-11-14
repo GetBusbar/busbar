@@ -50,12 +50,12 @@ fn card() -> RateCard {
         ])
 }
 
-fn posting(lane: String, quantities: &[(&str, u64)], fee_count: u64) -> Posting {
+fn posting(lane: String, quantities: &[(&'static str, u64)], fee_count: u64) -> Posting {
     Posting {
         lane,
         quantities: quantities
             .iter()
-            .map(|(class, amount)| Quantity::new(*class, *amount))
+            .map(|(class, amount)| Quantity::new(class, *amount))
             .collect(),
         fee_count,
         tier_bp: STANDARD_TIER_BP,
@@ -72,7 +72,7 @@ fn tallied(card: &RateCard, p: &Posting) -> Result<u128, crate::cost::MoneyError
         &p.lane,
         p.arrived_ms,
         p.tier_bp,
-        p.quantities.iter().map(|q| (q.class.as_str(), q.amount)),
+        p.quantities.iter().map(|q| (q.class, q.amount)),
         crate::cost::whole(p.fee_count),
     )?;
     crate::cost::nanos_of_exact(tally.exact()?)

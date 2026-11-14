@@ -12,7 +12,7 @@ use crate::principal::Principal;
 fn identifies(name: &'static str) -> Box<dyn AuthModule> {
     Box::new(Canned::new(
         name,
-        AuthOutcome::Identify(Principal::from_id("alice")),
+        AuthOutcome::Identify(Principal::from_id("alice".to_owned())),
     ))
 }
 

@@ -28,11 +28,17 @@ pub struct OperatorWords {
 }
 
 /// The auth rows this build LINKS (the composition root's, or a test binary's) and the operator
-static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords)> = std::sync::OnceLock::new();
+/// credential's words, with the rows' names listed once at install so a reader borrows them.
+static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords, Vec<&'static str>)> =
+    std::sync::OnceLock::new();
 
 /// Install this build's linked auth rows and the operator credential's words.
 pub fn install_linked(rows: &'static [LinkedAuth], words: OperatorWords) {
-    let _ = LINKED.set((rows, words));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the linked auth rows' names are listed once, when the build installs its rows"
+    )]
+    let _ = LINKED.get_or_init(|| (rows, words, rows.iter().map(|r| r.0).collect()));
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -61,7 +67,7 @@ pub fn principal_id() -> &'static str {
 
 /// The operator credential's words: a linked root's hand-in takes precedence over explicit test
 pub fn words() -> OperatorWords {
-    if let Some((_, words)) = LINKED.get() {
+    if let Some((_, words, _)) = LINKED.get() {
         return *words;
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -72,8 +78,8 @@ pub fn words() -> OperatorWords {
 }
 
 /// The names of this build's linked auth rows, in registration order.
-pub fn linked_names() -> Vec<&'static str> {
-    linked().iter().map(|r| r.0).collect()
+pub fn linked_names() -> &'static [&'static str] {
+    LINKED.get().map_or(&[], |l| l.2.as_slice())
 }
 
 /// Whether a linked auth row answers the operator credential's provider `op`.
@@ -102,65 +108,81 @@ pub fn install_row(words: OperatorWords, door: AuthDoor) {
 
 /// THE OPERATOR CREDENTIAL'S REFUSALS, v1.5.5's text byte for byte with the provider read off the
 pub fn unanswered_token(op: &str) -> String {
-    format!(
+    config_text(format_args!(
         "an {op} token is configured but this binary was built WITHOUT the `auth-{op}` feature — \
          the admin API would be silently disabled. Rebuild with default features or wire an \
          external admin auth module."
-    )
+    ))
 }
 
 /// A `token:` on the chain entry backed by `module`, which is not the operator credential's.
 pub fn misplaced_token(op: &str, module: &str) -> String {
-    format!(
+    config_text(format_args!(
         "auth chain entry '{module}' sets `token:`, which belongs to the built-in `{op}` module \
          only; move it, e.g.:\n\n    admin_auth:\n      - {op}: {{ token: {{ env: \
          BUSBAR_ADMIN_TOKEN }} }}\n"
-    )
+    ))
 }
 
 /// A `token:` on the `identity-providers.<name>` definition backed by `module`.
 pub fn misplaced_definition_token(op: &str, name: &str, module: &str) -> String {
-    format!(
+    config_text(format_args!(
         "identity-providers.{name}: `token:` is the built-in `{op}` operator credential and is \
          meaningless on `module: {module}`"
-    )
+    ))
 }
 
 /// `keys` in the data-plane chain with no admin credential able to mint a key.
 pub fn no_mint_path(op: &str) -> String {
-    format!(
+    config_text(format_args!(
         "auth.chain names the built-in `keys` verifier but no admin credential can mint one — the \
          data plane would reject every request. Configure auth.admin_auth (an `{op}` entry with a \
          `token:`, or an admin module granting `mint`/`full`), or remove `keys` from auth.chain."
-    )
+    ))
 }
 
 /// The configured operator token did not resolve (`e`).
 pub fn unresolved_token(op: &str, e: &str) -> String {
-    format!("auth.admin_auth {op} token did not resolve: {e}")
+    config_text(format_args!(
+        "auth.admin_auth {op} token did not resolve: {e}"
+    ))
 }
 
 /// The configured operator token resolved to a blank value.
 pub fn blank_token(op: &str) -> String {
-    format!(
+    config_text(format_args!(
         "auth.admin_auth {op} `token:` resolved to an EMPTY/whitespace-only value. Refusing to start: \
          the digest would be taken over the blank string, so an empty credential would \
          authenticate as the operator. Check the referenced env var / file actually holds the \
          token, or remove the `token:` to disable the admin API deliberately."
-    )
+    ))
 }
 
 /// The 1.4.x `governance.admin_token` held a literal value: the migration's TODO.
 pub fn literal_token_todo(op: &str) -> String {
-    format!(
+    config_text(format_args!(
         "auth.admin_auth[{op}].token: governance.admin_token held a literal value; move it into an \
          env var or file and reference it (token: {{ env: VAR }} or {{ file: /path }})"
-    )
+    ))
 }
 
 /// The migration's change line for the 1.4.x `governance.admin_token`.
 pub fn migrated_token(op: &str) -> String {
-    format!("governance.admin_token -> auth.admin_auth: [ {op}: {{ token: <secret-ref> }} ]")
+    config_text(format_args!(
+        "governance.admin_token -> auth.admin_auth: [ {op}: {{ token: <secret-ref> }} ]"
+    ))
+}
+
+/// The one place the operator credential's refusal and migration text is spelled into a `String`:
+/// configuration checking and migration, at boot or on an admin edit, never a request.
+#[cold]
+fn config_text(text: std::fmt::Arguments<'_>) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the operator credential's refusal and migration text is spelled once, when configuration is checked or migrated"
+    )]
+    let spelled = std::fmt::format(text);
+    spelled
 }
 
 /// What the operator credential answered one request: a verdict — identified, a bad credential
@@ -250,8 +272,8 @@ impl OperatorCredential {
     /// The operator credential over the token digest `digest`: `answered` says whether a row answers
     pub fn open(
         answered: bool,
-        digest: Option<&str>,
-        open: impl FnOnce(&str) -> Result<Arc<dyn AuthCalls>, String>,
+        digest: Option<String>,
+        open: impl FnOnce(String) -> Result<Arc<dyn AuthCalls>, String>,
     ) -> Result<Self, String> {
         match (answered, digest) {
             (true, Some(digest)) => open(digest).map(Self::Module),
@@ -287,7 +309,7 @@ impl OperatorCredential {
 /// The operator credential on an admin chain: the credential the auth axis answered, and the
 pub struct Operator {
     cred: OperatorCredential,
-    names: Vec<String>,
+    names: foldhash::HashSet<String>,
     /// The carriers the operator credential's row states (its Statement's carrier marks, in order):
     carriers: Vec<String>,
 }
@@ -295,9 +317,14 @@ pub struct Operator {
 impl Operator {
     /// The operator credential of the operator provider `op`, answering for `op` referenced bare,
     pub fn new(op: &str) -> Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the operator provider's name is copied once, when the admin chain is built"
+        )]
+        let names = std::iter::once(op.to_owned()).collect();
         Self {
             cred: OperatorCredential::Unanswered,
-            names: vec![op.to_string()],
+            names,
             carriers: Vec::new(),
         }
     }
@@ -315,20 +342,24 @@ impl Operator {
     /// The operator credential of `op`, opened as [`OperatorCredential::open`] opens it, answering for
     pub fn open<'a>(
         op: &str,
-        defs: impl Iterator<Item = (&'a str, &'a str)>,
+        defs: impl Iterator<Item = (&'a str, &'a str)> + Clone,
         is_op: &dyn Fn(&str) -> bool,
         answered: bool,
         digest: Option<String>,
-        open: impl FnOnce(&str) -> Result<Arc<dyn AuthCalls>, String>,
+        open: impl FnOnce(String) -> Result<Arc<dyn AuthCalls>, String>,
     ) -> Result<Self, String> {
-        let defs: Vec<(&str, &str)> = defs.collect();
-        let module_of = |name: &str| defs.iter().find(|d| d.0 == name).map(|d| d.1);
+        let lookup = defs.clone();
+        let module_of = |name: &str| lookup.clone().find(|d| d.0 == name).map(|d| d.1);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the provider names backed by the operator credential are copied once, when the admin chain is built"
+        )]
         let names = std::iter::once(op)
-            .chain(defs.iter().map(|d| d.0))
+            .chain(defs.map(|d| d.0))
             .filter(|name| Self::backed(op, name, module_of(name), is_op))
-            .map(str::to_string)
+            .map(str::to_owned)
             .collect();
-        let cred = OperatorCredential::open(answered, digest.as_deref(), open)?;
+        let cred = OperatorCredential::open(answered, digest, open)?;
         Ok(Self {
             cred,
             names,
@@ -351,7 +382,7 @@ impl Operator {
 
     /// Whether the admin-chain provider `name` is the operator credential.
     pub fn is(&self, name: &str) -> bool {
-        self.names.iter().any(|n| n == name)
+        self.names.contains(name)
     }
 
     /// Whether a principal `id` that the admin-chain provider `name` identified is the operator: the

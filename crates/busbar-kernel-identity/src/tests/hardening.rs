@@ -15,7 +15,7 @@ fn the_chain_shape_accessors_answer_in_both_directions() {
         false,
     );
     assert!(
-        !with_module.chain_names().is_empty(),
+        with_module.chain_names().next().is_some(),
         "a chain with a module does not report an empty module list"
     );
     assert!(
@@ -26,7 +26,7 @@ fn the_chain_shape_accessors_answer_in_both_directions() {
 
     let keys_only = AuthChain::new(Vec::new(), true);
     assert!(
-        keys_only.chain_names().is_empty(),
+        keys_only.chain_names().next().is_none(),
         "the keys arm is not a boxed module, so a keys-only chain has none"
     );
     assert!(keys_only.keys_in_chain());
@@ -36,7 +36,7 @@ fn the_chain_shape_accessors_answer_in_both_directions() {
     );
 
     let empty = AuthChain::new(Vec::new(), false);
-    assert!(empty.chain_names().is_empty());
+    assert!(empty.chain_names().next().is_none());
     assert!(!empty.keys_in_chain());
     assert!(empty.is_open());
 }

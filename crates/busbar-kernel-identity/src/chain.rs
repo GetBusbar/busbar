@@ -42,19 +42,19 @@ pub trait RevocationView: Send + Sync {
     fn is_revoked(&self, credential: &str) -> bool;
 }
 
-/// The whole chain's verdict for one unit.
+/// The whole chain's verdict for one unit, borrowing the identifying provider's name from the chain.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ChainVerdict {
+pub enum ChainVerdict<'a> {
     /// Admitted with an identity: the provider that identified, the principal, and — only on an
-    /// engine arm — the enforced key it resolved. A boxed module can never populate the key,
+    /// engine arm — whether it resolved an enforced key. A boxed module can never resolve a key,
     /// because its answer type cannot carry one.
     Identified {
-        /// The provider name that identified.
-        module: String,
-        /// Who is calling.
+        /// The provider name that identified, as the chain's configuration spells it.
+        module: &'a str,
+        /// Who is calling. On an engine arm, the resolved key itself: its stable id and its label.
         principal: Principal,
-        /// The enforced key, when an engine arm resolved one.
-        resolved: Option<ResolvedKey>,
+        /// Whether an engine arm resolved an enforced key (the key is `principal`'s id and name).
+        resolved: bool,
     },
     /// Admitted anonymously — the open front door.
     Open,
@@ -92,8 +92,8 @@ impl AuthChain {
     }
 
     /// The ordered module names, for the plugin catalogue. A module name is an identifier, never a
-    pub fn chain_names(&self) -> Vec<&'static str> {
-        self.chain.iter().map(|e| e.module.name()).collect()
+    pub fn chain_names(&self) -> impl ExactSizeIterator<Item = &'static str> + '_ {
+        self.chain.iter().map(|e| e.module.name())
     }
 
     /// Whether the front door is open: no boxed module and no keys arm.
@@ -107,7 +107,7 @@ impl AuthChain {
     }
 
     /// Run the chain with no key verifier — the thin form for callers that only need the shape of
-    pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
+    pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict<'_> {
         self.run_chain_with(candidate, None, 0, None)
     }
 
@@ -118,7 +118,7 @@ impl AuthChain {
         keys: Option<&dyn KeyVerifier>,
         now: u64,
         expected_aud: Option<&str>,
-    ) -> ChainVerdict {
+    ) -> ChainVerdict<'_> {
         if self.chain.is_empty() && !self.keys_in_chain {
             return ChainVerdict::Open;
         }
@@ -126,9 +126,9 @@ impl AuthChain {
             match entry.module.authenticate(candidate) {
                 AuthOutcome::Identify(principal) => {
                     return ChainVerdict::Identified {
-                        module: entry.provider.clone(),
+                        module: &entry.provider,
                         principal,
-                        resolved: None,
+                        resolved: false,
                     };
                 }
                 AuthOutcome::Reject => return ChainVerdict::Denied,
@@ -154,7 +154,7 @@ fn keys_arm_verdict(
     candidate: Option<&str>,
     now: u64,
     expected_aud: Option<&str>,
-) -> ChainVerdict {
+) -> ChainVerdict<'static> {
     let Some(token) = candidate.filter(|t| !t.is_empty()) else {
         return ChainVerdict::Denied;
     };
@@ -163,19 +163,19 @@ fn keys_arm_verdict(
     };
     match keys.verify_token(token, now, expected_aud) {
         Some(key) => ChainVerdict::Identified {
-            module: KEYS_MODULE.to_string(),
-            principal: principal_from_key(&key),
-            resolved: Some(key),
+            module: KEYS_MODULE,
+            principal: principal_from_key(key),
+            resolved: true,
         },
         None => ChainVerdict::Denied,
     }
 }
 
 /// The principal for a resolved key: the stable key id, its label as the name, and no roles — a key
-fn principal_from_key(key: &ResolvedKey) -> Principal {
+fn principal_from_key(key: ResolvedKey) -> Principal {
     Principal {
-        id: key.id.clone(),
-        name: Some(key.name.clone()),
+        id: key.id,
+        name: Some(key.name),
         roles: Vec::new(),
         ttl_secs: None,
     }
