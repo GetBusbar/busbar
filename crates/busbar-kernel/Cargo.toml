@@ -64,6 +64,9 @@ loom-model = ["dep:loom"]
 test-support = ["busbar-kernel-identity/test-support"]
 # Default off: `timeit!` expands to `()`.
 timing = ["dep:libc"]
+# Default off: the binary's jemalloc control (`busbar_kernel::mallctl`). Only the binary links
+# jemalloc, so only it turns this on.
+mallctl = ["dep:tikv-jemalloc-sys", "dep:libc"]
 
 [dev-dependencies]
 busbar-plugin-loader = { path = "../plugin-loader" }
@@ -83,9 +86,13 @@ criterion = { workspace = true }
 # Member `test-support` features are enabled here, never in a release build.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemalloc-sys = { workspace = true, optional = true }
+
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
-tikv-jemalloc-ctl = { workspace = true }
+tikv-jemalloc-sys = { workspace = true }
+libc = { workspace = true }
 
 [[bench]]
 name = "pool_upstream_creds"
