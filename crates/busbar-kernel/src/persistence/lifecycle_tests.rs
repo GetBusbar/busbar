@@ -105,10 +105,7 @@ fn missing_or_mismatched_evidence_is_refused() {
         verify_activation(&complete, session(), Some(b"state"), Some(&good)),
         Err(Error::Refused)
     );
-    assert_eq!(
-        refused(Some(b"state"), Some(b"not a marker")).is_err(),
-        true
-    );
+    assert!(refused(Some(b"state"), Some(b"not a marker")).is_err());
 }
 
 #[test]

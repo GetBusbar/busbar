@@ -922,7 +922,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=fdf0dc743d69a620e52270b5422f670bd109a803#fdf0dc743d69a620e52270b5422f670bd109a803"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=9d699bfad308717ec5c7ecfdab2ad1735e922fca#9d699bfad308717ec5c7ecfdab2ad1735e922fca"
 dependencies = [
  "busbar-contract",
  "getrandom 0.3.4",
@@ -933,12 +933,13 @@ dependencies = [
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=c34b36bdabf539c870059e31cd045849461fc0af#c34b36bdabf539c870059e31cd045849461fc0af"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=baf42fd1411ed61cd1ea49fa144aed38b94fdc06#baf42fd1411ed61cd1ea49fa144aed38b94fdc06"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "bytes",
  "fallible-iterator 0.2.0",
+ "foldhash 0.2.0",
  "getrandom 0.3.4",
  "postgres-protocol",
  "postgres-types",
@@ -953,7 +954,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=ea788ec75936869620d79594ad14c35b49ac2d5f#ea788ec75936869620d79594ad14c35b49ac2d5f"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=ca5b5ba131e97c863307ef396c65e4c9be90487f#ca5b5ba131e97c863307ef396c65e4c9be90487f"
 dependencies = [
  "busbar-contract",
  "getrandom 0.3.4",
@@ -2542,7 +2543,7 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 [[package]]
 name = "postgres-protocol"
 version = "0.6.12"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=c34b36bdabf539c870059e31cd045849461fc0af#c34b36bdabf539c870059e31cd045849461fc0af"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=baf42fd1411ed61cd1ea49fa144aed38b94fdc06#baf42fd1411ed61cd1ea49fa144aed38b94fdc06"
 dependencies = [
  "base64 0.22.1",
  "byteorder",
