@@ -18,6 +18,8 @@ path = "tests/fixtures/sdk_door_baseline.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+# The crypto facade, re-exported whole as `busbar_contract::crypto`.
+busbar-crypto = { path = "../busbar-crypto" }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 serde_yaml = { workspace = true }
@@ -58,7 +60,10 @@ test-seal = ["test-support"]
 # Ordinary ABI test support (`abi::sdk::test_support`): the all-zero value of a reviewed ABI
 # struct, `Default` on it, and the lending pairs. It forges nothing; sealed credentials stay
 # behind the dev-dependency-only `test-seal` feature.
-test-support = []
+test-support = ["busbar-crypto/test-support"]
+
+# TLS configs and verifiers through the crypto facade (TLS crates and tests only).
+tls = ["busbar-crypto/tls"]
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

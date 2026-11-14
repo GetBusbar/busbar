@@ -1266,6 +1266,7 @@ zeroize = "1"
 # binary's contract is. Add a row here for each busbar crate a pulled plugin names directly.
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "../../crates/busbar-contract" }
+busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]

@@ -9,6 +9,7 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
     "crates/busbar-contract",
+    "crates/busbar-crypto",
     "crates/busbar-kernel",
     "crates/busbar-migrations",
     "crates/busbar-kernel-identity",
@@ -25,6 +26,8 @@ members = [
 # `default-features = false` must be set here: a member cannot turn workspace defaults off.
 [workspace.dependencies]
 busbar-contract = { path = "crates/busbar-contract" }
+# The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
+busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }
 arc-swap = "1"
 async-trait = "0.1"
 aws-lc-sys = { version = "=0.47.0", default-features = false }
@@ -138,6 +141,8 @@ unicode-normalization = "0.1.25"
 # Plugins that name busbar-contract by git resolve to this tree, so exactly one copy links.
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "crates/busbar-contract" }
+# The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
+busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }
 
 # Pinned dependency fixes: h2 sensitive fields, WebSocket 1014 and bounded frame diagnostics.
 [patch.crates-io]
