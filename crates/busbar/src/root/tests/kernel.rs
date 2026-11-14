@@ -242,9 +242,7 @@ fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither(
         [],
         0,
         &live,
-        Some(busbar_kernel_ledger::usage::DatedHistory::of(
-            &history, 3_000,
-        )),
+        Some(busbar_kernel_ledger::usage::DatedHistory::of(&history)),
     )
     .expect("an open class the older era's card priced must price, not refuse");
     assert_eq!(
@@ -285,9 +283,7 @@ fn a_fee_edit_mid_window_prices_each_era_at_the_plane_fee_in_force() {
         [],
         0,
         &live,
-        Some(busbar_kernel_ledger::usage::DatedHistory::of(
-            &history, 3_000,
-        )),
+        Some(busbar_kernel_ledger::usage::DatedHistory::of(&history)),
     )
     .expect("a plane's fee units price");
     assert_eq!(priced.minor(), 13, "each era at the plane fee in force");

@@ -154,6 +154,7 @@ impl EntryId {
             .map(Self::parse_hex)
     }
 
+    #[cfg(test)]
     /// The separator between an id and the model name in a pseudo-model key.
     pub const SEPARATOR: char = '\u{1f}';
 
@@ -178,6 +179,7 @@ impl EntryId {
             .map(EntryId)
     }
 
+    #[cfg(test)]
     /// The pseudo-model prefix `"<24hex>\u{1f}"`: alone it keys the entry's fee count, followed by
     pub fn pseudo_prefix(&self) -> String {
         let mut prefix = self.hex();
@@ -185,6 +187,7 @@ impl EntryId {
         prefix
     }
 
+    #[cfg(test)]
     /// Split a pseudo-model key into its entry id and the model name after the separator (empty
     pub fn split_pseudo(key: &str) -> Option<(EntryId, &str)> {
         let (id, model) = key.split_once(Self::SEPARATOR)?;
@@ -488,6 +491,7 @@ impl History {
             .map(|entry| (entry.id(), &entry.card))
     }
 
+    #[cfg(test)]
     /// The card of the entry whose id is `id`, voided or not: a count posted under an entry keeps
     pub fn card_of(&self, id: &EntryId) -> Option<&RateCard> {
         self.entries
@@ -509,6 +513,7 @@ pub struct HistoryView<'a> {
 }
 
 impl HistoryView<'_> {
+    #[cfg(test)]
     /// Resolve counts served by one exact entry, then apply deliberate later amendments at their
     pub fn card_for_entry_era(&self, id: EntryId, wall_at: u64) -> Option<(EntryKey, &RateCard)> {
         let original = self.entries.iter().find(|entry| entry.id() == id)?;

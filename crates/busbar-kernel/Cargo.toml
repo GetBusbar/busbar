@@ -85,6 +85,8 @@ rcgen = { workspace = true, features = ["pem"] }
 criterion = { workspace = true }
 # Member `test-support` features are enabled here, never in a release build.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger", features = ["test-support"] }
+busbar-kernel-egress = { path = "../busbar-kernel-egress", features = ["test-support"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemalloc-sys = { workspace = true, optional = true }
