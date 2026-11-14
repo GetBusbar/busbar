@@ -11,7 +11,7 @@ use super::{in_head, now_ns, out_head, Dispatcher, Frame, Kind, Plugin};
 
 pub const READY_DEADLINE: Duration = Duration::from_secs(30);
 
-const CANCEL_GRACE: Duration = Duration::from_secs(5);
+pub const CANCEL_GRACE: Duration = Duration::from_secs(5);
 
 impl<K: Kind> Plugin<K> {
     pub fn has_ready(&self) -> bool {

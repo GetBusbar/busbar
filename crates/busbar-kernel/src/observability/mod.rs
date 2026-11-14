@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-pub fn percent_decode(s: &str) -> String {
+pub fn percentdecode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -139,11 +139,6 @@ pub fn console_filter(
         }
     }
     Ok(targets.with_default(default.unwrap_or(LevelFilter::INFO)))
-}
-
-/// Validate `RUST_LOG` before the server does any work, so a bad value stops boot at once.
-pub fn check_rust_log() -> Result<(), RustLogError> {
-    console_filter(std::env::var("RUST_LOG").ok().as_deref()).map(|_| ())
 }
 
 fn log_levels_from(

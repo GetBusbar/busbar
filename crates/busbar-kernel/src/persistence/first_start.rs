@@ -5,6 +5,7 @@
 //! Neither missing business rows nor a principal/durability label can create this authority.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use busbar_contract::persistence::{
     control, Address, AttemptId, Candidate, DatasetId, ExpectedValue, Mutation, NamespaceId,
@@ -13,10 +14,78 @@ use busbar_contract::persistence::{
 use busbar_contract::Secret;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 
 use super::{commit::Attempt, facade::WriterAuthority, startup};
+use crate::diagnostics::{diag_warn, FIRST_START_SLOW_STEP};
 
 const NAMESPACE: NamespaceId = NamespaceId(*b"busbar.birth1\0\0\0");
+
+/// A gap between two progress writes, outside READY, longer than this is reported (§2.3).
+const SLOW_STEP: Duration = Duration::from_secs(45);
+
+/// Core's R0 progress row (FIRST-START-TAKEOVER §2.9 (c)): present only while an R0 import runs,
+/// Put by every R0 commit with `pages + 1` and deleted by the final one, so each R0 commit is a
+/// progress write a waiter observes. A fixed binary layout like `control::Writer`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct R0Progress {
+    pub version: u32,
+    pub pages: u64,
+    /// MIGRATE-ON-BOOT's paged pre-check cursor; its inner layout is MIGRATE's.
+    pub cursor: Vec<u8>,
+}
+
+const R0_MAGIC: &[u8; 8] = b"bbr0prg1";
+const R0_VERSION: u32 = 1;
+const R0_CURSOR_MAX: usize = 1 << 20;
+
+impl R0Progress {
+    /// Magic, `version` u32 LE, `pages` u64 LE, `cursor` length u32 LE and its bytes.
+    #[must_use]
+    pub fn encode(&self) -> Option<Vec<u8>> {
+        if self.version != R0_VERSION || self.cursor.len() > R0_CURSOR_MAX {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(24 + self.cursor.len());
+        bytes.extend_from_slice(R0_MAGIC);
+        bytes.extend_from_slice(&self.version.to_le_bytes());
+        bytes.extend_from_slice(&self.pages.to_le_bytes());
+        bytes.extend_from_slice(&u32::try_from(self.cursor.len()).ok()?.to_le_bytes());
+        bytes.extend_from_slice(&self.cursor);
+        Some(bytes)
+    }
+
+    /// Refuses a wrong magic, an unknown version, and a short or over-long buffer.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 24 || &bytes[..8] != R0_MAGIC {
+            return None;
+        }
+        let version = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+        if version != R0_VERSION {
+            return None;
+        }
+        let pages = u64::from_le_bytes(bytes[12..20].try_into().ok()?);
+        let len = usize::try_from(u32::from_le_bytes(bytes[20..24].try_into().ok()?)).ok()?;
+        if len > R0_CURSOR_MAX || bytes.len() != 24 + len {
+            return None;
+        }
+        Some(Self {
+            version,
+            pages,
+            cursor: bytes[24..].to_vec(),
+        })
+    }
+}
+
+/// The address of core's R0 progress row, beside the birth record in the first-start namespace.
+#[must_use]
+pub fn r0_progress_address() -> Address {
+    Address {
+        namespace: NAMESPACE.0,
+        key: b"r0-progress".to_vec(),
+    }
+}
 
 /// The selected initial instance and its exact admitted plugin/configuration digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +158,11 @@ impl Birth {
         Ok(value)
     }
 
+    /// Planes this record shows done; each adds one READY to a resumed owner's first write.
+    pub(super) fn done_len(&self) -> usize {
+        self.done.len()
+    }
+
     pub(super) fn encode(&self) -> Result<Vec<u8>, startup::Error> {
         let bytes = serde_json::to_vec(self).map_err(|_| startup::Error::Corrupt)?;
         if bytes.len() > 1 << 20 {
@@ -136,6 +210,8 @@ pub enum Abandoned {
 struct State {
     birth: Birth,
     pending: Option<(Birth, Arc<Attempt>)>,
+    /// Set by `abandon`: every later first-start step is refused.
+    abandoned: bool,
 }
 
 /// Only Startup can construct this proof, after its exact ownership/fence transaction
@@ -144,6 +220,8 @@ pub struct FirstStart {
     backend: Arc<dyn PersistenceBackend>,
     authority: WriterAuthority,
     state: Mutex<State>,
+    /// The last confirmed progress write (or construction, for a resumed owner).
+    last_write: std::sync::Mutex<Instant>,
 }
 
 impl FirstStart {
@@ -158,7 +236,9 @@ impl FirstStart {
             state: Mutex::new(State {
                 birth,
                 pending: None,
+                abandoned: false,
             }),
+            last_write: std::sync::Mutex::new(Instant::now()),
         }
     }
 
@@ -166,13 +246,131 @@ impl FirstStart {
         self.state.lock().await.birth.published
     }
 
-    pub(crate) fn owner(&self) -> [u8; 16] {
+    pub fn owner(&self) -> [u8; 16] {
         self.authority.writer
     }
 
-    /// Exit path only: retire this writer so the next inspect takes over at once.
+    /// Exit path only (FIRST-START-TAKEOVER §2.7): retire this writer so the next inspect takes
+    /// over at once. The birth record keeps this owner; after this call every first-start step
+    /// is refused. Writes nothing after publication or once this writer was taken over.
     pub async fn abandon(&self) -> Result<Abandoned, startup::Error> {
-        todo!("FIRST-START-TAKEOVER §2.7: FirstStart::abandon")
+        let mut state = self.state.lock().await;
+        if state.birth.published {
+            return Ok(Abandoned::Published);
+        }
+        state.abandoned = true;
+        let me = self.authority.writer;
+        // A decided conflict is a takeover between the read and the commit (the fence is on the
+        // registrar's row, which a takeover leaves alone) or a moved manifest: re-read once.
+        for _ in 0..2 {
+            let attempt = {
+                let values = self
+                    .read(vec![
+                        startup::manifest_address(),
+                        startup::writer_address(me),
+                    ])
+                    .await?;
+                let seal = crate::seal::lend();
+                let manifest_bytes = values[0]
+                    .as_ref()
+                    .ok_or(startup::Error::Corrupt)?
+                    .expose(&seal);
+                let manifest = startup::Manifest::decode(manifest_bytes)?;
+                let row_bytes = values[1]
+                    .as_ref()
+                    .ok_or(startup::Error::Corrupt)?
+                    .expose(&seal);
+                let row = control::Writer::decode(row_bytes).ok_or(startup::Error::Corrupt)?;
+                if !row.admits(self.authority.execution_epoch) {
+                    return Ok(Abandoned::NotAdmitted);
+                }
+                let retired = control::Writer {
+                    retired_through: row.admitted_through,
+                    ..row
+                };
+                let candidate = startup::prepare(
+                    manifest,
+                    vec![
+                        startup::exact(startup::manifest_address(), manifest_bytes.clone()),
+                        startup::exact(startup::writer_address(me), row_bytes.clone()),
+                    ],
+                    vec![Mutation::Put {
+                        address: startup::writer_address(me),
+                        value: Secret::new(
+                            retired.encode().ok_or(startup::Error::Corrupt)?.to_vec(),
+                        ),
+                    }],
+                )?;
+                Attempt::new(candidate, self.backend.clone())
+                    .map_err(|_| startup::Error::Authority)?
+            };
+            match startup::decided(&attempt).await {
+                Ok(None) => return Ok(Abandoned::Retired),
+                Ok(Some(_)) => return Ok(Abandoned::Unconfirmed),
+                Err(startup::Error::Conflict) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(Abandoned::Unconfirmed)
+    }
+
+    /// Record a confirmed R0 commit as this owner's progress write (§2.9 (c) obligation 2), so
+    /// `FIRST_START_SLOW_STEP` measures each gap, never the whole import.
+    pub fn note_r0_commit(&self) {
+        self.progressed("r0-commit");
+    }
+
+    /// Report the gap since the last progress write if it exceeds its budget, then restart it.
+    /// Steps that run inside a plane's READY get one READY_STEP more.
+    fn progressed(&self, step: &'static str) {
+        let now = Instant::now();
+        let mut last = self
+            .last_write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let gap = now.duration_since(*last);
+        let budget = match step {
+            "complete" | "initialize-host" => SLOW_STEP.saturating_add(startup::READY_STEP),
+            _ => SLOW_STEP,
+        };
+        if gap > budget {
+            diag_warn!(
+                FIRST_START_SLOW_STEP,
+                step,
+                gap_ms = u64::try_from(gap.as_millis()).unwrap_or(u64::MAX),
+                budget_s = budget.as_secs(),
+                "first start step {step} came {} s after the previous progress write (budget {} s)",
+                gap.as_secs(),
+                budget.as_secs(),
+            );
+        }
+        *last = now;
+    }
+
+    async fn read(
+        &self,
+        addresses: Vec<Address>,
+    ) -> Result<Vec<Option<Secret<Vec<u8>>>>, startup::Error> {
+        let info = self.backend.info();
+        let count = addresses.len();
+        let observed = self
+            .backend
+            .read(Arc::new(Read {
+                dataset: info.dataset,
+                addresses,
+                time: None,
+            }))
+            .await
+            .map_err(startup::Error::Backend)?;
+        match observed {
+            ReadResult::Values {
+                observed_at,
+                values,
+            } if observed_at.authority == info.clock_authority && values.len() == count => {
+                Ok(values)
+            }
+            _ => Err(startup::Error::Corrupt),
+        }
     }
 
     /// Atomically consume a finite host initialization binding with its native effects.
@@ -184,7 +382,7 @@ impl FirstStart {
     ) -> Result<startup::Progress, startup::Error> {
         validate_plan(std::slice::from_ref(&binding))?;
         let mut state = self.state.lock().await;
-        if state.birth.published {
+        if state.birth.published || state.abandoned {
             return Err(startup::Error::Authority);
         }
         if let Some(held) = state
@@ -209,7 +407,7 @@ impl FirstStart {
         next.initialized.sort_by(|a, b| a.instance.cmp(&b.instance));
         validate_plan(&next.initialized)?;
         let progress = self
-            .change_with(&mut state, next, predicates, mutations)
+            .change_with(&mut state, next, predicates, mutations, "initialize-host")
             .await?;
         if progress == startup::Progress::Advanced {
             self.verify(&state.birth).await?;
@@ -235,7 +433,7 @@ impl FirstStart {
     /// original preimage stable until initialize_host reconciles the exact candidate.
     pub(crate) async fn initialization_witness(&self) -> Result<Vec<u8>, startup::Error> {
         let state = self.state.lock().await;
-        if state.birth.published {
+        if state.birth.published || state.abandoned {
             return Err(startup::Error::Authority);
         }
         let pending = match &state.pending {
@@ -252,7 +450,7 @@ impl FirstStart {
     pub async fn freeze(&self, plan: Vec<Binding>) -> Result<startup::Progress, startup::Error> {
         validate_plan(&plan)?;
         let mut state = self.state.lock().await;
-        if state.birth.published {
+        if state.birth.published || state.abandoned {
             return Err(startup::Error::Authority);
         }
         if let Some(held) = &state.birth.plan {
@@ -266,13 +464,13 @@ impl FirstStart {
         }
         let mut next = state.birth.clone();
         next.plan = Some(plan);
-        self.change(&mut state, next).await
+        self.change(&mut state, next, "freeze").await
     }
 
     /// Exact proof of a still-current initial owner, not a runtime emptiness observation.
     pub(crate) async fn permits(&self, instance: &str) -> Result<bool, startup::Error> {
         let state = self.state.lock().await;
-        if state.pending.is_some() || state.birth.published {
+        if state.pending.is_some() || state.birth.published || state.abandoned {
             return Ok(false);
         }
         self.verify(&state.birth).await?;
@@ -289,6 +487,7 @@ impl FirstStart {
     pub async fn complete(&self, instance: &str) -> Result<startup::Progress, startup::Error> {
         let mut state = self.state.lock().await;
         if state.birth.published
+            || state.abandoned
             || !state
                 .birth
                 .plan
@@ -306,11 +505,14 @@ impl FirstStart {
         let mut next = state.birth.clone();
         next.done.push(instance.to_string());
         next.done.sort();
-        self.change(&mut state, next).await
+        self.change(&mut state, next, "complete").await
     }
 
     pub async fn publish(&self) -> Result<startup::Progress, startup::Error> {
         let mut state = self.state.lock().await;
+        if state.abandoned {
+            return Err(startup::Error::Authority);
+        }
         if state.birth.published {
             return self
                 .verify(&state.birth)
@@ -327,7 +529,7 @@ impl FirstStart {
         }
         let mut next = state.birth.clone();
         next.published = true;
-        self.change(&mut state, next).await
+        self.change(&mut state, next, "publish").await
     }
 
     async fn verify(&self, birth: &Birth) -> Result<(), startup::Error> {
@@ -393,8 +595,10 @@ impl FirstStart {
         &self,
         state: &mut State,
         next: Birth,
+        step: &'static str,
     ) -> Result<startup::Progress, startup::Error> {
-        self.change_with(state, next, Vec::new(), Vec::new()).await
+        self.change_with(state, next, Vec::new(), Vec::new(), step)
+            .await
     }
 
     async fn change_with(
@@ -403,6 +607,7 @@ impl FirstStart {
         next: Birth,
         predicates: Vec<Predicate>,
         mutations: Vec<Mutation>,
+        step: &'static str,
     ) -> Result<startup::Progress, startup::Error> {
         let operation = match &state.pending {
             Some((_, attempt)) => attempt.candidate().candidate().id.operation,
@@ -427,6 +632,7 @@ impl FirstStart {
         }
         state.birth = next;
         state.pending = None;
+        self.progressed(step);
         Ok(startup::Progress::Advanced)
     }
 

@@ -3823,7 +3823,7 @@ mod refresher {
                 .spawn(|| run(&BOOK))
                 .unwrap_or_else(|e| {
                     eprintln!("busbar: the credential refresher did not start: {e}");
-                    std::process::exit(2);
+                    crate::root::exit::exit(2);
                 });
         });
         &BOOK

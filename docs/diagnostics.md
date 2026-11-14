@@ -2288,3 +2288,69 @@ busbar found audit history in the legacy durable table but could not copy it int
 
 **What to do:** Investigate the governance store's write path at boot (the same store the audit log persists to). Once it accepts writes, restart so the one-time migration completes and the durable history is restored into the seam; a transient hiccup needs no action beyond confirming the store is healthy.
 
+<a id="first-start-waiting"></a>
+### BUSBAR-9013 — Waiting on another writer's first start of this dataset (no listener bound yet)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `first-start-waiting`
+
+Another process owns this dataset's first start and has not published it, and its progress rows (birth record, writer row, R0 progress row) changed within the stall window, so this process waits instead of retiring it. It binds no listener while it waits. The line names the owner's writer id, how long ago its progress last changed and when this process takes over if nothing changes. A restart resets the wait.
+
+**What to do:** Let it wait: it is admitted once the owner publishes, or takes over once the owner stops making progress for the window. Do not stop or restart it before the named takeover time; give the supervisor a startup budget of at least 200 + 105 x P seconds (P = conditional-records planes), see docs/operations.md First start with several replicas.
+
+<a id="first-start-takeover"></a>
+### BUSBAR-9014 — Took over a stalled first start (the previous owner is retired)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `first-start-takeover`
+
+An unpublished first start of this dataset was owned by another writer whose progress rows stayed byte-for-byte unchanged for the whole stall window (90 s plus 35 s per plane already done), so this process retired that writer and now owns the first start. Logged only when the takeover Register applied. The line names the dataset, the previous and new writer ids, the stall, the window and the observed digest. The previous owner, if still alive, is fenced and fails boot asking for reconciliation.
+
+**What to do:** Find out why the previous owner stopped: it crashed, was killed, or hung past its own deadlines (a plugin READY, an unavailable store). No action is needed for the dataset; this process finishes first start.
+
+<a id="first-start-takeover-unconfirmed"></a>
+### BUSBAR-9015 — First-start takeover not confirmed (outcome unknown or refused)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `first-start-takeover-unconfirmed`
+
+This process tried to take over a stalled first start, but the store did not confirm it: either the outcome is unknown (the previous writer may or may not have been retired) or the store refused it with no effect. Nothing claims the takeover happened; boot then refuses with the store admission error that follows this line.
+
+**What to do:** Check the store's health and restart. The next start reads the dataset as it is: it waits on the owner, or takes over at once if the earlier takeover did apply.
+
+<a id="first-start-slow-step"></a>
+### BUSBAR-9016 — First start step slower than its budget (waiters may take over)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `first-start-slow-step`
+
+A first-start owner went longer than the step budget (45 s, plus 35 s for a step that runs inside a plane's READY) between two progress writes. Waiting replicas take over after 90 s without progress, so a gap near that window risks retiring a live owner. The line names the step and the gap.
+
+**What to do:** Find what made the step slow (plugin load or open, driver build, the store, an import page) and make it faster. A single replica is not at risk; several replicas sharing the store are.
+
+<a id="first-start-exit-retired"></a>
+### BUSBAR-9017 — First start handed over on exit (writer retired)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `first-start-exit-retired`
+
+This process owned an unpublished first start and exited before publishing it (a boot refusal, a signal, or a one-shot command), so it retired its own writer row on the way out. The birth record is unchanged; the next start of this dataset, here or on another replica, takes over at once with no wait.
+
+**What to do:** None for the hand-over. Fix the reason the process exited, which is printed just before this line.
+
+<a id="first-start-exit-retire-failed"></a>
+### BUSBAR-9018 — First start not handed over on exit (the next start waits)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `first-start-exit-retire-failed`
+
+This process owned an unpublished first start and exited, but retiring its writer row did not complete within the exit budget (5 s), was refused, or its outcome is unknown. The next start of this dataset waits up to the named window before it takes over, as after a crash.
+
+**What to do:** Check the store's health. Keep the next start running for at least the named window so it can take over; restarting it early resets the wait.
+
