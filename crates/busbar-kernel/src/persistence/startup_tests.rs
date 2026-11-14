@@ -83,7 +83,7 @@ impl PersistenceBackend for Backend {
             let (decision, hold) = {
                 let mut native = self.0.lock().unwrap();
                 if let Some(apply) = native.before_commit.take() {
-                    apply(&mut *native);
+                    apply(&mut native);
                 }
                 let digest = prepared.fingerprint();
                 native.sends.push(digest);

@@ -4,15 +4,9 @@ use crate::appbuild::{
     inert_durable_keys_banner, open_relay_banner, resolve_model_context_max,
     stateful_plane_ephemeral_store_warn,
 };
-use crate::preflight::{
-    build_secret_resolver, is_real_auth_plugin_ref, is_real_identity_provider_plugin_ref,
-    parse_signing_secret, resolve_admin_token, resolve_signing_key,
-    valid_identity_provider_modules,
-};
+use crate::preflight::{is_real_auth_plugin_ref, resolve_admin_token};
 use crate::router::{
-    apply_common_layers, apply_inbound_concurrency_limit, base_data_router,
-    build_router_with_limits, method_not_allowed_handler, project_auth_scope_caps,
-    request_activity_tick, reshape_body_limit_413, reshape_oversized_413, server_timing,
+    apply_inbound_concurrency_limit, project_auth_scope_caps, reshape_oversized_413, server_timing,
     server_timing_dur_ms, AXUM_BODY_LIMIT_413_MARKER, HEADER_SERVER_TIMING, NO_UPSTREAM_RTT,
 };
 use axum::Router;

@@ -345,7 +345,7 @@ fn bound_entry<'v>(
     let recorded = recorded.unwrap_or_default();
     if route == busbar_contract::abi::plane::ROUTE_POOL && !recorded.is_empty() {
         if view.pool.is_empty()
-            || (recorded != view.pool.as_bytes() && !holds(recorded, &*view.pool))
+            || (recorded != view.pool.as_bytes() && !holds(recorded, &view.pool))
         {
             return Err(Stopped::Unreadable);
         }

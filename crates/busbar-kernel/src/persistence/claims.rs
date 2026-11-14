@@ -157,7 +157,7 @@ impl<'a> Claims<'a> {
             hash.update((attempt.len() as u64).to_be_bytes());
             hash.update(attempt);
         }
-        let digest: [u8; 32] = hash.finalize().into();
+        let digest: [u8; 32] = hash.finalize();
         let operation = digest[..16].try_into().map_err(|_| Error::Invalid)?;
         for _ in 0..=self.store.limits().conflict_retries {
             // Bind planning to the logical claim before any native crossing. A
@@ -274,7 +274,7 @@ impl<'a> Claims<'a> {
             hash.update((part.len() as u64).to_be_bytes());
             hash.update(part);
         }
-        let digest: [u8; 32] = hash.finalize().into();
+        let digest: [u8; 32] = hash.finalize();
         let operation = digest[..16].try_into().map_err(|_| Error::Invalid)?;
         for _ in 0..=self.store.limits().conflict_retries {
             let permit = match self
@@ -464,7 +464,7 @@ pub enum SweepOutcome {
 impl Sweep<'_> {
     /// Advance one bounded page while retaining original pending custody.
     pub async fn advance(&mut self) -> Result<SweepOutcome, Error> {
-        self.state.advance(&self.store).await
+        self.state.advance(self.store).await
     }
 }
 
