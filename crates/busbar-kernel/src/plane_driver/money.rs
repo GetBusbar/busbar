@@ -1092,6 +1092,9 @@ impl PlaneMoney {
             return false;
         }
         if let Some(snapshot) = self.checkpoint_snapshot(key, open, counts, metered) {
+            busbar_contract::stage_probe::tick(
+                busbar_contract::stage_probe::Derive::CheckpointStage,
+            );
             self.gov.finish_unit_checkpoint(snapshot);
         } else {
             tracing::error!(unit = key.get(), checkpoint = %hex::encode(open.checkpoint_id),
@@ -1242,6 +1245,9 @@ impl MoneySeam for PlaneMoney {
             ) else {
                 return Checkpoint::Unpriced;
             };
+            busbar_contract::stage_probe::tick(
+                busbar_contract::stage_probe::Derive::CheckpointStage,
+            );
             self.gov.stage_unit_checkpoint(snapshot);
         }
         if let Some(ceiling) = open.spend_ceiling_micros {
@@ -1438,3 +1444,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/qualified_pool_tests.rs"]
 mod qualified_pool_tests;
+
+#[cfg(test)]
+#[path = "tests/checkpoint_change_tests.rs"]
+mod checkpoint_change_tests;
