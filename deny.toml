@@ -78,7 +78,8 @@ deny = [
     # THE CRYPTO SEAM (CRYPTO-SEAM r15 §2.7, decisions 210, 224, 229): one backend, reached only through
     # the facade; AWS-LC (aws-lc-rs) is the one provider. Wrappers are the third-party parents allowed
     # to carry a banned crate. Not yet on: `ring` (four plugins still name it), `aes`/`cipher`
-    # (transport-webrtc).
+    # (transport-webrtc), `sha2` (busbar-auth-oauth) and `getrandom`/`rand_core` (busbar-store-memory,
+    # -postgres, -sqlite): core is clean since oauth-as 1.1 (decision 228), these plugins move in §8 5-7.
     { crate = "aws-lc-rs", wrappers = ["busbar-crypto-backend", "quinn-proto", "rcgen", "rustls", "rustls-webpki", "x509-parser"], reason = "AWS-LC only through the crypto backend" },
     { crate = "aws-lc-sys", wrappers = ["busbar-crypto-backend", "aws-lc-rs"], reason = "AWS-LC only through the crypto backend" },
     { crate = "aws-lc-fips-sys", wrappers = ["aws-lc-rs"], reason = "the private FIPS build only" },
@@ -93,10 +94,6 @@ deny = [
     { crate = "num", wrappers = ["fraction"], reason = "jsonschema's number type only" },
     { crate = "num-rational", wrappers = ["num"], reason = "jsonschema's number type only" },
     { crate = "fraction", wrappers = ["jsonschema", "jsonschema-value"], reason = "jsonschema's number type only" },
-    # §8 step 4: oauth-as 1.1 with default-features = false links neither (decision 228).
-    { crate = "sha2", wrappers = ["ed25519-dalek", "postgres-protocol", "postgres-types"], reason = "SHA-2 is the facade's" },
-    { crate = "getrandom", wrappers = ["busbar-crypto-backend", "ahash", "jobserver", "jsonschema", "quinn-proto", "rand", "rand_core", "referencing", "ring", "tempfile"], reason = "randomness is the facade's fill" },
-    { crate = "rand_core", wrappers = ["busbar-crypto-backend", "chacha20", "getrandom", "rand", "rand_chacha", "rand_pcg", "rand_xoshiro", "signature"], reason = "randomness is the facade's fill" },
     { crate = "sha1", wrappers = ["tungstenite"], reason = "SHA-1 is the facade's legacy::sha1" },
     { crate = "md-5", wrappers = ["postgres-protocol"], reason = "MD5 is the facade's legacy::md5" },
     { crate = "hmac", wrappers = ["postgres-protocol"], reason = "HMAC is the facade's" },
