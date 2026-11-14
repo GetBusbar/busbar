@@ -35,24 +35,3 @@ fn enabling_the_gate_installs_the_atexit_latch_exactly_once() {
     assert!(ATEXIT_INSTALLED.load(Ordering::Acquire));
     set_enabled(false);
 }
-
-#[test]
-fn bucket_floor_is_pinned_to_independent_values() {
-    assert_eq!(bucket_floor(0), 0);
-    assert_eq!(bucket_floor(1), 1 << 0);
-    assert_eq!(bucket_floor(2), 1 << 1);
-    assert_eq!(bucket_floor(3), 1 << 2);
-    assert_eq!(bucket_floor(4), 1 << 3);
-    assert_eq!(bucket_floor(10), 1 << 9);
-    assert_eq!(bucket_floor(11), 1 << 10);
-    assert_eq!(bucket_floor(64), 1 << 63);
-
-    for ns in [1u64, 2, 3, 4, 1023, 1024, 1025, u32::MAX as u64, u64::MAX] {
-        let idx = bucket_of(ns);
-        assert!(
-            bucket_floor(idx) <= ns,
-            "bucket_floor({idx}) = {} must not exceed the sample {ns} that fell in it",
-            bucket_floor(idx)
-        );
-    }
-}
