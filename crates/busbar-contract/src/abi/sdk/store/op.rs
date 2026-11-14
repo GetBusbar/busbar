@@ -229,7 +229,7 @@ impl<'a> Op<'a> {
     pub fn connector(&mut self) -> Result<Services<'_, 'a>, ConnFailure> {
         let host = self.host.ok_or(ConnFailure::Unarmed)?;
         if !self.can_pend() {
-            return Err(ConnFailure::NoTicket);
+            return Err(crate::abi::sdk::conn::no_ticket());
         }
         let started_at = self.replay.unwrap_or(self.issued);
         let conn = host.connector_from(self.ticket, started_at);
@@ -308,6 +308,11 @@ impl Op<'_> {
     pub(crate) fn close_checkout(&mut self) {
         self.abandon_pending_service();
         if let Some(c) = self.checkout.take() {
+            // A ticketless op cannot hold a checkout (a checkout needs the connector), and asking the
+            // connector would make a `NoTicket` that nothing hands to plugin code (R28).
+            if !self.can_pend() {
+                return;
+            }
             if let Ok(mut s) = self.connector() {
                 let _ = s.close(c.stream);
             }
