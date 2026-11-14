@@ -451,3 +451,45 @@ fn credential_prompt_uses_declared_label_and_keeps_private_form_transport() {
     assert!(html.contains("type=\"password\""));
     assert!(html.contains("state&quot;value"));
 }
+
+// selfmint F6 / T5, T10, T13 (hosted-login half): each self-serve refusal gets its own 403 page;
+// "No access yet" is only for an identity with no grant. Red on b345530502: there is no
+// `SelfKeyIssue::Refused`, and every refusal rendered "No access yet".
+#[tokio::test]
+async fn each_self_mint_refusal_renders_its_own_page() {
+    use busbar_kernel::governance::SelfMintRefusal;
+    for (refusal, heading) in [
+        (SelfMintRefusal::Disabled, "Key disabled"),
+        (SelfMintRefusal::Revoked, "Key revoked"),
+        (SelfMintRefusal::TransitionHeld, "Key on hold"),
+        (SelfMintRefusal::OtherProvider, "Different sign-in method"),
+        (SelfMintRefusal::Unattributed, "Key needs an administrator"),
+        (
+            SelfMintRefusal::ForeignKeyInGroup,
+            "Key needs an administrator",
+        ),
+    ] {
+        let (title, copy) = self_mint_refused_copy(refusal);
+        assert_eq!(title, heading, "{refusal:?}");
+        let resp = self_mint_refused_page(refusal);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{refusal:?}");
+        let body = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert_branded_error_page(&body, heading);
+        assert!(
+            body.contains(&copy.replace('\'', "&#39;")),
+            "{refusal:?}: {body}"
+        );
+        assert!(!body.contains("No access yet"), "{refusal:?}: {body}");
+    }
+    let (_, other) = self_mint_refused_copy(SelfMintRefusal::OtherProvider);
+    assert!(
+        !other.to_lowercase().contains("remove") && !other.to_lowercase().contains("delete"),
+        "C4: no remove-the-old-key remedy for another provider's key: {other}"
+    );
+}

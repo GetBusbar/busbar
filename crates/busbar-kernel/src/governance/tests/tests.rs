@@ -3701,8 +3701,11 @@ async fn self_refresh_publishes_atomic_binding_transfer_without_postcommit_scan(
     assert_eq!(live[0].id, new.id);
 }
 
+// Owner sign-off: this pinned the 1.5.5 same-id reuse (`binding.id == epoch_one.id`). With the hold
+// as the only policy the probe never writes over an undeleted derived row: the refresh steps past the
+// rotated row to a fresh epoch and replaces it (one live key, the rotated token dead).
 #[tokio::test]
-async fn default_self_refresh_publishes_when_the_derived_id_is_reused() {
+async fn self_refresh_after_an_admin_rotation_publishes_without_postcommit_scan() {
     let (store, faults) = native_identity_fixture().await;
     let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
         .await
@@ -3733,9 +3736,20 @@ async fn default_self_refresh_publishes_when_the_derived_id_is_reused() {
         .refresh_self(sub, "corp", None, now + 3600, now)
         .await
         .unwrap();
-    assert_eq!(
+    assert_ne!(
         binding.id, epoch_one.id,
-        "retain the default same-id policy"
+        "the refresh steps past the rotated row instead of writing over it"
+    );
+    assert!(
+        store
+            .identity()
+            .get_key(&epoch_one.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some(),
+        "the rotated row is replaced, so one live key remains"
     );
     assert!(gov.verify_token(&token, now, None).is_some());
     assert!(gov.verify_token(&prior, now, None).is_none());
@@ -4076,6 +4090,7 @@ async fn mint_self_offloaded_issues_and_refreshes_through_native_async_identity(
     let (issued, issued_token) = crate::governance::mint_self_offloaded(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         sub.to_string(),
         "corp".to_string(),
         None,
@@ -4093,6 +4108,7 @@ async fn mint_self_offloaded_issues_and_refreshes_through_native_async_identity(
     let (refreshed, refreshed_token) = crate::governance::mint_self_offloaded(
         gov.clone(),
         crate::governance::SelfMintOp::Refresh,
+        crate::governance::UnattributedBinding::Adopt,
         sub.to_string(),
         "corp".to_string(),
         None,
@@ -4124,6 +4140,7 @@ async fn mint_self_async_preserves_a_native_commit_failure() {
     let result = crate::governance::mint_self_offloaded(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
+        crate::governance::UnattributedBinding::Adopt,
         "refused".into(),
         "corp".into(),
         None,
@@ -4846,6 +4863,124 @@ async fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
         "the refresh must mint a new id, never write over the rotated row"
     );
     assert!(gov.verify_token(&t2, now, None).is_some());
+}
+
+// T10 probe backstop (G1, G2). Red on b345530502: `first_free_self_epoch` returns `(id, 0)` for an
+// undeleted disabled derived row (self_serve.rs:137-140 reuse) and `SelfEpoch` does not exist.
+async fn revoked_derived_row(gov: &GovState, sub: &str, epoch: u64) -> VirtualKey {
+    let seed = [3u8; 32];
+    let id = GovState::derive_self_subject(&seed, sub, epoch);
+    let key = VirtualKey {
+        generation_hash: binding_marker(&id, &epoch.to_string()),
+        name: format!("self-serve key ({sub})"),
+        enabled: true,
+        group: Some(format!("{SELF_KEY_GROUP_PREFIX}{sub}")),
+        id: id.clone(),
+        ..Default::default()
+    };
+    gov.core_store()
+        .unwrap()
+        .identity()
+        .put_key(&key)
+        .await
+        .unwrap();
+    gov.revoke_async(&id, "admin revoke").await.unwrap();
+    gov.core_store()
+        .unwrap()
+        .identity()
+        .get_key(&id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+async fn derived_tombstone(gov: &GovState, sub: &str, epoch: u64) {
+    let id = GovState::derive_self_subject(&[3u8; 32], sub, epoch);
+    let key = VirtualKey {
+        generation_hash: binding_marker(&id, &epoch.to_string()),
+        enabled: true,
+        group: Some(format!("{SELF_KEY_GROUP_PREFIX}{sub}")),
+        id: id.clone(),
+        ..Default::default()
+    };
+    let identity = gov.core_store().unwrap().identity();
+    identity.put_key(&key).await.unwrap();
+    identity.delete_key(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn the_self_epoch_probe_never_steps_over_an_undeleted_derived_row() {
+    let gov = GovState::new_with_core(
+        crate::real_store::core().await,
+        None,
+        Some(self_serve_signer()),
+    )
+    .await
+    .unwrap();
+    let seed = [3u8; 32];
+    let none = std::collections::BTreeSet::new();
+
+    let sub = "oidc:probe-zero";
+    let revoked = revoked_derived_row(&gov, sub, 0).await;
+    assert!(!revoked.enabled);
+    assert_eq!(
+        gov.first_free_self_epoch(&seed, sub, 0, &none)
+            .await
+            .unwrap(),
+        crate::governance::SelfEpoch::Occupied(revoked.clone()),
+        "(i) the revoked row at epoch 0 is returned, not reused and not skipped"
+    );
+    let cleared = std::collections::BTreeSet::from([revoked.id.clone()]);
+    assert_eq!(
+        gov.first_free_self_epoch(&seed, sub, 0, &cleared)
+            .await
+            .unwrap(),
+        crate::governance::SelfEpoch::Free {
+            id: GovState::derive_self_subject(&seed, sub, 1),
+            epoch: 1
+        },
+        "(i) a cleared id is stepped over to the next probe"
+    );
+
+    let sub = "oidc:probe-one";
+    derived_tombstone(&gov, sub, 0).await;
+    let revoked = revoked_derived_row(&gov, sub, 1).await;
+    assert_eq!(
+        gov.first_free_self_epoch(&seed, sub, 0, &none)
+            .await
+            .unwrap(),
+        crate::governance::SelfEpoch::Occupied(revoked.clone()),
+        "(i) the tombstone at 0 is skipped, the revoked row at 1 is not"
+    );
+
+    let material = gov.signing_material().expect("a signer is configured");
+    let before = gov.all_keys_async().await.unwrap().len();
+    match gov
+        .write_self_binding(&material, sub, "corp", None, 0, u64::MAX, 1, None, &none)
+        .await
+    {
+        Ok(crate::governance::SelfWrite::Occupied(row)) => assert_eq!(row, revoked),
+        other => panic!("(ii) expected SelfWrite::Occupied, not {other:?}"),
+    }
+    assert_eq!(
+        gov.all_keys_async().await.unwrap().len(),
+        before,
+        "(ii) nothing was written"
+    );
+
+    let revoked_ids = std::collections::BTreeSet::from([revoked.id.clone()]);
+    assert_eq!(
+        gov.self_mint_refusal(
+            sub,
+            "corp",
+            crate::governance::UnattributedBinding::Adopt,
+            std::slice::from_ref(&revoked),
+            std::slice::from_ref(&revoked),
+            &revoked_ids,
+        ),
+        Some(crate::governance::SelfMintRefusal::Revoked),
+        "(iii) the probe hit is judged Revoked"
+    );
 }
 
 #[tokio::test]
