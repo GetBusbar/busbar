@@ -308,6 +308,11 @@ impl Op<'_> {
     pub(crate) fn close_checkout(&mut self) {
         self.abandon_pending_service();
         if let Some(c) = self.checkout.take() {
+            // A ticketless op cannot hold a checkout (a checkout needs the connector), and asking the
+            // connector would make a `NoTicket` that nothing hands to plugin code (R28).
+            if !self.can_pend() {
+                return;
+            }
             if let Ok(mut s) = self.connector() {
                 let _ = s.close(c.stream);
             }
