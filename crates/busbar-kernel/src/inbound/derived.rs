@@ -37,6 +37,8 @@ pub(crate) struct Derived {
     admission: OnceLock<Option<PlaneAdmission>>,
     headers: OnceLock<axum::http::HeaderMap>,
     carried: OnceLock<Carried>,
+    /// The door ticket the unit's auth point verified, with the record it read (SP-AU3).
+    ticket: OnceLock<crate::governance::VerifiedTicket>,
 }
 
 impl Derived {
@@ -77,6 +79,17 @@ impl Derived {
         original: &Head,
     ) -> Option<&Secret<String>> {
         self.carried(app, original).candidate.as_ref()
+    }
+
+    /// Keep the door ticket the unit's auth point verified, for the final gate to redeem
+    /// without verifying it again. The first one kept wins.
+    pub(crate) fn carry_ticket(&self, ticket: crate::governance::VerifiedTicket) {
+        let _ = self.ticket.set(ticket);
+    }
+
+    /// The door ticket the unit's auth point verified, if it verified one.
+    pub(crate) fn ticket(&self) -> Option<&crate::governance::VerifiedTicket> {
+        self.ticket.get()
     }
 
     /// The carried client token (carriers only), as `extract_client_token` reads it.

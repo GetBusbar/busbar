@@ -900,6 +900,7 @@ pub use state::{
 mod tickets;
 pub(crate) use tickets::{
     legacy_ticket_authorizes, legacy_ticket_expiry, legacy_ticket_record, legacy_ticket_token,
+    VerifiedTicket,
 };
 pub use tickets::{ticket_record_live, TicketRefusal, TICKET_RECORD_KIND, TICKET_SPENT_KIND};
 

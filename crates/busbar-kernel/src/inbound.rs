@@ -804,6 +804,11 @@ impl RequestAdmission {
         self.inner.derived.headers(&self.inner.original)
     }
 
+    /// The door ticket this unit's auth point verified, with the record it read (SP-AU3).
+    pub(crate) fn carried_ticket(&self) -> Option<&crate::governance::VerifiedTicket> {
+        self.inner.derived.ticket()
+    }
+
     /// The client token the original head carries (carriers only), read once per unit.
     pub(crate) fn client_token(&self) -> Option<&str> {
         self.inner
@@ -2728,10 +2733,14 @@ impl Inbound {
                             {
                                 until_deadline(
                                     deadline,
-                                    gov.peek_ticket_async(prefix, token, crate::store::now()),
+                                    gov.peek_door_ticket_async(prefix, token, crate::store::now()),
                                 )
                                 .await
                                 .flatten()
+                                .map(|(key, ticket)| {
+                                    derived.carry_ticket(ticket);
+                                    key
+                                })
                             }
                             _ => None,
                         };
