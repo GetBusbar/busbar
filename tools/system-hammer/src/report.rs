@@ -173,7 +173,7 @@ pub fn table(r: &RunReport) -> String {
         r.tool_version,
         r.label,
         r.binary.version.trim_start_matches("busbar "),
-        &r.binary.git_sha[..r.binary.git_sha.len().min(12)],
+        stem_part(&r.binary.git_sha, 12),
         r.binary.pgo,
         r.host.hostname,
         r.host.arch,
