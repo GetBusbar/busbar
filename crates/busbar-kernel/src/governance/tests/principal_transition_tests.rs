@@ -385,17 +385,16 @@ async fn cold_principal_transition_carries_disabled_and_revoked_self_holds() {
         f.apply(&plan).await;
         for _restart in 0..2 {
             let gov = f.gov().await;
-            assert!(!gov.self_mint_holds.load(Ordering::Relaxed));
             assert!(matches!(
                 gov.issue_self(NEW, "identity", None, NOW + 60, NOW).await,
                 Err(crate::governance::SelfMintError::Refused(
-                    crate::governance::SelfMintRefusal::Disabled
+                    crate::governance::SelfMintRefusal::Held
                 ))
             ));
             assert!(matches!(
                 gov.refresh_self(NEW, "identity", None, NOW + 60, NOW).await,
                 Err(crate::governance::SelfMintError::Refused(
-                    crate::governance::SelfMintRefusal::Disabled
+                    crate::governance::SelfMintRefusal::Held
                 ))
             ));
             assert!(gov
@@ -466,7 +465,7 @@ async fn cold_principal_transition_carries_disabled_and_revoked_self_holds() {
                 .issue_self(NEW, "identity", None, NOW + 60, NOW)
                 .await,
             Err(crate::governance::SelfMintError::Refused(
-                crate::governance::SelfMintRefusal::Disabled
+                crate::governance::SelfMintRefusal::Held
             ))
         ));
         for carry in &plan.carry {
@@ -1862,7 +1861,6 @@ async fn successor_rejects_omitted_predecessor_hold_without_any_key_or_group() {
         .refresh_self(third_b, "identity", None, NOW + 60, NOW)
         .await
         .is_err());
-    assert!(!gov.self_mint_holds.load(Ordering::Relaxed));
 }
 
 #[tokio::test]

@@ -154,7 +154,7 @@ async fn mint_provisioned_self_key(
     )
     .await
     .map_err(|e| match e {
-        crate::governance::SelfMintError::Refused(_) => ExchangeError::Unbound,
+        crate::governance::SelfMintError::Refused(reason) => ExchangeError::Held(reason),
         crate::governance::SelfMintError::Store(e) => ExchangeError::MintFailed(e.to_string()),
     })?;
     Ok(IssuedKey {
@@ -229,7 +229,7 @@ impl SelfGroupProvisioner for HandleProvisioner {
 }
 
 /// Why an exchange was refused. Mapped to a status by the HTTP handler: `StaticKeyPresented`
-/// → 400, `Unauthorized` → 401, `SelfMintDisabled`/`Unbound`/`BadSubject`/`OverCeiling` → 403,
+/// → 400, `Unauthorized` → 401, `SelfMintDisabled`/`Unbound`/`Held`/`BadSubject`/`OverCeiling` → 403,
 /// `MintFailed` → 500.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExchangeError {
@@ -242,10 +242,11 @@ pub(crate) enum ExchangeError {
     /// and the disabled-mint policy is not disclosed to the unauthenticated.
     SelfMintDisabled,
     /// Identified, but no role of the principal is bound under the identifying module, or the bound
-    /// role has no `group` to charge through, or (only with the unsigned
-    /// [`crate::governance::SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`] on) the subject's self-serve
-    /// binding is disabled or was minted by another identity provider → 403.
+    /// role has no `group` to charge through → 403.
     Unbound,
+    /// The subject's self-serve key is on hold (an admin disabled or revoked it, another identity
+    /// provider minted it, or the subject is held) → 403 with the coded reason.
+    Held(crate::governance::SelfMintRefusal),
     /// The principal id is not a safe self-serve subject (reserved/ambiguous) → 403.
     BadSubject,
     /// The key this identity would mint is over the deployment's mint ceiling (`auth.policy`: the

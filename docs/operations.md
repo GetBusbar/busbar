@@ -637,6 +637,25 @@ returns the signed token **once**; a key is pure auth (every limit lives on the 
 EXPIRES (default 90 days, so re-mint or rotate before then), and `DELETE` puts its subject on the
 durable revocation denylist immediately.
 
+### Containing a self-serve key
+
+An admin action on a self-serve key (one a user minted at `/auth/token`) holds across the user's
+next sign-in and Refresh. To contain a leaked key or offboard a user:
+
+- **Disable** (`PATCH /keys/{id} {"enabled": false}`) for a reversible pause. The user's sign-in is
+  refused (403 `BUSBAR-4043`) until you `PATCH {"enabled": true}`, which brings back the same key
+  and its earlier tokens.
+- **Revoke** (`POST /keys/{id}/revoke`) for a permanent stop. Nothing re-enables a revoked key: not a
+  sign-in, not a Refresh, not `PATCH {"enabled": true}` (409 `BUSBAR-4044`).
+- **Delete** (`DELETE /keys/{id}`) to start the user over: their next sign-in mints a new key with a
+  new id, and every old token stays dead. Delete is also how you clear a revoked key or a key held
+  by a different sign-in provider.
+
+Each refused sign-in is in the admin audit log as `self_serve.mint` / `rejected` on
+`key:<id>#<reason>`, and logs `BUSBAR-4043` at debug. After upgrading from 1.5.5, review the
+self-serve keys you had disabled: a 1.5.5 login re-enabled them silently, and that cannot be
+detected afterwards.
+
 ### Enforcement model
 
 - **Verification is stateless**: signature + expiry + the revocation denylist; policy (group,
