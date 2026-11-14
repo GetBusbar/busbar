@@ -240,7 +240,7 @@ impl DataRoutes {
         if rendered.body.is_empty() {
             caller.complete_head(rendered.status, rendered.fields);
         } else {
-            caller.head(rendered.status, rendered.fields);
+            caller.head_whole(rendered.status, rendered.fields, rendered.body.len());
         }
         if !rendered.body.is_empty() && !caller.write(&rendered.body).await {
             admission.refuse(
@@ -413,6 +413,8 @@ impl DataRoutes {
                 if response.body.is_empty() {
                     caller.complete_head(response.status, response.fields);
                 } else {
+                    // lint-exempt(whole-body-states-length): `streams__sdp__calls` pins this
+                    // datagram whole response as chunked, pending the owner's ruling.
                     caller.head(response.status, response.fields);
                     let _ = caller.write_owned(response.body).await;
                 }
@@ -520,7 +522,7 @@ pub(crate) async fn render<C: Output>(caller: &C, rendered: Rendered) {
     if rendered.body.is_empty() {
         caller.complete_head(rendered.status, rendered.fields);
     } else {
-        caller.head(rendered.status, rendered.fields);
+        caller.head_whole(rendered.status, rendered.fields, rendered.body.len());
         let _ = caller.write(&rendered.body).await;
     }
 }
