@@ -13,7 +13,9 @@ fn duplicate_lifted_sections_and_policies_are_refused_by_the_live_reader() {
         let error = deploy_from_yaml_str(yaml)
             .expect_err("duplicates must not replace policy")
             .to_string();
-        assert!(error.contains("duplicate field"), "{error}");
+        // The shared YAML reader refuses the repeated key itself (its wording, not serde's
+        // `duplicate field`); the JSON reader below still reaches serde's own refusal.
+        assert!(error.contains("duplicate"), "{error}");
     }
 
     let mut json = serde_json::Deserializer::from_str(r#"{"auth":{"policy":{},"policy":{}}}"#);
@@ -32,13 +34,13 @@ fn duplicate_provider_names_are_refused_in_deployment_and_catalog_readers() {
         .expect_err("a duplicate deployment must not silently replace its destination")
         .to_string();
     assert!(
-        error.contains("duplicate entry") && error.contains("p"),
+        error.contains("duplicate") && error.contains("p"),
         "{error}"
     );
     let error = providers::catalog_from_str("p: {protocol: x, base_url: https://one.example}\np: {protocol: x, base_url: https://two.example}\n")
         .expect_err("a duplicate catalog name must not replace its destination").to_string();
     assert!(
-        error.contains("duplicate entry") && error.contains("p"),
+        error.contains("duplicate") && error.contains("p"),
         "{error}"
     );
 }
@@ -170,7 +172,7 @@ fn hook_timeout_validation_covers_zero_boundary_and_overflow_in_resolved_config(
     let mut deploy = super::tests::base_deploy();
     deploy.hooks.insert(
         "too-slow".into(),
-        serde_yaml::from_str(&format!(
+        busbar_contract::yaml::from_str(&format!(
             "module: test-hook\nkind: gate\ntimeout_ms: {}",
             u64::MAX
         ))

@@ -564,8 +564,10 @@ where
     de.deserialize_map(Entries(std::marker::PhantomData))
 }
 
-pub fn catalog_from_str(text: &str) -> Result<HashMap<String, ProviderDef>, serde_yaml::Error> {
-    catalog(serde_yaml::Deserializer::from_str(text))
+pub fn catalog_from_str(
+    text: &str,
+) -> Result<HashMap<String, ProviderDef>, busbar_contract::yaml::Error> {
+    busbar_contract::yaml::with_deserializer(text, |d| catalog(d))
 }
 
 macro_rules! provider_entry {
@@ -987,14 +989,14 @@ mod declared_auth_style_tests {
             "x-double-mint",
         ] {
             let style = provider_auth_from_declared_word(
-                serde_yaml::from_str::<String>(word).expect("style is a YAML string"),
+                busbar_contract::yaml::from_str::<String>(word).expect("style is a YAML string"),
                 &declared,
             )
             .unwrap_or_else(|e| panic!("declared style '{word}' must parse: {e}"));
             assert_eq!(style.as_str(), word);
         }
         let refused = provider_auth_from_declared_word(
-            serde_yaml::from_str::<String>("oauth2").expect("style is a YAML string"),
+            busbar_contract::yaml::from_str::<String>("oauth2").expect("style is a YAML string"),
             &declared,
         )
         .expect_err("'oauth2' is declared by no plugin and must fail to deserialize")

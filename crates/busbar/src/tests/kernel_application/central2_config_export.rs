@@ -33,7 +33,8 @@ health:
 routing:
   default_policy_timeout_ms: 99
 "#;
-    let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("limits override must parse");
+    let deploy: DeployCfg =
+        busbar_contract::yaml::from_str(yaml).expect("limits override must parse");
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
@@ -59,7 +60,7 @@ routing:
 #[test]
 fn export_named_map_allows_two_instances_of_one_module() {
     crate::dist_root_install::install();
-    let defs: busbar_kernel::config::ExportDefs = serde_yaml::from_str(
+    let defs: busbar_kernel::config::ExportDefs = busbar_contract::yaml::from_str(
         "req-log:  { module: request-log-webhook, settings: { url: \"https://logs.example.com/a\" } }\n\
          req-siem: { module: request-log-webhook, settings: { url: \"https://siem.internal/b\", delivery_timeout_secs: 9 } }\n",
     )
@@ -93,7 +94,7 @@ fn export_named_map_allows_two_instances_of_one_module() {
         serde_json::json!(9)
     );
 
-    let defs: busbar_kernel::config::ExportDefs = serde_yaml::from_str(
+    let defs: busbar_kernel::config::ExportDefs = busbar_contract::yaml::from_str(
         "one: { module: prometheus, settings: { buffer_seconds: 60 } }\n\
          two: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
     )
@@ -112,7 +113,7 @@ fn export_named_map_allows_two_instances_of_one_module() {
     );
 
     let defs: busbar_kernel::config::ExportDefs =
-        serde_yaml::from_str("x: { module: nope }\n").expect("parses");
+        busbar_contract::yaml::from_str("x: { module: nope }\n").expect("parses");
     let mut errors = Vec::new();
     let _ = busbar_kernel::config::resolve_export(&defs, &mut errors);
     assert!(

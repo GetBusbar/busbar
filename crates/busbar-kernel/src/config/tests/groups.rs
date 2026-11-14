@@ -10,7 +10,7 @@ const ADDITIVE_METRIC_WORDS: [&str; 4] = [
 ];
 
 fn refusal(yaml: &str) -> String {
-    match serde_yaml::from_str::<LimitCfg>(yaml) {
+    match busbar_contract::yaml::from_str::<LimitCfg>(yaml) {
         Ok(ok) => panic!("expected a refusal, parsed {ok:?}"),
         Err(e) => e.to_string(),
     }
@@ -19,11 +19,34 @@ fn refusal(yaml: &str) -> String {
 #[test]
 fn the_unknown_field_list_is_1_5_5s() {
     let got = refusal("{ requests: 1, per: day, bogus: 1 }");
-    assert!(
-        got.contains(
-            "unknown field `bogus`, expected one of `requests`, `tokens`, `budget`, \
-             `concurrent`, `per`, `pool`, `on_exhaust`, `downgrade_to`"
-        ),
+    // The field list is 1.5.5's; the YAML reader renders serde's `unknown_field` list without
+    // the backticks serde_yaml put round each name, so pin the names and their order.
+    let list = got
+        .split_once("unknown field `bogus`, expected one of ")
+        .map(|(_, list)| list)
+        .unwrap_or_else(|| panic!("BOOT-P29 refusal is not 1.5.5's: {got}"));
+    let names: Vec<&str> = list
+        .split(", ")
+        .map(|name| {
+            name.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_matches('`')
+        })
+        .take(8)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "requests",
+            "tokens",
+            "budget",
+            "concurrent",
+            "per",
+            "pool",
+            "on_exhaust",
+            "downgrade_to"
+        ],
         "BOOT-P29 refusal is not 1.5.5's: {got}"
     );
     for word in ADDITIVE_METRIC_WORDS {
@@ -80,8 +103,9 @@ fn the_four_additive_metrics_still_parse() {
         LimitMetric::TokensCacheWrite,
     ];
     for (word, metric) in ADDITIVE_METRIC_WORDS.iter().zip(expected) {
-        let parsed: LimitCfg = serde_yaml::from_str(&format!("{{ {word}: 7, per: day }}"))
-            .unwrap_or_else(|e| panic!("`{word}` no longer parses: {e}"));
+        let parsed: LimitCfg =
+            busbar_contract::yaml::from_str(&format!("{{ {word}: 7, per: day }}"))
+                .unwrap_or_else(|e| panic!("`{word}` no longer parses: {e}"));
         assert_eq!(parsed.metric, metric);
         assert_eq!(parsed.amount, 7);
         assert_eq!(parsed.per, Some(LimitWindow::Day));
@@ -96,7 +120,7 @@ fn the_four_frozen_metrics_still_parse() {
         } else {
             format!("{{ {word}: 7, per: day }}")
         };
-        let parsed: LimitCfg = serde_yaml::from_str(&yaml)
+        let parsed: LimitCfg = busbar_contract::yaml::from_str(&yaml)
             .unwrap_or_else(|e| panic!("`{word}` no longer parses: {e}"));
         assert_eq!(parsed.metric.as_str(), word);
         assert_eq!(parsed.amount, 7);

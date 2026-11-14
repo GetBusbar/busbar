@@ -7,16 +7,16 @@ use std::collections::HashMap;
 
 fn strip_from_document(
     text: &str,
-    observed: &mut Vec<serde_yaml::Value>,
-) -> Result<DeployCfg, serde_yaml::Error> {
+    observed: &mut Vec<busbar_contract::yaml::Value>,
+) -> Result<DeployCfg, busbar_contract::yaml::Error> {
     struct Section<'a>(&'a mut Lifted);
     impl<'de> DeserializeSeed<'de> for Section<'_> {
-        type Value = serde_yaml::Value;
+        type Value = busbar_contract::yaml::Value;
         fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
             plane_remainder_in("tools", "card-plane", "card thing", de, self.0)
         }
     }
-    struct Document<'a>(&'a mut Vec<serde_yaml::Value>);
+    struct Document<'a>(&'a mut Vec<busbar_contract::yaml::Value>);
     impl<'de> Visitor<'de> for Document<'_> {
         type Value = DeployCfg;
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -41,10 +41,9 @@ fn strip_from_document(
             Ok(deploy)
         }
     }
-    serde::Deserializer::deserialize_map(
-        serde_yaml::Deserializer::from_str(text),
-        Document(observed),
-    )
+    busbar_contract::yaml::with_deserializer(text, |d| {
+        serde::Deserializer::deserialize_map(d, Document(observed))
+    })
 }
 
 #[test]
@@ -60,7 +59,7 @@ fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
 
     let saw = observed.clone();
     assert_eq!(saw.len(), 1, "the plane parsed its section once: {saw:?}");
-    let blob = serde_yaml::to_string(&saw[0]).unwrap();
+    let blob = busbar_contract::yaml::to_string(&saw[0]).unwrap();
     assert!(
         !blob.contains("rate_card") && !blob.contains("tool_calls") && blob.contains("srv"),
         "the plane got its own settings and not a byte of its card: {blob}"
@@ -100,7 +99,7 @@ fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
      &mut observed)
     .expect("a plane section with fees parses");
     let saw = observed.clone();
-    let blob = serde_yaml::to_string(&saw[0]).unwrap();
+    let blob = busbar_contract::yaml::to_string(&saw[0]).unwrap();
     assert!(
         !blob.contains("fees") && !blob.contains("per_request") && blob.contains("srv"),
         "the plane got its own settings and not a byte of its fees: {blob}"
@@ -158,12 +157,18 @@ fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
             &mut observed,
         )
         .expect_err(key);
-        assert_eq!(
-            err.to_string(),
-            format!(
-                "tools.{key}: {} at line 6 column 5",
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!(
+                "tools.{key}: {}",
                 reserved_name_refusal("tools", "card thing", key)
-            )
+            )),
+            "{message}"
+        );
+        assert_eq!(
+            err.location().map(|at| (at.line(), at.column())),
+            Some((6, 5)),
+            "{message}"
         );
         assert!(
             observed.is_empty(),
@@ -181,6 +186,6 @@ fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
         &mut observed,
     )
     .expect("every reserved knob, well-shaped, loads");
-    let saw = serde_yaml::to_string(&observed[0]).unwrap();
+    let saw = busbar_contract::yaml::to_string(&observed[0]).unwrap();
     assert!(saw.contains("srv") && !saw.contains("fees"), "{saw}");
 }

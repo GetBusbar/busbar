@@ -8,7 +8,7 @@ use super::*;
 
 #[test]
 fn the_destination_keys_parse_under_advanced() {
-    let a: AdvancedCfg = serde_yaml::from_str(
+    let a: AdvancedCfg = busbar_contract::yaml::from_str(
         "block_private_addresses: false\nallow_destinations: [10.0.0.0/8, '*.corp.example']\n",
     )
     .expect("the destination keys are advanced keys");
@@ -19,7 +19,8 @@ fn the_destination_keys_parse_under_advanced() {
 #[test]
 fn private_addresses_are_blocked_by_default() {
     assert!(AdvancedCfg::default().block_private_addresses);
-    let omitted: AdvancedCfg = serde_yaml::from_str("rate_sweep_interval: 256\n").expect("parses");
+    let omitted: AdvancedCfg =
+        busbar_contract::yaml::from_str("rate_sweep_interval: 256\n").expect("parses");
     assert!(omitted.block_private_addresses);
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
     let d = cfg.destinations();

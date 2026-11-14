@@ -600,21 +600,21 @@ plane_behaviour! {
         fn(prior: &dyn crate::plane_driver::slots::PlaneSlots, next: &dyn crate::plane_driver::slots::PlaneSlots),
     >,
 
-    /// PARSE THIS PLANE'S TOP-LEVEL REGISTRY SECTION from a positionless `serde_yaml::Value` into its
+    /// PARSE THIS PLANE'S TOP-LEVEL REGISTRY SECTION from a positionless `busbar_contract::yaml::Value` into its
     /// own typed config, boxed as the neutral [`crate::config::plane_sections::PlaneCfg`] — the seam
     /// `DeployCfg`'s `tools:`/`agents:` field deserializes through, so core names no plane config type.
     /// `None` for a plane with no registry section (the LLM / `proto` planes).
     #[allow(clippy::type_complexity)]
     parse_section:
-        Option<fn(&PlaneDecl, &serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String>>,
+        Option<fn(&PlaneDecl, &busbar_contract::yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String>>,
 
     /// PARSE THIS PLANE'S TOP-LEVEL ENDPOINT block (the MCP plane's `mcp:` door) from a positionless
-    /// `serde_yaml::Value`, boxed as the neutral [`crate::config::plane_sections::PlaneEndpointCfg`] — the seam
+    /// `busbar_contract::yaml::Value`, boxed as the neutral [`crate::config::plane_sections::PlaneEndpointCfg`] — the seam
     /// `DeployCfg`'s `mcp:` field deserializes through. `None` for a plane with no endpoint block
     /// (every plane but MCP).
     #[allow(clippy::type_complexity)]
     parse_endpoint: Option<
-        fn(&PlaneDecl, &serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>,
+        fn(&PlaneDecl, &busbar_contract::yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>,
     >,
 
     /// LOWER THIS PLANE'S ENDPOINT block into its validated runtime resource, type-erased as

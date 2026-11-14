@@ -1038,9 +1038,10 @@ async fn budget_block_carries_downgrade_target() {
 
 #[tokio::test]
 async fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
-    let card: BTreeMap<String, crate::config::RateEntryCfg> =
-        serde_yaml::from_str("rerank: { input_utok: 1, units: { search_units: 2000 } }\n")
-            .expect("an open class parses under units:");
+    let card: BTreeMap<String, crate::config::RateEntryCfg> = busbar_contract::yaml::from_str(
+        "rerank: { input_utok: 1, units: { search_units: 2000 } }\n",
+    )
+    .expect("an open class parses under units:");
     let groups: BTreeMap<String, GroupCfg> = [(
         "g".to_string(),
         group_cfg(
@@ -1104,7 +1105,7 @@ async fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_
     let k = key("vk_rerank", Some("g"));
 
     let silent: BTreeMap<String, crate::config::RateEntryCfg> =
-        serde_yaml::from_str("rerank: { input_utok: 1 }\n").expect("parses");
+        busbar_contract::yaml::from_str("rerank: { input_utok: 1 }\n").expect("parses");
     let cm = CostModel::resolve_parts(Some(&silent), 0, &groups);
     let usage = busbar_contract::billing::Usage {
         usage_units: units.clone(),

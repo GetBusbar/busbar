@@ -7,7 +7,7 @@ use busbar_kernel::plane_driver::ObservationPolicy;
 
 pub(super) fn parse(
     instance: &str,
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     facts: &DoorFacts,
     pools: &DoorPools,
 ) -> Result<BTreeMap<String, ObservationPolicy>, String> {

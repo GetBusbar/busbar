@@ -17,7 +17,7 @@ child_default:
   limits:
     - { budget: 2000, per: month }
 ";
-    let g1: GroupCfg = serde_yaml::from_str(src).expect("parse group");
+    let g1: GroupCfg = busbar_contract::yaml::from_str(src).expect("parse group");
     assert!(
         g1.child_default
             .as_ref()
@@ -25,8 +25,8 @@ child_default:
         "child_default template parses"
     );
 
-    let out = serde_yaml::to_string(&g1).expect("serialize group");
-    let g2: GroupCfg = serde_yaml::from_str(&out).expect("re-parse serialized group");
+    let out = busbar_contract::yaml::to_string(&g1).expect("serialize group");
+    let g2: GroupCfg = busbar_contract::yaml::from_str(&out).expect("re-parse serialized group");
     assert_eq!(
         g1, g2,
         "group must survive a serialize/deserialize round-trip"
@@ -53,8 +53,9 @@ child_default:
 
 #[test]
 fn group_without_child_default_omits_it() {
-    let g: GroupCfg = serde_yaml::from_str("limits: [ { budget: 10, per: day } ]").unwrap();
-    let out = serde_yaml::to_string(&g).unwrap();
+    let g: GroupCfg =
+        busbar_contract::yaml::from_str("limits: [ { budget: 10, per: day } ]").unwrap();
+    let out = busbar_contract::yaml::to_string(&g).unwrap();
     assert!(
         !out.contains("child_default"),
         "no spurious child_default key: {out}"
@@ -72,15 +73,17 @@ fn group_without_child_default_omits_it() {
 
 #[test]
 fn limit_serialize_shape_matches_deserialize() {
-    let concurrent: LimitCfg = serde_yaml::from_str("{ concurrent: 3 }").unwrap();
+    let concurrent: LimitCfg = busbar_contract::yaml::from_str("{ concurrent: 3 }").unwrap();
     assert_eq!(
-        serde_yaml::to_string(&concurrent).unwrap().trim(),
+        busbar_contract::yaml::to_string(&concurrent)
+            .unwrap()
+            .trim(),
         "concurrent: 3"
     );
 
-    let budget: LimitCfg = serde_yaml::from_str("{ budget: 5000, per: month }").unwrap();
-    let out = serde_yaml::to_string(&budget).unwrap();
-    let back: LimitCfg = serde_yaml::from_str(&out).unwrap();
+    let budget: LimitCfg = busbar_contract::yaml::from_str("{ budget: 5000, per: month }").unwrap();
+    let out = busbar_contract::yaml::to_string(&budget).unwrap();
+    let back: LimitCfg = busbar_contract::yaml::from_str(&out).unwrap();
     assert_eq!(budget, back);
 }
 
@@ -119,11 +122,11 @@ fn every_limit_metric_serde_round_trips() {
             format!("{{ {key}: 7, per: minute }}")
         };
         let parsed: LimitCfg =
-            serde_yaml::from_str(&src).unwrap_or_else(|e| panic!("parse `{src}`: {e}"));
+            busbar_contract::yaml::from_str(&src).unwrap_or_else(|e| panic!("parse `{src}`: {e}"));
         assert_eq!(parsed.metric, m, "deserialize `{key}` -> variant");
 
-        let out = serde_yaml::to_string(&parsed).expect("serialize");
-        let back: LimitCfg = serde_yaml::from_str(&out).expect("re-parse");
+        let out = busbar_contract::yaml::to_string(&parsed).expect("serialize");
+        let back: LimitCfg = busbar_contract::yaml::from_str(&out).expect("re-parse");
         assert_eq!(parsed, back, "round-trip for `{key}`");
         assert!(
             out.contains(key),
@@ -134,7 +137,7 @@ fn every_limit_metric_serde_round_trips() {
 
 #[test]
 fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalization() {
-    let l: LimitCfg = serde_yaml::from_str(
+    let l: LimitCfg = busbar_contract::yaml::from_str(
         "{ budget: 5000, per: month, pool: frontier, on_exhaust: downgrade, \
              downgrade_to: value }",
     )
@@ -142,7 +145,7 @@ fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalizatio
     assert_eq!(l.scope, Some(ScopeRef::pool("frontier")));
     assert_eq!(l.downgrade_to, Some(ScopeRef::pool("value")));
 
-    let out = serde_yaml::to_string(&l).expect("serializes");
+    let out = busbar_contract::yaml::to_string(&l).expect("serializes");
     assert!(
         out.contains("pool: frontier"),
         "wire key stays the bare `pool: <name>`, no {{kind, value}} wrapper: {out}"
@@ -156,7 +159,7 @@ fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalizatio
         "no ScopeRef {{kind, value}} shape may leak onto the wire: {out}"
     );
 
-    let back: LimitCfg = serde_yaml::from_str(&out).expect("reparses");
+    let back: LimitCfg = busbar_contract::yaml::from_str(&out).expect("reparses");
     assert_eq!(
         back, l,
         "round-trip must be byte-for-byte behaviorally exact"
@@ -165,7 +168,8 @@ fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalizatio
 
 #[test]
 fn budget_modes_parse_default_and_round_trip() {
-    let bare: LimitCfg = serde_yaml::from_str("{ budget: 5000, per: month }").expect("parses");
+    let bare: LimitCfg =
+        busbar_contract::yaml::from_str("{ budget: 5000, per: month }").expect("parses");
     assert_eq!((bare.admission, bare.on_exhaustion), (None, None));
     assert_eq!(AdmissionMode::governing([&bare]), AdmissionMode::Exact);
     assert_eq!(
@@ -173,7 +177,7 @@ fn budget_modes_parse_default_and_round_trip() {
         ExhaustionMode::FinishUnit
     );
 
-    let set: LimitCfg = serde_yaml::from_str(
+    let set: LimitCfg = busbar_contract::yaml::from_str(
         "{ budget: 5000, per: month, admission: estimate, on_exhaustion: cut-stream }",
     )
     .expect("the budget modes parse");
@@ -188,13 +192,13 @@ fn budget_modes_parse_default_and_round_trip() {
         ExhaustionMode::CutStream,
         "any governing cut-stream cuts"
     );
-    let out = serde_yaml::to_string(&set).expect("serializes");
+    let out = busbar_contract::yaml::to_string(&set).expect("serializes");
     assert!(out.contains("admission: estimate"), "{out}");
     assert!(out.contains("on_exhaustion: cut-stream"), "{out}");
-    let back: LimitCfg = serde_yaml::from_str(&out).expect("reparses");
+    let back: LimitCfg = busbar_contract::yaml::from_str(&out).expect("reparses");
     assert_eq!(back, set);
 
-    let spelled: LimitCfg = serde_yaml::from_str(
+    let spelled: LimitCfg = busbar_contract::yaml::from_str(
         "{ budget: 1, per: day, admission: exact, on_exhaustion: finish-unit }",
     )
     .expect("the defaults may be spelled out");
@@ -214,7 +218,7 @@ fn budget_modes_refuse_on_a_non_budget_limit_and_an_unknown_mode() {
             "on_exhaustion",
         ),
     ] {
-        let err = serde_yaml::from_str::<LimitCfg>(limit)
+        let err = busbar_contract::yaml::from_str::<LimitCfg>(limit)
             .expect_err("a non-budget limit refuses a budget mode")
             .to_string();
         assert!(
@@ -222,11 +226,15 @@ fn budget_modes_refuse_on_a_non_budget_limit_and_an_unknown_mode() {
             "{err}"
         );
     }
-    assert!(
-        serde_yaml::from_str::<LimitCfg>("{ budget: 1, per: day, on_exhaustion: cut }").is_err()
-    );
-    assert!(serde_yaml::from_str::<LimitCfg>("{ budget: 1, per: day, admission: guess }").is_err());
-    assert!(serde_yaml::from_str::<LimitCfg>(
+    assert!(busbar_contract::yaml::from_str::<LimitCfg>(
+        "{ budget: 1, per: day, on_exhaustion: cut }"
+    )
+    .is_err());
+    assert!(busbar_contract::yaml::from_str::<LimitCfg>(
+        "{ budget: 1, per: day, admission: guess }"
+    )
+    .is_err());
+    assert!(busbar_contract::yaml::from_str::<LimitCfg>(
         "{ budget: 1, per: day, admission: exact, admission: estimate }"
     )
     .is_err());
@@ -234,7 +242,7 @@ fn budget_modes_refuse_on_a_non_budget_limit_and_an_unknown_mode() {
 
 #[test]
 fn downgrade_and_cut_stream_coexist_on_one_limit() {
-    let l: LimitCfg = serde_yaml::from_str(
+    let l: LimitCfg = busbar_contract::yaml::from_str(
         "{ budget: 5000, per: month, pool: frontier, on_exhaust: downgrade, downgrade_to: value, \
            on_exhaustion: cut-stream }",
     )
@@ -245,7 +253,7 @@ fn downgrade_and_cut_stream_coexist_on_one_limit() {
 }
 
 fn tree() -> BTreeMap<String, GroupCfg> {
-    serde_yaml::from_str(
+    busbar_contract::yaml::from_str(
         "
 acme:
   limits: [ { budget: 5000000, per: month } ]
@@ -314,7 +322,7 @@ fn provision_child_builds_leaf_from_nearest_default() {
 
 #[test]
 fn distinct_groups_cannot_share_a_generated_enforcement_identity() {
-    let mut groups: BTreeMap<String, GroupCfg> = serde_yaml::from_str(
+    let mut groups: BTreeMap<String, GroupCfg> = busbar_contract::yaml::from_str(
         r#"
 a:
   limits:

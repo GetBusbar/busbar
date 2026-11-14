@@ -128,7 +128,7 @@ fn a_model_serving_doors_ledger_lanes_are_its_actual_model_names() {
     let section = DoorSection::new(
         None,
         reg.section,
-        serde_yaml::from_str(
+        busbar_contract::yaml::from_str(
             "models:\n  first-model: { provider: one }\n  second-model: { provider: two }\n\
              hooks: [audit]\npools: { both: { members: [first-model, second-model] } }\n",
         )
@@ -163,7 +163,7 @@ fn a_model_map_owns_the_routed_entries_even_when_empty() {
         let section = DoorSection::new(
             None,
             reg.section,
-            serde_yaml::from_str(&format!(
+            busbar_contract::yaml::from_str(&format!(
                 "models: {models}\nmetadata: {{ url: 'https://example.test' }}\n"
             ))
             .unwrap(),
@@ -182,7 +182,7 @@ fn named_doors_keep_their_explicit_scoped_registration_lanes() {
     let section = DoorSection::new(
         None,
         reg.section,
-        serde_yaml::from_str(
+        busbar_contract::yaml::from_str(
             "first: { url: 'https://one.test' }\nsecond: { url: 'https://two.test' }\n\
              hooks: [audit]\nupstream_credentials: own\nwork: { max_live: 2 }\n\
              pools: { both: { members: [first, second] } }\nmodels: null\n",
@@ -210,8 +210,11 @@ fn unpriced_and_fee_only_doors_add_no_resource_price_obligations() {
             "models: { actual-model: { provider: upstream } }\n",
             "actual-member: { url: 'https://example.test' }\n",
         ] {
-            let section =
-                DoorSection::new(None, reg.section, serde_yaml::from_str(written).unwrap());
+            let section = DoorSection::new(
+                None,
+                reg.section,
+                busbar_contract::yaml::from_str(written).unwrap(),
+            );
             assert!(section.ledger_lanes_for(&decl).is_empty());
         }
     }
@@ -383,13 +386,14 @@ fn a_registration_with_no_name_or_section_is_refused() {
 fn the_section_is_judged_by_the_door_and_carried_as_written() {
     let decl = fold(registration("door-fold-parse", NAMED)).expect("folds");
     let parse = decl.parse_section.expect("a section parser");
-    let bad: serde_yaml::Value = serde_yaml::from_str("zed: {pin: {mechanism: unpinned}}").unwrap();
+    let bad: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("zed: {pin: {mechanism: unpinned}}").unwrap();
     assert_eq!(
         parse(decl, &bad).unwrap_err(),
         format!("`{NAMED}.zed`: `url:` must name the endpoint"),
         "the door's refusal, in its words"
     );
-    let good: serde_yaml::Value = serde_yaml::from_str(
+    let good: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(
         "hooks: [audit]\nzed: {url: 'https://z', hooks: [gate]}\nalpha: {url: 'https://a'}\n",
     )
     .unwrap();
@@ -417,7 +421,7 @@ fn the_section_is_judged_by_the_door_and_carried_as_written() {
 fn a_registration_view_reads_the_kernel_owned_trust_keys() {
     let decl = fold(registration("door-fold-view", NAMED)).expect("folds");
     let keys = decl.trust_keys;
-    let pinned: serde_yaml::Value = serde_yaml::from_str(
+    let pinned: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(
         "url: https://z\npin: {mechanism: jws, key: k, fingerprint: 'sha256:x'}\nreverify_ttl: 1m",
     )
     .unwrap();
@@ -429,7 +433,8 @@ fn a_registration_view_reads_the_kernel_owned_trust_keys() {
     assert_eq!(v.pin_mechanism.as_deref(), Some("jws"));
     assert_eq!(v.fingerprint_pinned, Some(true));
     assert_eq!(v.reverify_ttl.as_deref(), Some("1m"));
-    let bare: serde_yaml::Value = serde_yaml::from_str("url: https://a").unwrap();
+    let bare: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("url: https://a").unwrap();
     let v = view_of("alpha", &bare, keys);
     assert_eq!(v.fingerprint_pinned, Some(false));
     assert_eq!(
@@ -481,7 +486,7 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
         section: DoorSection::new(
             decl.door,
             NAMED,
-            serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+            busbar_contract::yaml::from_str("zed: {url: 'https://z'}").unwrap(),
         ),
         facing: (reg.facing)(b"{}", b"", Some("https://gw.example"), &[]).expect("faces"),
         opened: true,
@@ -558,7 +563,8 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     );
     let decl = fold(reg).expect("folds");
     assert_eq!(decl.owned_config_sections, &[owned_key]);
-    let block: serde_yaml::Value = serde_yaml::from_str("uri: 'https://gw.example/x'").unwrap();
+    let block: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("uri: 'https://gw.example/x'").unwrap();
     let parsed =
         (decl.parse_endpoint.expect("its endpoint parses"))(decl, &block).expect("carried");
     assert!(parsed.is_present());
@@ -566,7 +572,7 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     let section = DoorSection::new(
         decl.door,
         NAMED,
-        serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+        busbar_contract::yaml::from_str("zed: {url: 'https://z'}").unwrap(),
     );
     let section_defs = section.as_defs();
     let ctx = BuildCtx {
@@ -601,7 +607,7 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
     let decl = fold(reg).expect("folds");
     let doorless_facing = facing.clone();
     let slot = DoorSlot {
-        section: DoorSection::new(decl.door, NAMED, serde_yaml::Value::Null),
+        section: DoorSection::new(decl.door, NAMED, busbar_contract::yaml::Value::Null),
         facing,
         opened: true,
     };
@@ -642,7 +648,7 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
     colliding.insert(
         other_decl.key,
         std::sync::Arc::new(DoorSlot {
-            section: DoorSection::new(other_decl.door, NAMED, serde_yaml::Value::Null),
+            section: DoorSection::new(other_decl.door, NAMED, busbar_contract::yaml::Value::Null),
             facing: busbar_contract::plane_calls::DoorFacing {
                 listed: vec!["alpha".into()],
                 ..Default::default()
@@ -669,7 +675,7 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
     > = [(
         decl.key,
         std::sync::Arc::new(DoorSlot {
-            section: DoorSection::new(None, NAMED, serde_yaml::Value::Null),
+            section: DoorSection::new(None, NAMED, busbar_contract::yaml::Value::Null),
             facing: doorless_facing,
             opened: true,
         }) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -701,7 +707,7 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
     );
     let decl = fold(reg).expect("folds");
     let provider = |yaml: &str| -> crate::config::providers::ResolvedProvider {
-        serde_yaml::from_str::<crate::config::providers::ProviderCfg>(yaml)
+        busbar_contract::yaml::from_str::<crate::config::providers::ProviderCfg>(yaml)
             .expect("a provider")
             .into()
     };
@@ -724,7 +730,7 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
     let section = DoorSection::new(
         decl.door,
         NAMED,
-        serde_yaml::from_str(
+        busbar_contract::yaml::from_str(
             "models: {m1: {provider: eng-a}, m2: {provider: eng-b}, m3: {provider: eng-a}}",
         )
         .unwrap(),
@@ -783,8 +789,8 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
     });
     let decl = fold(reg).unwrap();
     let section = |value| DoorSection::new(decl.door, NAMED, value);
-    let first = section(serde_yaml::from_str("first: {}\n").unwrap());
-    let next = section(serde_yaml::from_str("replacement: {}\n").unwrap());
+    let first = section(busbar_contract::yaml::from_str("first: {}\n").unwrap());
+    let next = section(busbar_contract::yaml::from_str("replacement: {}\n").unwrap());
     let first_defs = first.as_defs();
     let next_defs = next.as_defs();
     fn ctx<'a>(
@@ -870,7 +876,7 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
 
     let absent = std::collections::BTreeMap::new();
     assert!((decl.build)(decl, &ctx(&absent, Some(&prior), None)).is_none());
-    let null_defs = section(serde_yaml::Value::Null).as_defs();
+    let null_defs = section(busbar_contract::yaml::Value::Null).as_defs();
     assert!((decl.build)(decl, &ctx(&null_defs, Some(&prior), None)).is_none());
 
     let owned_ctx = |value| BuildCtx {
@@ -883,7 +889,8 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
         prior: Some(&prior),
         providers: None,
     };
-    let active_owned: serde_yaml::Value = serde_yaml::from_str("enabled: true\n").unwrap();
+    let active_owned: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("enabled: true\n").unwrap();
     refuse.store(false, Ordering::SeqCst);
     let owned = (decl.build)(decl, &owned_ctx(active_owned.clone())).unwrap();
     assert!(!Arc::ptr_eq(&old, &owned));
@@ -897,7 +904,7 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
     refuse.store(true, Ordering::SeqCst);
     let refused_owned = (decl.build)(decl, &owned_ctx(active_owned)).unwrap();
     assert!(Arc::ptr_eq(&old, &refused_owned));
-    assert!((decl.build)(decl, &owned_ctx(serde_yaml::Value::Null)).is_none());
+    assert!((decl.build)(decl, &owned_ctx(busbar_contract::yaml::Value::Null)).is_none());
 }
 
 #[test]

@@ -5,7 +5,7 @@
 //! Selection and credential interpretation belong to the requesting and receiving plugins.
 use super::migrate_plugins::MigrateHost;
 use busbar_contract::secret_ref::SecretRef;
-use serde_yaml::Mapping;
+use busbar_contract::yaml::{self, prelude::*};
 
 pub(super) fn migrate(
     root: &mut Mapping,
@@ -18,13 +18,13 @@ pub(super) fn migrate(
     let Some((first, rest)) = path.split_first() else {
         return;
     };
-    let Some(mut slot) = root.get_mut(first.as_str()) else {
+    let Some(mut slot) = root.get_key_mut(first.as_str()) else {
         return;
     };
     for key in rest {
         let Some(next) = slot
             .as_mapping_mut()
-            .and_then(|map| map.get_mut(key.as_str()))
+            .and_then(|map| map.get_key_mut(key.as_str()))
         else {
             // A borrowed catalog value is not an authored deployment credential.
             return;
@@ -34,16 +34,16 @@ pub(super) fn migrate(
     let site = path.join(".");
     let result = (|| {
         let sources = host.source_declarations()?;
-        let reference = busbar_contract::secret_ref::context::deserialize::<SecretRef, _>(
-            slot.clone(),
-            &sources,
-        )
+        let authored = yaml::to_string(&*slot).map_err(|_| "invalid reference")?;
+        let reference = yaml::with_deserializer(&authored, |d| {
+            busbar_contract::secret_ref::context::deserialize::<SecretRef, _>(d, &sources)
+        })
         .map_err(|_| "invalid reference")?;
         let Some(reference) = host.migrate_credential(module, &reference, host.migrating_from())?
         else {
             return Ok::<_, String>(None);
         };
-        serde_yaml::to_value(reference.authoring(&busbar_kernel::seal::acquire()))
+        yaml::to_value(&reference.authoring(&busbar_kernel::seal::acquire()))
             .map(Some)
             .map_err(|_| "cannot author migrated reference".into())
     })();

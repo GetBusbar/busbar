@@ -24,7 +24,7 @@ fn read_with<'de, D: Deserializer<'de>>(
         #[serde(default)]
         listen: Option<String>,
         #[serde(default, rename = "pools")]
-        _pools: Option<serde_yaml::Value>,
+        _pools: Option<busbar_contract::yaml::Value>,
     }
     struct Document<'a> {
         table: &'a [(&'static str, Dest)],
@@ -61,7 +61,9 @@ fn test_decisions_section_parses() {
         }),
     )];
     let required: &[&'static str] = &[];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let section = NEUTRAL_SECTION;
     let deploy: DeployCfg = read(&format!(
@@ -108,7 +110,9 @@ fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
         ),
     ];
     let required: &[&'static str] = &[];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let deploy: DeployCfg = read(
         "neutral_section:\n  a: 1\nsecond_section:\n  b: 2\n\
@@ -146,7 +150,9 @@ fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
         ),
     ];
     let required: &[&'static str] = &[];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let deploy: DeployCfg = read(&format!(
         "neutral_section:\n  a: 1\n  fees: {{ per_request: 3 }}\n{RAW_SECTION}:\n  greeting: hi\n\
@@ -154,8 +160,9 @@ fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
     ))
     .expect("both sections parse");
     let sections = deploy.door_sections();
-    let a: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
-    let raw: serde_yaml::Value = serde_yaml::from_str("greeting: hi").unwrap();
+    let a: busbar_contract::yaml::Value = busbar_contract::yaml::from_str("a: 1").unwrap();
+    let raw: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("greeting: hi").unwrap();
     assert_eq!(
         sections.get("neutral_section"),
         Some(&a),
@@ -182,14 +189,17 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
         }),
     )];
     let required: &[&'static str] = &[];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let deploy: DeployCfg = read(&format!(
         "{RAW_SECTION}:\n  greeting: hi\n  fees: {{ per_request: 3 }}\n\
          providers: {{}}\nmodels: {{}}\npools: {{}}\n",
     ))
     .expect("a section a registered plane declares must parse, whichever carrier holds it");
-    let remainder: serde_yaml::Value = serde_yaml::from_str("greeting: hi").unwrap();
+    let remainder: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("greeting: hi").unwrap();
     assert_eq!(
         deploy.plane_raw.get(RAW_SECTION),
         Some(&remainder),
@@ -206,7 +216,7 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
         .endpoint_resource(RAW_SECTION)
         .expect("its plane's resource");
     assert_eq!(
-        resource.downcast_ref::<(&'static str, serde_yaml::Value)>(),
+        resource.downcast_ref::<(&'static str, busbar_contract::yaml::Value)>(),
         Some(&(RAW_SECTION, remainder)),
         "the resource is `(section, value)`"
     );
@@ -224,7 +234,9 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
 fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
     let table: &[(&'static str, Dest)] = &[];
     let required: &[&'static str] = &[];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let err = read(
         "decisions:\n  \
@@ -252,26 +264,44 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
 fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field_text() {
     let table: &[(&'static str, Dest)] = &[];
     let required: &[&'static str] = &["providers", "models"];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let err = read(NO_CATALOG).expect_err("providers required");
-    assert_eq!(err.to_string(), "missing field `providers`");
+    assert!(
+        err.to_string().starts_with("missing field `providers`"),
+        "{err}"
+    );
     let err = read("listen: \"127.0.0.1:0\"\nproviders: {}\n").expect_err("models required");
-    assert_eq!(err.to_string(), "missing field `models`");
+    assert!(
+        err.to_string().starts_with("missing field `models`"),
+        "{err}"
+    );
 
-    let value: serde_yaml::Value = serde_yaml::from_str(NO_CATALOG).unwrap();
-    let err = read_with(value, table, required).expect_err("providers required");
-    assert_eq!(err.to_string(), "missing field `providers`");
+    let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(NO_CATALOG).unwrap();
+    let text = busbar_contract::yaml::to_string(&value).unwrap();
+    let err = busbar_contract::yaml::with_deserializer(&text, |d| read_with(d, table, required))
+        .expect_err("providers required");
+    assert!(
+        err.to_string().starts_with("missing field `providers`"),
+        "{err}"
+    );
 }
 
 #[test]
 fn a_plane_requiring_one_section_leaves_the_other_omissible() {
     let table: &[(&'static str, Dest)] = &[];
     let required: &[&'static str] = &["providers"];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let err = read(NO_CATALOG).expect_err("providers required");
-    assert_eq!(err.to_string(), "missing field `providers`");
+    assert!(
+        err.to_string().starts_with("missing field `providers`"),
+        "{err}"
+    );
     let deploy = read("providers: {}\n").expect("models is required by no registered plane");
     assert!(deploy.models.is_empty() && deploy.providers.is_empty());
 }
@@ -280,13 +310,17 @@ fn a_plane_requiring_one_section_leaves_the_other_omissible() {
 fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
     let table: &[(&'static str, Dest)] = &[];
     let required: &[&'static str] = &[];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let deploy = read(NO_CATALOG).expect("no registered plane requires a catalog section");
     assert!(deploy.providers.is_empty(), "{:?}", deploy.providers.keys());
     assert!(deploy.models.is_empty(), "{:?}", deploy.models.keys());
-    let value: serde_yaml::Value = serde_yaml::from_str(NO_CATALOG).unwrap();
-    read_with(value, table, required).expect("the in-memory path agrees");
+    let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(NO_CATALOG).unwrap();
+    let text = busbar_contract::yaml::to_string(&value).unwrap();
+    busbar_contract::yaml::with_deserializer(&text, |d| read_with(d, table, required))
+        .expect("the in-memory path agrees");
 
     let carried = read("models:\n  m1: { provider: p1 }\nlisten: \"127.0.0.1:0\"\n")
         .expect("a carried section parses as written");
@@ -309,11 +343,16 @@ fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
 fn any_section_a_registered_plane_requires_is_refused_when_absent() {
     let table: &[(&'static str, Dest)] = &[];
     let required: &[&'static str] = &["pools"];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let err =
         read("listen: \"127.0.0.1:0\"\n").expect_err("pools is required by a registered plane");
-    assert_eq!(err.to_string(), "missing field `pools`");
+    assert!(
+        err.to_string().starts_with("missing field `pools`"),
+        "{err}"
+    );
     read("pools: {}\n").expect("carried, so accepted");
 }
 
@@ -336,14 +375,17 @@ fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
         ),
     ];
     let required: &[&'static str] = &[];
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), table, required);
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+    };
 
     let deploy: DeployCfg = read(
         "beside_declaring:\n  a: 1\nbeside_owned:\n  receiver: true\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
     .expect("a section a registered plane owns must parse");
-    let written: serde_yaml::Value = serde_yaml::from_str("receiver: true").unwrap();
+    let written: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("receiver: true").unwrap();
     assert_eq!(deploy.plane_raw.get("beside_owned"), Some(&written));
     assert_eq!(deploy.door_sections().get("beside_owned"), Some(&written));
     let bare: DeployCfg = read("beside_declaring:\n  a: 1\nproviders: {}\nmodels: {}\npools: {}\n")
@@ -353,7 +395,9 @@ fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
 
 #[test]
 fn data_listener_provenance_distinguishes_omitted_explicit_default_and_empty() {
-    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), &[], &[]).unwrap();
+    let read = |text: &str| {
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, &[], &[])).unwrap()
+    };
     let omitted = read("providers: {}\nmodels: {}\n");
     assert!(!omitted.listen_explicit);
     let explicit = read(&format!(

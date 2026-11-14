@@ -70,13 +70,13 @@ fn drop_in_as(dir: &Path, lib: &[u8], name: &str) {
 
 fn pin_plugins(dir: &Path) {
     let path = dir.join("config.yaml");
-    let mut config: serde_yaml::Value =
-        serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    config["plugins"] = serde_yaml::to_value(common::plugins::trusted_config_document(
+    use busbar_contract::yaml::{self, prelude::*};
+    let mut config: Value = yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    *config.at_mut("plugins") = yaml::to_value(&common::plugins::trusted_config_document(
         &dir.join("plugins"),
     ))
     .unwrap();
-    std::fs::write(path, serde_yaml::to_string(&config).unwrap()).unwrap();
+    std::fs::write(path, yaml::to_string(&config).unwrap()).unwrap();
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {

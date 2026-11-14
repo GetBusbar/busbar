@@ -17,7 +17,6 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 zeroize = { workspace = true }
 getrandom = { workspace = true }

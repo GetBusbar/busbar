@@ -6,6 +6,7 @@ use super::migrate_plugins::MigrateHost;
 #[cfg(test)]
 use busbar_contract::abi::sdk::migrate::Migrated;
 use busbar_contract::abi::sdk::migrate::MigrationAnswer;
+use busbar_contract::yaml;
 use busbar_kernel::config::overlay::OverlayDoc;
 use serde_json::{Map, Value};
 
@@ -108,14 +109,13 @@ pub fn migrate_overlay_with(bytes: &[u8], host: &dyn MigrateHost) -> Result<Over
         }
     }
     let fragment = super::migrate_plugins::yaml_value(&Value::Object(fragment))?;
-    let raw =
-        serde_yaml::to_string(&fragment).map_err(|_| "cannot encode overlay migration input")?;
+    let raw = yaml::to_string(&fragment).map_err(|_| "cannot encode overlay migration input")?;
     let converted = super::migrate::migrate_overlay_fragment(&raw, &OverlayHost(host))?;
     if !converted.todos.is_empty() {
         return Err("overlay migration has unresolved plugin or configuration prerequisites; migrate the affected settings before retrying".into());
     }
-    let mut migrated: Map<String, Value> = serde_yaml::from_str(&converted.yaml)
-        .map_err(|_| "cannot decode overlay migration result")?;
+    let mut migrated: Map<String, Value> =
+        yaml::from_str(&converted.yaml).map_err(|_| "cannot decode overlay migration result")?;
     let object = source
         .as_object_mut()
         .ok_or("historical overlay is not an object")?;

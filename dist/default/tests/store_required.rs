@@ -85,8 +85,9 @@ fn migrate_inserts_the_memory_store_and_the_result_validates() {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "migrates; stderr:\n{stderr}");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&stdout).expect("YAML on stdout");
-    let want: serde_yaml::Value = serde_yaml::from_str("module: memory").unwrap();
+    use busbar_contract::yaml::{self, prelude::*};
+    let doc: Value = yaml::from_str(&stdout).expect("YAML on stdout");
+    let want: Value = yaml::from_str("module: memory").unwrap();
     assert_eq!(doc.get("store"), Some(&want), "stdout:\n{stdout}");
     assert!(
         stderr.contains("  - store: inserted `store: {module: memory}`"),

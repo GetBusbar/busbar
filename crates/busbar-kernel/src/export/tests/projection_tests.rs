@@ -9,7 +9,7 @@ use crate::export::projection::{
 use busbar_contract::abi::export::{ExportField, ExportStream};
 
 fn resolve_errs(yaml: &str, carries: &[ExportStream]) -> Vec<String> {
-    let defs: ExportDefs = serde_yaml::from_str(yaml).expect("fixture parses");
+    let defs: ExportDefs = busbar_contract::yaml::from_str(yaml).expect("fixture parses");
     let mut errors = Vec::new();
     for (name, def) in defs {
         resolve_projection(
@@ -332,7 +332,7 @@ fn projection_union_is_the_compute_gate() {
         assert!(!empty.wants_stream(*s));
     }
 
-    let defs: ExportDefs = serde_yaml::from_str(
+    let defs: ExportDefs = busbar_contract::yaml::from_str(
         "req-log:\n  module: fixture-export\n  streams: [logs]\n  settings: {}\ntraces:\n  module: fixture-export\n  streams: [traces]\n  settings: {}\n",
     )
     .unwrap();
@@ -421,7 +421,7 @@ fn produced_fields_are_a_subset_of_the_documented_defaults() {
 
 #[test]
 fn projection_keys_are_instance_level_not_settings() {
-    let def: ExportDefCfg = serde_yaml::from_str(
+    let def: ExportDefCfg = busbar_contract::yaml::from_str(
         "module: fixture-export\nstreams: [logs]\ndurable: false\nsettings:\n  option: opaque\n",
     )
     .unwrap();

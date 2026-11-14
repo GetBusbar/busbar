@@ -395,7 +395,7 @@ async fn governed_full(
     let mut sections = BTreeMap::new();
     sections.insert(
         "test_plane",
-        serde_yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
+        busbar_contract::yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
     );
     config.groups = groups;
 
@@ -936,7 +936,10 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         upgrades: Vec::new(),
     };
     let mut sections = BTreeMap::new();
-    sections.insert("test_plane", serde_yaml::from_str("m: {}").expect("yaml"));
+    sections.insert(
+        "test_plane",
+        busbar_contract::yaml::from_str("m: {}").expect("yaml"),
+    );
     let served = compose_served(
         Some(Arc::clone(&gov)),
         &[(instance.to_string(), plane)],

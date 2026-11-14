@@ -1478,15 +1478,16 @@ fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
     // These cases exercise provider references and grammar, using a synthetic fixture model
     // declared with this fixture contract on 2026-11-09, not metadata for a provider model.
     // Leave scalar/typo sections intact so their intended parser failures remain visible.
-    let mut fixture: serde_yaml::Value = serde_yaml::from_str(decisions_yaml).unwrap();
+    use busbar_contract::yaml::{self, prelude::*};
+    let mut fixture: Value = yaml::from_str(decisions_yaml).unwrap();
     let aliases: Option<Vec<String>> = fixture
         .get("decisions")
         .and_then(|section| section.get("models"))
-        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(Value::as_mapping)
         .map(|models| {
             models
                 .keys()
-                .filter_map(serde_yaml::Value::as_str)
+                .filter_map(Value::as_str)
                 .map(str::to_owned)
                 .collect()
         });
@@ -1497,9 +1498,10 @@ fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
                 "release_date": "2026-11-09",
             }))
         }).collect();
-        fixture["decisions"]["catalog"] = serde_yaml::to_value(catalog).unwrap();
-        fixture["decisions"]["ingress"] = serde_yaml::from_str("{listen: '127.0.0.1:0'}").unwrap();
-        serde_yaml::to_string(&fixture).unwrap()
+        *fixture.at_mut("decisions").at_mut("catalog") = yaml::to_value(&catalog).unwrap();
+        *fixture.at_mut("decisions").at_mut("ingress") =
+            yaml::from_str("{listen: '127.0.0.1:0'}").unwrap();
+        yaml::to_string(&fixture).unwrap()
     } else {
         decisions_yaml.to_owned()
     };

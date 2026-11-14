@@ -190,7 +190,7 @@ fn hook_view<T: Serialize>(hooks: &List<T>, path: &str) -> Value {
 /// Capture only routing syntax whose exact typed values have already been accepted. Failure to
 /// read optional source provenance never changes whether the normal configuration parser succeeds.
 pub(super) fn capture(text: &str, parsed: &PoolsCfg) -> Option<AuthoredRouting> {
-    let source: Source = serde_yaml::from_str(text).ok()?;
+    let source: Source = busbar_contract::yaml::from_str(text).ok()?;
     if source.pools.pools.len() != parsed.pools.len()
         || source.pools.hooks.entries() != parsed.all_pool_hooks.as_slice()
     {

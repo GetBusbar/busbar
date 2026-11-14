@@ -37,7 +37,6 @@ loom = { workspace = true, optional = true }
 ring = { workspace = true }
 base64 = { workspace = true }
 sonic-rs = { workspace = true }
-serde_yaml = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 zeroize = { workspace = true }

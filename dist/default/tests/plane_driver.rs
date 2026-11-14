@@ -301,7 +301,7 @@ pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
         },
         book.clone(),
         services(),
-        ("test_plane", &serde_yaml::Value::Null),
+        ("test_plane", &busbar_contract::yaml::Value::Null),
     )
     .now_or_never()
     .expect("non-persistent fixture admission completes immediately")
@@ -449,7 +449,7 @@ fn driver_of(plugin: &Arc<Plugin<Plane>>, dispatcher: Arc<Dispatcher>) -> PlaneD
         },
         Arc::new(cases::Book::default()),
         services(),
-        ("test_plane", &serde_yaml::Value::Null),
+        ("test_plane", &busbar_contract::yaml::Value::Null),
     )
     .now_or_never()
     .expect("non-persistent fixture admission completes immediately")
@@ -1901,7 +1901,7 @@ async fn a_session_is_refused_while_its_money_is_unstated() {
             },
             Arc::new(Unstated),
             services(),
-            ("test_plane", &serde_yaml::Value::Null),
+            ("test_plane", &busbar_contract::yaml::Value::Null),
         )
         .await
         .expect("the instance is admitted");

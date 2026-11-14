@@ -3,6 +3,7 @@
 
 //! Resolved views support validation; authored substitutions remain substitutions.
 use super::migrate_plugins::MigrateHost;
+use busbar_contract::yaml::{self, MappingExt, Value as Yaml};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use zeroize::Zeroize;
@@ -11,40 +12,34 @@ use zeroize::Zeroize;
 pub struct ResolvedTemplates(BTreeMap<String, Option<Value>>);
 impl ResolvedTemplates {
     pub fn from_yaml(authored: &str, detection: &str) -> Result<Self, String> {
-        let authored: serde_yaml::Value =
-            serde_yaml::from_str(authored).map_err(|_| "authored template is not YAML")?;
-        let detection: serde_yaml::Value =
-            serde_yaml::from_str(detection).map_err(|_| "resolved detection is not YAML")?;
+        let authored: Yaml =
+            yaml::from_str(authored).map_err(|_| "authored template is not YAML")?;
+        let detection: Yaml =
+            yaml::from_str(detection).map_err(|_| "resolved detection is not YAML")?;
         let mut result = Self::default();
         result.record(&authored, &detection, 0)?;
         Ok(result)
     }
-    fn record(
-        &mut self,
-        authored: &serde_yaml::Value,
-        actual: &serde_yaml::Value,
-        depth: usize,
-    ) -> Result<(), String> {
-        use serde_yaml::Value as Yaml;
+    fn record(&mut self, authored: &Yaml, actual: &Yaml, depth: usize) -> Result<(), String> {
         if depth > 128 {
             return Err("template detection exceeds structure budget".into());
         }
         match (authored, actual) {
-            (Yaml::Mapping(a), Yaml::Mapping(b)) if a.len() == b.len() => {
+            (Yaml::Map(a), Yaml::Map(b)) if a.len() == b.len() => {
                 for (key, value) in a {
                     self.record(
                         value,
-                        b.get(key).ok_or("detection changed a mapping key")?,
+                        b.get_key(key).ok_or("detection changed a mapping key")?,
                         depth + 1,
                     )?;
                 }
             }
-            (Yaml::Sequence(a), Yaml::Sequence(b)) if a.len() == b.len() => {
+            (Yaml::Array(a), Yaml::Array(b)) if a.len() == b.len() => {
                 for (a, b) in a.iter().zip(b) {
                     self.record(a, b, depth + 1)?;
                 }
             }
-            (Yaml::String(template), _) if template.contains("${") => {
+            (Yaml::Text(template), _) if template.contains("${") => {
                 let value = serde_json::to_value(actual)
                     .map_err(|_| "resolved scalar cannot be represented")?;
                 if value.is_array() || value.is_object() {
@@ -61,8 +56,7 @@ impl ResolvedTemplates {
                     }
                 }
             }
-            (Yaml::Mapping(_) | Yaml::Sequence(_), _)
-            | (_, Yaml::Mapping(_) | Yaml::Sequence(_)) => {
+            (Yaml::Map(_) | Yaml::Array(_), _) | (_, Yaml::Map(_) | Yaml::Array(_)) => {
                 return Err("detection changed document structure".into());
             }
             _ => {}
@@ -120,9 +114,8 @@ pub fn resolved_settings(value: &Value, host: &dyn MigrateHost) -> Result<Value,
 /// Preserve scalar quoting after a structural move. A quoted `${N}` that resolves
 /// to a string must not become an unquoted numeric YAML scalar after serialization.
 pub(super) fn render_authored(yaml: &str, host: &dyn MigrateHost) -> Result<String, String> {
-    use serde_yaml::Value as Yaml;
     use sha2::{Digest, Sha256};
-    let mut doc: Yaml = serde_yaml::from_str(yaml).map_err(|_| "converted template is not YAML")?;
+    let mut doc: Yaml = yaml::from_str(yaml).map_err(|_| "converted template is not YAML")?;
     let prefix = format!(
         "__BUSBAR_AUTHORED_{}__",
         hex::encode(Sha256::digest(yaml.as_bytes()))
@@ -138,7 +131,7 @@ pub(super) fn render_authored(yaml: &str, host: &dyn MigrateHost) -> Result<Stri
         host: &dyn MigrateHost,
     ) -> Result<(), String> {
         match value {
-            Yaml::String(template) if template.contains("${") => {
+            Yaml::Text(template) if template.contains("${") => {
                 let Some(resolved) = host.resolved_authored_scalar(template)? else {
                     return Ok(());
                 };
@@ -152,12 +145,12 @@ pub(super) fn render_authored(yaml: &str, host: &dyn MigrateHost) -> Result<Stri
                 replacements.push((marker.clone(), replacement));
                 *template = marker;
             }
-            Yaml::Sequence(values) => {
+            Yaml::Array(values) => {
                 for value in values {
                     walk(value, prefix, replacements, host)?;
                 }
             }
-            Yaml::Mapping(values) => {
+            Yaml::Map(values) => {
                 for (_, value) in values {
                     walk(value, prefix, replacements, host)?;
                 }
@@ -176,7 +169,7 @@ pub(super) fn render_authored(yaml: &str, host: &dyn MigrateHost) -> Result<Stri
         .map(|line| format!("{line}\n"))
         .collect();
     let mut rendered =
-        serde_yaml::to_string(&doc).map_err(|_| "authored template could not be rendered")?;
+        yaml::to_string(&doc).map_err(|_| "authored template could not be rendered")?;
     // Replace longer markers first: slot 1 is a prefix of slot 10.
     replacements.sort_by_key(|(marker, _)| std::cmp::Reverse(marker.len()));
     for (marker, value) in replacements {
@@ -188,6 +181,7 @@ pub(super) fn render_authored(yaml: &str, host: &dyn MigrateHost) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_contract::yaml::ValueExt;
 
     struct Host(ResolvedTemplates);
     impl MigrateHost for Host {
@@ -218,9 +212,9 @@ mod tests {
             Host(ResolvedTemplates::from_yaml("n: ${N}\ns: '${S}'\n", "n: 4\ns: '4'\n").unwrap());
         let yaml = render_authored("moved: {count: '${N}', label: '${S}'}\n", &host).unwrap();
         let resolved = yaml.replace("${N}", "4").replace("${S}", "4");
-        let doc: serde_yaml::Value = serde_yaml::from_str(&resolved).unwrap();
-        assert_eq!(doc["moved"]["count"].as_u64(), Some(4));
-        assert_eq!(doc["moved"]["label"].as_str(), Some("4"));
+        let doc: Yaml = yaml::from_str(&resolved).unwrap();
+        assert_eq!(doc.at("moved").at("count").as_u64(), Some(4));
+        assert_eq!(doc.at("moved").at("label").as_str(), Some("4"));
         assert!(yaml.contains("${N}") && yaml.contains("${S}"));
     }
 

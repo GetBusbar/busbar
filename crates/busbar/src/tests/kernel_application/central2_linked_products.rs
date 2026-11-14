@@ -15,7 +15,7 @@ fn linked_hook_name() -> &'static str {
 }
 fn real_ranking(word: &str) -> Option<(Arc<dyn busbar_kernel::hooks::RoutingPolicy>, Duration)> {
     let cfg = busbar_kernel::config::PoolCfg {
-        policy: serde_yaml::from_str(word).expect("an ordinary pool policy word"),
+        policy: busbar_contract::yaml::from_str(word).expect("an ordinary pool policy word"),
         ..Default::default()
     };
     match busbar_kernel::hooks::resolve_policy(&cfg) {
@@ -81,7 +81,8 @@ fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused(
     crate::dist_root_install::install();
     let hook = |module: &str| {
         let cfg: busbar_kernel::config::HookCfg =
-            serde_yaml::from_str(&format!("kind: gate\nmodule: {module}\n")).expect("a hook");
+            busbar_contract::yaml::from_str(&format!("kind: gate\nmodule: {module}\n"))
+                .expect("a hook");
         std::collections::HashMap::from([("h".to_string(), cfg)])
     };
     let dir = plugins::scratch("linked-hook");

@@ -197,11 +197,12 @@ fn descriptor_provider_entries(
     sources: &[walk::Source],
     types: &serde_json::Map<String, serde_json::Value>,
 ) -> BTreeMap<String, BTreeSet<String>> {
-    let registry: serde_yaml::Value =
-        serde_yaml::from_str(&std::fs::read_to_string(walk::repo().join("plugins.yaml")).unwrap())
-            .unwrap();
+    let registry: serde_json::Value = busbar_contract::yaml::from_str(
+        &std::fs::read_to_string(walk::repo().join("plugins.yaml")).unwrap(),
+    )
+    .unwrap();
     let captures: Vec<_> = registry["plugins"]
-        .as_sequence()
+        .as_array()
         .unwrap()
         .iter()
         .filter(|owner| owner.get("provider_key_census").is_some())

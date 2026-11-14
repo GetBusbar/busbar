@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::plugin::Kind;
+use busbar_contract::yaml::{self, MappingExt as _, ValueExt as _};
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
@@ -59,8 +60,8 @@ fn shape(key: &str) -> Option<Shape> {
 }
 
 #[must_use]
-pub fn names_an_entry(key: &str, value: &serde_yaml::Value) -> bool {
-    use serde_yaml::Value as Y;
+pub fn names_an_entry(key: &str, value: &yaml::Value) -> bool {
+    use yaml::Value as Y;
     let Some(map) = value.as_mapping() else {
         return false;
     };
@@ -70,7 +71,7 @@ pub fn names_an_entry(key: &str, value: &serde_yaml::Value) -> bool {
         Some(Shape::Fields(keys)) => map
             .keys()
             .any(|k| k.as_str().is_none_or(|k| !keys.contains(&k))),
-        Some(Shape::MapOfMaps) => map.values().any(|v| !matches!(v, Y::Mapping(_) | Y::Null)),
+        Some(Shape::MapOfMaps) => map.values().any(|v| !matches!(v, Y::Map(_) | Y::Null)),
     }
 }
 
@@ -78,7 +79,7 @@ pub fn read_section<'de, D: Deserializer<'de>>(
     de: D,
     section: &str,
     noun: &str,
-) -> Result<serde_yaml::Value, D::Error> {
+) -> Result<yaml::Value, D::Error> {
     Read::Section { section, noun }.deserialize(de)
 }
 
@@ -98,7 +99,7 @@ enum Read<'a> {
 }
 
 impl Read<'_> {
-    fn done<E: de::Error>(self, value: serde_yaml::Value) -> Result<serde_yaml::Value, E> {
+    fn done<E: de::Error>(self, value: yaml::Value) -> Result<yaml::Value, E> {
         match self {
             Read::Entry {
                 section,
@@ -113,14 +114,14 @@ impl Read<'_> {
 }
 
 impl<'de> DeserializeSeed<'de> for Read<'_> {
-    type Value = serde_yaml::Value;
+    type Value = yaml::Value;
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         de.deserialize_any(self)
     }
 }
 
 impl<'de> Visitor<'de> for Read<'_> {
-    type Value = serde_yaml::Value;
+    type Value = yaml::Value;
 
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("any YAML value")
@@ -129,12 +130,12 @@ impl<'de> Visitor<'de> for Read<'_> {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         use serde::Deserialize as _;
         let Read::Section { section, noun } = self else {
-            let read = serde_yaml::Value::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            let read = yaml::Value::deserialize(de::value::MapAccessDeserializer::new(map))?;
             return self.done(read);
         };
 
-        let mut out = serde_yaml::Mapping::new();
-        while let Some(key) = map.next_key::<serde_yaml::Value>()? {
+        let mut out = yaml::Mapping::new();
+        while let Some(key) = map.next_key::<yaml::Value>()? {
             if out.contains_key(&key) {
                 return Err(de::Error::custom(duplicate_entry(&key)));
             }
@@ -146,63 +147,64 @@ impl<'de> Visitor<'de> for Read<'_> {
                 })?,
                 None => map.next_value()?,
             };
-            out.insert(key, value);
+            out.insert_key(key, value);
         }
-        Ok(serde_yaml::Value::Mapping(out))
+        Ok(yaml::Value::Map(out))
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
         use serde::Deserialize as _;
-        let read = serde_yaml::Value::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
+        let read = yaml::Value::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
         self.done(read)
     }
 
     fn visit_enum<A: de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
         use serde::Deserialize as _;
-        let read = serde_yaml::Value::deserialize(de::value::EnumAccessDeserializer::new(data))?;
+        let read = yaml::Value::deserialize(de::value::EnumAccessDeserializer::new(data))?;
         self.done(read)
     }
 
     fn visit_some<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         use serde::Deserialize as _;
-        let read = serde_yaml::Value::deserialize(de)?;
+        let read = yaml::Value::deserialize(de)?;
         self.done(read)
     }
 
     fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
-        self.done(serde_yaml::Value::Bool(v))
+        self.done(yaml::Value::Bool(v))
     }
     fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
-        self.done(serde_yaml::Value::Number(v.into()))
+        self.done(yaml::Value::from(v))
     }
     fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
-        self.done(serde_yaml::Value::Number(v.into()))
+        self.done(yaml::Value::from(v))
     }
     fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
-        self.done(serde_yaml::Value::Number(v.into()))
+        self.done(yaml::Value::Float(v))
     }
     fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-        self.done(serde_yaml::Value::String(v.to_owned()))
+        self.done(yaml::Value::Text(v.to_owned()))
     }
     fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
-        self.done(serde_yaml::Value::String(v))
+        self.done(yaml::Value::Text(v))
     }
     fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-        self.done(serde_yaml::Value::Null)
+        self.done(yaml::Value::Null)
     }
     fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
-        self.done(serde_yaml::Value::Null)
+        self.done(yaml::Value::Null)
     }
 }
 
-fn duplicate_entry(key: &serde_yaml::Value) -> String {
-    use serde_yaml::Value as Y;
+fn duplicate_entry(key: &yaml::Value) -> String {
+    use yaml::Value as Y;
     match key {
         Y::Null => "duplicate entry with null key".to_owned(),
         Y::Bool(b) => format!("duplicate entry with key `{b}`"),
-        Y::Number(n) => format!("duplicate entry with key {n}"),
-        Y::String(s) => format!("duplicate entry with key {s:?}"),
-        Y::Sequence(_) | Y::Mapping(_) | Y::Tagged(_) => "duplicate entry in YAML map".to_owned(),
+        Y::Integer(n) => format!("duplicate entry with key {}", i128::from(*n)),
+        Y::Float(n) => format!("duplicate entry with key {n:?}"),
+        Y::Text(s) => format!("duplicate entry with key {s:?}"),
+        _ => "duplicate entry in YAML map".to_owned(),
     }
 }
 
@@ -254,8 +256,8 @@ pub struct Position {
 }
 
 impl Document {
-    pub fn parse(text: String) -> Result<Self, serde_yaml::Error> {
-        let value = serde_yaml::from_str(&text)?;
+    pub fn parse(text: String) -> Result<Self, yaml::Error> {
+        let value = yaml::from_str(&text)?;
         Ok(Self { text, value })
     }
 
@@ -334,17 +336,29 @@ impl Document {
     pub fn position(&self, path: &[String]) -> Option<Position> {
         self.probe(path, "")
             .ok()
-            .and_then(|e| e.location())
+            .and_then(|(_, e)| e.location())
             .map(|l| Position {
-                line: l.line(),
-                column: l.column(),
+                line: l.line() as usize,
+                column: l.column() as usize,
             })
     }
 
     #[must_use]
     pub fn refusal(&self, path: &[String], reason: &str) -> String {
+        // 1.5.5's wording, kept: `<path>: <reason> at line L column C`, the path written
+        // `a.b[0].c` and the position the parser gives the node.
         match self.probe(path, reason) {
-            Ok(e) => e.to_string(),
+            Ok((at, e)) => {
+                let head = if at.is_empty() {
+                    String::new()
+                } else {
+                    format!("{at}: ")
+                };
+                match e.location() {
+                    Some(l) => format!("{head}{reason} at line {} column {}", l.line(), l.column()),
+                    None => format!("{head}{reason}"),
+                }
+            }
             Err(()) => format!("{}: {reason}", path.join(".")),
         }
     }
@@ -357,15 +371,18 @@ impl Document {
             .map_or_else(|| reason.to_owned(), |p| self.refusal(p, reason))
     }
 
-    fn probe(&self, path: &[String], reason: &str) -> Result<serde_yaml::Error, ()> {
+    /// The parser's error at the node `path` names, and that node's path as 1.5.5 wrote it.
+    fn probe(&self, path: &[String], reason: &str) -> Result<(String, yaml::Error), ()> {
         let found = std::cell::Cell::new(false);
+        let at = std::cell::RefCell::new(String::new());
         let seed = Probe {
             path,
             reason,
             found: &found,
+            at: &at,
         };
-        match seed.deserialize(serde_yaml::Deserializer::from_str(&self.text)) {
-            Err(e) if found.get() => Ok(e),
+        match yaml::with_deserializer(&self.text, |d| seed.deserialize(d)) {
+            Err(e) if found.get() => Ok((at.into_inner(), e)),
             _ => Err(()),
         }
     }
@@ -452,6 +469,8 @@ struct Probe<'p> {
     path: &'p [String],
     reason: &'p str,
     found: &'p std::cell::Cell<bool>,
+    /// The path walked so far, written as 1.5.5 wrote it (`a.b[0].c`).
+    at: &'p std::cell::RefCell<String>,
 }
 
 impl Probe<'_> {
@@ -481,6 +500,13 @@ impl<'de> Visitor<'de> for Probe<'_> {
         };
         while let Some(key) = map.next_key::<String>()? {
             if key == *head {
+                {
+                    let mut at = self.at.borrow_mut();
+                    if !at.is_empty() {
+                        at.push('.');
+                    }
+                    at.push_str(head);
+                }
                 return map.next_value_seed(Probe { path: rest, ..self });
             }
             map.next_value::<IgnoredAny>()?;
@@ -498,6 +524,15 @@ impl<'de> Visitor<'de> for Probe<'_> {
             if seq.next_element::<IgnoredAny>()?.is_none() {
                 return Err(de::Error::custom(reason));
             }
+        }
+        {
+            let mut at = self.at.borrow_mut();
+            if at.is_empty() {
+                at.push('.');
+            }
+            at.push('[');
+            at.push_str(&index.to_string());
+            at.push(']');
         }
         seq.next_element_seed(Probe { path: rest, ..self })?;
         Err(de::Error::custom(reason))

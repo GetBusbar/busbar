@@ -3,6 +3,7 @@
 
 mod common;
 
+use busbar_contract::yaml::prelude::{Value, ValueExt};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -54,7 +55,7 @@ fn a_stray_catalog_key_is_removed_into_a_catalog_the_migrated_config_names() {
     assert!(migrated.contains("mock.example"), "{migrated}");
     let old = std::fs::read_to_string(dir.join("providers.yaml")).unwrap();
     assert!(old.contains("notes"), "the old catalog is left as it was");
-    let doc: serde_yaml::Value = serde_yaml::from_str(
+    let doc: Value = busbar_contract::yaml::from_str(
         &stdout
             .lines()
             .filter(|l| !l.starts_with('#'))
@@ -63,8 +64,8 @@ fn a_stray_catalog_key_is_removed_into_a_catalog_the_migrated_config_names() {
     )
     .expect("YAML");
     assert_eq!(
-        doc["providers_file"],
-        serde_yaml::Value::from("providers.migrated.yaml"),
+        doc.at("providers_file"),
+        &Value::from("providers.migrated.yaml"),
         "the migrated config names the migrated catalog:\n{stdout}"
     );
     std::fs::write(dir.join("config.migrated.yaml"), &stdout).unwrap();
@@ -129,15 +130,26 @@ advanced:
         !stderr.contains("1.x virtual keys do not carry over"),
         "{stderr}"
     );
-    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
+    let doc: Value = busbar_contract::yaml::from_slice(&out.stdout).unwrap();
     assert_eq!(
-        doc["providers_file"].as_str(),
+        doc.at("providers_file").as_str(),
         launch.join("from-env.yaml").to_str()
     );
-    assert_eq!(doc["advanced"]["worker_threads"], 5);
-    assert_eq!(doc["advanced"]["upstream_http1_only"], false);
-    assert_eq!(doc["advanced"]["upstream_h2_prior_knowledge"], true);
-    assert_eq!(doc["auth"]["signing_key"]["env"], "EXISTING_SIGNING_KEY");
+    assert_eq!(doc.at("advanced").at("worker_threads").as_u64(), Some(5));
+    assert_eq!(
+        doc.at("advanced").at("upstream_http1_only").as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        doc.at("advanced")
+            .at("upstream_h2_prior_knowledge")
+            .as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        doc.at("auth").at("signing_key").at("env").as_str(),
+        Some("EXISTING_SIGNING_KEY")
+    );
     std::fs::write(dir.join("config.migrated.yaml"), &out.stdout).unwrap();
     // Retired runtime input cannot redirect a validated deployment back to another catalog.
     let out = Command::new(common::boot::exe())

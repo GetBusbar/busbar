@@ -333,7 +333,7 @@ auth:
   admin_auth: []
 "#;
     let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
+        busbar_contract::yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("the fixture config must resolve");
 
@@ -374,7 +374,7 @@ auth:
     let op = crate::config::operator_provider();
     let yaml = yaml.replace("OPERATOR", op);
     let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
+        busbar_contract::yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("the fixture config must resolve");
     let boot_token = cfg.auth.as_ref().expect("auth").admin_auth[0]
@@ -411,7 +411,7 @@ auth:
   admin_auth: []
 "#;
     let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
+        busbar_contract::yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("the fixture config must resolve");
 
@@ -462,12 +462,12 @@ auth:
 
     let yaml = yaml.replace("OPERATOR", crate::config::operator_provider());
     let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
+        busbar_contract::yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
 
     let defs: std::collections::HashMap<String, crate::config::ProviderDef> = ["hosted", "local"]
         .into_iter()
         .map(|name| {
-            let def: crate::config::ProviderDef = serde_yaml::from_str(&format!(
+            let def: crate::config::ProviderDef = busbar_contract::yaml::from_str(&format!(
                 "protocol: {}\nbase_url: \"https://api.vendor-a.test\"\n",
                 // Only secret-field enumeration and keyless host validation are exercised.
                 // This inert dialect word does not register executable plane behavior.

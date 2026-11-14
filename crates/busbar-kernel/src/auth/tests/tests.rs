@@ -272,15 +272,15 @@ fn the_refuse_every_ungoverned_rule_against_1_5_5s_guard() {
 #[test]
 fn test_upstream_credentials_deserialize() {
     assert!(
-        serde_yaml::from_str::<crate::auth::UpstreamCreds>("invalid").is_err(),
+        busbar_contract::yaml::from_str::<crate::auth::UpstreamCreds>("invalid").is_err(),
         "an unrecognized upstream_credentials value must fail to deserialize"
     );
     assert_eq!(
-        serde_yaml::from_str::<crate::auth::UpstreamCreds>("passthrough").unwrap(),
+        busbar_contract::yaml::from_str::<crate::auth::UpstreamCreds>("passthrough").unwrap(),
         crate::auth::UpstreamCreds::Passthrough
     );
     assert_eq!(
-        serde_yaml::from_str::<crate::auth::UpstreamCreds>("own").unwrap(),
+        busbar_contract::yaml::from_str::<crate::auth::UpstreamCreds>("own").unwrap(),
         crate::auth::UpstreamCreds::Own
     );
 }
@@ -1681,7 +1681,7 @@ fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
 }
 
 fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
-    serde_yaml::from_str(yaml).expect("`verbs:` is a role-binding key")
+    busbar_contract::yaml::from_str(yaml).expect("`verbs:` is a role-binding key")
 }
 
 #[test]

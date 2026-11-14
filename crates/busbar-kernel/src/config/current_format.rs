@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Current-reader admission only. Historical conversions live in busbar-migrations.
-use serde_yaml::Value;
+use busbar_contract::yaml::{MappingExt, Value, ValueExt};
 
 /// Reject retired structural forms before serde can discard their meaning.
 /// This boundary supplies no historical defaults and performs no conversion.
@@ -22,14 +22,14 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             markers.push(format!("`{key}:` is not a current config field"));
         }
     }
-    if let Some(auth) = root.get("auth").and_then(Value::as_mapping) {
+    if let Some(auth) = root.get_key("auth").and_then(Value::as_mapping) {
         for key in ["mode", "client_tokens", "upstream_credentials", "methods"] {
             if auth.contains_key(key) {
                 markers.push(format!("`auth.{key}:` is not a current config field"));
             }
         }
     }
-    if let Some(providers) = root.get("providers").and_then(Value::as_mapping) {
+    if let Some(providers) = root.get_key("providers").and_then(Value::as_mapping) {
         for (name, provider) in providers {
             if provider
                 .as_mapping()
@@ -42,12 +42,12 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             }
         }
     }
-    if let Some(pools) = root.get("pools").and_then(Value::as_mapping) {
+    if let Some(pools) = root.get_key("pools").and_then(Value::as_mapping) {
         for pool in pools.values() {
             let Some(pool) = pool.as_mapping() else {
                 continue;
             };
-            if let Some(members) = pool.get("members").and_then(Value::as_sequence) {
+            if let Some(members) = pool.get_key("members").and_then(Value::as_sequence) {
                 if members
                     .iter()
                     .any(|m| m.as_mapping().is_some_and(|m| m.contains_key("target")))
@@ -78,18 +78,23 @@ mod tests {
             ("reject", OnExhaustedCfg::Reject),
             ("least_bad", OnExhaustedCfg::LeastBad),
         ] {
-            let document: Value = serde_yaml::from_str(&format!(
+            let document: Value = busbar_contract::yaml::from_str(&format!(
                 "pools: {{op: {{members: [], on_exhausted: {keyword}}}}}"
             ))
             .unwrap();
             assert!(detect_legacy_markers(&document).is_empty());
-            let pool: PoolCfg = serde_yaml::from_value(document["pools"]["op"].clone()).unwrap();
+            let pool: PoolCfg =
+                busbar_contract::yaml::from_value(document.at("pools").at("op").clone()).unwrap();
             assert_eq!(pool.on_exhausted, Some(expected));
         }
-        let document: Value =
-            serde_yaml::from_str("pools: {op: {members: [], on_exhausted: invalid_mode}}").unwrap();
+        let document: Value = busbar_contract::yaml::from_str(
+            "pools: {op: {members: [], on_exhausted: invalid_mode}}",
+        )
+        .unwrap();
         assert!(detect_legacy_markers(&document).is_empty());
-        let error = serde_yaml::from_value::<PoolCfg>(document["pools"]["op"].clone()).unwrap_err();
+        let error =
+            busbar_contract::yaml::from_value::<PoolCfg>(document.at("pools").at("op").clone())
+                .unwrap_err();
         assert!(error.to_string().contains("unknown on_exhausted keyword"));
     }
 }

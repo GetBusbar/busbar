@@ -5,6 +5,7 @@ mod common;
 
 mod linked;
 
+use busbar_contract::yaml::prelude::{MappingExt, Value, ValueExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -77,8 +78,8 @@ fn validate_as_written(name: &str) -> Output {
     out
 }
 
-fn yaml(text: &str) -> serde_yaml::Value {
-    serde_yaml::from_str(text).expect("YAML")
+fn yaml(text: &str) -> Value {
+    busbar_contract::yaml::from_str(text).expect("YAML")
 }
 
 #[test]
@@ -97,10 +98,19 @@ fn a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same() {
 
     let (migrated, summary, _) = migrate_and_validate("rate_card.yaml");
     let doc = yaml(&migrated);
-    let entry = &doc["rate_card"]["test-model"];
-    assert_eq!(entry["input_utok"], yaml("3.0"), "token prices are kept");
-    assert_eq!(entry["output_utok"], yaml("15.0"), "token prices are kept");
-    let units = entry["units"]
+    let entry = doc.at("rate_card").at("test-model");
+    assert_eq!(
+        entry.at("input_utok"),
+        &yaml("3.0"),
+        "token prices are kept"
+    );
+    assert_eq!(
+        entry.at("output_utok"),
+        &yaml("15.0"),
+        "token prices are kept"
+    );
+    let units = entry
+        .at("units")
         .as_mapping()
         .unwrap_or_else(|| panic!("units were added:\n{migrated}"));
     assert!(!units.is_empty(), "units were added:\n{migrated}");
@@ -128,8 +138,8 @@ fn a_1_5_5_metadata_entry_naming_no_host_migrates_away() {
 
     let (migrated, summary, stderr) = migrate_and_validate("metadata_no_host.yaml");
     assert_eq!(
-        yaml(&migrated)["security"]["blocked_metadata_hosts"],
-        yaml("['169.254.169.254']"),
+        yaml(&migrated).at("security").at("blocked_metadata_hosts"),
+        &yaml("['169.254.169.254']"),
         "only the entry that named no host is removed:\n{migrated}"
     );
     assert!(
@@ -148,9 +158,10 @@ fn a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration() {
     use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg, ProviderDef};
     linked::install();
     let raw = std::fs::read_to_string(fixture("ungoverned_principals.yaml")).unwrap();
-    let defs: std::collections::HashMap<String, ProviderDef> =
-        serde_yaml::from_str("mock:\n  protocol: anthropic\n  base_url: https://mock.example\n")
-            .expect("provider defs parse");
+    let defs: std::collections::HashMap<String, ProviderDef> = busbar_contract::yaml::from_str(
+        "mock:\n  protocol: anthropic\n  base_url: https://mock.example\n",
+    )
+    .expect("provider defs parse");
     let resolved = |text: &str| {
         let deploy: DeployCfg =
             deploy_from_yaml_str(text).unwrap_or_else(|e| panic!("the config parses: {e}\n{text}"));

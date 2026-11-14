@@ -400,7 +400,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         busbar_kernel::config::interpolate_env(&format!("audience: \"${{{interp_var}}}\"\n"))
             .expect("the config text interpolates");
     let parsed: serde_json::Map<String, serde_json::Value> =
-        serde_yaml::from_str(&text).expect("the interpolated settings parse");
+        busbar_contract::yaml::from_str(&text).expect("the interpolated settings parse");
     let mut s = common::credentials::settings(audience);
     s.extend(parsed);
     outcome(

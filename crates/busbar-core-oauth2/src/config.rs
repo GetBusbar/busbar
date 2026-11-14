@@ -557,7 +557,9 @@ fn is_scope_token(s: &str) -> bool {
             .all(|b| b == 0x21 || (0x23..=0x5B).contains(&b) || (0x5D..=0x7E).contains(&b))
 }
 
-pub(crate) fn seam_check(block: &serde_yaml::Value) -> Result<Vec<(String, SecretRef)>, String> {
+pub(crate) fn seam_check(
+    block: &busbar_contract::yaml::Value,
+) -> Result<Vec<(String, SecretRef)>, String> {
     let identity = identity_of(block)?;
     Ok(secret_refs(&identity)
         .into_iter()
@@ -565,9 +567,9 @@ pub(crate) fn seam_check(block: &serde_yaml::Value) -> Result<Vec<(String, Secre
         .collect())
 }
 
-pub(crate) fn identity_of(block: &serde_yaml::Value) -> Result<AsIdentity, String> {
+pub(crate) fn identity_of(block: &busbar_contract::yaml::Value) -> Result<AsIdentity, String> {
     let cfg: OauthAsCfg =
-        serde_yaml::from_value(block.clone()).map_err(|e| format!("oauth_as: {e}"))?;
+        busbar_contract::yaml::from_value(block.clone()).map_err(|e| format!("oauth_as: {e}"))?;
     AsIdentity::from_cfg(&cfg).map_err(|e| e.to_string())
 }
 

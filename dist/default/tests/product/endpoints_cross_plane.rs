@@ -91,8 +91,8 @@ pools:
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document: serde_json::Value =
-        serde_yaml::from_str(yaml).expect("the concrete product deployment is valid YAML");
+    let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
+        .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
     document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
     document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
@@ -102,7 +102,7 @@ pools:
         &deploy,
         &std::collections::HashMap::from([(
             "fixture".to_string(),
-            serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
+            busbar_contract::yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
                 .expect("provider definition"),
         )]),
     )
@@ -231,8 +231,8 @@ pools:
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document: serde_json::Value =
-        serde_yaml::from_str(yaml).expect("the concrete product deployment is valid YAML");
+    let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
+        .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
     document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
     document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
@@ -242,7 +242,7 @@ pools:
         &deploy,
         &std::collections::HashMap::from([(
             "fixture".to_string(),
-            serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
+            busbar_contract::yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
                 .expect("provider definition"),
         )]),
     )
@@ -371,8 +371,8 @@ pools:
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document: serde_json::Value =
-        serde_yaml::from_str(yaml).expect("the concrete product deployment is valid YAML");
+    let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
+        .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
     document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
     document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
@@ -382,7 +382,7 @@ pools:
         &deploy,
         &std::collections::HashMap::from([(
             "fixture".to_string(),
-            serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
+            busbar_contract::yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
                 .expect("provider definition"),
         )]),
     )
@@ -474,8 +474,8 @@ pools:
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document: serde_json::Value =
-        serde_yaml::from_str(yaml).expect("the concrete product deployment is valid YAML");
+    let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
+        .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
     document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
     document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
@@ -485,7 +485,7 @@ pools:
         &deploy,
         &std::collections::HashMap::from([(
             "fixture".to_string(),
-            serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
+            busbar_contract::yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
                 .expect("provider definition"),
         )]),
     )
@@ -648,7 +648,7 @@ async fn with_listing_door(
     Arc::make_mut(&mut app).plane_slots.insert(
         decl.key,
         Arc::new(DoorSlot {
-            section: DoorSection::new(decl.door, section, serde_yaml::Value::Null),
+            section: DoorSection::new(decl.door, section, busbar_contract::yaml::Value::Null),
             facing,
             opened: true,
         }),
@@ -761,7 +761,7 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     let section = busbar_kernel::plane_driver::door::DoorSection::new(
         door.door,
         door.config_section,
-        serde_yaml::from_str("member: {url: 'https://m'}").unwrap(),
+        busbar_contract::yaml::from_str("member: {url: 'https://m'}").unwrap(),
     );
     let section_defs = section.as_defs();
     let slot = (door.build)(
@@ -809,8 +809,8 @@ pools:
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let mut document: serde_json::Value =
-        serde_yaml::from_str(yaml).expect("the concrete product deployment is valid YAML");
+    let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
+        .expect("the concrete product deployment is valid YAML");
     document["store"] = serde_json::json!({"module": module, "settings": settings});
     document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
     document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
@@ -820,7 +820,7 @@ pools:
         &deploy,
         &std::collections::HashMap::from([(
             "fixture".to_string(),
-            serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
+            busbar_contract::yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
                 .expect("provider definition"),
         )]),
     )

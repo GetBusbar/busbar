@@ -16,7 +16,7 @@ pub fn resolve_store_bootstrap_with_security(
     deploy: &DeployCfg,
     security: &Option<super::SecurityCfg>,
 ) -> Result<RootCfg, Vec<String>> {
-    let mut bootstrap: DeployCfg = serde_yaml::from_str("{}")
+    let mut bootstrap: DeployCfg = busbar_contract::yaml::from_str("{}")
         .map_err(|_| vec!["cannot construct the Store bootstrap configuration".into()])?;
     bootstrap.listen.clone_from(&deploy.listen);
     bootstrap.admin_listen.clone_from(&deploy.admin_listen);
@@ -70,7 +70,7 @@ mod tests {
     }
     #[test]
     fn store_bootstrap_does_not_refuse_overlay_owned_identity_definitions() {
-        let deploy: DeployCfg = serde_yaml::from_str("auth: { chain: [overlay-corp], admin_auth: [overlay-admin] }\nstore: { module: memory }\n").unwrap();
+        let deploy: DeployCfg = busbar_contract::yaml::from_str("auth: { chain: [overlay-corp], admin_auth: [overlay-admin] }\nstore: { module: memory }\n").unwrap();
         assert!(super::super::resolve(&deploy, &Default::default()).is_err());
         let bootstrap = resolve_store_bootstrap(&deploy).unwrap();
         assert_eq!(bootstrap.store.as_ref().unwrap().module, "memory");
@@ -80,7 +80,7 @@ mod tests {
     }
     #[test]
     fn complete_resolution_sees_recovered_named_definitions_and_hook_controls() {
-        let mut deploy: DeployCfg = serde_yaml::from_str("auth: { chain: [overlay-corp], admin_auth: [overlay-admin] }\nstore: { module: memory }\n").unwrap();
+        let mut deploy: DeployCfg = busbar_contract::yaml::from_str("auth: { chain: [overlay-corp], admin_auth: [overlay-admin] }\nstore: { module: memory }\n").unwrap();
         let doc: super::super::overlay::OverlayDoc = serde_json::from_value(serde_json::json!({
             "version":2,
             "hooks":{"guard":{"kind":"tap","module":"observer","phase":["response"],"groups":["restricted"]}},
@@ -107,8 +107,10 @@ mod tests {
     }
     #[test]
     fn store_bootstrap_checks_security_before_opening_without_requiring_overlay_tls() {
-        let deploy: DeployCfg =
-            serde_yaml::from_str("store: { module: memory }\nadmin_require_mtls: true\n").unwrap();
+        let deploy: DeployCfg = busbar_contract::yaml::from_str(
+            "store: { module: memory }\nadmin_require_mtls: true\n",
+        )
+        .unwrap();
         let cfg = resolve_store_bootstrap(&deploy).unwrap();
         assert!(crate::config_validate::validate_bootstrap_security(&cfg).is_ok());
         for field in ["blocked_metadata_hosts", "allow_metadata_hosts"] {
@@ -116,7 +118,7 @@ mod tests {
                 let raw = format!(
                     "store: {{ module: memory }}\nsecurity: {{ {field}: ['{invalid}'] }}\n"
                 );
-                let deploy: DeployCfg = serde_yaml::from_str(&raw).unwrap();
+                let deploy: DeployCfg = busbar_contract::yaml::from_str(&raw).unwrap();
                 let errors = resolve_store_bootstrap(&deploy).unwrap_err();
                 assert!(
                     errors.iter().any(|error| error.contains(field)),

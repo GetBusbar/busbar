@@ -12,8 +12,8 @@ version = 2
 ignore = [
     # Empty. RUSTSEC-2024-0436 (`paste`, via tikv-jemalloc-ctl) and RUSTSEC-2024-0449
     # (`unsafe-libyaml`, via serde_yaml_ng) were accepted here until both crates left the graph:
-    # busbar-kernel's `mallctl` calls jemalloc directly, and YAML is yaml_serde on libyaml-rs (no
-    # advisory). The bans below keep them out.
+    # busbar-kernel's `mallctl` calls jemalloc directly, and YAML is serde-saphyr (forbid(unsafe_code),
+    # no advisory). The bans below keep them out.
 ]
 
 [licenses]
@@ -75,9 +75,11 @@ deny = [
     { crate = "rustls@0.21", reason = "TLS is rustls 0.23" },
     { crate = "rustls@0.22", reason = "TLS is rustls 0.23" },
     { crate = "ring@0.16", reason = "the crypto backend is ring 0.17" },
-    { crate = "serde_yaml", reason = "unmaintained; YAML is yaml_serde" },
-    { crate = "serde_yaml_ng", reason = "rests on unsafe-libyaml; YAML is yaml_serde" },
-    { crate = "unsafe-libyaml", reason = "unmaintained C translation (RUSTSEC-2024-0449); YAML is yaml_serde on its maintained rename, libyaml-rs" },
+    { crate = "serde_yaml", reason = "unmaintained; YAML is serde-saphyr through busbar_contract::yaml" },
+    { crate = "serde_yaml_ng", reason = "rests on unsafe-libyaml; YAML is serde-saphyr through busbar_contract::yaml" },
+    { crate = "unsafe-libyaml", reason = "unmaintained C translation (RUSTSEC-2024-0449); YAML is serde-saphyr through busbar_contract::yaml" },
+    { crate = "yaml_serde", reason = "rests on libyaml-rs, a c2rust translation; YAML is serde-saphyr through busbar_contract::yaml" },
+    { crate = "libyaml-rs", reason = "c2rust translation of libyaml (renamed unsafe-libyaml); YAML is serde-saphyr through busbar_contract::yaml" },
     { crate = "tikv-jemalloc-ctl", reason = "pulls unmaintained `paste`; jemalloc control is busbar-kernel's `mallctl`" },
     { crate = "paste", reason = "unmaintained (RUSTSEC-2024-0436)" },
     # ONE Ed25519 = ed25519-dalek 3 (ARCHITECT ruling 2026-10-02, DEPS-AUDIT cut #9 REFUSED; moved

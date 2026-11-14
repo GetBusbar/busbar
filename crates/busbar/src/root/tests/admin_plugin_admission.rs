@@ -1817,7 +1817,11 @@ async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_befor
             "plugins":{"enabled":true,"dir":dir,
                 "trust":{"publishers":[{"name":"acme","public_key":hex::encode(key.verifying_key().to_bytes())}]},
                 "fetch":[{"url":"https://plugins.invalid/anchor.tar.gz","sha256":hash}]}});
-        std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
+        std::fs::write(
+            &config,
+            busbar_contract::yaml::to_string(&document).unwrap(),
+        )
+        .unwrap();
     };
     write_base(&crate::root::loader::sign::sha256_hex(&first));
     let mut posture = publisher_posture("acme", &key);

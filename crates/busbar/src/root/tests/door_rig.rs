@@ -321,7 +321,7 @@ pub(crate) struct DoorCompose<'a> {
     doors: Vec<(String, DoorPlane)>,
     dispatcher: &'a Arc<Dispatcher>,
     late: &'a LateServices,
-    sections: &'a BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &'a BTreeMap<&'static str, busbar_contract::yaml::Value>,
     money: &'a dyn Fn() -> Arc<PlaneMoney>,
     public_url: Option<&'a str>,
     egress: Option<&'a EgressRig>,
@@ -336,7 +336,7 @@ impl<'a> DoorCompose<'a> {
         doors: Vec<(String, DoorPlane)>,
         dispatcher: &'a Arc<Dispatcher>,
         late: &'a LateServices,
-        sections: &'a BTreeMap<&'static str, serde_yaml::Value>,
+        sections: &'a BTreeMap<&'static str, busbar_contract::yaml::Value>,
         money: &'a dyn Fn() -> Arc<PlaneMoney>,
     ) -> Self {
         Self {

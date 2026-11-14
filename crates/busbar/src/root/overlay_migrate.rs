@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Offline import of the overlay selected by an actual 1.5.5 deployment.
+use busbar_contract::yaml::{MappingExt, ValueExt};
 use busbar_kernel::config;
 use busbar_kernel::persistence::facade::CoreStore;
 use std::io::Read;
@@ -64,14 +65,15 @@ fn bounded_bytes(path: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn old_document(raw: &str) -> Result<serde_yaml::Value, String> {
+fn old_document(raw: &str) -> Result<busbar_contract::yaml::Value, String> {
     // Missing credentials elsewhere in the old document must not block overlay discovery.
     // Its management selectors still require their actual values, never placeholders.
-    let document: serde_yaml::Value =
-        serde_yaml::from_str(raw).map_err(|_| "old configuration is not valid YAML")?;
+    let document: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(raw).map_err(|_| "old configuration is not valid YAML")?;
     if let Some(management) = document.get("config") {
         let selector = zeroize::Zeroizing::new(
-            serde_yaml::to_string(management).map_err(|_| "cannot encode old overlay selector")?,
+            busbar_contract::yaml::to_string(management)
+                .map_err(|_| "cannot encode old overlay selector")?,
         );
         let _resolved_selector = zeroize::Zeroizing::new(config::interpolate_env(&selector)?);
     }
@@ -82,23 +84,26 @@ fn old_document(raw: &str) -> Result<serde_yaml::Value, String> {
         config::EnvSubst::Lenient,
         &mut Vec::new(),
     )?);
-    serde_yaml::from_str(&expanded).map_err(|_| "old configuration is not valid YAML".into())
+    busbar_contract::yaml::from_str(&expanded)
+        .map_err(|_| "old configuration is not valid YAML".into())
 }
 
 fn source_path(old_config: &Path, raw: &str, env: Option<&Path>) -> Result<PathBuf, String> {
     // Resolve exactly the historical selector, without opening plugins or serving old config.
     let value = old_document(raw)?;
-    let management = &value["config"];
-    if management["locked"].as_bool() == Some(true) {
+    let management = value.at("config");
+    if management.at("locked").as_bool() == Some(true) {
         return Err("the old deployment was locked and did not consume an overlay".into());
     }
     let parent = old_config.parent().unwrap_or_else(|| Path::new("."));
     match management.get("overlay") {
-        None | Some(serde_yaml::Value::Null) => Ok(env
+        None | Some(busbar_contract::yaml::Value::Null) => Ok(env
             .map(Path::to_path_buf)
             .unwrap_or_else(|| parent.join(config::overlay::DEFAULT_OVERLAY_FILENAME))),
-        Some(serde_yaml::Value::Mapping(_)) => {
-            let file = management["overlay"]["file"]
+        Some(busbar_contract::yaml::Value::Map(_)) => {
+            let file = management
+                .at("overlay")
+                .at("file")
                 .as_str()
                 .filter(|file| !file.is_empty())
                 .ok_or("old config.overlay.file is missing or invalid")?;
@@ -116,9 +121,9 @@ fn source_path(old_config: &Path, raw: &str, env: Option<&Path>) -> Result<PathB
 /// Capture the actual historical Store selection in the newly emitted base YAML. The Store
 /// must be known before recovery; the original configuration and overlay remain unchanged.
 pub fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), String> {
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(raw).map_err(|_| "old configuration is not valid YAML")?;
-    if old_document(raw)?["config"]["locked"].as_bool() == Some(true) {
+    let value: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(raw).map_err(|_| "old configuration is not valid YAML")?;
+    if old_document(raw)?.at("config").at("locked").as_bool() == Some(true) {
         return Ok((raw.to_owned(), false));
     }
     let env = std::env::var_os("BUSBAR_CONFIG_OVERLAY").map(PathBuf::from);
@@ -143,13 +148,13 @@ pub fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), Str
     let root = value
         .as_mapping_mut()
         .ok_or("old configuration is not a mapping")?;
-    root.insert(
-        serde_yaml::Value::from("store"),
+    root.insert_key(
+        busbar_contract::yaml::Value::from("store"),
         busbar_migrations::config::migrate_plugins::yaml_value(store)
             .map_err(|_| "cannot encode the historical Store selection")?,
     );
-    let yaml =
-        serde_yaml::to_string(&value).map_err(|_| "cannot encode the new base Store selection")?;
+    let yaml = busbar_contract::yaml::to_string(&value)
+        .map_err(|_| "cannot encode the new base Store selection")?;
     Ok((yaml, true))
 }
 
@@ -164,7 +169,7 @@ pub async fn run(
     let old_bytes = zeroize::Zeroizing::new(bounded_bytes(old_config)?);
     let old_text = std::str::from_utf8(&old_bytes).map_err(|_| "old configuration is not UTF-8")?;
     let old_document = old_document(old_text)?;
-    if old_document["config"]["locked"].as_bool() == Some(true) {
+    if old_document.at("config").at("locked").as_bool() == Some(true) {
         println!(
             "{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"not_required\",\"source_preserved\":true}}"
         );
@@ -312,9 +317,9 @@ mod tests {
         );
         let (yaml, captured) = capture_store(&raw, &directory.join("config.yaml")).unwrap();
         assert!(captured);
-        let value: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(value["store"]["max_connections"].as_u64(), Some(17));
-        assert_eq!(value["store"]["timeout_secs"].as_f64(), Some(1.25));
+        let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&yaml).unwrap();
+        assert_eq!(value.at("store").at("max_connections").as_u64(), Some(17));
+        assert_eq!(value.at("store").at("timeout_secs").as_f64(), Some(1.25));
         assert!(!yaml.contains("$serde_json::private::Number"));
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -348,9 +353,15 @@ mod tests {
         let raw =
             format!("config:\n  locked: ${{{KEY}}}\n  overlay:\n    file: /missing/overlay.json\n");
         let result = capture_store(&raw, Path::new("/missing/config.yaml"));
-        let locked = old_document(&raw).unwrap()["config"]["locked"].as_bool();
-        let quoted = old_document(&format!("config: {{locked: '${{{KEY}}}'}}")).unwrap()["config"]
-            ["locked"]
+        let locked = old_document(&raw)
+            .unwrap()
+            .at("config")
+            .at("locked")
+            .as_bool();
+        let quoted = old_document(&format!("config: {{locked: '${{{KEY}}}'}}"))
+            .unwrap()
+            .at("config")
+            .at("locked")
             .clone();
         std::env::remove_var(KEY);
         assert_eq!(quoted.as_str(), Some("true"));
