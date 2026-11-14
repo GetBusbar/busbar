@@ -181,8 +181,15 @@ fn ceiling(
 /// Takes the work root for this run. The hammer deletes it when done, so it
 /// must only ever delete a directory it created itself.
 fn claim_work(dir: &std::path::Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    Ok(())
+    if let Some(p) = dir.parent() {
+        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir(dir).map_err(|e| {
+        format!(
+            "--work {}: {e}; the hammer deletes its work dir, so it must not already exist",
+            dir.display()
+        )
+    })
 }
 
 fn main() {
