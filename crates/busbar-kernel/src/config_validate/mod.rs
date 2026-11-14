@@ -426,12 +426,15 @@ fn judge_with_plugins(
         if member_protocols.len() > 1 {
             let mut protocols: Vec<&str> = member_protocols.iter().copied().collect();
             protocols.sort_unstable();
-            diag_warn!(
-                CONFIG_POOL_HETEROGENEOUS,
-                pool = %pool_name,
-                protocols = %protocols.join("+"),
-                "heterogeneous pool: cross-protocol failover translates via the IR and may not preserve all provider features"
-            );
+            let (pool, protocols) = (pool_name.to_string(), protocols.join("+"));
+            advisories.raise(move || {
+                diag_warn!(
+                    CONFIG_POOL_HETEROGENEOUS,
+                    pool = %pool,
+                    protocols = %protocols,
+                    "heterogeneous pool: cross-protocol failover translates via the IR and may not preserve all provider features"
+                )
+            });
         }
 
         if let Some(breaker) = &pool_cfg.breaker {
@@ -912,13 +915,19 @@ fn judge_with_plugins(
                     scope,
                 ) {
                     Err(e) => errors.push(coded::config_auth_policy_invalid(e).into()),
-                    Ok(busbar_contract::authz::Scope::Full) => diag_warn!(
-                        CONFIG_AUTH_CHAIN_FULL_SCOPE,
-                        module = %entry.module,
-                        "auth chain entry grants max_admin_scope: full - principals identified by \
-                         this module can hold FULL admin authority (the default ceiling is \
-                         read-only); make sure this chain is trusted end to end"
-                    ),
+                    Ok(busbar_contract::authz::Scope::Full) => {
+                        let module = entry.module.to_string();
+                        advisories.raise(move || {
+                            diag_warn!(
+                                CONFIG_AUTH_CHAIN_FULL_SCOPE,
+                                module = %module,
+                                "auth chain entry grants max_admin_scope: full - principals \
+                                 identified by this module can hold FULL admin authority (the \
+                                 default ceiling is read-only); make sure this chain is trusted \
+                                 end to end"
+                            )
+                        });
+                    }
                     Ok(_) => {}
                 }
             }
