@@ -477,33 +477,13 @@ async fn rewrap_at_rest(gs: &governance::GovState) {
 #[must_use = "an unkept InstalledLimits never publishes the generation's limits"]
 pub struct InstalledLimits {
     limits: config::LimitsResolved,
-    rates: ResolvedRates,
+    rates: config::card::CardRates,
 
     configured_card: config::card::CardFields,
 
     destinations: config::Destinations,
 
     rules: std::sync::Arc<dyn RootRules>,
-}
-
-impl ResolvedRates {
-    fn raw(&self) -> crate::rate_apply::RawRates<'_> {
-        crate::rate_apply::RawRates {
-            lanes: &self.lanes,
-            units: &self.units,
-            flat_minor: self.flat_minor,
-            present: self.present,
-            plane_fees: &self.plane_fees,
-        }
-    }
-}
-
-struct ResolvedRates {
-    lanes: Vec<(String, busbar_contract::billing::RawTierRates)>,
-    units: Vec<(String, String, u64)>,
-    flat_minor: i64,
-    present: bool,
-    plane_fees: config::PlaneFeesMap,
 }
 
 impl InstalledLimits {
@@ -1159,7 +1139,7 @@ async fn build_app_native(
         crate::cost::measurement_rate_cells(&cfg.plugin_rate_cards)
             .map(|(cell, rate)| (cell.lane, cell.class, rate)),
     );
-    let resolved_rates = ResolvedRates {
+    let resolved_rates = config::card::CardRates {
         lanes,
         units,
         flat_minor: cfg.per_request_fee,

@@ -92,10 +92,7 @@ impl HookBinder for HostGatedHooks {
     }
 
     fn dialect(&self, dialect: u32) -> String {
-        self.dialects
-            .get(dialect as usize)
-            .cloned()
-            .unwrap_or_default()
+        super::dialect_at(&self.dialects, dialect)
     }
 
     fn bind_gated(&self, container: &str, principal: Option<&str>) -> Option<GatedHooks> {
