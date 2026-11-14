@@ -904,6 +904,16 @@ fn config_store_inputs(
     Ok((door, store.module.clone(), settings))
 }
 
+/// The 1.5.5 `plugins.fetch` refusal: a header line, then one `  - ` bullet per failed target.
+fn plugins_fetch_refusal<S: AsRef<str>>(errors: &[S]) -> String {
+    let mut out = String::from("plugins.fetch failed:");
+    for error in errors {
+        out.push_str("\n  - ");
+        out.push_str(error.as_ref());
+    }
+    out
+}
+
 fn fetch_config_plugins(
     plugins: &config::PluginsCfg,
     cfg: &config::RootCfg,
@@ -917,11 +927,11 @@ fn fetch_config_plugins(
             dir.display()
         )
     })?;
-    let fetch = crate::preflight::root_rows()
-        .plugins_fetch
-        .ok_or("plugins.fetch failed: no composition root installed the plugins fetch")?;
+    let fetch = crate::preflight::root_rows().plugins_fetch.ok_or_else(|| {
+        plugins_fetch_refusal(&["no composition root installed the plugins fetch"])
+    })?;
     let outcomes = fetch(dir, &targets, boot, &cfg.blocked_metadata_hosts)
-        .map_err(|errors| format!("plugins.fetch failed: {}", errors.join("; ")))?;
+        .map_err(|errors| plugins_fetch_refusal(&errors))?;
     for outcome in outcomes {
         match outcome {
             crate::preflight::Fetched::Cached { filename } => {
@@ -1048,11 +1058,11 @@ async fn build_app_native(
             ));
         }
 
-        let fetch = crate::preflight::root_rows()
-            .plugins_fetch
-            .ok_or("plugins.fetch failed:\n  - no composition root installed the plugins fetch")?;
+        let fetch = crate::preflight::root_rows().plugins_fetch.ok_or_else(|| {
+            plugins_fetch_refusal(&["no composition root installed the plugins fetch"])
+        })?;
         let outcomes = fetch(&dir, &targets, prior.is_none(), &cfg.blocked_metadata_hosts)
-            .map_err(|errs| format!("plugins.fetch failed:\n  - {}", errs.join("\n  - ")))?;
+            .map_err(|errs| plugins_fetch_refusal(&errs))?;
         for outcome in &outcomes {
             match outcome {
                 crate::preflight::Fetched::Cached { filename } => {
@@ -2028,3 +2038,7 @@ mod root_rules_hearing_tests;
 #[cfg(test)]
 #[path = "tests/config_store_recovery_tests.rs"]
 mod config_store_recovery_tests;
+
+#[cfg(test)]
+#[path = "tests/plugins_fetch_refusal_tests.rs"]
+mod plugins_fetch_refusal_tests;
