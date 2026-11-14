@@ -119,8 +119,23 @@ impl Gateway {
             }
             if let Ok(r) = call(gw.listen, "GET", "/healthz", &[], b"") {
                 if r.status == 200 {
-                    gw.boot = started.elapsed();
-                    return Ok(gw);
+                    // Only the child's own listener counts: if another process holds the port
+                    // (it was taken, or the child failed to bind it), every case would load
+                    // that process instead.
+                    let owned = crate::procstat::listens_on(gw.pid, gw.listen.port());
+                    if owned == Ok(true) {
+                        gw.boot = started.elapsed();
+                        return Ok(gw);
+                    }
+                    gw.stop();
+                    return Err(match owned {
+                        Ok(_) => format!(
+                            "{} answers /healthz, but busbar (pid {}) does not listen on it: \
+                             the port is held by another process",
+                            gw.listen, gw.pid
+                        ),
+                        Err(e) => format!("who listens on {}: {e}", gw.listen),
+                    });
                 }
             }
             if Instant::now() > deadline {
@@ -232,11 +247,7 @@ fn parse_response(raw: &[u8]) -> Result<Resp, String> {
     } else {
         rest.to_vec()
     };
-    Ok(Resp {
-        status,
-        headers,
-        body,
-    })
+    Ok(Resp { status, body })
 }
 
 fn dechunk(mut b: &[u8]) -> Result<Vec<u8>, String> {
@@ -265,6 +276,49 @@ fn dechunk(mut b: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another process answering 200 on the port the gateway was told to bind (the port was
+    /// stolen, or the child failed to bind it) is not the gateway being healthy: boot must not
+    /// hand back a gateway whose load would land on someone else.
+    #[test]
+    fn boot_refuses_a_healthz_answer_from_a_process_that_is_not_the_child() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let foreign = TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = foreign.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for s in foreign.incoming() {
+                let Ok(mut s) = s else { continue };
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok",
+                );
+            }
+        });
+        let work = std::env::temp_dir().join(format!("hammer-boot-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        // A "gateway" that binds nothing and just stays up.
+        let bin = work.join("not-busbar");
+        std::fs::write(&bin, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let booted = Gateway::boot(BootSpec {
+            bin: &bin,
+            work: work.join("gw"),
+            config: String::new(),
+            providers: String::new(),
+            env: Vec::new(),
+            listen,
+            admin: listen,
+        });
+        let refused = booted.is_err();
+        drop(booted);
+        let _ = std::fs::remove_dir_all(&work);
+        assert!(
+            refused,
+            "boot took another process's /healthz answer as its child's"
+        );
+    }
 
     #[test]
     fn parses_chunked_and_plain_responses() {

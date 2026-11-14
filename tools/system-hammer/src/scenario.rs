@@ -45,10 +45,10 @@ pub struct Scenario {
     pub providers_1_5: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Setup steps (see [`Step`]); kept as JSON values because YAML externally tagged enums
-    /// need `!tags`, and `- mint_key: {...}` reads better.
+    /// Setup steps (see [`Step`]); kept as YAML values and read as single-key maps, because
+    /// YAML externally tagged enums otherwise need `!tags`, and `- mint_key: {...}` reads better.
     #[serde(default)]
-    pub setup: Vec<serde_json::Value>,
+    pub setup: Vec<serde_yaml::Value>,
     #[serde(default)]
     pub cases: Vec<CaseSpec>,
     /// Generated LLM cases (ingress x egress x stream x pad x tools), one list per block.
@@ -83,7 +83,8 @@ fn one() -> usize {
     1
 }
 
-/// A setup step, run in order after boot.
+/// A setup step. `rsa_service_account` steps run first, before boot (the config and env may
+/// need what they save); every other step runs in order after boot.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
@@ -260,16 +261,20 @@ fn m_prefix() -> String {
     "m-".into()
 }
 
-/// Names of the suites and the scenarios each runs.
 impl Scenario {
+    /// The setup steps, parsed.
     pub fn steps(&self) -> Result<Vec<Step>, String> {
         self.setup
             .iter()
-            .map(|v| serde_json::from_value(v.clone()).map_err(|e| format!("setup step {v}: {e}")))
+            .map(|v| {
+                serde_yaml::with::singleton_map_recursive::deserialize::<Step, _>(v.clone())
+                    .map_err(|e| format!("setup step {v:?}: {e}"))
+            })
             .collect()
     }
 }
 
+/// Names of the suites and the scenarios each runs.
 pub type Suites = BTreeMap<String, Vec<String>>;
 
 pub fn scenarios_dir() -> PathBuf {
@@ -291,6 +296,18 @@ pub fn load(dir: &Path, name: &str) -> Result<Scenario, String> {
     let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
     let s: Scenario = serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", p.display()))?;
     s.steps().map_err(|e| format!("{}: {e}", p.display()))?;
+    // Every request path is checked here, before anything boots (placeholders survive the check;
+    // `to_req` checks the filled path again).
+    for c in &s.cases {
+        let bg = c.background.iter().flat_map(|b| &b.requests);
+        for r in c.requests.iter().chain(&c.direct).chain(bg) {
+            crate::driver::check_path(&r.path)
+                .map_err(|e| format!("{}: case {}: {e}", p.display(), c.name))?;
+        }
+    }
+    for m in &s.llm_matrix {
+        expand_matrix(m).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
     Ok(s)
 }
 
@@ -340,9 +357,11 @@ pub fn to_req(r: &ReqSpec, vars: &BTreeMap<String, String>) -> Result<Req, Strin
             HeaderValue::from_str(&fill(val, &v)).map_err(|e| format!("header {k}: {e}"))?;
         headers.push((name, value));
     }
+    let path = fill(&r.path, &v);
+    crate::driver::check_path(&path)?;
     Ok(Req {
         method,
-        path: fill(&r.path, &v),
+        path,
         headers,
         body: Bytes::from(fill(&r.body, &v)),
         expect_status: r.expect,
@@ -372,6 +391,13 @@ pub fn expand_matrix(m: &LlmMatrix) -> Result<Vec<CaseSpec>, String> {
             let de = Dialect::parse(eg).ok_or(format!("llm_matrix: unknown dialect {eg}"))?;
             for &stream in &m.stream {
                 for &tools in &m.tools {
+                    if stream && tools {
+                        // The mock streams text only: such a cell would not test tool calls.
+                        return Err(format!(
+                            "llm_matrix: {ing}>{eg} stream with tools: the mock has no streamed \
+                             tool-call body"
+                        ));
+                    }
                     for &pad in &m.pad {
                         let model = format!("{}{}", m.model_prefix, eg);
                         let mut name = format!("{ing}>{eg}");
@@ -381,8 +407,10 @@ pub fn expand_matrix(m: &LlmMatrix) -> Result<Vec<CaseSpec>, String> {
                         if tools {
                             name.push_str(" tools");
                         }
-                        if pad > 0 {
+                        if pad > 0 && pad.is_multiple_of(1024) {
                             name.push_str(&format!(" {}KiB", pad / 1024));
+                        } else if pad > 0 {
+                            name.push_str(&format!(" {pad}B"));
                         }
                         if m.proto == Proto::H2c {
                             name.push_str(" h2c");
@@ -690,6 +718,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A request path the driver cannot send as written is refused at load, not replaced by `/`.
+    #[test]
+    fn a_request_path_that_is_not_a_uri_path_is_refused() {
+        for bad in ["/v1/chat completions", "v1/chat/completions", ""] {
+            let r: ReqSpec = serde_yaml::from_str(&format!("path: {bad:?}")).unwrap();
+            assert!(to_req(&r, &BTreeMap::new()).is_err(), "{bad:?}");
+        }
+        let r: ReqSpec =
+            serde_yaml::from_str("path: \"/v1beta/models/m:generateContent?alt=sse\"").unwrap();
+        assert!(to_req(&r, &BTreeMap::new()).is_ok());
+    }
+
+    /// The mock has no streamed tool-call body, so a stream+tools cell would only measure text:
+    /// the matrix refuses it.
+    #[test]
+    fn a_matrix_cell_that_streams_with_tools_is_refused() {
+        let m: LlmMatrix = serde_yaml::from_str(
+            "ingress: [openai]\negress: [anthropic]\nstream: [true]\ntools: [true]\n",
+        )
+        .unwrap();
+        let e = expand_matrix(&m).unwrap_err();
+        assert!(e.contains("stream") && e.contains("tools"), "{e}");
     }
 
     #[test]
