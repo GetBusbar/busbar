@@ -114,6 +114,7 @@ busbar-default::bin/busbar root::serve::source_file::test_validate_rejects_empty
 busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::actual_store_compatibility_replay_preserves_the_resolved_verdict	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route	CDT-KNOWN-RED	stable
 busbar-default::boot_lines_neutrality boot_lines_match_1_5_5_shape	CDT-KNOWN-RED	stable
+busbar-default::cli_validate validate_accepts_a_reference_at_a_planes_declared_wildcard_path	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_ok_on_a_config_in_the_planes_second_dialect	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_ok_on_a_good_decisions_config	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before	CDT-KNOWN-RED	stable
