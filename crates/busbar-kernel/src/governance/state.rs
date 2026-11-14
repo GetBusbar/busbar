@@ -81,14 +81,21 @@ impl From<KeyMutationError> for RecordStoreError {
                 key_id,
                 operation,
                 reconcile,
-            } => Self(format!(
-                "{}: {operation} applied to key '{key_id}'; cache reconciliation incomplete ({reconcile})",
-                if operation == "key.rotate" {
-                    ROTATION_DURABLE_MARKER
-                } else {
-                    REVOCATION_DURABLE_MARKER
-                }
-            )),
+            } => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a credential mutation whose cache reconcile failed is reported once"
+                )]
+                let message = format!(
+                    "{}: {operation} applied to key '{key_id}'; cache reconciliation incomplete ({reconcile})",
+                    if operation == "key.rotate" {
+                        ROTATION_DURABLE_MARKER
+                    } else {
+                        REVOCATION_DURABLE_MARKER
+                    }
+                );
+                Self(message)
+            }
         }
     }
 }
@@ -135,20 +142,58 @@ impl From<MintError> for RecordStoreError {
     fn from(error: MintError) -> Self {
         match error {
             MintError::Store(error) => error,
-            applied => Self(applied.to_string()),
+            applied => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: an applied mint whose cache reconcile failed is reported once"
+                )]
+                let message = applied.to_string();
+                Self(message)
+            }
         }
+    }
+}
+
+/// The current signing key id, read in place from the shared signing material (no copy).
+pub struct SigningKid(Arc<SigningMaterial>);
+
+impl std::ops::Deref for SigningKid {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.0.signer.kid()
+    }
+}
+
+impl serde::Serialize for SigningKid {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0.signer.kid())
     }
 }
 
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
-    getrandom::fill(&mut raw).map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a virtual key id is drawn only when a key is minted"
+    )]
+    let drawn = getrandom::fill(&mut raw);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the refusal is built only when the OS CSPRNG fails"
+    )]
+    drawn.map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a virtual key id is rendered only when a key is minted"
+    )]
     let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
     let generation = generate_binding_generation().store()?;
+    let generation_hash = binding_marker(&id, &generation);
     let binding = VirtualKey {
-        id: id.clone(),
+        id,
 
-        generation_hash: binding_marker(&id, &generation),
+        generation_hash,
         name: spec.name,
 
         allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
@@ -187,6 +232,10 @@ impl GovState {
         denylist: Arc<revocation::RevocationSync>,
     ) -> RecordStoreResult<Self> {
         let mut boot_caller_ref = zeroize::Zeroizing::new([0u8; 32]);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the per-boot caller-reference key is drawn once when governance starts"
+        )]
         getrandom::fill(boot_caller_ref.as_mut_slice())
             .expect("OS randomness for the per-boot caller-reference key");
         Ok(Self {
@@ -194,16 +243,14 @@ impl GovState {
             core,
             identity_claims: claims::AsyncClaimSet::new(),
             caches,
-            concurrent: RwLock::new(HashMap::new()),
+            concurrent: RwLock::default(),
             admin_token_hash: RwLock::new(
-                admin_token
-                    .as_ref()
-                    .map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
+                admin_token.map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
             recovery_book: recovery::RecoveryBook::default(),
             correction_claims: claims::AsyncClaimSet::new(),
-            corrections: std::sync::Mutex::new(HashMap::new()),
+            corrections: std::sync::Mutex::default(),
             ticket_operations: tickets::TicketOperations::default(),
             budget_flushes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             budget_flush_runner: BudgetFlushRunner::default(),
@@ -359,8 +406,8 @@ impl GovState {
         *self.caller_refs.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(key));
     }
 
-    pub fn signing_kid(&self) -> Option<String> {
-        self.signing_material().map(|m| m.signer.kid().to_string())
+    pub fn signing_kid(&self) -> Option<SigningKid> {
+        self.signing_material().map(SigningKid)
     }
 
     pub fn card_issuer(&self) -> Option<crate::plane_driver::registry::CardIssuer> {
@@ -368,8 +415,13 @@ impl GovState {
         let domain = decl.card_signing_domain?;
         let prefix = decl.card_kid_prefix?;
         let m = self.signing_material()?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the agent-card issuer is resolved once when the planes start"
+        )]
+        let kid = format!("{prefix}{}", m.signer.kid());
         Some(crate::plane_driver::registry::CardIssuer {
-            kid: format!("{prefix}{}", m.signer.kid()),
+            kid,
             issuer_spki_base64: m.signer.subkey_key_info_base64(domain),
         })
     }
@@ -382,7 +434,6 @@ impl GovState {
         ))
     }
 
-    #[allow(dead_code)]
     pub fn signing_secret(&self) -> Option<[u8; 32]> {
         self.signing_material().map(|m| m.signer.secret_bytes())
     }
@@ -399,7 +450,10 @@ impl GovState {
         self.record_usage_served(cost, key, pool, model, None, units, now);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accrual inputs are distinct scalars of one request"
+    )]
     pub fn record_usage_served(
         &self,
         cost: &crate::cost::CostModel,
@@ -414,7 +468,10 @@ impl GovState {
         self.record_usage_served_in_era(cost, key, pool, model, provider, units, now, era);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accrual inputs are distinct scalars of one request"
+    )]
     pub fn record_usage_served_in_era(
         &self,
         cost: &crate::cost::CostModel,
@@ -439,7 +496,10 @@ impl GovState {
         .expect("whole usage accrual exceeds Count range");
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accrual inputs are distinct scalars of one request"
+    )]
     pub fn record_counts_served_in_era(
         &self,
         cost: &crate::cost::CostModel,
@@ -605,7 +665,10 @@ impl GovState {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accrual inputs are distinct scalars of one request"
+    )]
     fn record_lane_metering_attributed(
         &self,
         key_id: &str,
@@ -702,7 +765,10 @@ impl GovState {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accrual inputs are distinct scalars of one request"
+    )]
     pub(crate) fn record_metered_request_dated<E: Into<RawRateEra>>(
         &self,
         key_id: &str,
@@ -726,7 +792,10 @@ impl GovState {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accrual inputs are distinct scalars of one request"
+    )]
     pub(crate) fn record_metered_request_in_era(
         &self,
         key_id: &str,
@@ -749,7 +818,10 @@ impl GovState {
         .expect("metering accumulation exceeds Count range");
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accrual inputs are distinct scalars of one request"
+    )]
     fn try_record_metered_request_in_era(
         &self,
         key_id: &str,
@@ -816,6 +888,7 @@ impl GovState {
             }
         }
         let metering = &self.pending_metering;
+        // busbar:expect(bp::state_scan, reason = "boot: custody is inspected only at shutdown, after admission has stopped")
         if metering.flush_runner.is_running()
             || !metering
                 .flight
@@ -832,6 +905,10 @@ impl GovState {
         {
             return true;
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: custody is inspected only at shutdown, after admission has stopped"
+        )]
         let corrections: Vec<_> = self
             .corrections
             .lock()
@@ -937,9 +1014,9 @@ impl GovState {
     }
 
     pub fn set_at_rest_keys(&self, keys: Option<super::at_rest::AtRestKeys>) -> bool {
-        let kids = |k: Option<&super::at_rest::AtRestKeys>| {
-            k.map(|k| (k.kid().to_string(), k.previous_kid().map(str::to_string)))
-        };
+        fn kids(k: Option<&super::at_rest::AtRestKeys>) -> Option<(&str, Option<&str>)> {
+            k.map(|k| (k.kid(), k.previous_kid()))
+        }
         let next = keys.map(Arc::new);
         let mut slot = self.at_rest.write().unwrap_or_else(|e| e.into_inner());
         let changed = kids(slot.as_deref()) != kids(next.as_deref());
@@ -993,6 +1070,10 @@ impl GovState {
         for mut shard in self.budget.write_all() {
             let before = shard.len();
 
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: runs only when an operator deletes a group"
+            )]
             shard.retain(|_, cell| {
                 if cell.dirty
                     || cell.flushing != 0
@@ -1020,6 +1101,7 @@ impl GovState {
         now: u64,
     ) -> RecordStoreResult<()> {
         let keys = self.core_store()?.identity().list_keys().await?;
+        // busbar:expect(bp::fresh_buffer, reason = "boot: budgets hydrate only when governance starts or recovers")
         let mut buckets = Vec::new();
         for key in &keys {
             buckets.push((key.id.clone(), super::WINDOW_TOTAL, None));
@@ -1069,7 +1151,7 @@ impl GovState {
         &self,
         cost: &crate::cost::CostModel,
         include_request_fee: bool,
-        cell: BudgetCell,
+        cell: &BudgetCell,
     ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
         self.money_view.priced();
 
@@ -1100,9 +1182,17 @@ impl GovState {
         }
         let store = ObservationStore::open(self.core.clone()).expect("durability support checked");
         let (plane, pool) = split_plane_lane(pool);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal is built only when admission is blocked"
+        )]
         let chain = cost
             .chain_for(key)
             .map_err(|g| LimitBlocked::MissingGroup(g.to_string()))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal is built only when admission is blocked"
+        )]
         let blocked = |bucket: &crate::cost::ChainBucket<'_>, metric| LimitBlocked::Limit {
             group: bucket.group_name.unwrap_or(bucket.bucket_id).to_string(),
             metric,
@@ -1162,15 +1252,12 @@ impl GovState {
                 return Err(blocked(bucket, "tokens"));
             }
             for cap in bucket.class_caps {
-                let observed = Count::total(
-                    total
-                        .units
-                        .iter()
-                        .map(|(lane, units)| class_total(lane, units, cap.class))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|_| blocked(bucket, cap.metric.as_str()))?,
-                )
-                .map_err(|_| blocked(bucket, cap.metric.as_str()))?;
+                let mut observed = Count::ZERO;
+                for (lane, units) in &total.units {
+                    observed = class_total(lane, units, cap.class)
+                        .and_then(|class| observed.checked_add(class))
+                        .map_err(|_| blocked(bucket, cap.metric.as_str()))?;
+                }
                 if !observed.is_zero()
                     && ordinary_cell
                         .total_tier(cap.class)
@@ -1326,12 +1413,18 @@ impl GovState {
         {
             return g.clone();
         }
-        self.concurrent
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a group's gauge is keyed once, the first time the group is admitted"
+        )]
+        let gauge = self
+            .concurrent
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .entry(group.to_string())
             .or_default()
-            .clone()
+            .clone();
+        gauge
     }
 
     #[cfg(test)]
@@ -1429,9 +1522,6 @@ impl GovState {
         )
     }
 
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
     fn admit_checked(
         &self,
         cost: &crate::cost::CostModel,
@@ -1442,11 +1532,16 @@ impl GovState {
     ) -> Result<AdmitGrant, LimitBlocked> {
         let (plane, pool) = split_plane_lane(pool);
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal is built only when admission is blocked"
+        )]
         let missing = |g: &str| LimitBlocked::MissingGroup(g.to_string());
         let chain = cost.chain_for(key).map_err(missing)?;
 
-        let buckets: Vec<&crate::cost::ChainBucket<'_>> =
-            chain.iter().filter(|b| b.applies_to_pool(pool)).collect();
+        // Chains are a handful of buckets deep: the admission scratch lives on the stack.
+        let mut buckets: ChainScratch<&crate::cost::ChainBucket<'_>> = ChainScratch::new();
+        buckets.extend(chain.iter().filter(|b| b.applies_to_pool(pool)));
         let groups = cost.groups();
 
         // A recovered unit may have sent only part of its raw custody. Admit against exact
@@ -1454,6 +1549,10 @@ impl GovState {
         for bucket in &buckets {
             let window = budget_window(bucket.window, now);
             if self.unresolved_unit_target(bucket.bucket_id, window) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refusal is built only when admission is blocked"
+                )]
                 return Err(LimitBlocked::Limit {
                     group: bucket.group_name.unwrap_or(bucket.bucket_id).to_string(),
                     metric: "budget",
@@ -1499,16 +1598,19 @@ impl GovState {
 
         let fee = cost.request_fee_on(plane);
         let n = buckets.len();
-        let mut shard_idx: Vec<usize> = Vec::with_capacity(n);
-        for bucket in &buckets {
-            shard_idx.push(self.budget.shard_index(bucket.bucket_id));
-        }
-        let mut order = shard_idx.clone();
+        let mut shard_idx: ChainScratch<usize> = ChainScratch::new();
+        shard_idx.extend(
+            buckets
+                .iter()
+                .map(|bucket| self.budget.shard_index(bucket.bucket_id)),
+        );
+        let mut order: ChainScratch<usize> = ChainScratch::new();
+        order.extend_from_slice(&shard_idx);
         order.sort_unstable();
-        let mut guards: Vec<Option<std::sync::RwLockWriteGuard<'_, HashMap<String, BudgetCell>>>> =
-            Vec::new();
+        let mut guards: ChainScratch<Option<std::sync::RwLockWriteGuard<'_, _>>> =
+            ChainScratch::new();
         guards.resize_with(n, || None);
-        let mut guard_shards = vec![usize::MAX; n];
+        let mut guard_shards: ChainScratch<usize> = ChainScratch::from_elem(usize::MAX, n);
         let mut g = 0usize;
         for &sh in order.iter() {
             if g > 0 && guard_shards[g - 1] == sh {
@@ -1572,11 +1674,10 @@ impl GovState {
                         cell.requests.max(branch.accepted.requests)
                     }),
                     bucket.tokens_cap.map_or(Count::ZERO, |_| {
-                        cell.correction
-                            .as_ref()
-                            .map_or(cell.total_tokens(), |branch| {
-                                cell.total_tokens().max(branch.accepted.total_tokens())
-                            })
+                        cell.correction.as_ref().map_or_else(
+                            || cell.total_tokens(),
+                            |branch| cell.total_tokens().max(branch.accepted.total_tokens()),
+                        )
                     }),
                     Some(cell),
                     bucket.budget_cap.map_or(Ok(0), |_| {
@@ -1597,12 +1698,13 @@ impl GovState {
             let class_blocked = (bucket.class_caps.iter())
                 .find(|c| {
                     live.map_or(Count::ZERO, |cell| {
-                        cell.correction
-                            .as_ref()
-                            .map_or(cell.total_tier(c.class), |branch| {
+                        cell.correction.as_ref().map_or_else(
+                            || cell.total_tier(c.class),
+                            |branch| {
                                 cell.total_tier(c.class)
                                     .max(branch.accepted.total_tier(c.class))
-                            })
+                            },
+                        )
                     }) >= whole_count(c.cap)
                 })
                 .map(|c| c.metric.as_str());
@@ -1639,6 +1741,10 @@ impl GovState {
             if let Some(metric) = blocked_metric {
                 drop(guards);
                 drop(grant);
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refusal is built only when admission is blocked"
+                )]
                 return Err(LimitBlocked::Limit {
                     group: bucket
                         .group_name
@@ -1659,10 +1765,19 @@ impl GovState {
 
         let era = crate::rate_apply::era_at(wall_ms());
 
-        let one = || BTreeMap::from([(PER_REQUEST.to_string(), Count::ONE)]);
-        let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));
-        grant.charge.lane = plane_fee.as_ref().map(|(lane, _)| lane.clone());
+        // One fee request on a plane's fee lane: the unit map is built once per process.
+        static PER_REQUEST_ONE: std::sync::OnceLock<BTreeMap<String, Count>> =
+            std::sync::OnceLock::new();
+        // busbar:expect(bp::into_alloc, reason = "boot: the one-fee-request unit map is built once per process")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the one-fee-request unit map is built once per process"
+        )]
+        let one =
+            PER_REQUEST_ONE.get_or_init(|| BTreeMap::from([(PER_REQUEST.to_string(), Count::ONE)]));
+        grant.charge.lane = (!plane.is_empty()).then(|| plane_fee_lane(plane));
         grant.charge.era = era;
+        let plane_fee = grant.charge.lane.as_deref();
 
         for (bi, bucket) in buckets.iter().enumerate() {
             let gi = guard_for(&guard_shards, shard_idx[bi]);
@@ -1674,16 +1789,29 @@ impl GovState {
                     c
                 }
                 Some(c) => c,
-                None => map
-                    .entry(bucket.bucket_id.to_string())
-                    .or_insert_with(|| BudgetCell::fresh(window)),
+                None => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: a bucket's cell is keyed once, the first time the bucket is charged"
+                    )]
+                    let fresh = map
+                        .entry(bucket.bucket_id.to_string())
+                        .or_insert_with(|| BudgetCell::fresh(window));
+                    fresh
+                }
             };
             cell.mutate(|cell| {
                 if let Some(group) = bucket.group_name {
-                    cell.group_owners.insert(group.to_string());
+                    if !cell.group_owners.contains(group) {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: a bucket learns each owning group once, the first time it is charged"
+                        )]
+                        cell.group_owners.insert(group.to_string());
+                    }
                 }
                 cell.requests = cell.requests.saturating_add(1);
-                if let Some((lane, one)) = &plane_fee {
+                if let Some(lane) = plane_fee {
                     cell.accrue_raw(lane, era, one)
                         .expect("fee count exceeds Count range");
                 } else {
@@ -1711,6 +1839,10 @@ impl GovState {
                 if cell.window_start == *window {
                     refund_in_place(cell, lane, charge.era);
                 } else if cell.window_start > *window {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: a refund runs only for a request that failed"
+                    )]
                     let taken_back = match lane {
                         None => UsageDelta {
                             billable_requests: -1,
@@ -1846,6 +1978,10 @@ impl GovState {
                 let mut errors = self.retry_usage_corrections().await;
                 if self.recovery_enabled() {
                     if let Err(error) = self.resume_raw_recovery().await {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "error: the message is built only when a flush step fails"
+                        )]
                         errors.push(error.to_string());
                     }
                 }
@@ -1866,6 +2002,7 @@ impl GovState {
                 // Include accrual that arrived while retained operations were awaiting their
                 // receipts. Capture is entirely in memory; each immutable flight owns its debt
                 // before any Store call can suspend this future.
+                // busbar:expect(bp::fresh_buffer, reason = "config: budget flights are captured only by the background budget flush, never inline with a request")
                 let mut new_flights = Vec::new();
                 {
                     for mut map in self.budget.write_all() {
@@ -1903,7 +2040,7 @@ impl GovState {
                             failed,
                             flushed,
                             "shutdown budget flush retains unresolved raw custody: {}",
-                            errors.join(", ")
+                            Joined(&errors)
                         );
                     } else {
                         diag_warn!(
@@ -1911,7 +2048,7 @@ impl GovState {
                             failed,
                             flushed,
                             "budget flush retains exact operations for retry: {}",
-                            errors.join(", ")
+                            Joined(&errors)
                         );
                     }
                 }
@@ -1942,8 +2079,10 @@ impl GovState {
         let (key, plain, enabled) = match self.lookup_credential(kind, public_id) {
             Some((key, cred)) => {
                 let plain = if cred.meta.is_live(now) {
+                    // Hand the opened plaintext over without copying it; the emptied
+                    // Zeroizing shell has nothing left to wipe.
                     super::at_rest::open(keys.as_deref(), &cred.meta, &cred.secret)
-                        .map(|p| p.to_string())
+                        .map(|mut p| std::mem::take(&mut *p))
                 } else {
                     None
                 };
@@ -2000,9 +2139,12 @@ fn take_one(counts: &mut BTreeMap<String, Count>, unit: &str) {
 }
 
 fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) -> RecordStoreError {
-    RecordStoreError(format!(
-        "the spend of bucket `{bucket_id}` cannot be priced: {e}"
-    ))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the refusal text is built only when a spend cannot be priced"
+    )]
+    let message = format!("the spend of bucket `{bucket_id}` cannot be priced: {e}");
+    RecordStoreError(message)
 }
 
 pub(super) fn durable_cell(
@@ -2019,6 +2161,10 @@ pub(super) fn durable_cell(
     let (mut fees, mut undated_fees) = (Vec::new(), row.billable_requests);
     for e in eras.models {
         for raw in e.usage_units.values() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is built only when a durable row is invalid"
+            )]
             let count =
                 Count::from_stored(*raw, e.scale).map_err(|e| RecordStoreError(e.to_string()))?;
             if count.is_negative() {
@@ -2036,6 +2182,10 @@ pub(super) fn durable_cell(
             continue;
         }
         let Some(model) = model else {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is built only when a durable row is invalid"
+            )]
             let count = Count::from_stored(
                 e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0),
                 e.scale,
@@ -2044,6 +2194,10 @@ pub(super) fn durable_cell(
             if count.micros() % 1_000_000 != 0 {
                 return Err(RecordStoreError("fractional fee count".into()));
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is built only when a durable row is invalid"
+            )]
             let n = u64::try_from(count.micros() / 1_000_000)
                 .map_err(|e| RecordStoreError(e.to_string()))?
                 .min(undated_fees);
@@ -2059,6 +2213,10 @@ pub(super) fn durable_cell(
         let mut cur = BTreeMap::new();
         for (unit, n) in e.usage_units {
             let left = rest.cur.get(&unit).copied().unwrap_or_default();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is built only when a durable row is invalid"
+            )]
             let n = Count::from_stored(n, e.scale).map_err(|e| RecordStoreError(e.to_string()))?;
             let n = n.min(left);
             if n.is_zero() {
@@ -2067,6 +2225,10 @@ pub(super) fn durable_cell(
             if left == n {
                 rest.cur.remove(&unit);
             } else {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refusal text is built only when a durable row is invalid"
+                )]
                 rest.cur.insert(
                     unit.clone(),
                     left.checked_sub(n)
@@ -2086,7 +2248,9 @@ pub(super) fn durable_cell(
         });
     }
     for m in &mut cell.models {
+        // busbar:expect(bp::clone_alloc, reason = "config: a cell is rebuilt from its durable row only for operator usage views, corrections and recovery")
         m.flushed = m.cur.clone();
+        // busbar:expect(bp::clone_alloc, reason = "config: a cell is rebuilt from its durable row only for operator usage views, corrections and recovery")
         m.flushed_era = m.cur.clone();
     }
     cell.fee_eras = busbar_kernel_ledger::usage::FeeEras::of(fees);
@@ -2097,7 +2261,12 @@ pub(super) fn durable_cell(
 fn durable_segments(
     rows: Vec<busbar_contract::records::ModelTokens>,
 ) -> RecordStoreResult<Vec<ModelCell>> {
-    rows.into_iter()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a cell is rebuilt from its durable row only for operator usage views, corrections and recovery"
+    )]
+    let cells = rows
+        .into_iter()
         .map(|m| {
             Ok(ModelCell {
                 model: m.model.into(),
@@ -2106,6 +2275,7 @@ fn durable_segments(
                     .usage_units
                     .into_iter()
                     .map(|(unit, n)| {
+                        #[expect(clippy::disallowed_methods, reason = "error: the refusal text is built only when a durable row is invalid")]
                         let count = Count::from_stored(n, m.scale)
                             .map_err(|e| RecordStoreError(e.to_string()))?;
                         if count.is_negative() {
@@ -2118,7 +2288,8 @@ fn durable_segments(
                 flushed_era: BTreeMap::new(),
             })
         })
-        .collect()
+        .collect();
+    cells
 }
 
 #[path = "money_view.rs"]
@@ -2128,4 +2299,23 @@ pub(super) mod money_view;
 /// `expires_at == now` is already expired, as a token's `exp == now` is.
 pub(crate) fn key_row_expired(key: &VirtualKey, now: u64) -> bool {
     key.expires_at.is_some_and(|exp| exp <= now)
+}
+
+/// Per-admission scratch sized to the key's chain depth; inline (no heap) for ordinary chains.
+type ChainScratch<T> = smallvec::SmallVec<[T; 8]>;
+
+/// Flush failure messages rendered `a, b, c` straight into the log line.
+struct Joined<'a>(&'a [String]);
+
+impl std::fmt::Display for Joined<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Joined(errors) = *self;
+        for (i, error) in errors.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(error)?;
+        }
+        Ok(())
+    }
 }

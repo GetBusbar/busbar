@@ -30,6 +30,8 @@ use busbar_contract::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use super::shape::{self, Allowed, Level, Member};
+
 pub const USAGE: NamespaceId = NamespaceId(*b"busbar.usage.v1\0");
 pub const METERING: NamespaceId = NamespaceId(*b"busbar.meter.v1\0");
 pub const LOGICAL_RECEIPTS: NamespaceId = NamespaceId(*b"busbar.logical1\0");
@@ -59,13 +61,23 @@ impl From<Failure> for Error {
         if e == Failure::StaleScan {
             Self::Conflict
         } else {
-            invalid(format!("ledger backend: {e:?}"))
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is built only when the store operation fails"
+            )]
+            let message = format!("ledger backend: {e:?}");
+            invalid(message)
         }
     }
 }
 impl From<crate::persistence::facade::AccessError> for Error {
     fn from(e: crate::persistence::facade::AccessError) -> Self {
-        invalid(format!("ledger access: {e:?}"))
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text is built only when the store operation fails"
+        )]
+        let message = format!("ledger access: {e:?}");
+        invalid(message)
     }
 }
 impl From<keys::KeyError> for Error {
@@ -75,7 +87,12 @@ impl From<keys::KeyError> for Error {
 }
 impl From<busbar_contract::count::CountError> for Error {
     fn from(e: busbar_contract::count::CountError) -> Self {
-        invalid(e.to_string())
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text is built only when the store operation fails"
+        )]
+        let message = e.to_string();
+        invalid(message)
     }
 }
 impl From<Error> for RecordStoreError {
@@ -212,7 +229,7 @@ pub fn migration_usage(
     let build = || -> Result<_> {
         let mut row = row.clone();
         row.normalize_scale6()?;
-        row.models.sort_by(|a, b| a.model.cmp(&b.model));
+        row.models.sort_unstable_by(|a, b| a.model.cmp(&b.model));
         if row
             .models
             .windows(2)
@@ -278,62 +295,61 @@ struct Record<T> {
     record: T,
 }
 fn encode<T: Serialize>(record: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request"
+    )]
+    let encoded = serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt());
+    encoded
 }
 trait Canonical {
-    fn check(value: &serde_json::Value) -> Result<()>;
+    /// The record's canonical member names (checked on the stored bytes, no DOM).
+    const SHAPE: Level<'static>;
 }
-fn fields(value: &serde_json::Value, allowed: &[&str]) -> Result<()> {
-    let object = value.as_object().ok_or_else(corrupt)?;
-    if object.keys().any(|k| !allowed.contains(&k.as_str())) {
-        return Err(corrupt());
+const fn only(names: &'static [&'static str]) -> Level<'static> {
+    Level {
+        allowed: Allowed::List(names),
+        required: None,
     }
-    Ok(())
 }
+const USAGE_MODEL: Level<'static> = only(&["scale", "model", "usage_units"]);
 impl Canonical for UsageLedger {
-    fn check(value: &serde_json::Value) -> Result<()> {
-        fields(value, &["requests", "billable_requests", "models"])?;
-        for model in value
-            .get("models")
-            .and_then(|v| v.as_array())
-            .ok_or_else(corrupt)?
-        {
-            fields(model, &["scale", "model", "usage_units"])?;
-        }
-        Ok(())
-    }
+    const SHAPE: Level<'static> = Level {
+        allowed: Allowed::List(&["requests", "billable_requests", "models"]),
+        required: Some(("models", Member::Array(&USAGE_MODEL))),
+    };
 }
 impl Canonical for MeteringRow {
-    fn check(value: &serde_json::Value) -> Result<()> {
-        fields(
-            value,
-            &[
-                "scale",
-                "key_id",
-                "model",
-                "provider",
-                "tokens_input",
-                "tokens_output",
-                "tokens_cache_read",
-                "tokens_cache_write",
-                "requests",
-                "billable_requests",
-                "key_group_at_use",
-                "pricing_version",
-                "priced_from_ms",
-                "usage_units",
-            ],
-        )
-    }
+    const SHAPE: Level<'static> = only(&[
+        "scale",
+        "key_id",
+        "model",
+        "provider",
+        "tokens_input",
+        "tokens_output",
+        "tokens_cache_read",
+        "tokens_cache_write",
+        "requests",
+        "billable_requests",
+        "key_group_at_use",
+        "pricing_version",
+        "priced_from_ms",
+        "usage_units",
+    ]);
 }
 // Metadata inspection never supplies quantity values. Counts decode directly from
 // the original bytes into i128; JSON object order and whitespace are immaterial.
 fn decode<T: DeserializeOwned + Canonical>(bytes: &Secret<Vec<u8>>) -> Result<T> {
     let seal = crate::seal::lend();
     let bytes = bytes.expose(&seal);
-    let metadata: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| corrupt())?;
-    fields(&metadata, &["version", "record"])?;
-    T::check(metadata.get("record").ok_or_else(corrupt)?)?;
+    let record = T::SHAPE;
+    let metadata = Level {
+        allowed: Allowed::List(&["version", "record"]),
+        required: Some(("record", Member::Object(&record))),
+    };
+    if !shape::check(bytes, &metadata) {
+        return Err(corrupt());
+    }
     let value: Record<T> = serde_json::from_slice(bytes).map_err(|_| corrupt())?;
     if value.version != 1 {
         return Err(corrupt());
@@ -347,9 +363,7 @@ struct Receipt {
     result: u8,
 }
 impl Canonical for Receipt {
-    fn check(value: &serde_json::Value) -> Result<()> {
-        fields(value, &["digest", "result"])
-    }
+    const SHAPE: Level<'static> = only(&["digest", "result"]);
 }
 
 struct Tx<'a> {
@@ -372,6 +386,10 @@ impl<'a> Tx<'a> {
     async fn prefetch(&mut self, mut addresses: Vec<Address>) -> Result<()> {
         addresses.sort_unstable();
         addresses.dedup();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request"
+        )]
         addresses.retain(|at| !self.observed.contains_key(at) && !self.changes.contains_key(at));
         if addresses.is_empty() {
             return Ok(());
@@ -452,6 +470,7 @@ impl<'a> Tx<'a> {
     ) -> Result<Vec<(Address, Secret<Vec<u8>>)>> {
         let collection = self.store.scan(namespace, prefix, None).await?;
         let guard = scan_guard(namespace, collection.generation);
+        // busbar:expect(bp::state_scan, reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request")
         if let Some(previous) = self.guards.iter().find(|p| p.address == guard.address) {
             let seal = crate::seal::lend();
             let same = match (&previous.expected, &guard.expected) {
@@ -476,6 +495,10 @@ impl<'a> Tx<'a> {
             address,
             expected: v.map_or(ExpectedValue::Absent, ExpectedValue::Exact),
         }));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request"
+        )]
         let candidate = PreparedCandidate::new(Candidate {
             id: self.store.next_id()?,
             codec: CANDIDATE_VERSION,
@@ -515,6 +538,7 @@ impl Change<'_> {
             Self::Meter(deltas) => deltas.len(),
             Self::Correction(request) => request.usage.len().checked_add(1).ok_or_else(corrupt)?,
         };
+        // busbar:expect(bp::fresh_buffer, reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request")
         let mut addresses = Vec::new();
         addresses
             .try_reserve_exact(count.checked_mul(2).ok_or_else(corrupt)?)
@@ -781,6 +805,7 @@ impl Ledger<'_> {
         } else {
             keys::framed(b'M', &[&METERING.0, &bucket_bytes])?
         };
+        // busbar:expect(bp::fresh_buffer, reason = "config: ledger rows are read and written only by the background budget and metering flush, operator usage views and corrections, never inline with a request")
         let mut result = Vec::new();
         for (at, bytes) in tx.scan(time_namespace(METERING, bucket), prefix).await? {
             let mut row: MeteringRow = decode(&bytes)?;
@@ -793,7 +818,7 @@ impl Ledger<'_> {
                 .map_err(|_| invalid("ledger scan allocation exhausted"))?;
             result.push(row);
         }
-        result.sort_by(|a, b| {
+        result.sort_unstable_by(|a, b| {
             (
                 &a.key_id,
                 &a.model,
@@ -1017,10 +1042,15 @@ fn submission_result(submission: Submission) -> Result<u8> {
         },
         SubmitResult::NoEffect(f) => Err(f.into()),
         SubmitResult::Uncertain | SubmitResult::Reconcile | SubmitResult::Busy => {
-            Err(invalid(format!(
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is built only when the store operation fails"
+            )]
+            let message = format!(
                 "ledger outcome unresolved; retained operation {}",
                 hex::encode(submission.id.0)
-            )))
+            );
+            Err(invalid(message))
         }
     }
 }

@@ -44,7 +44,7 @@ impl GovState {
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
             None => {
-                let priced = self.price_cell(cost, include_request_fee, cell)?;
+                let priced = self.price_cell(cost, include_request_fee, &cell)?;
                 self.money_view.keep(bucket_id, inputs, priced.clone());
                 priced
             }

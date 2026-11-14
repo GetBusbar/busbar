@@ -755,14 +755,10 @@ async fn create_key_owned(
 
     let requested_binding_mode = busbar_kernel::governance::SELF_KEY_BINDING_MODE_APP;
 
+    let requested_scopes =
+        busbar_kernel::governance::grant_scopes(req.allowed_pools.clone(), plane_scopes.clone());
     let (requested_pools, grants_other_kinds) =
-        busbar_kernel::governance::mint_policy::requested_grant(
-            busbar_kernel::governance::grant_scopes(
-                req.allowed_pools.clone(),
-                plane_scopes.clone(),
-            )
-            .as_deref(),
-        );
+        busbar_kernel::governance::mint_policy::requested_grant(requested_scopes.as_deref());
     let mint_req = MintRequest {
         roles: caller_roles,
         requested_pools: requested_pools.as_deref(),
