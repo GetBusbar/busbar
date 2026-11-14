@@ -913,6 +913,7 @@ async fn run(
         }
 
         let mut fresh_record_bootstrap = None;
+        let mut judged_effective = None;
         if let Some(command) = principal_transition.as_ref() {
             command
                 .validate_overlay_mode(config_locked, overlay_doc.is_some())
@@ -930,12 +931,15 @@ async fn run(
             if let Some(doc) = overlay_doc.as_ref() {
                 config::overlay::merge_into(&mut effective, doc.clone());
             }
-            config_validate::validate(&effective).unwrap_or_else(|errors| {
-                die(format!(
-                    "principal transition effective configuration errors: {}",
-                    errors.join("; ")
-                ))
-            });
+            // The one semantic judgement of this boot's effective configuration, made exactly as
+            // construction makes it. A serving transition hands it to construction below.
+            let judged = config_validate::judge_effective(&effective, &deploy.plugins)
+                .unwrap_or_else(|errors| {
+                    die(format!(
+                        "principal transition effective configuration errors: {}",
+                        errors.join("; ")
+                    ))
+                });
             let result = root::principal_transition::execute(
                 command,
                 &effective,
@@ -964,6 +968,7 @@ async fn run(
             if config_locked {
                 overlay_path = None;
             }
+            judged_effective = Some((effective, judged));
         }
 
         Some((
@@ -980,6 +985,7 @@ async fn run(
             base_hook_names,
             base_group_names,
             fresh_record_bootstrap,
+            judged_effective,
         ))
     })
     .await;
@@ -997,6 +1003,7 @@ async fn run(
         base_hook_names,
         base_group_names,
         fresh_record_bootstrap,
+        judged_effective,
     )) = bootstrap
     else {
         return;
@@ -1086,13 +1093,21 @@ async fn run(
     )
     .unwrap_or_else(|error| die(format!("effective connector boot configuration: {error}")));
 
-    if let Some(doc) = overlay_doc {
-        config::overlay::merge_into(&mut cfg, doc);
-    }
-
-    // Semantic validation of this effective configuration runs once, inside the application build
-    // the startup continuation drives (`appbuild` -> `config_validate::check`), before any Store
-    // publication or listener. A second pass here repeated every validator warning at boot.
+    // Semantic validation of the effective configuration runs once per boot. Ordinarily that is
+    // inside the application build the startup continuation drives (`appbuild` ->
+    // `config_validate::check_with`), before any Store publication or listener. A fresh-instance
+    // transition already judged its effective configuration (the same deploy, definitions and
+    // overlay) before writing its Store baseline: the application is built from that judged value
+    // and consumes that one result, so neither the pass nor its warnings repeat.
+    let (cfg, judged) = match judged_effective {
+        Some((effective, judged)) => (effective, Some(judged)),
+        None => {
+            if let Some(doc) = overlay_doc {
+                config::overlay::merge_into(&mut cfg, doc);
+            }
+            (cfg, None)
+        }
+    };
 
     if cfg.allow_all_metadata {
         tracing::warn!(
@@ -1186,6 +1201,7 @@ async fn run(
         root::startup_upgrade::continuation::Preparation {
             startup: store_admission,
             config: cfg,
+            judged,
             plugins: plugins_cfg,
             overlay: overlay_path,
             deploy,
