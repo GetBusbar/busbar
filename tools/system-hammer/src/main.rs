@@ -339,8 +339,8 @@ fn main() {
     let stem = format!(
         "hammer-{}-{}-{}",
         rep.started_unix,
-        rep.binary.version.replace(' ', "-"),
-        &rep.binary.git_sha[..rep.binary.git_sha.len().min(10)]
+        report::stem_part(&rep.binary.version, 64),
+        report::stem_part(&rep.binary.git_sha, 10)
     );
     let json_path = a.out.join(format!("{stem}.json"));
     let txt_path = a.out.join(format!("{stem}.txt"));
