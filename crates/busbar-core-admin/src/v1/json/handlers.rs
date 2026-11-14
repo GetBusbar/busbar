@@ -3122,7 +3122,7 @@ pub(crate) async fn hook_status(
                 .metrics
                 .as_ref()
                 .map(|m| {
-                    busbar_contract::hook_wire::reply::parse_status_metrics(m)
+                    busbar_kernel::hooks::text_cut::parse_hook_status_metrics(&name, m)
                         .into_iter()
                         .map(|metric| {
                             let mut entry =
