@@ -777,12 +777,7 @@ impl GovState {
             return true;
         }
         for index in 0..GOV_SHARDS {
-            let map = self
-                .budget
-                .shard_at(index)
-                .map
-                .read()
-                .unwrap_or_else(|p| p.into_inner());
+            let map = self.budget.shard_at(index).read();
             if map.values().any(|cell| {
                 cell.dirty
                     || cell.flushing != 0
@@ -1480,11 +1475,11 @@ impl GovState {
             let shard = self.budget.shard_at(sh);
 
             let sweep_needed = shard
-                .sweep_ticker
+                .sweep_ticker()
                 .fetch_add(1, Ordering::Relaxed)
                 .wrapping_add(1)
                 .is_multiple_of(crate::limits::rate_sweep_interval());
-            let mut map = shard.map.write().unwrap_or_else(|p| p.into_inner());
+            let mut map = shard.write();
             if sweep_needed {
                 let max_window = 31 * super::SECS_PER_DAY;
                 map.retain(|id, c| {
@@ -1814,16 +1809,28 @@ impl GovState {
                 }
 
                 let foreign_settled = self.capture_foreign_settled_snapshot().await;
-                {
-                    for mut map in self.budget.write_all() {
-                        for (id, cell) in map.iter_mut() {
-                            #[cfg(test)]
-                            self.budget
-                                .flush_cells_visited
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if cell.dirty {
-                                let _ = self.capture_budget_flushes(id, cell, &foreign_settled);
+                // One flag swap per tick selects the shards written since the last tick (W6). Pass 2
+                // walks those again plus any written during the await between the passes, so a
+                // shard pass 1 selected is never dropped. Shutdown and the backstop walk them all.
+                let backstop = !shutdown && self.budget.backstop_due(std::time::Instant::now());
+                let flagged = self.budget.take_flags();
+                let mask1 = if shutdown || backstop {
+                    ALL_SHARDS
+                } else {
+                    flagged
+                };
+                for (index, mut map) in self.budget.write_masked(mask1) {
+                    let unflagged = backstop && flagged & (1u64 << index) == 0;
+                    for (id, cell) in map.iter_mut() {
+                        #[cfg(test)]
+                        self.budget
+                            .flush_cells_visited
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if cell.dirty {
+                            if unflagged {
+                                report_unflagged_dirty_cell(id);
                             }
+                            let _ = self.capture_budget_flushes(id, cell, &foreign_settled);
                         }
                     }
                 }
@@ -1834,31 +1841,40 @@ impl GovState {
                 // receipts. Capture is entirely in memory; each immutable flight owns its debt
                 // before any Store call can suspend this future.
                 let mut new_flights = Vec::new();
-                {
-                    for mut map in self.budget.write_all() {
-                        for (id, cell) in map.iter_mut() {
-                            #[cfg(test)]
-                            self.budget
-                                .flush_cells_visited
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if !cell.dirty || self.budget_bucket_deleting(id) {
-                                continue;
-                            }
-                            new_flights.extend(self.capture_budget_flushes(
-                                id,
-                                cell,
-                                &foreign_settled,
-                            ));
-                            cell.mutate(|cell| {
-                                cell.dirty = cell.correction.is_some()
-                                    || !ExactUsageDelta::of(cell, false).is_zero()
-                                    || !ExactUsageDelta::of(cell, true).is_zero()
-                                    || !cell.rolled.is_empty()
-                                    || !cell.rolled_eras.is_empty();
-                            });
+                let mask2 = mask1 | self.budget.take_flags();
+                for (index, mut map) in self.budget.write_masked(mask2) {
+                    let mut left_dirty = false;
+                    for (id, cell) in map.iter_mut() {
+                        #[cfg(test)]
+                        self.budget
+                            .flush_cells_visited
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if !cell.dirty {
+                            continue;
                         }
+                        if self.budget_bucket_deleting(id) {
+                            left_dirty = true;
+                            continue;
+                        }
+                        new_flights.extend(self.capture_budget_flushes(id, cell, &foreign_settled));
+                        cell.mutate(|cell| {
+                            cell.dirty = cell.correction.is_some()
+                                || !ExactUsageDelta::of(cell, false).is_zero()
+                                || !ExactUsageDelta::of(cell, true).is_zero()
+                                || !cell.rolled.is_empty()
+                                || !cell.rolled_eras.is_empty();
+                        });
+                        left_dirty |= cell.dirty;
+                    }
+                    // A cell still dirty (a capture refused while its flight is in flight, a
+                    // retained correction, leftover deltas or rolled windows) is walked again on
+                    // the next tick, not at the backstop. Set while the shard's lock is held.
+                    if left_dirty {
+                        self.budget.reflag(index);
                     }
                 }
+                #[cfg(test)]
+                self.assert_dirty_cells_flagged();
                 let (late_flushed, late_errors) = if shutdown {
                     self.resume_budget_flushes(true).await
                 } else {
@@ -1930,6 +1946,41 @@ impl GovState {
         let live = enabled && plain.is_some() && !revoked;
         let secret = plain.unwrap_or_default();
         (busbar_contract::redacted::Secret::new(secret), live)
+    }
+}
+
+/// Every budget shard, as a flush mask.
+const ALL_SHARDS: u64 = u64::MAX >> (64 - GOV_SHARDS);
+
+/// The backstop found a dirty cell in a shard whose flag was clear: every mutable shard access
+/// sets the flag, so this is a bug. It is flushed by the same walk; tests fail, release audits once.
+fn report_unflagged_dirty_cell(bucket: &str) {
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if cfg!(debug_assertions) {
+        panic!("budget cell {bucket} was dirty in a shard whose flag was clear");
+    }
+    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            audit = "budget_dirty_unflagged",
+            bucket,
+            "budget flush backstop found a dirty cell in an unflagged shard; flushed it"
+        );
+    }
+}
+
+impl GovState {
+    /// Test invariant at the end of every flush: a dirty cell always sits in a flagged shard.
+    #[cfg(test)]
+    pub(super) fn assert_dirty_cells_flagged(&self) {
+        for index in 0..GOV_SHARDS {
+            let map = self.budget.shard_at(index).read();
+            if map.values().any(|cell| cell.dirty) {
+                assert!(
+                    self.budget.flagged_at(index),
+                    "shard {index} holds a dirty budget cell but its flag is clear"
+                );
+            }
+        }
     }
 }
 

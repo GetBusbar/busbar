@@ -48,6 +48,10 @@ pub const DEFAULT_RATE_SWEEP_INTERVAL: u32 = 256;
 
 pub const DEFAULT_USAGE_FLUSH_INTERVAL_MS: u64 = 100;
 
+/// How often the budget flush walks every shard whatever its "may be dirty" flag, as a backstop
+/// (seconds, within [10 s, 10 min]).
+pub const DEFAULT_BUDGET_FLUSH_BACKSTOP_SECS: u64 = 60;
+
 pub const DEFAULT_PROBE_INTERVAL_SECS: u64 = 30;
 
 pub const DEFAULT_PROBE_TIMEOUT_SECS: u64 = 5;

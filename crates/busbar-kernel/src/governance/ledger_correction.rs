@@ -1408,16 +1408,7 @@ impl GovState {
         order.dedup();
         let mut guards: Vec<_> = order
             .iter()
-            .map(|shard| {
-                (
-                    *shard,
-                    self.budget
-                        .shard_at(*shard)
-                        .map
-                        .write()
-                        .unwrap_or_else(|p| p.into_inner()),
-                )
-            })
+            .map(|shard| (*shard, self.budget.shard_at(*shard).write()))
             .collect();
 
         for (bucket, window) in &pending.targets {
@@ -1690,16 +1681,7 @@ impl GovState {
             let pending = {
                 let mut guards: Vec<_> = order
                     .iter()
-                    .map(|shard| {
-                        (
-                            *shard,
-                            self.budget
-                                .shard_at(*shard)
-                                .map
-                                .write()
-                                .unwrap_or_else(|p| p.into_inner()),
-                        )
-                    })
+                    .map(|shard| (*shard, self.budget.shard_at(*shard).write()))
                     .collect();
                 let mut replacements = snapshots.clone();
                 let mut branches = Vec::new();
