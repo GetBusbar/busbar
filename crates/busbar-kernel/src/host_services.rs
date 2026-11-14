@@ -197,6 +197,18 @@ impl From<u64> for Refused {
 
 pub const NO_DEST_JUDGE: &str = "no destination judge is installed";
 
+/// BUSBAR-6014: `dest.judge` refuses the operator-infrastructure egress class from a plugin. That
+/// class is a property of a config-declared target, never a plugin's choice; a host named inside
+/// content is judged in the default or open-web class.
+pub const DEST_JUDGE_OPERATOR_INFRASTRUCTURE: &str = "BUSBAR-6014: dest.judge refuses the \
+     operator-infrastructure egress class: that class belongs to a target the operator configured, \
+     never to a host a plugin names; judge it in the default or open-web class";
+
+/// Whether the refusal of a plugin's operator-infrastructure `dest.judge` was already logged and
+/// audited (once per process: the service carries no caller).
+static DEST_JUDGE_CLASS_FLAGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub type AsyncJob = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 
 pub trait Offload: Send + Sync {
@@ -2739,6 +2751,22 @@ impl HostServices for KernelServices {
         let refuse_private = flags & svc::DEST_REFUSE_PRIVATE != 0;
         let explain = flags & svc::DEST_EXPLAIN != 0;
 
+        if class == busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE {
+            if !DEST_JUDGE_CLASS_FLAGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::diagnostics::diag_warn!(
+                    crate::diagnostics::PLUGIN_CALL_REFUSED_ABI_RULE,
+                    "a plugin asked dest.judge under the operator-infrastructure egress class; \
+                     refused (logged once per process)"
+                );
+                crate::audit::auditlog::record_plugin_refusal(
+                    crate::audit::auditlog::PluginRefusal::Op,
+                    "plugin",
+                    "dest.judge",
+                    "BUSBAR-6014",
+                );
+            }
+            return Ran::Now(Stored::refused(DEST_JUDGE_OPERATOR_INFRASTRUCTURE));
+        }
         let Some(j) = &self.judge else {
             return Ran::Now(Stored::refused(NO_DEST_JUDGE));
         };

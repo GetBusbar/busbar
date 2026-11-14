@@ -20,12 +20,9 @@ use busbar_kernel::config::Destinations;
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
     connector::EGRESS_DEFAULT,
-    CARVE_OUT_CLASS,
+    connector::EGRESS_PROVIDER,
     connector::EGRESS_OPEN_WEB,
 ];
-
-/// The one class the 1.5.5 metadata carve-outs are read in ([`Metadata::lifts`]): the provider
-const CARVE_OUT_CLASS: u32 = connector::EGRESS_PROVIDER;
 
 /// The loopback-allowed class: private addresses refused but loopback, and an alternate IPv4
 const LOOPBACK_CLASS: u32 = connector::EGRESS_LOOPBACK_ALLOWED;
@@ -201,12 +198,54 @@ fn is_name(n: &str) -> bool {
         && !is_alternate_ipv4_encoding(n)
 }
 
-/// One `advanced.allow_destinations` entry, or the boot refusal naming it.
-fn strict(i: usize, entry: &str) -> Result<Entry, String> {
-    let shown = match entry.rfind('@') {
+/// An entry as a refusal shows it: userinfo before an `@` redacted.
+fn shown(entry: &str) -> String {
+    match entry.rfind('@') {
         Some(at) => format!("<redacted>@{}", &entry[at + 1..]),
         None => entry.to_owned(),
+    }
+}
+
+/// One `advanced.allow_destinations` entry, or the boot refusal naming it: a malformed entry, or one
+/// naming a cloud-metadata destination ([`refuse_metadata_entry`], BUSBAR-3134).
+fn strict(i: usize, written: &str) -> Result<Entry, String> {
+    let e = entry(i, written)?;
+    refuse_metadata_entry(i, written, &e)?;
+    Ok(e)
+}
+
+/// Whether `addr` is a cloud-metadata destination the guard refuses in every class: a metadata
+/// address (link-local IPv4 included) or IPv6 link-local `fe80::/10`, in any embedded form.
+fn is_metadata_address(addr: IpAddr) -> bool {
+    ip_is_cloud_metadata(&addr)
+        || matches!(canonical(addr), IpAddr::V6(v6) if is_link_local_v6(&v6))
+}
+
+/// BUSBAR-3134: an allowlist entry that NAMES a cloud-metadata destination (a built-in metadata host
+/// name, a metadata literal, or a /32 or /128 equal to a metadata address) is refused at boot rather
+/// than silently ignored: no configuration ever admits metadata. A wider network that merely covers a
+/// metadata address loads, and never admits it.
+fn refuse_metadata_entry(i: usize, written: &str, e: &Entry) -> Result<(), String> {
+    let names_metadata = match e {
+        Entry::Host(h) => METADATA_HOSTS.contains(&h.as_str()),
+        Entry::Net(net, len) => *len == full(*net) && is_metadata_address(*net),
+        Entry::Under(_) => false,
     };
+    if !names_metadata {
+        return Ok(());
+    }
+    let code = busbar_kernel::diagnostics::CONFIG_DESTINATION_NAMES_METADATA.banner();
+    Err(format!(
+        "{ALLOW_KEY}[{i}]: `{}` names a cloud-metadata destination, which is refused \
+         unconditionally ({code}); no configuration admits it. Remove the entry; an instance \
+         credential comes from workload-identity federation, never from the metadata endpoint",
+        shown(written)
+    ))
+}
+
+/// One `advanced.allow_destinations` entry parsed, or the refusal naming a malformed one.
+fn entry(i: usize, entry: &str) -> Result<Entry, String> {
+    let shown = shown(entry);
     let bad = || {
         format!("{ALLOW_KEY}[{i}]: `{shown}` is not a host, a `*.domain` wildcard, an IP or a CIDR")
     };
@@ -235,56 +274,15 @@ fn strict(i: usize, entry: &str) -> Result<Entry, String> {
 /// only) and the extra refusals.
 #[derive(Debug, Default)]
 struct Metadata {
-    /// `security.allow_all_metadata`: every metadata address and extra refusal lifted, for a
-    /// provider dial.
-    allow_all: bool,
-    /// `security.allow_metadata_hosts`: carve-outs for every dial in the carve-out class.
-    everywhere: Vec<Entry>,
-    /// Each provider's own `allow_metadata_hosts`, keyed by the host its URLs name (the union,
-    /// where two providers name one host).
-    by_host: HashMap<String, Vec<Entry>>,
     /// `security.blocked_metadata_hosts`.
     blocked: Vec<Entry>,
 }
 
 impl Metadata {
     fn from_config(d: &Destinations) -> Metadata {
-        let mut by_host: HashMap<String, Vec<Entry>> = HashMap::new();
-        for (url, own) in &d.url_allow {
-            let read = busbar_kernel_egress::trust::net::split_url(url).ok();
-            if let Some(host) = read.and_then(|(_, host, _, _)| norm(&host)) {
-                by_host
-                    .entry(host)
-                    .or_default()
-                    .extend(own.iter().filter_map(|e| legacy(e)));
-            }
-        }
         Metadata {
-            allow_all: d.allow_all_metadata,
-            everywhere: d.legacy_allow.iter().filter_map(|e| legacy(e)).collect(),
-            by_host,
             blocked: d.blocked.iter().filter_map(|e| legacy(e)).collect(),
         }
-    }
-
-    /// Whether a carve-out lifts the refusal of `name` (normalized) answering `addr` (`None`: the
-    fn lifts(&self, name: &str, addr: Option<IpAddr>, class: u32) -> bool {
-        if class != CARVE_OUT_CLASS {
-            return false;
-        }
-        let own = self.by_host.get(name).map_or(&[][..], Vec::as_slice);
-        self.allow_all
-            || self
-                .everywhere
-                .iter()
-                .chain(own)
-                .any(|e| e.names(name) || addr.is_some_and(|a| e.covers(a)))
-    }
-
-    /// Whether a carve-out ENTRY names `addr` itself for a dial of `name` under `class`: the
-    fn carves_address(&self, name: &str, addr: IpAddr, class: u32) -> bool {
-        let own = self.by_host.get(name).map_or(&[][..], Vec::as_slice);
-        class == CARVE_OUT_CLASS && self.everywhere.iter().chain(own).any(|e| e.covers(addr))
     }
 }
 
@@ -386,11 +384,7 @@ impl Guard {
         };
         let m = self.metadata();
         let allowed = self.allow.iter().any(|e| e.names(&name));
-        let lifted = allowed || m.lifts(&name, None, class);
-        if METADATA_HOSTS.iter().any(|h| name == *h) && !lifted {
-            return refuse(DEST_METADATA);
-        }
-        if m.blocked.iter().any(|e| e.names(&name)) && !lifted {
+        if METADATA_HOSTS.iter().any(|h| name == *h) || m.blocked.iter().any(|e| e.names(&name)) {
             return refuse(DEST_METADATA);
         }
 
@@ -461,19 +455,8 @@ impl Guard {
         let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));
 
         let denied = metadata || listed(&m.blocked);
-        let allowlisted = if denied {
-            self.allow.iter().any(|e| e.pins(addr))
-        } else {
-            listed(&self.allow)
-        };
-
-        let carved = if link_local {
-            m.carves_address(&name, addr, class)
-        } else {
-            m.lifts(&name, Some(addr), class)
-        };
-        let admitted =
-            allowlisted || carved || (!metadata && !link_local && (named(&self.allow) || reach));
+        let allowlisted = !denied && !link_local && listed(&self.allow);
+        let admitted = allowlisted || (!denied && !link_local && (named(&self.allow) || reach));
         if admitted {
             return Ok(());
         }

@@ -1652,6 +1652,9 @@ pub fn check_record_retentions(
 pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
     for (i, k) in keys.iter().enumerate() {
         named(k.key, "trust_key.key")?;
+        if k.role == TRUST_PRIVATE_REACH {
+            return Err(fault(Rule::UnknownCode, "trust_key.role_retired"));
+        }
         code(
             u64::from(k.role),
             u64::from(TRUST_PIN),
@@ -1677,10 +1680,6 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
             if k.mechanisms_len != 0 {
                 return Err(fault(Rule::Contradiction, "trust_key.duration_mechanisms"));
             }
-            if k.role == TRUST_PRIVATE_REACH && !k.default.ptr.is_null() {
-                return Err(fault(Rule::Contradiction, "trust_key.reach_default"));
-            }
-
             if k.role == TRUST_ITEM_APPROVALS && (k.default.ptr.is_null() || k.default.len == 0) {
                 return Err(fault(Rule::Missing, "trust_key.approvals_field"));
             }

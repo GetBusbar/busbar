@@ -238,6 +238,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     let tail: PlaneTail =
         unsafe { crate::dispatch::plugin::kind_tail(st, "a plane", PLANE_TAIL_FROZEN) }?;
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    refuse_retired_trust_roles(&tail)?;
     check_tail_trust_keys(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_fee_units(&tail)
@@ -608,7 +609,6 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
             role: match k.role {
                 plane::TRUST_PIN => TrustRole::Pin,
                 plane::TRUST_REVERIFY_TTL => TrustRole::ReverifyTtl,
-                plane::TRUST_PRIVATE_REACH => TrustRole::PrivateReach,
                 plane::TRUST_ITEM_APPROVALS => TrustRole::ItemApprovals,
                 _ => TrustRole::RecoveryBackoff,
             },
@@ -1252,6 +1252,25 @@ fn check_tail_text(text: AbiStr, field: &'static str) -> Result<(), Fault> {
     busbar_contract::abi::mechanism::check::text(text, field)?;
     if text.len as u64 > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES {
         return Err(fault(Rule::OverMax, field));
+    }
+    Ok(())
+}
+
+/// BUSBAR-6013 (`PLUGIN_DECLARES_RETIRED_ABI_VALUE`): a plane declaring the retired trust role
+/// `TRUST_PRIVATE_REACH` (4) is refused, naming the key and the role, before any other trust-key
+/// rule reads it.
+fn refuse_retired_trust_roles(tail: &PlaneTail) -> Result<(), String> {
+    const CODE: busbar_contract::diagnostic::Banner = busbar_contract::diagnostic::Banner(6013);
+    for key in listed(tail.trust_keys, tail.trust_keys_len) {
+        if key.role == plane::TRUST_PRIVATE_REACH {
+            return Err(format!(
+                "{CODE}: the plane declares trust key `{}` with the retired role \
+                 TRUST_PRIVATE_REACH (4); one core setting, `advanced.allow_destinations`, governs \
+                 every private destination. Upgrade the plugin to a release built against busbar \
+                 1.6.0",
+                kept(key.key)
+            ));
+        }
     }
     Ok(())
 }

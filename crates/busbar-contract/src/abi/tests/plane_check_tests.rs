@@ -2360,9 +2360,11 @@ fn well_formed_trust_keys_pass() {
     assert_eq!(check_pin_mechanisms(&MECHANISMS), Ok(()));
 }
 
-/// A private reach key carries no default flags or mechanisms.
+/// THE RETIRED PRIVATE REACH (`TRUST_PRIVATE_REACH`, role 4): a plane declaring it is refused at
+/// load, whatever its default, flags or mechanisms; one policy, `advanced.allow_destinations`,
+/// governs every private destination.
 #[test]
-fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
+fn the_retired_private_reach_role_is_refused() {
     let reach = TrustKey {
         default: AbiStr {
             ptr: null(),
@@ -2370,23 +2372,17 @@ fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
         },
         ..duration_key(TRUST_PRIVATE_REACH)
     };
-    assert_eq!(check_trust_keys(&[pin_key(), reach]), Ok(()));
-    assert_eq!(
-        check_trust_keys(&[duration_key(TRUST_PRIVATE_REACH)]),
-        f(Rule::Contradiction, "trust_key.reach_default")
-    );
-    assert_eq!(
-        check_trust_keys(&[TrustKey { flags: 1, ..reach }]),
-        f(Rule::UnknownCode, "trust_key.duration_flags")
-    );
-    assert_eq!(
-        check_trust_keys(&[TrustKey {
-            mechanisms: MECHANISMS.as_ptr(),
-            mechanisms_len: MECHANISMS.len(),
-            ..reach
-        }]),
-        f(Rule::Contradiction, "trust_key.duration_mechanisms")
-    );
+    for keys in [
+        vec![pin_key(), reach],
+        vec![reach],
+        vec![duration_key(TRUST_PRIVATE_REACH)],
+        vec![TrustKey { flags: 1, ..reach }],
+    ] {
+        assert_eq!(
+            check_trust_keys(&keys),
+            f(Rule::UnknownCode, "trust_key.role_retired")
+        );
+    }
 }
 
 #[test]

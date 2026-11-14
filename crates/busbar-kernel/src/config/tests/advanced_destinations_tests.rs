@@ -24,18 +24,19 @@ fn private_addresses_are_blocked_by_default() {
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
     let d = cfg.destinations();
     assert!(d.block_private_addresses);
-    assert!(d.allow.is_empty() && d.legacy_allow.is_empty() && d.blocked.is_empty());
-    assert!(d.url_allow.is_empty());
+    assert!(d.allow.is_empty() && d.blocked.is_empty());
 }
 
+/// The one 1.5.5 security key that still feeds the guard is `blocked_metadata_hosts`; the retired
+/// carve-outs never reach it (they are refused at validation, BUSBAR-3136).
 #[test]
 fn the_1_5_5_security_keys_feed_the_one_guard() {
     let mut deploy = base_deploy();
     deploy.advanced.allow_destinations = vec!["127.0.0.1".into()];
     deploy.security = Some(SecurityCfg {
         blocked_metadata_hosts: vec!["imds.corp.example".into()],
-        allow_metadata_hosts: vec!["169.254.169.254".into()],
-        allow_all_metadata: true,
+        allow_metadata_hosts: Vec::new(),
+        allow_all_metadata: false,
     });
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert_eq!(
@@ -43,10 +44,7 @@ fn the_1_5_5_security_keys_feed_the_one_guard() {
         Destinations {
             block_private_addresses: true,
             allow: vec!["127.0.0.1".into()],
-            legacy_allow: vec!["169.254.169.254".into()],
-            url_allow: Vec::new(),
             blocked: vec!["imds.corp.example".into()],
-            allow_all_metadata: true,
         }
     );
 }

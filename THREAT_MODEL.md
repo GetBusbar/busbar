@@ -310,7 +310,7 @@ stop someone who holds both from re-signing history.
 - **Host / OS / kernel** compromise of the machine Busbar runs on, and an attacker who controls the
   configured store.
 - Operators who deliberately configure Busbar insecurely (`admin_require_mtls: false` on an exposed
-  admin listener, an empty auth chain in production, `security.allow_all_metadata`,
+  admin listener, an empty auth chain in production,
   `allow_unsigned`, `allow_third_party`): documented foot-guns behind explicit settings, warned at
   boot.
 - Physical access and side channels beyond the constant-time comparisons noted above.

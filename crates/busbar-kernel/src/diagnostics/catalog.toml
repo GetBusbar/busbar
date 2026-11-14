@@ -232,9 +232,86 @@ summary = "A plugin declares billable classes for a configured lane, but that la
 action = "Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup."
 
 [[diagnostic]]
+name = "CONFIG_DESTINATION_NAMES_METADATA"
+doc = "An `advanced.allow_destinations` entry names a cloud-metadata destination, which no configuration admits."
+code = 3134
+class = "Config"
+slug = "config-destination-names-metadata"
+title = "An allowlist entry names a cloud-metadata destination"
+severity = "Fatal"
+summary = "An `advanced.allow_destinations` entry is a cloud-metadata host name (such as `metadata.google.internal`), a metadata address (such as `169.254.169.254`, `fd00:ec2::254` or an IPv6 link-local address), or a /32 or /128 network equal to one. Cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so the entry is refused at startup rather than silently ignored. A wider network that merely covers a metadata address (such as `169.254.0.0/16`) loads, and still never admits the metadata address."
+action = "Remove the entry named in the message. A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint."
+
+[[diagnostic]]
+name = "CONFIG_METADATA_CARVE_OUT_RETIRED"
+doc = "A retired 1.5.5 cloud-metadata carve-out key is set; no configuration admits cloud metadata."
+code = 3136
+class = "Config"
+slug = "config-metadata-carve-out-retired"
+title = "A retired cloud-metadata carve-out key is set"
+severity = "Fatal"
+summary = "The configuration sets `security.allow_metadata_hosts`, `security.allow_all_metadata: true` or a provider's `allow_metadata_hosts`. In 1.6.0 cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so these 1.5.5 carve-outs are retired. The configuration is refused rather than read with the carve-out ignored. `security.blocked_metadata_hosts` still extends the denylist."
+action = "Run `busbar --migrate-config`: it removes the keys and reports each removed entry (BUSBAR-3411). A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint."
+
+[[diagnostic]]
+name = "MIGRATE_PRIVATE_REACH_TO_ALLOWLIST"
+doc = "The migration retired a registration's `allow_private` and listed exactly its hosts in `advanced.allow_destinations`."
+code = 3410
+class = "Config"
+slug = "migrate-private-reach-to-allowlist"
+title = "A registration's allow_private was replaced by exact advanced.allow_destinations entries"
+severity = "Actionable"
+summary = "An MCP server (`tools.<server>`) or A2A agent (`agents.<agent>`) set the retired `allow_private`. The migration removed the key and listed exactly the hosts that registration dials in `advanced.allow_destinations` (never a wildcard or a network, never a cloud-metadata host). A plaintext `http://` registration to a non-loopback host is refused at 1.6.0: the planes admit `http://` to loopback only."
+action = "Review the listed hosts. Move a non-loopback `http://` registration to `https://`; per-destination plaintext arrives after 1.6.0."
+
+[[diagnostic]]
+name = "MIGRATE_METADATA_CARVE_OUT_REMOVED"
+doc = "The migration removed a retired 1.5.5 cloud-metadata carve-out key."
+code = 3411
+class = "Config"
+slug = "migrate-metadata-carve-out-removed"
+title = "A retired cloud-metadata carve-out key was removed"
+severity = "Actionable"
+summary = "The migration removed `security.allow_metadata_hosts`, `security.allow_all_metadata` or a provider's `allow_metadata_hosts`, naming each removed entry. 1.6.0 refuses cloud metadata for every outbound connection and no configuration admits it; a destination the carve-out reached is now refused."
+action = "If a removed entry reached an instance credential endpoint, move that workload to workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file."
+
+[[diagnostic]]
+name = "PLUGIN_DECLARES_RETIRED_ABI_VALUE"
+doc = "A plugin declares a retired ABI value or need shape; the plugin or need is refused."
+code = 6013
+class = "Plugins"
+slug = "plugin-declares-retired-abi-value"
+title = "A plugin declares a retired ABI value"
+severity = "Fatal"
+summary = "A plugin's Statement or need uses something the 1.6.0 ABI retired: the plane trust role `TRUST_PRIVATE_REACH` (4), or an operator-infrastructure need over a framed transport (`http`, `grpc`) that names no config-declared target (`target_from`). The operator-infrastructure class is a property of a target the operator configured, never a plugin's choice. The plugin (for a trust role) or the need is refused, naming what it declared. A carrier need (`tcp`, `unix`) without a declared target is deprecated and refused from 1.7.0."
+action = "Upgrade the plugin to a release built against busbar 1.6.0. A plugin author drops the retired role, and declares `target_from` on an operator-infrastructure need."
+
+[[diagnostic]]
+name = "PLUGIN_CALL_REFUSED_ABI_RULE"
+doc = "A plugin call broke an ABI rule and was refused; flagged once per instance and audited."
+code = 6014
+class = "Plugins"
+slug = "plugin-call-refused-abi-rule"
+title = "A plugin call was refused by an ABI rule"
+severity = "Actionable"
+summary = "A plugin asked for something the ABI does not allow: `dest.judge` under the operator-infrastructure egress class (content-named hosts are judged in the default or open-web class), or a mid-stream upgrade offering a name that is not the dialled host (only a dial to an IP literal may offer another name). The call is refused; the first refusal per instance is logged and audited."
+action = "Upgrade the plugin to a release built against busbar 1.6.0, or report the plugin to its author."
+
+[[diagnostic]]
+name = "PLUGIN_USES_DEPRECATED_ABI_VALUE"
+doc = "A plugin used a deprecated ABI value that is still honoured; flagged once per instance and audited."
+code = 6015
+class = "Plugins"
+slug = "plugin-uses-deprecated-abi-value"
+title = "A plugin used a deprecated ABI value (refused from 1.7.0)"
+severity = "Actionable"
+summary = "A plugin secured an operator-infrastructure connection with `UPGRADE_VERIFY_OFF`, so the far end's certificate is not verified (postgres `sslmode=prefer`, valkey `#insecure`). The value is honoured in 1.6.x, deprecated, and refused from 1.7.0. The first use per instance is logged and audited."
+action = "Configure the server with a certificate the plugin can verify (`sslmode=require` or `verify-full`, `rediss://` without `#insecure`); the core trust store for private CAs arrives after 1.6.0."
+
+[[diagnostic]]
 name = "CONFIG_PRIVATE_REACH_RETIRED"
 doc = "A plane registration sets the retired `allow_private`; the one private-address policy is `advanced.allow_destinations`."
-code = 3027
+code = 3135
 class = "Config"
 slug = "config-private-reach-retired"
 title = "A registration still carries the retired per-registration private-address switch"
@@ -1710,14 +1787,16 @@ action = "Retry the request; a shutdown-race clears on its own. A repeatable fai
 
 [[diagnostic]]
 name = "METADATA_PROTECTION_DISABLED"
-doc = "The nuclear `allow_all_metadata` is set: the cloud-metadata SSRF guard is OFF. Security posture."
+doc = "RETIRED in 1.6.0: `allow_all_metadata` is refused (BUSBAR-3136), so the cloud-metadata guard is never off."
 code = 5045
 class = "Proxy"
 slug = "metadata-protection-disabled"
-title = "Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set)"
+title = "Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set) — RETIRED"
 severity = "Actionable"
-summary = "The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's cloud-metadata SSRF guard is OFF and EVERY cloud-metadata endpoint (e.g. 169.254.169.254, the GCP/Azure metadata hosts) is reachable through the proxy. That is a security-relevant degradation: a crafted upstream URL or a compromised plugin can reach the instance's credential endpoint. Emitted once at boot."
-action = "Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list)."
+summary = "RETIRED. Nothing emits this code: 1.6.0 refuses `security.allow_all_metadata` at startup (BUSBAR-3136), and cloud metadata is refused for every outbound connection, so the guard can no longer be disabled."
+action = "Nothing emits this code. See BUSBAR-3136."
+since = "1.5.0"
+retired = true
 
 [[diagnostic]]
 name = "CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED"

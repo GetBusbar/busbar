@@ -483,7 +483,10 @@ pub struct DestJudgeIn {
     pub head: ServiceHead,
     /// The destination, as the content names it (a URL, or `host:port`).
     pub dest: AbiStr,
-    /// The egress class whose rules apply; `0` = the host's default.
+    /// The egress class whose rules apply; `0` = the host's default. Never
+    /// `EGRESS_OPERATOR_INFRASTRUCTURE`: that class belongs to a config-declared target, so the
+    /// call is Refused (BUSBAR-6014); a host named inside content is judged in the default or
+    /// open-web class.
     pub egress_class: u32,
     /// [`DEST_RESOLVE`] | [`DEST_REFUSE_PRIVATE`] | [`DEST_EXPLAIN`].
     pub flags: u32,

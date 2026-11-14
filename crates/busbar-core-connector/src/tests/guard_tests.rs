@@ -117,7 +117,30 @@ fn a_mixed_answer_is_refused_whole() {
     );
 }
 
-/// A host entry never admits a metadata answer; an IP or CIDR entry naming the metadata address
+/// A guard over `allow` as the judge would hold it if a boot refusal were ever missed: each entry
+/// parsed, but the boot refusal of a metadata entry ([`refuse_metadata_entry`]) skipped, so the dial
+/// arm is pinned on its own (defence in depth).
+fn unchecked(allow: &[&str]) -> Guard {
+    Guard {
+        allow: allow
+            .iter()
+            .enumerate()
+            .map(|(i, e)| entry(i, e).expect("a well-formed entry"))
+            .collect(),
+        ..Guard::default()
+    }
+}
+
+const EVERY_CLASS: [u32; 5] = [
+    EGRESS_DEFAULT,
+    EGRESS_PROVIDER,
+    EGRESS_OPEN_WEB,
+    EGRESS_LOOPBACK_ALLOWED,
+    EGRESS_OPERATOR_INFRASTRUCTURE,
+];
+
+/// T-G1: no allowlist entry admits a metadata answer, a host entry or an exact IP entry naming the
+/// metadata address itself, in any class.
 #[test]
 fn a_name_entry_never_admits_a_metadata_answer() {
     let g = guard(true, &["evil.test"]);
@@ -125,11 +148,87 @@ fn a_name_entry_never_admits_a_metadata_answer() {
         verdict(g.judge_answer("evil.test", &[ip("169.254.169.254")], C)),
         Some(DEST_METADATA)
     );
-    let g = guard(true, &["169.254.169.254"]);
-    assert_eq!(
-        g.judge_answer("evil.test", &[ip("169.254.169.254")], C),
-        Ok(())
-    );
+    let g = unchecked(&["169.254.169.254"]);
+    for class in EVERY_CLASS {
+        assert_eq!(
+            verdict(g.judge_answer("evil.test", &[ip("169.254.169.254")], class)),
+            Some(DEST_METADATA),
+            "class {class}"
+        );
+    }
+}
+
+/// T-G2: a metadata NAME in the allowlist never lifts the name arm's refusal, in any class.
+#[test]
+fn a_metadata_name_entry_is_refused_in_every_class() {
+    let g = unchecked(&["metadata.google.internal"]);
+    for class in EVERY_CLASS {
+        assert_eq!(
+            g.judge_name("metadata.google.internal", class)
+                .unwrap_err()
+                .verdict,
+            DEST_METADATA,
+            "class {class}"
+        );
+    }
+}
+
+/// BUSBAR-3134: an `advanced.allow_destinations` entry that names a cloud-metadata destination (a
+/// metadata host name, a metadata literal, or a /32 or /128 equal to a metadata address) refuses the
+/// boot, naming the index; a wider network that merely covers metadata loads (it never admits it).
+#[test]
+fn an_allow_entry_naming_metadata_is_refused_at_boot() {
+    let refused = |e: &str| {
+        Guard::from_config(&Destinations {
+            allow: vec!["ok.test".into(), e.into()],
+            ..Destinations::default()
+        })
+        .unwrap_err()
+    };
+    for named in [
+        "169.254.169.254",
+        "169.254.169.254/32",
+        "169.254.170.2",
+        "100.100.100.200",
+        "168.63.129.16/32",
+        "fd00:ec2::254",
+        "[fd00:ec2::254]",
+        "fd00:ec2::254/128",
+        "fd00:ec2::23/128",
+        "::ffff:169.254.169.254",
+        "fe80::1",
+        "metadata.google.internal",
+        "METADATA.Google.Internal.",
+        "instance-data",
+    ] {
+        let r = refused(named);
+        assert!(
+            r.starts_with("advanced.allow_destinations[1]: `"),
+            "{named}: {r}"
+        );
+        assert!(
+            r.contains("names a cloud-metadata destination") && r.contains("BUSBAR-3134"),
+            "{named}: {r}"
+        );
+    }
+    for wider in [
+        "169.254.0.0/16",
+        "169.254.169.0/24",
+        "100.100.100.200/31",
+        "fd00:ec2::254/127",
+        "fe80::/10",
+        "0.0.0.0/0",
+        "*.google.internal",
+    ] {
+        assert!(
+            Guard::from_config(&Destinations {
+                allow: vec![wider.into()],
+                ..Destinations::default()
+            })
+            .is_ok(),
+            "{wider} covers metadata but does not name it"
+        );
+    }
 }
 
 /// A cidr allowlist entry does not admit a metadata address inside it.
@@ -207,9 +306,11 @@ fn a_cidr_allowlist_entry_does_not_admit_a_metadata_address_inside_it() {
     assert_eq!(g.judge_answer("x.test", &[ip("203.0.113.8")], C), Ok(()));
 }
 
-/// An exact metadata allow entry is the documented carve out.
+/// An exact metadata allow entry is NOT a carve-out (it is refused at boot, BUSBAR-3134); even a
+/// guard that somehow held one refuses the metadata answer in the default, provider and
+/// operator-infrastructure classes, and a wider network never names it.
 #[test]
-fn an_exact_metadata_allow_entry_is_the_documented_carve_out() {
+fn an_exact_metadata_allow_entry_admits_nothing() {
     for (entry, meta) in [
         ("100.100.100.200", "100.100.100.200"),
         ("100.100.100.200/32", "100.100.100.200"),
@@ -219,12 +320,12 @@ fn an_exact_metadata_allow_entry_is_the_documented_carve_out() {
         ("fd00:ec2::254/128", "fd00:ec2::254"),
         ("fd00:ec2::23/128", "fd00:ec2::23"),
     ] {
-        let g = guard(true, &[entry]);
+        let g = unchecked(&[entry]);
         for class in [C, EGRESS_PROVIDER, EGRESS_OPERATOR_INFRASTRUCTURE] {
             assert_eq!(
-                g.judge_answer("svc.test", &[ip(meta)], class),
-                Ok(()),
-                "{entry} admits {meta}, class {class}"
+                verdict(g.judge_answer("svc.test", &[ip(meta)], class)),
+                Some(DEST_METADATA),
+                "{entry} refuses {meta}, class {class}"
             );
         }
     }
@@ -247,34 +348,6 @@ fn an_exact_metadata_allow_entry_is_the_documented_carve_out() {
             "{wider} does not name {meta}"
         );
     }
-    let all = Guard::from_config(&Destinations {
-        allow: vec!["100.64.0.0/10".into()],
-        allow_all_metadata: true,
-        ..Destinations::default()
-    })
-    .unwrap();
-    assert_eq!(
-        all.judge_answer("x.test", &[ip("100.100.100.200")], EGRESS_PROVIDER),
-        Ok(())
-    );
-    assert_eq!(
-        verdict(all.judge_answer("x.test", &[ip("100.100.100.200")], C)),
-        Some(DEST_METADATA)
-    );
-    let carved = Guard::from_config(&Destinations {
-        allow: vec!["169.254.0.0/16".into()],
-        legacy_allow: vec!["169.254.169.254".into()],
-        ..Destinations::default()
-    })
-    .unwrap();
-    assert_eq!(
-        carved.judge_answer("x.test", &[ip("169.254.169.254")], EGRESS_PROVIDER),
-        Ok(())
-    );
-    assert_eq!(
-        verdict(carved.judge_answer("x.test", &[ip("169.254.169.254")], C)),
-        Some(DEST_METADATA)
-    );
 }
 
 /// RED `block_private_addresses: false` admits private answers and names, never cloud metadata.
@@ -322,168 +395,60 @@ fn the_name_arm_decides_before_resolution() {
     assert_eq!(g.judge_name("localhost", C), Ok(None));
 }
 
-/// The 1.5.5 keys that still load: for a provider dial, a carve-out NAME admits its metadata
+/// `security.blocked_metadata_hosts`, the 1.5.5 key that still loads, extends the refusal: a listed
+/// name or address is refused as cloud metadata in every class, and no allowlist entry lifts it.
 #[test]
-fn the_1_5_5_keys_keep_their_meaning() {
-    let legacy = |allow: &[&str], blocked: &[&str], all: bool| {
-        Guard::from_config(&Destinations {
-            block_private_addresses: true,
-            legacy_allow: allow.iter().map(|s| (*s).to_owned()).collect(),
-            blocked: blocked.iter().map(|s| (*s).to_owned()).collect(),
-            allow_all_metadata: all,
-            ..Destinations::default()
-        })
-        .unwrap()
-    };
-    let g = legacy(&["imds.corp.example"], &[], false);
-    assert_eq!(
-        g.judge_answer(
-            "imds.corp.example",
-            &[ip("169.254.169.254")],
-            EGRESS_PROVIDER
-        ),
-        Ok(())
-    );
-    let g = legacy(&[], &[], true);
-    assert_eq!(
-        g.judge_name("metadata.google.internal", EGRESS_PROVIDER),
-        Ok(None)
-    );
-    assert_eq!(
-        g.judge_answer("x.test", &[ip("169.254.169.254")], EGRESS_PROVIDER),
-        Ok(())
-    );
-    let carved = legacy(&["imds.corp.example", "169.254.169.254"], &[], true);
-    for class in [
-        C,
-        EGRESS_OPEN_WEB,
-        EGRESS_OPERATOR_INFRASTRUCTURE,
-        EGRESS_LOOPBACK_ALLOWED,
-    ] {
+fn the_extra_metadata_refusals_hold_in_every_class() {
+    let g = Guard::from_config(&Destinations {
+        block_private_addresses: true,
+        allow: vec!["imds.corp.example".into(), "203.0.113.0/24".into()],
+        blocked: vec!["imds.corp.example".into(), "203.0.113.9".into()],
+        ..Destinations::default()
+    })
+    .unwrap();
+    for class in EVERY_CLASS {
         assert_eq!(
-            verdict(carved.judge_answer("imds.corp.example", &[ip("169.254.169.254")], class)),
-            Some(DEST_METADATA),
-            "class {class}"
-        );
-        assert_eq!(
-            carved
-                .judge_name("metadata.google.internal", class)
+            g.judge_name("imds.corp.example", class)
                 .unwrap_err()
                 .verdict,
             DEST_METADATA,
             "class {class}"
         );
+        assert_eq!(
+            verdict(g.judge_answer("x.test", &[ip("203.0.113.9")], class)),
+            Some(DEST_METADATA),
+            "class {class}"
+        );
     }
-    let g = legacy(&[], &["imds.corp.example", "203.0.113.9"], false);
-    assert_eq!(
-        g.judge_name("imds.corp.example", C).unwrap_err().verdict,
-        DEST_METADATA
-    );
-    assert_eq!(
-        verdict(g.judge_answer("x.test", &[ip("203.0.113.9")], C)),
-        Some(DEST_METADATA)
-    );
 }
 
-/// A provider's own carve-out (`providers.<p>.allow_metadata_hosts`) admits for a provider dial of
+/// A config commit re-publishes the extra refusals to every clone of the guard: a refusal the
+/// commit adds holds at once, and one it drops is lifted.
 #[test]
-fn a_provider_carve_out_admits_only_for_its_own_url_host() {
+fn a_commit_republishes_the_metadata_lists() {
+    let blocking = Destinations {
+        block_private_addresses: true,
+        blocked: vec!["203.0.113.9".into()],
+        ..Destinations::default()
+    };
     let g = Guard::from_config(&Destinations {
         block_private_addresses: true,
-        url_allow: vec![
-            (
-                "https://IMDS-Proxy.test./v1".into(),
-                vec!["169.254.169.254".into()],
-            ),
-            (
-                "https://token.test/oauth".into(),
-                vec!["169.254.169.254".into()],
-            ),
-            ("https://other.test".into(), Vec::new()),
-        ],
         ..Destinations::default()
     })
     .unwrap();
-    let imds = [ip("169.254.169.254")];
-    for host in ["imds-proxy.test", "token.test"] {
-        assert_eq!(
-            g.judge_answer(host, &imds, EGRESS_PROVIDER),
-            Ok(()),
-            "{host}"
-        );
-    }
-    for host in ["other.test", "unnamed.test"] {
-        assert_eq!(
-            verdict(g.judge_answer(host, &imds, EGRESS_PROVIDER)),
-            Some(DEST_METADATA),
-            "{host}"
-        );
-    }
-    assert_eq!(
-        verdict(g.judge_answer("imds-proxy.test", &imds, C)),
-        Some(DEST_METADATA)
-    );
-}
-
-#[test]
-fn provider_metadata_carveouts_accept_http_schemes_in_any_case() {
-    for scheme in ["http", "HTTP", "hTtPs"] {
-        let g = Guard::from_config(&Destinations {
-            block_private_addresses: true,
-            url_allow: vec![(
-                format!("{scheme}://IMDS-Proxy.test./Case/Path"),
-                vec!["169.254.169.254".into()],
-            )],
-            ..Destinations::default()
-        })
-        .unwrap();
-        let imds = [ip("169.254.169.254")];
-        assert_eq!(
-            g.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER),
-            Ok(())
-        );
-        assert_eq!(
-            verdict(g.judge_answer("other.test", &imds, EGRESS_PROVIDER)),
-            Some(DEST_METADATA)
-        );
-        assert_eq!(
-            verdict(g.judge_answer("imds-proxy.test", &imds, C)),
-            Some(DEST_METADATA)
-        );
-    }
-}
-
-/// A config commit re-publishes the metadata lists to every clone of the guard: a carve-out the
-#[test]
-fn a_commit_republishes_the_metadata_lists() {
-    let carved = Destinations {
-        block_private_addresses: true,
-        url_allow: vec![(
-            "https://imds-proxy.test".into(),
-            vec!["169.254.169.254".into()],
-        )],
-        ..Destinations::default()
-    };
-    let g = Guard::from_config(&carved).unwrap();
     let held = g.clone();
-    let imds = [ip("169.254.169.254")];
+    let listed = [ip("203.0.113.9")];
+    assert_eq!(held.judge_answer("x.test", &listed, EGRESS_PROVIDER), Ok(()));
+    g.publish(&blocking);
     assert_eq!(
-        held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER),
-        Ok(())
+        verdict(held.judge_answer("x.test", &listed, EGRESS_PROVIDER)),
+        Some(DEST_METADATA)
     );
     g.publish(&Destinations {
         block_private_addresses: true,
         ..Destinations::default()
     });
-    assert_eq!(
-        verdict(held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER)),
-        Some(DEST_METADATA)
-    );
-    g.publish(&carved);
-    assert_eq!(
-        held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER),
-        Ok(())
-    );
+    assert_eq!(held.judge_answer("x.test", &listed, EGRESS_PROVIDER), Ok(()));
 }
 
 /// A bad allowlist entry refuses the boot, naming the key, its index and the entry (userinfo
@@ -579,25 +544,6 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
         Some(DEST_METADATA),
         "a host entry never admits a metadata answer"
     );
-    let carved = Guard::from_config(&Destinations {
-        block_private_addresses: true,
-        url_allow: vec![(
-            "https://imds-proxy.test".into(),
-            vec!["169.254.169.254".into()],
-        )],
-        ..Destinations::default()
-    })
-    .unwrap();
-    assert_eq!(
-        verdict(carved.judge_answer("model.internal", &[ip("169.254.169.254")], p)),
-        Some(DEST_METADATA),
-        "another provider's carve-out admits nothing here"
-    );
-    assert_eq!(
-        verdict(carved.judge_answer("model.internal", &[ip("10.0.0.5")], p)),
-        Some(DEST_INTERNAL),
-        "a metadata carve-out is no private allowance"
-    );
 }
 
 /// THE DESIGN §5 egress-class table, held beside the provider fix above: operator infrastructure is
@@ -616,12 +562,6 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
     let carved = Guard::from_config(&Destinations {
         block_private_addresses: true,
         allow: vec!["db.test".into()],
-        legacy_allow: vec!["169.254.169.254".into(), "db.test".into()],
-        url_allow: vec![(
-            "https://db.test".into(),
-            vec!["169.254.169.254".into(), "db.test".into()],
-        )],
-        allow_all_metadata: true,
         ..Destinations::default()
     })
     .unwrap();
@@ -922,12 +862,11 @@ fn a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable() {
 
 /// The guard, the one metadata and link-local refusal a judged dial meets, refuses an IPv6
 #[test]
-fn ipv6_link_local_is_refused_in_every_class_unless_an_ip_entry_names_it() {
+fn ipv6_link_local_is_refused_in_every_class_whatever_is_listed() {
     let ll = ip("fe80::1");
     let lax = Guard::from_config(&Destinations {
         block_private_addresses: false,
         allow: vec!["router.test".into()],
-        allow_all_metadata: true,
         ..Destinations::default()
     })
     .unwrap();
@@ -956,22 +895,18 @@ fn ipv6_link_local_is_refused_in_every_class_unless_an_ip_entry_names_it() {
     }
     let listed = guard(true, &["fe80::/10"]);
     assert_eq!(
-        listed.judge_answer("router.test", &[ll], EGRESS_OPERATOR_INFRASTRUCTURE),
-        Ok(())
+        verdict(listed.judge_answer("router.test", &[ll], EGRESS_OPERATOR_INFRASTRUCTURE)),
+        Some(DEST_METADATA),
+        "a network covering link-local never admits it"
     );
-    let carved = Guard::from_config(&Destinations {
-        legacy_allow: vec!["fe80::1".into()],
-        ..Destinations::default()
-    })
-    .unwrap();
-    assert_eq!(
-        carved.judge_answer("router.test", &[ll], EGRESS_PROVIDER),
-        Ok(())
-    );
-    assert_eq!(
-        verdict(carved.judge_answer("router.test", &[ll], EGRESS_DEFAULT)),
-        Some(DEST_METADATA)
-    );
+    let named = unchecked(&["fe80::1"]);
+    for class in EVERY_CLASS {
+        assert_eq!(
+            verdict(named.judge_answer("router.test", &[ll], class)),
+            Some(DEST_METADATA),
+            "an exact link-local entry admits nothing, class {class}"
+        );
+    }
 }
 
 /// THE ONE POLICY, BY THE CLASS EACH FEATURE PLUGIN DIALS UNDER (plane-mcp and plane-a2a:
