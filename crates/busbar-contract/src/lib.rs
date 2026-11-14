@@ -138,10 +138,7 @@ pub use redacted::{constant_time_eq, sha256_hex, OwnerSeal, Secret};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
-pub use unit::{
-    AbortBy, AdmitFacts, AuditFacts, FailureReason, FinishClass, LegResult, Origin, Refusal,
-    RefusalReason, ResourceLocator, ScopeFacts, Step, Unit, UnitEnd, UsageLocator, UsageLocators,
-};
+pub use unit::{AuditFacts, FinishClass, RefusalReason, ResourceLocator, ScopeFacts};
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
