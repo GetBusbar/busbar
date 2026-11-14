@@ -1176,3 +1176,74 @@ fn cold_reference_discovery_preserves_owner_scope_and_never_selects_or_rewrites_
     assert_eq!((changes.len(), todos.len(), failures.len()), (1, 1, 0));
     assert!(!format!("{changes:?}{todos:?}").contains("PRIVATE_"));
 }
+
+/// The 1.4 `governance.db_path` shape: it migrates to a sqlite Store whose current plugin must
+/// check the settings before anything is written.
+const GOVERNANCE_14: &str = "governance: {enabled: true, db_path: busbar-governance.db}\n";
+
+/// A host with no migration for the sqlite Store, whose check of it answers `.0`.
+struct StoreCheck(&'static str);
+
+impl MigrateHost for StoreCheck {
+    fn validate_migrated(
+        &self,
+        kind: &str,
+        module: &str,
+        _: &serde_json::Value,
+    ) -> Result<(), String> {
+        if kind == "store" && module == "sqlite" {
+            return Err(self.0.into());
+        }
+        Ok(())
+    }
+    fn migrate(
+        &self,
+        _: &str,
+        _: &str,
+        _: &serde_json::Value,
+        _: &str,
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
+        Ok(None)
+    }
+    fn repin(&self, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    fn release_for(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn a_store_whose_current_plugin_cannot_be_obtained_says_why() {
+    let line = migrate_config_with(
+        GOVERNANCE_14,
+        &StoreCheck("the plugin index idx.json could not be read"),
+    )
+    .expect_err("an unchecked Store is not emitted");
+    assert_eq!(
+        line,
+        "store.settings: the current store plugin 'sqlite' could not be obtained to check these \
+         settings (the plugin index idx.json could not be read); install it in a plugins \
+         directory and set `plugins: {enabled: true, dir: <dir>}` in this config, or make \
+         BUSBAR_PLUGIN_INDEX and the plugin's GitHub release reachable, then retry"
+    );
+    assert!(
+        !line.contains("kit"),
+        "no plugin kit is offered before one exists: {line}"
+    );
+}
+
+#[test]
+fn a_plugin_refusal_prints_no_plugin_text() {
+    let line = migrate_config_with(
+        GOVERNANCE_14,
+        &StoreCheck("db_path LEAK-sk-123 is not acceptable"),
+    )
+    .expect_err("refused settings are not emitted");
+    assert_eq!(
+        line,
+        "store.settings: current plugin validation refused unchanged settings; install the \
+         current plugin or resolve its migration prerequisites before retrying"
+    );
+    assert!(!line.contains("LEAK-sk-123"), "{line}");
+}
