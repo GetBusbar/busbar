@@ -434,11 +434,6 @@ impl Pairing {
         outcome.failure.is_none() && !self.closed()
     }
 
-    /// Wait for fresh input credit without copying or accepting its bytes. Cancellation while
-    pub async fn input_credit(&self, capacity: usize) -> Result<Custody, SubmitError> {
-        self.input_credit_from(None, capacity).await
-    }
-
     /// Wait for capacity that can be retired independently of this writer's own reader task.
     pub async fn input_credit_for(
         &self,

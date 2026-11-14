@@ -315,11 +315,6 @@ impl CardEntry {
         t >= self.effective_from && self.effective_until.is_none_or(|until| t < until)
     }
 
-    /// Whether a VOID record names this entry: it is never in force, but its id stays KNOWN, so a
-    pub fn is_voided(&self) -> bool {
-        self.voided
-    }
-
     /// Whether this entry prices `t`: live, and covering it.
     fn prices(&self, t: u64) -> bool {
         !self.voided && self.covers(t)
@@ -534,11 +529,6 @@ impl History {
             .rev()
             .find(|e| !e.voided)
             .map(|e| e.key.t_ms())
-    }
-
-    /// The highest-keyed LIVE entry: the head a new entry extends.
-    pub fn live_head(&self) -> Option<&CardEntry> {
-        self.entries.iter().rev().find(|e| !e.voided)
     }
 
     /// **THE ANSWER AT `instant`** (seam for the poster): the id and card of the highest-keyed live

@@ -391,19 +391,6 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
         let mut archive = self.archive.lock().map_err(|_| Error::Corrupt)?;
         view.origin_digest(&mut *archive, fact, budget)
     }
-    pub fn visit_fact_evidence(
-        &self,
-        fact: &crate::source_facts::FactRow,
-        budget: usize,
-        visitor: &mut dyn FnMut(crate::source_facts::EvidenceRow) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        let view = self
-            .interpretation
-            .as_ref()
-            .ok_or(Error::MissingCapability)?;
-        let mut archive = self.archive.lock().map_err(|_| Error::Corrupt)?;
-        view.evidence(&mut *archive, fact, budget, visitor)
-    }
     pub fn identity(&self) -> Identity {
         self.identity.clone()
     }

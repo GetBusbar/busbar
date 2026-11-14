@@ -12,8 +12,6 @@ use super::ticket::InstanceWake;
 
 pub const HANDLE_ID_BITS: u32 = 24;
 
-pub const HANDLE_TAG_BITS: u32 = 64 - HANDLE_ID_BITS;
-
 const ID_MASK: u64 = (1 << HANDLE_ID_BITS) - 1;
 
 const DOMAIN_INSTANCE: u64 = u64::from_le_bytes(*b"bb.inst1");
