@@ -466,6 +466,16 @@ mod tests {
                 !s.cases.is_empty() || !s.llm_matrix.is_empty(),
                 "{n} has cases"
             );
+            let open = s
+                .llm_matrix
+                .iter()
+                .map(|m| &m.shape)
+                .chain(s.cases.iter().map(|c| &c.shape))
+                .any(|sh| sh.open.is_some());
+            assert!(
+                !open || s.description.contains("open-loop"),
+                "{n}: has an open-loop shape but its description does not say so"
+            );
             for m in &s.llm_matrix {
                 expand_matrix(m).unwrap();
             }
