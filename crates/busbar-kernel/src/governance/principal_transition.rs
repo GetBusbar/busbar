@@ -2328,6 +2328,12 @@ pub fn requirements(
     Ok(requirements)
 }
 
+/// What [`running_executable`] opens, as its refusals name it.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const RUNNING_EXECUTABLE: &str = "/proc/self/exe";
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const RUNNING_EXECUTABLE: &str = "the running executable (std::env::current_exe)";
+
 /// The image this process is running, opened for hashing.
 ///
 /// On Linux `/proc/self/exe` names the mapped inode itself, so a file renamed over the
@@ -2336,13 +2342,17 @@ pub fn requirements(
 fn running_executable() -> std::io::Result<std::fs::File> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        std::fs::File::open("/proc/self/exe")
+        std::fs::File::open(RUNNING_EXECUTABLE)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
         std::fs::File::open(std::env::current_exe()?)
     }
 }
+
+/// The running image's digest, once it has been computed. Only a computed digest is kept: a
+/// failure to read the image is refused for this transition and retried on the next.
+type DigestCell = std::sync::OnceLock<String>;
 
 fn executable_sha256() -> Result<String, String> {
     static DIGEST: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
@@ -2359,9 +2369,29 @@ fn executable_sha256() -> Result<String, String> {
                 }
                 digest.update(&bytes[..n]);
             }
-            Ok(hex::encode(digest.finalize()))
-        })
-        .clone()
+            digest.update(&bytes[..n]);
+        }
+        Ok(hex::encode(digest.finalize()))
+    })
+}
+
+/// The digest `cell` holds, computed by `hash` when it holds none.
+fn once_digest(
+    cell: &DigestCell,
+    hash: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    if let Some(digest) = cell.get() {
+        return Ok(digest.clone());
+    }
+    let digest = hash()?;
+    Ok(cell.get_or_init(|| digest).clone())
+}
+
+/// The refusal for a running image that could not be opened or read.
+fn executable_refusal(error: std::io::Error) -> String {
+    format!(
+        "cannot read {RUNNING_EXECUTABLE} to digest the running binary for a linked auth principal's provenance: {error}"
+    )
 }
 
 fn tracked(requirements: &[Requirement]) -> impl Iterator<Item = &Requirement> {
