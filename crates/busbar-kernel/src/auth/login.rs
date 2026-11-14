@@ -312,75 +312,65 @@ impl LoginMethods {
 
         let mut axis: Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for (name, mc) in &cfg.methods {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: an identity-provider refusal at config load"
-            )]
-            let mut resolved = crate::config::secret::resolve_settings(
-                &mc.settings,
-                &registry.secret_slots(&mc.module),
-                &registry.reference_slots(&mc.module),
-                &mc.module,
-                secret_resolver,
-                &busbar_contract::config_time::ConfigScope::config_time(),
-            )
-            .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
-
-            if let Some(bl) = &mc.browser_login {
-                if let Some(cid) = &bl.client_id {
-                    resolved.default_text("client_id", cid.clone());
-                }
-            }
             let refused = |e: String| login_module_refusal(name, &mc.module, &e);
+            let has_button = mc.browser_login.is_some();
+            let calls = instances.instance(
+                name,
+                &mc.module,
+                registry,
+                || {
+                    let mut resolved = super::instances::provider_settings(
+                        cfg,
+                        name,
+                        &mc.module,
+                        &mc.settings,
+                        registry,
+                        secret_resolver,
+                        |e| format!("identity-providers.{name} settings: {e}"),
+                    )?;
+                    let axis = match &axis {
+                        Some(a) => a.clone(),
+                        None => axis
+                            .insert(
+                                open_axis().ok_or_else(|| missing_login_axis(name, &mc.module))?,
+                            )
+                            .clone(),
+                    };
+
+                    if !axis.answers(&mc.module) {
+                        return Err(refused(super::auth_refusal(registry, &mc.module)));
+                    }
+
+                    super::instances::lend_login_secret(
+                        cfg,
+                        name,
+                        &mc.module,
+                        registry,
+                        secret_resolver,
+                        &mut resolved,
+                    )?;
+
+                    Ok(super::instances::Prepared {
+                        axis,
+                        resolved,
+                        reresolve: super::instances::reresolve(
+                            cfg,
+                            name,
+                            &mc.module,
+                            &mc.settings,
+                            registry,
+                            secret_resolver,
+                        ),
+                    })
+                },
+                &refused,
+            )?;
             let axis = match &axis {
                 Some(a) => a.clone(),
                 None => axis
                     .insert(open_axis().ok_or_else(|| missing_login_axis(name, &mc.module))?)
                     .clone(),
             };
-
-            if !axis.answers(&mc.module) {
-                return Err(refused(super::auth_refusal(registry, &mc.module)));
-            }
-
-            let has_button = mc.browser_login.is_some();
-
-            lend_browser_login_secret(
-                name,
-                &mc.module,
-                mc.browser_login.as_ref(),
-                &registry.secret_slots(&mc.module),
-                secret_resolver,
-                &mut resolved,
-            )?;
-
-            let reresolve = super::relender(&mc.settings, registry, &mc.module, secret_resolver)
-                .map(|base| -> super::relend::Reresolve {
-                    let (name, module, browser) =
-                        (name.clone(), mc.module.clone(), mc.browser_login.clone());
-                    let (slots, resolver) =
-                        (registry.secret_slots(&mc.module), secret_resolver.clone());
-                    Box::new(move || {
-                        let mut resolved = base()?;
-                        if let Some(cid) = browser.as_ref().and_then(|bl| bl.client_id.clone()) {
-                            resolved.default_text("client_id", cid);
-                        }
-                        lend_browser_login_secret(
-                            &name,
-                            &module,
-                            browser.as_ref(),
-                            &slots,
-                            &resolver,
-                            &mut resolved,
-                        )?;
-                        Ok(resolved)
-                    })
-                });
-            let opened =
-                super::relend::open(&axis, &mc.module, &login_label(name), &resolved, reresolve);
-
-            drop(resolved);
-            let calls = opened.map_err(&refused)?;
             let inbound_style = axis.inbound_style(&mc.module);
             if inbound_style.as_ref().is_some_and(|style| {
                 style.points != calls.inbound_points()
@@ -467,15 +457,6 @@ pub(super) fn lend_browser_login_secret(
         )
         .map_err(|e| format!("identity-providers.{name} browser_login.client_secret: {e}"))?;
     resolved.insert_secret(CLIENT_SECRET_SLOT, secret_slots, secret)
-}
-
-fn login_label(name: &str) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: an identity provider's login label, named once at config load"
-    )]
-    let label = format!("{name}#login");
-    label
 }
 
 /// One hosted-login method: its admitted presentation and login classification.
@@ -660,6 +641,10 @@ pub async fn issue_self_key(
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a self-serve key is provisioned once per login, under its provider's name"
+    )]
     let keys = DeterministicEd25519Keys::new(gov, module.to_string(), team, pools, provisioner);
     match issue_key(&keys, principal, ttl, refresh).await {
         Ok(k) => SelfKeyIssue::Issued {
