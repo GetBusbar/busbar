@@ -83,6 +83,10 @@ struct State {
     records: usize,
     bytes: usize,
     failed: Option<RuntimeError>,
+    /// Where each frame of this node's journal sits: `(first_ordinal, first_sequence)` per run of
+    /// contiguous sequences, built by the open replay (one segment per custody bridge, usually
+    /// one). Live appends are contiguous, so the last segment covers them (W1 step 2).
+    seq_map: Vec<(u64, u64)>,
 }
 
 /// Publication progress mirrored from `State` for confirm waiters, so a
@@ -119,7 +123,17 @@ impl RuntimeJournal {
             .historical_replay()
             .await
             .map_err(RuntimeError::from)?;
-        while replay.next().await.map_err(RuntimeError::from)?.is_some() {}
+        let mut seq_map: Vec<(u64, u64)> = Vec::new();
+        let mut ordinal = 0u64;
+        let mut previous: Option<u64> = None;
+        while let Some(record) = replay.next().await.map_err(RuntimeError::from)? {
+            ordinal = ordinal.checked_add(1).ok_or(RuntimeError::Budget)?;
+            if previous.and_then(|seq| seq.checked_add(1)) != Some(record.node_seq) {
+                seq_map.try_reserve(1).map_err(|_| RuntimeError::Budget)?;
+                seq_map.push((ordinal, record.node_seq));
+            }
+            previous = Some(record.node_seq);
+        }
         let proof = replay.finish().map_err(RuntimeError::from)?;
         journal
             .confirm_owned(&proof)
@@ -141,6 +155,7 @@ impl RuntimeJournal {
                 records: 0,
                 bytes: 0,
                 failed: None,
+                seq_map,
             }),
             driving: tokio::sync::Mutex::new(()),
             progress: tokio::sync::watch::Sender::new(Progress::default()),
@@ -415,6 +430,79 @@ impl RuntimeJournal {
             return Err(RuntimeError::Authority);
         }
         Ok(())
+    }
+
+    /// This owner's verified head, without a replay (W1 step 1). It drives the staged runs first,
+    /// so the head includes every append this owner has issued; a run that stays Uncertain or Busy
+    /// is an error, as with `flush`. No `confirm_owned` is issued: every write that uses this proof
+    /// carries the owned H/O predicates in its own commit, and read-only acknowledgements issue
+    /// `confirm_owned_with`, so a stale proof (a foreign takeover) still fails closed there.
+    pub(crate) async fn verified_head(
+        &self,
+    ) -> std::result::Result<Arc<VerifiedHead>, RuntimeError> {
+        if self.has_pending()? {
+            self.flush().await?;
+        }
+        let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+        if let Some(error) = state.failed {
+            return Err(error);
+        }
+        Ok(state.verified.clone())
+    }
+
+    fn has_pending(&self) -> std::result::Result<bool, RuntimeError> {
+        let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+        if let Some(error) = state.failed {
+            return Err(error);
+        }
+        Ok(!state.pending.is_empty())
+    }
+
+    /// The ordinal of this node's frame `sequence` within a proof this owner verified, by
+    /// arithmetic over the open replay's layout (W1 step 2). A proof of another dataset or node,
+    /// or one longer than this owner's verified head, is refused; a sequence outside the proof or
+    /// inside a bridged gap is invalid. A wrong ordinal can only fail closed: readers compare the
+    /// frame's sequence and selections bind the exact frame body by predicate.
+    pub(crate) fn locate(
+        &self,
+        proof: &VerifiedHead,
+        sequence: u64,
+    ) -> std::result::Result<u64, RuntimeError> {
+        let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+        if let Some(error) = state.failed {
+            return Err(error);
+        }
+        let verified = &state.verified;
+        if proof.dataset != verified.dataset
+            || proof.node != verified.node
+            || proof.head.count > verified.head.count
+            || (proof.owner.is_some() && proof.owner != verified.owner)
+        {
+            return Err(RuntimeError::Authority);
+        }
+        if sequence == 0 || sequence > proof.head.sequence {
+            return Err(RuntimeError::Invalid);
+        }
+        let segment = state
+            .seq_map
+            .partition_point(|&(_, first_sequence)| first_sequence <= sequence);
+        let (first_ordinal, first_sequence) = *segment
+            .checked_sub(1)
+            .and_then(|index| state.seq_map.get(index))
+            .ok_or(RuntimeError::Invalid)?;
+        let ordinal = first_ordinal
+            .checked_add(sequence - first_sequence)
+            .ok_or(RuntimeError::Invalid)?;
+        if state
+            .seq_map
+            .get(segment)
+            .is_some_and(|&(next_ordinal, _)| ordinal >= next_ordinal)
+            || ordinal == 0
+            || ordinal > proof.head.count
+        {
+            return Err(RuntimeError::Invalid);
+        }
+        Ok(ordinal)
     }
 
     pub async fn flush(&self) -> std::result::Result<(), RuntimeError> {

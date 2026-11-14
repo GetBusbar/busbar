@@ -245,6 +245,77 @@ impl<'a> StoreJournal<'a> {
             .map(|(_, record)| record)
     }
 
+    /// One point read of the frame a runtime-located ordinal names (W1 step 2), checked against
+    /// the expected sequence and the proven prefix. A mismatch is `Corrupt`: a wrong ordinal fails
+    /// closed instead of naming another frame.
+    pub(crate) async fn read_verified_record_at(
+        &self,
+        proof: &VerifiedHead,
+        sequence: u64,
+        ordinal: u64,
+    ) -> Result<Record> {
+        self.selected_head_predicate(proof)?;
+        if sequence == 0
+            || sequence > proof.head.sequence
+            || ordinal == 0
+            || ordinal > proof.head.count
+        {
+            return Err(Error::Invalid);
+        }
+        let (record, value) = self.original_at(ordinal).await?;
+        if record.node_seq != sequence {
+            return Err(Error::Corrupt);
+        }
+        Ok(Record::new(
+            self.node,
+            sequence,
+            value.expose(&crate::seal::lend()).to_vec(),
+        ))
+    }
+
+    /// [`Self::select_verified`] for records whose ordinals the runtime journal located: no
+    /// record is re-read, since each one's `R/ordinal == Exact(body)` predicate binds the exact
+    /// frame in the same commit (W1 step 2).
+    pub(crate) async fn select_verified_at(
+        &self,
+        proof: &VerifiedHead,
+        records: &[Record],
+        ordinals: &[u64],
+        selection: Selection,
+    ) -> Result<WriteResult> {
+        if ordinals.len() != records.len() {
+            return Err(Error::Invalid);
+        }
+        self.change_selection_at(proof, records, Some(ordinals), selection, false, &[])
+            .await
+    }
+
+    /// [`Self::delete_verified`] for a runtime-located record; see [`Self::select_verified_at`].
+    pub(crate) async fn delete_verified_at(
+        &self,
+        proof: &VerifiedHead,
+        record: &Record,
+        ordinal: u64,
+        operation_id: [u8; 16],
+        address: Address,
+        expected: ExpectedValue,
+    ) -> Result<WriteResult> {
+        self.change_selection_at(
+            proof,
+            std::slice::from_ref(record),
+            Some(std::slice::from_ref(&ordinal)),
+            Selection {
+                operation_id,
+                address,
+                expected,
+                value: Secret::default(),
+            },
+            true,
+            &[],
+        )
+        .await
+    }
+
     /// Recheck the exact original at an ordinal retained by a completed replay.
     /// This only confirms unchanged bytes; it grants no prefix membership or
     /// selection authority. The caller still holds its complete prefix proof.
@@ -351,6 +422,9 @@ impl<'a> StoreJournal<'a> {
             .await
     }
 
+    /// (Production removes through [`Self::delete_verified_at`]; this replaying form stays for the
+    /// journal tests.)
+    #[cfg(test)]
     /// Preserve a domain's exact selected-row deletion after audit confirmation;
     /// it has the same original-frame/custody guards and retained exact attempt
     /// as selection. This does not introduce a replacement tombstone schema.
@@ -381,6 +455,19 @@ impl<'a> StoreJournal<'a> {
         &self,
         proof: &VerifiedHead,
         records: &[Record],
+        selection: Selection,
+        delete: bool,
+        guards: &[Predicate],
+    ) -> Result<WriteResult> {
+        self.change_selection_at(proof, records, None, selection, delete, guards)
+            .await
+    }
+
+    async fn change_selection_at(
+        &self,
+        proof: &VerifiedHead,
+        records: &[Record],
+        located: Option<&[u64]>,
         selection: Selection,
         delete: bool,
         guards: &[Predicate],
@@ -463,11 +550,24 @@ impl<'a> StoreJournal<'a> {
         predicates
             .try_reserve_exact(records.len() + 1)
             .map_err(|_| Error::Budget)?;
-        for record in records {
-            let (ordinal, original) = self.locate_verified_record(proof, record.node_seq).await?;
-            if original.identity() != record.identity() || original.body != record.body {
-                return Err(Error::Corrupt);
-            }
+        for (index, record) in records.iter().enumerate() {
+            let ordinal = match located {
+                Some(ordinals) => {
+                    let ordinal = *ordinals.get(index).ok_or(Error::Invalid)?;
+                    if ordinal == 0 || ordinal > proof.head.count {
+                        return Err(Error::Invalid);
+                    }
+                    ordinal
+                }
+                None => {
+                    let (ordinal, original) =
+                        self.locate_verified_record(proof, record.node_seq).await?;
+                    if original.identity() != record.identity() || original.body != record.body {
+                        return Err(Error::Corrupt);
+                    }
+                    ordinal
+                }
+            };
             predicates.push(Predicate {
                 address: self.address(b'R', ordinal),
                 expected: ExpectedValue::Exact(Secret::new(record.body.clone())),
