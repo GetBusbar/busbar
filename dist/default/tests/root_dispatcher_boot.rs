@@ -216,3 +216,82 @@ fn retired_worker_environment_never_overrides_the_configured_dispatcher() {
         );
     }
 }
+
+#[test]
+fn every_retired_launch_variable_is_reported_at_boot_and_never_honoured() {
+    // RETIRED_LAUNCH_ENV order, each with the key the notice must name instead.
+    let retired = [
+        ("BUSBAR_PROVIDERS", "providers_file"),
+        ("BUSBAR_WORKER_THREADS", "advanced.worker_threads"),
+        ("BUSBAR_UPSTREAM_HTTP1_ONLY", "advanced.upstream_http1_only"),
+        (
+            "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
+            "advanced.upstream_h2_prior_knowledge",
+        ),
+    ];
+    let elsewhere = std::env::temp_dir()
+        .join(format!(
+            "busbar-retired-providers-{}-elsewhere.yaml",
+            std::process::id()
+        ))
+        .to_string_lossy()
+        .into_owned();
+    let (threads, out) = boot(
+        "retired-all",
+        &[
+            ("BUSBAR_WORKER_THREADS", "2"),
+            ("BUSBAR_UPSTREAM_HTTP1_ONLY", "true"),
+            ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "false"),
+            ("BUSBAR_PROVIDERS", elsewhere.as_str()),
+        ],
+        Some(WORKERS),
+    );
+    assert_eq!(
+        threads,
+        WORKERS + 1,
+        "decision 160: BUSBAR_WORKER_THREADS is not honoured; the configured workers run: {out}"
+    );
+    let listening = out
+        .find("busbar listening")
+        .expect("boot() waited for the listener line");
+    let mut last = None;
+    for (name, key) in retired {
+        let notice = format!(
+            "[warn] {}: {name} is set but ignored",
+            busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner()
+        );
+        let notices: Vec<&str> = out
+            .lines()
+            .filter(|line| line.starts_with(&notice))
+            .collect();
+        assert_eq!(
+            notices.len(),
+            1,
+            "exactly one BUSBAR-3029 line for {name} at boot: {out}"
+        );
+        assert!(
+            notices[0].contains(key),
+            "the {name} notice names its replacement {key}: {out}"
+        );
+        let at = out.find(notices[0]).expect("the notice is in the log");
+        assert!(
+            at < listening,
+            "the {name} notice prints before the listener: {out}"
+        );
+        assert!(
+            last.is_none_or(|prev| prev < at),
+            "the notices print in RETIRED_LAUNCH_ENV order ({name} out of order): {out}"
+        );
+        last = Some(at);
+        assert!(
+            out.lines()
+                .filter(|line| line.contains(name))
+                .all(|line| !line.contains("DEPRECATED") && !line.contains("honored")),
+            "decision 160: {name} is ignored and reported, never honoured: {out}"
+        );
+    }
+    assert!(
+        !out.contains(&elsewhere),
+        "the notice never echoes a retired variable's value: {out}"
+    );
+}
