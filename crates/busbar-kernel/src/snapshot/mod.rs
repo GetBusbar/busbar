@@ -349,6 +349,8 @@ pub const PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL: &str =
 
 pub const PLUGIN_LABEL_REFUSED_TOTAL: &str = "busbar_plugin_label_refused_total";
 
+pub const TELEMETRY_OVERFLOW_REPLAYS_TOTAL: &str = "busbar_telemetry_overflow_replays_total";
+
 pub const KEY_SPEND_CENTS: &str = "busbar_key_spend_cents";
 
 pub const KEY_TOKENS_TOTAL: &str = "busbar_key_tokens_total";
@@ -493,6 +495,10 @@ fn describe() {
     describe_counter!(
         METERING_PENDING_COALESCED_TOTAL,
         "Metering cells coalesced into a per-bucket overflow sentinel because the write-behind accumulator was at its cap (sustained store outage); totals preserved, per-key attribution collapsed"
+    );
+    describe_counter!(
+        TELEMETRY_OVERFLOW_REPLAYS_TOTAL,
+        "Full histogram buffers replayed into the recorder on the request thread because the slot already had two buffers parked or the 8 MiB park budget was spent"
     );
     describe_histogram!(
         REQUEST_DURATION_SECONDS,

@@ -593,6 +593,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL,
+    busbar_kernel::snapshot::TELEMETRY_OVERFLOW_REPLAYS_TOTAL,
     busbar_kernel::snapshot::KEY_SPEND_CENTS,
     busbar_kernel::snapshot::KEY_TOKENS_TOTAL,
     busbar_kernel::snapshot::BUCKET_TOKENS,
