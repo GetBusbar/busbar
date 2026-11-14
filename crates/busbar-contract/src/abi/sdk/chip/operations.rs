@@ -12,7 +12,10 @@ use super::{digests, rsa, Refused};
 use crate::abi::sdk::cred::{Cred, Seal};
 
 /// An input to sealed composition. No variant exposes an input's secret bytes.
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "a part may name a credential: no Debug, so no secret byte can print"
+)]
 pub enum CredentialPart<'a> {
     /// Bytes already known to the caller, such as a framing prefix or public challenge.
     Public(&'a [u8]),
@@ -54,7 +57,10 @@ pub enum Digest {
 /// let value = SealedValue::compose(&[]);
 /// let _ = value.normalize_ascii_spaces();
 /// ```
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "a sealed value is secret: no Debug, so no byte can print"
+)]
 #[derive(Clone)]
 pub struct SealedValue(Cred);
 

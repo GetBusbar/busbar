@@ -11,7 +11,7 @@ use serde::forward_to_deserialize_any;
 use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
 
-use super::protected_json::wipe;
+use super::settings_json::wipe;
 use super::Cred;
 
 /// Why settings did not parse: the field path and what was wrong, never the value.
@@ -31,7 +31,7 @@ impl SettingsError {
 
     fn at(mut self, path: &str) -> Self {
         if self.path.is_empty() {
-            self.path = path.to_owned();
+            self.path.push_str(path);
         }
         self
     }
@@ -136,7 +136,7 @@ pub fn settings_lent<T: DeserializeOwned>(doc: &[u8], lent: &[&[u8]]) -> Result<
 }
 
 fn document(bytes: &[u8]) -> Result<Value, SettingsError> {
-    super::protected_json::document(bytes, false)
+    super::settings_json::document(bytes, false)
         .map(|mut value| core::mem::take(&mut value.0))
         .map_err(|e| {
             SettingsError::new(format!(

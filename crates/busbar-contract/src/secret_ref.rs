@@ -553,8 +553,8 @@ impl Sugars {
                 ));
             };
             match *class {
-                REWRITE_SUGAR_SHOWN => sugar.shown = to.clone(),
-                REWRITE_SUGAR_NAMES => sugar.names = to.clone(),
+                REWRITE_SUGAR_SHOWN => sugar.shown.clone_from(to),
+                REWRITE_SUGAR_NAMES => sugar.names.clone_from(to),
                 _ => {
                     if ![SUGAR_ROLE_FILL, SUGAR_ROLE_PATH].contains(&to.as_str()) {
                         return Err(format!(

@@ -117,7 +117,7 @@ pub trait PlaneLife: Send + Sync + Sized + 'static {
 }
 
 macro_rules! plane_slot {
-    ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
+    ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:pat_param| $body:block) => {
         $(#[$doc])*
         #[derive(Debug)]
         pub struct $name<P>(PhantomData<P>);
@@ -129,7 +129,7 @@ macro_rules! plane_slot {
             fn call(
                 $inst: Instance<'_, P>,
                 $input: Lent<'_, $in>,
-                #[allow(unused_mut)] mut $o: Out<'_, $out>,
+                $o: Out<'_, $out>,
             ) -> Outcome {
                 $body
             }
@@ -139,7 +139,7 @@ macro_rules! plane_slot {
 
 plane_slot!(
     /// `validate`: [`PlaneLife::validate`].
-    Validate(ValidateIn => OutHead) |_, input, out| {
+    Validate(ValidateIn => OutHead) |_, input, mut out| {
         match P::validate(input.settings().bytes()) {
             Ok(()) => Outcome::Ready,
             Err(r) => out.fail(r),
@@ -149,7 +149,7 @@ plane_slot!(
 
 plane_slot!(
     /// `open`: [`PlaneLife::open`]; the first generation is published and the state held.
-    Open(PlaneOpenIn => PlaneOpenOut) |instance, input, out| {
+    Open(PlaneOpenIn => PlaneOpenOut) |instance, input, mut out| {
         let generation = input.open().generation();
         match P::open(&input, input.open().host().map(|loan| instance.host(loan))) {
             Ok(Opened { plane, first }) => {
@@ -171,7 +171,7 @@ plane_slot!(
 
 plane_slot!(
     /// `refresh`: [`PlaneLife::refresh_in`]; its generation is published. FAILED with no instance.
-    Refresh(RefreshIn => PlaneRefreshOut) |instance, input, out| {
+    Refresh(RefreshIn => PlaneRefreshOut) |instance, input, mut out| {
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
@@ -215,7 +215,7 @@ plane_slot!(
 
 plane_slot!(
     /// `release`: release optional plane-owned answers, or READY for a lease-free plane.
-    Release(ReleaseIn => OutHead) |instance, input, out| {
+    Release(ReleaseIn => OutHead) |instance, input, mut out| {
         match instance.get().and_then(PlaneLife::leases) {
             None => Outcome::Ready,
             Some(leases) => match leases.release(input.lease()) {

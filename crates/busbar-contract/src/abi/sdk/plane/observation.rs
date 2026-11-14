@@ -77,12 +77,7 @@ impl ScopeRequest {
         if self.scope == Some([0; 32])
             || (self.close && (self.scope.is_none() || !self.required_classes.is_empty()))
             || self.required_classes.len() > 64
-            || self
-                .required_classes
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                != self.required_classes.len()
+            || has_duplicate(&self.required_classes)
         {
             return Err(InvalidObservation);
         }
@@ -350,7 +345,7 @@ impl Observation {
             || (self.state == State::Final && self.counts.is_empty())
             || self.counts.len() > 64
             || self.evidence_ref.len() > 1024
-            || self.counts.values().any(|v| *v < Count::ZERO)
+            || any_negative(&self.counts)
             || self.revision.as_ref().is_some_and(|r| !opaque(&r.identity))
         {
             return Err(InvalidObservation);
@@ -386,6 +381,16 @@ impl Observation {
             .map(Self::decode)
             .transpose()
     }
+}
+
+/// Whether an intent's own (at most 64) counts hold a negative one.
+fn any_negative(counts: &BTreeMap<u32, Count>) -> bool {
+    counts.values().any(|v| *v < Count::ZERO)
+}
+
+/// Whether a class is listed twice: at most 64, each compared with those before it, in place.
+fn has_duplicate(classes: &[u32]) -> bool {
+    (1..classes.len()).any(|i| classes[..i].contains(&classes[i]))
 }
 
 #[cfg(test)]

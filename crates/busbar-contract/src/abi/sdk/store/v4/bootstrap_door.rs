@@ -100,7 +100,7 @@ impl Preparation {
             (Request::Inspect { .. }, Response::Inspected(answer)) => {
                 self.phase = native::Phase::Prepared;
                 self.inspected = Some(answer.state);
-                self.source = answer.source.clone();
+                self.source.clone_from(&answer.source);
                 self.marker = answer
                     .admission_marker
                     .as_ref()
@@ -560,6 +560,7 @@ impl<B: Backend> SafeSlot for Bootstrap<B> {
             if B::validate(loan.settings).is_err() {
                 return Outcome::Refused;
             }
+            // busbar:expect(bp::fresh_buffer, reason = "boot: the bootstrap open's lent secrets, listed once as the store opens")
             let mut secret_refs = Vec::new();
             if secret_refs.try_reserve_exact(loan.secrets.len()).is_err() {
                 return Outcome::Refused;

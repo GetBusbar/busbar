@@ -24,46 +24,66 @@ const SECRET_WORDS: &[&str] = &[
 #[must_use]
 pub fn mask_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_string();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a sink's URL, masked once as its instance opens"
+        )]
+        let unmasked = url.to_string();
+        return unmasked;
     };
+    // busbar:expect(bp::fresh_buffer, reason = "config: a sink's URL, masked once as its instance opens")
+    let mut out = String::with_capacity(url.len() + MASK.len());
+    out.push_str(scheme);
+    out.push_str("://");
     match rest.rfind('@') {
-        Some(at) => format!(
-            "{scheme}://{MASK}@{}",
-            mask_pairs(&rest[at + 1..], rest[..at].contains(['?', '#']))
-        ),
-        None => format!("{scheme}://{}", mask_pairs(rest, false)),
+        Some(at) => {
+            out.push_str(MASK);
+            out.push('@');
+            mask_pairs(&mut out, &rest[at + 1..], rest[..at].contains(['?', '#']));
+        }
+        None => mask_pairs(&mut out, rest, false),
     }
+    out
 }
 
-/// `s` with the secret-looking pair values masked: from its first `?` or `#`, or from its start
-fn mask_pairs(s: &str, open: bool) -> String {
+/// `s` onto `out`, its secret-looking pair values masked: from its first `?` or `#`, or from its
+/// start when `open`. Each pair is read in place, never copied out of `s`.
+fn mask_pairs(out: &mut String, s: &str, open: bool) {
     let start = if open {
         0
     } else {
         match s.find(['?', '#']) {
             Some(i) => i,
-            None => return s.to_string(),
+            None => {
+                out.push_str(s);
+                return;
+            }
         }
     };
-    let mut out = String::with_capacity(s.len());
     out.push_str(&s[..start]);
-    let mut pair = String::new();
     // A raw `;` or `?` is legal inside a value (RFC 3986 3.4): a keyless segment they split off
     // right after a masked value is that value's tail, and is dropped with it.
     let mut masked = false;
     let mut after = None;
-    for ch in s[start..].chars() {
+    let mut pair_at = start;
+    for (i, ch) in s[start..].char_indices() {
         if matches!(ch, '?' | '#' | '&' | ';') {
-            masked = push_pair(&mut out, &pair, masked && matches!(after, Some('?' | ';')));
-            pair.clear();
+            let at = start + i;
+            masked = push_pair(
+                out,
+                &s[pair_at..at],
+                masked && matches!(after, Some('?' | ';')),
+            );
             out.push(ch);
             after = Some(ch);
-        } else {
-            pair.push(ch);
+            pair_at = at + ch.len_utf8();
         }
     }
-    push_pair(&mut out, &pair, masked && matches!(after, Some('?' | ';')));
-    out
+    push_pair(
+        out,
+        &s[pair_at..],
+        masked && matches!(after, Some('?' | ';')),
+    );
 }
 
 /// `pair` onto `out`, its value masked when its key looks like a secret; whether the value that
@@ -84,10 +104,14 @@ fn push_pair(out: &mut String, pair: &str, continued: bool) -> bool {
     }
 }
 
-/// Whether `key` names a secret.
+/// Whether `key` names a secret: holds a [`SECRET_WORDS`] word in any ASCII case, compared in
+/// place.
 fn secret_looking(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    SECRET_WORDS.iter().any(|w| key.contains(w))
+    let key = key.as_bytes();
+    SECRET_WORDS.iter().any(|word| {
+        key.windows(word.len())
+            .any(|at| at.eq_ignore_ascii_case(word.as_bytes()))
+    })
 }
 
 #[cfg(test)]

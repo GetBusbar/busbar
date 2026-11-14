@@ -40,10 +40,8 @@ fn b64(bytes: &[u8]) -> Bytes {
 }
 
 fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> Zeroizing<[u8; 32]> {
-    let mut first = Zeroizing::new(salt.to_vec());
-    first.extend_from_slice(&1_u32.to_be_bytes());
     let key = HmacSha256Key::new(password);
-    let mut u = key.mac(&first);
+    let mut u = key.mac_parts([salt, &1_u32.to_be_bytes()[..]]);
     let mut acc = Zeroizing::new(*u);
     for _ in 1..iterations {
         u = key.mac(&u[..]);
@@ -90,9 +88,15 @@ impl Cred {
     pub fn redact_echo(&self, text: &str) -> String {
         let needle = self.wire();
         if needle.is_empty() || needle.len() > text.len() {
-            return text.to_owned();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a far end's error text, copied once on its way to a diagnostic"
+            )]
+            let echo = text.to_owned();
+            return echo;
         }
         let hay = text.as_bytes();
+        // busbar:expect(bp::fresh_buffer, reason = "error: a far end's error text, redacted once on its way to a diagnostic")
         let mut out = Vec::with_capacity(hay.len());
         let mut i = 0;
         while i < hay.len() {
@@ -104,7 +108,12 @@ impl Cred {
                 i += 1;
             }
         }
-        String::from_utf8(out).unwrap_or_else(|_| "[redacted]".to_owned())
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a far end's error text whose redaction split a character"
+        )]
+        let echo = String::from_utf8(out).unwrap_or_else(|_| "[redacted]".to_owned());
+        echo
     }
 }
 

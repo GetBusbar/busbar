@@ -155,7 +155,8 @@ fn valid_query(query: &InspectionQuery) -> Result<(), InspectionError> {
         InspectionQuery::CarrierSessions { sessions }
             if !sessions.is_empty() && sessions.len() <= max_carrier_sessions(0) =>
         {
-            let mut seen = std::collections::HashSet::with_capacity(sessions.len());
+            let mut seen =
+                foldhash::HashSet::with_capacity_and_hasher(sessions.len(), Default::default());
             if sessions.iter().all(|id| *id != 0 && seen.insert(*id)) {
                 Ok(())
             } else {
@@ -478,7 +479,7 @@ fn append(blob: &[u8], key: &str, bytes: &[u8]) -> Result<Vec<u8>, InspectionErr
     }
     let mut out = Vec::with_capacity(blob.len() + entry_len);
     out.extend_from_slice(blob);
-    out.extend_from_slice(&extensions::encode(&[(key, bytes)]));
+    extensions::encode_into(&mut out, &[(key, bytes)]);
     Ok(out)
 }
 

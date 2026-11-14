@@ -10,7 +10,6 @@ use crate::signal::SignalValue;
 
 enum Field<'a> {
     EmptyObject,
-    Null,
     Text(&'a str),
     U64(u64),
     Usize(usize),
@@ -34,7 +33,6 @@ impl Serialize for Field<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::EmptyObject => serializer.serialize_map(Some(0))?.end(),
-            Self::Null => serializer.serialize_none(),
             Self::Text(v) => v.serialize(serializer),
             Self::U64(v) => v.serialize(serializer),
             Self::Usize(v) => v.serialize(serializer),
@@ -52,92 +50,105 @@ impl Serialize for Field<'_> {
                 }
                 seq.end()
             }
+            // Each object below is written with its keys in byte order, as the BTreeMap the 1.5.5
+            // projection used would write them, absent members skipped: no map is built.
             Self::Context(v) => {
-                let mut fields = BTreeMap::new();
+                let mut map = serializer.serialize_map(None)?;
                 if !v.budget.is_empty() {
-                    fields.insert("budget", Self::Budget(&v.budget));
+                    map.serialize_entry("budget", &Self::Budget(&v.budget))?;
                 }
                 if let Some(remaining) = v.budget_remaining {
-                    fields.insert("budget_remaining", Self::I64(remaining));
+                    map.serialize_entry("budget_remaining", &remaining)?;
                 }
-                fields.serialize(serializer)
+                map.end()
             }
             Self::Messages(v) => {
                 let mut seq = serializer.serialize_seq(Some(v.len()))?;
                 for (role, text) in *v {
-                    let fields =
-                        BTreeMap::from([("role", Self::Text(role)), ("text", Self::Text(text))]);
-                    seq.serialize_element(&fields)?;
+                    seq.serialize_element(&Message(role, text))?;
                 }
                 seq.end()
             }
             Self::User(v) => {
-                let mut fields = BTreeMap::new();
+                let mut map = serializer.serialize_map(None)?;
                 for (name, value) in [
                     ("key_id", v.key_id.as_deref()),
                     ("key_name", v.key_name.as_deref()),
                     ("user", v.user.as_deref()),
                 ] {
                     if let Some(value) = value {
-                        fields.insert(name, Self::Text(value));
+                        map.serialize_entry(name, value)?;
                     }
                 }
-                fields.serialize(serializer)
+                map.end()
             }
             Self::Tags(v) => v.serialize(serializer),
             Self::Budget(v) => {
                 let mut seq = serializer.serialize_seq(Some(v.len()))?;
                 for bucket in *v {
-                    let mut fields = BTreeMap::from([
-                        ("bucket_id", Self::Text(&bucket.bucket_id)),
-                        (
-                            "budget_group",
-                            bucket
-                                .budget_group
-                                .as_deref()
-                                .map_or(Self::Null, Self::Text),
-                        ),
-                        ("budget_period", Self::Text(&bucket.budget_period)),
-                        (
-                            "remaining_micros",
-                            bucket.remaining_micros.map_or(Self::Null, Self::I64),
-                        ),
-                        (
-                            "spend_micros_at_current_rate",
-                            Self::I64(bucket.spend_micros_at_current_rate),
-                        ),
-                        ("window_start", Self::U64(bucket.window_start)),
-                    ]);
-                    if let Some(pool) = bucket.pool.as_deref() {
-                        fields.insert("pool", Self::Text(pool));
-                    }
-                    seq.serialize_element(&fields)?;
+                    seq.serialize_element(&BucketFields(bucket))?;
                 }
                 seq.end()
             }
             Self::Stage(v) => {
-                let mut fields = BTreeMap::from([("at", Self::Text(v.at))]);
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("at", v.at)?;
+                if let Some(attempt) = v.attempt_number {
+                    map.serialize_entry("attempt_number", &u64::from(attempt))?;
+                }
                 for (name, value) in [
                     ("model", v.model.as_deref()),
                     ("outcome", v.outcome.as_deref()),
                     ("previous_failure", v.previous_failure.as_deref()),
                 ] {
                     if let Some(value) = value {
-                        fields.insert(name, Self::Text(value));
+                        map.serialize_entry(name, value)?;
                     }
                 }
-                if let Some(attempt) = v.attempt_number {
-                    fields.insert("attempt_number", Self::U64(u64::from(attempt)));
-                }
                 if let Some(remaining) = v.remaining_candidates {
-                    fields.insert("remaining_candidates", Self::Usize(remaining));
+                    map.serialize_entry("remaining_candidates", &remaining)?;
                 }
                 if let Some(status) = v.status {
-                    fields.insert("status", Self::U64(u64::from(status)));
+                    map.serialize_entry("status", &u64::from(status))?;
                 }
-                fields.serialize(serializer)
+                map.end()
             }
         }
+    }
+}
+
+/// One prompt message: `{"role":..,"text":..}`.
+struct Message<'a>(&'a str, &'a str);
+
+impl Serialize for Message<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("role", self.0)?;
+        map.serialize_entry("text", self.1)?;
+        map.end()
+    }
+}
+
+/// One budget bucket, its keys in byte order (`pool` only when it has one).
+struct BucketFields<'a>(&'a Bucket<'a>);
+
+impl Serialize for BucketFields<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let bucket = self.0;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("bucket_id", &*bucket.bucket_id)?;
+        map.serialize_entry("budget_group", &bucket.budget_group.as_deref())?;
+        map.serialize_entry("budget_period", &*bucket.budget_period)?;
+        if let Some(pool) = bucket.pool.as_deref() {
+            map.serialize_entry("pool", pool)?;
+        }
+        map.serialize_entry("remaining_micros", &bucket.remaining_micros)?;
+        map.serialize_entry(
+            "spend_micros_at_current_rate",
+            &bucket.spend_micros_at_current_rate,
+        )?;
+        map.serialize_entry("window_start", &bucket.window_start)?;
+        map.end()
     }
 }
 

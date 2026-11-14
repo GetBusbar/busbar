@@ -8,7 +8,10 @@ use zeroize::Zeroizing;
 use super::{Cred, SealedWrite};
 
 /// One form value.
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 #[derive(Clone, PartialEq, Eq)]
 pub enum FormValue {
     /// Public text.

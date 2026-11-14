@@ -5,26 +5,55 @@
 
 use zeroize::Zeroizing;
 
-fn padded(data: &[u8], big_endian: bool) -> Zeroizing<Vec<u8>> {
-    let mut m = Zeroizing::new(Vec::with_capacity(data.len() + 72));
-    m.extend_from_slice(data);
-    m.push(0x80);
-    while m.len() % 64 != 56 {
-        m.push(0);
+/// Feed the concatenation of `parts`, then its Merkle-Damgard padding (`0x80`, zeros, the bit
+/// length in the digest's byte order), to `compress` one 64-byte block at a time, through one wiped
+/// block on the stack: the message is never copied whole. `already` counts the bytes the state has
+/// absorbed before (whole blocks), for the length.
+pub(crate) fn absorb<'a>(
+    parts: impl IntoIterator<Item = &'a [u8]>,
+    big_endian: bool,
+    already: u64,
+    mut compress: impl FnMut(&[u8; 64]),
+) {
+    let mut block = Zeroizing::new([0_u8; 64]);
+    let mut fill = 0;
+    let mut total = already;
+    for part in parts {
+        total = total.wrapping_add(part.len() as u64);
+        let mut rest = part;
+        while !rest.is_empty() {
+            let n = (64 - fill).min(rest.len());
+            block[fill..fill + n].copy_from_slice(&rest[..n]);
+            fill += n;
+            rest = &rest[n..];
+            if fill == 64 {
+                compress(&block);
+                fill = 0;
+            }
+        }
     }
-    let bits = (data.len() as u64).wrapping_mul(8);
-    if big_endian {
-        m.extend_from_slice(&bits.to_be_bytes());
+    block[fill] = 0x80;
+    block[fill + 1..].fill(0);
+    if fill >= 56 {
+        compress(&block);
+        block.fill(0);
+    }
+    let bits = total.wrapping_mul(8);
+    block[56..].copy_from_slice(&if big_endian {
+        bits.to_be_bytes()
     } else {
-        m.extend_from_slice(&bits.to_le_bytes());
-    }
-    m
+        bits.to_le_bytes()
+    });
+    compress(&block);
 }
 
 /// SHA-1 of the concatenation of `parts`.
 pub(crate) fn sha1(parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
-    let data = Zeroizing::new(parts.concat());
-    let m = padded(&data, true);
+    sha1_of(parts.iter().copied())
+}
+
+/// SHA-1 of the concatenation of `parts`, streamed ([`absorb`]).
+pub(crate) fn sha1_of<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> Zeroizing<[u8; 20]> {
     let mut h = Zeroizing::new([
         0x6745_2301_u32,
         0xEFCD_AB89,
@@ -33,7 +62,7 @@ pub(crate) fn sha1(parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
         0xC3D2_E1F0,
     ]);
     let mut w = Zeroizing::new([0_u32; 80]);
-    for block in m.as_chunks::<64>().0 {
+    absorb(parts, true, 0, |block| {
         for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
             w[i] = u32::from_be_bytes(*c);
         }
@@ -63,7 +92,7 @@ pub(crate) fn sha1(parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
         for (hi, si) in h.iter_mut().zip(s.iter()) {
             *hi = hi.wrapping_add(*si);
         }
-    }
+    });
     let mut out = Zeroizing::new([0_u8; 20]);
     for (o, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(h.iter()) {
         *o = v.to_be_bytes();
@@ -149,11 +178,9 @@ fn md5_k(i: usize) -> u32 {
 
 /// MD5 of the concatenation of `parts`.
 pub(crate) fn md5(parts: &[&[u8]]) -> Zeroizing<[u8; 16]> {
-    let data = Zeroizing::new(parts.concat());
-    let m = padded(&data, false);
     let mut h = Zeroizing::new([0x6745_2301_u32, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476]);
     let mut x = Zeroizing::new([0_u32; 16]);
-    for block in m.as_chunks::<64>().0 {
+    absorb(parts.iter().copied(), false, 0, |block| {
         for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
             x[i] = u32::from_le_bytes(*c);
         }
@@ -179,7 +206,7 @@ pub(crate) fn md5(parts: &[&[u8]]) -> Zeroizing<[u8; 16]> {
         for (hi, si) in h.iter_mut().zip(s.iter()) {
             *hi = hi.wrapping_add(*si);
         }
-    }
+    });
     let mut out = Zeroizing::new([0_u8; 16]);
     for (o, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(h.iter()) {
         *o = v.to_le_bytes();
@@ -189,6 +216,5 @@ pub(crate) fn md5(parts: &[&[u8]]) -> Zeroizing<[u8; 16]> {
 
 /// SHA-256 of the concatenation of `parts`, wiped (`sdk::hmac`'s primitive).
 pub(crate) fn sha256(parts: &[&[u8]]) -> Zeroizing<[u8; 32]> {
-    let data = Zeroizing::new(parts.concat());
-    crate::abi::sdk::hmac::sha256_wiped(None, &data)
+    crate::abi::sdk::hmac::sha256_parts(parts.iter().copied())
 }

@@ -97,6 +97,7 @@ impl Backing {
         if bytes.is_empty() {
             return std::ptr::null();
         }
+        // busbar:expect(bp::into_alloc, reason = "config: a plane snapshot description, copied once per published generation")
         let held: Box<[u8]> = bytes.into();
         let p = held.as_ptr();
         self.bytes.push(held);
@@ -135,14 +136,22 @@ impl Backing {
     }
 
     /// Each of `names` copied, held as one list of strings; its pointer (NULL when empty) and
-    fn strs(&mut self, names: &[String]) -> (*const AbiStr, usize) {
-        if names.is_empty() {
+    fn strs<'n>(
+        &mut self,
+        names: impl ExactSizeIterator<Item = &'n str>,
+    ) -> (*const AbiStr, usize) {
+        let len = names.len();
+        if len == 0 {
             return (std::ptr::null(), 0);
         }
-        let items: Box<[AbiStr]> = names.iter().map(|n| self.str(n)).collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane snapshot description, copied once per published generation"
+        )]
+        let items: Box<[AbiStr]> = names.map(|n| self.str(n)).collect();
         let p = items.as_ptr();
         self.lists.push(Box::new(List { _items: items }));
-        (p, names.len())
+        (p, len)
     }
 
     /// Each of `specs` lowered and held as one list; its pointer (NULL when empty) and length.
@@ -150,6 +159,10 @@ impl Backing {
         if specs.is_empty() {
             return (std::ptr::null(), 0);
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane snapshot description, copied once per published generation"
+        )]
         let items: Box<[T]> = specs.iter().map(|s| T::lower(s, 0, self)).collect();
         let p = items.as_ptr();
         self.lists.push(Box::new(List { _items: items }));
@@ -195,20 +208,30 @@ impl ClaimSpec {
     /// A claim of `verb` on `target` over `carrier`.
     #[must_use]
     pub fn new(verb: &str, target: &str, carrier: &str, flags: u32) -> Self {
-        Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane snapshot description, copied once per published generation"
+        )]
+        let claim = Self {
             verb: verb.to_string(),
             target: target.to_string(),
             carrier: carrier.to_string(),
             flags,
             refusal_dialect: 0,
             arrival_span: String::new(),
-        }
+        };
+        claim
     }
 
     /// The claim, its arrivals opening the span `name` ([`PlaneSnapshot::arrival_spans`]).
     #[must_use]
     pub fn with_arrival_span(mut self, name: &str) -> Self {
-        self.arrival_span = name.to_string();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane snapshot description, copied once per published generation"
+        )]
+        let name = name.to_string();
+        self.arrival_span = name;
         self
     }
 }
@@ -244,18 +267,28 @@ impl AdminRouteSpec {
     /// A route of `verb` on `target`, never audited.
     #[must_use]
     pub fn new(verb: &str, target: &str, flags: u32) -> Self {
-        Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane snapshot description, copied once per published generation"
+        )]
+        let route = Self {
             verb: verb.to_string(),
             target: target.to_string(),
             flags,
             audit_verb: String::new(),
-        }
+        };
+        route
     }
 
     /// The route, audited under `word`.
     #[must_use]
     pub fn audited(mut self, word: &str) -> Self {
-        self.audit_verb = word.to_string();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane snapshot description, copied once per published generation"
+        )]
+        let word = word.to_string();
+        self.audit_verb = word;
         self
     }
 }
@@ -298,14 +331,15 @@ impl Publish for PlaneSnapshot {
     fn lower(spec: &SnapshotSpec, generation: u64, backing: &mut Backing) -> Self {
         let (claims, claims_len) = backing.list::<Claim>(&spec.claims);
         let (admin_routes, admin_routes_len) = backing.list::<AdminRoute>(&spec.admin_routes);
-        let (listed, listed_len) = backing.strs(&spec.listed);
+        let (listed, listed_len) = backing.strs(spec.listed.iter().map(String::as_str));
 
-        let spans: Vec<String> = if spec.claims.iter().any(|c| !c.arrival_span.is_empty()) {
-            spec.claims.iter().map(|c| c.arrival_span.clone()).collect()
-        } else {
-            Vec::new()
-        };
-        let (arrival_spans, arrival_spans_len) = backing.strs(&spans);
+        // Each claim's span, read in place; none at all when no claim opens one.
+        let (arrival_spans, arrival_spans_len) =
+            if spec.claims.iter().any(|c| !c.arrival_span.is_empty()) {
+                backing.strs(spec.claims.iter().map(|c| c.arrival_span.as_str()))
+            } else {
+                (std::ptr::null(), 0)
+            };
         Self {
             size: std::mem::size_of::<Self>() as u32,
             _reserved: 0,
@@ -472,11 +506,9 @@ fn keyed_lock<K, V>(shard: &Mutex<BTreeMap<K, V>>) -> std::sync::MutexGuard<'_, 
 
 /// The shard a key of a [`Keyed::sharded`] map lives in: its hash's remainder.
 fn keyed_shard<K: std::hash::Hash>(key: &K) -> usize {
-    use std::hash::Hasher;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    key.hash(&mut h);
-
-    (h.finish() % KEYED_SHARDS as u64) as usize
+    use std::hash::BuildHasher;
+    // A fixed seed: a key's shard is the same for the life of the process.
+    (foldhash::fast::FixedState::with_seed(0).hash_one(key) % KEYED_SHARDS as u64) as usize
 }
 
 impl<K, V> Keyed<K, V> {
@@ -572,10 +604,15 @@ impl<K: Ord, V> Keyed<K, V> {
     where
         K: std::hash::Hash,
     {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a sharded table's shards, made once as its instance opens"
+        )]
+        let shards = (0..KEYED_SHARDS)
+            .map(|_| Mutex::new(BTreeMap::new()))
+            .collect();
         Self {
-            shards: (0..KEYED_SHARDS)
-                .map(|_| Mutex::new(BTreeMap::new()))
-                .collect(),
+            shards,
             shard_of: keyed_shard::<K>,
             len: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -612,9 +649,7 @@ impl<K: Ord, V> Keyed<K, V> {
     }
 
     /// Run `f` over the entry `key` names, made with `make` when it has none and fewer than
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
+    // `fetch_update`, not `try_update`: this crate's MSRV floor is below the newer name.
     pub fn with_or_insert_within<R>(
         &self,
         key: K,

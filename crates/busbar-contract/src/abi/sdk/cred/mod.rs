@@ -46,29 +46,129 @@
 //! let _: &[u8] = s.as_ref();
 //! ```
 
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 mod form_body;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub(crate) mod protected_json;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub mod record;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 mod redact;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 mod resolved;
 mod settings;
+/// Configure-time settings documents with guarded strings (cold: read per open, not per request).
+pub(crate) mod settings_json;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub(crate) mod write;
 
 use zeroize::{Zeroize, Zeroizing};
 
 pub use form_body::{FormBody, FormValue};
-pub use protected_json::{
-    json_text_members, select_json, settings_document, SelectedJson, SettingsValue,
-};
+pub use protected_json::{json_text_members, select_json, SelectedJson};
 pub use redact::redact_encoded_echoes;
 pub use resolved::{resolved, EMPTY_VALUE};
 pub use settings::{settings, SettingsError};
 pub use settings::{settings_lent, SECRET_MARKER};
+pub use settings_json::{settings_document, SettingsValue};
 pub(crate) use write::confirm_secure;
 pub use write::{Parts, SealedWrite};
 
 /// Zeroizing material with no way out of this crate: no getter, no `Debug`, no `Display`, no
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 pub struct Held<T: Zeroize>(T);
 
 impl<T: Zeroize> Held<T> {
@@ -112,7 +212,10 @@ type Bytes = Zeroizing<Vec<u8>>;
 
 /// A credential this plugin was configured with. It performs auth steps (`abi::sdk::chip`); its
 /// bytes never leave it. See the module docs.
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 #[derive(Clone)]
 pub struct Cred {
     held: std::sync::Arc<Held<Bytes>>,
@@ -155,16 +258,6 @@ impl Cred {
             held: Held::new(bytes),
             secure: self.secure,
         }
-    }
-
-    /// Take a credential setting out of a parsed settings document, wiping the string where it
-    pub fn take(v: &mut serde_json::Value) -> Option<Self> {
-        let serde_json::Value::String(s) = v else {
-            return None;
-        };
-        let bytes = Zeroizing::new(core::mem::take(s).into_bytes());
-        *v = serde_json::Value::Null;
-        Some(Self::from_bytes(bytes))
     }
 
     /// No credential (an empty password): every recipe answers as the protocol does for one.
@@ -213,7 +306,10 @@ impl PartialEq for Cred {
 impl Eq for Cred {}
 
 /// A recipe's output: bytes that go to the wire through [`SealedWrite`] and nowhere else.
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 pub struct Seal {
     held: Held<Bytes>,
     secure: bool,
@@ -244,6 +340,22 @@ impl Seal {
 pub const NOT_SECURE: &str = "a credential requiring a secure connection \
      was not sent: the host connector reports this connection is not secured";
 
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 mod json;
 #[cfg(test)]
 #[path = "../tests/cred_tests.rs"]
