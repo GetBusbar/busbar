@@ -467,6 +467,7 @@ dependencies = [
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
+ "tokio-util",
  "tower",
  "tracing",
  "tracing-log",
@@ -499,6 +500,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "futures",
 ]
 
 [[package]]
@@ -2931,6 +2933,7 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
