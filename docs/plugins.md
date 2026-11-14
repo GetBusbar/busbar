@@ -382,7 +382,7 @@ opaque settings are unaffected. The profile does not replace lifecycle checks fo
 between fields or deployment-wide constraints.
 
 The tooling's canonical implementation is its `template/settings/integer_token.rs`, rendered
-byte-for-byte to `testing/settings/integer_token.rs`. Pack tooling compiles the declared
+byte-for-byte to `crates/plugin-loader/src/integer_token.rs`. Pack tooling compiles the declared
 profile both for `--settings-schema-file` and for the actual Statement schema. Tests pair the
 profile with the real lifecycle parser using original JSON bytes, before any normalization.
 The parser, numeric runtime and SDK ABI are unchanged.
