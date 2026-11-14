@@ -3270,6 +3270,7 @@ impl Connector {
             program,
             members,
             member_spec: _,
+            declared_place: _,
         } = &*declared;
         let egress_class = *egress_class;
         if members.is_none()
