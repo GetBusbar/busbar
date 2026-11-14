@@ -106,7 +106,9 @@ sonic-rs = "0.5"
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory.
 tar = { version = "0.4", default-features = false }
-tikv-jemalloc-ctl = "0.6"
+# Called directly (busbar-kernel `mallctl`); default features off adds nothing tikv-jemallocator
+# does not already turn on.
+tikv-jemalloc-sys = { version = "0.6", default-features = false }
 tikv-jemallocator = "0.6"
 # No feature floor: each member picks its own slice.
 tokio = "1"

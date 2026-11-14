@@ -918,19 +918,17 @@ async fn one_seal_after_two_reloads() {
 #[cfg(not(target_env = "msvc"))]
 #[test]
 fn the_idle_purge_puts_each_arena_back_to_its_own_decay() {
-    use tikv_jemalloc_ctl::{Access, AsName};
+    use busbar_kernel::mallctl;
 
     let big = vec![1u8; 64 << 20];
     assert_eq!(big[big.len() - 1], 1);
     drop(big);
     let decays = || -> Vec<(u32, isize)> {
-        let n: u32 = b"arenas.narenas\0".name().read().unwrap_or(0);
+        let n: u32 = mallctl::read(c"arenas.narenas").unwrap_or(0);
         (0..n)
             .filter_map(|i| {
-                let key = format!("arena.{i}.dirty_decay_ms\0");
-                Access::<isize>::read(key.as_bytes().name())
-                    .ok()
-                    .map(|v| (i, v))
+                let key = std::ffi::CString::new(format!("arena.{i}.dirty_decay_ms")).ok()?;
+                mallctl::read::<isize>(&key).ok().map(|v| (i, v))
             })
             .collect()
     };
