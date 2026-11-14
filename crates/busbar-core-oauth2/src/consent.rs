@@ -100,14 +100,6 @@ impl Sessions {
         }
     }
 
-    pub(crate) fn is_staked(&self, id: &str, key: &str) -> bool {
-        let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        inner
-            .staked
-            .get(id)
-            .is_some_and(|pending| pending.iter().any(|(k, _)| k == key))
-    }
-
     pub(crate) fn spend(&self, id: &str, key: &str) -> Option<bool> {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let pending = inner.staked.get_mut(id)?;

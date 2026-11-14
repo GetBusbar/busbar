@@ -1766,8 +1766,8 @@ async fn build_app_native(
 
             let store = governance
                 .as_ref()
-                .map(|gs| gs.core_store_handle())
-                .transpose()
+                .ok_or_else(config::store_required)?
+                .core_store_handle()
                 .map_err(|error| format!("oauth_as store: {error}"))?;
             Some(
                 (seam.build)(

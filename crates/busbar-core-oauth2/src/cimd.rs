@@ -12,7 +12,7 @@ use oauth_as::consent::ConsentRecord;
 use oauth_as::device::{DeviceGrant, DeviceGrantState};
 use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
-use oauth_as::store::{MemoryStorage, RevocationWindow, Storage, StorageError, WriteOutcome};
+use oauth_as::store::{RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
 
 use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
@@ -581,136 +581,23 @@ pub(crate) struct CimdStore {
     documents: Documents,
 }
 
+/// The AS records, always in the deployment's store.
 pub(crate) struct Records {
-    inner: Backend,
+    inner: crate::shared::SharedStorage,
 
-    pushed: Mutex<HashMap<String, Pushed>>,
-
-    registered: Mutex<HashMap<String, Option<std::time::SystemTime>>>,
+    store: Arc<crate::shared::Shared>,
 }
 
 impl Records {
-    pub(crate) fn new(inner: MemoryStorage) -> Self {
-        Self {
-            inner: Backend::Memory(Box::new(inner)),
-            pushed: Mutex::new(HashMap::new()),
-            registered: Mutex::new(HashMap::new()),
-        }
-    }
-
     pub(crate) fn shared(shared: Arc<crate::shared::Shared>) -> Self {
         Self {
-            inner: Backend::Shared(
-                crate::shared::SharedStorage::new(Arc::clone(&shared)),
-                shared,
-            ),
-            pushed: Mutex::new(HashMap::new()),
-            registered: Mutex::new(HashMap::new()),
+            inner: crate::shared::SharedStorage::new(Arc::clone(&shared)),
+            store: shared,
         }
     }
 
-    fn track(&self, client: &Client) {
-        if self.store().is_some() || client.registration.is_none() {
-            return;
-        }
-        let now = std::time::SystemTime::now();
-        self.registered
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(client.client_id.as_str().to_string())
-            .and_modify(|held| *held = held.map(|t| t.max(now)))
-            .or_insert(Some(now));
-    }
-
-    fn holds(&self, client_id: &ClientId, until: Option<std::time::SystemTime>) {
-        let mut registered = self.registered.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(held) = registered.get_mut(client_id.as_str()) {
-            *held = match (*held, until) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                _ => None,
-            };
-        }
-    }
-
-    fn idle(&self, now: std::time::SystemTime) -> Vec<String> {
-        let mut registered = self.registered.lock().unwrap_or_else(|p| p.into_inner());
-        let idle: Vec<String> = registered
-            .iter()
-            .filter(|(_, held)| {
-                held.is_some_and(|t| t + crate::policy::REGISTERED_CLIENT_IDLE <= now)
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &idle {
-            registered.remove(id);
-        }
-        idle
-    }
-
-    pub(crate) fn store(&self) -> Option<&Arc<crate::shared::Shared>> {
-        match &self.inner {
-            Backend::Memory(_) => None,
-            Backend::Shared(_, shared) => Some(shared),
-        }
-    }
-}
-
-impl Default for Records {
-    fn default() -> Self {
-        Self::new(MemoryStorage::new())
-    }
-}
-
-pub(crate) enum Backend {
-    Memory(Box<MemoryStorage>),
-    Shared(crate::shared::SharedStorage, Arc<crate::shared::Shared>),
-}
-
-/// One `Storage` method, answered by whichever backend holds the records.
-macro_rules! delegate {
-    ($( fn $name:ident(&self $(, $arg:ident : $ty:ty)* ) -> $ret:ty; )*) => {
-        $(
-            async fn $name(&self $(, $arg: $ty)*) -> Result<$ret, StorageError> {
-                match self {
-                    Backend::Memory(m) => m.$name($($arg),*).await,
-                    Backend::Shared(s, _) => s.$name($($arg),*).await,
-                }
-            }
-        )*
-    };
-}
-
-impl Storage for Backend {
-    delegate! {
-        fn get_client(&self, client_id: &ClientId) -> Option<Arc<Client>>;
-        fn put_client(&self, client: Client) -> ();
-        fn compare_and_swap_client(&self, expected: &Client, updated: Client) -> bool;
-        fn delete_client(&self, client_id: &ClientId, window: RevocationWindow) -> bool;
-        fn put_device_grant(&self, grant: DeviceGrant) -> ();
-        fn get_device_grant(&self, device_code: &str) -> Option<DeviceGrant>;
-        fn find_device_grant_by_user_code(&self, normalized_user_code: &str) -> Option<DeviceGrant>;
-        fn take_device_grant(&self, device_code: &str) -> Option<DeviceGrant>;
-        fn compare_and_swap_device_grant(&self, expected: &DeviceGrantState, updated: DeviceGrant) -> bool;
-        fn put_authorization_code(&self, record: AuthorizationCodeRecord) -> ();
-        fn compare_and_swap_authorization_code(&self, expected: &AuthorizationCodeState, updated: AuthorizationCodeRecord) -> bool;
-        fn take_authorization_code(&self, code: &str) -> Option<AuthorizationCodeRecord>;
-        fn put_pushed_authorization_request(&self, record: oauth_as::par::PushedAuthorizationRequest) -> WriteOutcome;
-        fn take_pushed_authorization_request(&self, request_uri: &str) -> Option<oauth_as::par::PushedAuthorizationRequest>;
-        fn put_token(&self, token: IssuedToken) -> WriteOutcome;
-        fn get_token(&self, access_token: &str) -> Option<Arc<IssuedToken>>;
-        fn delete_token(&self, access_token: &str) -> ();
-        fn put_refresh_token(&self, record: RefreshTokenRecord) -> WriteOutcome;
-        fn get_refresh_token(&self, refresh_token: &str) -> Option<Arc<RefreshTokenRecord>>;
-        fn take_refresh_token(&self, refresh_token: &str) -> Option<RefreshTokenRecord>;
-        fn revoke_token_family(&self, family_id: &str, window: RevocationWindow) -> u64;
-        fn put_consent(&self, record: ConsentRecord) -> ();
-        fn compare_and_swap_consent(&self, expected: Option<&ConsentRecord>, updated: ConsentRecord) -> bool;
-        fn get_consent(&self, consent_id: &str) -> Option<Arc<ConsentRecord>>;
-        fn find_consent(&self, client_id: &ClientId, subject: &str) -> Option<Arc<ConsentRecord>>;
-        fn consents_for_subject(&self, subject: &str) -> Vec<Arc<ConsentRecord>>;
-        fn revoke_consent(&self, consent_id: &str, window: RevocationWindow) -> u64;
-        fn claim_replay_id(&self, id: &str, expires_at: std::time::SystemTime) -> bool;
-        fn sweep_expired(&self, now: std::time::SystemTime) -> u64;
+    pub(crate) fn store(&self) -> &Arc<crate::shared::Shared> {
+        &self.store
     }
 }
 
@@ -730,19 +617,19 @@ pub(crate) struct Pushed {
     pub(crate) scope: Option<String>,
     pub(crate) redirect_uri: String,
     expires_at: std::time::SystemTime,
-    /// Whether the consent screen has shown this request already.
-    shown: bool,
 }
 
 impl CimdStore {
+    /// A store over a fresh in-memory CoreStore: the production path, with nothing kept.
     #[cfg(test)]
-    pub(crate) fn new(
-        inner: MemoryStorage,
+    pub(crate) async fn new(
         ceiling: ScopeSet,
         fetcher: Arc<dyn CimdFetch>,
         provisioned: Vec<Client>,
     ) -> Self {
-        Self::over(Arc::new(Records::new(inner)), ceiling, fetcher, provisioned)
+        let carried = crate::plane::Carried::over(crate::testkit::memory_store().await)
+            .expect("the in-memory store opens the oauth-as scope");
+        Self::over(carried.records(), ceiling, fetcher, provisioned)
     }
 
     pub(crate) fn over(
@@ -764,51 +651,29 @@ impl CimdStore {
     }
 
     pub(crate) async fn pushed(&self, request_uri: &str) -> Option<Pushed> {
-        if let Some(store) = self.records.store() {
-            return match store.pushed(request_uri).await {
-                Ok(found) => found.map(|record| Pushed {
-                    client_id: record.client_id.as_str().to_string(),
-                    scope: record.scope.clone(),
-                    redirect_uri: record.redirect_uri.clone().unwrap_or_default(),
-                    expires_at: record.expires_at,
-                    shown: false,
-                }),
-                Err(e) => {
-                    tracing::debug!(error = %e, "oauth_as: the pushed request could not be read");
-                    None
-                }
-            };
+        match self.records.store().pushed(request_uri).await {
+            Ok(found) => found.map(|record| Pushed {
+                client_id: record.client_id.as_str().to_string(),
+                scope: record.scope.clone(),
+                redirect_uri: record.redirect_uri.clone().unwrap_or_default(),
+                expires_at: record.expires_at,
+            }),
+            Err(e) => {
+                tracing::debug!(error = %e, "oauth_as: the pushed request could not be read");
+                None
+            }
         }
-        let pushed = self
-            .records
-            .pushed
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        pushed
-            .get(request_uri)
-            .filter(|p| p.expires_at > std::time::SystemTime::now())
-            .cloned()
     }
 
     pub(crate) async fn mark_pushed_shown(&self, request_uri: &str) -> bool {
-        if let Some(store) = self.records.store() {
-            let until = self
-                .pushed(request_uri)
-                .await
-                .map_or_else(std::time::SystemTime::now, |p| p.expires_at);
-            return store
-                .mark_pushed_shown(request_uri, until)
-                .await
-                .unwrap_or(false);
-        }
-        let mut pushed = self
-            .records
-            .pushed
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        pushed
-            .get_mut(request_uri)
-            .map(|p| std::mem::replace(&mut p.shown, true))
+        let until = self
+            .pushed(request_uri)
+            .await
+            .map_or_else(std::time::SystemTime::now, |p| p.expires_at);
+        self.records
+            .store()
+            .mark_pushed_shown(request_uri, until)
+            .await
             .unwrap_or(false)
     }
 
@@ -905,7 +770,6 @@ impl Storage for CimdStore {
     }
 
     fn put_client(&self, client: Client) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.records.track(&client);
         self.records.inner.put_client(client)
     }
 
@@ -924,11 +788,6 @@ impl Storage for CimdStore {
         client_id: &ClientId,
         window: RevocationWindow,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.records
-            .registered
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(client_id.as_str());
         self.records.inner.delete_client(client_id, window)
     }
 
@@ -936,7 +795,6 @@ impl Storage for CimdStore {
         &self,
         grant: DeviceGrant,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.records.holds(&grant.client_id, Some(grant.expires_at));
         self.records.inner.put_device_grant(grant)
     }
 
@@ -969,8 +827,6 @@ impl Storage for CimdStore {
         updated: DeviceGrant,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
         self.records
-            .holds(&updated.client_id, Some(updated.expires_at));
-        self.records
             .inner
             .compare_and_swap_device_grant(expected, updated)
     }
@@ -979,8 +835,6 @@ impl Storage for CimdStore {
         &self,
         record: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.records
-            .holds(&record.client_id, Some(record.expires_at));
         self.records.inner.put_authorization_code(record)
     }
 
@@ -989,8 +843,6 @@ impl Storage for CimdStore {
         expected: &AuthorizationCodeState,
         updated: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.records
-            .holds(&updated.client_id, Some(updated.expires_at));
         self.records
             .inner
             .compare_and_swap_authorization_code(expected, updated)
@@ -1007,7 +859,6 @@ impl Storage for CimdStore {
         &self,
         token: IssuedToken,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
-        self.records.holds(&token.client_id, Some(token.expires_at));
         self.records.inner.put_token(token)
     }
 
@@ -1029,7 +880,6 @@ impl Storage for CimdStore {
         &self,
         record: RefreshTokenRecord,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
-        self.records.holds(&record.client_id, record.expires_at);
         self.records.inner.put_refresh_token(record)
     }
 
@@ -1059,7 +909,6 @@ impl Storage for CimdStore {
         &self,
         record: ConsentRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.records.holds(&record.client_id, None);
         self.records.inner.put_consent(record)
     }
 
@@ -1068,7 +917,6 @@ impl Storage for CimdStore {
         expected: Option<&ConsentRecord>,
         updated: ConsentRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.records.holds(&updated.client_id, None);
         self.records
             .inner
             .compare_and_swap_consent(expected, updated)
@@ -1108,28 +956,7 @@ impl Storage for CimdStore {
         &self,
         record: oauth_as::par::PushedAuthorizationRequest,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
-        self.records
-            .holds(&record.client_id, Some(record.expires_at));
-        let request_uri = record.request_uri.clone();
-        let summary = Pushed {
-            client_id: record.client_id.as_str().to_string(),
-            scope: record.scope.clone(),
-            redirect_uri: record.redirect_uri.clone().unwrap_or_default(),
-            expires_at: record.expires_at,
-            shown: false,
-        };
-        let put = self.records.inner.put_pushed_authorization_request(record);
-        async move {
-            let outcome = put.await?;
-            if matches!(outcome, WriteOutcome::Applied) && self.records.store().is_none() {
-                self.records
-                    .pushed
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .insert(request_uri, summary);
-            }
-            Ok(outcome)
-        }
+        self.records.inner.put_pushed_authorization_request(record)
     }
 
     fn take_pushed_authorization_request(
@@ -1137,22 +964,9 @@ impl Storage for CimdStore {
         request_uri: &str,
     ) -> impl Future<Output = Result<Option<oauth_as::par::PushedAuthorizationRequest>, StorageError>>
            + Send {
-        let take = self
-            .records
+        self.records
             .inner
-            .take_pushed_authorization_request(request_uri);
-        let request_uri = request_uri.to_string();
-        async move {
-            let taken = take.await?;
-            if taken.is_some() {
-                self.records
-                    .pushed
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&request_uri);
-            }
-            Ok(taken)
-        }
+            .take_pushed_authorization_request(request_uri)
     }
 
     fn claim_replay_id(
@@ -1167,31 +981,7 @@ impl Storage for CimdStore {
         &self,
         now: std::time::SystemTime,
     ) -> impl Future<Output = Result<u64, StorageError>> + Send {
-        self.records
-            .pushed
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|_, p| p.expires_at > now);
-        let sweep = self.records.inner.sweep_expired(now);
-        async move {
-            let mut removed = sweep.await?;
-
-            for id in self.records.idle(now) {
-                let window = RevocationWindow {
-                    recorded_at: now,
-                    until: now,
-                };
-                if self
-                    .records
-                    .inner
-                    .delete_client(&ClientId::new(id.as_str()), window)
-                    .await?
-                {
-                    removed += 1;
-                }
-            }
-            Ok(removed)
-        }
+        self.records.inner.sweep_expired(now)
     }
 }
 
@@ -1206,7 +996,6 @@ impl std::fmt::Debug for Pushed {
             .field("scope", &self.scope)
             .field("redirect_uri", &"<redacted>")
             .field("expires_at", &self.expires_at)
-            .field("shown", &self.shown)
             .finish()
     }
 }
