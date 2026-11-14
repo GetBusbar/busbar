@@ -66,6 +66,14 @@ allow-wildcard-paths = true
 deny = [
     # Stacks busbar does not use (kept from before the crypto seam; cargo-deny matches `name@version`
     # as an exact or PARTIAL version, so older lines are listed one by one).
+    # THE ONE LOAD CHOKEPOINT (LINT-RULES R23, ABI-DECISION §3.1): a dynamic library is loaded only
+    # by busbar-plugin-loader's `stage` (memfd staging, the native load guard), so libloading is the
+    # loader's alone, and no other dlopen crate may enter the graph.
+    { crate = "libloading", wrappers = ["busbar-plugin-loader"], reason = "dynamic libraries load only through busbar-plugin-loader's stage" },
+    { crate = "dlopen", reason = "dynamic libraries load only through busbar-plugin-loader's stage" },
+    { crate = "dlopen2", reason = "dynamic libraries load only through busbar-plugin-loader's stage" },
+    { crate = "sharedlib", reason = "dynamic libraries load only through busbar-plugin-loader's stage" },
+    { crate = "shared_library", reason = "dynamic libraries load only through busbar-plugin-loader's stage" },
     { crate = "hyper@0", reason = "HTTP is hyper 1" },
     { crate = "rustls@0.20", reason = "TLS is rustls 0.23" },
     { crate = "rustls@0.21", reason = "TLS is rustls 0.23" },
