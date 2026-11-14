@@ -101,7 +101,6 @@ busbar-default::bin/busbar root::serve::plane_streaming::session_door::physical_
 busbar-default::bin/busbar root::serve::serve_datagram::raw_udp_ingress_tests::raw_output_credit_readiness_drops_before_acceptance_and_resumes_without_replay	CDT-KNOWN-RED	flaky
 busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::actual_store_compatibility_replay_preserves_the_resolved_verdict	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route	CDT-KNOWN-RED	stable
-busbar-default::boot_lines_neutrality boot_lines_match_1_5_5_shape	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_accepts_a_reference_at_a_planes_declared_wildcard_path	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_ok_on_a_config_in_the_planes_second_dialect	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_ok_on_a_good_decisions_config	CDT-KNOWN-RED	stable
@@ -114,7 +113,6 @@ busbar-default::cli_validate validate_refuses_an_unmigrated_jwt_bearer_filename_
 busbar-default::cli_validate validate_refuses_every_public_url_that_boot_refuses	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_refuses_the_planes_protocol_when_its_section_is_not_configured	CDT-KNOWN-RED	stable
 busbar-default::config_migrate_1_5_5 a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration	CDT-KNOWN-RED	stable
-busbar-default::config_migrate_1_5_5 a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same	CDT-KNOWN-RED	stable
 busbar-default::config_migrate_cross_plane end_to_end_a_full_legacy_config_migrates_validates_and_drops_every_deprecated_spelling	CDT-KNOWN-RED	stable
 busbar-default::config_validate_cross_plane the_agents_section_enumerates_every_secret_reference_its_plane_declares	CDT-KNOWN-RED	stable
 busbar-default::config_validate_cross_plane the_tools_section_enumerates_every_secret_reference_its_plane_declares	CDT-KNOWN-RED	stable

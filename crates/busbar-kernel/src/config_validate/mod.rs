@@ -1554,6 +1554,7 @@ fn judge_plane_card(
             .into(),
         );
     }
+    gaps
 }
 
 fn validate_plane_fees(
