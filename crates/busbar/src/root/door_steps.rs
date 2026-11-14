@@ -2904,7 +2904,7 @@ impl OutboundAuths {
 
                     if installed {
                         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                            runtime.spawn(crate::root::measurements::background(
+                            runtime.spawn(crate::root::measurements::credential_upkeep(
                                 Arc::clone(&instance).ticks(),
                             ));
                         }
