@@ -2110,8 +2110,9 @@ fn running_executable() -> std::io::Result<std::fs::File> {
     }
 }
 
-/// The running image's digest, once it has been computed.
-type DigestCell = std::sync::OnceLock<Result<String, String>>;
+/// The running image's digest, once it has been computed. Only a computed digest is kept: a
+/// failure to read the image is refused for this transition and retried on the next.
+type DigestCell = std::sync::OnceLock<String>;
 
 fn executable_sha256() -> Result<String, String> {
     static DIGEST: DigestCell = DigestCell::new();
@@ -2136,12 +2137,18 @@ fn once_digest(
     cell: &DigestCell,
     hash: impl FnOnce() -> Result<String, String>,
 ) -> Result<String, String> {
-    cell.get_or_init(hash).clone()
+    if let Some(digest) = cell.get() {
+        return Ok(digest.clone());
+    }
+    let digest = hash()?;
+    Ok(cell.get_or_init(|| digest).clone())
 }
 
 /// The refusal for a running image that could not be opened or read.
 fn executable_refusal(error: std::io::Error) -> String {
-    error.to_string()
+    format!(
+        "cannot read {RUNNING_EXECUTABLE} to digest the running binary for a linked auth principal's provenance: {error}"
+    )
 }
 
 fn tracked(requirements: &[Requirement]) -> impl Iterator<Item = &Requirement> {

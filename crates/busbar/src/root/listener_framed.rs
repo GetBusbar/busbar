@@ -1507,6 +1507,22 @@ impl busbar_kernel::plane_driver::CallerEnd for ActorCaller {
     fn head(&self, status: u32, fields: busbar_kernel::plane_driver::HeadFields) {
         self.response_head(status, fields, false);
     }
+    /// A whole answer states its length, unless its fields already name the framing.
+    fn head_whole(
+        &self,
+        status: u32,
+        mut fields: busbar_kernel::plane_driver::HeadFields,
+        len: usize,
+    ) {
+        let framed = fields.iter().any(|(name, _)| {
+            name.eq_ignore_ascii_case(b"content-length")
+                || name.eq_ignore_ascii_case(b"transfer-encoding")
+        });
+        if !framed {
+            fields.push((b"content-length".to_vec(), len.to_string().into_bytes()));
+        }
+        self.response_head(status, fields, false);
+    }
     async fn write(&self, bytes: &[u8]) -> bool {
         self.out.data(Bytes::copy_from_slice(bytes), false).await
     }
