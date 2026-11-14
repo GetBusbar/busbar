@@ -253,7 +253,7 @@ fn retire_private_reach(root: &mut Pairs, changes: &mut Vec<String>, warnings: &
     }
     for (at, url, plaintext) in hosts {
         allow_registration_host(root, &at, &url, changes, warnings);
-        if plaintext && !crate::config::migrate_1_6::names_loopback_url(&url) {
+        if plaintext && !names_loopback_url(&url) {
             warnings.push(format!(
                 "{CODE}: {at}: `{url}` is plaintext http:// to a host other than loopback, which \
                  `{PRIVATE_REACH_KEY}: true` also let the registration use; it is refused at GA; \

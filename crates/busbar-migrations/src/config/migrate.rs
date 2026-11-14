@@ -2499,6 +2499,7 @@ mod decision_path_tests {
                 "a decision without a path prefix".into(),
             ],
             warnings: Vec::new(),
+            notices: Vec::new(),
         };
         assert_eq!(
             output.decision_paths(),
