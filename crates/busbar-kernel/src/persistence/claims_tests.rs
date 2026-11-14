@@ -24,6 +24,9 @@ struct Native {
     hold_reply: bool,
     wrong_clock: bool,
     bad_cursor: bool,
+    /// Answer a read whose TimeGuard no longer holds with TimeGuardFailed,
+    /// as a native store does.
+    honour_read_time: bool,
 }
 
 #[derive(Default)]
@@ -43,6 +46,15 @@ impl PersistenceBackend for Backend {
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
             let native = self.0.lock().unwrap();
+            if native.honour_read_time && request.time.is_some_and(|time| !time.permits(native.now))
+            {
+                return Ok(ReadResult::TimeGuardFailed {
+                    observed_at: ClockObservation {
+                        authority: [3; 16],
+                        unix_seconds: native.now,
+                    },
+                });
+            }
             Ok(ReadResult::Values {
                 observed_at: ClockObservation {
                     authority: if native.wrong_clock { [9; 16] } else { [3; 16] },
@@ -608,6 +620,7 @@ async fn rest_honours_earliest_expiry() {
 #[tokio::test(start_paused = true)]
 async fn late_sweep_never_redeems_lapsed_claim() {
     let (backend, store) = fixture(20, 4096).await;
+    backend.0.lock().unwrap().honour_read_time = true;
     let claims = Claims::authorized(&store, "owner", "kind");
     store.register_claim_scope("owner", "kind").unwrap();
     assert_eq!(
