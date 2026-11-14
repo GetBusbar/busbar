@@ -1256,6 +1256,28 @@ fn matched_handin_line<'a>(
     }
 }
 
+/// Whether a hand-in on `line` (already matched on the handed head) may continue the unit: its
+/// state agrees with the hand-in, a Chain line's unit is admitted, and no stripped credential
+/// is still present. Runs under the caller's units guard, the same one that records the hand-in.
+fn admits(line: &Line, h: &HandIn, u: &UnitState) -> bool {
+    if !handin_state_matches(
+        u.line,
+        u.generation,
+        u.signed_pending,
+        u.head.as_ref(),
+        &u.strips,
+        h,
+    ) {
+        return false;
+    }
+
+    if matches!(line.auth, LineAuth::Chain(..)) && !matches!(u.fixed(), Some(Fixed::Admitted(_))) {
+        return false;
+    }
+
+    !still_present(&u.strips, &h.head)
+}
+
 fn handin_state_matches(
     unit_line: u32,
     generation: u64,
@@ -2046,12 +2068,8 @@ impl Inbound {
             }
             return self.table(owner, generation).ok_or(NO_LIST);
         }
-        if !self.verified(owner, Some(generation), None, binding, unit) {
-            return Err(UNIT_FOREIGN);
-        }
-        self.units()
-            .get(&unit.id)
-            .map(|u| Arc::clone(&u.table))
+        // The unit's table comes out of the guard that checked its MAC (SINGLE-PATH SP-AU5).
+        self.verified_table(owner, Some(generation), None, binding, unit)
             .ok_or(UNIT_FOREIGN)
     }
 
@@ -2370,6 +2388,20 @@ impl Inbound {
         binding: RequestBinding,
         r: UnitRef,
     ) -> bool {
+        self.verified_table(owner, generation, line, binding, r)
+            .is_some()
+    }
+
+    /// [`Self::verified`], answering the verified unit's pinned table out of the same units
+    /// guard, so a caller that needs it takes no second lock.
+    fn verified_table(
+        &self,
+        owner: u64,
+        generation: Option<u64>,
+        line: Option<u32>,
+        binding: RequestBinding,
+        r: UnitRef,
+    ) -> Option<Arc<Table>> {
         let held = self
             .framing_listeners
             .lock()
@@ -2379,19 +2411,17 @@ impl Inbound {
                 listener.status != FramingStatus::Active
                     || listener.ended_streams.contains(&binding.stream)
             }) {
-                return false;
+                return None;
             }
         }
         let units = self.units();
-        let Some(u) = units.get(&r.id) else {
-            return false;
-        };
+        let u = units.get(&r.id)?;
         if u.owner != owner
             || u.binding != binding
             || generation.is_some_and(|g| g != u.generation)
             || line.is_some_and(|l| l != u.line)
         {
-            return false;
+            return None;
         }
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UnitMac);
         (self.seals.mac)(&UnitTag {
@@ -2402,6 +2432,7 @@ impl Inbound {
             unit: r.id,
         })
         .is_some_and(|mac| same(mac, r.mac))
+        .then(|| Arc::clone(&u.table))
     }
 
     pub fn auth_call(
@@ -2973,18 +3004,27 @@ impl Inbound {
                 binding,
                 Arc::clone(&table),
             )?
-        } else if self.verified(h.owner, None, None, binding, h.unit) {
-            h.unit
         } else {
-            return Err(UNIT_FOREIGN);
+            // `request_table` verified the presented unit (MAC, owner, binding, generation); a
+            // second check here could only refuse what it already refused (SINGLE-PATH SP-AU5).
+            h.unit
         };
-        let flow = if self.admits(&table, &h, unit) {
+        // The claim match reads the handed head and the table only, so it runs outside the
+        // units lock; the unit's own checks and the write then share one guard, so nothing can
+        // claim or retire the unit between them.
+        let line = matched_handin_line(
+            &table.listener.guests,
+            table.line_of(h.auth),
+            h.line,
+            &h.head,
+        );
+        let mut units = self.units();
+        let u = units.get_mut(&unit.id).ok_or(UNIT_FOREIGN)?;
+        let flow = if line.is_some_and(|line| admits(line, &h, u)) {
             FLOW_CONTINUE
         } else {
             FLOW_STOP
         };
-        let mut units = self.units();
-        let u = units.get_mut(&unit.id).ok_or(UNIT_FOREIGN)?;
         if u.head.is_none() {
             u.head = Some(h.head.clone());
         }
@@ -3000,39 +3040,6 @@ impl Inbound {
             };
         }
         Ok((flow, unit))
-    }
-
-    fn admits(&self, table: &Table, h: &HandIn, unit: UnitRef) -> bool {
-        let Some(line) = matched_handin_line(
-            &table.listener.guests,
-            table.line_of(h.auth),
-            h.line,
-            &h.head,
-        ) else {
-            return false;
-        };
-        let units = self.units();
-        let Some(u) = units.get(&unit.id) else {
-            return false;
-        };
-        if !handin_state_matches(
-            u.line,
-            u.generation,
-            u.signed_pending,
-            u.head.as_ref(),
-            &u.strips,
-            h,
-        ) {
-            return false;
-        }
-
-        if matches!(line.auth, LineAuth::Chain(..))
-            && !matches!(u.fixed(), Some(Fixed::Admitted(_)))
-        {
-            return false;
-        }
-
-        !still_present(&u.strips, &h.head)
     }
 
     #[allow(clippy::too_many_arguments)]
