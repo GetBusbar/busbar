@@ -173,3 +173,72 @@ fn compaction_wipes_only_the_known_initialized_vacated_tail_before_truncating() 
 fn bc2_trailing_cr_blank_line_completes_frame() {
     assert_eq!(sse_lines("data: x\r"), vec!["data: x"]);
 }
+
+/// DEPENDENCY-LADDER C17 (sseer) pins the framer before its terminator search moves onto
+/// `sseer::parser::parse_line`: every stream below, split at every byte offset into two pushes,
+/// gives the same frames and the same held tail, with a BOM, comment lines and every line
+/// terminator mixed in.
+#[test]
+fn frames_hold_at_every_split_offset_before_the_crate_swap() {
+    let streams: &[(&[u8], &[&[u8]], usize)] = &[
+        (
+            b"\xEF\xBB\xBFdata: a\n\n: keep-alive\r\n\r\nevent: x\rdata: b\r\r\ndata: c\n\r\ntail",
+            &[
+                b"\xEF\xBB\xBFdata: a\n\n",
+                b": keep-alive\r\n\r\n",
+                b"event: x\rdata: b\r\r\n",
+                b"data: c\n\r\n",
+            ],
+            4,
+        ),
+        (
+            b"\n\ndata: d\r\n\r\n\r\n\r\ndata: e\r",
+            &[b"\n\n", b"data: d\r\n\r\n", b"\r\n\r\n"],
+            8,
+        ),
+    ];
+    for &(stream, want, held) in streams {
+        for cut in 0..=stream.len() {
+            let (head, tail) = stream.split_at(cut);
+            let (out, r) = frames(&[head, tail]);
+            let want: Vec<Vec<u8>> = want.iter().map(|f| f.to_vec()).collect();
+            assert_eq!(out, want, "cut at {cut}");
+            assert_eq!(r.pending(), held, "cut at {cut}");
+        }
+    }
+}
+
+/// DEPENDENCY-LADDER C17: `find_frame_terminator` (the planes call it) keeps its answer, the
+/// offset of the first terminator of the blank line and the length of the pair.
+#[test]
+fn the_frame_terminator_answer_is_pinned_before_the_crate_swap() {
+    let cases: &[(&[u8], Option<(usize, usize)>)] = &[
+        (b"data: a\n\nrest", Some((7, 2))),
+        (b"data: a\r\n\r\n", Some((7, 4))),
+        (b"data: a\r\r\n", Some((7, 3))),
+        (b"data: a\n\r", None),
+        (b"data: a\r", None),
+        (b"\n\n", Some((0, 2))),
+        (b"\nx\n\n", Some((2, 2))),
+        (b": c\r\n\n", Some((3, 3))),
+        (b"no terminator", None),
+        (b"", None),
+    ];
+    for &(buf, want) in cases {
+        assert_eq!(find_frame_terminator(buf), want, "{buf:?}");
+    }
+}
+
+/// DEPENDENCY-LADDER C17: `sse_line_spans` keeps its spans, a last unterminated line included and
+/// a final lone CR ending its line.
+#[test]
+fn line_spans_are_pinned_before_the_crate_swap() {
+    assert_eq!(
+        sse_line_spans(b"a\r\nb\rc\n\nd"),
+        vec![(0, 1), (3, 4), (5, 6), (7, 7), (8, 9)]
+    );
+    assert_eq!(sse_line_spans(b"a\r"), vec![(0, 1)]);
+    assert_eq!(sse_line_spans(b"\r"), vec![(0, 0)]);
+    assert_eq!(sse_line_spans(b""), Vec::<(usize, usize)>::new());
+    assert_eq!(sse_lines(":c\ndata: x\r\n"), vec![":c", "data: x"]);
+}

@@ -17,6 +17,10 @@ name = "sdk_door_baseline"
 path = "tests/fixtures/sdk_door_baseline.rs"
 crate-type = ["cdylib"]
 
+[[bench]]
+name = "sse_frames"
+harness = false
+
 [dependencies]
 # The crypto facade, re-exported whole as `busbar_contract::crypto`.
 busbar-crypto = { path = "../busbar-crypto" }
