@@ -1090,7 +1090,7 @@ async fn run(
         config::overlay::merge_into(&mut cfg, doc);
     }
 
-    config_validate::validate(&cfg).unwrap_or_else(|errors| {
+    config_validate::judge_quietly(&cfg).unwrap_or_else(|errors| {
         die(format!(
             "effective configuration errors: {}",
             errors.join("; ")
@@ -1131,7 +1131,11 @@ async fn run(
             .copied(),
     );
 
-    export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
+    export::plugin::open(&cfg.export).unwrap_or_else(|e| {
+        config_validate::advise(&cfg); // a refused export open keeps its advisories, as today
+        die(format!("config errors:\n  - {e}"))
+    });
+    config_validate::advise(&cfg); // the one boot narration: sinks open, runtime current
 
     let door_providers = root::door_steps::provider_routes(
         &cfg.providers,

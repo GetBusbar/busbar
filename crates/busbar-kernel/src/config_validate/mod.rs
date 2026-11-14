@@ -35,6 +35,30 @@ pub fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
     validate_with_unset(cfg, &[])
 }
 
+/// Boot gate. Silent when the config passes; when it refuses, narrates the advisories first.
+pub fn judge_quietly(cfg: &RootCfg) -> Result<(), Vec<String>> {
+    let silent = tracing::subscriber::NoSubscriber::default();
+    tracing::subscriber::with_default(silent, || validate(cfg)).or_else(|_| validate(cfg))
+}
+
+/// Emit the semantic pass's advisories once (the boot narration). The verdict was judged already.
+pub fn advise(cfg: &RootCfg) {
+    let _ = validate(cfg);
+}
+
+tokio::task_local! {
+    static BOOT_ADVISED: ();
+}
+
+/// Admission inside `f` keeps its verdict but stays silent: the boot narration covered it.
+pub async fn after_boot_advice<F: std::future::Future>(f: F) -> F::Output {
+    BOOT_ADVISED.scope((), f).await
+}
+
+pub(crate) fn boot_advised() -> bool {
+    BOOT_ADVISED.try_with(|()| ()).is_ok()
+}
+
 #[cold]
 #[inline(never)]
 pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(), Vec<String>> {
