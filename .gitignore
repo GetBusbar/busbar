@@ -91,3 +91,7 @@ crates/*/proptest-regressions/
 # `scripts/a2a-subject/boot.sh` and a committed one is a report a later run could be read as having
 # produced.
 /.a2a-conformance/
+
+# The served OpenAPI document is gzipped into OUT_DIR by crates/busbar-core-admin/build.rs; a .gz
+# beside the JSON (as the UPDATE_OPENAPI=1 regeneration path still writes) is a stray copy, never source.
+/crates/busbar-core-admin/src/v1/json/openapi.json.gz
