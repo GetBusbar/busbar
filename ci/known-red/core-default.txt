@@ -36,10 +36,7 @@ busbar-default::bin/busbar root::connector::tests::a_provider_carve_out_does_not
 busbar-default::bin/busbar root::connector::tests::a_provider_without_an_allowlist_entry_is_refused_a_private_address	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::connector::tests::operator_infrastructure_refuses_metadata_even_when_carved_out	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::door_steps::registration_pin_tests::an_mtls_registration_presents_its_client_identity_and_one_with_none_is_refused_by_the_far_end	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::door_steps::tests::a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::door_steps::tests::a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::door_steps::tests::a_models_protocol_override_is_handed_to_the_plane	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::door_steps::tests::a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::door_steps::tests::kernel_sections_preserve_numeric_scalars_in_every_projected_section	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::door_steps::tests::kernel_sections_refuse_unrepresentable_provider_numbers_before_application	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::inbound_tests::close_tests::retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_lock	CDT-KNOWN-RED	stable
