@@ -1,0 +1,45 @@
+[package]
+# The public software crypto backend (CRYPTO-SEAM §2.1). Reached only through `busbar-crypto`; a private
+# build swaps a crate of the same name in with `[patch]`. Excluded from the root workspace: a member
+# would collide with a patched-in backend of the same name. Its own lock root (Cargo.lock committed).
+name = "busbar-crypto-backend"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "busbar's software crypto backend over AWS-LC (aws-lc-rs). Only busbar-crypto may depend on it."
+license = "Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The one crypto and TLS provider (decision 229). The raw `aws-lc-sys` dependency is the same library
+# aws-lc-rs links; it is named only for MD5 (`EVP_md5`), which aws-lc-rs does not expose.
+aws-lc-rs = { version = "=1.19.0", default-features = false, features = ["aws-lc-sys"] }
+aws-lc-sys = { version = "=0.47.0", default-features = false }
+# The audit-link hash (SEALING-FIX, decision 170): BLAKE3 in the software backend.
+blake3 = { version = "1.8", default-features = false, features = ["std"] }
+zeroize = { version = "1.8", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"], optional = true }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std", "aws-lc-rs"], optional = true }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs", "pem"], optional = true }
+
+[features]
+# TLS provider, verifiers, ticketer and approval hooks (only TLS crates and tests turn it on).
+tls = ["dep:rustls", "dep:webpki"]
+# Test certificates (rcgen); dev-dependencies only, never a shipped build.
+test-support = ["tls", "dep:rcgen"]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+
+# Effective only when this crate is its own lock root (its committed Cargo.lock): the same pinned forks
+# the core roots patch, so this lock resolves the same AWS-LC sources.
+[patch.crates-io]
+aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
+jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
+dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
+fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
