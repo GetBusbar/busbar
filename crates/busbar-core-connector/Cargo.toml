@@ -47,7 +47,7 @@ test-support = ["rcgen/pem"]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [dev-dependencies]
-busbar-contract = { path = "../busbar-contract", features = ["test-support"] }
+busbar-contract = { path = "../busbar-contract", features = ["test-support", "stage-probe"] }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
