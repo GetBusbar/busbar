@@ -1,30 +1,49 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Civil-date math for the plane crates that render an epoch timestamp without pulling a date-time
+//! Civil-date math for the plane crates that render an epoch timestamp, on the `time` crate
+//! (DEPENDENCY-LADDER C10). Both directions saturate at the calendar `time` carries, years -9999
+//! to 9999: RFC 3339 has no spelling for a five-digit year.
 
-/// Days since the Unix epoch → (year, month, day). Hinnant's algorithm, shifted to an era beginning
-pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
+use time::format_description::well_known::Rfc3339;
+use time::{Date, OffsetDateTime};
+
+/// The Julian day number of 1970-01-01, the Unix epoch.
+const UNIX_EPOCH_JULIAN_DAY: i64 = 2_440_588;
+
+/// The last second RFC 3339 can spell, 9999-12-31T23:59:59Z.
+const LAST_RFC3339_SECOND: i64 = 253_402_300_799;
+
+/// Days since the Unix epoch → the proleptic-Gregorian calendar date, saturating at
+/// [`Date::MIN`] and [`Date::MAX`].
+#[must_use]
+pub fn date_from_days(days: i64) -> Date {
+    i32::try_from(days.saturating_add(UNIX_EPOCH_JULIAN_DAY))
+        .ok()
+        .and_then(|julian| Date::from_julian_day(julian).ok())
+        .unwrap_or(if days < 0 { Date::MIN } else { Date::MAX })
 }
 
-/// Whole seconds since the Unix epoch → an RFC3339 UTC instant, `YYYY-MM-DDTHH:MM:SSZ`.
+/// Days since the Unix epoch → (year, month, day), saturating as [`date_from_days`] does.
+#[must_use]
+pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let date = date_from_days(z);
+    (
+        i64::from(date.year()),
+        u32::from(u8::from(date.month())),
+        u32::from(date.day()),
+    )
+}
+
+/// Whole seconds since the Unix epoch → an RFC3339 UTC instant, `YYYY-MM-DDTHH:MM:SSZ`, saturating
+/// at 9999-12-31T23:59:59Z.
+#[must_use]
 pub fn rfc3339_from_secs(secs: u64) -> String {
-    let secs = secs as i64;
-    let days = secs.div_euclid(86_400);
-    let tod = secs.rem_euclid(86_400);
-    let (y, m, d) = civil_from_days(days);
-    let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
-    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+    let secs = i64::try_from(secs).map_or(LAST_RFC3339_SECOND, |s| s.min(LAST_RFC3339_SECOND));
+    OffsetDateTime::from_unix_timestamp(secs)
+        .map_err(time::Error::from)
+        .and_then(|at| at.format(&Rfc3339).map_err(time::Error::from))
+        .expect("a whole UTC second in 1970..=9999 always has an RFC 3339 spelling")
 }
 
 #[cfg(test)]
