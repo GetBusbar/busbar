@@ -284,7 +284,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "socket2",
  "tikv-jemallocator",
  "tokio",
  "tokio-util",
@@ -427,15 +426,12 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-yaml",
  "bytes",
- "crc32fast",
  "ed25519-dalek",
  "futures",
  "getrandom 0.3.4",
  "hex",
  "http",
- "http-body",
  "http-body-util",
- "httpdate",
  "indexmap",
  "libc",
  "loom",
@@ -447,7 +443,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "sha2 0.10.9",
  "sonic-rs",
  "tikv-jemalloc-sys",
@@ -518,12 +513,9 @@ name = "busbar-migrations"
 version = "1.6.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
- "busbar-kernel-audit",
  "busbar-kernel-identity",
- "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-yaml",
  "getrandom 0.3.4",
@@ -3309,18 +3301,3 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[patch.unused]]
-name = "mysql_common"
-version = "0.35.5"
-source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=bed6617588e3646fdd7a8e645ee45a475d27c2c7#bed6617588e3646fdd7a8e645ee45a475d27c2c7"
-
-[[patch.unused]]
-name = "postgres-protocol"
-version = "0.6.12"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=ba55637630fb38de6382e8dd7370b3c2d45da57b#ba55637630fb38de6382e8dd7370b3c2d45da57b"
-
-[[patch.unused]]
-name = "stringprep"
-version = "0.1.5"
-source = "git+https://github.com/MattJackson/rust-stringprep?rev=da1e3cea3ca61b8b3882a71ee96496cd231601f2#da1e3cea3ca61b8b3882a71ee96496cd231601f2"
