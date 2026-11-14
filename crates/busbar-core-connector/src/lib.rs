@@ -1,5 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+// busbar:request-path
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 
 //! `busbar-core-connector` — THE CONNECTOR (THE DESIGN: connections). The chain is kernel →
 
@@ -1954,7 +1970,7 @@ impl Connector {
                     // This hop comes only from the operator's parsed proxy configuration. The
                     // application's target already passed its own class and security checks.
                     let proxy_judged = self.judge_into(
-                        &spec.endpoint(),
+                        spec.endpoint(),
                         false,
                         EGRESS_OPERATOR_INFRASTRUCTURE,
                         true,
@@ -2218,7 +2234,7 @@ impl Connector {
             // The configured CONNECT hop is operator infrastructure; its plaintext socket does
             // not change the separately judged application's TLS requirement.
             return match self.judge_into(
-                &proxy_authority,
+                proxy_authority,
                 false,
                 EGRESS_OPERATOR_INFRASTRUCTURE,
                 true,

@@ -404,18 +404,26 @@ mod platform {
         }
     }
 
-    fn system_directory() -> Result<std::path::PathBuf, Error> {
+    /// The system directory, read once per process: it does not move while the process runs.
+    fn system_directory() -> Result<&'static std::path::Path, Error> {
+        static DIRECTORY: std::sync::OnceLock<Option<std::path::PathBuf>> =
+            std::sync::OnceLock::new();
+        DIRECTORY
+            .get_or_init(read_system_directory)
+            .as_deref()
+            .ok_or(Error::SystemDirectory)
+    }
+
+    fn read_system_directory() -> Option<std::path::PathBuf> {
         let mut buffer = vec![0u16; 32_768];
         let length =
             unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
         if length == 0 || length >= buffer.len() {
-            return Err(Error::SystemDirectory);
+            return None;
         }
+        // busbar:expect(bp::into_alloc, reason = "boot: the system directory is read once per process")
         let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
-        if !path.is_absolute() {
-            return Err(Error::SystemDirectory);
-        }
-        Ok(path)
+        path.is_absolute().then_some(path)
     }
 
     pub(super) struct Job {
@@ -502,29 +510,32 @@ mod platform {
         }
         pub(super) fn before_reap(&mut self) {}
         pub(super) async fn wait_empty(&self) -> Result<(), Error> {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-            loop {
-                let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-                let read = unsafe {
-                    QueryInformationJobObject(
-                        raw(&self.handle),
-                        JobObjectBasicAccountingInformation,
-                        (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)
-                            .cast::<c_void>(),
-                        std::mem::size_of_val(&accounting) as u32,
-                        std::ptr::null_mut(),
-                    )
-                };
-                if read == 0 {
-                    return Err(Error::Cleanup);
+            // The Job is given five seconds to empty; the timer, not a clock read per poll, ends it.
+            let emptied = async {
+                loop {
+                    let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+                    let read = unsafe {
+                        QueryInformationJobObject(
+                            raw(&self.handle),
+                            JobObjectBasicAccountingInformation,
+                            (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)
+                                .cast::<c_void>(),
+                            std::mem::size_of_val(&accounting) as u32,
+                            std::ptr::null_mut(),
+                        )
+                    };
+                    if read == 0 {
+                        return Err(Error::Cleanup);
+                    }
+                    if accounting.ActiveProcesses == 0 {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-                if accounting.ActiveProcesses == 0 {
-                    return Ok(());
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(Error::Cleanup);
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            match tokio::time::timeout(Duration::from_secs(5), emptied).await {
+                Ok(emptied) => emptied,
+                Err(_) => Err(Error::Cleanup),
             }
         }
     }

@@ -412,9 +412,8 @@ impl UpstreamLeg {
         pairing: &Arc<Pairing>,
         cx: &mut Context<'_>,
         due: Option<Instant>,
+        now: Instant,
     ) -> Result<(), ConnError> {
-        let now = Instant::now();
-
         let room = MAX_READY.saturating_sub(lock(&self.ready).len());
         let yielded = self.turn(
             (),
@@ -596,8 +595,14 @@ impl LegSink for UpstreamLeg {
     }
 
     fn channels(&self, batch: SessionBatch, _: Instant) -> Result<(), String> {
-        self.take_channels(batch)
-            .map_err(|error| format!("upstream channel publication failed: {error:?}"))
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a failed channel publication is answered with its sentence"
+        )]
+        let taken = self
+            .take_channels(batch)
+            .map_err(|error| format!("upstream channel publication failed: {error:?}"));
+        taken
     }
 
     fn close(&self) {
@@ -843,6 +848,9 @@ impl Dialled {
         self.running(waker)?;
         self.leg.wait_ready(waker);
         let mut cx = Context::from_waker(waker);
+        // One clock reading per read, taken only once nothing is ready: the keying bound and the
+        // drive both judge by it.
+        let mut read_at: Option<Instant> = None;
         loop {
             if let Some((n, end)) = take_ready(&self.leg.ready, buf) {
                 return Ok(Piece {
@@ -859,11 +867,12 @@ impl Dialled {
                     declared_len: None,
                 });
             }
+            let now = *read_at.get_or_insert_with(Instant::now);
             let keyed = self.leg.presented();
-            if !keyed && self.due.is_some_and(|d| Instant::now() >= d) {
+            if !keyed && self.due.is_some_and(|d| now >= d) {
                 return Err(ConnError::Timeout);
             }
-            if let Err(e) = self.leg.drive(&self.pairing, &mut cx, self.due) {
+            if let Err(e) = self.leg.drive(&self.pairing, &mut cx, self.due, now) {
                 return Err(self.fail(e));
             }
             if lock(&self.leg.ready).is_empty() {
@@ -1025,11 +1034,13 @@ impl Dialled {
         if !lock(&self.leg.ready).is_empty() {
             return true;
         }
-        if !self.leg.presented() && self.due.is_some_and(|d| Instant::now() >= d) {
+        // One clock reading: the keying bound and the drive both judge by it.
+        let now = Instant::now();
+        if !self.leg.presented() && self.due.is_some_and(|d| now >= d) {
             return true;
         }
         let mut cx = Context::from_waker(waker);
-        if let Err(error) = self.leg.drive(&self.pairing, &mut cx, self.due) {
+        if let Err(error) = self.leg.drive(&self.pairing, &mut cx, self.due, now) {
             self.fail(error);
             return true;
         }
@@ -1122,18 +1133,20 @@ pub(crate) fn composed_body(
         .and_then(|(_, value)| std::str::from_utf8(value).ok())
         .and_then(form_boundary)
         .ok_or(ConnError::Refused)?;
-    let delimiter = [b"\r\n--", boundary.as_bytes()].concat();
+    // The delimiter is `CRLF--boundary`; the description is searched for it in place.
+    const LEAD: &[u8] = b"\r\n--";
+    let boundary = boundary.as_bytes();
     if description
-        .windows(delimiter.len())
-        .any(|w| w == delimiter.as_slice())
+        .windows(LEAD.len() + boundary.len())
+        .any(|w| w.starts_with(LEAD) && w[LEAD.len()..] == *boundary)
     {
         return Err(ConnError::Refused);
     }
-    Ok([body, description, &delimiter, b"--\r\n"].concat())
+    Ok([body, description, LEAD, boundary, b"--\r\n"].concat())
 }
 
 /// The `boundary` of a `multipart/form-data` content type (RFC 7578, RFC 2046 section 5.1.1),
-fn form_boundary(content_type: &str) -> Option<String> {
+fn form_boundary(content_type: &str) -> Option<&str> {
     let mut params = content_type.split(';');
     if !params
         .next()?
@@ -1146,7 +1159,7 @@ fn form_boundary(content_type: &str) -> Option<String> {
         let (name, value) = p.split_once('=')?;
         name.trim()
             .eq_ignore_ascii_case("boundary")
-            .then(|| value.trim().trim_matches('"').to_string())
+            .then(|| value.trim().trim_matches('"'))
     })?;
 
     let fits = (1..=70).contains(&boundary.len())

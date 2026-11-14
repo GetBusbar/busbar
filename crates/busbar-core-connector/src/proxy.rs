@@ -3,7 +3,7 @@
 
 //! THE PROXY ENVIRONMENT, AS EVERY CONNECTOR DIAL HONOURS IT (the engine's proxy behaviour moves
 
-use std::{ffi::OsString, sync::Arc};
+use std::{borrow::Cow, ffi::OsString, sync::Arc};
 
 pub use crate::proxy_route::{ProxyChoice, ProxyHop};
 
@@ -11,30 +11,48 @@ pub use crate::proxy_route::{ProxyChoice, ProxyHop};
 fn redact_userinfo(v: &str) -> String {
     let parts = busbar_contract::net::url_authority(v);
     let (host_port, tail) = (parts.host_port, parts.tail);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the proxy environment is parsed once; its redacted spelling feeds only a refusal"
+    )]
     let shown = if parts.userinfo.is_some() {
         format!("***@{host_port}{tail}")
     } else if tail.contains('@') {
-        "***".to_string()
+        "***".to_owned()
     } else {
         format!("{host_port}{tail}")
     };
-    match parts.scheme {
-        Some(s) => format!("{s}://{shown}"),
-        None => shown,
-    }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the proxy environment is parsed once; its redacted spelling feeds only a refusal"
+    )]
+    let schemed = parts.scheme.map(|s| format!("{s}://{shown}"));
+    schemed.unwrap_or(shown)
 }
 
 /// Parse a proxy env value (`http://[user:pass@]host[:port]`; a bare `host:port` is accepted
 pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
     let shown = redact_userinfo(v);
-    let url = if v.contains("://") {
-        v.to_string()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a bare proxy env value is given its scheme once, as the environment is parsed"
+    )]
+    let url: Cow<'_, str> = if v.contains("://") {
+        Cow::Borrowed(v)
     } else {
-        format!("http://{v}")
+        Cow::Owned(format!("http://{v}"))
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a refusal of the proxy environment, parsed once"
+    )]
     let parsed = url::Url::parse(&url)
         .map_err(|e| format!("proxy env value {shown:?} is not a valid URL: {e}"))?;
     if parsed.scheme() != busbar_contract::http::uri::Scheme::HTTP.as_str() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a refusal of the proxy environment, parsed once"
+        )]
         return Err(format!(
             "proxy env value {shown:?} uses scheme {:?}: only plain http:// CONNECT proxies \
              are supported (an https:// proxy would need TLS-to-proxy, which this tunnel does \
@@ -42,11 +60,19 @@ pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
             parsed.scheme()
         ));
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the proxy host is copied once, as the environment is parsed"
+    )]
     let host = parsed
         .host_str()
         .ok_or_else(|| format!("proxy env value {shown:?} has no host"))?
-        .to_string();
+        .to_owned();
     let port = parsed.port().unwrap_or(80);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the Proxy-Authorization value is spelled once, as the environment is parsed"
+    )]
     let auth = (!parsed.username().is_empty()).then(|| {
         use base64::Engine;
 
@@ -67,6 +93,7 @@ pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
 /// `text` with every `%XX` escape decoded to its byte; a `%` not followed by two hex digits is
 fn percent_decoded(text: &str) -> Vec<u8> {
     let bytes = text.as_bytes();
+    // busbar:expect(bp::fresh_buffer, reason = "config: the proxy userinfo is decoded once, as the environment is parsed")
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -119,6 +146,10 @@ impl ProxyEnvValues {
                 if value.is_empty() {
                     continue;
                 }
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: a refusal of the proxy environment, read once"
+                )]
                 return value
                     .into_string()
                     .map(Some)
@@ -176,14 +207,21 @@ pub const CONNECT_HANDSHAKE: std::time::Duration = std::time::Duration::from_sec
 /// `CONNECT host:port HTTP/1.1` (+ Host, + Proxy-Authorization when configured), the bytes the
 #[must_use]
 pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
-    let mut req = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
-    if let Some(auth) = proxy.proxy_authorization() {
-        req.push_str("Proxy-Authorization: ");
-        req.push_str(auth);
-        req.push_str("\r\n");
-    }
-    req.push_str("\r\n");
-    req.into_bytes()
+    // The connection owns these bytes until the tunnel is written: one exactly sized buffer, the
+    // hop's tail spelled once with the hop.
+    const CONNECT: &[u8] = b"CONNECT ";
+    const HOST: &[u8] = b" HTTP/1.1\r\nHost: ";
+    const EOL: &[u8] = b"\r\n";
+    let tail = proxy.connect_tail().as_bytes();
+    let mut req =
+        Vec::with_capacity(CONNECT.len() + HOST.len() + EOL.len() + 2 * target.len() + tail.len());
+    req.extend_from_slice(CONNECT);
+    req.extend_from_slice(target.as_bytes());
+    req.extend_from_slice(HOST);
+    req.extend_from_slice(target.as_bytes());
+    req.extend_from_slice(EOL);
+    req.extend_from_slice(tail);
+    req
 }
 
 /// What the proxy has answered so far to a CONNECT for `addr` (`host:port`): `Ok(None)` = its head is not
@@ -201,6 +239,10 @@ pub fn connect_answer(head: &[u8], addr: &str) -> Result<Option<usize>, String> 
         .nth(1)
         .is_some_and(|code| code.first() == Some(&b'2') && code.len() == 3);
     if !status_2xx {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the proxy refused the tunnel; the refusal quotes its status line"
+        )]
         return Err(format!(
             "proxy refused CONNECT {addr}: {}",
             String::from_utf8_lossy(line)

@@ -154,3 +154,6 @@ crate-type = ["cdylib"]
 name = "neutral_export_routes_door"
 path = "tests/fixtures/neutral_export_routes_door.rs"
 crate-type = ["cdylib"]
+
+[lints]
+workspace = true

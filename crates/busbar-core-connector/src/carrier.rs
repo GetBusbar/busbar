@@ -29,7 +29,10 @@ pub trait Side: Send + Sync {
 }
 
 /// One carrier op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "each variant is the op it names, its `in` and its `out`"
+)]
 #[derive(Debug)]
 pub enum Carry<'a> {
     Listen(&'a mut ListenIn, &'a mut ListenOut),
@@ -63,7 +66,12 @@ fn op_of(c: &Carry<'_>) -> u8 {
 /// The text of a crossing that did not answer READY.
 #[must_use]
 pub fn text(c: &Crossed) -> String {
-    String::from_utf8_lossy(c.error.as_deref().unwrap_or_default()).into_owned()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a crossing that did not answer READY is spelled for its refusal"
+    )]
+    let text = String::from_utf8_lossy(c.error.as_deref().unwrap_or_default()).into_owned();
+    text
 }
 
 /// A side as its holder drives it: the side, and the op pending on it (`0` = none).
@@ -388,7 +396,12 @@ impl Carried {
 
     /// The dial's connect settled (the carrier's `flush` on a fresh dial): `Ready(Err)` with the
     pub fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), String>> {
-        self.poll_flush(cx).map_err(|e| e.to_string())
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a failed connect is answered with its sentence"
+        )]
+        let connected = self.poll_flush(cx).map_err(|e| e.to_string());
+        connected
     }
 
     /// Every byte the carrier took is on the wire (`flush`).

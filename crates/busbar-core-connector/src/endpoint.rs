@@ -55,9 +55,14 @@ pub fn named(target: &str) -> Result<(), EndpointRefusal> {
 
 /// The host `target` names, or the refusal naming the target.
 fn host_of(target: &str) -> Result<String, EndpointRefusal> {
-    target_host(target).ok_or_else(|| EndpointRefusal::NoHost {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refusal names the target that named no host"
+    )]
+    let host = target_host(target).ok_or_else(|| EndpointRefusal::NoHost {
         target: target.to_owned(),
-    })
+    });
+    host
 }
 
 #[cfg(test)]

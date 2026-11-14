@@ -1,0 +1,96 @@
+# Core copy of the fleet bad-pattern rule block. The source is GetBusbar/busbar-release template/clippy.toml;
+# this block is byte-identical to it and changes only together with it.
+
+# --- Fleet bad-pattern rules (one source: GetBusbar/busbar-release template/clippy.toml; core's clippy.toml
+# is a byte-identical copy of this block). A known-bad pattern must not pass CI.
+# Inert unless a module tree carries the request-path marker: [workspace.lints.clippy] sets the three
+# disallowed_* lints to "allow" and the marker raises them to deny:
+#   #[cfg_attr(not(test), deny(clippy::disallowed_macros, clippy::disallowed_methods, clippy::disallowed_types, clippy::redundant_clone, clippy::format_push_string, clippy::needless_collect, clippy::or_fun_call, clippy::needless_pass_by_value, clippy::allow_attributes, clippy::allow_attributes_without_reason))]
+#   mod door;
+# busbar-bad-patterns (busbar-release tools/bad-patterns, run by CI beside clippy) checks what this list
+# cannot express (allocating clone/From/Into, fresh per-call buffers, scans over state, repeated clock
+# reads) and the shape of every escape: one #[expect(<lint>, reason = "error|boot|config: ..")] on a
+# single cold statement, never on a module, fn or impl.
+disallowed-macros = [
+  { path = "serde_json::json", reason = "builds a Value tree per call; serialize a borrowed #[derive(Serialize)] struct into the op's reused buffer", allow-invalid = true },
+  { path = "anyhow::anyhow", reason = "formats and boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
+  { path = "anyhow::bail", reason = "formats and boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
+  { path = "anyhow::format_err", reason = "formats and boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
+  { path = "anyhow::ensure", reason = "formats and boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
+]
+disallowed-methods = [
+  # Text and bytes allocated per call. format! and std::fmt::format(format_args!(..)) both land here.
+  { path = "alloc::fmt::format", reason = "format!/fmt::format allocate a String per call; write! into the op's reused buffer, or use a &'static str" },
+  { path = "alloc::string::ToString::to_string", reason = "allocates a String per call; borrow the &str, use a &'static str, or write! into the op's reused buffer" },
+  { path = "alloc::borrow::ToOwned::to_owned", reason = "allocates an owned copy per call; borrow it (&str, &[u8], Cow::Borrowed)" },
+  { path = "slice::to_vec", reason = "allocates a Vec copy per call; borrow the slice, or extend the op's reused buffer" },
+  { path = "str::to_lowercase", reason = "allocates a String per call; compare with eq_ignore_ascii_case, or lower into the op's reused buffer" },
+  { path = "str::to_uppercase", reason = "allocates a String per call; compare with eq_ignore_ascii_case, or write into the op's reused buffer" },
+  { path = "str::to_ascii_lowercase", reason = "allocates a String per call; compare with eq_ignore_ascii_case, or make_ascii_lowercase in the op's reused buffer" },
+  { path = "str::to_ascii_uppercase", reason = "allocates a String per call; compare with eq_ignore_ascii_case, or make_ascii_uppercase in the op's reused buffer" },
+  { path = "slice::to_ascii_lowercase", reason = "allocates a Vec per call; eq_ignore_ascii_case, or make_ascii_lowercase in the op's reused buffer" },
+  { path = "slice::to_ascii_uppercase", reason = "allocates a Vec per call; eq_ignore_ascii_case, or make_ascii_uppercase in the op's reused buffer" },
+  { path = "str::repeat", reason = "allocates a String per call; write into the op's reused buffer" },
+  { path = "slice::repeat", reason = "allocates a Vec per call; extend the op's reused buffer" },
+  { path = "str::replace", reason = "allocates a String per call; write the pieces into the op's reused buffer" },
+  { path = "str::replacen", reason = "allocates a String per call; write the pieces into the op's reused buffer" },
+  { path = "slice::concat", reason = "allocates per call; extend the op's reused buffer piece by piece" },
+  { path = "slice::join", reason = "allocates per call; write the pieces and separators into the op's reused buffer" },
+  { path = "alloc::string::String::into_boxed_str", reason = "shrinks with a realloc per call; keep the String, or use a &'static str" },
+  { path = "alloc::vec::Vec::into_boxed_slice", reason = "shrinks with a realloc per call; keep the Vec, or borrow the slice" },
+  { path = "alloc::borrow::Cow::into_owned", reason = "allocates when borrowed; keep the Cow borrowed" },
+  { path = "alloc::borrow::Cow::to_mut", reason = "allocates when borrowed; write into the op's reused buffer" },
+  { path = "core::iter::Iterator::collect", reason = "allocates a collection per call; iterate lazily, or extend the op's reused buffer (clear + extend)" },
+  { path = "core::iter::FromIterator::from_iter", reason = "allocates a collection per call; iterate lazily, or extend the op's reused buffer" },
+  { path = "anyhow::Error::msg", reason = "boxes an error per call; return a typed error or a &'static str refusal", allow-invalid = true },
+  # JSON DOM and fresh serializer output.
+  { path = "serde_json::to_value", reason = "builds a Value tree per call; serialize the borrowed struct directly", allow-invalid = true },
+  { path = "serde_json::from_value", reason = "walks a Value tree; deserialize the bytes straight into the target type", allow-invalid = true },
+  { path = "serde_json::to_vec", reason = "allocates a fresh Vec per call; serde_json::to_writer into the op's reused buffer", allow-invalid = true },
+  { path = "serde_json::to_string", reason = "allocates a fresh String per call; serde_json::to_writer into the op's reused buffer", allow-invalid = true },
+  { path = "serde_json::to_vec_pretty", reason = "allocates a fresh Vec per call; to_writer into the op's reused buffer", allow-invalid = true },
+  { path = "serde_json::to_string_pretty", reason = "allocates a fresh String per call; to_writer into the op's reused buffer", allow-invalid = true },
+  # Stable sorts allocate scratch; O(n) sweeps over state.
+  { path = "slice::sort", reason = "stable sort allocates a scratch buffer; sort_unstable" },
+  { path = "slice::sort_by", reason = "stable sort allocates a scratch buffer; sort_unstable_by" },
+  { path = "slice::sort_by_key", reason = "stable sort allocates a scratch buffer; sort_unstable_by_key" },
+  { path = "slice::sort_by_cached_key", reason = "allocates a key buffer per call; sort_unstable_by_key" },
+  { path = "alloc::vec::Vec::retain", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
+  { path = "alloc::vec::Vec::retain_mut", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
+  { path = "alloc::vec::Vec::remove", reason = "O(n) shift per call; swap_remove, VecDeque::pop_front, or a map keyed by id" },
+  { path = "alloc::collections::VecDeque::retain", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
+  { path = "alloc::collections::VecDeque::retain_mut", reason = "O(n) sweep in a request-path op; index by key, or expire in the tick" },
+  { path = "alloc::collections::VecDeque::remove", reason = "O(n) shift per call; pop_front/pop_back, or a map keyed by id" },
+  { path = "std::collections::HashMap::retain", reason = "O(n) sweep in a request-path op; remove by key, or expire in the tick" },
+  { path = "std::collections::HashSet::retain", reason = "O(n) sweep in a request-path op; remove by key, or expire in the tick" },
+  { path = "alloc::collections::BTreeMap::retain", reason = "O(n) sweep in a request-path op; remove by key or range, or expire in the tick" },
+  { path = "alloc::collections::BTreeSet::retain", reason = "O(n) sweep in a request-path op; remove by key or range, or expire in the tick" },
+  # Raw OS clock reads. Read the shared clock once at the op's entry and pass the value down
+  # (busbar-bad-patterns BP05 then allows one shared-clock read per fn, none inside a loop).
+  { path = "std::time::Instant::now", reason = "OS clock read on the request path; take the op's one shared-clock reading passed down" },
+  { path = "std::time::Instant::elapsed", reason = "reads the OS clock; subtract from the op's one shared-clock reading" },
+  { path = "std::time::SystemTime::now", reason = "OS clock read on the request path; take the op's one shared-clock reading passed down" },
+  { path = "std::time::SystemTime::elapsed", reason = "reads the OS clock; subtract from the op's one shared-clock reading" },
+  { path = "tokio::time::Instant::now", reason = "OS clock read on the request path; take the op's one shared-clock reading", allow-invalid = true },
+  { path = "tokio::time::Instant::elapsed", reason = "reads the OS clock; subtract from the op's one shared-clock reading", allow-invalid = true },
+  { path = "chrono::Utc::now", reason = "OS clock read on the request path; take the op's one shared-clock reading", allow-invalid = true },
+  { path = "chrono::Local::now", reason = "OS clock read and a time-zone lookup per call; take the op's one shared-clock reading", allow-invalid = true },
+  { path = "time::OffsetDateTime::now_utc", reason = "OS clock read on the request path; take the op's one shared-clock reading", allow-invalid = true },
+  # Kernel entropy per call.
+  { path = "getrandom::fill", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
+  { path = "getrandom::getrandom", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
+  { path = "getrandom::u32", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
+  { path = "getrandom::u64", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
+]
+disallowed-types = [
+  # SipHash by default, in every spelling (new, default, from, collect, with_capacity): naming the std
+  # type is what is banned. foldhash::HashMap/HashSet are the shared aliases (per-process seeded).
+  { path = "std::collections::HashMap", reason = "default SipHash hasher; use foldhash::HashMap (HashMapExt::new / ::default)" },
+  { path = "std::collections::HashSet", reason = "default SipHash hasher; use foldhash::HashSet (HashSetExt::new / ::default)" },
+  { path = "std::hash::RandomState", reason = "SipHash; use foldhash::fast::RandomState" },
+  { path = "std::hash::DefaultHasher", reason = "SipHash; use foldhash::fast::FoldHasher" },
+  { path = "serde_json::Value", reason = "a JSON DOM per call; deserialize into a borrowed struct, or RawValue for pass-through", allow-invalid = true },
+  { path = "serde_json::Map", reason = "a JSON DOM per call; serialize a borrowed struct", allow-invalid = true },
+  { path = "rand::rngs::OsRng", reason = "a getrandom syscall per draw; a per-thread userspace CSPRNG seeded once", allow-invalid = true },
+  { path = "rand_core::OsRng", reason = "a getrandom syscall per draw; a per-thread userspace CSPRNG seeded once", allow-invalid = true },
+]

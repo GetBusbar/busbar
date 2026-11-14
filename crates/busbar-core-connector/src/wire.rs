@@ -21,9 +21,17 @@ impl HostWire {
     pub fn new(door: &dyn FramerDoor) -> Result<Self, String> {
         let facts = door.facts();
         let Some(&key) = facts.claims.first() else {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a load-time refusal of a transport entry"
+            )]
             return Err(format!("transport `{}` states no claim", facts.name));
         };
         if !facts.composes_over.is_empty() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a load-time refusal of a transport entry"
+            )]
             return Err(format!(
                 "transport `{}` names a transport it composes over; no transport names another \
                  (the carrier is the connector's choice from the target's scheme)",
