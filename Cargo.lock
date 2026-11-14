@@ -282,6 +282,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-migrations",
  "busbar-plugin-loader",
+ "busbar-yaml",
  "bytes",
  "core_affinity",
  "getrandom 0.3.4",
@@ -294,7 +295,6 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "sha2 0.10.9",
  "socket2",
  "tikv-jemalloc-ctl",
@@ -313,6 +313,7 @@ dependencies = [
  "async-trait",
  "aws-lc-sys",
  "base64 0.22.1",
+ "busbar-yaml",
  "bytes",
  "futures",
  "getrandom 0.3.4",
@@ -330,7 +331,6 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "sha2 0.10.9",
  "smallvec",
  "syn 2.0.117",
@@ -350,6 +350,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-yaml",
  "flate2",
  "http-body-util",
  "jsonschema",
@@ -357,7 +358,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -404,6 +404,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plugin-loader",
+ "busbar-yaml",
  "bytes",
  "futures",
  "http",
@@ -415,7 +416,6 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -439,6 +439,7 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
+ "busbar-yaml",
  "bytes",
  "crc32fast",
  "criterion",
@@ -462,7 +463,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
- "serde_yaml_ng",
  "sha2 0.10.9",
  "sonic-rs",
  "tikv-jemalloc-ctl",
@@ -540,11 +540,11 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
+ "busbar-yaml",
  "getrandom 0.3.4",
  "hex",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "sha2 0.10.9",
  "tokio",
  "zeroize",
@@ -577,6 +577,18 @@ dependencies = [
  "tungstenite",
  "windows-sys 0.61.2",
  "zeroize",
+]
+
+[[package]]
+name = "busbar-yaml"
+version = "1.6.0"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2550,19 +2562,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml_ng"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3093,12 +3092,6 @@ checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
 dependencies = [
  "tinyvec",
 ]
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

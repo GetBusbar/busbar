@@ -161,7 +161,8 @@ deny = [
     { crate = "hyper:<1", reason = "HTTP is hyper 1; no hyper 0.14 stack" },
     { crate = "rustls:<0.23", reason = "one rustls major (0.23) fleet-wide" },
     { crate = "ring:<0.17", reason = "one ring major (0.17) fleet-wide" },
-    { crate = "serde_yaml", reason = "unmaintained; busbar uses serde_yaml_ng" },
+    { crate = "serde_yaml", reason = "unmaintained; YAML is busbar's busbar-yaml (through busbar-contract)" },
+    { crate = "unsafe-libyaml", reason = "unmaintained C translation (RUSTSEC-2024-0449); busbar-yaml is a safe port of libyaml" },
 ]
 # Duplicate versions the fleet accepts beyond busbar's own. multiple-versions is "deny" (OWNER
 # 2026-10-02: no plugin may drag in a second version of anything busbar already uses); busbar-release's
