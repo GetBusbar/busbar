@@ -1309,19 +1309,41 @@ async fn build_app_native(
         diag_error!(OPEN_RELAY_NO_AUTH, "{banner}");
     }
 
+    // One instance per identity provider for this build, shared by every role that names it
+    // (WASTE-AUTH-SECRETS W1): the chain, admin_auth and the hosted login methods look it up.
+    let mut auth_instances = crate::auth::instances::AuthInstances::default();
+    let open_auth_axis = || crate::preflight::auth_axis(plugin_registry.clone());
     let auth_mw = Arc::new(
-        AuthMiddleware::new(&auth_cfg, &plugin_registry, &secret_resolver)
-            .map_err(|e| format!("auth chain construction failed: {e}"))?,
+        AuthMiddleware::build_on(
+            &auth_cfg,
+            plugin_registry.as_ref(),
+            &secret_resolver,
+            &mut auth_instances,
+            &open_auth_axis,
+        )
+        .map_err(|e| format!("auth chain construction failed: {e}"))?,
     );
 
-    let mut admin_modules =
-        crate::auth::AdminAuthChain::build(&auth_cfg, &plugin_registry, &secret_resolver)
-            .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    let mut admin_modules = crate::auth::AdminAuthChain::build_on(
+        &auth_cfg,
+        plugin_registry.as_ref(),
+        &secret_resolver,
+        &mut auth_instances,
+        &open_auth_axis,
+    )
+    .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
 
     let login_methods = Arc::new(
-        crate::auth::login::LoginMethods::build(&auth_cfg, &plugin_registry, &secret_resolver)
-            .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
+        crate::auth::login::LoginMethods::build_on(
+            &auth_cfg,
+            plugin_registry.as_ref(),
+            &secret_resolver,
+            &mut auth_instances,
+            &open_auth_axis,
+        )
+        .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
     );
+    drop(auth_instances);
 
     let store: Arc<dyn busbar_kernel::store::LaneRuntime> = match prior {
         Some(p) => Arc::new(HealthState::new_with_limits_restored(

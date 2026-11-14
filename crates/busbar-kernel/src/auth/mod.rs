@@ -765,6 +765,16 @@ impl AdminAuthChain {
                              loaded as a `kind: auth` plugin: {e}"
                         )
                     };
+                    let calls = instances.instance(name, || {
+                        let mut resolved = instances::provider_settings(
+                            cfg,
+                            name,
+                            other,
+                            &entry.settings,
+                            registry,
+                            secret_resolver,
+                            |e| format!("identity-providers.{name} settings: {e}"),
+                        )?;
 
                     let axis = match &axis {
                         Some(axis) => axis.clone(),
@@ -777,9 +787,21 @@ impl AdminAuthChain {
                                 crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
                                     refused(format!("no `kind: auth` plugin answers to '{other}'"))
                                 })?;
-                            axis.insert(opened).clone()
+                                axis.insert(opened).clone()
+                            }
+                        };
+
+                        if !axis.answers(other) {
+                            return Err(refused(auth_refusal(registry, other)));
                         }
-                    };
+                        instances::lend_login_secret(
+                            cfg,
+                            name,
+                            other,
+                            registry,
+                            secret_resolver,
+                            &mut resolved,
+                        )?;
 
                     if !axis.answers(other) {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
@@ -830,6 +852,23 @@ impl AuthMiddleware {
         registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
+        Self::build_on(
+            cfg,
+            registry.as_ref(),
+            secret_resolver,
+            &mut instances::AuthInstances::default(),
+            &|| crate::preflight::auth_axis(registry.clone()),
+        )
+    }
+
+    /// [`Self::new`] over the build's shared `instances` (WASTE-AUTH-SECRETS W1).
+    pub(crate) fn build_on(
+        cfg: &AuthCfg,
+        registry: &dyn busbar_contract::plugin_rows::PluginRows,
+        secret_resolver: &crate::config::secret::SecretResolver,
+        instances: &mut instances::AuthInstances,
+        open_axis: &dyn Fn() -> Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
+    ) -> Result<Self, String> {
         let mut keys_in_chain = false;
         // busbar:expect(bp::fresh_buffer, reason = "config: the configured auth chain, built once at config load")
         let mut chain: Vec<ChainEntry> = Vec::new();
@@ -874,9 +913,22 @@ impl AuthMiddleware {
                                 crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
                                     refused(format!("no `kind: auth` plugin answers to '{other}'"))
                                 })?;
-                            axis.insert(opened).clone()
+                                axis.insert(opened).clone()
+                            }
+                        };
+
+                        if !axis.answers(other) {
+                            return Err(refused(auth_refusal(registry, other)));
                         }
-                    };
+                        instances::lend_login_secret(
+                            cfg,
+                            name,
+                            other,
+                            registry,
+                            secret_resolver,
+                            &mut resolved,
+                        )?;
+                        let opened = axis.open(other, &instances::instance_label(name), &resolved);
 
                     if !axis.answers(other) {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
@@ -916,7 +968,7 @@ impl AuthMiddleware {
         if keys_in_chain {
             let axis = match &axis {
                 Some(axis) => Some(axis.clone()),
-                None => crate::preflight::auth_axis(registry.clone()),
+                None => open_axis(),
             };
             for module in axis.iter().flat_map(|a| a.credential_readers()) {
                 #[expect(
@@ -965,7 +1017,7 @@ impl AuthMiddleware {
 
         let carriers = match &axis {
             Some(axis) => axis.default_inbound_style()?,
-            None => crate::preflight::auth_axis(registry.clone())
+            None => open_axis()
                 .map(|axis| axis.default_inbound_style())
                 .transpose()?
                 .unwrap_or_default(),
@@ -979,8 +1031,7 @@ impl AuthMiddleware {
             })
             .or_else(|| match &axis {
                 Some(axis) => axis.issued_credential(),
-                None => crate::preflight::auth_axis(registry.clone())
-                    .and_then(|axis| axis.issued_credential()),
+                None => open_axis().and_then(|axis| axis.issued_credential()),
             });
         Ok(Self {
             keys_in_chain,
@@ -1152,16 +1203,8 @@ impl AuthMiddleware {
         for entry in self
             .chain
             .iter()
-            .filter(|e| module.is_none_or(|m| m == e.provider))
-        {
-            match entry.calls.refresh() {
-                Ok(count) => flushed += count,
-                Err(error) => {
-                    failure.get_or_insert(error);
-                }
-            }
-        }
-        failure.map_or(Ok(flushed), Err)
+            .filter(move |e| provider.is_none_or(|m| m == e.provider))
+            .map(|e| &e.calls)
     }
 
     pub async fn run_chain_on_request_path(
