@@ -111,6 +111,10 @@ h2 = { workspace = true }
 log = { workspace = true }
 tungstenite = { workspace = true }
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+# Lock alignment (check_shared_core_resolution): dist/default unifies digest 0.11 with `mac` and
+# `oid` (its pinned postgres-protocol brings hmac 0.13 and default sha2 0.11), so the root lock must
+# resolve the same digest for every shared core crate. Dev-only: plugins never build it.
+digest = { version = "0.11", default-features = false, features = ["mac", "oid"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

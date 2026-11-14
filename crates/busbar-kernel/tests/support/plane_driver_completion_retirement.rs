@@ -29,7 +29,12 @@ struct Control {
     allow_sibling: AtomicBool,
     allow_settled: AtomicBool,
     wakers: Mutex<Vec<Waker>>,
+    /// The real loader flights behind each gate (primary or not), held weakly: the driver stays
+    /// their only owner.
+    flights: Mutex<Vec<(bool, std::sync::Weak<SharedFlight>)>>,
 }
+
+type SharedFlight = Mutex<Box<dyn PieceInFlight>>;
 
 fn controls() -> &'static Mutex<HashMap<usize, Arc<Control>>> {
     static CONTROLS: OnceLock<Mutex<HashMap<usize, Arc<Control>>>> = OnceLock::new();
@@ -148,13 +153,13 @@ extern "C" fn door() -> &'static Door {
 }
 
 struct GatedFlight {
-    inner: Box<dyn PieceInFlight>,
+    inner: Arc<SharedFlight>,
     control: Arc<Control>,
     primary: bool,
 }
 impl Future for GatedFlight {
     type Output = Answered;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Answered> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Answered> {
         let allowed = if self.primary {
             &self.control.allow_primary
         } else {
@@ -164,11 +169,14 @@ impl Future for GatedFlight {
             self.control.wakers.lock().unwrap().push(cx.waker().clone());
             return Poll::Pending;
         }
-        let answer = Pin::new(&mut *self.inner).poll(cx);
+        let mut inner = self.inner.lock().unwrap();
+        let answer = Pin::new(&mut **inner).poll(cx);
+        let retirement = inner.retirement();
+        drop(inner);
         if answer.is_ready() {
             if self.primary {
                 self.control.primary_seen.store(true, Ordering::SeqCst);
-            } else if self.inner.retirement() == Some(Retirement::UnitCompleted) {
+            } else if retirement == Some(Retirement::UnitCompleted) {
                 self.control.sibling_seen.store(true, Ordering::SeqCst);
             }
         }
@@ -178,19 +186,54 @@ impl Future for GatedFlight {
 impl PieceInFlight for GatedFlight {
     fn settled(&mut self) -> Option<Answered> {
         if self.control.allow_settled.load(Ordering::SeqCst) {
-            self.inner.settled()
+            self.inner.lock().unwrap().settled()
         } else {
             None
         }
     }
     fn retirement(&self) -> Option<Retirement> {
-        self.inner.retirement()
+        self.inner.lock().unwrap().retirement()
     }
     fn out(&self) -> Option<OnPieceOut> {
-        self.inner.out()
+        self.inner.lock().unwrap().out()
     }
     fn cancel_writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {
-        self.inner.cancel_writes()
+        self.inner.lock().unwrap().cancel_writes()
+    }
+}
+
+/// Wait until the loader's worker has published the answers of both gated flights (the primary
+/// and its far-end sibling), without letting the driver see either of them.
+///
+/// The primary's `piece` callback runs inside its crossing, and the worker retires the pending
+/// sibling in the same pass that ends that crossing; both answers are published only after the
+/// worker has let go of what the crossing held (`put_after_retirement`). So `primary_crossed`
+/// says nothing about whether `settled()` is already Some. A test that asserts what a fixed
+/// number of synchronous sweeps achieves must first wait for that publication explicitly.
+/// Probing the real flight is side-effect free: `settled()` caches the answer the driver later
+/// reads through the gate.
+fn await_published(c: &Control) {
+    let flights = c.flights.lock().unwrap().clone();
+    let mut kinds: Vec<bool> = flights.iter().map(|(primary, _)| *primary).collect();
+    kinds.sort_unstable();
+    assert_eq!(
+        kinds,
+        [false, true],
+        "exactly the primary and its far-end sibling are gated"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    for (primary, flight) in flights {
+        let flight = flight
+            .upgrade()
+            .expect("a buried flight is still owned by the driver");
+        while flight.lock().unwrap().settled().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never published the {} answer",
+                if primary { "primary" } else { "sibling" }
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 
@@ -283,6 +326,12 @@ impl PlaneCalls for Calls {
         let gated = primary || i.from == FROM_FAR_END;
         let inner = self.actual.on_piece(t, i, o, lent);
         if gated {
+            let inner = Arc::new(Mutex::new(inner));
+            self.control
+                .flights
+                .lock()
+                .unwrap()
+                .push((primary, Arc::downgrade(&inner)));
             Box::new(GatedFlight {
                 inner,
                 control: self.control.clone(),
@@ -511,13 +560,15 @@ async fn completion_retirement_dropped_before_consumption_sweeps_without_duplica
     advance_until(&mut running, || c.far_pending.load(Ordering::SeqCst)).await;
     drop(send);
     advance_until(&mut running, || c.primary_crossed.load(Ordering::SeqCst)).await;
-    // Neither kernel leg consumed its result. Hide settled() until both flights are buried,
-    // then let the real sweeper observe the primary and host-retired sibling together.
+    // Neither kernel leg consumed its result. Hide settled() until both flights are buried and
+    // the worker has published both answers, then let the real sweeper observe the primary and
+    // the retired sibling together.
     assert!(!c.primary_seen.load(Ordering::SeqCst));
     assert!(!c.sibling_seen.load(Ordering::SeqCst));
     drop(running);
     drop(units);
     assert_eq!(driver.buried(), 2);
+    await_published(&c);
     c.allow_settled.store(true, Ordering::SeqCst);
     for _ in 0..4 {
         driver.sweep();
