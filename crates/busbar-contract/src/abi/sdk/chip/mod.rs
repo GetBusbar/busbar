@@ -40,8 +40,7 @@ fn b64(bytes: &[u8]) -> Bytes {
 }
 
 fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> Zeroizing<[u8; 32]> {
-    let mut first = Zeroizing::new(salt.to_vec());
-    first.extend_from_slice(&1_u32.to_be_bytes());
+    let first = Zeroizing::new([salt, &1_u32.to_be_bytes()].concat());
     let key = HmacSha256Key::new(password);
     let mut u = key.mac(&first);
     let mut acc = Zeroizing::new(*u);
@@ -62,21 +61,19 @@ impl Cred {
 
     /// `Bearer <credential>`.
     pub fn bearer(&self) -> Seal {
-        let mut v = Zeroizing::new(b"Bearer ".to_vec());
-        v.extend_from_slice(self.wire());
-        self.seal(v)
+        // Exact size in one allocation (`concat`): the wiping buffer never grows (LR-117).
+        self.seal(Zeroizing::new(
+            [b"Bearer ".as_slice(), self.wire()].concat(),
+        ))
     }
 
     /// `Basic base64(user:credential)` (RFC 7617; the user's octets as they are).
     pub fn basic(&self, user: impl AsRef<[u8]>) -> Seal {
         let user = user.as_ref();
-        let mut pair = Zeroizing::new(Vec::with_capacity(user.len() + 1 + self.len()));
-        pair.extend_from_slice(user);
-        pair.push(b':');
-        pair.extend_from_slice(self.wire());
-        let mut v = Zeroizing::new(b"Basic ".to_vec());
-        v.extend_from_slice(&b64(&pair));
-        self.seal(v)
+        let pair = Zeroizing::new([user, b":", self.wire()].concat());
+        self.seal(Zeroizing::new(
+            [b"Basic ".as_slice(), b64(&pair).as_slice()].concat(),
+        ))
     }
 
     /// Whether `presented` equals the credential, compared over SHA-256 digests so neither content

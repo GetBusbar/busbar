@@ -79,13 +79,14 @@ fn pem_body(pem: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn mgf1_sha1(seed: &[u8], len: usize) -> Zeroizing<Vec<u8>> {
-    let mut out = Zeroizing::new(Vec::with_capacity(len + 20));
+    // Exact size, filled in place: the wiping buffer never grows (LINT-RULES LR-117).
+    let mut out = Zeroizing::new(vec![0_u8; len]);
     let mut counter = 0_u32;
-    while out.len() < len {
-        out.extend_from_slice(&sha1(&[seed, &counter.to_be_bytes()])[..]);
+    for chunk in out.chunks_mut(20) {
+        let digest = sha1(&[seed, &counter.to_be_bytes()]);
+        chunk.copy_from_slice(&digest[..chunk.len()]);
         counter += 1;
     }
-    out.truncate(len);
     out
 }
 
@@ -113,11 +114,12 @@ pub(crate) fn oaep_sha1(message: &[u8], pem: &[u8], seed: &[u8; 20]) -> Result<V
     if k < 2 * 20 + 2 || message.len() > k - 2 * 20 - 2 {
         return Err(Refused("the password is too long for the server's RSA key"));
     }
-    let mut db = Zeroizing::new(Vec::with_capacity(k - 21));
-    db.extend_from_slice(&sha1(&[b""])[..]);
-    db.resize(k - 21 - message.len() - 1, 0);
-    db.push(1);
-    db.extend_from_slice(message);
+    // DB = lHash || PS (zeros) || 0x01 || M, exact size and filled in place (LR-117).
+    let mut db = Zeroizing::new(vec![0_u8; k - 21]);
+    db[..20].copy_from_slice(&sha1(&[b""])[..]);
+    let one = k - 21 - message.len() - 1;
+    db[one] = 1;
+    db[one + 1..].copy_from_slice(message);
     for (d, m) in db.iter_mut().zip(mgf1_sha1(seed, k - 21).iter()) {
         *d ^= m;
     }
@@ -125,10 +127,7 @@ pub(crate) fn oaep_sha1(message: &[u8], pem: &[u8], seed: &[u8; 20]) -> Result<V
     for (s, m) in masked_seed.iter_mut().zip(mgf1_sha1(&db, 20).iter()) {
         *s ^= m;
     }
-    let mut em = Zeroizing::new(Vec::with_capacity(k));
-    em.push(0);
-    em.extend_from_slice(&masked_seed[..]);
-    em.extend_from_slice(&db);
+    let em = Zeroizing::new([&[0_u8][..], &masked_seed[..], &db[..]].concat());
     let c = BigUint::from_bytes_be(&em).modpow(&e, &n);
     let mut out = c.to_bytes_be();
     if out.len() < k {

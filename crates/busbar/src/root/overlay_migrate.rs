@@ -227,10 +227,10 @@ pub async fn run(
     busbar_kernel::config_validate::validate(&effective)
         .map_err(|_| "migrated effective configuration failed validation")?;
     let mut source = zeroize::Zeroizing::new(Vec::new());
-    source.extend_from_slice(b"busbar.overlay.source.1.5.5\0");
-    source.extend_from_slice(&(old_bytes.len() as u64).to_be_bytes());
-    source.extend_from_slice(&old_bytes);
-    source.extend_from_slice(&bytes);
+    busbar_contract::secure::append(&mut source, b"busbar.overlay.source.1.5.5\0");
+    busbar_contract::secure::append(&mut source, &(old_bytes.len() as u64).to_be_bytes());
+    busbar_contract::secure::append(&mut source, &old_bytes);
+    busbar_contract::secure::append(&mut source, &bytes);
     let mut source_sha256 = [0; 32];
     hex::decode_to_slice(busbar_contract::sha256_hex(&source), &mut source_sha256)
         .map_err(|_| "cannot digest overlay migration source")?;

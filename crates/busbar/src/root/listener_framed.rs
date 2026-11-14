@@ -454,7 +454,8 @@ impl StagedUpgrade {
     fn take_incoming(&mut self) -> zeroize::Zeroizing<Vec<u8>> {
         let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(self.incoming_len));
         for chunk in self.incoming.drain(..) {
-            bytes.extend_from_slice(&chunk);
+            // Reserved to the total, so the wiping buffer never grows (LINT-RULES LR-117).
+            busbar_contract::secure::append(&mut bytes, &chunk);
         }
         self.incoming_len = 0;
         bytes

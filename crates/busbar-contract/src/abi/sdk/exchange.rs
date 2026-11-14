@@ -536,29 +536,42 @@ impl Exchange {
             .map(|(name, value)| line(name, value))
             .chain(sealed.iter().map(|(_, name, seal)| line(name, seal.wire())))
             .sum();
-        let mut head = Zeroizing::new(Vec::with_capacity(m + t + block));
-        head.extend_from_slice(&request.method);
-        head.extend_from_slice(&request.target);
-        let block_at = head.len();
+        // Exact size (method, target and every field line), filled in place: the wiping buffer
+        // never grows (LINT-RULES LR-117).
+        fn fill(head: &mut [u8], len: &mut usize, parts: &[&[u8]]) {
+            for part in parts {
+                head[*len..*len + part.len()].copy_from_slice(part);
+                *len += part.len();
+            }
+        }
+        fn put(head: &mut [u8], len: &mut usize, name: &[u8], value: &[u8]) {
+            fill(
+                head,
+                len,
+                &[name, fields::SEPARATOR, value, fields::LINE_END],
+            );
+        }
+        let mut head = Zeroizing::new(vec![0_u8; m + t + block]);
+        let mut len = 0;
+        fill(
+            &mut head,
+            &mut len,
+            &[&request.method[..], &request.target[..]],
+        );
+        let block_at = len;
         let mut sealed_lines = Vec::new();
-        let put = |head: &mut Vec<u8>, name: &[u8], value: &[u8]| {
-            head.extend_from_slice(name);
-            head.extend_from_slice(fields::SEPARATOR);
-            head.extend_from_slice(value);
-            head.extend_from_slice(fields::LINE_END);
-        };
         let mut index = 0;
         for at in 0..=request.fields.len() {
             for (_, name, seal) in sealed
                 .iter()
                 .filter(|(s_at, ..)| (*s_at).min(request.fields.len()) == at)
             {
-                put(&mut head, name, seal.wire());
+                put(&mut head, &mut len, name, seal.wire());
                 sealed_lines.push(index);
                 index += 1;
             }
             if let Some((name, value)) = request.fields.get(at) {
-                put(&mut head, name, value);
+                put(&mut head, &mut len, name, value);
                 index += 1;
             }
         }
@@ -566,7 +579,7 @@ impl Exchange {
             kind: REQUEST_HEAD,
             method: span(0, m),
             target: span(m, t),
-            fields: span(block_at, head.len() - block_at),
+            fields: span(block_at, len - block_at),
             timeout_ms: request.timeout_ms,
             ..RequestPiece::ZERO
         });

@@ -187,8 +187,8 @@ pub(crate) unsafe fn prepare(
         .filter(|&n| n <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize)
         .ok_or(())?;
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(len));
-    bytes.extend_from_slice(prior);
-    bytes.extend_from_slice(&added);
+    busbar_contract::secure::append(&mut bytes, prior);
+    busbar_contract::secure::append(&mut bytes, &added);
     let bytes = Arc::new(bytes);
     head.extensions = Blob {
         ptr: bytes.as_ptr(),
