@@ -951,6 +951,29 @@ async fn test_budget_window_periods() {
     assert_eq!(window_end(WINDOW_TOTAL, 1_700_000_000), None);
 }
 
+/// DEPENDENCY-LADDER C10 (time 0.3) pins the calendar-month window before the hand
+/// `days_from_civil` goes: a leap February, the December-to-January year roll, and the
+/// non-leap 2100 February, each at the window's first and last second.
+#[test]
+fn month_windows_follow_the_gregorian_calendar() {
+    let cases: &[(u64, u64, u64)] = &[
+        (1_835_438_400, 1_832_976_000, 1_835_481_600),
+        (1_832_976_000, 1_832_976_000, 1_835_481_600),
+        (1_835_481_599, 1_832_976_000, 1_835_481_600),
+        (1_798_761_599, 1_796_083_200, 1_798_761_600),
+        (
+            1_798_761_600,
+            1_798_761_600,
+            1_798_761_600 + 31 * SECS_PER_DAY,
+        ),
+        (4_107_456_000, 4_105_123_200, 4_107_542_400),
+    ];
+    for &(now, start, end) in cases {
+        assert_eq!(budget_window(WINDOW_MONTH, now), start, "start at {now}");
+        assert_eq!(window_end(WINDOW_MONTH, now), Some(end), "end at {now}");
+    }
+}
+
 #[tokio::test]
 async fn test_derived_spend_enforces_cap_from_request_ledger() {
     let store = crate::real_store::core().await;

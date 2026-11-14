@@ -742,6 +742,45 @@ fn times_are_utc_seconds_both_ways() {
     }
 }
 
+/// DEPENDENCY-LADDER C10 (time 0.3) pins the release-document time grammar before the hand
+/// parser goes: exactly `YYYY-MM-DDTHH:MM:SSZ`, upper-case `T` and `Z`, no sign, no fraction, no
+/// leap second, nothing before the epoch.
+#[test]
+fn release_times_keep_the_fixed_twenty_byte_grammar() {
+    assert_eq!(
+        wire::parse_time("9999-12-31T23:59:59Z"),
+        Ok(253_402_300_799)
+    );
+    assert_eq!(wire::parse_time("2100-02-28T00:00:00Z"), Ok(4_107_456_000));
+    for bad in [
+        "+2027-01-15T08:00:00Z",
+        "2027-01-15t08:00:00Z",
+        "2027-01-15T08:00:00z",
+        "2027-01-15T08:00:00.000Z",
+        "2027-01-15T08:00:60Z",
+        "2027-01-15T24:00:00Z",
+        "2027-01-15T08:60:00Z",
+        "2027-1-15T08:00:00Z",
+        "2027-01-00T08:00:00Z",
+        "2100-02-29T00:00:00Z",
+        "1969-12-31T23:59:59Z",
+        "0000-01-01T00:00:00Z",
+        "",
+    ] {
+        assert!(wire::parse_time(bad).is_err(), "{bad}");
+    }
+}
+
+/// DEPENDENCY-LADDER C10: a release time past 9999-12-31T23:59:59Z has no four-digit-year
+/// spelling, so it renders as that last second. Named change, red on the hand formatter, which
+/// wrote a five-digit year that `parse_time` then refused.
+#[test]
+fn release_times_render_saturated_past_the_last_four_digit_year() {
+    assert_eq!(wire::format_time(253_402_300_799), "9999-12-31T23:59:59Z");
+    assert_eq!(wire::format_time(253_402_300_800), "9999-12-31T23:59:59Z");
+    assert_eq!(wire::format_time(u64::MAX), "9999-12-31T23:59:59Z");
+}
+
 #[test]
 fn a_key_id_is_the_sha256_of_its_canonical_key_object() {
     let k = TestSigner::ed25519(3).key();
