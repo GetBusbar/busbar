@@ -1305,6 +1305,10 @@ each dialect translates, field by field, is listed in the generated
 
 - 1.6.0 Fixed: OpenAI cached + cache-write tokens exceeding the prompt total refuse metering (audited and explained) instead of over-billing input.
 - 1.6.0 Fixed: a webrequest hook's status no longer reports drift where its settings match.
+- `hooks: [cheapest]` / `strategy: cheapest` rank by card price again: a strategy word is granted
+  the candidate route-cost signal. A pool whose ordering policy makes no choice while no member has a
+  known cost (so the walk falls back to weighted round-robin) now logs BUSBAR-5046 once per policy
+  and pool; gates never log it.
 - **Billing change: Gemini transcriptions bill every token Google reports.** A transcription
   (`generateContent` with inline audio) served same-dialect, from a Gemini caller to a Gemini
   upstream, was not billed at all: no usage, no ledger line, no cap or budget charge. It is now
