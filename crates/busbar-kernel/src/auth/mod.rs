@@ -2085,14 +2085,16 @@ async fn ticket_verdict(
     now: u64,
 ) -> Result<Option<(ChainVerdict, Vec<u8>)>, ()> {
     claimed_ticket_verdict(
-        signed,
-        keys_in_chain,
-        prefix,
-        token,
+        PresentedTicket {
+            signed,
+            keys_in_chain,
+            prefix,
+            token,
+            carried: None,
+        },
         gov,
         now,
         &crate::appbuild::AcceptAll,
-        None,
     )
     .await
     .map(|admitted| admitted.map(|(verdict, record, _)| (verdict, record)))
@@ -2104,17 +2106,32 @@ type ClaimedTicketVerdict = (
     Option<crate::host_services::HostTicketAdmission>,
 );
 
-async fn claimed_ticket_verdict(
+/// What one request presents for door-ticket redemption: whether it arrived signed, whether keys
+/// are in the chain, the door's ticket prefix, the presented token, and the ticket its auth point
+/// already verified (SINGLE-PATH SP-AU3).
+#[derive(Clone, Copy)]
+struct PresentedTicket<'a> {
     signed: bool,
     keys_in_chain: bool,
-    prefix: Option<&str>,
-    token: Option<&str>,
+    prefix: Option<&'a str>,
+    token: Option<&'a str>,
+    carried: Option<&'a crate::governance::VerifiedTicket>,
+}
+
+async fn claimed_ticket_verdict(
+    presented: PresentedTicket<'_>,
     gov: Option<&std::sync::Arc<crate::governance::GovState>>,
     now: u64,
     rules: &dyn crate::appbuild::RootRules,
-    carried: Option<&crate::governance::VerifiedTicket>,
 ) -> Result<Option<ClaimedTicketVerdict>, ()> {
     use crate::host_services::{HostTicketAdmission, TicketClaimDisposition};
+    let PresentedTicket {
+        signed,
+        keys_in_chain,
+        prefix,
+        token,
+        carried,
+    } = presented;
     match (!signed, prefix, token) {
         (true, Some(prefix), Some(token)) if keys_in_chain && token.starts_with(prefix) => {
             let gov = gov.ok_or(())?;
@@ -2579,16 +2596,18 @@ pub(crate) async fn auth_middleware(
     };
 
     let ticketed = match claimed_ticket_verdict(
-        signed.is_some(),
-        app.auth.keys_in_chain,
-        core_routes.door_ticket(&path, req.method()),
-        client_token.as_deref(),
+        PresentedTicket {
+            signed: signed.is_some(),
+            keys_in_chain: app.auth.keys_in_chain,
+            prefix: core_routes.door_ticket(&path, req.method()),
+            token: client_token.as_deref(),
+            carried: inbound
+                .as_ref()
+                .and_then(crate::inbound::RequestAdmission::carried_ticket),
+        },
         app.governance.as_ref(),
         busbar_kernel::store::now(),
         app.root_rules.as_ref(),
-        inbound
-            .as_ref()
-            .and_then(crate::inbound::RequestAdmission::carried_ticket),
     )
     .await
     {

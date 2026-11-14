@@ -165,14 +165,16 @@ async fn refused_host_custody_never_spends_the_durable_ticket() {
     }
     let (gov, _, ticket, now) = actual_ticket("missing-host-custody").await;
     assert!(claimed_ticket_verdict(
-        false,
-        true,
-        Some("tk_"),
-        Some(&ticket),
+        PresentedTicket {
+            signed: false,
+            keys_in_chain: true,
+            prefix: Some("tk_"),
+            token: Some(&ticket),
+            carried: None,
+        },
         Some(&gov),
         now,
         &Refuse,
-        None,
     )
     .await
     .is_err());
