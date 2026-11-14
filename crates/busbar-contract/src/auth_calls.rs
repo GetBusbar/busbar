@@ -358,6 +358,21 @@ pub trait AuthCalls: Send + Sync {
     /// `refresh` with a NEW generation and unchanged settings: the admin cache flush. The plugin
     fn refresh(&self) -> Result<u64, String>;
 
+    /// Whether this instance answers `verify` itself right now: not quarantined, revoked or
+    /// closed, and its metadata valid. Default `false`: an implementor that cannot tell is never
+    /// trusted to be answering.
+    fn answering(&self) -> bool {
+        false
+    }
+
+    /// Whether core may carry this instance into the next config build unchanged (its inputs are
+    /// unchanged and it is healthy: answering, and its refresh schedule did not fail). Default
+    /// `false`: an implementor that cannot tell is opened again on every build, as before
+    /// (WASTE-AUTH-SECRETS W2).
+    fn reusable(&self) -> bool {
+        false
+    }
+
     /// RE-LEND: take `settings` (this instance's settings re-resolved from what it was opened
     /// over) and, when the secret material lent from them changed, hand it to the plugin's
     /// `refresh`. `NotRefreshed` asks the caller to open a new instance and swap it in. A refusal
