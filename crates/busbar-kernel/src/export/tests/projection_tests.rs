@@ -3,7 +3,7 @@
 
 use crate::config::{ExportDefCfg, ExportDefs};
 use crate::export::projection::{
-    produced_fields, resolve_projection, ProjectedRecord, Projection, ProjectionUnion,
+    produced_fields, resolve_projection, FieldValue, ProjectedRecord, Projection, ProjectionUnion,
     PRODUCED_STREAMS,
 };
 use busbar_contract::abi::export::{ExportField, ExportStream};
@@ -292,7 +292,7 @@ fn projected_record_cannot_carry_an_ungranted_field() {
         .set(ExportField::Kind, "key.delete")
         .set(ExportField::Actor, "admin@example.com")
         .set(ExportField::Resource, "key:k1");
-    let payload = rec.finish();
+    let payload: serde_json::Value = serde_json::from_slice(&rec.finish().line).unwrap();
 
     let obj = payload.as_object().expect("an object");
     let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
@@ -321,7 +321,50 @@ fn a_grant_on_one_stream_does_not_leak_into_another() {
 
     let mut rec = ProjectedRecord::new(proj, ExportStream::Logs);
     rec.set(ExportField::Ts, 1u64).set(ExportField::Pool, "p");
-    assert_eq!(rec.finish(), serde_json::json!({}));
+    assert_eq!(rec.finish().line, b"{}");
+}
+
+#[test]
+fn a_projected_record_is_byte_for_byte_its_json_document() {
+    let fields = [
+        ExportField::Ts,
+        ExportField::IngressProtocol,
+        ExportField::Pool,
+        ExportField::Outcome,
+        ExportField::LatencyMs,
+        ExportField::TraceId,
+        ExportField::SpanId,
+        ExportField::Lane,
+        ExportField::Start,
+    ];
+    let proj = Projection::for_test(&[ExportStream::Traces], &fields);
+    let mut rec = ProjectedRecord::new(proj, ExportStream::Traces);
+    rec.set(ExportField::Ts, 1_700_000_000u64)
+        .set(ExportField::Pool, "p\"1\\\u{1}é")
+        .set(ExportField::Outcome, FieldValue::F64(f64::NAN))
+        .set(ExportField::LatencyMs, FieldValue::F64(1e21))
+        .set(ExportField::TraceId, FieldValue::Hex(0xab))
+        .set(ExportField::Lane, FieldValue::I64(-3))
+        .set(ExportField::Start, FieldValue::Bool(true))
+        .set(ExportField::SpanId, FieldValue::F64(0.1));
+    rec.span(b"{\"name\":\"s\"}");
+    let rendered = rec.finish();
+    let document = serde_json::json!({
+        "ts": 1_700_000_000u64,
+        "pool": "p\"1\\\u{1}é",
+        "outcome": {"$busbar_f64": "NaN"},
+        "latency_ms": 1e21,
+        "trace_id": "00000000000000ab",
+        "lane": -3,
+        "start": true,
+        "span_id": 0.1,
+        "span": {"name": "s"},
+    });
+    assert_eq!(rendered.line, serde_json::to_vec(&document).unwrap());
+    assert!(rendered
+        .members
+        .names()
+        .eq(document.as_object().unwrap().keys().map(String::as_str)));
 }
 
 #[test]
@@ -379,7 +422,8 @@ fn produced_logs_fields_match_the_request_log_producer() {
         outcome: "ok",
         latency_ms: 5,
     };
-    let payload = crate::export::build_request_log(all_logs, &facts);
+    let payload: serde_json::Value =
+        serde_json::from_slice(&crate::export::build_request_log(all_logs, &facts).line).unwrap();
     let mut written: Vec<&str> = payload
         .as_object()
         .expect("an object")

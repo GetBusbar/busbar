@@ -33,8 +33,20 @@ pub enum Bearer {
     Busbar,
     /// Not a three-segment JWS with a JSON payload: nothing to read.
     Opaque,
-    /// A JWT's payload.
-    Jwt(serde_json::Value),
+    /// A JWT's payload: checked once to be one JSON value, its claims read in place on demand.
+    Jwt(JwtPayload),
+}
+
+/// A JWT payload known to be one well-formed JSON value. Only the claims the kernel judges are
+/// read out of it, in place; no document is built.
+#[derive(Debug)]
+pub struct JwtPayload(Vec<u8>);
+
+/// What a payload's `cnf.jkt` is: present (of any JSON type) and, if so, whether a string.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Jkt {
+    pub(crate) present: bool,
+    pub(crate) string: bool,
 }
 
 impl Bearer {
@@ -53,28 +65,16 @@ impl Bearer {
         base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(payload)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .map_or(Bearer::Opaque, Bearer::Jwt)
+            .filter(|bytes| serde_json::from_slice::<claims::Checked>(bytes).is_ok())
+            .map_or(Bearer::Opaque, |bytes| Bearer::Jwt(JwtPayload(bytes)))
     }
 
     #[must_use]
     pub fn binding(&self, expected_aud: &str) -> Binding {
-        let claims = match self {
-            Bearer::Busbar => return Binding::Deferred,
-            Bearer::Opaque => return Binding::Opaque,
-            Bearer::Jwt(claims) => claims,
-        };
-        match claims.get("aud") {
-            Some(serde_json::Value::String(s)) if s == expected_aud => Binding::Bound,
-            Some(serde_json::Value::Array(vs)) => {
-                if vs.iter().any(|v| v.as_str() == Some(expected_aud)) {
-                    Binding::Bound
-                } else {
-                    Binding::Mismatch
-                }
-            }
-
-            _ => Binding::Mismatch,
+        match self {
+            Bearer::Busbar => Binding::Deferred,
+            Bearer::Opaque => Binding::Opaque,
+            Bearer::Jwt(claims) => claims.binding(expected_aud),
         }
     }
 

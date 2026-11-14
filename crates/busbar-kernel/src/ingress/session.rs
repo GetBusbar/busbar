@@ -25,8 +25,10 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for SessionUpgrade {
     }
 }
 
+/// Complete the upgrade: the single-use slot takes the pipe and the upgrade is spent.
 pub fn bridge(upgrade: SessionUpgrade, pipe: SessionPipe) -> Response {
-    upgrade.0.put(pipe);
+    let SessionUpgrade(slot) = upgrade;
+    slot.put(pipe);
     let mut response = Response::new(axum::body::Body::empty());
     *response.status_mut() = axum::http::StatusCode::SWITCHING_PROTOCOLS;
     response

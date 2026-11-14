@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use serde_json::Value;
 
 #[tokio::test]
 async fn a_transport_refusal_keeps_its_status_and_names_no_id() {

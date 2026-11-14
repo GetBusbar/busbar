@@ -700,6 +700,7 @@ dependencies = [
  "bytes",
  "crc32fast",
  "ed25519-dalek",
+ "foldhash 0.2.0",
  "futures",
  "getrandom 0.3.4",
  "hex",

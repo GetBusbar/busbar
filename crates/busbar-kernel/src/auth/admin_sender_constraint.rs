@@ -12,13 +12,18 @@
 use super::{App, HeaderMap, HeaderName, AUTHORIZATION};
 
 pub(super) fn downgraded(app: &App, provider: &str, headers: &HeaderMap) -> bool {
-    let mut carriers = app.admin_modules.operator.carriers().to_vec();
-    if let Some(module) = app.admin_modules.modules.get(provider) {
-        carriers.extend(module.calls.carriers());
-    }
+    let module = app
+        .admin_modules
+        .modules
+        .get(provider)
+        .map(|module| module.calls.carriers())
+        .unwrap_or_default();
     // Authorization is also relevant when the provider's candidate came from another carrier.
-    carriers.push(AUTHORIZATION.as_str().to_owned());
-    downgraded_in(headers, &carriers)
+    let carriers = (app.admin_modules.operator.carriers().iter())
+        .chain(&module)
+        .map(String::as_str)
+        .chain([AUTHORIZATION.as_str()]);
+    downgraded_in(headers, carriers)
 }
 
 fn downgraded_in(headers: &HeaderMap, carriers: &[String]) -> bool {

@@ -39,10 +39,10 @@ pub(crate) async fn export_read(
     amendments: &NodeAmendments,
     module: &str,
     op: &str,
-    payload: &serde_json::Value,
+    members: crate::export::projection::Members,
 ) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
-    let fields = payload.as_object().map(|o| o.keys().cloned().collect());
-    let (fields, now) = (fields.unwrap_or_default(), busbar_kernel::store::now());
+    let fields = members.names().map(str::to_owned).collect();
+    let now = busbar_kernel::store::now();
     amendments
         .record_read(&pass(), Reader::Export, module, None, op, fields, now)
         .await

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use axum::response::{IntoResponse, Response};
-use serde_json::Value;
 
 pub struct Metadata<'a> {
     pub resource: std::borrow::Cow<'a, str>,
@@ -26,34 +25,47 @@ pub fn metadata(m: &Metadata<'_>) -> Response {
     response
 }
 
+/// The metadata document, borrowed from the configured values and serialized in member order.
+#[derive(serde::Serialize)]
+struct Document<'a> {
+    #[serde(skip_serializing_if = "omitted")]
+    authorization_servers: &'a [String],
+    bearer_methods_supported: [&'static str; 1],
+    resource: &'a str,
+    #[serde(skip_serializing_if = "omitted")]
+    scopes_supported: &'a [String],
+}
+
+fn omitted(list: &&[String]) -> bool {
+    list.is_empty()
+}
+
 /// The fixed OAuth metadata document as neutral head/body output.
 pub fn metadata_rendered(m: &Metadata<'_>) -> crate::plane_driver::Rendered {
-    let mut doc = serde_json::Map::new();
-    doc.insert("resource".into(), Value::from(m.resource.as_ref()));
-    if !m.authorization_servers.is_empty() {
-        doc.insert(
-            "authorization_servers".into(),
-            Value::from(m.authorization_servers),
-        );
-    }
-    if !m.scopes_supported.is_empty() {
-        doc.insert("scopes_supported".into(), Value::from(m.scopes_supported));
-    }
-    doc.insert(
-        "bearer_methods_supported".into(),
-        Value::from(vec!["header"]),
-    );
-    crate::plane_driver::Rendered {
+    let doc = Document {
+        authorization_servers: m.authorization_servers,
+        bearer_methods_supported: ["header"],
+        resource: m.resource.as_ref(),
+        scopes_supported: m.scopes_supported,
+    };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the protected-resource metadata publishes this node's auth configuration; the plane head type owns its field bytes"
+    )]
+    let fields = vec![
+        (b"cache-control".to_vec(), b"public, max-age=3600".to_vec()),
+        (
+            b"content-type".to_vec(),
+            b"application/json; charset=utf-8".to_vec(),
+        ),
+    ];
+    let mut rendered = crate::plane_driver::Rendered {
         status: 200,
-        fields: vec![
-            (b"cache-control".to_vec(), b"public, max-age=3600".to_vec()),
-            (
-                b"content-type".to_vec(),
-                b"application/json; charset=utf-8".to_vec(),
-            ),
-        ],
-        body: serde_json::to_vec(&Value::Object(doc)).expect("metadata is a JSON value"),
-    }
+        fields,
+        body: Vec::with_capacity(128),
+    };
+    serde_json::to_writer(&mut rendered.body, &doc).expect("metadata is a JSON value");
+    rendered
 }
 
 #[cfg(test)]

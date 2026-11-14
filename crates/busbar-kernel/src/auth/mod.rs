@@ -87,9 +87,9 @@ pub struct AuthMiddleware {
 }
 
 struct CredentialReader {
-    name: String,
+    name: std::sync::Arc<str>,
     calls: std::sync::Arc<dyn AuthCalls>,
-    kinds: Vec<String>,
+    kinds: std::sync::Arc<[String]>,
     carriers: Vec<HeaderName>,
 
     issued: Option<busbar_contract::auth_calls::IssuedShape>,
@@ -97,6 +97,7 @@ struct CredentialReader {
 
 impl CredentialReader {
     fn carried(&self, headers: &HeaderMap) -> bool {
+        // busbar:expect(bp::state_scan, reason = "config: a reader's configured carrier names, fixed when the chain is built (a few header names)")
         self.carriers.iter().any(|c| headers.contains_key(c))
     }
 }
@@ -316,34 +317,39 @@ async fn signed_replay_claimed(
     }
 }
 
-fn strike_named(req: &mut Request<Body>, consumed: &mut ConsumedCredentials, strips: &[Strip]) {
-    let fields: Vec<HeaderName> = strips
-        .iter()
-        .filter(|s| s.place == StripPlace::Field)
-        .filter_map(|s| HeaderName::from_bytes(s.name.as_bytes()).ok())
-        .collect();
-    consumed.carry(&fields);
-    let keys: Vec<&str> = strips
-        .iter()
-        .filter(|s| s.place == StripPlace::Query)
-        .map(|s| s.name.as_ref())
-        .collect();
-    if keys.is_empty() {
+fn strike_named<'s>(
+    req: &mut Request<Body>,
+    consumed: &mut ConsumedCredentials,
+    strips: impl Iterator<Item = &'s Strip> + Clone,
+) {
+    consumed.carry_iter(
+        strips
+            .clone()
+            .filter(|s| s.place == StripPlace::Field)
+            .filter_map(|s| HeaderName::from_bytes(s.name.as_bytes()).ok()),
+    );
+    let keys = strips.filter(|s| s.place == StripPlace::Query);
+    if keys.clone().next().is_none() {
         return;
     }
-    if let Some(uri) = without_query_keys(req.uri(), &keys) {
+    let named = |key: &str| keys.clone().any(|s| s.name == key);
+    if let Some(uri) = without_query_where(req.uri(), &named) {
         *req.uri_mut() = uri;
     }
     if let Some(original) = req.extensions_mut().get_mut::<axum::extract::OriginalUri>() {
-        if let Some(uri) = without_query_keys(&original.0, &keys) {
+        if let Some(uri) = without_query_where(&original.0, &named) {
             original.0 = uri;
         }
     }
 }
 
-pub(crate) fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option<axum::http::Uri> {
+/// `uri` without the query pairs whose key (raw or form-decoded) `named` picks.
+fn without_query_where(
+    uri: &axum::http::Uri,
+    named: &dyn Fn(&str) -> bool,
+) -> Option<axum::http::Uri> {
     let query = uri.query()?;
-    let kept = without_query_keys_text(query, keys)?;
+    let kept = without_query_text_where(query, named)?;
     let path_and_query = if kept.is_empty() {
         uri.path().to_string()
     } else {
@@ -356,13 +362,16 @@ pub(crate) fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option
 
 /// Strip consumed query keys without requiring the enclosing target to be an HTTP URI.
 pub(crate) fn without_query_keys_text(query: &str, keys: &[&str]) -> Option<String> {
+    without_query_text_where(query, &|key| keys.contains(&key))
+}
+
+fn without_query_text_where(query: &str, is_key: &dyn Fn(&str) -> bool) -> Option<String> {
     let named = |pair: &&str| {
         let key = pair.split_once('=').map_or(*pair, |(k, _)| k);
-        let decoded = url::form_urlencoded::parse(key.as_bytes())
-            .next()
-            .map(|(k, _)| k);
-        keys.iter()
-            .any(|k| *k == key || decoded.as_deref() == Some(*k))
+        is_key(key)
+            || url::form_urlencoded::parse(key.as_bytes())
+                .next()
+                .is_some_and(|(decoded, _)| is_key(&decoded))
     };
     if !query.split('&').any(|p| named(&p)) {
         return None;
@@ -503,19 +512,18 @@ fn data_verdict_of(
     Ok(chain_verdict_of(answer))
 }
 
-fn signed_verdict_of(answer: VerifyAnswer, faulted: bool, strips: &mut Vec<Strip>) -> Verified {
+fn signed_verdict_of(answer: VerifyAnswer, faulted: bool) -> (Verified, Vec<Strip>) {
     let VerifyAnswer {
         verified,
         strips: named,
         ..
     } = answer;
-    strips.extend(named);
     if faulted {
         auth_faulted();
-        return Verified::Failed;
+        return (Verified::Failed, named);
     }
     cleared(&AUTH_FAULTED_WARNED);
-    verified
+    (verified, named)
 }
 
 fn admin_verdict_of(answer: VerifyAnswer, faulted: bool) -> Judgement {
@@ -626,7 +634,7 @@ impl ChainHead {
 }
 
 pub struct AdminAuthChain {
-    pub modules: std::collections::HashMap<String, AdminModule>,
+    pub modules: foldhash::HashMap<String, AdminModule>,
 
     pub operator: Operator,
 }
@@ -653,14 +661,23 @@ pub fn open_operator(
 
     let carriers = axis.as_ref().map(|a| a.carriers(op)).unwrap_or_default();
     Operator::open(op, defs, &is_op, answered, digest, |d| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the operator provider opens once, at boot; its refusal names the missing plugin"
+        )]
         let axis = axis.ok_or_else(|| format!("no `kind: auth` plugin answers to '{op}'"))?;
-        axis.open(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the operator provider opens once, at boot, on its configured digest"
+        )]
+        let opened = axis.open(
             op,
             op,
             &busbar_contract::plugin_settings::ResolvedSettings::from(serde_json::Value::String(
                 d.to_string(),
             )),
-        )
+        );
+        opened
     })
     .map(|operator| operator.with_carriers(carriers))
 }
@@ -705,7 +722,7 @@ pub(crate) fn auth_refusal(
 impl fmt::Debug for AdminAuthChain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AdminAuthChain")
-            .field("modules", &self.modules.keys().collect::<Vec<_>>())
+            .field("modules", &self.modules.keys())
             .finish()
     }
 }
@@ -716,8 +733,7 @@ impl AdminAuthChain {
         registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
-        let mut modules: std::collections::HashMap<String, AdminModule> =
-            std::collections::HashMap::new();
+        let mut modules: foldhash::HashMap<String, AdminModule> = foldhash::HashMap::default();
         let op = crate::config::operator_provider();
         let is_op = |m: &str| crate::config::names_operator(m);
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
@@ -726,6 +742,10 @@ impl AdminAuthChain {
                 module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
                 other => {
                     let name = entry.name.as_str();
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: admin_auth providers resolve once, at config load"
+                    )]
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
                         &registry.secret_slots(other),
@@ -735,6 +755,10 @@ impl AdminAuthChain {
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
                     .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: a config-load refusal naming the admin_auth provider"
+                    )]
                     let refused = |e: String| {
                         format!(
                             "auth.admin_auth provider '{name}' (module '{other}') could not be \
@@ -745,6 +769,10 @@ impl AdminAuthChain {
                     let axis = match &axis {
                         Some(axis) => axis.clone(),
                         None => {
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "config: a config-load refusal naming the admin_auth module"
+                            )]
                             let opened =
                                 crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
                                     refused(format!("no `kind: auth` plugin answers to '{other}'"))
@@ -757,6 +785,10 @@ impl AdminAuthChain {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
 
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: the module's label, named once when admin_auth loads"
+                    )]
                     let label = format!("admin_auth.{name}");
 
                     let calls = relend::open(
@@ -768,6 +800,10 @@ impl AdminAuthChain {
                     )
                     .map_err(refused)?;
 
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: the admin_auth provider table is built once, at config load"
+                    )]
                     modules.insert(name.to_string(), AdminModule { calls });
                 }
             }
@@ -795,6 +831,7 @@ impl AuthMiddleware {
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
+        // busbar:expect(bp::fresh_buffer, reason = "config: the configured auth chain, built once at config load")
         let mut chain: Vec<ChainEntry> = Vec::new();
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.chain {
@@ -803,6 +840,10 @@ impl AuthMiddleware {
                     keys_in_chain = true;
                 }
                 other => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: auth.chain modules resolve once, at config load"
+                    )]
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
                         &registry.secret_slots(other),
@@ -812,6 +853,10 @@ impl AuthMiddleware {
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
                     .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: a config-load refusal naming the auth.chain module"
+                    )]
                     let refused = |e: String| {
                         format!(
                             "auth.chain module '{other}' could not be loaded as a `kind: auth` \
@@ -821,6 +866,10 @@ impl AuthMiddleware {
                     let axis = match &axis {
                         Some(axis) => axis.clone(),
                         None => {
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "config: a config-load refusal naming the auth.chain module"
+                            )]
                             let opened =
                                 crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
                                     refused(format!("no `kind: auth` plugin answers to '{other}'"))
@@ -842,6 +891,10 @@ impl AuthMiddleware {
 
                     drop(resolved);
                     let calls = opened.map_err(refused)?;
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: the auth chain is built once, at config load"
+                    )]
                     chain.push(ChainEntry {
                         provider: entry.name.clone(),
                         name: calls.name().to_string(),
@@ -858,6 +911,7 @@ impl AuthMiddleware {
             );
         }
 
+        // busbar:expect(bp::fresh_buffer, reason = "config: the credential readers, built once at config load")
         let mut readers = Vec::new();
         if keys_in_chain {
             let axis = match &axis {
@@ -865,6 +919,10 @@ impl AuthMiddleware {
                 None => crate::preflight::auth_axis(registry.clone()),
             };
             for module in axis.iter().flat_map(|a| a.credential_readers()) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: a config-load refusal naming the credential-reader plugin"
+                )]
                 let calls = axis
                     .as_ref()
                     .map(|a| {
@@ -882,9 +940,17 @@ impl AuthMiddleware {
                         )
                     })?;
                 if let Some(calls) = calls {
+                    // busbar:expect(bp::into_alloc, reason = "config: a credential reader is named once, at config load")
+                    let name = std::sync::Arc::<str>::from(module.as_str());
+                    // busbar:expect(bp::into_alloc, reason = "config: a credential reader's kinds are read once, at config load")
+                    let kinds = std::sync::Arc::<[String]>::from(calls.credential_kinds());
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: the credential readers are built once, at config load"
+                    )]
                     readers.push(CredentialReader {
-                        name: module.to_string(),
-                        kinds: calls.credential_kinds(),
+                        name,
+                        kinds,
                         issued: calls.issued_shape(),
                         carriers: calls
                             .carriers()
@@ -932,13 +998,22 @@ impl AuthMiddleware {
     }
 
     pub fn chain_names(&self) -> Vec<String> {
-        self.chain.iter().map(|e| e.name.clone()).collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the admin service's view of the configured chain"
+        )]
+        let names = self.chain.iter().map(|e| e.name.clone()).collect();
+        names
     }
 
     /// Effective authentication arms in execution order, including built-in keys.
     pub fn effective_chain_names(&self) -> Vec<String> {
         let mut names = self.chain_names();
         if self.keys_in_chain {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the admin service's view of the configured chain"
+            )]
             names.push(crate::config::KEYS_MODULE.to_string());
         }
         names
@@ -946,6 +1021,7 @@ impl AuthMiddleware {
 
     #[must_use]
     pub fn position_calls(&self, provider: &str) -> Option<std::sync::Arc<dyn AuthCalls>> {
+        // busbar:expect(bp::state_scan, reason = "config: plane routes resolve each configured chain position once, at config load")
         self.chain
             .iter()
             .find(|e| e.provider == provider)
@@ -955,24 +1031,31 @@ impl AuthMiddleware {
     pub(crate) fn signed_reader(
         &self,
         headers: &HeaderMap,
-    ) -> Option<(String, std::sync::Arc<dyn AuthCalls>, Vec<String>)> {
+    ) -> Option<(
+        std::sync::Arc<str>,
+        std::sync::Arc<dyn AuthCalls>,
+        std::sync::Arc<[String]>,
+    )> {
         if !self.keys_in_chain {
             return None;
         }
+        // busbar:expect(bp::state_scan, reason = "config: the configured credential readers, fixed when the chain is built (one per reader plugin)")
         self.readers.iter().find(|r| r.carried(headers)).map(|r| {
             (
-                r.name.clone(),
+                std::sync::Arc::clone(&r.name),
                 std::sync::Arc::clone(&r.calls),
-                r.kinds.clone(),
+                std::sync::Arc::clone(&r.kinds),
             )
         })
     }
 
     pub fn position_points(&self, provider: &str) -> busbar_contract::abi::auth::AuthPoints {
         use busbar_contract::abi::auth::AuthPoints;
+        // busbar:expect(bp::state_scan, reason = "config: plane routes read each configured chain position's points once, at config load")
         if let Some(entry) = self.chain.iter().find(|e| e.provider == provider) {
             return entry.calls.inbound_points();
         }
+        // busbar:expect(bp::state_scan, reason = "config: plane routes read the configured readers' points once, at config load")
         let readers = self
             .readers
             .iter()
@@ -1009,7 +1092,7 @@ impl AuthMiddleware {
                     now,
                     expected_aud,
                     Reach::Inline,
-                    &mut Vec::new(),
+                    &mut None,
                     &mut claim,
                 )
                 .await
@@ -1022,7 +1105,10 @@ impl AuthMiddleware {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one chain walk carries the head, the clock reading and both of its outputs"
+    )]
     async fn walk(
         &self,
         head: &ChainHead,
@@ -1031,7 +1117,7 @@ impl AuthMiddleware {
         now: u64,
         expected_aud: Option<&str>,
         reach: Reach,
-        strips: &mut Vec<Strip>,
+        strips: &mut Option<Vec<Strip>>,
         claim: &mut Option<ReplayClaim>,
     ) -> Result<ChainVerdict, VerifierUnavailable> {
         if self.chain.is_empty() && !self.keys_in_chain {
@@ -1039,7 +1125,12 @@ impl AuthMiddleware {
         }
         for entry in &self.chain {
             let judged = judge(entry, head.request(candidate, now), reach).await?;
-            strips.extend(judged.strips);
+            // The first stripping position's lines move in whole; only a later one appends.
+            match strips {
+                Some(held) => held.extend(judged.strips),
+                None if judged.strips.is_empty() => {}
+                None => *strips = Some(judged.strips),
+            }
             if let Some(verdict) = chain_position_verdict(&entry.provider, judged.verdict) {
                 if matches!(verdict, ChainVerdict::Identified { .. }) {
                     *claim = ReplayClaim::of(&entry.provider, judged.replay, now);
@@ -1057,6 +1148,7 @@ impl AuthMiddleware {
     pub fn flush_verified(&self, module: Option<&str>) -> Result<u64, String> {
         let mut flushed = 0;
         let mut failure = None;
+        // busbar:expect(bp::state_scan, reason = "config: an operator's admin flush walks the configured chain once")
         for entry in self
             .chain
             .iter()
@@ -1091,51 +1183,60 @@ impl AuthMiddleware {
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
     ) -> Result<ChainVerdict, VerifierUnavailable> {
-        let (verdict, _, pending) =
-            Self::judge_chain_on_request_path_naming(auth, candidate, head, gov, expected_aud)
-                .await;
+        let (verdict, _, pending) = Self::judge_chain_on_request_path_naming(
+            auth,
+            candidate.as_deref(),
+            &head,
+            gov,
+            expected_aud.as_deref(),
+        )
+        .await;
 
         claimed_chain_identity(verdict, pending.as_ref()).await
     }
 
     pub async fn judge_chain_on_request_path_naming(
         auth: &std::sync::Arc<AuthMiddleware>,
-        candidate: Option<String>,
-        head: ChainHead,
+        candidate: Option<&str>,
+        head: &ChainHead,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
-        expected_aud: Option<String>,
+        expected_aud: Option<&str>,
     ) -> (
         Result<ChainVerdict, VerifierUnavailable>,
         Vec<Strip>,
         Option<PendingClaim>,
     ) {
         let now = busbar_kernel::store::now();
-        let mut strips = Vec::new();
+        let mut strips = None;
         let mut claim = None;
         let verdict = auth
             .walk(
-                &head,
-                candidate.as_deref(),
+                head,
+                candidate,
                 gov.as_deref(),
                 now,
-                expected_aud.as_deref(),
+                expected_aud,
                 Reach::RequestPath,
                 &mut strips,
                 &mut claim,
             )
             .await;
-        (verdict, strips, PendingClaim::of(claim, gov))
+        (
+            verdict,
+            strips.unwrap_or_default(),
+            PendingClaim::of(claim, gov),
+        )
     }
 
     pub fn constant_time_eq(a: &str, b: &str) -> bool {
         busbar_contract::redacted::constant_time_eq(a, b)
     }
 
-    pub fn extract_bearer_token(auth_header: &str) -> Option<String> {
+    pub fn extract_bearer_token(auth_header: &str) -> Option<&str> {
         let (scheme, token) = auth_header.split_once(' ')?;
         let token = token.trim_start_matches(' ');
         if scheme.eq_ignore_ascii_case(AUTH_SCHEME_BEARER) && !token.is_empty() {
-            Some(token.to_string())
+            Some(token)
         } else {
             None
         }
@@ -1161,7 +1262,6 @@ impl AuthMiddleware {
         &self.carriers
     }
 
-    #[allow(dead_code)]
     pub fn validate_token(&self, token: Option<&str>) -> bool {
         !matches!(self.run_chain(token), ChainVerdict::Denied)
     }
@@ -1367,21 +1467,44 @@ fn candidate_from_metadata(
 }
 
 pub fn carried_credential(carriers: &[HeaderName], headers: &HeaderMap) -> Option<String> {
-    carriers.iter().find_map(|carrier| {
-        let value = headers.get(carrier)?.to_str().ok()?;
-        if *carrier == AUTHORIZATION {
-            AuthMiddleware::extract_bearer_token(value)
-        } else {
-            Some(value.to_owned()).filter(|t| !t.is_empty())
-        }
+    let token = carriers
+        .iter()
+        .find_map(|carrier| carried_token(headers.get(carrier)?, *carrier == AUTHORIZATION))?;
+    Some(token.to_owned())
+}
+
+/// The first credential carried under one of `carriers` (header names as configured), borrowed.
+fn carried_named<'h, 'c>(
+    carriers: impl IntoIterator<Item = &'c str>,
+    headers: &'h HeaderMap,
+) -> Option<&'h str> {
+    carriers.into_iter().find_map(|carrier| {
+        let authorization = carrier.eq_ignore_ascii_case(AUTHORIZATION.as_str());
+        carried_token(headers.get(carrier)?, authorization)
     })
 }
 
+/// The credential one carrier line holds: the bearer token on `authorization`, else the value.
+fn carried_token(value: &HeaderValue, authorization: bool) -> Option<&str> {
+    let value = value.to_str().ok()?;
+    if authorization {
+        AuthMiddleware::extract_bearer_token(value)
+    } else {
+        Some(value).filter(|t| !t.is_empty())
+    }
+}
+
+/// The configured carrier words as header names, parsed once when the chain is built.
 pub(crate) fn header_names(words: &[String]) -> Vec<HeaderName> {
-    words
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: carrier names are parsed once, when the auth chain is built"
+    )]
+    let names = words
         .iter()
         .filter_map(|w| HeaderName::from_bytes(w.as_bytes()).ok())
-        .collect()
+        .collect();
+    names
 }
 
 pub use busbar_contract::auth::AuthPrincipal;
@@ -1435,11 +1558,14 @@ async fn run_admin_chain(
         return (ChainVerdict::Open, None);
     }
 
-    let candidate = carried_credential(
-        &header_names(app.admin_modules.operator.carriers()),
+    let candidate = carried_named(
+        app.admin_modules
+            .operator
+            .carriers()
+            .iter()
+            .map(String::as_str),
         headers,
     );
-    let candidate = candidate.as_deref();
     let now = busbar_kernel::store::now();
     for name in &app.admin_chain {
         let operator = app.admin_modules.operator.is(name);
@@ -1448,8 +1574,13 @@ async fn run_admin_chain(
                 let operator = &app.admin_modules.operator;
                 let mut head = admin_head(method, target, headers, now);
 
-                head.credential = candidate
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the admin API is the node's configuration plane; its verify request owns a copy of the head"
+                )]
+                let credential = candidate
                     .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
+                head.credential = credential;
                 match probe {
                     true => operator.probe(&head),
                     false => operator.judge(head).await,
@@ -1458,8 +1589,13 @@ async fn run_admin_chain(
 
             other => {
                 let mut request = admin_head(method, target, headers, now);
-                request.credential = candidate
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the admin API is the node's configuration plane; its verify request owns a copy of the head"
+                )]
+                let credential = candidate
                     .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
+                request.credential = credential;
                 external_admin_module(app, other, request, probe).await
             }
         }
@@ -1545,12 +1681,12 @@ pub fn dry_run_admin_scope(
         return busbar_contract::authz::Grants::default();
     }
 
-    admin_scope_from_door(probe_admin_door(app, "GET", "/", headers, false))
+    admin_scope_from_door(&probe_admin_door(app, "GET", "/", headers, false))
 }
 
-fn admin_scope_from_door(door: AdminDoor) -> busbar_contract::authz::Grants {
+fn admin_scope_from_door(door: &AdminDoor) -> busbar_contract::authz::Grants {
     match door {
-        AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => grants,
+        AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => *grants,
 
         AdminDoor::Open | AdminDoor::Denied | AdminDoor::Unavailable(_) => {
             busbar_contract::authz::Grants::default()
@@ -1586,6 +1722,10 @@ fn admin_head(
     headers: &HeaderMap,
     now: u64,
 ) -> busbar_contract::auth_calls::VerifyRequest {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the admin API is the node's configuration plane; its verify request owns a copy of the head"
+    )]
     let (path, query) = match target.split_once('?') {
         Some((path, query)) => (path, Some(query.to_string())),
         None => (target, None),
@@ -1594,7 +1734,11 @@ fn admin_head(
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    busbar_contract::auth_calls::VerifyRequest {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the admin API is the node's configuration plane; its verify request owns a copy of the head"
+    )]
+    let request = busbar_contract::auth_calls::VerifyRequest {
         point: busbar_contract::abi::auth::AuthPoint::Head,
         lines: (headers.iter())
             .map(|(n, v)| {
@@ -1612,7 +1756,8 @@ fn admin_head(
         credential: None,
         peer: None,
         body: None,
-    }
+    };
+    request
 }
 
 fn admin_chain_outcome(
@@ -1653,14 +1798,16 @@ async fn judge_admin_door(
     headers: &HeaderMap,
     probe: bool,
     claim: bool,
-    strips: &mut Vec<Strip>,
-) -> Result<AdminDoor, VerifierUnavailable> {
-    let (verdict, cap, replay, no_verdict) =
-        judge_admin_chain(app, method, target, headers, probe, strips).await;
+) -> Result<(AdminDoor, Vec<Strip>), VerifierUnavailable> {
+    let (verdict, cap, replay, no_verdict, strips) =
+        judge_admin_chain(app, method, target, headers, probe).await;
     let verdict = admin_chain_outcome(verdict, no_verdict)?;
     let (door, pending) = admin_door_claim_of(app, verdict, cap, replay);
 
-    Ok(claimed_admin_door(door, pending.as_ref(), method, target, claim).await)
+    Ok((
+        claimed_admin_door(door, pending.as_ref(), method, target, claim).await,
+        strips,
+    ))
 }
 
 async fn claimed_admin_door(
@@ -1728,17 +1875,22 @@ async fn judge_admin_chain(
     target: &str,
     headers: &HeaderMap,
     probe: bool,
-    strips: &mut Vec<Strip>,
 ) -> (
     ChainVerdict,
     Option<busbar_contract::authz::Scope>,
     Option<(String, Box<Replay>)>,
     bool,
+    Vec<Strip>,
 ) {
     let mut carried = AdminCarried::default();
     let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
-    strips.append(&mut carried.strips);
-    (verdict, cap, carried.replay, carried.no_verdict)
+    (
+        verdict,
+        cap,
+        carried.replay,
+        carried.no_verdict,
+        carried.strips,
+    )
 }
 
 fn cap_admin_scope(
@@ -1867,9 +2019,9 @@ async fn probe_admin_verdict_async(
     headers: &HeaderMap,
     probe: bool,
 ) -> (AdminDoor, Option<PendingClaim>) {
-    let mut strips = Vec::new();
-    let (verdict, cap, replay, no_verdict) =
-        judge_admin_chain(app, method, target, headers, probe, &mut strips).await;
+    // A probe judges only; the lines the chain named for stripping are dropped with it.
+    let (verdict, cap, replay, no_verdict, _) =
+        judge_admin_chain(app, method, target, headers, probe).await;
     admin_probe_projection(admin_chain_outcome(verdict, no_verdict), |verdict| {
         admin_door_claim_of(app, verdict, cap, replay)
     })
@@ -1940,7 +2092,11 @@ fn admin_verbs_named(
     let Some(table) = bindings.get(module) else {
         return std::collections::BTreeSet::new();
     };
-    (principal.roles.iter())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the admin API is the node's configuration plane; a principal's named verbs are listed per admin request"
+    )]
+    let named = (principal.roles.iter())
         .filter_map(|role| table.get(role))
         .filter_map(|b| match b.verb_grant() {
             Some(Ok(crate::config::VerbGrant::Named(names))) => Some(names),
@@ -1950,38 +2106,62 @@ fn admin_verbs_named(
         .filter(|verb| {
             rung_of(verb.as_str()).is_some_and(|rung| cap.is_none_or(|c| c.allows(rung)))
         })
-        .collect()
+        .collect();
+    named
 }
 
+/// An admin error body, `{"error":{"code":..,"message":..}}`, serialized from borrowed parts.
+#[derive(serde::Serialize)]
+struct AdminError<M> {
+    error: AdminErrorBody<M>,
+}
+
+#[derive(serde::Serialize)]
+struct AdminErrorBody<M> {
+    code: &'static str,
+    message: M,
+}
+
+/// The fixed body of a fixed admin refusal, rendered once and shared by every response.
+fn admin_error_body(e: &crate::admin::gate::ApiError) -> axum::body::Bytes {
+    let body = crate::json::to_vec(&AdminError {
+        error: AdminErrorBody {
+            code: e.code(),
+            message: e.message(),
+        },
+    });
+    axum::body::Bytes::from(body.unwrap_or_default())
+}
+
+static ADMIN_UNAUTHORIZED_BODY: std::sync::LazyLock<axum::body::Bytes> =
+    std::sync::LazyLock::new(|| admin_error_body(&crate::admin::gate::ApiError::Unauthorized));
+
+static ADMIN_RATE_LIMITED_BODY: std::sync::LazyLock<axum::body::Bytes> =
+    std::sync::LazyLock::new(|| admin_error_body(&crate::admin::gate::ApiError::RateLimited));
+
 fn admin_unauthorized_response() -> Response {
-    let e = crate::admin::gate::ApiError::Unauthorized;
-    let body = serde_json::json!({
-        "error": { "code": e.code(), "message": e.message() }
-    })
-    .to_string();
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .header(axum::http::header::WWW_AUTHENTICATE, "Bearer")
-        .body(Body::from(body))
+        .body(Body::from(ADMIN_UNAUTHORIZED_BODY.clone()))
         .expect("static unauthorized response")
 }
 
 fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
-    let body = serde_json::json!({
-        "error": {
-            "code": "forbidden",
-            "message": format!(
+    let body = crate::json::to_vec(&AdminError {
+        error: AdminErrorBody {
+            code: "forbidden",
+            message: format_args!(
                 "this endpoint requires the `{}` admin scope",
                 needed.as_str()
             ),
-        }
-    })
-    .to_string();
+        },
+    });
     Response::builder()
         .status(StatusCode::FORBIDDEN)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
+        .body(Body::from(body.unwrap_or_default()))
         .expect("static forbidden response")
 }
 
@@ -1997,19 +2177,14 @@ fn rate_limited_after(retry_after_secs: u64) -> Response {
 }
 
 fn rate_limited_response() -> Response {
-    let e = crate::admin::gate::ApiError::RateLimited;
-    let body = serde_json::json!({
-        "error": { "code": e.code(), "message": e.message() }
-    })
-    .to_string();
     Response::builder()
         .header(
             axum::http::header::RETRY_AFTER,
-            crate::ratelimit::MUTATION_RATE_WINDOW_SECS.to_string(),
+            HeaderValue::from(crate::ratelimit::MUTATION_RATE_WINDOW_SECS),
         )
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
+        .body(Body::from(ADMIN_RATE_LIMITED_BODY.clone()))
         .expect("static rate-limited response")
 }
 
@@ -2129,9 +2304,12 @@ fn admin_principal_or_response(door: AdminDoor) -> Result<Option<Principal>, Box
 }
 
 fn admin_unavailable_response() -> Response {
-    let mut resp = crate::admin::gate::err_json(&crate::admin::gate::ApiError::Unavailable(
-        ADMIN_AUTH_UNAVAILABLE_MESSAGE.to_string(),
-    ));
+    let unavailable = crate::admin::gate::ApiError::Unavailable(String::new());
+    let mut resp = crate::admin::gate::error_envelope(
+        unavailable.http_status(),
+        unavailable.code(),
+        ADMIN_AUTH_UNAVAILABLE_MESSAGE,
+    );
     resp.headers_mut().insert(
         axum::http::header::RETRY_AFTER,
         HeaderValue::from_static(ADMIN_AUTH_RETRY_AFTER),
@@ -2156,7 +2334,11 @@ fn consumed_from_carriers(
 ) -> ConsumedCredentials {
     let mut consumed = ConsumedCredentials::carrying(carriers);
     if let Some(operator_carriers) = operator_carriers {
-        consumed.carry(&header_names(operator_carriers));
+        consumed.carry_iter(
+            operator_carriers
+                .iter()
+                .filter_map(|w| HeaderName::from_bytes(w.as_bytes()).ok()),
+        );
     }
     if dpop_proven || is_admin {
         consumed.carry(&[dpop::DPOP_HEADER]);
@@ -2265,7 +2447,10 @@ async fn claimed_ticket_verdict(
     }
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "axum middleware answers a response on either side"
+)]
 pub(crate) async fn auth_middleware(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
 
@@ -2283,21 +2468,25 @@ pub(crate) async fn auth_middleware(
             crate::guest::Claimant::Plane(_)
         )
     }) {
-        let path = req.uri().path().to_owned();
-        let door = core_routes.door_refusal(&path, req.method()).map(|refuse| {
-            (
-                refuse.clone(),
-                zeroize::Zeroizing::new(
-                    req.uri()
-                        .path_and_query()
-                        .map_or(path.as_str(), |target| target.as_str())
-                        .to_owned(),
-                ),
-            )
-        });
         let mut context = match admitted_context(inbound).await {
             Ok(context) => context,
             Err(refused) => {
+                let path = req.uri().path();
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refused request's door target, kept for its refusal"
+                )]
+                let door = core_routes.door_refusal(path, req.method()).map(|refuse| {
+                    (
+                        refuse.clone(),
+                        zeroize::Zeroizing::new(
+                            req.uri()
+                                .path_and_query()
+                                .map_or(path, |target| target.as_str())
+                                .to_owned(),
+                        ),
+                    )
+                });
                 let admission = inbound.plane_admission();
                 let token = inbound.client_token();
                 return Err(match refused {
@@ -2318,7 +2507,7 @@ pub(crate) async fn auth_middleware(
                                 description,
                                 None,
                             ),
-                            None => unauthorized_response(&app, &path, door.as_ref()),
+                            None => unauthorized_response(&app, path, door.as_ref()),
                         }
                     }
                 });
@@ -2343,29 +2532,35 @@ pub(crate) async fn auth_middleware(
         .map(crate::inbound::RequestAdmission::original_headers);
 
     let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
-    let path = req.uri().path().to_owned();
+    // A handle on the received target (shared bytes, no copy): `req` is rewritten below.
+    let (uri, method) = (req.uri().clone(), req.method().clone());
+    let path = uri.path();
     let admission = inbound.as_ref().map_or_else(
         || {
             (!crate::router::is_private_listener())
-                .then(|| app.planes.admission_for(&path).cloned())
+                .then(|| app.planes.admission_for(path).cloned())
                 .flatten()
         },
         |inbound| inbound.plane_admission().cloned(),
     );
 
-    let door: Option<RefusalDoor> = core_routes.door_refusal(&path, req.method()).map(|refuse| {
-        let target = req
-            .uri()
-            .path_and_query()
-            .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
-        (refuse.clone(), zeroize::Zeroizing::new(target))
-    });
+    // The refusal door and its target are read only when this request is refused.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused request's door target, kept for its refusal"
+    )]
+    let door = || -> Option<RefusalDoor> {
+        core_routes.door_refusal(path, &method).map(|refuse| {
+            let target = uri.path_and_query().map_or(path, |t| t.as_str()).to_owned();
+            (refuse.clone(), zeroize::Zeroizing::new(target))
+        })
+    };
 
     let mut declared_admin = false;
     let mut declared_core_admin = false;
 
     let mut claimed_at_key = false;
-    if let Some(auth) = core_routes.declared_auth(&path, req.method()) {
+    if let Some(auth) = core_routes.declared_auth(path, req.method()) {
         match auth {
             busbar_contract::abi::mechanism::route::RouteAuth::None => {
                 drop(_mw.take());
@@ -2380,7 +2575,7 @@ pub(crate) async fn auth_middleware(
     }
 
     if let Some(auth) = (!claimed_at_key && !declared_admin)
-        .then(|| app.plugin_routes.declared_auth(&path, req.method()))
+        .then(|| app.plugin_routes.declared_auth(path, req.method()))
         .flatten()
     {
         match auth {
@@ -2395,6 +2590,8 @@ pub(crate) async fn auth_middleware(
 
     let is_admin = declared_admin
         || (!claimed_at_key && (path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX)));
+    // The request's one wall reading: every limiter, ticket and credential check below uses it.
+    let now = busbar_kernel::store::now();
 
     let client_token: Option<String> = match inbound.as_ref() {
         Some(inbound) => inbound.client_token().map(str::to_owned),
@@ -2478,7 +2675,6 @@ pub(crate) async fn auth_middleware(
             return Err(rate_limited_after(retry_after));
         }
         let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
-        let mut strips = Vec::new();
         // The root deliberately defers core Admin routes to this verifier, independent
         // of the data chain. Their unverified open guest verdict is not an admin grant.
         let deferred_core_admin = declared_core_admin
@@ -2513,8 +2709,6 @@ pub(crate) async fn auth_middleware(
             else {
                 return Err(admin_unavailable_response());
             };
-            door
-        };
         let effect_context = effect::Context::new(
             req.method().as_str(),
             target,
@@ -2523,8 +2717,8 @@ pub(crate) async fn auth_middleware(
                 .unwrap_or_else(|| req.headers().clone()),
             &door,
         );
-        let authorized = admin_door_admits(&door, req.method().as_str(), &path);
-        strike_named(&mut req, &mut consumed, &strips);
+        let authorized = admin_door_admits(&door, req.method().as_str(), path);
+        strike_named(&mut req, &mut consumed, strips.iter());
         req.extensions_mut().insert(consumed);
 
         if presented && matches!(door, AdminDoor::Denied) {
@@ -2543,7 +2737,7 @@ pub(crate) async fn auth_middleware(
                 return Err(*response);
             }
         };
-        let required = crate::admin::gate::required_scope(req.method(), &path);
+        let required = crate::admin::gate::required_scope(req.method(), path);
 
         if !authorized {
             if let Some(admission) = &inbound {
@@ -2558,14 +2752,13 @@ pub(crate) async fn auth_middleware(
                 .unwrap_or("anonymous");
             if let crate::ratelimit::RateCheck::Denied {
                 first_in_window: true,
-            } = app.mutation_limiter.check(
-                actor,
-                crate::ratelimit::MutationClass::Forbidden,
-                busbar_kernel::store::now(),
-            ) {
+            } =
+                app.mutation_limiter
+                    .check(actor, crate::ratelimit::MutationClass::Forbidden, now)
+            {
                 crate::audit_ring::AUDIT.record_by(
                     "admin.forbidden",
-                    &path,
+                    path,
                     crate::audit_ring::OUTCOME_REJECTED,
                     actor,
                 );
@@ -2584,17 +2777,20 @@ pub(crate) async fn auth_middleware(
         if is_mutation {
             let rel = path
                 .strip_prefix(crate::admin::gate::ADMIN_PREFIX)
-                .unwrap_or(&path);
+                .unwrap_or(path);
             let class = crate::ratelimit::classify_mutation(rel);
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())
                 .unwrap_or("anonymous");
-            if let crate::ratelimit::RateCheck::Denied { first_in_window } = app
-                .mutation_limiter
-                .check(actor, class, busbar_kernel::store::now())
+            if let crate::ratelimit::RateCheck::Denied { first_in_window } =
+                app.mutation_limiter.check(actor, class, now)
             {
                 if first_in_window {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: the first rate-limited refusal in a window names its class and path"
+                    )]
                     crate::audit_ring::AUDIT.record_by(
                         "admin.rate_limited",
                         &format!("{}:{path}", class.label()),
@@ -2632,11 +2828,14 @@ pub(crate) async fn auth_middleware(
         });
     }
 
-    let ingress_signed = core_routes.signed_ingress(&path);
+    let ingress_signed = core_routes.signed_ingress(path);
 
-    let mut strips = inbound
+    // The lines to strip: the admission's, then the signed reader's, then the chain's.
+    let admitted_strips = inbound
         .as_ref()
-        .map_or_else(Vec::new, |admission| admission.inner.strips.clone());
+        .map_or(&[][..], |admission| admission.inner.strips.as_slice());
+    let mut signed_strips = Vec::new();
+    let mut chain_strips = Vec::new();
 
     let reader =
         (inbound.is_none() && admission.is_none() && app.auth.keys_in_chain && ingress_signed)
@@ -2657,16 +2856,17 @@ pub(crate) async fn auth_middleware(
             )
             .await
             else {
-                return Err(unauthorized_response(&app, &path, door.as_ref()));
+                return Err(unauthorized_response(&app, path, door().as_ref()));
             };
             let request = signed_request(&parts, &body_bytes);
             req = Request::from_parts(parts, Body::from(body_bytes));
             let mut call = reader.calls.verify(request);
             let answer = (&mut call).await;
-            match signed_verdict_of(answer, call.faulted(), &mut strips) {
+            let (verified, named) = signed_verdict_of(answer, call.faulted());
+            signed_strips = named;
+            match verified {
                 Verified::Pass => None,
                 Verified::Identity(id) => {
-                    let now = busbar_kernel::store::now();
                     let key = app.governance.as_deref().and_then(|gov| {
                         reader.kinds.iter().find_map(|kind| {
                             let (key, cred) = gov.lookup_credential(kind, &id.subject)?;
@@ -2688,11 +2888,11 @@ pub(crate) async fn auth_middleware(
                             principal: principal_from_vkey(&key),
                             resolved: Some(std::sync::Arc::new(key)),
                         }),
-                        None => return Err(unauthorized_response(&app, &path, door.as_ref())),
+                        None => return Err(unauthorized_response(&app, path, door().as_ref())),
                     }
                 }
 
-                Verified::Reject => return Err(unauthorized_response(&app, &path, door.as_ref())),
+                Verified::Reject => return Err(unauthorized_response(&app, path, door().as_ref())),
 
                 Verified::Failed => {
                     verify_without_verdict("data", &reader.name, "no verdict");
@@ -2707,10 +2907,10 @@ pub(crate) async fn auth_middleware(
     let ticketed = match claimed_ticket_verdict(
         signed.is_some(),
         app.auth.keys_in_chain,
-        core_routes.door_ticket(&path, req.method()),
+        core_routes.door_ticket(path, req.method()),
         client_token.as_deref(),
         app.governance.as_ref(),
-        busbar_kernel::store::now(),
+        now,
         app.root_rules.as_ref(),
     )
     .await
@@ -2721,7 +2921,7 @@ pub(crate) async fn auth_middleware(
             Some(verdict)
         }
         Ok(None) => None,
-        Err(()) => return Err(unauthorized_response(&app, &path, door.as_ref())),
+        Err(()) => return Err(unauthorized_response(&app, path, door().as_ref())),
     };
     let verdict = if let Some(verdict) = signed {
         verdict
@@ -2755,16 +2955,16 @@ pub(crate) async fn auth_middleware(
         } else {
             AuthMiddleware::judge_chain_on_request_path_naming(
                 &app.auth,
-                client_token.clone(),
-                ChainHead::of(&req),
+                client_token.as_deref(),
+                &ChainHead::of(&req),
                 app.governance.clone(),
-                admission.as_ref().map(|a| a.audience.clone()),
+                admission.as_ref().map(|a| a.audience.as_str()),
             )
             .await
         };
         match judged {
             Ok(verdict) => {
-                strips.extend(named);
+                chain_strips = named;
                 pending = claim;
                 verdict
             }
@@ -2789,7 +2989,14 @@ pub(crate) async fn auth_middleware(
         Ok((principal, gov)) => {
             req.extensions_mut().insert(principal);
             req.extensions_mut().insert(gov);
-            strike_named(&mut req, &mut consumed, &strips);
+            strike_named(
+                &mut req,
+                &mut consumed,
+                admitted_strips
+                    .iter()
+                    .chain(&signed_strips)
+                    .chain(&chain_strips),
+            );
             req.extensions_mut().insert(consumed);
         }
         Err(refusal) => {
@@ -2797,7 +3004,7 @@ pub(crate) async fn auth_middleware(
                 refusal,
                 admission.as_ref(),
                 client_token.is_some(),
-                || unauthorized_with_completion_taps(&app, &path, door.as_ref()),
+                || unauthorized_with_completion_taps(&app, path, door().as_ref()),
             ));
         }
     }

@@ -5,7 +5,6 @@ use crate::state::CurrentApp;
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
-use std::time::Instant;
 
 pub(crate) async fn observe(CurrentApp(app): CurrentApp, req: Request, next: Next) -> Response {
     let path = req.uri().path();
@@ -15,21 +14,27 @@ pub(crate) async fn observe(CurrentApp(app): CurrentApp, req: Request, next: Nex
     let Some((plane, wire)) = labels else {
         return next.run(req).await;
     };
-    let started = Instant::now();
+    let started = crate::store::monotonic_ns();
     let resp = next.run(req).await;
 
     if resp.extensions().get::<Counted>().is_some() {
         return resp;
     }
+    observed(&app, plane, wire, &resp, started);
+    resp
+}
+
+/// Record an uncounted mounted request, measured from its arrival reading to this one.
+fn observed(app: &crate::state::App, plane: &str, wire: &str, resp: &Response, started: u64) {
+    let lasted = crate::store::monotonic_ns().saturating_sub(started);
     crate::telemetry::request_finished(
-        &app,
+        app,
         plane,
         wire,
         crate::telemetry::POOL_LABEL_UNRESOLVED,
         crate::telemetry::outcome_of(resp.status().as_u16()),
-        started.elapsed().as_secs_f64(),
+        std::time::Duration::from_nanos(lasted).as_secs_f64(),
     );
-    resp
 }
 
 /// A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.

@@ -30,6 +30,10 @@ impl ConsumedCredentials {
         self.names.extend_from_slice(carriers);
     }
 
+    pub(crate) fn carry_iter(&mut self, carriers: impl IntoIterator<Item = HeaderName>) {
+        self.names.extend(carriers);
+    }
+
     pub fn strip(&self, headers: &mut HeaderMap) {
         for name in &self.names {
             headers.remove(name);
@@ -67,6 +71,7 @@ impl ConsumedCredentials {
     pub(crate) fn strip_neutral(&self, head: &mut crate::inbound::Head) {
         use zeroize::Zeroize as _;
         head.fields.retain_mut(|(name, value)| {
+            // busbar:expect(bp::state_scan, reason = "config: the carrier names are the configured credential headers, a fixed handful per chain")
             let keep = !self
                 .names
                 .iter()

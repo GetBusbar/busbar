@@ -74,9 +74,14 @@ async fn a_bound_sink_takes_the_held_tail_then_every_new_amendment() {
         )
         .await
         .unwrap();
-    export_read(&journal, "sink", "logs", &serde_json::json!({ "a": 1 }))
-        .await
-        .unwrap();
+    export_read(
+        &journal,
+        "sink",
+        "logs",
+        crate::export::projection::Members::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(*sink.0.lock().unwrap(), vec![first + 1, first + 2]);
 }
 

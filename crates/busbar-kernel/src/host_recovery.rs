@@ -10,13 +10,18 @@ use busbar_contract::Secret;
 
 pub(super) const CALLERS: &str = "kernel-caller-bindings";
 
-type ActiveWork = Arc<Mutex<std::collections::HashSet<(Arc<str>, crate::host_work::Reference)>>>;
+/// Recovered work items handed back per poll.
+const RECOVERY_BATCH: usize = 8;
+
+type ActiveWork = Arc<Mutex<foldhash::HashSet<(Arc<str>, crate::host_work::Reference)>>>;
 
 #[derive(Default)]
 pub(super) struct RecoveryRuntime {
     ready: std::sync::atomic::AtomicBool,
-    scan: tokio::sync::Mutex<HashMap<Arc<str>, ScanState>>,
+    scan: tokio::sync::Mutex<foldhash::HashMap<Arc<str>, ScanState>>,
     active: ActiveWork,
+    /// One caller-binding store handle per opened instance, bound on its first use.
+    callers: Mutex<foldhash::HashMap<Arc<str>, Arc<ScopedStore>>>,
 }
 
 #[derive(Default)]
@@ -216,10 +221,11 @@ impl KernelServices {
             scan.cursor = page.next;
             scan.pending.extend(page.rows);
         }
+        // busbar:expect(bp::fresh_buffer, reason = "boot: resumes units a previous process left in flight; the recovery scheduler polls it, no request does")
         let mut ready = Vec::new();
         // A bounded batch retains the unconsumed part of this page, so slow polls cannot
         // starve the later records by repeatedly restarting from the first work item.
-        while ready.len() < 8 {
+        while ready.len() < RECOVERY_BATCH {
             let Some((reference, bytes)) = scan.pending.pop_front() else {
                 break;
             };
@@ -263,21 +269,48 @@ impl KernelServices {
         Ok(ready)
     }
 
+    /// The opened instance's caller-binding store handle, bound once per instance.
+    fn caller_rows(
+        &self,
+        store: &Arc<crate::persistence::facade::CoreStore>,
+        caller: &Caller,
+    ) -> Result<Arc<ScopedStore>, &'static str> {
+        let mut callers = self
+            .recovery
+            .callers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(rows) = callers.get(caller.namespace()) {
+            return Ok(Arc::clone(rows));
+        }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: binds an opened instance's caller-binding schema once, at its first session"
+        )]
+        let rows =
+            ScopedStore::host_private(store.clone(), caller.namespace(), [CALLERS.to_string()])
+                .map_err(|_| "caller binding unavailable")?;
+        let rows = Arc::new(rows);
+        callers.insert(caller.namespace().clone(), Arc::clone(&rows));
+        Ok(rows)
+    }
+
+    /// The durable caller reference for `principal`: the bound one when a row exists, else
+    /// `proposed`, bound now. The answer reuses `proposed`'s buffer either way.
     pub(crate) async fn resolve_caller_reference(
         &self,
         caller: &Caller,
         principal: &str,
-        proposed: &str,
+        mut proposed: String,
     ) -> Result<String, &'static str> {
-        if principal.is_empty() || !valid_reference(proposed) || self.facts(caller).is_none() {
+        if principal.is_empty() || !valid_reference(&proposed) || self.facts(caller).is_none() {
             return Err("invalid caller binding");
         }
         let Some(store) = self.persistence.get() else {
-            return Ok(proposed.to_owned());
+            return Ok(proposed);
         };
-        let rows =
-            ScopedStore::host_private(store.clone(), caller.namespace(), [CALLERS.to_string()])
-                .map_err(|_| "caller binding unavailable")?;
+        let rows = self.caller_rows(store, caller)?;
+        let mut binding: Option<Request> = None;
         for _ in 0..3 {
             if let Some(saved) = rows
                 .get(CALLERS, principal.as_bytes())
@@ -285,30 +318,49 @@ impl KernelServices {
                 .map_err(|_| "caller binding read failed")?
             {
                 let seal = crate::seal::lend();
-                return read_reference(saved.expose(&seal)).ok_or("corrupt caller binding");
+                let bound = read_reference(saved.expose(&seal)).ok_or("corrupt caller binding")?;
+                if bound != proposed {
+                    proposed.clear();
+                    proposed.push_str(bound);
+                }
+                return Ok(proposed);
             }
-            let request = Request {
-                op_id: store
-                    .next_id()
-                    .map_err(|_| "caller binding id unavailable")?
-                    .operation,
-                predicates: vec![Predicate {
-                    schema: CALLERS.into(),
-                    key: principal.as_bytes().to_vec(),
-                    expected: Expected::Absent,
-                }],
-                mutations: vec![Mutation::Put {
-                    schema: CALLERS.into(),
-                    key: principal.as_bytes().to_vec(),
-                    value: Secret::new(proposed.as_bytes().to_vec()),
-                }],
+            let op_id = store
+                .next_id()
+                .map_err(|_| "caller binding id unavailable")?
+                .operation;
+            let request = match &mut binding {
+                Some(request) => {
+                    request.op_id = op_id;
+                    request
+                }
+                None => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: the one-time durable binding row of a principal seen for the first time; the store request owns its bytes"
+                    )]
+                    let first = Request {
+                        op_id,
+                        predicates: vec![Predicate {
+                            schema: CALLERS.into(),
+                            key: principal.as_bytes().to_vec(),
+                            expected: Expected::Absent,
+                        }],
+                        mutations: vec![Mutation::Put {
+                            schema: CALLERS.into(),
+                            key: principal.as_bytes().to_vec(),
+                            value: Secret::new(proposed.as_bytes().to_vec()),
+                        }],
+                    };
+                    binding.insert(first)
+                }
             };
             match rows
-                .conditional_native(&request)
+                .conditional_native(request)
                 .await
                 .map_err(|_| "caller binding write failed")?
             {
-                Outcome::Applied => return Ok(proposed.to_owned()),
+                Outcome::Applied => return Ok(proposed),
                 Outcome::ConditionConflict => continue,
                 // Unconfirmed custody cannot authorize the plugin to create an index.
                 _ => return Err("caller binding not durably confirmed"),
@@ -320,9 +372,9 @@ impl KernelServices {
 
 /// Decodes a stored caller binding row: exactly one valid caller reference, the same pseudonymous
 /// value lent to plugins as `caller_ref`. Anything else is a corrupt row and yields nothing.
-fn read_reference(row: &[u8]) -> Option<String> {
+fn read_reference(row: &[u8]) -> Option<&str> {
     let reference = std::str::from_utf8(row).ok()?;
-    valid_reference(reference).then(|| String::from(reference))
+    valid_reference(reference).then_some(reference)
 }
 
 fn valid_reference(reference: &str) -> bool {
