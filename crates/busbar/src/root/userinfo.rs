@@ -37,10 +37,10 @@ impl UserinfoBasic {
         let mut plain = zeroize::Zeroizing::new(Vec::with_capacity(
             user.len() + 1 + pass.map_or(0, |p| p.len()),
         ));
-        plain.extend_from_slice(user.as_bytes());
-        plain.push(b':');
+        busbar_contract::secure::append(&mut plain, user.as_bytes());
+        busbar_contract::secure::append(&mut plain, b":");
         if let Some(pass) = pass {
-            plain.extend_from_slice(pass.as_bytes());
+            busbar_contract::secure::append(&mut plain, pass.as_bytes());
         }
         Some(Self(Arc::new(Secret::new(basic_value(&plain)))))
     }

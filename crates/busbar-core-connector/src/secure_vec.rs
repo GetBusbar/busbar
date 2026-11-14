@@ -1,24 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CORE WIPING BUFFER (TRANSPORT-TLS §2.0). Both legs queue credential-bearing bytes (request
-//! heads with the injected `Authorization`, reply heads and bodies) in buffers that must not keep
-//! what they release. [`SecureVec`] is a byte queue whose consumed prefix is wiped as it is
-//! consumed, whose growth never reallocates live bytes in place, and whose allocation is
-//! volatile-wiped before it is freed (`Zeroizing`).
-//!
-//! Rules: (1) [`SecureVec::consume`] wipes `[head, head + n)` and advances `head`; nothing moves.
-//! (2) Compaction only when new bytes do not fit after `end` and at least half the used span is
-//! consumed; growth copies only `[head, end)` into a fresh zeroed block. (3) The read surface is
-//! `[head, end)` only ([`SecureVec::as_slice`]); no `Deref`, `Clone` or `PartialEq`, and `Debug`
-//! prints the length. (4) No `realloc` of live bytes. (5) Hot wipes are a plain fill; the
-//! volatile wipe runs only on the free path.
-
-#![forbid(unsafe_code)]
+//! The connector's per-thread wiping scratch slots over [`SecureVec`]. The buffer itself lives in
+//! `busbar_contract::secure` (one home for the wiping logic, reachable by plugins); this module
+//! re-exports it under its old path.
 
 use std::cell::Cell;
-use std::fmt;
-use std::io;
 use std::thread::LocalKey;
 
 use zeroize::Zeroizing;
@@ -298,50 +285,6 @@ pub(crate) fn scratch_misses() -> usize {
 
 #[cfg(not(test))]
 const fn scratch_missed() {}
-
-/// Wipe bytes the buffer still owns and will reuse. These are not dead stores: the allocation is
-/// read again through `as_slice`/`copy_within`, and the final wipe before the free is
-/// `Zeroizing`'s.
-fn wipe(s: &mut [u8]) {
-    s.fill(0);
-    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
-}
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static REFUSE_GROWTH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Live bytes moved by compaction or growth on this thread (the amortisation proof).
-    static MOVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn moved(n: usize) {
-    MOVED.with(|m| m.set(m.get() + n));
-}
-
-#[cfg(not(test))]
-const fn moved(_: usize) {}
-
-/// Test hook: while `refuse` is set on this thread, every [`SecureVec`] growth fails with
-/// [`Overflow`], as an allocator failure would.
-#[cfg(any(test, feature = "test-support"))]
-pub fn refuse_growth(refuse: bool) {
-    REFUSE_GROWTH.with(|r| r.set(refuse));
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn growth_refused() -> bool {
-    REFUSE_GROWTH.with(std::cell::Cell::get)
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-const fn growth_refused() -> bool {
-    false
-}
 
 #[cfg(test)]
 #[path = "tests/secure_vec_tests.rs"]

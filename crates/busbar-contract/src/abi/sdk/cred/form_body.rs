@@ -173,10 +173,10 @@ impl FormBody {
         let mut signatures = signatures.iter();
         for (i, (name, value)) in self.pairs.iter().enumerate() {
             if i > 0 {
-                out.push(b'&');
+                crate::secure::append(&mut out, b"&");
             }
             encode(&mut out, name.as_bytes());
-            out.push(b'=');
+            crate::secure::append(&mut out, b"=");
             match value {
                 FormValue::Public(v) => encode(&mut out, v.as_bytes()),
                 FormValue::Sealed(c) => encode(&mut out, c.wire()),

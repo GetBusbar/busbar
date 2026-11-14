@@ -7,7 +7,7 @@
 //! IEEE bits, and text its original bytes. No coercion, JSON, or secret logging.
 
 use crate::redacted::{OwnerSeal, Secret};
-use zeroize::Zeroizing;
+use crate::secure::SecureVec;
 
 const MAGIC: &[u8; 8] = b"BBLROW01";
 
@@ -67,31 +67,30 @@ pub fn encode<O: OwnerSeal>(
     if size > budget {
         return Err(Error::Budget);
     }
-    let mut bytes = Zeroizing::new(Vec::new());
-    bytes
-        .try_reserve_exact(size)
-        .map_err(|_| Error::Allocation)?;
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&count.to_le_bytes());
+    // Exact size, allocated once: the wiping buffer never grows (LINT-RULES LR-117).
+    let mut bytes = SecureVec::with_capacity(size).map_err(|_| Error::Allocation)?;
+    let mut put = |b: &[u8]| bytes.extend(b).map_err(|_| Error::Allocation);
+    put(MAGIC)?;
+    put(&count.to_le_bytes())?;
     for cell in cells {
         match cell {
-            Cell::Null => bytes.push(0),
+            Cell::Null => put(&[0])?,
             Cell::Integer(value) => {
-                bytes.push(1);
-                bytes.extend_from_slice(&value.to_le_bytes());
+                put(&[1])?;
+                put(&value.to_le_bytes())?;
             }
             Cell::RealBits(value) => {
-                bytes.push(2);
-                bytes.extend_from_slice(&value.to_le_bytes());
+                put(&[2])?;
+                put(&value.to_le_bytes())?;
             }
             Cell::Text(value) | Cell::Blob(value) => {
-                bytes.push(if matches!(cell, Cell::Text(_)) { 3 } else { 4 });
-                bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
-                bytes.extend_from_slice(value);
+                put(&[if matches!(cell, Cell::Text(_)) { 3 } else { 4 }])?;
+                put(&(value.len() as u64).to_le_bytes())?;
+                put(value)?;
             }
         }
     }
-    Ok(Secret::held(std::mem::take(&mut *bytes)))
+    Ok(Secret::held(std::mem::take(&mut *bytes.into_zeroizing())))
 }
 
 /// Validated borrowed row. Parsing does not allocate or copy protected payloads.

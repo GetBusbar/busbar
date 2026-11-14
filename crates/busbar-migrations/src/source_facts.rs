@@ -158,23 +158,22 @@ impl View {
     ) -> Result<(), Error> {
         let seal = crate::seal::lend();
         let group = origin.group().expose(&seal);
-        let mut key = zeroize::Zeroizing::new(Vec::with_capacity(
-            group.len().checked_add(17).ok_or(Error::Bounds)?,
-        ));
-        key.push(match origin.chunk.family {
+        // family, group length, group, then one 8-byte sequence: exact size, written in place,
+        // so the wiping buffer never grows (LINT-RULES LR-117).
+        let prefix = group.len().checked_add(9).ok_or(Error::Bounds)?;
+        let mut key = zeroize::Zeroizing::new(vec![0_u8; prefix + 8]);
+        key[0] = match origin.chunk.family {
             l::source::HistoricalFamily::Identity => 0,
             l::source::HistoricalFamily::Accounting => 1,
             l::source::HistoricalFamily::Archival => 2,
             l::source::HistoricalFamily::Audit => 3,
             l::source::HistoricalFamily::Evidence => 4,
-        });
-        key.extend_from_slice(&(group.len() as u64).to_le_bytes());
-        key.extend_from_slice(group);
-        let prefix = key.len();
+        };
+        key[1..9].copy_from_slice(&(group.len() as u64).to_le_bytes());
+        key[9..prefix].copy_from_slice(group);
         let mut count = 0u64;
         for sequence in 0..source.row_count() {
-            key.truncate(prefix);
-            key.extend_from_slice(&sequence.to_le_bytes());
+            key[prefix..].copy_from_slice(&sequence.to_le_bytes());
             let ordinal = source
                 .find_native(self.chunks, &key)?
                 .ok_or(Error::Verification)?;

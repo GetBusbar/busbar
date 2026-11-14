@@ -648,19 +648,21 @@ fn pointer(path: &str) -> Result<Zeroizing<Vec<String>>, PatchError> {
         if parts.len() == 128 {
             return Err(PatchError::Limit);
         }
-        let mut decoded = Zeroizing::new(String::new());
+        // Decoding never lengthens a part: one exact allocation, never grown (LINT-RULES LR-117).
+        let mut decoded = Zeroizing::new(String::with_capacity(part.len()));
         let mut chars = part.chars();
         while let Some(ch) = chars.next() {
-            decoded.push(match ch {
+            let ch = match ch {
                 '~' => match chars.next() {
                     Some('0') => '~',
                     Some('1') => '/',
                     _ => return Err(PatchError::Path),
                 },
                 ch => ch,
-            });
+            };
+            busbar_contract::secure::append_str(&mut decoded, ch.encode_utf8(&mut [0; 4]));
         }
-        parts.push(std::mem::take(&mut *decoded));
+        busbar_contract::secure::push(&mut parts, std::mem::take(&mut *decoded));
     }
     Ok(parts)
 }

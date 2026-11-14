@@ -4,7 +4,7 @@
 //! Shared stateless framing helpers and established error/media vocabulary.
 //! LLM dialect declarations and codecs live in their owning plane.
 
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 /// Error `type` for a missing or invalid API key.
 pub const ERR_TYPE_AUTHENTICATION: &str = "authentication_error";
@@ -189,12 +189,12 @@ impl SseFrames {
             .checked_add(chunk.len())
             .expect("SSE buffer length overflow");
         if required > self.buf.capacity() {
-            let mut grown = Zeroizing::new(Vec::new());
-
-            grown.reserve(required.max(self.buf.capacity().saturating_mul(2)));
+            // A fresh block of the final capacity (no reallocation of live bytes), then the old
+            // one wiped (LINT-RULES LR-117).
+            let mut grown = Vec::with_capacity(required.max(self.buf.capacity().saturating_mul(2)));
             grown.extend_from_slice(&self.buf);
             self.buf.zeroize();
-            self.buf = std::mem::take(&mut *grown);
+            self.buf = grown;
         }
         self.buf.extend_from_slice(chunk);
     }

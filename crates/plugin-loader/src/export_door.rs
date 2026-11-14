@@ -297,8 +297,8 @@ impl Shared {
             lines.iter().map(|l| l.bytes.len() + 1).sum(),
         ));
         for l in &lines {
-            batch.extend_from_slice(&l.bytes);
-            batch.push(b'\n');
+            busbar_contract::secure::append(&mut batch, &l.bytes);
+            busbar_contract::secure::append(&mut batch, b"\n");
         }
         let batch = Arc::new(batch);
         let op_id = self.op_id();

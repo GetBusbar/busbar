@@ -59,21 +59,19 @@ impl Cred {
 
     /// `Bearer <credential>`.
     pub fn bearer(&self) -> Seal {
-        let mut v = Zeroizing::new(b"Bearer ".to_vec());
-        v.extend_from_slice(self.wire());
-        self.seal(v)
+        // Exact size in one allocation (`concat`): the wiping buffer never grows (LR-117).
+        self.seal(Zeroizing::new(
+            [b"Bearer ".as_slice(), self.wire()].concat(),
+        ))
     }
 
     /// `Basic base64(user:credential)` (RFC 7617; the user's octets as they are).
     pub fn basic(&self, user: impl AsRef<[u8]>) -> Seal {
         let user = user.as_ref();
-        let mut pair = Zeroizing::new(Vec::with_capacity(user.len() + 1 + self.len()));
-        pair.extend_from_slice(user);
-        pair.push(b':');
-        pair.extend_from_slice(self.wire());
-        let mut v = Zeroizing::new(b"Basic ".to_vec());
-        v.extend_from_slice(&b64(&pair));
-        self.seal(v)
+        let pair = Zeroizing::new([user, b":", self.wire()].concat());
+        self.seal(Zeroizing::new(
+            [b"Basic ".as_slice(), b64(&pair).as_slice()].concat(),
+        ))
     }
 
     /// Whether `presented` equals the credential, compared over SHA-256 digests so neither content

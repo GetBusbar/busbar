@@ -107,8 +107,8 @@ impl SealedWrite {
         let mut buf = Zeroizing::new(Vec::with_capacity(wire.len()));
         for p in &wire.parts {
             match p {
-                Part::Public(b) => buf.extend_from_slice(b),
-                Part::Sealed(s) => buf.extend_from_slice(s.wire()),
+                Part::Public(b) => crate::secure::append(&mut buf, b),
+                Part::Sealed(s) => crate::secure::append(&mut buf, s.wire()),
             }
         }
         // The parts are consumed: their seals are wiped as soon as the wire holds them.

@@ -147,17 +147,18 @@ const MAGIC: &[u8; 8] = b"BBCDOC01";
 fn failure() -> String {
     "protected document checkpoint is invalid or changed".into()
 }
-fn put(out: &mut Vec<u8>, value: &[u8]) -> Result<(), String> {
+fn put(out: &mut SecureVec, value: &[u8]) -> Result<(), String> {
     let size = u32::try_from(value.len()).map_err(|_| failure())?;
-    out.try_reserve(4 + value.len())
-        .map_err(|_| "document checkpoint allocation refused")?;
-    out.extend_from_slice(&size.to_le_bytes());
-    out.extend_from_slice(value);
-    Ok(())
+    raw(out, &size.to_le_bytes())?;
+    raw(out, value)
 }
-fn count(out: &mut Vec<u8>, n: usize) -> Result<(), String> {
-    out.extend_from_slice(&u32::try_from(n).map_err(|_| failure())?.to_le_bytes());
-    Ok(())
+fn count(out: &mut SecureVec, n: usize) -> Result<(), String> {
+    raw(out, &u32::try_from(n).map_err(|_| failure())?.to_le_bytes())
+}
+/// Append to the checkpoint's wiping buffer, which never frees a block unwiped (LINT-RULES LR-117).
+fn raw(out: &mut SecureVec, bytes: &[u8]) -> Result<(), String> {
+    out.extend(bytes)
+        .map_err(|_| "document checkpoint allocation refused".to_owned())
 }
 fn path_bytes(path: &Path) -> Vec<u8> {
     #[cfg(windows)]
@@ -315,22 +316,25 @@ impl Inventory {
         Ok(())
     }
     fn material(&self) -> Result<Zeroizing<Vec<u8>>, String> {
-        let mut out = Zeroizing::new(vec![platform()]);
+        let mut out = SecureVec::new();
+        raw(&mut out, &[platform()])?;
         count(&mut out, self.documents.len())?;
         for document in &self.documents {
             let p = &document.publication;
             put(&mut out, &path_bytes(&p.path))?;
-            out.extend_from_slice(&p.original_digest);
-            out.extend_from_slice(&p.target_digest);
-            out.extend_from_slice(&p.transform_id);
-            out.push(u8::from(p.locked));
-            out.push(u8::from(document.read_only));
+            raw(&mut out, &p.original_digest)?;
+            raw(&mut out, &p.target_digest)?;
+            raw(&mut out, &p.transform_id)?;
+            raw(
+                &mut out,
+                &[u8::from(p.locked), u8::from(document.read_only)],
+            )?;
             match &document.metadata {
                 Some(bytes) => {
-                    out.push(1);
+                    raw(&mut out, &[1])?;
                     put(&mut out, bytes)?;
                 }
-                None => out.push(0),
+                None => raw(&mut out, &[0])?,
             };
             put(&mut out, &p.original)?;
             put(&mut out, &p.converted)?;
@@ -346,12 +350,13 @@ impl Inventory {
             put(&mut out, &secret.bytes)?;
             put(&mut out, &path_bytes(&secret.path))?;
         }
-        Ok(out)
+        Ok(out.into_zeroizing())
     }
     fn encoded(&self, migration: [u8; 16], phase: Phase) -> Result<Secret<Vec<u8>>, String> {
-        let mut out = Zeroizing::new(MAGIC.to_vec());
-        out.extend_from_slice(&migration);
-        out.extend_from_slice(&self.digest);
+        let mut out = SecureVec::new();
+        raw(&mut out, MAGIC)?;
+        raw(&mut out, &migration)?;
+        raw(&mut out, &self.digest)?;
         let (tag, index) = match phase {
             Phase::Intent => (0, 0),
             Phase::Validated => (1, 0),
@@ -360,10 +365,10 @@ impl Inventory {
             Phase::Deferred(i) => (4, i),
             Phase::Complete => (5, 0),
         };
-        out.push(tag);
-        out.extend_from_slice(&index.to_le_bytes());
-        out.extend_from_slice(&self.material()?);
-        Ok(Secret::new(std::mem::take(&mut *out)))
+        raw(&mut out, &[tag])?;
+        raw(&mut out, &index.to_le_bytes())?;
+        raw(&mut out, &self.material()?)?;
+        Ok(Secret::new(std::mem::take(&mut *out.into_zeroizing())))
     }
     fn decode(protected: &Secret<Vec<u8>>, migration: [u8; 16]) -> Result<(Self, Phase), String> {
         let seal = busbar_kernel::seal::lend();

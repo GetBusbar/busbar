@@ -406,17 +406,14 @@ struct ProtectedJson {
 }
 impl std::io::Write for ProtectedJson {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let length = self
-            .bytes
+        self.bytes
             .len()
             .checked_add(bytes.len())
             .filter(|length| *length <= self.budget)
             .ok_or_else(|| std::io::Error::other("frozen overlay encoding budget exceeded"))?;
-        let additional = length - self.bytes.len();
-        self.bytes
-            .try_reserve(additional)
+        // Grows into a fresh block and wipes the old one (LINT-RULES LR-117).
+        busbar_contract::secure::try_append(&mut self.bytes, bytes)
             .map_err(|_| std::io::Error::other("frozen overlay encoding allocation refused"))?;
-        self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {

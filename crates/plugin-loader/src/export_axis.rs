@@ -273,7 +273,7 @@ impl<'r> ExportRows<'r> {
                 Ok(bytes) => bytes,
                 Err(error) => return Some(vec![error.to_string()]),
             };
-            listed.push((name.clone(), bytes.expose(seal).clone()));
+            busbar_contract::secure::push(&mut listed, (name.clone(), bytes.expose(seal).clone()));
         }
         #[expect(
             clippy::disallowed_methods,
