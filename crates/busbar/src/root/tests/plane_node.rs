@@ -5258,3 +5258,6 @@ async fn a_same_dialect_rerank_puts_identical_search_units_on_both_books() {
         );
     }
 }
+
+#[path = "work_budget.rs"]
+mod work_budget;
