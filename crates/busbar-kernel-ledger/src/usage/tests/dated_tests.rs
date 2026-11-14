@@ -96,7 +96,6 @@ fn a_card_edit_mid_window_prices_each_segment_at_the_card_it_was_earned_under() 
         &live,
         Some(DatedHistory {
             view: history.current(),
-            now_ms: EDIT_MS + 60_000,
         }),
     )
     .expect("priced");
@@ -165,7 +164,6 @@ fn the_fee_base_splits_by_the_era_each_request_was_admitted_under() {
         &live,
         Some(DatedHistory {
             view: history.current(),
-            now_ms: EDIT_MS + 1,
         }),
     )
     .unwrap();
@@ -206,7 +204,6 @@ fn an_era_older_than_the_window_resolves_at_the_window_start() {
         &live,
         Some(DatedHistory {
             view: history.current(),
-            now_ms: EDIT_MS + 2_000,
         }),
     )
     .unwrap();
@@ -232,7 +229,6 @@ fn a_segment_no_entry_covers_refuses() {
         &card(1.0, 0),
         Some(DatedHistory {
             view: history.current(),
-            now_ms: EDIT_MS,
         }),
     );
     assert!(
@@ -250,7 +246,7 @@ fn exact_opening_and_config_counts_keep_their_prices_across_later_windows() {
     let units = input(100_000);
     let live = card(10.0, 7);
     let window_start = EDIT_MS + 1_000;
-    let dated = Some(DatedHistory::of(&history, window_start));
+    let dated = Some(DatedHistory::of(&history));
     let mut fees = FeeEras::<RawRateEra>::default();
     fees.charge(old);
     fees.charge(new);
@@ -310,7 +306,7 @@ fn a_nonzero_serving_era_before_the_window_keeps_its_original_card() {
         [],
         window_start,
         &live,
-        Some(DatedHistory::of(&history, window_start)),
+        Some(DatedHistory::of(&history)),
     )
     .expect("the timestamp names its unique original entry");
     assert_eq!(got.minor_i64(), Ok(100));
@@ -339,7 +335,7 @@ fn an_amendment_uses_wall_window_and_never_the_live_configuration_card() {
             [(old, 1)],
             window_start,
             &live,
-            Some(DatedHistory { view, now_ms: from }),
+            Some(DatedHistory { view }),
         )
         .expect("the amendment and original card are recorded")
         .minor_i64()
@@ -395,7 +391,7 @@ fn exact_provenance_prices_open_classes_and_every_fee_lane_through_tally() {
         [(old, 2)],
         EDIT_MS + 1_000,
         &new_card,
-        Some(DatedHistory::of(&history, EDIT_MS + 1_000)),
+        Some(DatedHistory::of(&history)),
     )
     .expect("all counts use the old complete card");
     assert_eq!(got.minor_i64(), Ok(2 + 6 + 2 * 5 + 3 * 7 + 2 * 11));
@@ -416,7 +412,7 @@ fn exact_provenance_missing_entry_and_overflow_still_refuse() {
             [],
             at,
             &live,
-            Some(DatedHistory::of(&history, at))
+            Some(DatedHistory::of(&history))
         ),
         Err(MoneyError::NoCardInForce { at })
     );
@@ -430,7 +426,7 @@ fn exact_provenance_missing_entry_and_overflow_still_refuse() {
             [],
             0,
             &expensive,
-            Some(DatedHistory::of(&history, 0))
+            Some(DatedHistory::of(&history))
         ),
         Err(MoneyError::Overflow)
     );
@@ -460,7 +456,7 @@ fn an_old_entry_row_can_straddle_a_nominal_configuration_cutover() {
         [],
         bucket_start,
         &live,
-        Some(DatedHistory::of(&history, bucket_start + BUCKET_MS)),
+        Some(DatedHistory::of(&history)),
     )
     .expect("the exact old entry prices the entire aggregate");
     assert_eq!(got.minor_i64(), Ok(600));
@@ -503,7 +499,7 @@ fn measurement_dated_readback_prices_only_reported_classes_at_the_serving_entry(
         [],
         EDIT_MS + 1_000,
         &live,
-        Some(DatedHistory::of(&history, EDIT_MS + 1_000)),
+        Some(DatedHistory::of(&history)),
     )
     .unwrap();
     assert_eq!(got, Money::of_nanos(5_000).unwrap());
@@ -514,7 +510,7 @@ fn measurement_dated_readback_prices_only_reported_classes_at_the_serving_entry(
             [],
             EDIT_MS + 1_000,
             &live,
-            Some(DatedHistory::of(&history, EDIT_MS + 1_000)),
+            Some(DatedHistory::of(&history)),
         ),
         Err(MoneyError::ClassUnpriced { .. })
     ));

@@ -8,4 +8,6 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod cost;
+#[cfg(any(test, feature = "test-support"))]
+mod test_support;
 pub mod usage;

@@ -292,8 +292,7 @@ impl BudgetCell {
     ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
         use busbar_kernel_ledger::usage::{price_dated_counts_raw, DatedHistory};
         let history = crate::rate_apply::dated_history();
-        let now_ms = crate::store::now_ms();
-        let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
+        let dated = history.as_deref().map(DatedHistory::of);
         let fees = (self.fee_eras.split(self.billable_requests)).filter(|_| include_fee);
         let rows = self.models.iter().map(|m| (&*m.model, m.era, &m.cur));
         let start_ms = self.window_start.saturating_mul(1_000);

@@ -674,6 +674,8 @@ busbar-kernel = { path = "../../crates/busbar-kernel", features = ["test-support
 # The amendment-chain verify test edits the held journal in memory (`tamper_node_for_test`), which the
 # audit crate exposes to a dependent's tests only behind this feature.
 busbar-kernel-audit = { path = "../../crates/busbar-kernel-audit", features = ["test-support"] }
+# The money equivalence proof builds ledger rows and postings with the ledger fixtures.
+busbar-kernel-ledger = { path = "../../crates/busbar-kernel-ledger", features = ["test-support"] }
 # The core test kit: the local token issuer, the connection-table doubles, the auth axis's stand-in
 # and the root's door fixtures.
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
