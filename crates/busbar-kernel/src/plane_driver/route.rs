@@ -630,11 +630,20 @@ enum Toward<'r> {
     FarEnd(&'r mut OutboundRequest),
     Caller,
 
-    Session(&'r mut OutboundRequest),
+    Session(&'r mut OutboundRequest, &'r mut SessionLeg),
 
     Response(&'r mut OutboundRequest),
 
     Nowhere,
+}
+
+/// A session frame's far-bound state. Once the session has dialed, its frames carry only body
+/// and text, so the route (verb, target, fields) is not copied again, and whether a frame goes
+/// far is what the plane emitted, not whether the frame differs from an empty request.
+#[derive(Debug)]
+struct SessionLeg {
+    dialed: bool,
+    far: bool,
 }
 
 type Keep = Arc<Mutex<Option<Box<PieceBufs>>>>;
@@ -1579,7 +1588,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
             let caller_bound = match &*toward {
                 Toward::Caller => true,
-                Toward::Session(_) | Toward::Response(_) => out.flags & EMIT_TO_FAR_END == 0,
+                Toward::Session(..) | Toward::Response(_) => out.flags & EMIT_TO_FAR_END == 0,
                 Toward::FarEnd(request) => {
                     out.flags & EMIT_TO_FAR_END == 0
                         && (out.flags & EMIT_DONE != 0
@@ -1659,18 +1668,37 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let far = match toward {
                 Toward::FarEnd(_) => true,
-                Toward::Session(_) | Toward::Response(_) => out.flags & EMIT_TO_FAR_END != 0,
+                Toward::Session(..) | Toward::Response(_) => out.flags & EMIT_TO_FAR_END != 0,
                 Toward::Caller | Toward::Nowhere => false,
+            };
+            let (session, routes) = match &mut *toward {
+                Toward::Session(_, leg) => {
+                    if far && out.flags & EMIT_TO_FAR_END != 0 {
+                        leg.far = true;
+                    }
+                    (true, !leg.dialed)
+                }
+                _ => (false, true),
             };
             match toward {
                 Toward::Nowhere => return Step::Answered(out.flags & EMIT_DONE != 0),
-                Toward::FarEnd(request) | Toward::Session(request) | Toward::Response(request)
+                Toward::FarEnd(request)
+                | Toward::Session(request, _)
+                | Toward::Response(request)
                     if far =>
                 {
                     if out.flags & EMIT_TO_FAR_END != 0 {
-                        if out.verb.len != 0 {
-                            request.verb = bufs.arena(out.verb).to_vec();
-                            request.target = bufs.arena(out.target).to_vec();
+                        if routes {
+                            if session && (out.verb.len != 0 || out.fields_written != 0) {
+                                busbar_contract::stage_probe::tick(
+                                    busbar_contract::stage_probe::Derive::SessionRoute,
+                                );
+                            }
+                            if out.verb.len != 0 {
+                                request.verb = bufs.arena(out.verb).to_vec();
+                                request.target = bufs.arena(out.target).to_vec();
+                            }
+                            request.fields.extend(bufs.fields_of(out.fields_written));
                         }
                         if out.need != 0 {
                             request.need = out.need;
@@ -1678,7 +1706,6 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         if out.flags & PIECE_OUT_TEXT != 0 {
                             request.text = true;
                         }
-                        request.fields.extend(bufs.fields_of(out.fields_written));
                         request.body.extend_from_slice(emitted);
                     }
                 }
