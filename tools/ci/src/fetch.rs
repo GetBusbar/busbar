@@ -217,6 +217,85 @@ fn transfer(
     Ok((code, target, hash.hex(), received))
 }
 
+/// Outcome of a bounded in-memory GET.
+pub enum Got {
+    /// The body exceeded the bound; the transfer was stopped.
+    Exceeded,
+    /// curl finished: final HTTP code (0 when no response), curl exit, body.
+    Done { code: u16, exit: i32, body: Vec<u8> },
+}
+
+/// One bounded GET without following redirects (`header` is the only
+/// credential carrier and reaches curl only through its stdin configuration).
+pub fn get(url: &str, header: &str, limit: u64) -> Result<Got> {
+    let config = format!(
+        "url = {}\nheader = {}\nsilent\nshow-error\nproto = \"=https\"\nmax-redirs = 0\n\
+         globoff\nconnect-timeout = 120\nspeed-limit = 1\nspeed-time = 120\n\
+         write-out = \"%{{stderr}}\\n{MARKER}%{{http_code}} %{{redirect_url}}\\n\"\n",
+        quoted(url)?,
+        quoted(header)?
+    );
+    let options = proc::Options {
+        env: vec![
+            ("PATH".into(), proc::HOST_PATH.into()),
+            ("LC_ALL".into(), "C".into()),
+        ],
+        ..Default::default()
+    };
+    let mut command = proc::command(
+        &proc::strings(&[CURL, "--disable", "--config", "-"]),
+        &options,
+    )?;
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{CURL}: {e}"))?;
+    let mut input = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || {
+        let _ = input.write_all(config.as_bytes());
+    });
+    let mut stderr = child.stderr.take().unwrap();
+    let errors = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = (&mut stderr).take(1 << 20).read_to_end(&mut out);
+        out
+    });
+    let mut body = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .unwrap()
+        .take(limit + 1)
+        .read_to_end(&mut body);
+    let exceeded = body.len() as u64 > limit;
+    if exceeded || read.is_err() {
+        proc::signal_process(-(child.id() as i32), proc::SIGKILL);
+    }
+    let waited = proc::supervise(
+        &mut child,
+        &proc::Options {
+            timeout: Some(Duration::from_secs(30)),
+            ..Default::default()
+        },
+        "curl",
+    );
+    let _ = writer.join();
+    let stderr = String::from_utf8_lossy(&errors.join().unwrap_or_default()).into_owned();
+    if exceeded {
+        return Ok(Got::Exceeded);
+    }
+    let exited = waited?;
+    read.map_err(|e| e.to_string())?;
+    let code = status(&stderr).map(|(code, _)| code).unwrap_or(0);
+    Ok(Got::Done {
+        code,
+        exit: exited.code().unwrap_or(-1),
+        body,
+    })
+}
+
 fn status_or_detail(stderr: &str, token: &str) -> Result<(u16, String)> {
     status(stderr).map_err(|e| format!("{e}: {}", redact(stderr, token)))
 }

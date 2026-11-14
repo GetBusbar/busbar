@@ -1,16 +1,20 @@
 mod bootstrap;
 mod fetch;
 mod images;
+mod inflate;
 mod inputs;
 mod isolation;
 mod isotime;
 mod json;
 mod policy;
 mod proc;
+mod py;
+mod retention;
 mod security;
 mod sha256;
 mod tar;
 mod toml;
+mod zip;
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
