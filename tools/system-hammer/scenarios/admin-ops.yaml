@@ -1,6 +1,6 @@
 name: admin-ops
 group: admin
-description: Admin API under load - key listing, key minting and stats beside openai>openai traffic, and alone.
+description: Admin API under load - key listing, key minting and stats beside openai>openai traffic, and alone (an open-loop 40/s case, since the admin API rate-limits a closed loop).
 config: |
   listen: "{LISTEN}"
   admin_listen: "{ADMIN}"
