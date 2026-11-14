@@ -842,3 +842,54 @@ fn configured_plain_connect_proxy_carries_an_open_web_tls_target() {
         peer.await.unwrap();
     });
 }
+
+#[test]
+fn no_proxy_star_exempts_ip_literals_too() {
+    for host in ["10.0.0.1", "::1", "[::1]", "api.upstream.test"] {
+        assert!(no_proxy_matches("*", host), "`*` exempts {host}");
+        assert!(
+            no_proxy_matches("example.com, *", host),
+            "`*` anywhere in the list exempts {host}"
+        );
+    }
+}
+
+#[test]
+fn request_method_env_does_not_disable_proxy() {
+    std::env::set_var("REQUEST_METHOD", "GET");
+    let config = test_config("proxy.corp", 3128, None, "internal");
+    let via = selected(&config, true, "api.upstream.test");
+    let exempt = config.exempts("api.upstream.test");
+    std::env::remove_var("REQUEST_METHOD");
+    assert_eq!(
+        via.as_deref(),
+        Some("proxy.corp:3128"),
+        "the CGI rule never turns a configured proxy off"
+    );
+    assert!(!exempt, "the CGI rule never widens the exemption list");
+}
+
+#[test]
+fn no_proxy_unparseable_host_is_not_exempt() {
+    for host in [
+        "a.com/x",
+        "a.com:443",
+        "a.com?q",
+        "a.com#f",
+        "evil.com/a.com",
+        "",
+    ] {
+        assert!(
+            !no_proxy_matches("a.com", host),
+            "{host:?} must go through the proxy"
+        );
+    }
+}
+
+#[test]
+fn no_proxy_userinfo_host_is_not_exempt() {
+    assert!(!no_proxy_matches("10.0.0.0/8", "x@10.0.0.1"));
+    assert!(!no_proxy_matches("10.0.0.1", "x@10.0.0.1"));
+    assert!(!no_proxy_matches("a.com", "u@a.com"));
+    assert!(!no_proxy_matches("a.com", "u:p@a.com"));
+}
