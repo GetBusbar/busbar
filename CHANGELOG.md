@@ -20,6 +20,10 @@ All notable changes to Busbar are documented here. The format is based on
   status, latency and failover reason, outcome, status and total latency. No body, header or
   credential is logged. At the default level none of it is computed.
 
+- A hooked request's projection is read in place: hooks see the plane's arena without copying the
+  prompt, a request stage reuses at most two arenas whatever its rewrite count, and a plane that
+  asks for more projection room than its input can need is refused and counted by
+  `busbar_hook_project_over_cap_total{part}`.
 - Cross-dialect Bedrock document requests use a neutral attachment label when the source filename is not a valid native document name.
 - Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.
 - Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.

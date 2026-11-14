@@ -25,9 +25,9 @@ fn the_seams_own_failed_verdict_keeps_its_503_and_a_hook_status_is_clamped() {
 fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_refused() {
     use super::bound_entry;
     use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL};
-    let named = |entry: &str| {
-        let mut view = super::Projection::empty(entry.to_string(), String::new());
-        view.projected = Some(b"{}".to_vec());
+    let named = |entry: &'static str| {
+        let mut view = super::Projection::empty(entry, "");
+        view.projected = Some(b"{}".as_slice());
         view
     };
     let (files, shell, none) = (named("files"), named("shell"), named(""));
@@ -62,7 +62,7 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
         bound_entry(
             Some(b"files"),
             ROUTE_DIRECT,
-            &super::Projection::default(),
+            &super::Projection::empty("", ""),
             holds
         )
         .ok(),
@@ -75,9 +75,9 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
 fn a_pool_route_preserves_its_named_pool_or_binds_a_verified_member() {
     use super::bound_entry;
     use busbar_contract::abi::plane::ROUTE_POOL;
-    let named = |entry: &str| {
-        let mut view = super::Projection::empty(entry.to_string(), String::new());
-        view.projected = Some(b"{}".to_vec());
+    let named = |entry: &'static str| {
+        let mut view = super::Projection::empty(entry, "");
+        view.projected = Some(b"{}".as_slice());
         view
     };
     let holds = |pool: &[u8], member: &str| pool == b"pair" && member == "files";
@@ -150,9 +150,9 @@ fn the_gate_first_binder_names_the_dialect_a_unit_arrived_in() {
 #[test]
 fn a_scope_unit_binds_the_entry_its_scope_resolved_to_inside_the_recorded_candidates() {
     use super::scoped_entry;
-    let named = |entry: &str| {
-        let mut view = super::Projection::empty(entry.to_string(), String::new());
-        view.projected = Some(b"{}".to_vec());
+    let named = |entry: &'static str| {
+        let mut view = super::Projection::empty(entry, "");
+        view.projected = Some(b"{}".as_slice());
         view
     };
     let candidates: &[u8] = b"conformance, other";
@@ -209,7 +209,7 @@ fn a_scope_unit_binds_the_entry_its_scope_resolved_to_inside_the_recorded_candid
         scoped_entry(
             Some(candidates),
             Some(b"conformance"),
-            &super::Projection::default()
+            &super::Projection::empty("", "")
         )
         .ok(),
         Some(None)

@@ -27,7 +27,10 @@ use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_mes
 use busbar_contract::hooks::TransformOutcome;
 
 use super::super::{DriverSteps, FarEnd, PlaneUnits};
-use super::{rewrite_applied, veto_by, HookBinder, HookRead, Projection, RewriteChain, Stopped};
+use super::{
+    rewrite_applied, veto_by, HookBinder, HookRead, ProjectArena, Projected, Projection,
+    RewriteChain, Stopped,
+};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::ResolvedPolicy;
 use busbar_kernel_audit::record::{HookApplied, HookHead};
@@ -149,7 +152,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         binder: &dyn HookBinder,
         ran: &mut Vec<HookApplied>,
     ) -> Result<(), Stopped> {
-        let first = self.project(None, false);
+        let (arena, first) = self.project(self.fresh_arena(), None, false);
         let (principal, recorded, route) = {
             let st = self.lock();
             (
@@ -165,10 +168,11 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         } else {
             None
         };
-        let mut view: Projection = match first {
-            Ok(view) => view,
+        let mut cur = match first {
+            Ok(at) => Projected { arena, at },
 
             Err(Stopped::Unparseable { marked }) => {
+                drop(arena);
                 let named = if scoped {
                     resolved.as_deref()
                 } else {
@@ -183,7 +187,10 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             Err(other) => return Err(other),
         };
+        // The spare arena a rewrite re-projects into: a stage run allocates at most two.
+        let mut spare: Option<ProjectArena> = None;
 
+        let view = cur.view();
         let holds = |pool: &[u8], member: &str| self.steps.pool_holds(pool, member);
         let bound = if scoped {
             scoped_entry(recorded.as_deref(), resolved.as_deref(), &view)?
@@ -204,8 +211,10 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         super::record_request_id(hooks.request_id);
 
         self.screen_gates(&hooks, &view, ran).await?;
+        drop(view);
 
         for (timeout, hook) in &hooks.rewrites {
+            let view = cur.view();
             let req = view.request(
                 hooks.request_id,
                 &view.pool,
@@ -220,21 +229,27 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             let outcome = hook.transform(&req, *timeout).await;
             drop(req);
+            drop(view);
             ran.push(rewrite_applied(hook.name(), &outcome));
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
-                    let mut next = match self.project(Some(&bytes), true) {
+                    let arena = spare.take().unwrap_or_else(|| self.fresh_arena());
+                    let (mut arena, next) = self.project(arena, Some(&bytes), true);
+                    let names_entry = |pool: &str| pool == entry || (scoped && pool.is_empty());
+                    let next = match next {
                         Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => next,
 
                         Ok(next) if next.rewrite_not_applicable => {
-                            if next.pool != entry && !(scoped && next.pool.is_empty()) {
+                            if !names_entry(&next.pool(&arena)) {
                                 return Err(Stopped::Unreadable);
                             }
+                            arena.reset();
+                            spare = Some(arena);
                             rewrite_not_applicable(hook.name(), ran);
                             tracing::warn!(
                                 hook = hook.name(),
-                                entry = %view.pool,
+                                entry = %cur.view().pool,
                                 "rewrite not applicable to this request; forwarded unmodified"
                             );
                             continue;
@@ -243,18 +258,18 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                         Err(fault @ Stopped::Veto(_)) => return Err(fault),
 
                         Ok(_) | Err(_) => {
-                            let (status, message) = refused_rewrite(&**hook, &view.pool, ran);
+                            let (status, message) = refused_rewrite(&**hook, &cur.view().pool, ran);
                             return Err(veto_by(status, message, hook.name()));
                         }
                     };
 
-                    if next.pool != entry && !(scoped && next.pool.is_empty()) {
+                    if !names_entry(&next.pool(&arena)) {
                         return Err(Stopped::Unreadable);
                     }
-                    if let Some(body) = next.rewritten.take() {
-                        self.lock().body = Some(bytes::Bytes::from(body));
+                    if let Some(body) = next.rewritten_body(&arena) {
+                        self.lock().body = Some(body);
                     }
-                    view = next;
+                    spare = Some(cur.accept(arena, next));
                 }
                 TransformOutcome::Reject { status, message } => {
                     let (status, message) = rewrite_refusal(status, &message);
@@ -264,7 +279,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Failed { message } => {
                     tracing::warn!(
                         hook = hook.name(),
-                        entry = %view.pool,
+                        entry = %cur.view().pool,
                         error = %message,
                         "rewrite hook could not answer; proceeding with the original body"
                     );
@@ -277,18 +292,18 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     async fn screen_gates(
         &self,
         hooks: &GatedHooks,
-        view: &Projection,
+        view: &Projection<'_>,
         ran: &mut Vec<HookApplied>,
     ) -> Result<(), Stopped> {
         if !hooks.gates.is_empty() {
             let now_ms = crate::store::now_ms();
             let door = DoorSubject {
-                projected: view.projected.as_deref(),
+                projected: view.projected,
                 container: &view.pool,
                 dialect: &view.dialect,
                 request_id: hooks.request_id,
                 key: hooks.key.as_deref(),
-                session: view.session.as_deref(),
+                session: view.session,
                 scan: hooks.scan.as_ref().map(|s| ScanSubstrate {
                     store: &s.store,
                     generation: s.generation,
@@ -324,7 +339,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 fn bound_entry<'v>(
     recorded: Option<&'v [u8]>,
     route: u8,
-    view: &'v Projection,
+    view: &'v Projection<'_>,
     holds: impl Fn(&[u8], &str) -> bool,
 ) -> Result<Option<&'v str>, Stopped> {
     if view.pool.is_empty() && view.projected.is_none() {
@@ -333,11 +348,11 @@ fn bound_entry<'v>(
     let recorded = recorded.unwrap_or_default();
     if route == busbar_contract::abi::plane::ROUTE_POOL && !recorded.is_empty() {
         if view.pool.is_empty()
-            || (recorded != view.pool.as_bytes() && !holds(recorded, view.pool.as_str()))
+            || (recorded != view.pool.as_bytes() && !holds(recorded, &*view.pool))
         {
             return Err(Stopped::Unreadable);
         }
-        return Ok(Some(&view.pool));
+        return Ok(Some(&*view.pool));
     }
     if recorded != view.pool.as_bytes() {
         return Err(Stopped::Unreadable);
@@ -350,7 +365,7 @@ fn bound_entry<'v>(
 fn scoped_entry<'v>(
     candidates: Option<&[u8]>,
     resolved: Option<&'v [u8]>,
-    view: &Projection,
+    view: &Projection<'_>,
 ) -> Result<Option<&'v str>, Stopped> {
     if view.pool.is_empty() && view.projected.is_none() {
         return Ok(None);
