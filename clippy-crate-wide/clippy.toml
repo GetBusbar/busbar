@@ -1,5 +1,5 @@
 # Core's CRATE-WIDE clippy rows: they bind every workspace member and target. Source:
-# GetBusbar/busbar-release ci/core-crate-wide-clippy-bans.toml (busbar-release 1f82bea22db37d5250604161f20d42c7fc2b4735), byte for byte
+# GetBusbar/busbar-release ci/core-crate-wide-clippy-bans.toml (busbar-release 240a8f5afc80cf6d16ec5a5f31cb89750f67f2c6), byte for byte
 # below this header. The root clippy.toml holds the request-path rows, which the workspace lints turn
 # off outside the request-path marker; these run as a second clippy pass with this directory as the
 # configuration and the disallowed lints raised on the command line (outranking [workspace.lints]):
