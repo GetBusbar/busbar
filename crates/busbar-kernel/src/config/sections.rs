@@ -327,10 +327,16 @@ pub struct ConfigMgmtCfg {
 }
 
 /// One top-level `rate_card:` entry: the four per-token rates in MICRO-units (1e-6 abstract cost
-/// unit) per token, one per pricing tier. A tier omitted in YAML prices at 0 for that tier (e.g. a
-/// model with no cache pricing simply omits the cache rates). Values must be finite and >= 0
-/// (validated at boot). Floats exist ONLY here at the config boundary: [`RateEntryCfg::raw_tier_rates`]
-/// converts them ONCE, exactly, to integer nano-units per token, and nothing past it carries a float.
+/// unit) per token, one per pricing tier. An omitted (or `null`) `cache_write_utok` means "no
+/// separate write tariff": cache writes price at `input_utok` ([`RateEntryCfg::cache_write_rate`]),
+/// the floor every provider bills a write at, so an unpriced write never silently bills 0. An
+/// explicit `0` is a configured free class; it reaches this type only through the admin API or a
+/// version-2 overlay, because a root `rate_card:` YAML `0` is the 1.5.5 spelling of "no separate
+/// tariff" and is removed before parse ([`zero_cache_write_models`]). Any other tier omitted in YAML
+/// prices at 0 for that tier (e.g. a model with no cache-read pricing simply omits that rate).
+/// Values must be finite and >= 0 (validated at boot). Floats exist ONLY here at the config
+/// boundary: [`RateEntryCfg::raw_tier_rates`] converts them ONCE, exactly, to integer nano-units per
+/// token, and nothing past it carries a float.
 ///
 /// `units:` prices the OPEN meter classes a plane declares on this lane — a rerank's
 /// `search_units`, an a2a `hops` — keyed by the class string, each rate in micro-units per unit like
@@ -348,22 +354,54 @@ pub struct RateEntryCfg {
     pub output_utok: f64,
     #[serde(default)]
     pub cache_read_utok: f64,
-    #[serde(default)]
-    pub cache_write_utok: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_utok: Option<f64>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub units: std::collections::BTreeMap<String, UnitRate>,
 }
 
 impl RateEntryCfg {
+    /// The cache-write rate this entry prices at: the configured `cache_write_utok`, else
+    /// `input_utok` (an omitted write rate means "no separate write tariff", never 0).
+    pub fn cache_write_rate(&self) -> f64 {
+        self.cache_write_utok.unwrap_or(self.input_utok)
+    }
+
     pub fn raw_tier_rates(&self) -> busbar_contract::billing::RawTierRates {
         let nanos = busbar_kernel_ledger::cost::representable_nano_rate;
         busbar_contract::billing::RawTierRates {
             input: nanos(self.input_utok),
             output: nanos(self.output_utok),
             cache_read: nanos(self.cache_read_utok),
-            cache_write: nanos(self.cache_write_utok),
+            cache_write: nanos(self.cache_write_rate()),
         }
     }
+}
+
+/// The models of a root `rate_card:` mapping whose `cache_write_utok` is the number 0 (`0` or
+/// `0.0`). In a root `rate_card:` that spelling is 1.5.5's "no separate write tariff" (1.5.5 billed
+/// Chat cache writes inside the input and wrote `0` into every card), never a free write class. The
+/// one predicate both the startup/migration unfold and the reload refusal use, so they cover the
+/// same keys: root entries only (plane `rate_card:` blocks are not 1.5.5 shapes), and only a
+/// number (a non-number is refused downstream as written).
+pub fn zero_cache_write_models(root: &serde_yaml::Mapping) -> Vec<String> {
+    let Some(card) = root
+        .get("rate_card")
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Vec::new();
+    };
+    card.iter()
+        .filter(|(_, entry)| {
+            entry
+                .get("cache_write_utok")
+                .and_then(serde_yaml::Value::as_f64)
+                .is_some_and(|rate| rate == 0.0)
+        })
+        .filter_map(|(model, _)| model.as_str())
+        .filter(|model| !model.contains(busbar_kernel_ledger::cost::PLANE_LANE_SEP))
+        .map(str::to_owned)
+        .collect()
 }
 
 pub fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {

@@ -72,7 +72,19 @@ impl MigrateHost for OverlayHost<'_> {
     }
 }
 
-pub fn migrate_overlay_with(bytes: &[u8], host: &dyn MigrateHost) -> Result<OverlayDoc, String> {
+/// A converted 1.5.5 overlay and what the conversion changed: `changes` for an explicit report
+/// (`--migrate-overlay`), `notices` for a startup caller that zeroizes `changes` and logs these
+/// at WARN instead (they hold only authored keys and fixed text).
+pub struct OverlayMigration {
+    pub doc: OverlayDoc,
+    pub changes: Vec<String>,
+    pub notices: Vec<String>,
+}
+
+pub fn migrate_overlay_with(
+    bytes: &[u8],
+    host: &dyn MigrateHost,
+) -> Result<OverlayMigration, String> {
     let mut source = super::overlay_legacy::parse_legacy_overlay(bytes)?;
     host.admit_config_profile(&super::provenance::HistoricalConfigProof::settings(
         "overlay.v1",
@@ -110,7 +122,7 @@ pub fn migrate_overlay_with(bytes: &[u8], host: &dyn MigrateHost) -> Result<Over
     let fragment = super::migrate_plugins::yaml_value(&Value::Object(fragment))?;
     let raw =
         serde_yaml::to_string(&fragment).map_err(|_| "cannot encode overlay migration input")?;
-    let converted = super::migrate::migrate_overlay_fragment(&raw, &OverlayHost(host))?;
+    let mut converted = super::migrate::migrate_overlay_fragment(&raw, &OverlayHost(host))?;
     if !converted.todos.is_empty() {
         return Err("overlay migration has unresolved plugin or configuration prerequisites; migrate the affected settings before retrying".into());
     }
@@ -142,7 +154,11 @@ pub fn migrate_overlay_with(bytes: &[u8], host: &dyn MigrateHost) -> Result<Over
     let bytes = serde_json::to_vec(&source).map_err(|_| "cannot encode migrated overlay")?;
     let mut doc = super::overlay_legacy::decode_legacy_overlay(&bytes)?;
     doc.version = busbar_kernel::config::overlay::OVERLAY_VERSION;
-    Ok(doc)
+    Ok(OverlayMigration {
+        doc,
+        changes: std::mem::take(&mut converted.changes),
+        notices: std::mem::take(&mut converted.notices),
+    })
 }
 
 #[cfg(test)]
@@ -216,7 +232,7 @@ mod tests {
     #[test]
     fn actual_overlay_shape_preserves_tombstones_controls_and_converts_plugin_settings() {
         let bytes = br#"{"version":1,"hooks":{"guard":{"kind":"tap","plugin":"observer","at":"response","groups":["restricted"],"on_error":"reject"}},"global_hooks":["guard"],"deleted":["old-hook"],"groups":{"restricted":{"enabled":false}},"deleted_groups":["old-grant"],"root":{"per_request_fee":7},"named_maps":{"identity-providers":{"corp":{"module":"test-lift","settings":{"token":"${UNCHANGED}"}}}}}"#;
-        let doc = migrate_overlay_with(bytes, &Host).unwrap();
+        let doc = migrate_overlay_with(bytes, &Host).unwrap().doc;
         assert_eq!(doc.deleted, ["old-hook"]);
         assert_eq!(doc.deleted_groups, ["old-grant"]);
         assert!(!doc.groups["restricted"].enabled);

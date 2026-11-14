@@ -1043,6 +1043,8 @@ async fn run(
             eprintln!("busbar: {e}");
         }
     }
+    // Startup conversion notices raised while the configuration loaded, before the log existed.
+    documents.replay_notices();
 
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "busbar starting");
 

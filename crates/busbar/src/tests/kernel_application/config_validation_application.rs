@@ -3240,7 +3240,7 @@ fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
         match tier {
             "input_utok" => entry.input_utok = v,
             "output_utok" => entry.output_utok = v,
-            _ => entry.cache_write_utok = v,
+            _ => entry.cache_write_utok = Some(v),
         }
         cfg.rate_card = Some(rate_card_for_actual_plane(
             [("m".to_string(), entry)].into_iter().collect(),
@@ -3311,7 +3311,7 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
                 input_utok: f64::NAN,
                 output_utok: -1.0,
                 cache_read_utok: f64::INFINITY,
-                cache_write_utok: 0.0,
+                cache_write_utok: Some(0.0),
                 ..Default::default()
             },
         )]),
@@ -3384,7 +3384,7 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
             input_utok: 3.0,
             output_utok: 15.0,
             cache_read_utok: 0.3,
-            cache_write_utok: 3.75,
+            cache_write_utok: Some(3.75),
             ..Default::default()
         },
     );

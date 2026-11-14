@@ -113,10 +113,10 @@ store:
   settings: { db_path: /var/lib/busbar/governance.db }
 
 rate_card:                               # per-model token pricing, micro-units per token
-  claude-sonnet: { input_utok: 3.0, output_utok: 15.0 }
+  claude-sonnet: { input_utok: 3.0, output_utok: 15.0, cache_write_utok: 3.75 }
   gpt-4o:        { input_utok: 2.5, output_utok: 10.0 }
   gemini-flash:  { input_utok: 0.15, output_utok: 0.6 }
-  claude-haiku:  { input_utok: 0.8, output_utok: 4.0 }
+  claude-haiku:  { input_utok: 0.8, output_utok: 4.0, cache_write_utok: 1.0 }
 per_request_fee: 0
 ```
 

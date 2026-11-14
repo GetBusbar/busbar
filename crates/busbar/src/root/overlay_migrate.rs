@@ -193,7 +193,10 @@ pub async fn run(
     let current =
         std::str::from_utf8(&current).map_err(|_| "current configuration is not UTF-8")?;
     let host = super::config_migrate::RootHost::for_document(current, current_config);
-    let doc = busbar_migrations::config::migrate_overlay::migrate_overlay_with(&bytes, &host)?;
+    let busbar_migrations::config::migrate_overlay::OverlayMigration { doc, changes, .. } =
+        busbar_migrations::config::migrate_overlay::migrate_overlay_with(&bytes, &host)?;
+    let changes = serde_json::to_string(&changes)
+        .map_err(|_| "cannot encode the overlay migration changes")?;
     for (key, entries) in &doc.named_maps {
         let section = config::named_map::NamedMapSection::sections()
             .into_iter()
@@ -237,7 +240,7 @@ pub async fn run(
     let store = config::overlay::OverlayStore::from_core(core.clone())?;
     let applied = store.import_once_async(source_sha256, &doc).await?;
     println!(
-        "{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"{}\",\"source_preserved\":true,\"source_sha256\":\"{}\"}}",
+        "{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"{}\",\"source_preserved\":true,\"source_sha256\":\"{}\",\"changes\":{changes}}}",
         if applied {
             "applied"
         } else {

@@ -1,8 +1,9 @@
 # The rate_card surface: per-model, four per-token tiers in MICRO-units. Exercises a model that
 # prices all four tiers (input/output/cache_read/cache_write), a model that omits the cache tiers
-# (they resolve to 0), a fractional rate, and a flat per_request_fee. rate_card is carried through
-# `resolve` VERBATIM, so this snapshot is exactly what the cost model reads. M3 moving the parse to
-# the retired engine crate must leave these numbers byte-identical.
+# (cache_read resolves to 0, cache_write to the entry's input_utok), a fractional rate, and a
+# flat per_request_fee. rate_card is carried through `resolve` VERBATIM, so this snapshot is
+# exactly what the cost model reads. M3 moving the parse to the retired engine crate must leave
+# these numbers byte-identical.
 listen: "0.0.0.0:8080"
 per_request_fee: 5
 providers:

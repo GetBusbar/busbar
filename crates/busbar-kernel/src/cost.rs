@@ -277,7 +277,7 @@ impl CostModel {
                             ("input".to_owned(), entry.input_utok),
                             ("output".to_owned(), entry.output_utok),
                             ("cache_read".to_owned(), entry.cache_read_utok),
-                            ("cache_write".to_owned(), entry.cache_write_utok),
+                            ("cache_write".to_owned(), entry.cache_write_rate()),
                         ]
                         .into_iter()
                         .chain(entry.units.iter().map(|(class, price)| {

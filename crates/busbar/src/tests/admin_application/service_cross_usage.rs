@@ -48,7 +48,7 @@ fn current_cost() -> busbar_kernel::cost::CostModel {
             input_utok: RATE_CURRENT,
             output_utok: 0.0,
             cache_read_utok: 0.0,
-            cache_write_utok: 0.0,
+            cache_write_utok: Some(0.0),
             ..Default::default()
         },
     )]);

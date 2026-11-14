@@ -287,7 +287,7 @@ async fn with_no_history_source_the_read_is_the_previous_release_to_the_byte() {
             input_utok: 10_000_000.0,
             output_utok: 20_000_000.0,
             cache_read_utok: 0.0,
-            cache_write_utok: 0.0,
+            cache_write_utok: Some(0.0),
             ..Default::default()
         },
     )]);
