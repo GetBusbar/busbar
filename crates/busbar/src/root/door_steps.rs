@@ -509,6 +509,22 @@ impl DoorFacts {
     }
 }
 
+/// The budget inputs one unit's admission reads (SINGLE-PATH SP-AD1): built once by
+/// `prepare_admission` for the unit's routed pool and consumed by its charge's first admission.
+/// A downgrade re-route builds its own for the new pool.
+struct BudgetPlan {
+    /// Its expected units, by class name.
+    units: BTreeMap<String, busbar_contract::Count>,
+    /// The pool it is charged through.
+    pool: String,
+    /// The lanes its routed members price on.
+    lanes: Vec<String>,
+    /// Its admission estimate over those lanes.
+    estimate: Option<i64>,
+    /// Its key's budget chain; `None` when a group the key names is missing.
+    chain: Option<busbar_kernel::cost::ChainPlan>,
+}
+
 /// What one unit carries between its steps.
 #[derive(Default)]
 struct DoorUnit {
@@ -528,6 +544,8 @@ struct DoorUnit {
     routed: Option<Routed>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<Arc<AdmitGrant>>,
+    /// Its budget inputs, built at `prepare_admission` and taken by its charge.
+    budget: Option<BudgetPlan>,
     charged_unit: Option<busbar_contract::caps::UnitKey>,
     /// Whether the unit's money facts were opened (it was charged).
     charged: bool,
@@ -874,11 +892,23 @@ impl<'s> DoorSteps<'s> {
         let (Some(gov), Some(money)) = (self.app.governance.as_ref(), self.money) else {
             return Ok(false);
         };
-        let (routed, expected) = {
-            let u = self.lock();
-            (u.routed.clone(), u.expected.clone())
+        let (routed, planned) = {
+            let mut u = self.lock();
+            (u.routed.clone(), u.budget.take())
         };
-        let units = self.expected_units(&expected)?;
+        let (units, mut planned) = match planned {
+            Some(BudgetPlan {
+                units,
+                pool,
+                lanes,
+                estimate,
+                chain,
+            }) => (units, Some((pool, lanes, estimate, chain))),
+            None => {
+                let expected = self.lock().expected.clone();
+                (self.expected_units(&expected)?, None)
+            }
+        };
         let lanes_of = |routed: &Option<Routed>| -> Vec<String> {
             routed
                 .iter()
@@ -890,10 +920,20 @@ impl<'s> DoorSteps<'s> {
         let mut routed = routed;
         let mut visited: Vec<String> = Vec::new();
         let (grant, pool, lanes) = loop {
-            let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
-            let pool = self.charged_pool(label);
-            let lanes = lanes_of(&routed);
-            let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
+            // The first admission reads the plan `prepare_admission` built; a downgrade
+            // re-route builds the pool, lanes and estimate for its new pool, and its admission
+            // resolves the chain itself.
+            let (pool, lanes, estimate, chain) = match planned.take() {
+                Some(plan) => plan,
+                None => {
+                    let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
+                    let pool = self.charged_pool(label);
+                    let lanes = lanes_of(&routed);
+                    let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
+                    let estimate = self.app.cost.estimate_counts_minor(&models, &units);
+                    (pool, lanes, estimate, None)
+                }
+            };
             if let Some(c) = &self.child_constraints {
                 let lane = plane_lane(&self.facts.plane, &c.grant.target_binding);
                 let fee = u128::try_from(self.app.cost.request_fee_on(&self.facts.plane))
@@ -909,13 +949,13 @@ impl<'s> DoorSteps<'s> {
                     return Err(Refusal::new(ReasonCode::Unpriced));
                 }
             }
-            match gov.try_admit_estimated_counts(
+            match gov.try_admit_planned(
                 &self.app.cost,
                 key,
                 &pool,
                 self.arrived,
-                &models,
-                &units,
+                estimate,
+                chain.as_ref(),
             ) {
                 Ok(grant) => break (grant, pool, lanes),
                 Err(LimitBlocked::Limit {
@@ -1237,16 +1277,31 @@ impl DriverSteps for DoorSteps<'_> {
             .flat_map(|(_, members)| members)
             .map(|m| plane_lane(&self.facts.plane, m))
             .collect();
-        let models: Vec<_> = lanes.iter().map(String::as_str).collect();
-        gov.check_observation_admission(
+        let estimate = {
+            let models: Vec<_> = lanes.iter().map(String::as_str).collect();
+            self.app.cost.estimate_counts_minor(&models, &units)
+        };
+        let chain = self.app.cost.plan_chain(key);
+        gov.check_observation_admission_on(
             &self.app.cost,
             key,
+            chain.as_ref(),
             &pool,
             self.arrived,
-            self.app.cost.estimate_counts_minor(&models, &units),
+            estimate,
         )
         .await
-        .map_err(|blocked| refusal_for(&blocked))
+        .map_err(|blocked| refusal_for(&blocked))?;
+        // The observation check read the routed pool only; a downgrade at the charge re-admits
+        // through its new pool without a second observation read, as before.
+        self.lock().budget = Some(BudgetPlan {
+            units,
+            pool,
+            lanes,
+            estimate,
+            chain,
+        });
+        Ok(())
     }
 
     fn admit(
