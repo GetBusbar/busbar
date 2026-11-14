@@ -214,6 +214,9 @@ pub struct Connection {
     cause: Option<ConnCause>,
     /// THE PROXY TUNNEL a dial through a proxy asks for before anything else rides the socket
     tunnel: Option<Tunnel>,
+    /// The connection failed while its proxy tunnel was still pending: the proxy hop, not the
+    /// target, is what failed (its connect, its CONNECT answer, or its deadline).
+    failed_at_proxy: bool,
     /// The framing's `begin` is parked on its ticket (an auth call it made is not ready): the
     opening_owed: bool,
     /// What the carrier read while the framing's `begin` was parked, in order, for the framer
@@ -545,7 +548,7 @@ impl Planned {
 
     /// Dial exactly `addr` — the address judged for [`Self::authority`] — with the name the entry
     pub fn dial_at(self, addr: std::net::SocketAddr) -> Result<Connection, Failure> {
-        self.dial_via(addr, None)
+        self.dial_via(addr, None).map_err(|(_, f)| f)
     }
 
     /// [`Self::dial_at`] `addr`, a connect the far end refuses moving on to each of `also` in
@@ -555,7 +558,7 @@ impl Planned {
         also: Vec<std::net::SocketAddr>,
     ) -> Result<Connection, Failure> {
         let via = (Arc::clone(&self.via.door), Arc::clone(&self.via.io));
-        let mut conn = self.dial_via(addr, None)?;
+        let mut conn = self.dial_via(addr, None).map_err(|(_, f)| f)?;
         if !also.is_empty() {
             conn.fallback = Some(Fallback {
                 door: via.0,
@@ -567,11 +570,13 @@ impl Planned {
     }
 
     /// Dial the PROXY at `proxy` and, once it connects, ask it for a tunnel to this plan's
-    pub fn dial_through(
+    /// A failure names the hop that failed: the target's own connection-security setup, or the
+    /// dial to the proxy.
+    pub(crate) fn dial_through(
         self,
         proxy: std::net::SocketAddr,
         connect: Vec<u8>,
-    ) -> Result<Connection, Failure> {
+    ) -> Result<Connection, (Hop, Failure)> {
         self.dial_via(proxy, Some(connect))
     }
 
@@ -580,7 +585,13 @@ impl Planned {
         self,
         addr: std::net::SocketAddr,
         connect: Option<Vec<u8>>,
-    ) -> Result<Connection, Failure> {
+    ) -> Result<Connection, (Hop, Failure)> {
+        let dialled = if connect.is_some() {
+            Hop::Proxy
+        } else {
+            Hop::Target
+        };
+        let target = |f: Failure| (Hop::Target, f);
         let authority_for_tunnel = self.located.authority.clone();
         let Self {
             door,
@@ -600,7 +611,8 @@ impl Planned {
                     Failure::Refused(
                         "the target asks for connection security and none is set".into(),
                     )
-                })?;
+                })
+                .map_err(target)?;
             let mut config = (*base).clone();
 
             config.alpn_protocols = if located.offer.is_empty() {
@@ -631,9 +643,12 @@ impl Planned {
                     .trim_end_matches(']')
                     .to_owned(),
             )
-            .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")))?;
+            .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")))
+            .map_err(target)?;
             Some(rustls::Connection::Client(unbounded(
-                rustls::ClientConnection::new(Arc::new(config), name).map_err(failed)?,
+                rustls::ClientConnection::new(Arc::new(config), name)
+                    .map_err(failed)
+                    .map_err(target)?,
             )))
         } else {
             None
@@ -643,7 +658,8 @@ impl Planned {
             Arc::clone(&via.io),
             &Dest::Authority(addr.to_string()),
         )
-        .map_err(dial_failure)?;
+        .map_err(dial_failure)
+        .map_err(|f| (dialled, f))?;
         // When TLS is active the SNI may come from located.name or, if that is None,
         // from the authority host (see the `host` fallback above).  Record whichever
         // name was actually offered so ConnFacts.sni is accurate.
@@ -662,7 +678,8 @@ impl Planned {
             (tls, presented),
             offered_name,
             &located.offer,
-        )?;
+        )
+        .map_err(|f| (dialled, f))?;
         conn.alpn_offer = alpn_offer;
         conn.tunnel = connect.map(|request| Tunnel {
             request,
@@ -673,6 +690,16 @@ impl Planned {
         });
         Ok(conn)
     }
+}
+
+/// WHICH HOP OF A PROXIED DIAL FAILED: the target's own setup (its connection security), or the
+/// dial to the proxy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hop {
+    /// The target: its connection-security setup failed before any connect.
+    Target,
+    /// The proxy: the dial to it failed.
+    Proxy,
 }
 
 /// A dial's remaining addresses ([`Connection::fallback`]) and the carrier that dials them.
@@ -770,6 +797,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            failed_at_proxy: false,
             fallback: None,
             alpn_offer: Vec::new(),
             offer: Vec::new(),
@@ -823,6 +851,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            failed_at_proxy: false,
             fallback: None,
             alpn_offer: Vec::new(),
             offer: Vec::new(),
@@ -973,6 +1002,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            failed_at_proxy: false,
             fallback: None,
             alpn_offer,
             offer: accept.alpn.clone(),
@@ -1361,8 +1391,14 @@ impl Connection {
         };
         if !matches!(self.phase, Phase::Failed(_)) {
             self.cause = Some(ConnCause { stage, text });
+            self.failed_at_proxy = self.tunnel.is_some();
         }
         self.phase = Phase::Failed(f);
+    }
+
+    /// Whether the connection failed before its proxy opened the tunnel (the proxy hop failed).
+    pub(crate) fn failed_at_proxy(&self) -> bool {
+        self.failed_at_proxy
     }
 
     /// The next frame piece: `Ready(Ok(Some))` a piece, `Ready(Ok(None))` the connection ended,

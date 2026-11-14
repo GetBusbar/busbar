@@ -20,6 +20,16 @@ All notable changes to Busbar are documented here. The format is based on
   status, latency and failover reason, outcome, status and total latency. No body, header or
   credential is logged. At the default level none of it is computed.
 
+- **plugins.fetch download failures say why:** a failed download on boot or reload, and the
+  `busbar config migrate` release-index fetch and migration plugin download, now append whether
+  busbar refused it (`busbar refused it before connecting: the destination guard refuses an
+  internal or loopback address (list it in advanced.allow_destinations to allow it)`, `... the URL
+  carries userinfo; busbar never sends credentials embedded in a URL`) or the path failed (`could
+  not connect to the registry: Connection refused (os error 111)`, `could not connect to the
+  egress proxy: the name did not resolve`, `the TLS handshake with the registry failed: ...`).
+  The 1.5.5 prefix `GET <url>: error sending request for url (<url>)` is unchanged, so prefix
+  matchers still match; exact-line matchers do not. Plugin-facing connection answers are unchanged.
+
 - Cross-dialect Bedrock document requests use a neutral attachment label when the source filename is not a valid native document name.
 - Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.
 - Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.
