@@ -93,7 +93,7 @@
     "crates/busbar-kernel/src/admin/seam.rs": {"once_dyn": 1, "by": "W3.11 (judgement: once W3.7 folds admin in, the slot names its concrete type)"},
     "crates/busbar-kernel/src/governance/recovery.rs": {"once_dyn": 1, "attach": 1, "by": "W3.11"},
     "crates/busbar-kernel/src/governance/unit_checkpoint.rs": {"once_dyn": 1, "attach": 1, "by": "W3.11"},
-    "crates/busbar-kernel/src/host_services.rs": {"once_dyn": 4, "attach": 7, "by": "W3.11"},
+    "crates/busbar-kernel/src/host_services.rs": {"once_dyn": 4, "attach": 8, "by": "W3.11"},
     "crates/busbar-kernel/src/plane_driver/money/observations.rs": {"attach": 1, "by": "W6.6 (judgement: a domain re-bind of a unit's observation scope, not a seam; the unit rewrite folds it)"},
     "crates/busbar-kernel/src/plane_driver/registry.rs": {"atomic_ptr": 1, "by": "W3.11"},
     "crates/busbar-kernel/src/preflight.rs": {"atomic_ptr": 1, "by": "W3.11"},
