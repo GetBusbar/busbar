@@ -284,6 +284,17 @@ pub(crate) fn test_archive(
     facts: Vec<HistoricalFact>,
     budget: usize,
 ) -> Arc<crate::archive_source::ArchiveSource<std::io::Cursor<zeroize::Zeroizing<Vec<u8>>>>> {
+    try_test_archive(facts, budget).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn try_test_archive(
+    facts: Vec<HistoricalFact>,
+    budget: usize,
+) -> Result<
+    Arc<crate::archive_source::ArchiveSource<std::io::Cursor<zeroize::Zeroizing<Vec<u8>>>>>,
+    Error,
+> {
     use busbar_contract::persistence::legacy_row;
     busbar_contract::own_seal!(Fixture);
     let reader = l::SourceReader::new(
@@ -347,15 +358,12 @@ pub(crate) fn test_archive(
     let bytes = zeroize::Zeroizing::new(writer.finish().unwrap().0);
     let source = archive::read(std::io::Cursor::new(bytes), limits).unwrap();
     let view = View::new(reader, 0, 1, vec![2]).unwrap();
-    Arc::new(
-        crate::archive_source::ArchiveSource::open(
-            source,
-            Arc::new(grouping::FactGroups::new(view, budget).unwrap()),
-            budget,
-            [0; 3],
-        )
-        .unwrap()
-        .with_semantic_budget(budget)
-        .unwrap(),
-    )
+    crate::archive_source::ArchiveSource::open(
+        source,
+        Arc::new(grouping::FactGroups::new(view, budget).unwrap()),
+        budget,
+        [0; 3],
+    )?
+    .with_semantic_budget(budget)
+    .map(Arc::new)
 }

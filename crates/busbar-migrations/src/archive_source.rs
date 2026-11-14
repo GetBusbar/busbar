@@ -180,7 +180,6 @@ pub struct ArchiveSource<R> {
     overlay: Mutex<Option<Arc<super::legacy::overlay::PreparedOverlay>>>,
     /// RAII ownership keeps actual native fences/connections alive through projection.
     _native_owner: Option<Arc<dyn busbar_contract::persistence::lifecycle::PreparedStore>>,
-    native_identity: Option<busbar_contract::persistence::lifecycle::SourceIdentity>,
 }
 impl<R> std::fmt::Debug for ArchiveSource<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -295,7 +294,6 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
             semantic_bytes: 0,
             overlay: Mutex::new(None),
             _native_owner: None,
-            native_identity: None,
         })
     }
     /// Bind batching to the same compiled deterministic transform used by migration.
@@ -375,14 +373,8 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
         self.identity.schema_digest = self.header.catalogue_digest;
         self.snapshot = snapshot;
         self.header.native_anchor_digest = source.native_anchor;
-        self.native_identity = Some(source);
         self._native_owner = Some(owner);
         Ok(self)
-    }
-    pub(crate) fn matches_native_fence(&self, fence: &crate::CheckedNativeFence) -> bool {
-        self.native_identity.as_ref() == Some(fence.source())
-            && self.snapshot.snapshot == fence.snapshot()
-            && self._native_owner.is_some()
     }
     pub fn interpretation(&self) -> Option<&crate::source_facts::View> {
         self.interpretation.as_ref()

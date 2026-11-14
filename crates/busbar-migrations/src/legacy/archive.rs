@@ -24,24 +24,9 @@ pub struct Binding<'a> {
     pub source_scope: Scope,
 }
 
-pub struct Receipt<'a> {
-    pub operation: &'a [u8; 16],
-    pub body: &'a [u8],
-    pub answer: &'a [u8],
-    pub recorded_at: Option<u64>,
-    pub expires_at_ms: Option<i64>,
-    /// Original historical digest only. Its hash domain is NOT a new receipt's.
-    pub historical_digest: Option<[u8; 32]>,
-    pub completed_shape: bool,
-}
 pub enum Route<'a> {
     Record {
         address: Address,
-        value: &'a [u8],
-    },
-    Prepared(CanonicalRows),
-    JournalPart {
-        key: &'a [u8],
         value: &'a [u8],
     },
     /// Admitted logical record retained pending a declared owner binding. This is an
@@ -86,9 +71,6 @@ pub fn route_record<'a>(
     bytes: &'a [u8],
     bindings: &[Binding<'_>],
 ) -> Result<Route<'a>, Error> {
-    if schema == "busbar.journal.v1" {
-        return Ok(Route::JournalPart { key, value: bytes });
-    }
     if let Some(address) =
         busbar_kernel::persistence::import_target::records::builtin_record_address(
             schema, key, bytes,
@@ -132,18 +114,6 @@ pub fn route_record<'a>(
         address,
         value: bytes,
     })
-}
-
-/// Retain the ENTIRE original protected legacy-row frame at its full native
-/// source identity before routing a payload. Every known table validates exact
-/// column names. Unrecognized tables fail rather than disappear.
-pub trait HistoricalReceiptResolution: Send + Sync {
-    fn resolve_original(
-        &self,
-        provenance: Provenance,
-        evidence_address: &Address,
-        receipt: &Receipt<'_>,
-    ) -> Result<[u8; 32], super::super::Error>;
 }
 
 #[cfg(test)]
