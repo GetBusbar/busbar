@@ -52,3 +52,7 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 rcgen = { workspace = true, features = ["pem"] }
+
+[lints.rust]
+# tokio's own gate for edge-triggered readiness (io/unix.rs SHORT_CLEARS).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mio_unsupported_force_poll_poll)'] }

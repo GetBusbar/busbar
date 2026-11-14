@@ -106,7 +106,46 @@ impl<T: AsFd> Registered<T> {
             }
         }
     }
+
+    /// One non-blocking attempt of a sized `op` in `dir` (`want` = the bytes asked for).
+    /// `WouldBlock` clears readiness and waits for a fresh edge, as [`Registered::poll_io`].
+    pub fn poll_io_sized(
+        &self,
+        dir: Direction,
+        want: usize,
+        cx: &mut Context<'_>,
+        op: impl FnMut(&T) -> io::Result<usize>,
+    ) -> Poll<io::Result<usize>> {
+        let _ = want;
+        self.poll_io(dir, cx, op)
+    }
 }
+
+/// Whether a SHORT transfer (`0 < n < want`) proves the socket drained, so readiness may be
+/// cleared without a `WouldBlock` attempt: true only on edge-triggered selectors (epoll, kqueue),
+/// exactly tokio 1.53.3's gate (`io/poll_evented.rs`, issue 5866; keep in sync with it). mio's
+/// poll(2) backend (`mio_unsupported_force_poll_poll`, and targets such as AIX, Solaris, Haiku)
+/// is level-triggered and keeps today's behaviour.
+pub const SHORT_CLEARS: bool = cfg!(all(
+    not(mio_unsupported_force_poll_poll),
+    any(
+        // epoll
+        target_os = "android",
+        target_os = "illumos",
+        target_os = "linux",
+        target_os = "redox",
+        // kqueue
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "visionos",
+        target_os = "watchos",
+    ),
+));
 
 impl Registered<std::net::TcpListener> {
     /// Accept the next socket on the registered listener.
