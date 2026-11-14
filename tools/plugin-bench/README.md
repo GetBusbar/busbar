@@ -59,8 +59,29 @@ one piece per SSE event. Every unit runs to `EMIT_DONE`. The scenarios are:
 The default settings name providers `oai` and `ant` and models `gpt` and `claude`. Use
 `--settings` to override them.
 
-**secret, auth, hook, export, transport** have no workload yet. Adding one means a `specs()`
-module beside `store.rs`/`plane.rs` that builds that kind's frames.
+**secret.** `resolve` of a 40 B and a 200 B reference, the not-found path, and `check`.
+
+**auth.** Outbound `fields` as the far-end request path calls it (`POST /v1/chat/completions`):
+the operator's own key, a caller passthrough key, and an invalid passthrough key. Inbound
+`verify` is benched only for plugins that serve it.
+
+**hook.** `decide` over an OpenAI chat projection with 1 KiB / 8 KiB / 100 KiB of content and
+three members. Only the FIRST crossing is measured: a hook's classifier child needs a
+dispatcher-bound child ticket, which an inline call cannot bind, so the child call is refused and
+the hook abstains. The resumed crossing (replay + classify) is not measured.
+
+**export.** `deliver` of 1 span, one request's spans (3) and a full 256-span batch, on the
+loader's inline-ticket path (`deliver` needs a ticket to reach its connection), plus the ticket
+retire/mint as its own op. The far end is `SinkConns` (`src/host.rs`): an in-memory connection
+table that admits the plugin's declared need, takes each framed request whole and answers 200.
+
+**transport.** In-memory bytes, no sockets: `begin` / `ingest` / `emit` on the inline-ticket path
+under the connector's framing context, `finish` direct. h1 keep-alive with 1/8/100 KiB request
+bodies and a JSON or 200-chunk SSE response; h2 (prior knowledge) the same; h1
+connection-per-request. Each answer lease is released untimed after the call
+(`BUSBAR_BENCH_TRANSPORT_KEEP_LEASES=1` keeps them, as core's connector currently does).
+
+Adding a kind's workload means a `specs()` module that builds that kind's frames.
 
 ## Running it
 

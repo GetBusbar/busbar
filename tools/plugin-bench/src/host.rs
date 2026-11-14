@@ -9,6 +9,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use busbar_contract::abi::mechanism::rendering::ReadNeed;
+use busbar_contract::conn::{
+    ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece, PieceKind,
+};
+
 use busbar_contract::abi::sdk::plane::conditional::ConditionalCandidate;
 use busbar_contract::services::{
     Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
@@ -195,5 +200,205 @@ impl HostServices for BenchHost {
     }
     fn snapshot_read(&self, _: &Caller, _: u32, _: Later) -> Ran {
         self.later()
+    }
+}
+
+/// THE FAR END a kind's declared need reaches, in memory: every need declared on it is accepted
+/// (any target), it carries framed `http`, and every request opened on it is taken whole (head,
+/// fields and body, handed over by the host as one `open`), discarded, and answered `200` with an
+/// empty body (an OTLP collector's empty `ExportTraceServiceResponse`). No socket, no thread, no
+/// per-request allocation of its own once its connection book has grown to the thread count: a
+/// connection is a slot in one locked book, freed on `close`. Opens are counted globally and per
+/// calling thread ([`SinkConns::opened_here`]), so a workload can prove each measured call reached
+/// the far end exactly once.
+#[derive(Debug, Default)]
+pub struct SinkConns {
+    declared: std::sync::Mutex<Vec<(InstanceId, NeedId)>>,
+    /// Per slot: its generation and the reads it answered (`u8::MAX` = free).
+    book: std::sync::Mutex<Book>,
+    pub opened: AtomicU64,
+    pub bytes: AtomicU64,
+}
+
+const FREE: u8 = u8::MAX;
+
+/// The connection book: per slot its generation and reads answered, and the free slots.
+type Book = (Vec<(u32, u8)>, Vec<usize>);
+
+thread_local! {
+    static OPENED_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+impl SinkConns {
+    /// How many requests this thread opened on any `SinkConns`.
+    pub fn opened_here() -> u64 {
+        OPENED_HERE.with(std::cell::Cell::get)
+    }
+
+    fn book(&self) -> std::sync::MutexGuard<'_, Book> {
+        self.book
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn slot(conn: ConnId) -> (usize, u32) {
+        (
+            ((conn.0 & 0xffff_ffff) as usize).wrapping_sub(1),
+            (conn.0 >> 32) as u32,
+        )
+    }
+}
+
+impl DeclaredConns for SinkConns {
+    fn declare(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        _: &ReadNeed,
+        target: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<(), ConnError> {
+        if crate::report::verbose() {
+            eprintln!("[conns] declare need {} -> {target:?}", need.0);
+        }
+        self.declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((owner, need));
+        Ok(())
+    }
+    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
+        self.declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&(owner, need))
+            .then_some(Ok(()))
+    }
+    fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
+        DeclaredConns::declared(self, owner, need).is_some()
+    }
+    fn serves_scheme(&self, transport: &str) -> bool {
+        transport == "http"
+    }
+    fn forget(&self, owner: InstanceId) {
+        self.declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(o, _)| *o != owner);
+    }
+}
+
+impl Conns for SinkConns {
+    fn open(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+    ) -> Result<ConnId, ConnError> {
+        if DeclaredConns::declared(self, caller, need).is_none() {
+            return Err(ConnError::UndeclaredNeed);
+        }
+        if crate::report::verbose() {
+            eprintln!(
+                "[conns] open {} {} {} fields={} body={}B",
+                String::from_utf8_lossy(desc.method),
+                desc.target,
+                String::from_utf8_lossy(desc.head_target),
+                desc.fields.len(),
+                desc.body.len()
+            );
+        }
+        self.opened.fetch_add(1, Ordering::Relaxed);
+        self.bytes
+            .fetch_add(desc.body.len() as u64, Ordering::Relaxed);
+        OPENED_HERE.with(|n| n.set(n.get() + 1));
+        let mut book = self.book();
+        let (index, generation) = match book.1.pop() {
+            Some(i) => {
+                book.0[i].1 = 0;
+                (i, book.0[i].0)
+            }
+            None => {
+                book.0.push((0, 0));
+                (book.0.len() - 1, 0)
+            }
+        };
+        Ok(ConnId((u64::from(generation) << 32) | (index as u64 + 1)))
+    }
+    fn open_with_security(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        _require_secure: bool,
+    ) -> Result<ConnId, ConnError> {
+        // A modeled secured far end: a credential that requires connection security is carried.
+        self.open(caller, need, desc)
+    }
+    fn write(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
+        Err(ConnError::Closed)
+    }
+    fn read(&self, _: InstanceId, conn: ConnId, _: u64, _: &mut [u8]) -> Result<Piece, ConnError> {
+        let (index, generation) = Self::slot(conn);
+        let n = {
+            let mut book = self.book();
+            let Some(entry) = book
+                .0
+                .get_mut(index)
+                .filter(|e| e.0 == generation && e.1 != FREE)
+            else {
+                return Err(ConnError::Closed);
+            };
+            entry.1 += 1;
+            entry.1
+        };
+        let kind = match n {
+            1 => PieceKind::Fields,
+            2 => PieceKind::Completion,
+            _ => return Err(ConnError::Closed),
+        };
+        let head = n == 1;
+        Ok(Piece {
+            kind,
+            stream: busbar_contract::ids::StreamId(0),
+            len: 0,
+            end: true,
+            status: head.then_some(busbar_contract::transport::wire::WireStatusClass::Success),
+            status_code: head.then_some(200),
+            status_namespace: None,
+            retry_after_secs: None,
+            fault: None,
+            reason: None,
+            declared_len: None,
+        })
+    }
+    fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
+        Ok(0)
+    }
+    fn facts(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, ConnError> {
+        Ok(busbar_contract::transport::ConnFacts::default())
+    }
+    fn close(&self, _: InstanceId, conn: ConnId) -> Result<(), ConnError> {
+        let (index, generation) = Self::slot(conn);
+        let mut book = self.book();
+        match book.0.get_mut(index) {
+            Some(entry) if entry.0 == generation && entry.1 != FREE => {
+                *entry = (generation.wrapping_add(1), FREE);
+                book.1.push(index);
+                Ok(())
+            }
+            _ => Err(ConnError::Closed),
+        }
     }
 }
