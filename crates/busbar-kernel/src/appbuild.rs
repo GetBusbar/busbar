@@ -5,8 +5,8 @@ use std::sync::Arc;
 use crate::auth::{open_operator, AuthMiddleware};
 use crate::diagnostics::{
     diag_error, diag_warn, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH,
-    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
-    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED,
+    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, STATEFUL_PLANE_EPHEMERAL_STORE,
+    STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
     build_secret_resolver, resolve_admin_token, resolve_at_rest_keys, resolve_signing_key,
@@ -134,13 +134,13 @@ pub struct LoadedConfig {
 pub fn load_config_from_disk(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
-    safe_mode: bool,
+    ignore_overlay: bool,
     env_mode: config::EnvSubst,
 ) -> Result<LoadedConfig, String> {
     load_config_from_disk_judged(
         config_path,
         providers_override,
-        safe_mode,
+        ignore_overlay,
         env_mode,
         &AcceptAll,
     )
@@ -151,14 +151,14 @@ pub fn load_config_from_disk(
 pub fn load_config_from_disk_judged(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
-    safe_mode: bool,
+    ignore_overlay: bool,
     env_mode: config::EnvSubst,
     rules: &dyn RootRules,
 ) -> Result<LoadedConfig, String> {
     load_config_from_disk_with_document_patch(
         config_path,
         providers_override,
-        safe_mode,
+        ignore_overlay,
         env_mode,
         rules,
         None,
@@ -170,7 +170,7 @@ pub fn load_config_from_disk_judged(
 pub fn load_config_from_disk_with_document_patch(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
-    safe_mode: bool,
+    ignore_overlay: bool,
     env_mode: config::EnvSubst,
     rules: &dyn RootRules,
     patch: Option<&config::document_patch::DocumentPatch>,
@@ -178,7 +178,7 @@ pub fn load_config_from_disk_with_document_patch(
     load_config_from_disk_with_document_patches(
         config_path,
         providers_override,
-        safe_mode,
+        ignore_overlay,
         env_mode,
         rules,
         patch,
@@ -190,7 +190,7 @@ pub fn load_config_from_disk_with_document_patch(
 pub fn load_config_from_disk_with_document_patches(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
-    safe_mode: bool,
+    ignore_overlay: bool,
     env_mode: config::EnvSubst,
     rules: &dyn RootRules,
     patch: Option<&config::document_patch::DocumentPatch>,
@@ -201,7 +201,7 @@ pub fn load_config_from_disk_with_document_patches(
     load_config_from_disk_compacting_document_patches(
         config_path,
         providers_override,
-        safe_mode,
+        ignore_overlay,
         env_mode,
         rules,
         DocumentPatchLoad {
@@ -210,6 +210,16 @@ pub fn load_config_from_disk_with_document_patches(
             admission: None,
         },
     )
+}
+
+/// Set once by the binary when it was booted with `--ignore-overlay`.
+pub static IGNORE_OVERLAY_FLAG: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this process was booted with `--ignore-overlay`; a later reload/apply re-merges
+/// the Store overlay.
+pub fn booted_with_ignore_overlay() -> bool {
+    IGNORE_OVERLAY_FLAG.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub struct DocumentPatchLoad<'a> {
@@ -223,7 +233,7 @@ pub struct DocumentPatchLoad<'a> {
 pub fn load_config_from_disk_compacting_document_patches(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
-    safe_mode: bool,
+    ignore_overlay: bool,
     env_mode: config::EnvSubst,
     rules: &dyn RootRules,
     edits: DocumentPatchLoad<'_>,
@@ -290,7 +300,7 @@ pub fn load_config_from_disk_compacting_document_patches(
         }
     }
 
-    let mut deploy: config::DeployCfg = if let Some(patch) = patch.filter(|_| !safe_mode) {
+    let mut deploy: config::DeployCfg = if let Some(patch) = patch.filter(|_| !ignore_overlay) {
         *patch = patch.compacted_against_yaml(&interpolated_config)?;
         patch.parse_deploy_yaml_checked(&interpolated_config, |keys| {
             rules.unloaded_plane_refusal(keys).map_or(Ok(()), Err)
@@ -346,7 +356,7 @@ pub fn load_config_from_disk_compacting_document_patches(
             &interpolated_providers,
         ));
     let defs: HashMap<String, config::ProviderDef> =
-        if let Some(patch) = providers_patch.filter(|_| !safe_mode) {
+        if let Some(patch) = providers_patch.filter(|_| !ignore_overlay) {
             *patch = patch.compacted_against_yaml(&interpolated_providers)?;
             patch.parse_catalog_yaml(&interpolated_providers)?
         } else {
@@ -358,24 +368,6 @@ pub fn load_config_from_disk_compacting_document_patches(
     let overlay_path = None;
     let config_locked = resolution.locked;
     let config_read_only = false;
-
-    if safe_mode {
-        diag_warn!(
-            SAFE_MODE_OVERLAY_QUARANTINED,
-            "SAFE MODE: config overlay NOT merged — running on base config.yaml alone (the \
-             Store overlay is untouched; boot without --safe-mode to re-apply it)"
-        );
-        return Ok(LoadedConfig {
-            deploy,
-            defs,
-            providers_path,
-            overlay_path,
-            config_locked,
-            config_read_only,
-            overlay_doc: None,
-            unset_env_vars,
-        });
-    }
 
     let overlay_doc = None;
     Ok(LoadedConfig {
@@ -393,18 +385,23 @@ pub fn load_config_from_disk_compacting_document_patches(
 pub async fn load_config_from_disk_with_store(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
-    safe_mode: bool,
+    ignore_overlay: bool,
     env_mode: config::EnvSubst,
     rules: &dyn RootRules,
     overlay: Option<Arc<config::overlay::OverlayStore>>,
 ) -> Result<LoadedConfig, String> {
-    let mut loaded =
-        load_config_from_disk_judged(config_path, providers_override, safe_mode, env_mode, rules)?;
+    let mut loaded = load_config_from_disk_judged(
+        config_path,
+        providers_override,
+        ignore_overlay,
+        env_mode,
+        rules,
+    )?;
     if !loaded.config_locked {
         let store = overlay.ok_or_else(|| {
             "running config has no Store overlay anchor; restart to bootstrap it".to_string()
         })?;
-        if safe_mode {
+        if ignore_overlay {
             loaded.overlay_path = Some(store);
         } else {
             let (reopened, doc) = store.reopen_for_reload_async().await?;

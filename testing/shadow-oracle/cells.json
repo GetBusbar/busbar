@@ -16905,7 +16905,7 @@
         "config": "mutation:BOOT-W20",
         "env": {}
       },
-      "why": "expect exit 0; stderr \u220b SAFE MODE: config overlay NOT merged \u2014 running on base config.yaml alone",
+      "why": "1.6.0: --ignore-overlay (was --safe-mode); expect exit 0; stderr \u220b IGNORE OVERLAY: config overlay NOT merged \u2014 running on base config.yaml/providers.yaml alone",
       "needs_fixture": false
     },
     {
@@ -17258,7 +17258,7 @@
         "config": "baseline",
         "env": {}
       },
-      "why": "1.5.5: unrecognized as a FIRST argument; exit 2",
+      "why": "1.6.0: --safe-mode removed (renamed --ignore-overlay, no alias); exit 2 unrecognized, as 1.5.5",
       "bindings": [
         "PB-23"
       ]

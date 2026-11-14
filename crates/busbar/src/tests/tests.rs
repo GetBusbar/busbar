@@ -114,17 +114,20 @@ fn worker_threads_from_config_reads_a_real_file() {
 }
 
 #[test]
-fn safe_mode_requested_matches_the_exact_flag_only() {
-    assert!(safe_mode_requested(
-        vec!["busbar".to_string(), "--safe-mode".to_string()].into_iter()
-    ));
-    assert!(!safe_mode_requested(
-        vec!["busbar".to_string(), "--validate".to_string()].into_iter()
-    ));
-    assert!(!safe_mode_requested(
-        vec!["busbar".to_string(), "--safe-mode=true".to_string()].into_iter()
-    ));
-    assert!(!safe_mode_requested(std::iter::empty()));
+fn ignore_overlay_requested_matches_the_exact_flag_only() {
+    for (arg, expected) in [
+        ("--ignore-overlay", true),
+        ("--safe-mode", false),
+        ("--ignore-overlay=true", false),
+        ("--validate", false),
+    ] {
+        assert_eq!(
+            ignore_overlay_requested(vec!["busbar".to_string(), arg.to_string()].into_iter()),
+            expected,
+            "{arg}"
+        );
+    }
+    assert!(!ignore_overlay_requested(std::iter::empty()));
 }
 
 #[test]

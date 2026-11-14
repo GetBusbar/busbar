@@ -197,6 +197,7 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
     assert!(body["topology"]["providers"].is_number());
 
     assert_eq!(body["config_persistence"], true);
+    assert!(body.get("overlay_ignored").is_none());
 
     handle.abort();
     println!("{WITNESS}");

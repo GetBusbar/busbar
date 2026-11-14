@@ -62,7 +62,7 @@ ENVIRONMENT:
     RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:
-    --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
+    --ignore-overlay    boot on base config.yaml alone (the Store overlay is left untouched)
     --mcp-stdio         serve the MCP plane on THIS PROCESS's stdin/stdout (newline-delimited
                         JSON-RPC) instead of binding any listener — for an MCP host that runs
                         busbar as a child process. Requires the `mcp:` block; on a deployment with

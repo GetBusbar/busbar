@@ -212,6 +212,10 @@ pub struct InfoView {
     /// Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and
     /// compare to tell whether the running config changed. Process-local (resets on restart).
     pub config_version: u64,
+    /// Present and `true` when this process was booted with `--ignore-overlay`; a later
+    /// reload/apply re-merges the overlay.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub overlay_ignored: bool,
 }
 
 /// The compiled-in feature proof (`InfoView.build`).
