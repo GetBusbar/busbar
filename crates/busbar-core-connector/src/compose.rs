@@ -2469,7 +2469,7 @@ impl Connection {
             r?;
         }
         self.tls_out()?;
-        if matches!(self.phase, Phase::Open) && (!plain.is_empty() || closed) {
+        if matches!(self.phase, Phase::Open) {
             self.ingest(plain.as_slice(), closed, true)?;
         }
         plain.clear();
