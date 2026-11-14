@@ -1669,12 +1669,13 @@ impl<K: KindMarker> Services<K> {
             .iter()
             .map(|m| text(m))
             .collect();
-        let flags = u32::from(write.document.is_some())
-            * crate::abi::host::directory::APPLY_DOCUMENT
-            | u32::from(write.indexes.is_some()) * crate::abi::host::directory::APPLY_INDEXES
-            | u32::from(write.state.is_some()) * crate::abi::host::directory::APPLY_STATE
-            | u32::from(write.members_replace.is_some())
-                * crate::abi::host::directory::APPLY_REPLACE_MEMBERS;
+        use crate::abi::host::directory::{
+            APPLY_DOCUMENT, APPLY_INDEXES, APPLY_REPLACE_MEMBERS, APPLY_STATE,
+        };
+        let flags = (u32::from(write.document.is_some()) * APPLY_DOCUMENT)
+            | (u32::from(write.indexes.is_some()) * APPLY_INDEXES)
+            | (u32::from(write.state.is_some()) * APPLY_STATE)
+            | (u32::from(write.members_replace.is_some()) * APPLY_REPLACE_MEMBERS);
         let mut result = DirectoryResult::default();
         let input = DirectoryApplyIn {
             head: head::<DirectoryApplyIn>(op::DIRECTORY_APPLY, handle),
