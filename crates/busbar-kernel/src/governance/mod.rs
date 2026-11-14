@@ -4,7 +4,7 @@
 use busbar_contract::count::{Count, CountError, COUNT_SCALE};
 use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
 use foldhash::{HashMap, HashMapExt};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
@@ -787,82 +787,8 @@ pub const REVOCATION_SYNC_TTL_SECS: u64 = 5;
 
 const GOV_SHARDS: usize = 64;
 
-struct MapShard<V> {
-    map: RwLock<HashMap<String, V>>,
-    sweep_ticker: AtomicU32,
-}
-
-impl<V> Default for MapShard<V> {
-    fn default() -> Self {
-        Self {
-            map: RwLock::new(HashMap::new()),
-            sweep_ticker: AtomicU32::new(0),
-        }
-    }
-}
-
-struct Sharded<V> {
-    shards: Box<[MapShard<V>; GOV_SHARDS]>,
-}
-
-impl<V> Sharded<V> {
-    fn new() -> Self {
-        Self {
-            shards: Box::new(std::array::from_fn(|_| MapShard::default())),
-        }
-    }
-
-    #[inline]
-    fn shard_for(&self, key_id: &str) -> &MapShard<V> {
-        &self.shards[self.shard_index(key_id)]
-    }
-
-    #[inline]
-    fn shard_index(&self, key_id: &str) -> usize {
-        (busbar_kernel::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)
-    }
-
-    #[inline]
-    fn shard_at(&self, idx: usize) -> &MapShard<V> {
-        &self.shards[idx]
-    }
-
-    #[inline]
-    fn write(&self, key_id: &str) -> std::sync::RwLockWriteGuard<'_, HashMap<String, V>> {
-        self.shard_for(key_id)
-            .map
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-    }
-
-    #[inline]
-    fn read(&self, key_id: &str) -> std::sync::RwLockReadGuard<'_, HashMap<String, V>> {
-        self.shard_for(key_id)
-            .map
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-    }
-
-    fn write_all(
-        &self,
-    ) -> impl Iterator<Item = std::sync::RwLockWriteGuard<'_, HashMap<String, V>>> {
-        self.shards.iter().map(|s| {
-            #[cfg(test)]
-            self.flush_shard_locks.fetch_add(1, Ordering::Relaxed);
-            s.map.write().unwrap_or_else(|p| p.into_inner())
-        })
-    }
-
-    #[cfg(test)]
-    fn sweep_ticker_for(&self, key_id: &str) -> &AtomicU32 {
-        &self.shard_for(key_id).sweep_ticker
-    }
-
-    #[cfg(test)]
-    fn shard_lock_for(&self, key_id: &str) -> &RwLock<HashMap<String, V>> {
-        &self.shard_for(key_id).map
-    }
-}
+mod sharded;
+use sharded::Sharded;
 
 #[derive(Default)]
 struct GovCaches {
