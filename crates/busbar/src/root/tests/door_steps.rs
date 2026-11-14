@@ -1637,7 +1637,6 @@ fn a_need_over_an_upgrade_framer_spells_the_base_url_in_its_scheme() {
     assert_eq!(super::spelled_for("unix:///sock", "ws", &upgrades), None);
 }
 
-#[cfg(feature = "auth-header")]
 #[test]
 fn a_member_bound_over_an_upgrade_need_dials_its_spelled_base() {
     use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
@@ -1664,7 +1663,6 @@ fn a_member_bound_over_an_upgrade_need_dials_its_spelled_base() {
     assert_eq!(route.ride(2).map(|r| r.base_url), Some(spelled.as_str()));
 }
 
-#[cfg(feature = "auth-header")]
 #[test]
 fn a_member_binds_every_need_its_style_names_one_per_transport() {
     use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
@@ -1707,7 +1705,6 @@ fn resolve(
     resolve_for(&styled(), section, providers)
 }
 
-#[cfg(feature = "auth-header")]
 #[test]
 fn a_member_is_bound_under_its_dialects_default_style_on_the_need_that_style_names() {
     let routes = resolve("models: {m: {provider: p}}", &[("p", provider("d", None))])
@@ -1749,7 +1746,6 @@ fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
     );
 }
 
-#[cfg(feature = "auth-header")]
 #[test]
 fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
     use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
@@ -1821,7 +1817,6 @@ fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
     let _ = std::fs::remove_file(&key_file);
 }
 
-#[cfg(feature = "auth-header")]
 #[test]
 fn a_member_whose_protocol_states_no_default_style_rides_its_providers() {
     let routes = resolve(

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 #![cfg(unix)]
-#![cfg(feature = "export-otlp")]
 #![cfg(linked_section_pools)]
 #![cfg(linked_axis_export_doors)]
 
