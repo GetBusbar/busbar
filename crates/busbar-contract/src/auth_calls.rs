@@ -533,8 +533,9 @@ pub struct FieldsRequest {
     pub timestamp: u64,
     /// The exact head envelope the framer will send, in order, when the style declares
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
-    /// The caller's verified credential, for a passthrough binding (`abi::auth::MODE_PASSTHROUGH`).
-    pub caller_credential: Option<Secret<Vec<u8>>>,
+    /// The caller's verified credential, for a passthrough binding (`abi::auth::MODE_PASSTHROUGH`):
+    /// a handle on the unit's one shared buffer, lent to the plugin without a copy (SP-AU6).
+    pub caller_credential: Option<crate::redacted::SharedSecret>,
     /// The call's extensions blob (`abi::mechanism::extensions`), lent as `FieldsIn::head.extensions`:
     pub extensions: Vec<u8>,
 }

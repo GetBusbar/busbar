@@ -288,8 +288,9 @@ where
     };
     // The session's credential, moved into the one shared zeroising buffer each line's request
     // clones (SP-AU6), never copied per line.
-    let credential =
-        credential.map(|c| busbar_kernel::auth::CallerCredential::from(c.into_bytes()));
+    let credential = credential.map(|c| {
+        busbar_kernel::auth::CallerCredential::adopted(busbar_contract::Secret::new(c.into_bytes()))
+    });
     run_io(carrier, reader, writer, stop, move |caller| {
         let principal = gov.key().map_or_else(
             || {
