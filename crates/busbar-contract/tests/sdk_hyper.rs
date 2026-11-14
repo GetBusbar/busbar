@@ -522,3 +522,282 @@ fn a_pending_task_without_a_child_is_polled_once_per_host_drive() {
         .expect("a later explicit host drive");
     assert_eq!(polls.load(Ordering::Relaxed), 2);
 }
+
+// ── pipe hygiene (TRANSPORT-TLS T5) ──────────────────────────────────────────────────────────────
+//
+// The pipe holds the far side's request head (with its `Authorization`) in `rx` and the wire owed
+// to it in `tx`. Every byte it is done with is wiped: on delivery to hyper, on a take of the wire,
+// in the old block a growth releases, and on drop; and a drained pipe gives back what a large
+// message grew it to. The blocks are inspected by the allocator below, before it frees them.
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+use std::mem::MaybeUninit;
+
+/// Blocks one test may watch at once.
+const WATCHES: usize = 4;
+
+/// The most a drained pipe keeps (T5's `PIPE_KEEP`).
+const KEEP: usize = 64 * 1024;
+
+thread_local! {
+    /// Watched blocks: base address and the initialized range `[from, to)` inspected at free.
+    static WATCHED: Cell<[Option<(usize, usize, usize)>; WATCHES]> =
+        const { Cell::new([None; WATCHES]) };
+    /// What each watched block's free saw: whether its range was all zero.
+    static SEEN: Cell<[Option<bool>; WATCHES]> = const { Cell::new([None; WATCHES]) };
+}
+
+struct InspectBeforeFree;
+
+// SAFETY: every allocation operation is forwarded unchanged to System (`realloc` is the trait's
+// default: allocate, copy, `dealloc`, so a block a growth releases passes through `dealloc`). The
+// observer reads only a range this thread registered as written, of a block still live.
+unsafe impl GlobalAlloc for InspectBeforeFree {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the allocator caller supplies a valid layout.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        let address = pointer.addr();
+        let _ = WATCHED.try_with(|watched| {
+            let mut all = watched.get();
+            for (slot, watch) in all.iter_mut().enumerate() {
+                let Some((base, from, to)) = *watch else {
+                    continue;
+                };
+                if base != address {
+                    continue;
+                }
+                *watch = None;
+                let zero = to <= layout.size()
+                    && (from..to).all(|index| {
+                        // SAFETY: the test registered `[from, to)` as bytes the pipe wrote into
+                        // this block; the block is still live (it is freed below), and the read
+                        // goes through dealloc's own pointer.
+                        unsafe { pointer.add(index).read_volatile() == 0 }
+                    });
+                let _ = SEEN.try_with(|seen| {
+                    let mut s = seen.get();
+                    s[slot] = Some(zero);
+                    seen.set(s);
+                });
+            }
+            watched.set(all);
+        });
+        // SAFETY: pointer and layout describe the allocator caller's live allocation.
+        unsafe { System.dealloc(pointer, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: InspectBeforeFree = InspectBeforeFree;
+
+/// Watch the block at `base` in `slot`: when it is freed, record whether `[from, to)` was zero.
+fn watch(slot: usize, base: *const u8, from: usize, to: usize) {
+    assert!(from < to);
+    WATCHED.with(|watched| {
+        let mut all = watched.get();
+        assert!(all[slot].is_none(), "slot {slot} already watched");
+        all[slot] = Some((base.addr(), from, to));
+        watched.set(all);
+    });
+    SEEN.with(|seen| {
+        let mut s = seen.get();
+        s[slot] = None;
+        seen.set(s);
+    });
+}
+
+/// What the watched block's free saw (`None`: not freed yet).
+fn seen(slot: usize) -> Option<bool> {
+    SEEN.with(|seen| seen.get()[slot])
+}
+
+/// The bearer a request head carries; no wiped block may keep it.
+const BEARER: &[u8] = b"authorization: Bearer sk-SENTINEL-T5-0123456789abcdef\r\n";
+
+/// A request head of exactly `len` bytes carrying [`BEARER`], padded with non-zero bytes.
+fn request_head(len: usize) -> Vec<u8> {
+    let mut head = b"POST /v1/chat/completions HTTP/1.1\r\nhost: upstream\r\n".to_vec();
+    head.extend_from_slice(BEARER);
+    head.resize(len - 4, b'x');
+    head.extend_from_slice(b"\r\n\r\n");
+    assert_eq!(head.len(), len);
+    head
+}
+
+/// The base of the read half's block. The deque goes out and back through a `Vec`, which moves
+/// no allocation (`Vec: From<VecDeque>` keeps the buffer; `VecDeque: From<Vec>` is O(1)).
+fn rx_base(io: &HostIo) -> *const u8 {
+    io.pipe_for_test(|rx, _| {
+        let v = Vec::from(std::mem::take(rx));
+        let base = v.as_ptr();
+        *rx = VecDeque::from(v);
+        base
+    })
+}
+
+/// Read everything ingested, as hyper does, `chunk` bytes at most per read.
+fn read_all(io: &HostIo, chunk: usize) -> Vec<u8> {
+    let mut s = io.stream();
+    let mut store = vec![MaybeUninit::<u8>::uninit(); chunk];
+    let mut got = Vec::new();
+    while io.pending_input() > 0 {
+        let mut rb = ReadBuf::uninit(&mut store);
+        let polled = noop_cx(|cx| Pin::new(&mut s).poll_read(cx, rb.unfilled()));
+        assert!(matches!(polled, Poll::Ready(Ok(()))));
+        assert!(!rb.filled().is_empty());
+        got.extend_from_slice(rb.filled());
+    }
+    got
+}
+
+/// Write `bytes` through the pipe's write half, as hyper does.
+fn write(io: &HostIo, bytes: &[u8]) {
+    let wrote = noop_cx(|cx| Pin::new(&mut io.stream()).poll_write(cx, bytes));
+    assert!(matches!(wrote, Poll::Ready(Ok(n)) if n == bytes.len()));
+}
+
+/// A 1 KiB request head with a sentinel bearer, delivered to hyper, leaves no byte of it in the
+/// read half's block: delivery wipes what it hands up.
+#[test]
+fn pipe_rx_wipes_on_delivery() {
+    let io = HostIo::new(0);
+    let head = request_head(1024);
+    io.ingest(&head, false);
+    assert_eq!(read_all(&io, 2048), head);
+    assert_eq!(io.pending_input(), 0);
+
+    let rx = Vec::from(io.pipe_for_test(|rx, _| std::mem::take(rx)));
+    assert!(rx.is_empty());
+    assert!(rx.capacity() >= head.len());
+    watch(0, rx.as_ptr(), 0, head.len());
+    drop(rx);
+    assert_eq!(
+        seen(0),
+        Some(true),
+        "the delivered head (and its bearer) stayed in the pipe's read block"
+    );
+}
+
+/// A take of the wire (`take_wire`, and `wire_into` as `fill` calls it) leaves the rest at the
+/// front and nothing behind it: the vacated tail is wiped.
+#[test]
+fn pipe_tx_wipes_after_take_wire() {
+    let head = request_head(1024);
+
+    let io = HostIo::new(0);
+    write(&io, &head);
+    assert_eq!(io.take_wire(512), &head[..512]);
+    let tx = io.pipe_for_test(|_, tx| std::mem::take(tx));
+    assert_eq!(tx, &head[512..]);
+    watch(0, tx.as_ptr(), tx.len(), head.len());
+    drop(tx);
+    assert_eq!(
+        seen(0),
+        Some(true),
+        "take_wire left a stale copy of the wire behind the rest"
+    );
+
+    let io = HostIo::new(0);
+    write(&io, &head);
+    let mut o = Owes {
+        io,
+        pieces: VecDeque::new(),
+        ended: false,
+    };
+    let (_, wire, ..) = run_fill(&mut o, (256, 1, 1));
+    assert_eq!(wire, &head[..256]);
+    let tx = o.io.pipe_for_test(|_, tx| std::mem::take(tx));
+    assert_eq!(tx, &head[256..]);
+    watch(1, tx.as_ptr(), tx.len(), head.len());
+    drop(tx);
+    assert_eq!(
+        seen(1),
+        Some(true),
+        "wire_into left a stale copy of the wire behind the rest"
+    );
+}
+
+/// A growth of either half releases its old block only wiped, and keeps every byte in order.
+#[test]
+fn pipe_growth_wipes_old_block() {
+    let head = request_head(1024);
+    let more = vec![b'y'; 4096];
+
+    let io = HostIo::new(0);
+    io.ingest(&head, false);
+    watch(0, rx_base(&io), 0, head.len());
+    io.ingest(&more, false);
+    assert_eq!(
+        seen(0),
+        Some(true),
+        "the read half grew and released its old block unwiped"
+    );
+    let mut all = head.clone();
+    all.extend_from_slice(&more);
+    assert_eq!(read_all(&io, 1500), all);
+
+    let io = HostIo::new(0);
+    write(&io, &head);
+    watch(1, io.pipe_for_test(|_, tx| tx.as_ptr()), 0, head.len());
+    write(&io, &more);
+    assert_eq!(
+        seen(1),
+        Some(true),
+        "the write half grew and released its old block unwiped"
+    );
+    assert_eq!(io.take_wire(usize::MAX), all);
+}
+
+/// A drained pipe keeps at most 64 KiB per half, whatever a large message grew it to, and still
+/// carries the next message.
+#[test]
+fn pipe_shrinks_after_large_message() {
+    let io = HostIo::new(0);
+    let large = vec![b'z'; 1 << 20];
+    io.ingest(&large, false);
+    assert_eq!(read_all(&io, 64 * 1024).len(), large.len());
+    let rx_cap = io.pipe_for_test(|rx, _| rx.capacity());
+    assert!(rx_cap <= KEEP, "a drained read half kept {rx_cap} bytes");
+
+    let big = vec![b'w'; WRITE_HIGH_WATER];
+    write(&io, &big[..WRITE_HIGH_WATER / 2]);
+    write(&io, &big[WRITE_HIGH_WATER / 2..]);
+    assert_eq!(io.take_wire(usize::MAX), big);
+    let tx_cap = io.pipe_for_test(|_, tx| tx.capacity());
+    assert!(tx_cap <= KEEP, "a drained write half kept {tx_cap} bytes");
+
+    let head = request_head(1024);
+    io.ingest(&head, false);
+    assert_eq!(read_all(&io, 4096), head);
+    write(&io, &head);
+    assert_eq!(io.take_wire(usize::MAX), head);
+}
+
+/// Dropping the drive wipes what the pipe still holds, both halves.
+#[test]
+fn pipe_drop_wipes() {
+    let head = request_head(1024);
+    let io = HostIo::new(0);
+    let stream = io.stream();
+    io.ingest(&head, false);
+    write(&io, &head);
+    watch(0, rx_base(&io), 0, head.len());
+    watch(1, io.pipe_for_test(|_, tx| tx.as_ptr()), 0, head.len());
+    drop(stream);
+    assert_eq!(seen(0), None, "the pipe lives while the drive does");
+    drop(io);
+    assert_eq!(
+        seen(0),
+        Some(true),
+        "the dropped pipe's read block kept the head"
+    );
+    assert_eq!(
+        seen(1),
+        Some(true),
+        "the dropped pipe's write block kept the wire"
+    );
+}
