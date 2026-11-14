@@ -143,6 +143,14 @@ impl Pki {
 fn self_signed(name: &str, ca: bool) -> Issued {
     let kp = rcgen::KeyPair::generate().expect("a key");
     let mut params = rcgen::CertificateParams::new(vec![name.to_owned()]).expect("params");
+    // Its own subject name, so it is its own issuer and no other test root's: rcgen names every
+    // certificate `CN=rcgen self signed cert` by default, and a leaf whose issuer name matches a
+    // trusted root is refused as `BadSignature` rather than as an unknown issuer.
+    let label = key_pin(&kp.subject_public_key_info());
+    params.distinguished_name.push(
+        rcgen::DnType::CommonName,
+        format!("self-signed {name} {label}"),
+    );
     params.is_ca = if ca {
         rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained)
     } else {

@@ -451,7 +451,24 @@ fn an_accepted_client_under_an_unknown_ca_is_refused_in_the_stacks_words_exactly
     use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
     crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
-    let (_, stranger_leaf, stranger_key) = localhost_cert();
+    // The stranger CA must carry its OWN subject name: rcgen names every certificate
+    // `CN=rcgen self signed cert` by default, and a leaf whose issuer name matches the trusted
+    // `client_ca` is tried against it and refused as `BadSignature`, never as an unknown issuer.
+    let (stranger_leaf, stranger_key) = {
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "listen test stranger root");
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let issuer = rcgen::Issuer::new(params, ca_key);
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let leaf = rcgen::CertificateParams::new(vec!["localhost".to_owned()])
+            .unwrap()
+            .signed_by(&leaf_key, &issuer)
+            .unwrap();
+        (leaf.der().to_vec(), leaf_key.serialize_der())
+    };
     worker().block_on(async move {
         let mut client_roots = rustls::RootCertStore::empty();
         client_roots.add(ca.clone().into()).unwrap();

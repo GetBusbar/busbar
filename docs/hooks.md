@@ -147,6 +147,9 @@ agents:
     hooks: [plan-policy]
 ```
 
+A `cert_spki` pin is checked on top of certificate chain validation, not instead of it; to pin a
+self-signed tool server, follow [A self-signed upstream](mcp.md#a-self-signed-upstream).
+
 **Where they fire.** On the DISPATCH path, never the catalogue: what a caller may SEE is decided by
 its key grants and nothing else, and a hook decides what a caller may DO. On MCP that is inside
 `tools/call`, after the tool has been resolved and re-validated and **after any `ask_caller` answers
