@@ -1014,8 +1014,10 @@ fn load_system(now: SystemTime, env: EnvFn<'_>) -> Result<Base, String> {
                 dropped.push(format!("{} #{k}: {why}", f.display()));
                 continue;
             }
-            match webpki::anchor_from_trusted_cert(&cert) {
-                Ok(a) => anchors.push(a.to_owned()),
+            // rustls derives the anchor (webpki's anchor_from_trusted_cert, owned) on add.
+            let mut probe = rustls::RootCertStore::empty();
+            match probe.add(cert) {
+                Ok(()) => anchors.append(&mut probe.roots),
                 Err(e) => dropped.push(format!("{} #{k}: {e}", f.display())),
             }
         }

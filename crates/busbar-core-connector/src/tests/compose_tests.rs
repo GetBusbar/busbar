@@ -669,7 +669,8 @@ fn a_dialled_refusal_of_an_unexplained_kind_is_the_stacks_words_exactly() {
             c.cause(),
             Some(&ConnCause {
                 stage: CAUSE_SECURITY,
-                text: stack.to_string()
+                text: stack.to_string(),
+                outbound: false,
             })
         );
     });

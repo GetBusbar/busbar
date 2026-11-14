@@ -232,7 +232,7 @@ fn is_metadata_address(addr: IpAddr) -> bool {
 fn refuse_metadata_entry(i: usize, written: &str, e: &Entry) -> Result<(), String> {
     let names_metadata = match e {
         Entry::Host(h) => METADATA_HOSTS.contains(&h.as_str()),
-        Entry::Net(net, len) => *len == full(*net) && is_metadata_address(*net),
+        Entry::Net(net) => net.is_host() && is_metadata_address(net.addr()),
         Entry::Under(_) => false,
     };
     if !names_metadata {

@@ -292,6 +292,7 @@ impl Line {
                 refused: HashMap::default(),
                 missed: Vec::new(),
                 parked: HashMap::default(),
+                parked_total: 0,
                 held,
                 next: EXCHANGE_STREAM + 1,
             }),

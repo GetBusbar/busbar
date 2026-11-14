@@ -202,7 +202,7 @@ fn required_security_decisions(doc: &Value) -> Vec<String> {
         return todos;
     };
     for (section, check) in [("auth", 0u8), ("group_map", 2)] {
-        let Some(value) = root.get(section) else {
+        let Some(value) = root.get_key(section) else {
             continue;
         };
         let mut pending = vec![(value, check)];
