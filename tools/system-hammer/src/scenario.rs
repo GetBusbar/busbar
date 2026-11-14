@@ -436,7 +436,6 @@ pub fn expand_matrix(m: &LlmMatrix) -> Result<Vec<CaseSpec>, String> {
             }
         }
     }
-    let _ = MARKER;
     Ok(out)
 }
 
