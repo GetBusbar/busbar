@@ -49,6 +49,8 @@ pub const CASES: &[&str] = &[
     "k1_first_start_publication",
     "k2_empty_refuses_without_initialize",
     "k3_racing_initialize",
+    "t1_staggered_boot",
+    "t2_waiter_restart",
 ];
 
 /// The prefix of the lines `run` and each case print: `cases <n>` once, `passed <case>` per case.
@@ -60,6 +62,8 @@ pub async fn run<F: Fixture>(fixture: &F) {
     k1_first_start_publication(fixture).await;
     k2_empty_refuses_without_initialize(fixture).await;
     k3_racing_initialize(fixture).await;
+    t1_staggered_boot(fixture).await;
+    t2_waiter_restart(fixture).await;
 }
 
 /// K1: first start over an empty dataset publishes; a second writer is admitted with no first
@@ -231,6 +235,92 @@ pub async fn k3_racing_initialize<F: Fixture>(fixture: &F) {
         snapshot[..2],
         "{CASE}: root or manifest is no longer A's Initialize"
     );
+    passed(CASE);
+}
+
+/// T1 (FIRST-START-TAKEOVER §8): a writer that boots while another's first start is live waits,
+/// writes nothing and retires nobody; it is admitted, with no first start, after publication.
+pub async fn t1_staggered_boot<F: Fixture>(fixture: &F) {
+    const CASE: &str = "t1_staggered_boot";
+    let dataset = fixture.fresh().await;
+    let h1 = fixture.open(&dataset).await;
+    let h2 = fixture.open(&dataset).await;
+    let mut a = startup(CASE, &h1, true);
+    let store_a = admitted(CASE, "A over the empty dataset", &mut a).await;
+    let proof = owner(CASE, "A", &store_a);
+    let watched = vec![writer_address(proof.owner()), first_start::address()];
+    let before = rows(CASE, &h1, watched.clone()).await;
+    let mut b = startup(CASE, &h2, false);
+    for step in 0..100 {
+        assert_eq!(
+            b.advance().await,
+            Ok(Progress::Pending),
+            "{CASE}: B advance {step} while A's first start is live"
+        );
+        assert_eq!(
+            rows(CASE, &h1, watched.clone()).await,
+            before,
+            "{CASE}: B advance {step} changed A's writer row or the birth record"
+        );
+        tokio::time::sleep(WAIT).await;
+    }
+    publish(CASE, "A", &proof).await;
+    let store_b = admitted(CASE, "B after publication", &mut b).await;
+    assert!(
+        store_b.first_start().is_none(),
+        "{CASE}: B was admitted after publication holding a first start"
+    );
+    let row = writer(CASE, &h1, proof.owner()).await;
+    assert!(row.admits(1), "{CASE}: A was retired ({row:?})");
+    passed(CASE);
+}
+
+/// T2 (FIRST-START-TAKEOVER §8): a waiter that restarts during a long first start starts waiting
+/// again; the owner is never retired, and the restarted waiter is admitted after publication.
+pub async fn t2_waiter_restart<F: Fixture>(fixture: &F) {
+    const CASE: &str = "t2_waiter_restart";
+    let dataset = fixture.fresh().await;
+    let h1 = fixture.open(&dataset).await;
+    let mut a = startup(CASE, &h1, true);
+    let store_a = admitted(CASE, "A over the empty dataset", &mut a).await;
+    let proof = owner(CASE, "A", &store_a);
+    let writer_a = proof.owner();
+    let waits = |who: &'static str, mut waiter: Startup| {
+        let h1 = h1.clone();
+        async move {
+            for step in 0..20 {
+                assert_eq!(
+                    waiter.advance().await,
+                    Ok(Progress::Pending),
+                    "{CASE}: {who} advance {step} while A's first start is live"
+                );
+                let row = writer(CASE, &h1, writer_a).await;
+                assert!(
+                    row.admits(1),
+                    "{CASE}: {who} advance {step} retired A ({row:?})"
+                );
+                tokio::time::sleep(WAIT).await;
+            }
+            waiter
+        }
+    };
+    let h2 = fixture.open(&dataset).await;
+    drop(waits("B", startup(CASE, &h2, false)).await);
+    let binding = Binding {
+        instance: "kit".into(),
+        digest: [7; 32],
+    };
+    expect_advanced(CASE, "A", "freeze", proof.freeze(vec![binding]).await);
+    let h3 = fixture.open(&dataset).await;
+    let mut restarted = waits("B'", startup(CASE, &h3, false)).await;
+    publish(CASE, "A", &proof).await;
+    let store = admitted(CASE, "B' after publication", &mut restarted).await;
+    assert!(
+        store.first_start().is_none(),
+        "{CASE}: B' was admitted after publication holding a first start"
+    );
+    let row = writer(CASE, &h1, writer_a).await;
+    assert!(row.admits(1), "{CASE}: A was retired ({row:?})");
     passed(CASE);
 }
 
