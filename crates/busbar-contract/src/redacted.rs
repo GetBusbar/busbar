@@ -283,13 +283,7 @@ pub fn constant_time_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A,
     if a_bytes.len() != b_bytes.len() {
         return false;
     }
-
-    let mut result: u8 = 0;
-    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
-        result |= x ^ y;
-    }
-
-    std::hint::black_box(result) == 0
+    subtle::ConstantTimeEq::ct_eq(a_bytes, b_bytes).into()
 }
 
 /// Lowercase hex SHA-256 of `data` — THE digest facility credentials are compared under (a module

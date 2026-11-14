@@ -320,6 +320,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+ "subtle",
  "syn 2.0.117",
  "tracing",
  "tracing-core",
