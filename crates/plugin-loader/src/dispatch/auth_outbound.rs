@@ -156,23 +156,16 @@ const NO_FIELD: FieldSpan = FieldSpan {
     _reserved: 0,
 };
 
-/// What one fields call lends the plugin beside the request itself: the request is never copied
-/// here. On the spot it is the caller's own, borrowed for the whole call; on a ticket it is the
-/// one the call was handed, shared (`_keep`) so it outlives every submit, a grown one included.
 struct Lend {
-    /// The sealed-fields capability, then the request's own extensions.
-    extensions: Vec<u8>,
+    request: FieldsRequest,
     named: Vec<NamedValue>,
     field_buf: Vec<u8>,
     fields: Vec<FieldSpan>,
-    _keep: Option<Arc<FieldsRequest>>,
 }
 
-// SAFETY: the raw pointers in `named` point only into the request's heap bytes, which outlive this
-// lend: a ticketed lend holds the request (`_keep`), and an on-the-spot lend is dropped before
-// the caller's borrow of it ends. The plugin writes `field_buf`/`fields` only while its op is in
-// flight, and the host reads them only after the op's answer, which the dispatcher orders after
-// the crossing.
+// SAFETY: the raw pointers in `named` point only into `request`'s own heap bytes, owned here; the
+// plugin writes `field_buf`/`fields` only while its op is in flight, and the host reads them only
+// after the op's answer, which the dispatcher orders after the crossing.
 unsafe impl Send for Lend {}
 // SAFETY: as above; no host code mutates a `Lend` once the op is submitted.
 unsafe impl Sync for Lend {}
@@ -180,19 +173,24 @@ unsafe impl Sync for Lend {}
 impl Drop for Lend {
     fn drop(&mut self) {
         self.field_buf.fill(0);
-        self.extensions.fill(0);
     }
 }
 
 impl Lend {
-    fn new(
-        request: &FieldsRequest,
-        keep: Option<Arc<FieldsRequest>>,
-        bytes: usize,
-        fields: usize,
-    ) -> Box<Self> {
-        let mut extensions = extensions::encode(&[(EXT_SEALED_FIELDS, SEALED_FIELDS_V1)]);
-        extensions.extend_from_slice(&request.extensions);
+    fn new(mut request: FieldsRequest, bytes: usize, fields: usize) -> Box<Self> {
+        let mut capability = extensions::encode(&[(EXT_SEALED_FIELDS, SEALED_FIELDS_V1)]);
+        capability.append(&mut request.extensions);
+        request.extensions = capability;
+        Self::over(request, bytes, fields)
+    }
+
+    /// A grown resubmit's lend: the same request (its capability already in place) with larger
+    /// answer buffers. The first lend is still lent to the dispatcher, so the request is copied.
+    fn regrown(previous: &Lend, bytes: usize, fields: usize) -> Box<Self> {
+        Self::over(copy(&previous.request), bytes, fields)
+    }
+
+    fn over(request: FieldsRequest, bytes: usize, fields: usize) -> Box<Self> {
         let named = request
             .headers
             .iter()
@@ -202,25 +200,23 @@ impl Lend {
             })
             .collect();
         Box::new(Lend {
-            extensions,
+            request,
             named,
             field_buf: vec![0; bytes],
             fields: vec![NO_FIELD; fields],
-            _keep: keep,
         })
     }
 
-    /// The call's input over `r`, the request this lend was made from.
     fn input(
         &mut self,
         handle: u64,
         seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
-        r: &FieldsRequest,
     ) -> FieldsIn {
+        let r = &self.request;
         let mut head = in_head();
 
-        if !self.extensions.is_empty() {
-            head.extensions = blob(&self.extensions, BLOB_OCTETS, 0);
+        if !r.extensions.is_empty() {
+            head.extensions = blob(&r.extensions, BLOB_OCTETS, 0);
         }
         FieldsIn {
             head,
@@ -311,6 +307,24 @@ fn security_requirement(blob: Blob) -> Option<bool> {
         }
     }
     (consumed == bytes.len()).then_some(secure)
+}
+
+fn copy(r: &FieldsRequest) -> FieldsRequest {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AuthFieldsCopy);
+    FieldsRequest {
+        point: r.point,
+        conn: r.conn,
+        unit: r.unit,
+        body: r.body.clone(),
+        method: r.method.clone(),
+        authority: r.authority.clone(),
+        path: r.path.clone(),
+        query: r.query.clone(),
+        timestamp: r.timestamp,
+        headers: r.headers.clone(),
+        caller_credential: r.caller_credential.clone(),
+        extensions: r.extensions.clone(),
+    }
 }
 
 fn fields_out() -> FieldsOut {
@@ -416,14 +430,14 @@ impl OutboundAuth for OutboundInstance {
         if request.caller_credential.is_some() && seal.is_none() {
             return Some(Fields::Failed);
         }
-        let mut lend = Lend::new(request, None, FIELDS_BUF_BYTES, FIELDS_MAX as usize);
-        let mut frame = Frame::new(lend.input(handle, seal, request), fields_out());
+        let mut lend = Lend::new(copy(request), FIELDS_BUF_BYTES, FIELDS_MAX as usize);
+        let mut frame = Frame::new(lend.input(handle, seal), fields_out());
         let mut called = self.plugin.call(slot::FIELDS, &mut frame);
         if let Some(token) = called.recall.take() {
             let (bytes, fields) = grown(&frame.out);
             lend.field_buf.resize(bytes, 0);
             lend.fields.resize(fields, NO_FIELD);
-            frame = Frame::new(lend.input(handle, seal, request), fields_out());
+            frame = Frame::new(lend.input(handle, seal), fields_out());
             called = self.plugin.recall(token, slot::FIELDS, &mut frame);
         }
         let answer = (called.outcome == Outcome::Ready).then(|| lend.answer(&frame.out));
@@ -443,7 +457,7 @@ impl OutboundAuth for OutboundInstance {
             Asked {
                 this: self.clone(),
                 handle,
-                request: Arc::new(request),
+                request: Some(request),
                 deadline_ns,
                 lend: None,
                 first: true,
@@ -471,7 +485,9 @@ impl Fielding for Failed {
 struct Asked {
     this: OutboundInstance,
     handle: u64,
-    request: Arc<FieldsRequest>,
+    /// The request the call was handed, until its first submit moves it into the lend
+    /// (SINGLE-PATH SP-R3).
+    request: Option<FieldsRequest>,
     deadline_ns: u64,
 
     lend: Option<Arc<Lend>>,
@@ -479,18 +495,19 @@ struct Asked {
 }
 
 impl Asked {
+    /// Submit the call over a lend of the request: the first submit moves the request in; a
+    /// grown resubmit lends it again from the first lend. `false` when there is nothing to lend.
     fn submit(
         &mut self,
         call: &mut Ticketed<FieldsIn, FieldsOut>,
         (bytes, fields): (usize, usize),
-    ) {
-        let mut lend = Lend::new(
-            &self.request,
-            Some(Arc::clone(&self.request)),
-            bytes,
-            fields,
-        );
-        let input = lend.input(self.handle, self.this.dispatcher.seal(), &self.request);
+    ) -> bool {
+        let mut lend = match (self.request.take(), &self.lend) {
+            (Some(request), _) => Lend::new(request, bytes, fields),
+            (None, Some(previous)) => Lend::regrown(previous, bytes, fields),
+            (None, None) => return false,
+        };
+        let input = lend.input(self.handle, self.this.dispatcher.seal());
         let lent: Arc<Lend> = Arc::from(lend);
         call.submit(
             &*self.this.plugin,
@@ -501,6 +518,7 @@ impl Asked {
             Arc::clone(&lent) as super::Lent,
         );
         self.lend = Some(lent);
+        true
     }
 }
 
@@ -508,7 +526,9 @@ impl Answering<FieldsIn, FieldsOut> for Asked {
     type Out = Fields;
 
     fn start(&mut self, call: &mut Ticketed<FieldsIn, FieldsOut>) {
-        self.submit(call, (FIELDS_BUF_BYTES, FIELDS_MAX as usize));
+        // The call was minted with its request, so the first submit always has one to lend.
+        let submitted = self.submit(call, (FIELDS_BUF_BYTES, FIELDS_MAX as usize));
+        debug_assert!(submitted, "a fresh call holds its request");
     }
 
     fn answer(
@@ -520,8 +540,7 @@ impl Answering<FieldsIn, FieldsOut> for Asked {
         let answer = match (done.short && self.first, out, &self.lend) {
             (true, Some(out), _) => {
                 self.first = false;
-                self.submit(call, grown(&out));
-                None
+                (!self.submit(call, grown(&out))).then_some(Fields::Failed)
             }
             (_, Some(out), Some(lend)) => Some(settled(done.outcome, lend, &out)),
             _ => Some(Fields::Failed),
