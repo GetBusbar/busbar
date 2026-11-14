@@ -70,7 +70,7 @@ mallctl = ["dep:tikv-jemalloc-sys", "dep:libc"]
 
 [dev-dependencies]
 busbar-plugin-loader = { path = "../plugin-loader" }
-# The architecture checks (tests/loc_budget.rs) parse sources with syn; they never build core.
+# The architecture checks (tests/architecture.rs) parse sources with syn; they never build core.
 proc-macro2 = { workspace = true }
 syn = { workspace = true }
 sha2 = { workspace = true }
