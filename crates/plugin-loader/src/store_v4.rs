@@ -16,6 +16,7 @@ use busbar_contract::abi::sdk::store::v4::{
     self as sdk, metadata,
     response::{self, ResponseError},
 };
+use busbar_contract::abi::sdk::wipe::WipedBytes;
 use busbar_contract::abi::store::{v4 as wire, HostBuf};
 use busbar_contract::persistence::{self as owned, Failure, PersistenceBackend};
 use zeroize::Zeroize;
@@ -469,7 +470,7 @@ impl PersistenceBackend for LoadedPersistence {
             self.submit(CommitRequest {
                 original: candidate,
                 source,
-                bytes: zeroize::Zeroizing::new(Vec::new()),
+                bytes: WipedBytes::default(),
             })
             .await
         })
@@ -574,7 +575,7 @@ fn allocate<T: Copy>(count: usize, zero: T) -> Result<Vec<T>, ()> {
 }
 fn grow<T: Copy>(
     items: &mut Vec<T>,
-    bytes: &mut zeroize::Zeroizing<Vec<u8>>,
+    bytes: &mut WipedBytes,
     needed_items: u64,
     needed_bytes: u64,
     limits: Limits,
@@ -593,7 +594,7 @@ fn grow<T: Copy>(
         return Err(());
     }
     let new_items = allocate(count, zero)?;
-    let new_bytes = zeroize::Zeroizing::new(allocate(length, 0)?);
+    let new_bytes = WipedBytes::new(allocate(length, 0)?);
     // Descriptor fields include raw addresses into wiped bytes: clear retired arrays too.
     wipe_items(items);
     *items = new_items;
@@ -607,8 +608,8 @@ const INITIAL_VALUE_BYTES: usize = 4096;
 const INITIAL_SCAN_ITEMS: usize = 16;
 
 /// Zeroed output bytes sized up front, capped by the output byte limit.
-fn presized_bytes(want: usize, limits: Limits) -> zeroize::Zeroizing<Vec<u8>> {
-    zeroize::Zeroizing::new(allocate(want.min(limits.output_bytes), 0).unwrap_or_default())
+fn presized_bytes(want: usize, limits: Limits) -> WipedBytes {
+    WipedBytes::new(allocate(want.min(limits.output_bytes), 0).unwrap_or_default())
 }
 /// Descriptor array sized up front so a fitting answer needs one plugin crossing, not a Short retry.
 fn presized<T: Copy>(count: usize, limits: Limits, zero: T) -> Vec<T> {
@@ -637,17 +638,17 @@ fn authority(actual: [u8; 16], expected: [u8; 16]) -> Result<(), ResponseError> 
 struct ReadRequest {
     source: sdk::Read,
     items: Vec<wire::ReadValue>,
-    bytes: zeroize::Zeroizing<Vec<u8>>,
+    bytes: WipedBytes,
 }
 struct ScanRequest {
     source: Arc<owned::Scan>,
     items: Vec<wire::ScanRow>,
-    bytes: zeroize::Zeroizing<Vec<u8>>,
+    bytes: WipedBytes,
 }
 struct CommitRequest {
     original: owned::PreparedCandidate,
     source: sdk::Commit,
-    bytes: zeroize::Zeroizing<Vec<u8>>,
+    bytes: WipedBytes,
 }
 struct ClockRequest(owned::DatasetId);
 // SAFETY: output pointers are host-owned allocations exclusively accessed by one
