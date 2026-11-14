@@ -442,6 +442,8 @@ pub enum SelfKeyIssue {
     NoGovernance,
     /// The subject's key is disabled, or another identity provider minted it.
     Unbound,
+    /// The subject's self-serve key is on hold, and why.
+    Held(crate::governance::SelfMintRefusal),
     /// The mint failed.
     Failed,
 }
@@ -486,6 +488,7 @@ pub async fn issue_self_key(
             secret: k.secret,
         },
         Err(ExchangeError::Unbound) => SelfKeyIssue::Unbound,
+        Err(ExchangeError::Held(reason)) => SelfKeyIssue::Held(reason),
         Err(_) => SelfKeyIssue::Failed,
     }
 }

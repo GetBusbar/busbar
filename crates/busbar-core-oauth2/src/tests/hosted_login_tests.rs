@@ -451,3 +451,50 @@ fn credential_prompt_uses_declared_label_and_keeps_private_form_transport() {
     assert!(html.contains("type=\"password\""));
     assert!(html.contains("state&quot;value"));
 }
+
+#[test]
+fn a_held_subject_sees_the_on_hold_page_with_its_coded_reason() {
+    use busbar_kernel::governance::SelfMintRefusal;
+    for (reason, says) in [
+        (
+            SelfMintRefusal::Disabled,
+            "BUSBAR-4043: your self-serve key is on hold: an administrator disabled it; ask your \
+             Busbar administrator to re-enable or delete it. See \
+             https://getbusbar.com/docs/1.6/errors/BUSBAR-4043",
+        ),
+        (
+            SelfMintRefusal::Revoked,
+            "BUSBAR-4043: your self-serve key is on hold: an administrator revoked it, and a \
+             revoked key is never re-enabled; ask your Busbar administrator to delete it so your \
+             next sign-in issues a new key. See https://getbusbar.com/docs/1.6/errors/BUSBAR-4043",
+        ),
+        (
+            SelfMintRefusal::OtherProvider,
+            "BUSBAR-4043: your self-serve key is on hold: it was issued through a different \
+             sign-in provider; sign in with that provider, or ask your Busbar administrator to \
+             delete it. See https://getbusbar.com/docs/1.6/errors/BUSBAR-4043",
+        ),
+        (
+            SelfMintRefusal::Held,
+            "BUSBAR-4043: your self-serve key is on hold: your account is on hold; ask your \
+             Busbar administrator. See https://getbusbar.com/docs/1.6/errors/BUSBAR-4043",
+        ),
+    ] {
+        let resp = issue_page(
+            "https://busbar.example.com",
+            "corp",
+            SelfKeyIssue::Held(reason),
+        );
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{reason:?}");
+        let body = body_of(resp);
+        assert_branded_error_page(&body, "Your key is on hold");
+        assert!(
+            body.contains(says),
+            "{reason:?}: the page explains the hold with its code: {body}"
+        );
+        assert!(
+            !body.contains("No access yet"),
+            "{reason:?}: a hold is not merged with a missing grant: {body}"
+        );
+    }
+}

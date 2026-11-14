@@ -1160,7 +1160,13 @@ async fn update_key_owned(
         NotFound,
         EtagStale,
 
-        AtCap { group: String, n: usize, cap: usize },
+        AtCap {
+            group: String,
+            n: usize,
+            cap: usize,
+        },
+        /// Refused: the request would re-enable a revoked key (the coded message).
+        Revoked(String),
     }
     let effect_context = busbar_kernel::auth::effect::current();
     let res = crate::v1::json::config_transaction(&handle, move |txn| {
@@ -1242,6 +1248,7 @@ async fn update_key_owned(
                 Ok(match gov.update_key_outcome_claimed_async(&id, enabled, group, &identity_guard).await {
                     Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => UpdateOutcome::Applied,
                     Err(busbar_kernel::governance::KeyMutationError::Store(error)) => return Err(error),
+                    Err(revoked @ busbar_kernel::governance::KeyMutationError::Revoked { .. }) => UpdateOutcome::Revoked(revoked.to_string()),
                     Ok(Some(key)) => {
                         let state = key_state(&key, &gov);
                         UpdateOutcome::Updated(Box::new(key), state)
@@ -1289,6 +1296,9 @@ async fn update_key_owned(
                 )),
                 Cond::AtKeyCap,
             )
+        }
+        Ok(UpdateOutcome::Revoked(message)) => {
+            key_err(who, &AdminError::Conflict(message), Cond::KeyRevoked)
         }
 
 
@@ -1564,6 +1574,9 @@ async fn rotate_key_owned(
                 }
                 Err(busbar_kernel::governance::KeyMutationError::Store(error)) => {
                     return Err(error)
+                }
+                Err(revoked @ busbar_kernel::governance::KeyMutationError::Revoked { .. }) => {
+                    return Err(revoked.into())
                 }
                 Ok(Some(rotated)) => {
                     RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
@@ -1941,6 +1954,9 @@ async fn delete_key_owned(
                     Ok(()) => Ok(DeleteOutcome::Deleted),
                     Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => {
                         Ok(DeleteOutcome::Applied)
+                    }
+                    Err(revoked @ busbar_kernel::governance::KeyMutationError::Revoked { .. }) => {
+                        Err(revoked.into())
                     }
                     Err(busbar_kernel::governance::KeyMutationError::Store(error)) => {
                         audit::AUDIT.record_by(

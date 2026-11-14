@@ -680,6 +680,13 @@ impl Identity<'_> {
                 {
                     return Err(Error::Invalid("self binding is revoked"));
                 }
+                // Revoked is terminal: no write turns a revoked key back on.
+                if replacement.enabled
+                    && expected.is_none_or(|expected| !expected.enabled)
+                    && tx.one(row(b'D', &replacement.id)?).await?.is_some()
+                {
+                    return Err(Error::Invalid("a revoked key is never re-enabled"));
+                }
                 if tx.key(&replacement.id).await?.as_ref() != *expected {
                     return Err(Error::Invalid(
                         "identity key changed; retry the exact requested mutation",

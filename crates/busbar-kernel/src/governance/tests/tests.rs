@@ -4811,7 +4811,6 @@ async fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
     .await
     .unwrap();
 
-    gov.hold_self_mint_state();
     let sub = "oidc:alice";
     let now = 1_700_000_000u64;
 
@@ -4846,6 +4845,52 @@ async fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
         "the refresh must mint a new id, never write over the rotated row"
     );
     assert!(gov.verify_token(&t2, now, None).is_some());
+}
+
+#[tokio::test]
+async fn a_transition_held_subjects_self_key_fails_chain_verify() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    let now = 1_700_000_000u64;
+    let (held, held_token) = gov
+        .issue_self("oidc:held", "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    let (_, other_token) = gov
+        .issue_self("oidc:other", "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    let admin = gov
+        .mint_signed_async(
+            NewKeySpec {
+                name: "oidc:held".into(),
+                ..Default::default()
+            },
+            now + 3600,
+            now,
+        )
+        .await
+        .unwrap();
+    assert!(gov.verify_token(&held_token, now, None).is_some());
+
+    gov.install_transition_self_holds(std::iter::once("oidc:held".to_string()).collect());
+
+    assert!(
+        gov.verify_token(&held_token, now, None).is_none(),
+        "a held subject's user-bound key {} stops verifying",
+        held.id
+    );
+    assert!(
+        gov.verify_token(&other_token, now, None).is_some(),
+        "another subject's key is untouched"
+    );
+    assert!(
+        gov.verify_token(admin.1.expose(&crate::seal::lend()), now, None)
+            .is_some(),
+        "an admin-minted key is not user-bound, so a subject hold never touches it"
+    );
 }
 
 #[tokio::test]

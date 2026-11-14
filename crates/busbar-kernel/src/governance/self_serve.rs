@@ -1,5 +1,45 @@
 use super::*;
 
+/// The admin-log action of a refused self mint.
+pub(crate) const SELF_SERVE_MINT_ACTION: &str = "self_serve.mint";
+
+/// Whether `key` is `user_sub`'s self-serve binding, wherever an admin moved it: a user-bound row
+/// for that IdP subject, or a legacy 1.5.5 row (no `idp_subject`) in the subject's own group.
+pub(crate) fn is_self_binding_of(key: &VirtualKey, user_sub: &str) -> bool {
+    match key.idp_subject.as_deref() {
+        Some(subject) => {
+            subject == user_sub && key.binding_mode.as_deref() == Some(SELF_KEY_BINDING_MODE)
+        }
+        None => {
+            key.group
+                .as_deref()
+                .and_then(|group| group.strip_prefix(SELF_KEY_GROUP_PREFIX))
+                == Some(user_sub)
+        }
+    }
+}
+
+/// The hold a live (non-tombstoned) self binding puts on a self mint through `provider`: revoked
+/// (denylisted), disabled, or minted through another identity provider. A tombstone holds
+/// nothing: an admin DELETE is the reset. A legacy row with no provider is adopted, not held.
+pub(crate) fn hold_reason(
+    key: &VirtualKey,
+    denied: bool,
+    provider: &str,
+) -> Option<SelfMintRefusal> {
+    if key.deleted_at.is_some() {
+        None
+    } else if denied {
+        Some(SelfMintRefusal::Revoked)
+    } else if !key.enabled {
+        Some(SelfMintRefusal::Disabled)
+    } else if key.idp_provider.as_deref().is_some_and(|p| p != provider) {
+        Some(SelfMintRefusal::OtherProvider)
+    } else {
+        None
+    }
+}
+
 impl GovState {
     fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
         let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, seed);
@@ -8,115 +48,124 @@ impl GovState {
         format!("{VK_ID_PREFIX}{}", hex::encode(&tag.as_ref()[..16]))
     }
 
+    /// The subject's current self-serve binding: its live (enabled, not tombstoned) row, in
+    /// whatever group an admin moved it to.
     fn current_self_binding(rows: &[VirtualKey], user_sub: &str) -> Option<Arc<VirtualKey>> {
-        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
         rows.iter()
             .find(|key| {
-                key.enabled
-                    && key.deleted_at.is_none()
-                    && key.group.as_deref() == Some(group.as_str())
+                key.enabled && key.deleted_at.is_none() && is_self_binding_of(key, user_sub)
             })
             .cloned()
             .map(Arc::new)
     }
 
     fn cached_self_binding(&self, user_sub: &str) -> Option<Arc<VirtualKey>> {
-        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
         self.caches_read()
             .by_id
             .values()
             .find(|key| {
-                key.enabled
-                    && key.deleted_at.is_none()
-                    && key.group.as_deref() == Some(group.as_str())
+                key.enabled && key.deleted_at.is_none() && is_self_binding_of(key, user_sub)
             })
             .cloned()
     }
 
+    /// Re-read the durable row `id` under its key claim. A row that changed into a hold while the
+    /// caller waited (an admin disable or revoke racing the login) answers that hold, never a
+    /// store error; a row that stopped being the subject's binding asks for a retry.
     async fn read_self_binding(
         &self,
         id: &str,
         user_sub: &str,
-    ) -> RecordStoreResult<Arc<VirtualKey>> {
-        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
-        let key = self
-            .core_store()?
-            .identity()
+        provider: &str,
+    ) -> Result<Arc<VirtualKey>, SelfMintError> {
+        let identity = self.core_store()?.identity();
+        let Some(key) = identity
             .get_key(id)
             .await?
-            .filter(|k| {
-                k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str())
-            })
-            .map(Arc::new)
-            .ok_or_else(|| {
-                RecordStoreError("self-serve binding changed; retry the request".into())
-            })?;
-        Ok(key)
+            .filter(|k| k.deleted_at.is_none() && is_self_binding_of(k, user_sub))
+        else {
+            return Err(
+                RecordStoreError("self-serve binding changed; retry the request".into()).into(),
+            );
+        };
+        let denied = identity.is_denied(id).await?;
+        if denied {
+            self.refresh_order.patch(|| self.denylist.insert(id));
+        }
+        if let Some(reason) = hold_reason(&key, denied, provider) {
+            return Err(self.refuse_self_mint(user_sub, provider, reason, Some(id)));
+        }
+        Ok(Arc::new(key))
     }
 
-    /// Whether the durable row `id` is still this subject's live self-serve binding, only no
-    /// longer in its self group (an operator regroup). A disabled, deleted, foreign or missing
-    /// row is NOT a regroup: `read_self_binding` refuses those.
-    async fn regrouped_self_binding(&self, id: &str, user_sub: &str) -> RecordStoreResult<bool> {
-        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
-        Ok(self
-            .core_store()?
-            .identity()
-            .get_key(id)
-            .await?
-            .is_some_and(|k| {
-                k.enabled
-                    && k.deleted_at.is_none()
-                    && k.group.as_deref() != Some(group.as_str())
-                    && k.idp_subject.as_deref() == Some(user_sub)
-                    && k.binding_mode.as_deref() == Some(SELF_KEY_BINDING_MODE)
-            }))
+    /// Whether the subject itself is held (pre-GA: a completed principal transition), whatever its
+    /// keys say. Read by the self mint and by chain verify; the empty set is the fast path.
+    pub(crate) fn subject_held(&self, user_sub: &str) -> bool {
+        let holds = self
+            .transition_self_holds
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        !holds.is_empty() && holds.contains(user_sub)
     }
 
-    fn self_mint_refusal(
+    /// The hold on `user_sub`, if any, and the key that carries it. A self mint never re-enables a
+    /// key, never routes around a held key with a fresh one, and never hands one provider's key
+    /// to another: every hold is the admin's (or another provider's) to clear, never the user's.
+    async fn self_mint_refusal(
         &self,
         user_sub: &str,
         provider: &str,
         rows: &[VirtualKey],
-    ) -> Option<SelfMintRefusal> {
-        if self
-            .transition_self_holds
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .contains(user_sub)
+    ) -> RecordStoreResult<Option<(SelfMintRefusal, Option<String>)>> {
+        if self.subject_held(user_sub) {
+            return Ok(Some((SelfMintRefusal::Held, None)));
+        }
+        let identity = self.core_store()?.identity();
+        let mut found: Option<(SelfMintRefusal, String)> = None;
+        for key in rows
+            .iter()
+            .filter(|k| k.deleted_at.is_none() && is_self_binding_of(k, user_sub))
         {
-            return Some(SelfMintRefusal::Disabled);
-        }
-        if !self.self_mint_holds() {
-            return None;
-        }
-        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
-        let rows = rows.iter().filter(|k| {
-            k.deleted_at.is_none()
-                && (k.group.as_deref() == Some(group.as_str())
-                    || k.idp_subject.as_deref() == Some(user_sub))
-        });
-        let mut refusal = None;
-        for k in rows {
-            if !k.enabled {
-                return Some(SelfMintRefusal::Disabled);
-            }
-            if k.idp_provider.as_deref().is_some_and(|p| p != provider) {
-                refusal = Some(SelfMintRefusal::OtherProvider);
+            let denied = self.denylist.contains(&key.id) || identity.is_denied(&key.id).await?;
+            if let Some(reason) = hold_reason(key, denied, provider) {
+                if found
+                    .as_ref()
+                    .is_none_or(|(held, _)| reason.precedence() > held.precedence())
+                {
+                    found = Some((reason, key.id.clone()));
+                }
             }
         }
-        refusal
+        Ok(found.map(|(reason, id)| (reason, Some(id))))
     }
 
-    fn self_mint_holds(&self) -> bool {
-        self.self_mint_holds
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    #[cfg(test)]
-    pub fn hold_self_mint_state(&self) {
-        self.self_mint_holds
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+    /// Diagnose, audit and type one refusal. Every refusal of a self mint goes through here.
+    fn refuse_self_mint(
+        &self,
+        user_sub: &str,
+        provider: &str,
+        reason: SelfMintRefusal,
+        key_id: Option<&str>,
+    ) -> SelfMintError {
+        crate::diag_debug!(
+            crate::diagnostics::SELF_MINT_HELD,
+            subject = %user_sub,
+            key_id = key_id.unwrap_or("-"),
+            reason = reason.token(),
+            provider = %provider,
+            "self-serve mint refused: the subject's key is on hold"
+        );
+        let resource = match key_id {
+            Some(id) => format!("key:{id}#{}", reason.token()),
+            None => format!("subject:{user_sub}#{}", reason.token()),
+        };
+        crate::audit::auditlog::emit_admin_hostless_now(
+            SELF_SERVE_MINT_ACTION,
+            &resource,
+            crate::audit_ring::OUTCOME_REJECTED,
+            user_sub,
+        );
+        SelfMintError::Refused(reason)
     }
 
     async fn first_free_self_epoch(
@@ -131,11 +180,11 @@ impl GovState {
             let epoch = from.saturating_add(stride);
             let id = Self::derive_self_subject(seed, user_sub, epoch);
 
-            let occupied = self.core_store()?.identity().get_key(&id).await?;
-            // Default 1.5.5 issuance reused a derived live/disabled row. Only
-            // tombstones force a new epoch; the explicit hold policy is stricter.
+            let identity = self.core_store()?.identity();
+            // Any existing row is occupied: a self mint only ever writes a never-used id, so it
+            // can neither re-enable a disabled row nor write a generation back over a rotated one.
             let unavailable =
-                occupied.is_some_and(|key| key.deleted_at.is_some() || self.self_mint_holds());
+                identity.get_key(&id).await?.is_some() || identity.is_denied(&id).await?;
             if !unavailable {
                 return Ok((id, epoch));
             }
@@ -174,7 +223,11 @@ impl GovState {
             allowed_scopes,
             enabled: true,
             created_at: now,
-            group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
+            // A refresh keeps the group an admin moved the key to.
+            group: previous.map_or_else(
+                || Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
+                |previous| previous.group.clone(),
+            ),
 
             labels: std::collections::BTreeMap::new(),
             expires_at: None,
@@ -206,27 +259,13 @@ impl GovState {
                 identity.replace_key(previous, &binding).await?
             }
             None => {
-                let before = identity.get_key(&binding.id).await?;
-                if before.as_ref().is_some_and(|key| {
-                    self.self_mint_holds()
-                        || key.deleted_at.is_some()
-                        || (key.group.as_deref() != binding.group.as_deref()
-                            && !(key.idp_subject.as_deref() == Some(user_sub)
-                                && key.binding_mode.as_deref() == Some(SELF_KEY_BINDING_MODE)))
-                        || key
-                            .binding_mode
-                            .as_deref()
-                            .is_some_and(|mode| mode != SELF_KEY_BINDING_MODE)
-                        || key
-                            .idp_subject
-                            .as_deref()
-                            .is_some_and(|subject| subject != user_sub)
-                }) {
+                // A fresh binding goes only to a never-used id; the CAS on `None` holds that.
+                if identity.get_key(&binding.id).await?.is_some() {
                     return Err(RecordStoreError(
                         "self binding changed; retry the request".into(),
                     ));
                 }
-                identity.compare_self_key(before.as_ref(), &binding).await?
+                identity.compare_self_key(None, &binding).await?
             }
         };
         let binding = super::identity_runtime::committed_key(&commit, &id)?;
@@ -267,8 +306,8 @@ impl GovState {
             .identity_claim(IdentityClaimKey::Subject(user_sub.into()))
             .await;
         let rows = self.core_store()?.identity().self_keys(user_sub).await?;
-        if let Some(refusal) = self.self_mint_refusal(user_sub, provider, &rows) {
-            return Err(SelfMintError::Refused(refusal));
+        if let Some((reason, key_id)) = self.self_mint_refusal(user_sub, provider, &rows).await? {
+            return Err(self.refuse_self_mint(user_sub, provider, reason, key_id.as_deref()));
         }
         // A locally observed enabled binding is an expectation, not permission
         // to treat an unseen durable disable as a fresh login. Re-read it under
@@ -276,42 +315,12 @@ impl GovState {
         let existing = self
             .cached_self_binding(user_sub)
             .or_else(|| Self::current_self_binding(&rows, user_sub));
-        let existing = match existing {
-            Some(existing) => {
-                let key = self.identity_key_guard(&existing.id).await;
-                if self.regrouped_self_binding(&existing.id, user_sub).await? {
-                    // An operator moved this subject's live self-serve row out of its self group
-                    // while we waited on the key claim. That is the row a login arriving after the
-                    // move rebinds (`write_self_binding`, the 1.5.5 reuse of a derived row), so
-                    // take that path rather than refusing only because of the interleaving.
-                    drop(key);
-                    None
-                } else {
-                    Some((key, existing))
-                }
-            }
-            None => None,
-        };
         match existing {
-            Some((_key, existing)) => {
-                let existing = self.read_self_binding(&existing.id, user_sub).await?;
-                if self
-                    .core_store()?
-                    .identity()
-                    .is_denied(&existing.id)
-                    .await?
-                {
-                    self.refresh_order
-                        .patch(|| self.denylist.insert(&existing.id));
-                    return Err(SelfMintError::Refused(SelfMintRefusal::Disabled));
-                }
-                if let Some(refusal) = self.self_mint_refusal(
-                    user_sub,
-                    provider,
-                    std::slice::from_ref(existing.as_ref()),
-                ) {
-                    return Err(SelfMintError::Refused(refusal));
-                }
+            Some(existing) => {
+                let _key = self.identity_key_guard(&existing.id).await;
+                let existing = self
+                    .read_self_binding(&existing.id, user_sub, provider)
+                    .await?;
                 let new_scopes = allowed_scopes.clone();
 
                 let adopt = existing.idp_provider.is_none();
@@ -394,11 +403,14 @@ impl GovState {
             .identity_claim(IdentityClaimKey::Subject(user_sub.into()))
             .await;
         let rows = self.core_store()?.identity().self_keys(user_sub).await?;
-        if let Some(refusal) = self.self_mint_refusal(user_sub, provider, &rows) {
-            return Err(SelfMintError::Refused(refusal));
+        if let Some((reason, key_id)) = self.self_mint_refusal(user_sub, provider, &rows).await? {
+            return Err(self.refuse_self_mint(user_sub, provider, reason, key_id.as_deref()));
         }
         let previous = match Self::current_self_binding(&rows, user_sub) {
-            Some(existing) => Some(self.read_self_binding(&existing.id, user_sub).await?),
+            Some(existing) => Some(
+                self.read_self_binding(&existing.id, user_sub, provider)
+                    .await?,
+            ),
             None => None,
         };
         let epoch = previous

@@ -363,6 +363,15 @@ impl GovState {
         else {
             return Ok(None);
         };
+        // Revoked is terminal: nothing, an admin included, re-enables a revoked key.
+        if enabled == Some(true) && self.core.identity().is_denied(id).await? {
+            crate::diag_debug!(
+                crate::diagnostics::REVOKED_KEY_REENABLE_REFUSED,
+                key_id = %id,
+                "refused to re-enable a revoked key"
+            );
+            return Err(KeyMutationError::Revoked { key_id: id.into() });
+        }
         let mut key = before.clone();
         if let Some(enabled) = enabled {
             key.enabled = enabled;

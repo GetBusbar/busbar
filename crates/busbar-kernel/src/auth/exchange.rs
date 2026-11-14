@@ -154,28 +154,36 @@ fn exchange_ok_body(issued: &IssuedKey, base_url: &str) -> serde_json::Value {
 }
 
 fn refusal(e: ExchangeError) -> Response {
-    let (status, msg) = match e {
+    let (status, msg): (StatusCode, std::borrow::Cow<'static, str>) = match e {
         ExchangeError::StaticKeyPresented => (
             StatusCode::BAD_REQUEST,
-            "present an IdP identity, not a busbar key",
+            "present an IdP identity, not a busbar key".into(),
         ),
-        ExchangeError::Unauthorized => (StatusCode::UNAUTHORIZED, "not authenticated"),
+        ExchangeError::Unauthorized => (StatusCode::UNAUTHORIZED, "not authenticated".into()),
         ExchangeError::SelfMintDisabled => (
             StatusCode::FORBIDDEN,
-            "self-serve minting is disabled by policy",
+            "self-serve minting is disabled by policy".into(),
         ),
         ExchangeError::Unbound => (
             StatusCode::FORBIDDEN,
-            "no self-serve grant for this identity",
+            "no self-serve grant for this identity".into(),
         ),
-        ExchangeError::BadSubject => (StatusCode::FORBIDDEN, "identity is not a valid subject"),
+        // The flat data-plane envelope, carrying the coded reason (no new top-level field).
+        ExchangeError::Held(reason) => (StatusCode::FORBIDDEN, reason.message().into()),
+        ExchangeError::BadSubject => (
+            StatusCode::FORBIDDEN,
+            "identity is not a valid subject".into(),
+        ),
         ExchangeError::OverCeiling(_) => (
             StatusCode::FORBIDDEN,
-            "the key this identity would mint is over the mint ceiling (auth.policy)",
+            "the key this identity would mint is over the mint ceiling (auth.policy)".into(),
         ),
         ExchangeError::MintFailed(ref detail) => {
             diag_error!(TOKEN_EXCHANGE_MINT_FAILED, error = %detail, "token-exchange mint failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "could not issue a key")
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not issue a key".into(),
+            )
         }
     };
     (status, axum::Json(serde_json::json!({ "error": msg }))).into_response()

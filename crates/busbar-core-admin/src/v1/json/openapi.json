@@ -31594,7 +31594,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: governance is not enabled on this server, the group is at the `limits.max_keys_per_principal` cap | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: governance is not enabled on this server, the group is at the `limits.max_keys_per_principal` cap, the key is revoked, and a revoked key is never re-enabled | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {

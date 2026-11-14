@@ -113,6 +113,51 @@ async fn dpop_refusal_keeps_the_exchange_unauthenticated_words() {
 }
 
 #[tokio::test]
+async fn exchange_answers_a_held_subject_403_with_a_coded_body() {
+    use crate::governance::SelfMintRefusal;
+    for (reason, detail) in [
+        (
+            SelfMintRefusal::Disabled,
+            "an administrator disabled it; ask your Busbar administrator to re-enable or delete it",
+        ),
+        (
+            SelfMintRefusal::Revoked,
+            "an administrator revoked it, and a revoked key is never re-enabled; ask your Busbar \
+             administrator to delete it so your next sign-in issues a new key",
+        ),
+        (
+            SelfMintRefusal::OtherProvider,
+            "it was issued through a different sign-in provider; sign in with that provider, or \
+             ask your Busbar administrator to delete it",
+        ),
+        (
+            SelfMintRefusal::Held,
+            "your account is on hold; ask your Busbar administrator",
+        ),
+    ] {
+        let response = refusal(ExchangeError::Held(reason));
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            (status, body),
+            (
+                403,
+                serde_json::json!({
+                    "error": format!(
+                        "BUSBAR-4043: your self-serve key is on hold: {detail}. See \
+                         https://getbusbar.com/docs/1.6/errors/BUSBAR-4043"
+                    )
+                })
+            ),
+            "{reason:?}: the flat data-plane envelope carries the coded reason"
+        );
+    }
+}
+
+#[tokio::test]
 async fn exchange_verifier_outcome_projection_preserves_failed_and_faulted_503() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
     for faulted in [false, true] {

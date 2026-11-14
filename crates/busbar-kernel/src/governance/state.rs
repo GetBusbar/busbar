@@ -41,6 +41,10 @@ pub enum KeyMutationError {
         operation: &'static str,
         reconcile: RecordStoreError,
     },
+    /// Refused, nothing written: the request would re-enable a revoked key. Revoked is terminal.
+    Revoked {
+        key_id: String,
+    },
 }
 impl From<RecordStoreError> for KeyMutationError {
     fn from(error: RecordStoreError) -> Self {
@@ -57,6 +61,13 @@ impl std::fmt::Display for KeyMutationError {
                 f,
                 "{operation} applied to key '{key_id}'; cache reconciliation incomplete"
             ),
+            Self::Revoked { key_id } => f.write_str(&crate::diagnostics::coded(
+                &crate::diagnostics::REVOKED_KEY_REENABLE_REFUSED,
+                format_args!(
+                    "key '{key_id}' is revoked, and a revoked key is never re-enabled; delete it \
+                     instead, and a self-serve subject's next sign-in issues a new key"
+                ),
+            )),
         }
     }
 }
@@ -65,6 +76,7 @@ impl From<KeyMutationError> for RecordStoreError {
     fn from(error: KeyMutationError) -> Self {
         match error {
             KeyMutationError::Store(error) => error,
+            revoked @ KeyMutationError::Revoked { .. } => Self(revoked.to_string()),
             KeyMutationError::Applied {
                 key_id,
                 operation,
@@ -211,9 +223,6 @@ impl GovState {
             refresh_order,
             #[cfg(test)]
             identity_wait_observer: std::sync::Mutex::new(None),
-            self_mint_holds: std::sync::atomic::AtomicBool::new(
-                SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
-            ),
             transition_self_holds: RwLock::new(Default::default()),
             amendments: Arc::default(),
         })
@@ -269,6 +278,19 @@ impl GovState {
         }
 
         match self.lookup_by_sub(&claims.sub) {
+            Some(key)
+                if key.binding_mode.as_deref() == Some(SELF_KEY_BINDING_MODE)
+                    && key
+                        .idp_subject
+                        .as_deref()
+                        .is_some_and(|subject| self.subject_held(subject)) =>
+            {
+                tracing::debug!(
+                    sub = %claims.sub,
+                    "signed-token rejected: the key's self-serve subject is held"
+                );
+                None
+            }
             Some(key) if key_row_expired(&key, now) => {
                 tracing::debug!(
                     sub = %claims.sub,
