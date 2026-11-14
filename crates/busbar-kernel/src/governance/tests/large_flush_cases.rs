@@ -144,6 +144,7 @@ impl busbar_contract::persistence::PersistenceBackend for ChunkBackend {
     fn commit(
         &self,
         prepared: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
         Box::pin(async move {
             use busbar_contract::persistence::{Failure, Mutation};
@@ -192,7 +193,7 @@ impl busbar_contract::persistence::PersistenceBackend for ChunkBackend {
             if matches!(reply, Reply::FailBefore) {
                 return Err(Failure::Unknown);
             }
-            let result = self.inner.commit(prepared).await;
+            let result = self.inner.commit(prepared, key).await;
             match reply {
                 Reply::LoseAfter => Err(Failure::Unknown),
                 Reply::CancelAfter => panic!("planted caller cancellation after native commit"),

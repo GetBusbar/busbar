@@ -15,7 +15,7 @@ use std::any::Any;
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
-use super::backend::{Backend, Committed};
+use super::backend::{Backend, CommitSlot, Committed};
 use super::{decode, encode, metadata};
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::ticket::Ticket;
@@ -416,31 +416,40 @@ impl<B: Backend> Primitive<B> for Scan<B> {
 impl<B: Backend> Primitive<B> for Commit<B> {
     type In = wire::CommitIn;
     type Out = wire::CommitOut;
-    type Source = owned::PreparedCandidate<B::Owner>;
+    type Source = (owned::PreparedCandidate<B::Owner>, CommitSlot);
     type Answer = Result<Committed<B::Owner>, owned::Failure>;
     fn decode(backend: &B, input: Lent<'_, Self::In>) -> Result<Self::Source, decode::DecodeError> {
+        // Slot fields are validated before any candidate copy or backend read.
+        let slot = CommitSlot::decode(input.candidate.slot, input.candidate.seq)
+            .ok_or(decode::DecodeError::Flags)?;
         // SAFETY: immutable nested spans are guaranteed by the ABI loan.
-        unsafe {
+        let candidate = unsafe {
             decode::candidate_owned(&input.candidate, backend.input_budget(), backend.owner())
-        }
+        }?;
+        Ok((candidate, slot))
     }
     fn same(a: &Self::Source, b: &Self::Source) -> bool {
-        a.fingerprint() == b.fingerprint()
-    }
-    fn valid_outputs(input: Lent<'_, Self::In>) -> bool {
-        // SAFETY: this temporary preflight loan ends before backend or encoding.
-        unsafe { input.v4_output().is_some() }
+        a.0.fingerprint() == b.0.fingerprint() && a.1 == b.1
     }
     fn run(backend: &B, op: &mut Op<'_>, source: &Self::Source) -> Step<Self::Answer> {
-        backend.commit(op, source)
+        backend.commit(op, &source.0, source.1)
     }
     fn encode(
-        _: &Self::Source,
+        source: &Self::Source,
         answer: &Self::Answer,
         input: Lent<'_, Self::In>,
     ) -> Result<(Self::Out, bool), encode::EncodeError> {
-        // SAFETY: unique initialized output loan, used only in this crossing.
-        let bytes = unsafe { input.v4_output() }.ok_or(encode::EncodeError::Buffer)?;
+        if source.1.slot().is_none()
+            && matches!(
+                answer,
+                Ok(Committed {
+                    decision: owned::Decision::Stale,
+                    ..
+                })
+            )
+        {
+            return Err(encode::EncodeError::Malformed);
+        }
         let observed_at =
             answer
                 .as_ref()
@@ -456,10 +465,8 @@ impl<B: Backend> Primitive<B> for Commit<B> {
                 .as_ref()
                 .map(|value| &value.decision)
                 .map_err(|error| *error),
-            bytes,
         )?;
-        let short = out.needed != 0;
-        Ok((out, short))
+        Ok((out, false))
     }
 }
 impl<B: Backend> Primitive<B> for Clock<B> {

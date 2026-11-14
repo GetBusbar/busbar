@@ -5,14 +5,29 @@
 //! this facade; the raw backend stays private to core persistence coordination.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use busbar_contract::persistence::{
     control, Address, AttemptId, BackendInfo, Failure, PersistenceBackend, PreparedCandidate, Read,
-    ReadResult,
+    ReadResult, MAX_SLOTS,
 };
 
-use super::commit::{Attempt, SubmitResult};
+use super::commit::{Attempt, State, SubmitResult};
+
+/// At most this many in-doubt attempts are resubmitted per settle tick.
+pub const SETTLE_PER_TICK: usize = 64;
+
+/// How the queue's `pending_operations` slots are held right now; the states add up
+/// to the queue capacity (`busbar_store_slots`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SlotStates {
+    pub free: usize,
+    pub in_flight: usize,
+    pub in_doubt: usize,
+    pub resolved_uncollected: usize,
+    pub reconcile: usize,
+}
 
 #[path = "logical.rs"]
 mod logical;
@@ -59,6 +74,12 @@ struct Pending {
     accepting: bool,
     attempts: HashMap<PendingId, PendingEntry>,
     logical: HashMap<LogicalId, logical::Entry>,
+    /// Free queue slots, LIFO; slot 0 is leased first so hot slots stay low.
+    free: Vec<u32>,
+    /// The next lease sequence; 0 means "never used" at the store.
+    next_seq: u64,
+    /// Round-robin position of the settle pass, as a slot number.
+    settle_cursor: u32,
 }
 
 struct PendingEntry {
@@ -66,6 +87,8 @@ struct PendingEntry {
     driving: bool,
     logical: Option<LogicalId>,
     identity_owned: bool,
+    /// The queue slot this entry holds for its whole lifetime.
+    slot: u32,
 }
 
 /// Explicit host resource and contention policy; page limits bound each crossing,
@@ -84,6 +107,8 @@ pub struct CoreStore {
     info: BackendInfo,
     limits: Limits,
     pending: Mutex<Pending>,
+    /// Set while every queue slot is held; read lock-free on arrival.
+    exhausted: AtomicBool,
     pub(super) claim_maintenance: Mutex<super::claims::Maintenance>,
     pub(super) first_start: std::sync::OnceLock<Arc<super::first_start::FirstStart>>,
 }
@@ -102,9 +127,17 @@ impl CoreStore {
         {
             return Err(AccessError::Authority);
         }
-        if limits.pending_operations == 0 || limits.scan_items == 0 || limits.scan_bytes == 0 {
+        if limits.pending_operations == 0
+            || limits.pending_operations > MAX_SLOTS as usize
+            || limits.scan_items == 0
+            || limits.scan_bytes == 0
+        {
             return Err(AccessError::InvalidLimits);
         }
+        let mut free = Vec::new();
+        free.try_reserve_exact(limits.pending_operations)
+            .map_err(|_| AccessError::Overloaded)?;
+        free.extend((0..limits.pending_operations as u32).rev());
         let info = backend.info();
         if info.dataset.0 == [0; 16]
             || info.clock_authority == [0; 16]
@@ -157,13 +190,106 @@ impl CoreStore {
             limits,
             claim_maintenance: Mutex::default(),
             first_start: std::sync::OnceLock::new(),
+            exhausted: AtomicBool::new(false),
             pending: Mutex::new(Pending {
                 authority,
                 accepting: true,
                 attempts: HashMap::new(),
                 logical: HashMap::new(),
+                free,
+                next_seq: 1,
+                settle_cursor: 0,
             }),
         })
+    }
+
+    /// Whether every queue slot is held. One relaxed load; no lock.
+    #[must_use]
+    pub fn exhausted(&self) -> bool {
+        self.exhausted.load(Ordering::Relaxed)
+    }
+
+    /// The `busbar_store_slots` breakdown; its states add up to `pending_operations`.
+    pub fn slot_states(&self) -> Result<SlotStates, AccessError> {
+        let pending = self.lock()?;
+        let mut states = SlotStates {
+            free: pending.free.len(),
+            ..SlotStates::default()
+        };
+        for entry in pending.attempts.values() {
+            match entry.attempt.state() {
+                State::Prepared | State::InFlight => states.in_flight += 1,
+                State::Uncertain => states.in_doubt += 1,
+                State::Resolved => states.resolved_uncollected += 1,
+                State::Reconcile => states.reconcile += 1,
+            }
+        }
+        Ok(states)
+    }
+
+    /// Resubmit at most `limit` in-doubt attempts that no waiter is driving, round-robin
+    /// by slot. Entries are not removed: their owners collect the cached decision
+    /// through `retry`, which pops the entry and its slot. Returns how many were sent.
+    pub async fn settle_in_doubt(&self, limit: usize) -> Result<usize, AccessError> {
+        let batch = {
+            let mut pending = self.lock()?;
+            let mut doubt = Vec::new();
+            doubt
+                .try_reserve(pending.attempts.len())
+                .map_err(|_| AccessError::Overloaded)?;
+            doubt.extend(
+                pending
+                    .attempts
+                    .values()
+                    .filter(|entry| !entry.driving && entry.attempt.state() == State::Uncertain)
+                    .map(|entry| (entry.slot, entry.attempt.clone())),
+            );
+            doubt.sort_unstable_by_key(|(slot, _)| *slot);
+            let start = doubt.partition_point(|(slot, _)| *slot < pending.settle_cursor);
+            let take = limit.min(doubt.len());
+            let mut batch = Vec::new();
+            batch
+                .try_reserve_exact(take)
+                .map_err(|_| AccessError::Overloaded)?;
+            batch.extend(
+                doubt
+                    .iter()
+                    .cycle()
+                    .skip(start)
+                    .take(take)
+                    .map(|(_, attempt)| attempt.clone()),
+            );
+            if let Some((slot, _)) = doubt.iter().cycle().skip(start).nth(take) {
+                pending.settle_cursor = *slot;
+            }
+            batch
+        };
+        let sent = batch.len();
+        for attempt in batch {
+            // Busy means a waiter took it in the meantime: skip it.
+            let _ = attempt.submit().await;
+        }
+        Ok(sent)
+    }
+
+    fn exhaustion(&self, pending: &Pending, starts: bool) {
+        let mut states = SlotStates::default();
+        for entry in pending.attempts.values() {
+            match entry.attempt.state() {
+                State::Uncertain => states.in_doubt += 1,
+                State::Resolved => states.resolved_uncollected += 1,
+                State::Reconcile => states.reconcile += 1,
+                State::Prepared | State::InFlight => states.in_flight += 1,
+            }
+        }
+        crate::diag_warn!(
+            crate::diagnostics::STORE_INFLIGHT_EXHAUSTED,
+            starts,
+            in_doubt = states.in_doubt,
+            resolved_uncollected = states.resolved_uncollected,
+            reconcile = states.reconcile,
+            "store in-flight queue exhausted"
+        );
     }
 
     #[must_use]
@@ -282,7 +408,9 @@ impl CoreStore {
         self.limits
     }
 
-    /// Allocate an independent attempt identity, never from wall time or a label.
+    /// Allocate an independent attempt identity, never from wall time or a label:
+    /// the per-boot `node8 ‖ counter8` of `door::op_id`, unique across restarts,
+    /// nodes and every CoreStore in this process.
     pub(crate) fn next_id(&self) -> Result<AttemptId, AccessError> {
         let authority = {
             let pending = self.lock()?;
@@ -409,17 +537,32 @@ impl CoreStore {
                 }
                 held.attempt.clone()
             } else {
-                if pending.attempts.len() >= self.limits.pending_operations {
+                // Push: lease a slot in the same critical section that inserts the
+                // entry. An empty free list is exactly a full map.
+                let Some(slot) = pending.free.pop() else {
+                    if !self.exhausted.swap(true, Ordering::Relaxed) {
+                        self.exhaustion(&pending, true);
+                    }
+                    return Err(AccessError::Overloaded);
+                };
+                if pending.attempts.try_reserve(1).is_err() {
+                    pending.free.push(slot);
                     return Err(AccessError::Overloaded);
                 }
-                pending
-                    .attempts
-                    .try_reserve(1)
-                    .map_err(|_| AccessError::Overloaded)?;
-                let attempt = Arc::new(
-                    Attempt::new(candidate, self.backend.clone())
-                        .map_err(|_| AccessError::Authority)?,
-                );
+                let seq = pending.next_seq;
+                let key = super::slot_seal::slotted(slot, seq).ok_or(AccessError::Corrupt);
+                let attempt = key.and_then(|key| {
+                    Attempt::slotted(candidate, key, self.backend.clone())
+                        .map_err(|_| AccessError::Authority)
+                });
+                let attempt = match attempt {
+                    Ok(attempt) => Arc::new(attempt),
+                    Err(error) => {
+                        pending.free.push(slot);
+                        return Err(error);
+                    }
+                };
+                pending.next_seq = seq.checked_add(1).ok_or(AccessError::Corrupt)?;
                 pending.attempts.insert(
                     pending_id,
                     PendingEntry {
@@ -427,6 +570,7 @@ impl CoreStore {
                         driving: false,
                         logical: logical.map(|permit| permit.id),
                         identity_owned,
+                        slot,
                     },
                 );
                 attempt
@@ -491,14 +635,21 @@ impl CoreStore {
                 .get(&id)
                 .is_some_and(|held| Arc::ptr_eq(&held.attempt, &attempt))
             {
-                if let Some(logical) = pending.attempts.remove(&id).and_then(|entry| entry.logical)
-                {
-                    if pending
-                        .logical
-                        .get(&logical)
-                        .is_some_and(|entry| entry.pending == Some(id))
-                    {
-                        pending.logical.remove(&logical);
+                if let Some(entry) = pending.attempts.remove(&id) {
+                    // Pop: the slot returns in the same critical section that removes
+                    // the entry. Its next lease carries a larger seq.
+                    pending.free.push(entry.slot);
+                    if self.exhausted.swap(false, Ordering::Relaxed) {
+                        self.exhaustion(&pending, false);
+                    }
+                    if let Some(logical) = entry.logical {
+                        if pending
+                            .logical
+                            .get(&logical)
+                            .is_some_and(|entry| entry.pending == Some(id))
+                        {
+                            pending.logical.remove(&logical);
+                        }
                     }
                 }
             }

@@ -484,7 +484,7 @@ fn outcome(result: WriteResult) -> Result<(), (bool, RecordStoreError)> {
                 Decision::TimeGuardFailed { .. } => {
                     Err((true, refusal("running money temporal guard refused")))
                 }
-                Decision::OpIdConflict | Decision::ExpiredUnknown => Err((
+                Decision::OpIdConflict | Decision::Fenced | Decision::Stale => Err((
                     false,
                     refusal("running money native identity requires reconciliation"),
                 )),

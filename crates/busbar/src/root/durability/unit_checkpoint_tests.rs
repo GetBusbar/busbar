@@ -615,7 +615,7 @@ async fn actual_store_rejects_checkpoint_head_whose_evidence_was_changed() {
     })
     .unwrap();
     assert!(matches!(
-        backend.commit(candidate).await,
+        backend.commit(candidate, test_commit_key()).await,
         Ok(Decision::Applied(_))
     ));
     assert!(

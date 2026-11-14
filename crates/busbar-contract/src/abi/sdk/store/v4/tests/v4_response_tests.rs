@@ -84,27 +84,18 @@ fn read_copies_only_host_written_bytes_and_preserves_empty_vs_absent() {
 }
 
 #[test]
-fn commit_failed_short_and_refused_are_distinct() {
+fn commit_failed_and_refused_are_distinct() {
     let input = blank_in::<wire::CommitIn>();
     let mut out = blank_out::<wire::CommitOut>();
     out.head.size = core::mem::size_of::<wire::CommitOut>() as u32;
     out.head.outcome = RawOutcome::of(Outcome::Failed);
     assert_eq!(
-        commit(Outcome::Failed, &input, &out, &[], 0).unwrap_err(),
+        commit(Outcome::Failed, &input, &out).unwrap_err(),
         ResponseError::Failure(owned::Failure::Unknown)
     );
-    out.needed = 12;
-    assert_eq!(
-        commit(Outcome::Failed, &input, &out, &[], 0).unwrap_err(),
-        ResponseError::Short {
-            needed_items: 0,
-            needed_bytes: 12
-        }
-    );
-    out.needed = 0;
     out.head.outcome = RawOutcome::of(Outcome::Refused);
     assert_eq!(
-        commit(Outcome::Refused, &input, &out, &[], 0).unwrap_err(),
+        commit(Outcome::Refused, &input, &out).unwrap_err(),
         ResponseError::Failure(owned::Failure::Refused)
     );
 }
@@ -221,12 +212,12 @@ fn temporal_verdicts_must_match_the_returned_serialization_observation() {
     commit_out.authority = [1; 16];
     commit_out.observed_at = 10;
     commit_out.code = wire::COMMIT_APPLIED;
-    assert!(commit(Outcome::Ready, &commit_in, &commit_out, &[], 0).is_err());
+    assert!(commit(Outcome::Ready, &commit_in, &commit_out).is_err());
     commit_out.observed_at = 9;
     assert!(matches!(
-        commit(Outcome::Ready, &commit_in, &commit_out, &[], 0),
+        commit(Outcome::Ready, &commit_in, &commit_out),
         Ok(owned::Decision::Applied(_))
     ));
     commit_out.code = wire::COMMIT_TIME_GUARD_FAILED;
-    assert!(commit(Outcome::Ready, &commit_in, &commit_out, &[], 0).is_err());
+    assert!(commit(Outcome::Ready, &commit_in, &commit_out).is_err());
 }

@@ -61,15 +61,21 @@ impl PersistenceBackend for Backend {
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async { panic!("no client clock") })
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let mut inner = self.0.lock().unwrap();
             let candidate = prepared.candidate();
             let digest = prepared.fingerprint();
             inner.sends.push(digest);
             inner.candidates.push(prepared.clone());
-            if let Some((_, fingerprint)) =
-                inner.receipts.iter().find(|(id, _)| *id == candidate.id)
+            // Self-fenced sends skip the slot row; slotted ones replay by (writer, op).
+            if let Some((_, fingerprint)) = (!key.is_self_fenced())
+                .then(|| inner.receipts.iter().find(|(id, _)| *id == candidate.id))
+                .flatten()
             {
                 return Ok(if *fingerprint == digest {
                     Decision::Applied(candidate.result.clone())
@@ -84,7 +90,7 @@ impl PersistenceBackend for Backend {
             if let Some(root) = inner.rows.get(&root_address) {
                 let root = control::Dataset::decode(root.expose(&crate::seal::lend())).unwrap();
                 if root.writer_epoch != candidate.id.writer_epoch {
-                    return Ok(Decision::ExpiredUnknown);
+                    return Ok(Decision::Fenced);
                 }
                 let writer = inner
                     .rows
@@ -95,7 +101,7 @@ impl PersistenceBackend for Backend {
                     )
                     .and_then(|value| control::Writer::decode(value.expose(&crate::seal::lend())));
                 if !writer.is_some_and(|writer| writer.admits(candidate.id.execution_epoch)) {
-                    return Ok(Decision::ExpiredUnknown);
+                    return Ok(Decision::Fenced);
                 }
             }
             if inner.reject {
@@ -146,7 +152,9 @@ impl PersistenceBackend for Backend {
                     .rows
                     .insert(address, Secret::new((previous + 1).to_le_bytes().to_vec()));
             }
-            inner.receipts.push((candidate.id, digest));
+            if !key.is_self_fenced() {
+                inner.receipts.push((candidate.id, digest));
+            }
             if std::mem::take(&mut inner.fail_read_after_commit) {
                 inner.failed_reads += 1;
             }
@@ -494,13 +502,14 @@ async fn unknown_copy_retains_exact_candidate_and_atomic_checkpoint() {
     let native = backend.0.lock().unwrap();
     let sends = &native.sends;
     assert_eq!(sends[sends.len() - 1], sends[sends.len() - 2]);
+    // The copy page is self-fenced: its retry resolves by readback, so no slot row.
     assert_eq!(
         native
             .receipts
             .iter()
             .filter(|(id, _)| *id == operation)
             .count(),
-        1
+        0
     );
 }
 
@@ -1005,9 +1014,11 @@ async fn durable_intent_read_resolves_lost_reply_and_closed_guard_fences_delayed
     assert_eq!(outstanding.candidate, snapshot);
     assert_eq!(outstanding.fingerprint, candidate.fingerprint());
     assert_eq!(outstanding.prepared_at.unix_seconds, 1);
-    assert_eq!(outstanding.replay_deadline, 86401);
     assert!(matches!(
-        backend.commit(candidate.clone()).await.unwrap(),
+        backend
+            .commit(candidate.clone(), key_for(&candidate))
+            .await
+            .unwrap(),
         Decision::Applied(_)
     ));
     let resolution = IntentResolution {
@@ -1035,11 +1046,17 @@ async fn durable_intent_read_resolves_lost_reply_and_closed_guard_fences_delayed
         });
     }
     assert!(matches!(
-        backend.commit(candidate).await.unwrap(),
+        backend
+            .commit(candidate.clone(), key_for(&candidate))
+            .await
+            .unwrap(),
         Decision::ConditionConflict
     ));
     assert!(matches!(
-        backend.commit(old_journal_put).await.unwrap(),
+        backend
+            .commit(old_journal_put.clone(), key_for(&old_journal_put))
+            .await
+            .unwrap(),
         Decision::ConditionConflict
     ));
     assert!(!restored.pending(migration).await.unwrap());
@@ -1379,8 +1396,11 @@ async fn fenced_recovery_missing_witness_keeps_debt_and_never_first_executes() {
     );
     assert!(owner.pending(migration).await.unwrap());
     assert!(matches!(
-        backend.commit(candidate).await.unwrap(),
-        Decision::ExpiredUnknown
+        backend
+            .commit(candidate.clone(), key_for(&candidate))
+            .await
+            .unwrap(),
+        Decision::Fenced
     ));
     assert!(!backend.0.lock().unwrap().rows.contains_key(&Address {
         namespace: [9; 16],
@@ -1567,7 +1587,10 @@ async fn fenced_no_effect_requires_unchanged_native_generation_and_prior_checkpo
             })
             .unwrap();
             assert!(matches!(
-                backend.commit(external).await.unwrap(),
+                backend
+                    .commit(external.clone(), key_for(&external))
+                    .await
+                    .unwrap(),
                 Decision::Applied(_)
             ));
         }
@@ -1897,4 +1920,15 @@ async fn document_checkpoints_retain_unknown_and_discover_before_new_custody() {
         protected
     );
     assert_eq!(checkpoints.load(migration).await.unwrap(), Some(protected));
+}
+
+/// A test-side direct commit: self-fenced when the candidate proves it, else a slotted
+/// key minted with the test-only seal.
+fn key_for(candidate: &PreparedCandidate) -> CommitKey {
+    match SelfFenced::check(candidate) {
+        Ok(proof) => CommitKey::self_fenced(&proof),
+        Err(_) => {
+            CommitKey::slotted(0, 1, &busbar_contract::caps::SlotSeal::acquire_for_tests()).unwrap()
+        }
+    }
 }

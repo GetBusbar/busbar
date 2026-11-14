@@ -54,15 +54,18 @@ fn v4_commit_marshalling_roundtrip_preserves_complete_candidate_across_move() {
             .spawn(move || {
                 let frame = marshalled.frame(
                     blank_in::<wire::CommitIn>().head,
-                    HostBuf {
-                        ptr: std::ptr::null_mut(),
-                        cap: 0,
-                    },
+                    crate::persistence::CommitKey::slotted(
+                        3,
+                        9,
+                        &crate::caps::SlotSeal::acquire_for_tests(),
+                    )
+                    .unwrap(),
                 );
                 // SAFETY: the immutable marshaller retains every descriptor and payload.
                 let decoded = unsafe { decode::candidate(&frame.candidate, 65536) }.unwrap();
                 assert_eq!(decoded.fingerprint(), marshalled.candidate.fingerprint());
                 assert_eq!(frame.candidate.result.flags, BLOB_SECRET);
+                assert_eq!((frame.candidate.slot, frame.candidate.seq), (3, 9));
             })
             .join()
             .unwrap();

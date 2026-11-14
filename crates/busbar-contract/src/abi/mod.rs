@@ -195,6 +195,9 @@ extern "Rust" {
     fn __busbar_migrations_root(
         seal: crate::caps::MigrationSeal,
     ) -> Box<dyn std::any::Any + Send + Sync>;
+    fn __busbar_persistence_root(
+        seal: crate::caps::SlotSeal,
+    ) -> Box<dyn std::any::Any + Send + Sync>;
 }
 
 /// Hand `seal` to the kernel's root symbol; [`crate::caps::KernelSeal::deliver`] is the only
@@ -215,6 +218,15 @@ pub(crate) fn migration_root(
     // SAFETY: busbar-migrations defines this Rust-ABI symbol exactly once with
     // this signature and private return holder, just like the kernel root above.
     unsafe { __busbar_migrations_root(seal) }
+}
+
+#[inline]
+pub(crate) fn persistence_root(
+    seal: crate::caps::SlotSeal,
+) -> Box<dyn std::any::Any + Send + Sync> {
+    // SAFETY: busbar-kernel::persistence defines this Rust-ABI symbol exactly once with
+    // this signature and a private return holder, just like the kernel root above.
+    unsafe { __busbar_persistence_root(seal) }
 }
 
 /// The magic value every plugin-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the

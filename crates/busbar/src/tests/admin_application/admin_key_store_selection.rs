@@ -52,8 +52,12 @@ impl PersistenceBackend for CountingStore {
             self.inner.scan(request).await
         })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
-        Box::pin(async move { self.inner.commit(candidate).await })
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
+        Box::pin(async move { self.inner.commit(candidate, key).await })
     }
 }
 

@@ -1262,7 +1262,11 @@ impl PersistenceBackend for OverlayFaults {
             self.inner.read(request).await
         })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let schema = b"busbar.config.overlay.v1";
             let publication = candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, Mutation::Put { address, .. } if address.key.ends_with(b"head") && address.key.windows(schema.len()).any(|bytes| bytes == schema)));
@@ -1273,7 +1277,7 @@ impl PersistenceBackend for OverlayFaults {
                 }
             }
             let lose = publication && self.lose_reply.swap(false, Ordering::SeqCst);
-            let result = self.inner.commit(candidate).await?;
+            let result = self.inner.commit(candidate, key).await?;
             if lose {
                 Err(Failure::Unknown)
             } else {

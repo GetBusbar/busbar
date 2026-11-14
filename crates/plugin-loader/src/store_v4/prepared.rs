@@ -145,14 +145,10 @@ impl LoadedPrepared {
                         return Err(native::Error::SourceChanged);
                     }
                 }
-                if let Request::Finish {
-                    activation_receipt, ..
-                } = request
-                {
-                    if activation_receipt.attempt.dataset != begun.target.dataset {
-                        return Err(native::Error::SourceChanged);
-                    }
-                    if activation_receipt.phase == native::CompletionPhase::Complete
+                // The host verified the proof (its attempt names this target) before
+                // deciding the Finish (decision 185); only the phase order stays here.
+                if let Request::Finish { decision, .. } = request {
+                    if decision.phase == native::CompletionPhase::Complete
                         && (state.backend.is_none() || state.recovery.is_none())
                     {
                         return Err(native::Error::Refused);
@@ -560,13 +556,9 @@ async fn finish_response(
                 }
                 None
             }
-            (
-                Request::Finish {
-                    upgrade,
-                    activation_receipt,
-                },
-                Response::RecoveryReady(ready),
-            ) if activation_receipt.phase == native::CompletionPhase::Activation => {
+            (Request::Finish { upgrade, decision }, Response::RecoveryReady(ready))
+                if decision.phase == native::CompletionPhase::Activation =>
+            {
                 let Some(Response::Begun(begun)) = state.begun.as_deref() else {
                     return Err(native::Error::Corrupt);
                 };
@@ -582,15 +574,11 @@ async fn finish_response(
                 state.recovery = Some(ready.clone());
                 None
             }
-            (
-                Request::Finish {
-                    activation_receipt, ..
-                },
-                Response::ServingReady(ready),
-            ) if activation_receipt.phase == native::CompletionPhase::Complete => {
+            (Request::Finish { decision, .. }, Response::ServingReady(ready))
+                if decision.phase == native::CompletionPhase::Complete =>
+            {
                 if state.recovery.as_ref() != Some(&ready.recovery)
-                    || ready.completed_checkpoint_digest
-                        != activation_receipt.checkpoint_value_digest
+                    || ready.completed_checkpoint_digest != decision.checkpoint_value_digest
                 {
                     return Err(native::Error::SourceChanged);
                 }
@@ -651,8 +639,12 @@ impl PersistenceBackend for Target {
     fn scan(&self, request: Arc<owned::Scan>) -> owned::Call<'_, owned::Page> {
         self.backend.scan(request)
     }
-    fn commit(&self, candidate: owned::PreparedCandidate) -> owned::Call<'_, owned::Decision> {
-        self.backend.commit(candidate)
+    fn commit(
+        &self,
+        candidate: owned::PreparedCandidate,
+        key: owned::CommitKey,
+    ) -> owned::Call<'_, owned::Decision> {
+        self.backend.commit(candidate, key)
     }
     fn clock(&self, dataset: owned::DatasetId) -> owned::Call<'_, owned::ClockObservation> {
         self.backend.clock(dataset)

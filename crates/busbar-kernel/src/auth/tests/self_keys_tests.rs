@@ -274,7 +274,11 @@ impl PersistenceBackend for RefreshOverlapStore {
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.inner.clock(dataset)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let key_write = candidate
                 .candidate()
@@ -299,7 +303,7 @@ impl PersistenceBackend for RefreshOverlapStore {
                     .map_err(|_| Failure::Refused)?
                     .map_err(|_| Failure::Refused)?;
             }
-            self.inner.commit(candidate).await
+            self.inner.commit(candidate, key).await
         })
     }
 }

@@ -202,9 +202,6 @@ unsafe fn candidate_with<O>(
     budget: usize,
     wrap: impl Fn(Vec<u8>) -> Secret<Vec<u8>, O>,
 ) -> Result<owned::PreparedCandidate<O>, DecodeError> {
-    if raw._reserved != 0 {
-        return Err(DecodeError::Flags);
-    }
     identity(raw.id.dataset)?;
     identity(raw.id.writer)?;
     identity(raw.id.operation)?;

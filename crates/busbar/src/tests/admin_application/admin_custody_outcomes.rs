@@ -102,7 +102,11 @@ impl PersistenceBackend for Store {
             self.inner.scan(request).await
         })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        commit_key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let key = key_mutation(&candidate);
             if key && self.refuse_write.load(Ordering::SeqCst) {
@@ -144,7 +148,7 @@ impl PersistenceBackend for Store {
                 }
                 _ => false,
             });
-            let answer = self.inner.commit(candidate).await?;
+            let answer = self.inner.commit(candidate, commit_key).await?;
             if matches!(answer, Decision::Applied(_)) {
                 if claim {
                     self.claimed.notify_one();

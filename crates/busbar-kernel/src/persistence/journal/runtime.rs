@@ -237,7 +237,23 @@ impl RuntimeJournal {
     }
     /// Admission backpressure never discards a queued original or interprets a
     /// pending native attempt as durable acceptance.
+    /// One settle tick of the store's slot queue: resubmit at most `SETTLE_PER_TICK`
+    /// in-doubt attempts no waiter drives, then report the `busbar_store_slots` states.
+    /// Independent of `flush`, so a stalled store never blocks the journal flush.
+    pub async fn settle_store(
+        &self,
+    ) -> std::result::Result<crate::persistence::facade::SlotStates, AccessError> {
+        self.store
+            .settle_in_doubt(crate::persistence::facade::SETTLE_PER_TICK)
+            .await?;
+        self.store.slot_states()
+    }
+
     pub fn refuses_money(&self) -> Option<String> {
+        // One relaxed load: the store's slot queue is full (STORE_INFLIGHT_EXHAUSTED).
+        if self.store.exhausted() {
+            return Some("store in-flight queue exhausted".into());
+        }
         let state = self
             .state
             .lock()

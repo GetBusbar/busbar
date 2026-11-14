@@ -64,7 +64,11 @@ impl PersistenceBackend for FaultBackend {
             Ok(result)
         })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let publication = candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, busbar_contract::persistence::Mutation::Put { address, .. } if address.key.ends_with(HEAD)));
             let stage = candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, busbar_contract::persistence::Mutation::Put { address, .. } if address.key.windows(6).any(|bytes| bytes == b"chunk:")));
@@ -106,7 +110,7 @@ impl PersistenceBackend for FaultBackend {
             };
             match action {
                 REFUSE => return Err(Failure::Refused),
-                EXPIRED => return Ok(Decision::ExpiredUnknown),
+                EXPIRED => return Ok(Decision::Fenced),
                 BLOCK => {
                     self.publication.store(NORMAL, Ordering::SeqCst);
                     self.entered.notify_one();
@@ -114,7 +118,7 @@ impl PersistenceBackend for FaultBackend {
                 }
                 _ => {}
             }
-            let result = self.inner.commit(candidate).await?;
+            let result = self.inner.commit(candidate, key).await?;
             if publication && (action == LOSE || action == PANIC) {
                 self.publication.store(NORMAL, Ordering::SeqCst);
                 if action == PANIC {

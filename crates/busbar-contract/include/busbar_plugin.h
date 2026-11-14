@@ -121,7 +121,7 @@ extern "C" {
 #define BB_STORE_TABLE_SLOTS UINT32_C(14) /* Lifecycle and primitive slots together. */
 #define BB_STORE_SLOT_READ UINT32_C(9) /* Coherent exact-address read. */
 #define BB_STORE_SLOT_SCAN UINT32_C(10) /* Ordered namespace page. */
-#define BB_STORE_SLOT_COMMIT UINT32_C(11) /* Atomic candidate and receipt. */
+#define BB_STORE_SLOT_COMMIT UINT32_C(11) /* Atomic candidate and slot row. */
 #define BB_STORE_SLOT_CLOCK UINT32_C(12) /* Authoritative UTC observation. */
 #define BB_STORE_SLOT_BOOTSTRAP UINT32_C(13) /* Retained native pre-open inspection and upgrade session. */
 #define BB_STORE_TIME_NOT_BEFORE UINT32_C(1) /* Inclusive lower UTC bound is present. */
@@ -142,12 +142,15 @@ extern "C" {
 #define BB_STORE_SCAN_STALE UINT32_C(2) /* Generation changed; no page was returned. */
 #define BB_STORE_SCAN_EXHAUSTED UINT32_C(1) /* No further matching rows. */
 #define BB_STORE_SCAN_CONTINUE UINT32_C(2) /* Another page exists; next is its exclusive cursor. */
-#define BB_STORE_COMMIT_APPLIED UINT32_C(1) /* Effects and receipt committed; replay returns original result. */
+#define BB_STORE_COMMIT_APPLIED UINT32_C(1) /* Effects and slot row committed; an equal-sequence replay returns this verdict. */
 #define BB_STORE_COMMIT_CONDITION_CONFLICT UINT32_C(2) /* This execution did not apply because a predicate failed. */
 #define BB_STORE_COMMIT_TIME_GUARD_FAILED UINT32_C(3) /* This execution did not apply because the time guard failed. */
-#define BB_STORE_COMMIT_OPID_CONFLICT UINT32_C(4) /* This identity is already bound to another candidate. */
-#define BB_STORE_COMMIT_EXPIRED_UNKNOWN UINT32_C(5) /* Receipt unavailable and execution authority retired; never execute anew. */
-#define BB_STORE_LAYOUT_FINGERPRINT UINT64_C(0xd66505223254d413) /* Fingerprint of the primitive shapes, independent from the legacy business layout. */
+#define BB_STORE_COMMIT_OPID_CONFLICT UINT32_C(4) /* This (writer, slot, seq) is already bound to another candidate. */
+#define BB_STORE_COMMIT_FENCED UINT32_C(5) /* Epoch not admitted; this send applied nothing. */
+#define BB_STORE_COMMIT_STALE UINT32_C(6) /* The slot already evaluated a later sequence; this send applied nothing and never will. */
+#define BB_STORE_SLOT_SELF_FENCED UINT32_C(0xffffffff) /* Slot value of a self-fenced candidate, which must carry sequence zero. */
+#define BB_STORE_MAX_SLOTS UINT32_C(0x10000) /* Exclusive upper bound of a writer's queue slots; each store keeps at most this many */
+#define BB_STORE_LAYOUT_FINGERPRINT UINT64_C(0x5f47532174fb052b) /* Fingerprint of the primitive shapes, independent from the legacy business layout. */
 
 /* secret */
 #define BB_SECRET_ABI_VERSION UINT32_C(2) /* The secret kind's ABI version. */
@@ -1622,7 +1625,8 @@ struct bb_store_Mutation {
 struct bb_store_Candidate {
     bb_store_AttemptId id;
     uint32_t codec;
-    uint32_t _reserved;
+    uint32_t slot;
+    uint64_t seq;
     bb_store_TimeGuard time;
     const bb_store_Predicate *predicates;
     size_t predicates_len;
@@ -1713,7 +1717,6 @@ struct bb_store_ScanOut {
 struct bb_store_CommitIn {
     bb_mech_InHead head;
     bb_store_Candidate candidate;
-    bb_store_HostBuf result;
 };
 
 /* Execution decision; uncertainty is never converted to no-effect rejection. */
@@ -1723,8 +1726,6 @@ struct bb_store_CommitOut {
     uint32_t _reserved;
     uint64_t observed_at;
     uint8_t authority[16];
-    uint64_t written;
-    uint64_t needed;
 };
 
 /* Observe authoritative time for this dataset. */
@@ -4453,17 +4454,18 @@ BB_ASSERT(offsetof(bb_store_Mutation, tag) == 32, "bb_store_Mutation.tag: offset
 BB_ASSERT(offsetof(bb_store_Mutation, _reserved) == 36, "bb_store_Mutation._reserved: offset");
 BB_ASSERT(offsetof(bb_store_Mutation, exact_length) == 40, "bb_store_Mutation.exact_length: offset");
 BB_ASSERT(offsetof(bb_store_Mutation, value) == 48, "bb_store_Mutation.value: offset");
-BB_ASSERT(sizeof(bb_store_Candidate) == 152, "bb_store_Candidate: size");
+BB_ASSERT(sizeof(bb_store_Candidate) == 160, "bb_store_Candidate: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_Candidate) == 8, "bb_store_Candidate: alignment");
 BB_ASSERT(offsetof(bb_store_Candidate, id) == 0, "bb_store_Candidate.id: offset");
 BB_ASSERT(offsetof(bb_store_Candidate, codec) == 64, "bb_store_Candidate.codec: offset");
-BB_ASSERT(offsetof(bb_store_Candidate, _reserved) == 68, "bb_store_Candidate._reserved: offset");
-BB_ASSERT(offsetof(bb_store_Candidate, time) == 72, "bb_store_Candidate.time: offset");
-BB_ASSERT(offsetof(bb_store_Candidate, predicates) == 96, "bb_store_Candidate.predicates: offset");
-BB_ASSERT(offsetof(bb_store_Candidate, predicates_len) == 104, "bb_store_Candidate.predicates_len: offset");
-BB_ASSERT(offsetof(bb_store_Candidate, mutations) == 112, "bb_store_Candidate.mutations: offset");
-BB_ASSERT(offsetof(bb_store_Candidate, mutations_len) == 120, "bb_store_Candidate.mutations_len: offset");
-BB_ASSERT(offsetof(bb_store_Candidate, result) == 128, "bb_store_Candidate.result: offset");
+BB_ASSERT(offsetof(bb_store_Candidate, slot) == 68, "bb_store_Candidate.slot: offset");
+BB_ASSERT(offsetof(bb_store_Candidate, seq) == 72, "bb_store_Candidate.seq: offset");
+BB_ASSERT(offsetof(bb_store_Candidate, time) == 80, "bb_store_Candidate.time: offset");
+BB_ASSERT(offsetof(bb_store_Candidate, predicates) == 104, "bb_store_Candidate.predicates: offset");
+BB_ASSERT(offsetof(bb_store_Candidate, predicates_len) == 112, "bb_store_Candidate.predicates_len: offset");
+BB_ASSERT(offsetof(bb_store_Candidate, mutations) == 120, "bb_store_Candidate.mutations: offset");
+BB_ASSERT(offsetof(bb_store_Candidate, mutations_len) == 128, "bb_store_Candidate.mutations_len: offset");
+BB_ASSERT(offsetof(bb_store_Candidate, result) == 136, "bb_store_Candidate.result: offset");
 BB_ASSERT(sizeof(bb_store_ReadValue) == 32, "bb_store_ReadValue: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_ReadValue) == 8, "bb_store_ReadValue: alignment");
 BB_ASSERT(offsetof(bb_store_ReadValue, found) == 0, "bb_store_ReadValue.found: offset");
@@ -4526,20 +4528,17 @@ BB_ASSERT(offsetof(bb_store_ScanOut, items_written) == 152, "bb_store_ScanOut.it
 BB_ASSERT(offsetof(bb_store_ScanOut, bytes_written) == 160, "bb_store_ScanOut.bytes_written: offset");
 BB_ASSERT(offsetof(bb_store_ScanOut, needed_items) == 168, "bb_store_ScanOut.needed_items: offset");
 BB_ASSERT(offsetof(bb_store_ScanOut, needed_bytes) == 176, "bb_store_ScanOut.needed_bytes: offset");
-BB_ASSERT(sizeof(bb_store_CommitIn) == 264, "bb_store_CommitIn: size");
+BB_ASSERT(sizeof(bb_store_CommitIn) == 256, "bb_store_CommitIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_CommitIn) == 8, "bb_store_CommitIn: alignment");
 BB_ASSERT(offsetof(bb_store_CommitIn, head) == 0, "bb_store_CommitIn.head: offset");
 BB_ASSERT(offsetof(bb_store_CommitIn, candidate) == 96, "bb_store_CommitIn.candidate: offset");
-BB_ASSERT(offsetof(bb_store_CommitIn, result) == 248, "bb_store_CommitIn.result: offset");
-BB_ASSERT(sizeof(bb_store_CommitOut) == 168, "bb_store_CommitOut: size");
+BB_ASSERT(sizeof(bb_store_CommitOut) == 152, "bb_store_CommitOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_CommitOut) == 8, "bb_store_CommitOut: alignment");
 BB_ASSERT(offsetof(bb_store_CommitOut, head) == 0, "bb_store_CommitOut.head: offset");
 BB_ASSERT(offsetof(bb_store_CommitOut, code) == 120, "bb_store_CommitOut.code: offset");
 BB_ASSERT(offsetof(bb_store_CommitOut, _reserved) == 124, "bb_store_CommitOut._reserved: offset");
 BB_ASSERT(offsetof(bb_store_CommitOut, observed_at) == 128, "bb_store_CommitOut.observed_at: offset");
 BB_ASSERT(offsetof(bb_store_CommitOut, authority) == 136, "bb_store_CommitOut.authority: offset");
-BB_ASSERT(offsetof(bb_store_CommitOut, written) == 152, "bb_store_CommitOut.written: offset");
-BB_ASSERT(offsetof(bb_store_CommitOut, needed) == 160, "bb_store_CommitOut.needed: offset");
 BB_ASSERT(sizeof(bb_store_ClockIn) == 112, "bb_store_ClockIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_ClockIn) == 8, "bb_store_ClockIn: alignment");
 BB_ASSERT(offsetof(bb_store_ClockIn, head) == 0, "bb_store_ClockIn.head: offset");

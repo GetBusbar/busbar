@@ -8,8 +8,9 @@
 use super::*;
 use crate::persistence::startup;
 use busbar_contract::persistence::{
-    control, Address, AttemptId, BackendInfo, Call, ClockObservation, DatasetId, Decision,
-    Durability, ExpectedValue, Failure, Mutation, Page, PreparedCandidate, Read, ReadResult, Scan,
+    control, Address, AttemptId, BackendInfo, Call, ClockObservation, CommitKey, DatasetId,
+    Decision, Durability, ExpectedValue, Failure, Mutation, Page, PreparedCandidate, Read,
+    ReadResult, Scan,
 };
 use busbar_contract::Secret;
 use futures::FutureExt;
@@ -95,12 +96,16 @@ impl PersistenceBackend for Mock {
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async { Ok(observed()) })
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(&self, prepared: PreparedCandidate, key: CommitKey) -> Call<'_, Decision> {
         Box::pin(async move {
             let mut state = self.state.lock().unwrap();
             let digest = prepared.fingerprint();
             let candidate = prepared.candidate();
-            if let Some((_, prior)) = state.receipts.iter().find(|(id, _)| id == &candidate.id) {
+            // Slotted sends replay their recorded verdict; self-fenced sends record none.
+            if let Some((_, prior)) = (!key.is_self_fenced())
+                .then(|| state.receipts.iter().find(|(id, _)| id == &candidate.id))
+                .flatten()
+            {
                 return Ok(if *prior == digest {
                     Decision::Applied(candidate.result.clone())
                 } else {
@@ -120,7 +125,7 @@ impl PersistenceBackend for Mock {
                     .get(&startup::root_address())
                     .and_then(|v| control::Dataset::decode(v.expose(&seal)))
                 else {
-                    return Ok(Decision::ExpiredUnknown);
+                    return Ok(Decision::Fenced);
                 };
                 let writer = state
                     .rows
@@ -129,7 +134,7 @@ impl PersistenceBackend for Mock {
                 if root.writer_epoch != candidate.id.writer_epoch
                     || !writer.is_some_and(|w| w.admits(candidate.id.execution_epoch))
                 {
-                    return Ok(Decision::ExpiredUnknown);
+                    return Ok(Decision::Fenced);
                 }
             }
             if !blind && candidate.time.is_some_and(|guard| !guard.permits(1)) {
@@ -160,7 +165,9 @@ impl PersistenceBackend for Mock {
                     Mutation::DeleteRange { .. } => return Err(Failure::Refused),
                 }
             }
-            state.receipts.push((candidate.id, digest));
+            if !key.is_self_fenced() {
+                state.receipts.push((candidate.id, digest));
+            }
             Ok(Decision::Applied(candidate.result.clone()))
         })
     }
@@ -208,8 +215,8 @@ impl PersistenceBackend for EmptyReads {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         self.0.scan(request)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
-        self.0.commit(candidate)
+    fn commit(&self, candidate: PreparedCandidate, key: CommitKey) -> Call<'_, Decision> {
+        self.0.commit(candidate, key)
     }
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.0.clock(dataset)

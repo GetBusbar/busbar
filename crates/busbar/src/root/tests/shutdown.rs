@@ -71,7 +71,11 @@ impl PersistenceBackend for FlushBackend {
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.inner.clock(dataset)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let is = |prefix: &[u8]| {
                 candidate.candidate().mutations.iter().any(|mutation| {
@@ -99,7 +103,7 @@ impl PersistenceBackend for FlushBackend {
             if (budget || metering) && self.fail_accounting.load(Ordering::Acquire) {
                 return Err(Failure::Unknown);
             }
-            self.inner.commit(candidate).await
+            self.inner.commit(candidate, key).await
         })
     }
 }

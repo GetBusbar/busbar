@@ -2629,6 +2629,7 @@ impl busbar_contract::persistence::PersistenceBackend for JournalFaults {
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
         Box::pin(async move {
             use busbar_contract::persistence::{Decision, Failure};
@@ -2636,7 +2637,7 @@ impl busbar_contract::persistence::PersistenceBackend for JournalFaults {
             if self.refusing.load(Ordering::SeqCst) {
                 return Err(Failure::Unavailable);
             }
-            let decision = self.inner.commit(candidate).await?;
+            let decision = self.inner.commit(candidate, key).await?;
             if self.paused.load(Ordering::SeqCst) && matches!(decision, Decision::Applied(_)) {
                 self.uncertain.fetch_add(1, Ordering::SeqCst);
                 return Err(Failure::Unknown);

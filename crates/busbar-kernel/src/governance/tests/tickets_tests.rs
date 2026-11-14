@@ -277,7 +277,11 @@ impl PersistenceBackend for TicketBackend {
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.inner.clock(dataset)
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let writes = |schema: &str| {
                 prepared
@@ -302,7 +306,7 @@ impl PersistenceBackend for TicketBackend {
                     pause.attempts.lock().unwrap().push(prepared.fingerprint());
                 }
             }
-            let result = self.inner.commit(prepared).await;
+            let result = self.inner.commit(prepared, key).await;
             if publish && matches!(&result, Ok(Decision::Applied(_))) {
                 self.published.store(true, Ordering::SeqCst);
             }

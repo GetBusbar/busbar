@@ -1122,7 +1122,11 @@ impl PersistenceBackend for SettlementBackend {
     fn scan(&self, request: Arc<native::Scan>) -> native::Call<'_, native::Page> {
         self.store.backend().scan(request)
     }
-    fn commit(&self, candidate: native::PreparedCandidate) -> native::Call<'_, native::Decision> {
+    fn commit(
+        &self,
+        candidate: native::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> native::Call<'_, native::Decision> {
         Box::pin(async move {
             self.attempts
                 .lock()
@@ -1131,11 +1135,11 @@ impl PersistenceBackend for SettlementBackend {
             match self.mode.load(Ordering::SeqCst) {
                 1 => Err(native::Failure::Refused),
                 2 => {
-                    self.store.backend().commit(candidate).await?;
+                    self.store.backend().commit(candidate, key).await?;
                     Err(native::Failure::Unknown)
                 }
                 3 => panic!("settlement Store unwound"),
-                _ => self.store.backend().commit(candidate).await,
+                _ => self.store.backend().commit(candidate, key).await,
             }
         })
     }

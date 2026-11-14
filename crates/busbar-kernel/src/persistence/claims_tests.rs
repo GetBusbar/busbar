@@ -140,7 +140,11 @@ impl PersistenceBackend for Backend {
         })
     }
 
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        _key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let hold = {
                 let mut native = self.0.lock().unwrap();
@@ -421,20 +425,20 @@ async fn sweep_lost_reply_replays_receipt_without_deleting_new_claim() {
 }
 
 #[tokio::test]
-async fn sweep_unknown_then_rewind_retains_candidate_without_replanning() {
+async fn sweep_unknown_then_rewind_resolves_from_the_slotted_retry() {
+    // STORE-TRANSACTIONS section 2.3: an equal-seq slotted retry is the slot row's single
+    // evaluation, so a consistent time-guard refusal after an unevaluated send is final.
     let (backend, store) = fixture(20, 4096).await;
     let claims = Claims::authorized(&store, "owner", "kind");
     let address = insert(&backend, &claims, "token", 99);
     backend.0.lock().unwrap().unknown_before = true;
     let mut sweep = claims.sweep().unwrap();
-    let SweepOutcome::Pending(id) = sweep.advance().await.unwrap() else {
-        panic!("pending")
-    };
+    assert!(matches!(
+        sweep.advance().await.unwrap(),
+        SweepOutcome::Pending(_)
+    ));
     backend.0.lock().unwrap().now = 99;
-    assert_eq!(sweep.advance().await.unwrap(), SweepOutcome::Reconcile(id));
-    backend.0.lock().unwrap().now = 200;
-    assert_eq!(sweep.advance().await.unwrap(), SweepOutcome::Reconcile(id));
-    assert_eq!(store.stop_admission().unwrap(), vec![id]);
+    assert_eq!(sweep.advance().await.unwrap(), SweepOutcome::ClockRewound);
     let native = backend.0.lock().unwrap();
     assert_eq!(native.scans, 1);
     assert_eq!(native.sends.len(), 2);

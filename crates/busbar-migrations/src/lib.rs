@@ -6,7 +6,27 @@
 //! The Store checkpoint is authoritative; exported manifests contain only public
 //! identities and evidence digests. Protected intent must be durable before a send.
 //! Recovery reconciles outstanding intent against its original native authority;
-//! a new process cannot reset the replay horizon or declare old operation debt safe.
+//! a new process cannot declare old operation debt safe.
+//!
+//! Every store commit this crate makes is self-fenced (STORE-TRANSACTIONS R9): it
+//! cannot reach the kernel's slot queue. These must not compile here:
+//!
+//! ```compile_fail
+//! fn bypass(
+//!     candidate: busbar_contract::persistence::PreparedCandidate,
+//!     key: busbar_contract::persistence::CommitKey,
+//!     backend: std::sync::Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+//! ) {
+//!     // `Attempt::slotted` is crate-private to busbar-kernel.
+//!     let _ = busbar_kernel::persistence::commit::Attempt::slotted(candidate, key, backend);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! // The slotted-key root token cannot be constructed outside busbar-contract.
+//! let seal = busbar_contract::caps::SlotSeal(());
+//! let _ = busbar_contract::persistence::CommitKey::slotted(0, 1, &seal);
+//! ```
 
 #![deny(unsafe_code)]
 

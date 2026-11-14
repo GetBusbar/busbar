@@ -130,7 +130,11 @@ impl PersistenceBackend for Backend {
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async { Ok(self.now()) })
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        _key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             if self.hang.load(Ordering::Acquire) {
                 {

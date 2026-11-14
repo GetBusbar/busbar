@@ -154,7 +154,8 @@ impl TargetBootstrap {
                 )
                 .map_err(|_| Error::Corrupt)?;
                 self.pending = Some(
-                    Attempt::new(candidate, self.backend.clone()).map_err(|_| Error::Identity)?,
+                    Attempt::proven(candidate, self.backend.clone())
+                        .map_err(|_| Error::Identity)?,
                 );
                 Ok(BootstrapProgress::Advanced)
             }
