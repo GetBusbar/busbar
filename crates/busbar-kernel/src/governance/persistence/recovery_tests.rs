@@ -62,16 +62,66 @@ fn set_root_epoch(backend: &Backend, epoch: u64) {
     );
 }
 type ReadHook = Arc<dyn Fn(&Backend, &Read) + Send + Sync>;
+/// Owns the whole reply, so a test can await a real live append before the
+/// unchanged row read. The synchronous `after_read` cannot await.
+type AsyncReadHook = Arc<dyn Fn(Arc<Read>) -> Call<'static, ReadResult> + Send + Sync>;
 type ScanHook = Arc<dyn Fn(Arc<Scan>) -> Call<'static, Page> + Send + Sync>;
 
 #[derive(Default)]
 struct Backend {
     after_read: Mutex<Option<ReadHook>>,
+    read_hook: Mutex<Option<AsyncReadHook>>,
     scan_hook: Mutex<Option<ScanHook>>,
     state: Mutex<State>,
     lose_reply: AtomicBool,
     hang: AtomicBool,
     clock_seconds: AtomicU64,
+}
+impl Backend {
+    fn read_rows(&self, request: &Read) -> ReadResult {
+        let state = self.state.lock().unwrap();
+        ReadResult::Values {
+            observed_at: ClockObservation {
+                authority: [3; 16],
+                unix_seconds: 10 + self.clock_seconds.load(Ordering::SeqCst),
+            },
+            values: request
+                .addresses
+                .iter()
+                .map(|address| row(&state, address))
+                .collect(),
+        }
+    }
+    fn scan_rows(&self, request: &Scan) -> Page {
+        let state = self.state.lock().unwrap();
+        let mut rows = Vec::new();
+        let mut bytes = 0;
+        let mut next = None;
+        for (at, value) in &state.rows {
+            if at.namespace != request.namespace.0
+                || !at.key.starts_with(&request.prefix)
+                || request.after.as_ref().is_some_and(|after| at.key <= *after)
+            {
+                continue;
+            }
+            if rows.len() == request.max_items
+                || bytes + at.key.len() + value.expose(&crate::seal::lend()).len()
+                    > request.max_bytes
+            {
+                next = rows
+                    .last()
+                    .map(|(at, _): &(Address, Secret<Vec<u8>>)| at.key.clone());
+                break;
+            }
+            bytes += at.key.len() + value.expose(&crate::seal::lend()).len();
+            rows.push((at.clone(), value.clone()));
+        }
+        Page {
+            generation: 0,
+            rows,
+            next,
+        }
+    }
 }
 impl PersistenceBackend for Backend {
     fn info(&self) -> BackendInfo {
@@ -84,20 +134,12 @@ impl PersistenceBackend for Backend {
         }
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        let hook = self.read_hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            return hook(request);
+        }
         Box::pin(async move {
-            let state = self.state.lock().unwrap();
-            let result = ReadResult::Values {
-                observed_at: ClockObservation {
-                    authority: [3; 16],
-                    unix_seconds: 10 + self.clock_seconds.load(Ordering::SeqCst),
-                },
-                values: request
-                    .addresses
-                    .iter()
-                    .map(|address| row(&state, address))
-                    .collect(),
-            };
-            drop(state);
+            let result = self.read_rows(&request);
             let hook = self.after_read.lock().unwrap().clone();
             if let Some(hook) = hook {
                 hook(self, &request);
@@ -106,39 +148,11 @@ impl PersistenceBackend for Backend {
         })
     }
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
-        if let Some(hook) = self.scan_hook.lock().unwrap().clone() {
+        let hook = self.scan_hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
             return hook(request);
         }
-        Box::pin(async move {
-            let state = self.state.lock().unwrap();
-            let mut rows = Vec::new();
-            let mut bytes = 0;
-            let mut next = None;
-            for (at, value) in &state.rows {
-                if at.namespace != request.namespace.0
-                    || !at.key.starts_with(&request.prefix)
-                    || request.after.as_ref().is_some_and(|after| at.key <= *after)
-                {
-                    continue;
-                }
-                if rows.len() == request.max_items
-                    || bytes + at.key.len() + value.expose(&crate::seal::lend()).len()
-                        > request.max_bytes
-                {
-                    next = rows
-                        .last()
-                        .map(|(at, _): &(Address, Secret<Vec<u8>>)| at.key.clone());
-                    break;
-                }
-                bytes += at.key.len() + value.expose(&crate::seal::lend()).len();
-                rows.push((at.clone(), value.clone()));
-            }
-            Ok(Page {
-                generation: 0,
-                rows,
-                next,
-            })
-        })
+        Box::pin(async move { Ok(self.scan_rows(&request)) })
     }
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async move {
@@ -1127,4 +1141,209 @@ async fn heads_refuse_invalid_or_failed_pages_without_partial_results() {
             );
         }
     }
+}
+
+/// A live write on this node's own runtime journal. It moves the selected
+/// head H and the owner's verified head together, as a concurrent audit,
+/// usage or checkpoint commit does after boot.
+async fn live_append(journal: &RuntimeJournal) {
+    let run = journal
+        .stage_run(&[Entry::new(
+            RecordClass::Transaction,
+            b"concurrent local journal write".to_vec(),
+        )])
+        .unwrap();
+    journal.confirm(&run).await.unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum Interleave {
+    /// The node's own journal owner commits one more record.
+    Append,
+    /// A cold dataset cutover fences this node's writer epoch.
+    Cutover,
+}
+
+async fn interleave(backend: &Backend, journal: &RuntimeJournal, action: Interleave) {
+    match action {
+        Interleave::Append => live_append(journal).await,
+        Interleave::Cutover => set_root_epoch(backend, 3),
+    }
+}
+
+/// Run `action` once, inside the first RECOVERY bucket scan of a listing.
+fn on_first_recovery_scan(
+    backend: &Arc<Backend>,
+    journal: &Arc<RuntimeJournal>,
+    action: Interleave,
+) -> Arc<AtomicBool> {
+    let fired = Arc::new(AtomicBool::new(false));
+    let (owner, journal, done) = (backend.clone(), journal.clone(), fired.clone());
+    *backend.scan_hook.lock().unwrap() = Some(Arc::new(move |request: Arc<Scan>| {
+        let (backend, journal, done) = (owner.clone(), journal.clone(), done.clone());
+        let trigger = request.prefix == RECOVERY.0;
+        if trigger {
+            // One-shot: later scans, and the append's own I/O, see the plain store.
+            backend.scan_hook.lock().unwrap().take();
+        }
+        Box::pin(async move {
+            if trigger {
+                interleave(&backend, &journal, action).await;
+                done.store(true, Ordering::SeqCst);
+            }
+            Ok(backend.scan_rows(&request))
+        })
+    }));
+    fired
+}
+
+/// Run `action` once, before answering the `nth` read that includes the
+/// selected head row of `operation`.
+fn on_nth_head_read(
+    backend: &Arc<Backend>,
+    journal: &Arc<RuntimeJournal>,
+    operation: [u8; 16],
+    nth: usize,
+    action: Interleave,
+) -> Arc<AtomicBool> {
+    let fired = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let target = address(&operation);
+    let (owner, journal, done) = (backend.clone(), journal.clone(), fired.clone());
+    *backend.read_hook.lock().unwrap() = Some(Arc::new(move |request: Arc<Read>| {
+        let (backend, journal, done) = (owner.clone(), journal.clone(), done.clone());
+        let trigger =
+            request.addresses.contains(&target) && seen.fetch_add(1, Ordering::SeqCst) + 1 == nth;
+        if trigger {
+            backend.read_hook.lock().unwrap().take();
+        }
+        Box::pin(async move {
+            if trigger {
+                interleave(&backend, &journal, action).await;
+                done.store(true, Ordering::SeqCst);
+            }
+            Ok(backend.read_rows(&request))
+        })
+    }));
+    fired
+}
+
+/// Local node 7 selects nothing. Foreign node 9 selects parent [6;16] and its
+/// Applied checkpoint; foreign node 8 selects child [9;16], whose origin is
+/// that checkpoint. Returns the local sink, the checkpoint and the child.
+async fn foreign_parent_and_child(
+    backend: &Arc<Backend>,
+) -> (StoreRecovery, RecoveryEvent, RecoveryEvent) {
+    let local = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let child_owner = sink(Arc::new(attach(backend.clone(), 2).await), 8).await;
+    let parent_owner = sink(Arc::new(attach(backend.clone(), 3).await), 9).await;
+    let mut child = intent();
+    child.operation_id = [9; 16];
+    child.body_fingerprint = [8; 32];
+    let template = serde_json::json!({"physical":[1,2,3]});
+    let mut parent = intent();
+    parent.operation_id = [6; 16];
+    parent.payload = b"{\"handoffs\":[]}".to_vec();
+    let mut checkpoint = transition(&parent, RecoveryState::Applied);
+    checkpoint.payload=serde_json::to_vec(&serde_json::json!({"handoffs":[{"operation_id":child.operation_id,"kind":child.kind,"body_fingerprint":child.body_fingerprint,"first_sent_at_ms":child.first_sent_at_ms,"payload":serde_json::to_vec(&template).unwrap()}]})).unwrap();
+    let mut physical = template;
+    physical["origin"] = serde_json::json!({"operation_id":checkpoint.operation_id,"event_fingerprint":checkpoint.fingerprint().unwrap()});
+    child.payload = serde_json::to_vec(&physical).unwrap();
+    parent_owner.persist(&parent).await.unwrap();
+    parent_owner.persist(&checkpoint).await.unwrap();
+    child_owner.persist(&child).await.unwrap();
+    (local, checkpoint, child)
+}
+
+/// The listing is read-only. A record this node's own journal owner commits
+/// while the RECOVERY buckets are scanned is not a loss of authority.
+#[tokio::test]
+async fn inspect_foreign_survives_live_local_append() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let fired = on_first_recovery_scan(&backend, &recovery.journal, Interleave::Append);
+    let listed = recovery.inspect_foreign().await;
+    assert!(fired.load(Ordering::SeqCst), "live append never ran");
+    assert!(listed.unwrap().is_empty());
+}
+
+/// Per-foreign origin verification must not pin this node's selected head.
+#[tokio::test]
+async fn inspect_foreign_head_survives_live_local_append_in_origin_check() {
+    let backend = Arc::new(Backend::default());
+    let (recovery, checkpoint, child) = foreign_parent_and_child(&backend).await;
+    let fired = on_nth_head_read(
+        &backend,
+        &recovery.journal,
+        child.operation_id,
+        2,
+        Interleave::Append,
+    );
+    let listed = recovery.inspect_foreign().await;
+    assert!(fired.load(Ordering::SeqCst), "live append never ran");
+    let listed: Vec<_> = listed
+        .unwrap()
+        .into_iter()
+        .map(|inspection| (inspection.owner_node, inspection.event))
+        .collect();
+    assert_eq!(listed, vec![(9, checkpoint), (8, child)]);
+}
+
+/// A foreign tip whose selected ancestry reaches this node's own records (a
+/// handover) is accepted against the live owner, not a stale replay head.
+#[tokio::test]
+async fn inspect_foreign_handover_ancestry_survives_live_local_append() {
+    let backend = Arc::new(Backend::default());
+    let old = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let recipient = sink(Arc::new(attach(backend.clone(), 2).await), 8).await;
+    let initial = intent();
+    old.persist(&initial).await.unwrap();
+    let unknown = transition(&initial, RecoveryState::LandedUnknown);
+    let verdict = transition(&unknown, RecoveryState::VerdictNotLanded);
+    recipient
+        .adopt_verdict_selection(&attestation(&initial), &[unknown, verdict.clone()])
+        .await
+        .unwrap();
+    let foreign = heads(&old.store).await.unwrap();
+    assert_eq!(foreign.len(), 1);
+    assert_eq!(foreign[0].0, initial.operation_id);
+    assert_eq!(foreign[0].1.node, 8);
+    let fired = on_nth_head_read(
+        &backend,
+        &old.journal,
+        initial.operation_id,
+        2,
+        Interleave::Append,
+    );
+    let listed = old.inspect_foreign().await;
+    assert!(fired.load(Ordering::SeqCst), "live append never ran");
+    let listed = listed.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].owner_node, 8);
+    assert_eq!(listed[0].event, verdict);
+}
+
+/// Admission loss during a listing still refuses; the live head is never
+/// taken as authority by itself.
+#[tokio::test]
+async fn inspect_foreign_refuses_after_cold_cutover_mid_scan() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let fired = on_first_recovery_scan(&backend, &recovery.journal, Interleave::Cutover);
+    let listed = recovery.inspect_foreign().await;
+    assert!(fired.load(Ordering::SeqCst), "cutover never ran");
+    assert!(matches!(listed, Err(RecoveryError::Unavailable(_))));
+
+    let backend = Arc::new(Backend::default());
+    let (recovery, _, child) = foreign_parent_and_child(&backend).await;
+    let fired = on_nth_head_read(
+        &backend,
+        &recovery.journal,
+        child.operation_id,
+        2,
+        Interleave::Cutover,
+    );
+    let listed = recovery.inspect_foreign().await;
+    assert!(fired.load(Ordering::SeqCst), "cutover never ran");
+    assert!(matches!(listed, Err(RecoveryError::Unavailable(_))));
 }
