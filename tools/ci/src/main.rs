@@ -1,4 +1,5 @@
 mod bootstrap;
+mod confine;
 mod fetch;
 mod images;
 mod inflate;
@@ -6,6 +7,7 @@ mod inputs;
 mod isolation;
 mod isotime;
 mod json;
+mod pathx;
 mod policy;
 mod proc;
 mod py;
