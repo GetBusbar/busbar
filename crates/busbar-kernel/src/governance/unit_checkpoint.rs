@@ -101,6 +101,11 @@ pub trait UnitCheckpointSink: Send + Sync {
     }
 }
 
+mod book;
+
+pub use book::UnitAuditMiss;
+use book::{Pending, PendingBook};
+
 #[derive(Default)]
 pub(super) struct UnitCheckpointBook {
     sink: OnceLock<Arc<dyn UnitCheckpointSink>>,
@@ -169,11 +174,7 @@ impl GovState {
             .set(sink)
             .map_err(|_| error("unit checkpoint sink already attached"))?;
         {
-            let mut pending = self
-                .unit_checkpoints
-                .pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut pending = self.unit_checkpoints.pending.lock();
             for mut snapshot in recovered {
                 let persisted = Some(snapshot.revision);
                 if !snapshot.ended {
@@ -222,6 +223,7 @@ impl GovState {
         Ok(())
     }
 
+    /// Admission's question, answered from the book's recovered-target index without its lock.
     pub(super) fn unresolved_unit_target(&self, bucket: &str, window: u64) -> bool {
         let pending = self
             .unit_checkpoints
@@ -249,21 +251,35 @@ impl GovState {
     /// Synchronous shutdown barrier: reports and an active native flush retain
     /// custody even when no RPC is currently being polled.
     pub(super) fn has_unsettled_unit_checkpoints(&self) -> bool {
-        !self
-            .unit_checkpoints
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .is_empty()
+        !self.unit_checkpoints.pending.lock().is_empty()
             || self.unit_checkpoints.flushing.try_lock().is_err()
     }
 
     pub(crate) fn unit_checkpoint_pending(&self, id: &[u8; 16]) -> bool {
+        self.unit_checkpoints.pending.lock().get(id).is_some()
+    }
+
+    /// Records the sequence of `unit`'s live audit line on its pending checkpoint. Zero or several
+    /// live checkpoints for the unit is a counted miss; the caller then uses its cold lookup.
+    pub fn note_unit_audit(&self, unit: u64, seq: u64) -> Result<(), UnitAuditMiss> {
         self.unit_checkpoints
             .pending
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .contains_key(id)
+            .note_unit_audit(unit, seq)
+    }
+
+    /// The audit line sequence noted for checkpoint `id`, if any.
+    pub fn unit_checkpoint_audit_seq(&self, id: &[u8; 16]) -> Option<u64> {
+        self.unit_checkpoints
+            .pending
+            .lock()
+            .get(id)
+            .and_then(Pending::audit_seq)
+    }
+
+    /// `note_unit_audit` misses since boot.
+    pub fn unit_audit_misses(&self) -> u64 {
+        self.unit_checkpoints.pending.audit_misses()
     }
 
     pub fn unit_checkpoints_enabled(&self) -> bool {
@@ -275,19 +291,15 @@ impl GovState {
         if !self.unit_checkpoints_enabled() {
             return;
         }
-        let mut pending = self
-            .unit_checkpoints
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        match pending.get_mut(&snapshot.id) {
-            Some(previous) if !previous.snapshot.ended => {
+        let mut pending = self.unit_checkpoints.pending.lock();
+        match pending.edit(&snapshot.id) {
+            Some(mut previous) if !previous.snapshot().ended => {
                 // Exhaustion fails closed by keeping the last checkpoint; never wrap its identity.
-                let Some(next) = previous.snapshot.revision.checked_add(1) else {
+                let Some(next) = previous.snapshot().revision.checked_add(1) else {
                     return;
                 };
                 snapshot.revision = next;
-                previous.snapshot = snapshot;
+                previous.replace_snapshot(snapshot);
             }
             Some(_) => {}
             None => {
@@ -311,21 +323,14 @@ impl GovState {
             return false;
         }
         snapshot.ended = true;
-        let mut pending = self
-            .unit_checkpoints
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if pending.get(&snapshot.id).is_some_and(|p| p.snapshot.ended) {
+        let mut pending = self.unit_checkpoints.pending.lock();
+        let previous = pending.get(&snapshot.id);
+        if previous.is_some_and(|p| p.snapshot().ended) {
             return true;
         }
-        snapshot.revision = pending
-            .get(&snapshot.id)
-            .map_or(0, |p| p.snapshot.revision.saturating_add(1));
+        snapshot.revision = previous.map_or(0, |p| p.snapshot().revision.saturating_add(1));
         if snapshot.audit.is_none() {
-            snapshot.audit = pending
-                .get(&snapshot.id)
-                .and_then(|p| p.snapshot.audit.clone());
+            snapshot.audit = previous.and_then(|p| p.snapshot().audit.clone());
         }
         let mut recovered = false;
         if let Err(failed) = self.apply_unit_checkpoint_live(&snapshot) {
@@ -380,35 +385,30 @@ impl GovState {
         id: [u8; 16],
     ) -> RecordStoreResult<()> {
         let (snapshot, persisted, recovered) = {
-            let mut pending = self
-                .unit_checkpoints
-                .pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let Some(entry) = pending.get_mut(&id) else {
+            let mut pending = self.unit_checkpoints.pending.lock();
+            let Some(mut entry) = pending.edit(&id) else {
                 return Ok(());
             };
-            entry.snapshot.validate()?;
-            if entry.snapshot.ended && entry.snapshot.terminal.is_none() {
-                entry.snapshot.terminal = Some(self.unit_terminal_events(&entry.snapshot)?);
-                entry.snapshot.revision = entry
-                    .snapshot
+            entry.snapshot().validate()?;
+            if entry.snapshot().ended && entry.snapshot().terminal.is_none() {
+                let events = self.unit_terminal_events(entry.snapshot())?;
+                let revision = entry
+                    .snapshot()
                     .revision
                     .checked_add(1)
                     .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
+                entry.set_terminal(events, revision);
             }
-            (entry.snapshot.clone(), entry.persisted, entry.recovered)
+            (
+                entry.snapshot().clone(),
+                entry.persisted(),
+                entry.is_recovered(),
+            )
         };
         if persisted != Some(snapshot.revision) {
             sink.persist(&snapshot).await?;
-            if let Some(entry) = self
-                .unit_checkpoints
-                .pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get_mut(&id)
-            {
-                entry.persisted = Some(snapshot.revision);
+            if let Some(mut entry) = self.unit_checkpoints.pending.lock().edit(&id) {
+                entry.set_persisted(snapshot.revision);
             }
         }
         let Some(events) = &snapshot.terminal else {
@@ -462,3 +462,43 @@ impl GovState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+impl GovState {
+    /// Holds the book's lock, as the flusher's id snapshot and the request-path writers do.
+    pub(crate) fn hold_unit_checkpoint_book(&self) -> impl Drop + '_ {
+        self.unit_checkpoints.pending.hold()
+    }
+
+    /// The reference answer: a full walk of the book.
+    pub(crate) fn reference_unresolved_unit_target(&self, bucket: &str, window: u64) -> bool {
+        !self.unit_checkpoints.pending.lock().all(|entry| {
+            !(entry.is_recovered()
+                && entry
+                    .snapshot()
+                    .targets
+                    .iter()
+                    .any(|target| target.bucket == bucket && target.window == window))
+        })
+    }
+
+    /// Entries the book has visited so far, across all its counted structures.
+    pub(crate) fn unit_checkpoint_visits(&self) -> u64 {
+        self.unit_checkpoints.pending.visits()
+    }
+
+    /// The book itself, for tests that drive its mutation surface directly.
+    fn unit_checkpoint_book(&self) -> &PendingBook {
+        &self.unit_checkpoints.pending
+    }
+
+    /// Rebuilds the derived indexes from the map and asserts them; returns the recovered count.
+    pub(crate) fn check_unit_checkpoint_book(&self) -> usize {
+        self.unit_checkpoints.pending.check();
+        self.unit_checkpoints.pending.recovered_live()
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/unit_checkpoint_book_tests.rs"]
+mod book_tests;
