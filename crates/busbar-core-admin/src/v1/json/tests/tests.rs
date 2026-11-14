@@ -746,3 +746,45 @@ fn openapi_existing_sdk_routes_money_describes_each_wire_representation() {
     assert!(money.contains("Amount values are decimal-integer JSON strings"));
     assert!(money.contains("spend_micros are JSON integers"));
 }
+
+/// The message of a refused admin body decode, after checking it is the 400 `invalid_request`
+/// envelope.
+async fn bad_body_message<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> String {
+    let Err(err) = json_body::<T>(body, what) else {
+        panic!("a malformed {what} body must be refused");
+    };
+    let (status, _, body) = parts(*err).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_request");
+    body["error"]["message"]
+        .as_str()
+        .expect("the refusal carries a message")
+        .to_string()
+}
+
+#[tokio::test]
+async fn bad_body_refusal_names_the_missing_field_and_position() {
+    let message =
+        bad_body_message::<super::handlers::RegisterGroupReq>(br#"{"name":"oracle-bad"}"#, "group")
+            .await;
+    assert_eq!(
+        message,
+        "malformed group body: missing field `config` at line 1 column 21"
+    );
+}
+
+#[tokio::test]
+async fn bad_body_refusal_keeps_the_type_and_drops_the_value() {
+    let message =
+        bad_body_message::<super::handlers::RollbackReq>(br#"{"version":"zero"}"#, "rollback")
+            .await;
+    assert_eq!(
+        message,
+        "malformed rollback body: invalid type: string (values not echoed), expected u64 at line 1 \
+         column 17"
+    );
+    assert!(
+        !message.contains("zero"),
+        "the value is not echoed: {message}"
+    );
+}
