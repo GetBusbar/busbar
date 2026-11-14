@@ -298,6 +298,8 @@ pub struct RootHost {
     runtime_only: std::cell::Cell<bool>,
 }
 
+/// Why a migration validation probe stopped: a declared reference this process cannot resolve.
+const UNRESOLVABLE_REFERENCE: &str = "migration validation reference could not be resolved";
 const STAGING_RANDOM_BYTES: usize = 16;
 const STAGING_DIRECTORY_PREFIX: &str = "busbar-migrate-";
 #[cfg(unix)]
@@ -338,16 +340,25 @@ impl RootHost {
         &self,
         settings: &serde_json::Value,
         statement: &busbar_contract::abi::mechanism::rendering::Read,
-    ) -> Result<busbar_contract::abi::sdk::cred::SettingsValue, String> {
+    ) -> Result<Option<busbar_contract::abi::sdk::cred::SettingsValue>, String> {
         use busbar_contract::secret_fields;
         let reference = statement.reference_fields()?;
         if secret_fields::contradiction(&statement.secret_refs, &reference).is_some() {
             return Err("migration validation reference declarations contradict".into());
         }
         let allowed = [statement.secret_refs.as_slice(), reference.as_slice()].concat();
+        let sources = self.source_declarations()?;
         let mut probe = busbar_contract::abi::sdk::cred::SettingsValue::from(
             busbar_migrations::config::templates::resolved_settings(settings, self)?,
         );
+        // The admitted source shorthand (`{env:}`, `{file:}`, …) is a reference here exactly as
+        // it is to boot's settings resolution; otherwise a declared reference would reach the
+        // plugin's VALIDATE as an object and invent a migration decision.
+        busbar_contract::plugin_settings::canonicalize(
+            probe.pointer_mut("").expect("the JSON document has a root"),
+            &sources,
+        )
+        .map_err(|_| "migration validation reference shorthand is invalid")?;
         if secret_fields::undeclared_reference(&probe, &allowed).is_some() {
             return Err("migration validation contains an undeclared settings reference".into());
         }
@@ -372,15 +383,15 @@ impl RootHost {
             }
         }
         let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let mut unresolvable = false;
         // Both declared path classes reach VALIDATE as scalars. Resolution is
         // confined to this wiping probe; authored references and the plugin's
         // actual secret/reference classifications remain unchanged.
-        secret_fields::resolve_references(
+        let resolved = secret_fields::resolve_references(
             probe.pointer_mut("").expect("the JSON document has a root"),
             &[],
             &allowed,
             |_, reference| {
-                let sources = self.source_declarations()?;
                 let source =
                     sources.with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH);
                 if let Some(secret) = staged.iter().find(|secret| {
@@ -395,12 +406,26 @@ impl RootHost {
                     }
                     return Ok(text.to_owned());
                 }
-                busbar_kernel::config::secret::resolve_linked_string_at_config(reference, &scope)
-                    .map(|value| value.into_exposed(&busbar_kernel::seal::lend()))
-                    .map_err(|_| "migration validation reference could not be resolved".into())
+                match busbar_kernel::config::secret::resolve_linked_string_at_config(
+                    reference, &scope,
+                ) {
+                    Ok(value) => Ok(value.into_exposed(&busbar_kernel::seal::lend())),
+                    Err(_) => {
+                        unresolvable = true;
+                        Err(UNRESOLVABLE_REFERENCE.into())
+                    }
+                }
             },
-        )?;
-        Ok(probe)
+        );
+        match resolved {
+            Ok(()) => Ok(Some(probe)),
+            // A declared reference whose source this process cannot read (an unset variable,
+            // a file only the serving host has) is not a decision for the operator: the
+            // settings cannot be judged here, so judging them is left to the boot reader,
+            // which resolves and validates them and refuses an unresolvable reference itself.
+            Err(_) if unresolvable => Ok(None),
+            Err(error) => Err(error),
+        }
     }
     #[must_use]
     pub fn for_document(raw: &str, config: &std::path::Path) -> Self {

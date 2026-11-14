@@ -978,6 +978,14 @@ impl Documents {
     }
 }
 
+/// The startup refusal for unresolved migration decisions: their count and the configuration
+/// paths they concern (`decisions`, from [`busbar_migrations::config::migrate::MigrateOutput::decision_paths`]).
+fn debt_refusal(debt: usize, decisions: &str) -> String {
+    format!(
+        "configuration migration requires {debt} unresolved configuration decision(s) at: {decisions}"
+    )
+}
+
 fn json_slot_mut<'a>(
     mut value: &'a mut serde_json::Value,
     path: &[String],
@@ -1131,6 +1139,15 @@ mod tests {
     }
 
     const CONFIG: &str = "store: {module: custom}\nconfig: {locked: true}\n";
+
+    #[test]
+    fn a_migration_debt_refusal_names_its_decision_paths() {
+        assert_eq!(
+            debt_refusal(2, "export.hook.settings, export.trace.settings"),
+            "configuration migration requires 2 unresolved configuration decision(s) at: \
+             export.hook.settings, export.trace.settings"
+        );
+    }
 
     #[test]
     fn unchanged_documents_are_retained_and_completion_keeps_the_fingerprint() {
