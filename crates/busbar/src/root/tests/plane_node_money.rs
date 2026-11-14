@@ -48,6 +48,15 @@ fn selected(
     native_ready(journal.flush()).expect("staged originals confirm");
     native_ready(journal.read_records(native_budget())).expect("selected native history verifies")
 }
+async fn selected_now(
+    journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
+) -> Vec<busbar_kernel_wal::JournalRecord> {
+    journal.flush().await.expect("staged originals confirm");
+    journal
+        .read_records(native_budget())
+        .await
+        .expect("selected native history verifies")
+}
 fn native_ready<T>(future: impl std::future::Future<Output = T>) -> T {
     futures::executor::block_on(future)
 }
@@ -485,6 +494,16 @@ async fn the_exit_arm_seals_no_money_figure_into_the_record() {
         Some(seal),
         Vec::new(),
     );
+    let journal = book
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .journal
+        .clone();
+    assert_eq!(
+        selected_now(&journal).await.len(),
+        1,
+        "the unit has one native audit record and no shadow money posting"
+    );
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let record = durability
@@ -916,6 +935,74 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     let before = records();
     site.post(&ctx(52), ended);
     assert_eq!(records(), before, "no pass, no record");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
+    use busbar_kernel::plane_driver::EndPost;
+    let node = Arc::new(Node::new());
+    let durability = native_fixture().expect("a memory-buffered journal cannot fail to open");
+    let book = Arc::new(std::sync::Mutex::new(durability));
+    node.bind_book(Arc::clone(&book));
+    let journal = book
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .journal
+        .clone();
+    let posted = async || selected_now(&journal).await.len();
+    let site = NodeEndPost::new(Arc::clone(&node));
+    let ctx = |key: u64| UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
+        key: UnitKey::new(key),
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let who = PrincipalId::new("acct:node");
+    let facts = || busbar_contract::caps::AuditFacts {
+        op_class: busbar_contract::caps::OpClassId::new("call"),
+        finish: busbar_contract::FinishClass::Complete,
+    };
+
+    let ended = drive_to_end(&node, &site, None).await;
+    site.open(
+        UnitKey::new(41),
+        who.clone(),
+        Arrived::at(EPOCH * 1_000, 0),
+        None,
+    );
+    site.audited(
+        UnitKey::new(41),
+        facts(),
+        busbar_kernel::teller::verb_audit_pass(&node.kernel),
+    );
+
+    let before = posted().await;
+    site.post(&ctx(41), ended);
+    assert!(posted().await > before, "the abandoned end is on the book");
+    let ended = drive_to_end(&node, &site, None).await;
+    let before = posted().await;
+    site.post(&ctx(41), ended);
+    assert_eq!(posted().await, before, "an end posts at most once");
+
+    let ended = drive_to_end(&node, &site, None).await;
+    site.open(UnitKey::new(42), who, Arrived::at(EPOCH * 1_000, 1), None);
+    site.audited(
+        UnitKey::new(42),
+        facts(),
+        busbar_kernel::teller::verb_audit_pass(&node.kernel),
+    );
+    site.close(UnitKey::new(42));
+    let before = posted().await;
+    site.post(&ctx(42), ended);
+    assert_eq!(
+        posted().await,
+        before,
+        "a returned unit's end is not this site's"
+    );
+    assert_eq!(site.open_units(), 0, "every unit's facts closed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
