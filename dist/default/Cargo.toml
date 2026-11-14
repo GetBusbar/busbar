@@ -230,7 +230,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
 # SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
 # than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "hooks-complexity", "plane-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp", "auth-webhook-signature"]
+default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp", "auth-webhook-signature"]
 # THE LLM PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
 # LLM. Dropping the feature is the deletion test's level-1 build. There is no per-DIALECT feature and
 # there must not be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini`
@@ -348,6 +348,9 @@ auth-oauth = ["dep:busbar-auth-oauth"]
 # `["keys","admin-tokens"]` (accepted difference `#64-class build.auth_modules lists the webhook-signature module`).
 auth-webhook-signature = ["dep:busbar-auth-webhook-signature"]
 hooks-ranking = ["dep:busbar-hook-ranking"]
+# THE COMPLEXITY HOOK, opt-in: not default-on. The default build links one hook row, the ranking door
+# that claims the strategy words; complexity ships as its dropped-in plugin (scripts/ci-product-pins.json)
+# or is linked by building with this feature.
 hooks-complexity = ["dep:busbar-hook-complexity"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
