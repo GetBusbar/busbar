@@ -381,6 +381,12 @@ pub(super) struct SweepState {
     after: Option<Vec<u8>>,
     complete: bool,
     pending: Option<SweepPage>,
+    /// Smallest surviving expiry seen this pass, with the store time (unix
+    /// seconds) of the coherent read that observed it.
+    min_live: Option<(u64, u64)>,
+    /// Local monotonic scheduling hint: the scope is not scanned before this.
+    /// The store clock stays the only expiry authority.
+    rest_until: Option<tokio::time::Instant>,
 }
 impl SweepState {
     fn new(owner: &str, kind: &str) -> Result<Self, Error> {
@@ -391,7 +397,26 @@ impl SweepState {
             after: None,
             complete: false,
             pending: None,
+            min_live: None,
+            rest_until: None,
         })
+    }
+
+    /// The fresh state for the next pass, resting until the earliest surviving
+    /// expiry (as a duration of store seconds) or the maximum rest.
+    fn rested(&self, owner: &str, kind: &str) -> Result<Self, Error> {
+        let max = CLAIM_SWEEP_MAX_REST;
+        let rest = self.min_live.map_or(max, |(expiry, observed)| {
+            std::time::Duration::from_secs(expiry.saturating_sub(observed).saturating_add(1))
+                .min(max)
+        });
+        let mut next = Self::new(owner, kind)?;
+        next.rest_until = Some(tokio::time::Instant::now() + rest);
+        Ok(next)
+    }
+
+    fn due(&self, now: tokio::time::Instant) -> bool {
+        self.rest_until.is_none_or(|until| until <= now)
     }
 }
 
@@ -533,6 +558,10 @@ impl SweepState {
                         expected: ExpectedValue::Exact(value),
                     });
                     mutations.push(Mutation::Delete(address));
+                } else if self.min_live.is_none_or(|(held, held_at)| {
+                    expiry.saturating_sub(observed_at.unix_seconds) < held.saturating_sub(held_at)
+                }) {
+                    self.min_live = Some((expiry, observed_at.unix_seconds));
                 }
             }
             if mutations.is_empty() {
@@ -670,12 +699,19 @@ impl CoreStore {
     /// backs explicit owned cursors; no CoreStore Arc is retained by its registry.
     /// Cancellation returns the original cursor and pending candidate to custody.
     pub async fn sweep_claim_scope(&self) -> Result<Option<SweepOutcome>, Error> {
-        let selected = self
-            .claim_maintenance
-            .lock()
-            .map_err(|_| Error::Access(AccessError::Corrupt))?
-            .queue
-            .pop_front();
+        let selected = {
+            let mut maintenance = self
+                .claim_maintenance
+                .lock()
+                .map_err(|_| Error::Access(AccessError::Corrupt))?;
+            let now = tokio::time::Instant::now();
+            // A resting scope costs no store call; the first due scope runs.
+            maintenance
+                .queue
+                .iter()
+                .position(|(_, state)| state.due(now))
+                .and_then(|due| maintenance.queue.remove(due))
+        };
         let Some((scope, state)) = selected else {
             return Ok(None);
         };
@@ -694,7 +730,12 @@ impl CoreStore {
             result,
             SweepOutcome::Complete | SweepOutcome::Page { complete: true, .. }
         ) {
-            pass.state = Some(SweepState::new(&pass.scope.0, &pass.scope.1)?);
+            let next = pass
+                .state
+                .as_ref()
+                .ok_or(Error::Corrupt)?
+                .rested(&pass.scope.0, &pass.scope.1)?;
+            pass.state = Some(next);
         }
         Ok(Some(result))
     }
