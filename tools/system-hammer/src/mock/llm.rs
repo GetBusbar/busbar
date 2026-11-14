@@ -521,7 +521,7 @@ pub fn wants_tools(body: &[u8]) -> bool {
 }
 
 pub fn memfind(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+    needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
 }
 
 #[cfg(test)]

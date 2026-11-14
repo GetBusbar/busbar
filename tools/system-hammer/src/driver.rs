@@ -13,6 +13,7 @@
 //!   scheduled instants; latency is measured from the SCHEDULED start, so a stalled gateway shows
 //!   up as latency rather than as a silently lower offered rate (no coordinated omission).
 
+use crate::mock::llm::memfind;
 use bytes::Bytes;
 use hdrhistogram::Histogram;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Uri};
@@ -351,10 +352,6 @@ async fn exchange(
     Ok(out)
 }
 
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
-}
-
 struct Ctx {
     plan: Plan,
     reqs: Vec<Prepared>,
@@ -403,7 +400,7 @@ impl Ctx {
             }
             Ok(Ok(x)) => {
                 if let (Some(b), Some(want)) = (&x.body, &p.expect_contains) {
-                    checked = Some(contains(b, want));
+                    checked = Some(memfind(b, want));
                     if checked == Some(false) {
                         let text = String::from_utf8_lossy(&b[..b.len().min(400)]).into_owned();
                         self.note_error(|| format!("body without expected marker: {text}"));
