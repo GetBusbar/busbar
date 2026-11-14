@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 use super::{ChainVerdict, Principal};
 use crate::config::RoleBindings;
-use crate::diagnostics::{diag_debug, diag_warn, SELF_MINT_REFUSED, SELF_SUBJECT_UNSAFE};
+use crate::diagnostics::{diag_debug, SELF_SUBJECT_UNSAFE};
 use crate::governance::GovState;
 
 /// One issued self-serve key. The `secret` is the full busbar token (shown to the caller once); it is
@@ -28,8 +28,7 @@ pub(crate) struct IssuedKey {
 /// The self-serve key scheme, isolated behind a trait so the exchange endpoint is scheme-agnostic.
 /// ASYNC because the ONE production impl auto-provisions the personal budget group through the
 /// async config-mutation choke point (`crate::config::transaction::config_transaction`) before it
-/// mints. A refusal comes back as its typed [`ExchangeError`] (`SelfMintRefused`), a failure as
-/// `MintFailed`.
+/// mints. A refusal comes back as its typed [`ExchangeError`] (`Unbound`), a failure as `MintFailed`.
 #[async_trait]
 pub(crate) trait SelfServeKeys: Send + Sync {
     /// Issue the ONE key for `principal` (idempotent: a re-login returns the same key, only the
@@ -77,8 +76,6 @@ pub(crate) struct DeterministicEd25519Keys {
 
     provider: String,
 
-    unattributed: crate::governance::UnattributedBinding,
-
     team: String,
 
     allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
@@ -90,7 +87,6 @@ impl DeterministicEd25519Keys {
     pub(crate) fn new(
         gov: Arc<GovState>,
         provider: String,
-        unattributed: crate::governance::UnattributedBinding,
         team: String,
         allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
         provisioner: Arc<dyn SelfGroupProvisioner>,
@@ -98,7 +94,6 @@ impl DeterministicEd25519Keys {
         Self {
             gov,
             provider,
-            unattributed,
             team,
             allowed_scopes,
             provisioner,
@@ -135,7 +130,6 @@ impl DeterministicEd25519Keys {
         mint_provisioned_self_key(
             self.gov.clone(),
             op,
-            self.unattributed,
             principal,
             &self.provider,
             self.allowed_scopes.clone(),
@@ -146,11 +140,9 @@ impl DeterministicEd25519Keys {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn mint_provisioned_self_key(
     gov: Arc<GovState>,
     op: crate::governance::SelfMintOp,
-    unattributed: crate::governance::UnattributedBinding,
     principal: &Principal,
     provider: &str,
     allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
@@ -164,7 +156,6 @@ async fn mint_provisioned_self_key(
     let (binding, token) = crate::governance::mint_self_offloaded(
         gov,
         op,
-        unattributed,
         principal.id.clone(),
         provider.to_string(),
         allowed_scopes,
@@ -182,89 +173,6 @@ async fn mint_provisioned_self_key(
         group: binding.group.unwrap_or_default(),
         exp,
     })
-}
-
-/// The audit resource of a refused self-serve mint.
-pub(crate) fn self_mint_refused_resource(
-    subject: &str,
-    provider: &str,
-    refusal: crate::governance::SelfMintRefusal,
-) -> String {
-    format!(
-        "self_key:{subject};provider={provider};reason={}",
-        refusal.reason()
-    )
-}
-
-/// The one site both doors (token exchange and hosted login) share: every self-serve refusal is
-/// written to the admin audit log and explained in a diagnostic, then answered as a typed 403.
-fn self_mint_refused(
-    subject: &str,
-    provider: &str,
-    refusal: crate::governance::SelfMintRefusal,
-) -> ExchangeError {
-    crate::audit_ring::AUDIT.record_by(
-        "self_mint.refused",
-        &self_mint_refused_resource(subject, provider, refusal),
-        crate::audit_ring::OUTCOME_REJECTED,
-        subject,
-    );
-    diag_warn!(
-        SELF_MINT_REFUSED,
-        subject = %subject,
-        provider = %provider,
-        reason = %refusal.reason(),
-        "self-serve mint refused: an administrator's decision or another provider's binding holds \
-         this subject's key"
-    );
-    ExchangeError::SelfMintRefused(refusal)
-}
-
-/// The configured modules that can actually reach a self-serve mint: a door (named in the
-/// data-plane chain, or a hosted-login method), not the built-in `keys` verifier, and with at
-/// least one role binding that grants a `group` (without one, `resolve_exchange` refuses).
-pub(crate) fn self_mint_modules_of<'a>(
-    doors: impl IntoIterator<Item = &'a str>,
-    role_bindings: &RoleBindings,
-) -> std::collections::BTreeSet<String> {
-    doors
-        .into_iter()
-        .filter(|module| *module != crate::config::KEYS_MODULE)
-        .filter(|module| {
-            role_bindings
-                .get(*module)
-                .is_some_and(|table| table.values().any(|binding| binding.group.is_some()))
-        })
-        .map(str::to_string)
-        .collect()
-}
-
-/// [`self_mint_modules_of`] over the deployment's chain and hosted-login methods.
-pub(crate) fn self_mint_modules(app: &crate::state::App) -> std::collections::BTreeSet<String> {
-    let chain = app.auth.chain_providers();
-    let methods = app
-        .login_methods
-        .methods
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    self_mint_modules_of(
-        chain.iter().chain(methods.iter()).map(String::as_str),
-        &app.role_bindings,
-    )
-}
-
-/// Adopt a binding with no recorded provider only when `module` is the one module that can mint.
-pub(crate) fn unattributed_binding(
-    app: &crate::state::App,
-    module: &str,
-) -> crate::governance::UnattributedBinding {
-    let modules = self_mint_modules(app);
-    if modules.len() == 1 && modules.contains(module) {
-        crate::governance::UnattributedBinding::Adopt
-    } else {
-        crate::governance::UnattributedBinding::Refuse
-    }
 }
 
 #[async_trait]

@@ -49,12 +49,22 @@ fn the_retired_metadata_carve_outs_are_removed_and_each_entry_is_named() {
     )
     .expect("migrates");
     let d = doc(&out.yaml);
-    assert!(d["security"].get("allow_metadata_hosts").is_none(), "{}", out.yaml);
-    assert!(d["security"].get("allow_all_metadata").is_none(), "{}", out.yaml);
+    assert!(
+        d["security"].get("allow_metadata_hosts").is_none(),
+        "{}",
+        out.yaml
+    );
+    assert!(
+        d["security"].get("allow_all_metadata").is_none(),
+        "{}",
+        out.yaml
+    );
     assert_eq!(d["security"]["blocked_metadata_hosts"][0], "10.9.9.9");
     for provider in ["gemini", "other"] {
         assert!(
-            d["providers"][provider].get("allow_metadata_hosts").is_none(),
+            d["providers"][provider]
+                .get("allow_metadata_hosts")
+                .is_none(),
             "{}",
             out.yaml
         );
@@ -66,8 +76,9 @@ fn the_retired_metadata_carve_outs_are_removed_and_each_entry_is_named() {
         ("providers.gemini.allow_metadata_hosts", "169.254.170.2"),
     ] {
         assert!(
-            out.warnings.iter().any(|w| w
-                .starts_with(&format!("BUSBAR-3411: {path}: removed entry '{entry}'"))),
+            out.warnings
+                .iter()
+                .any(|w| w.starts_with(&format!("BUSBAR-3411: {path}: removed entry '{entry}'"))),
             "{path} {entry}: {:?}",
             out.warnings
         );
@@ -231,7 +242,9 @@ fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() 
         "{report}"
     );
     assert!(
-        report.contains("BUSBAR-3410: tools.other.allow_private: removed; 'already.internal' is already listed"),
+        report.contains(
+            "BUSBAR-3410: tools.other.allow_private: removed; 'already.internal' is already listed"
+        ),
         "{report}"
     );
     assert!(
@@ -239,10 +252,9 @@ fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() 
         "{report}"
     );
     assert!(
-        out.warnings
-            .iter()
-            .any(|w| w.starts_with("BUSBAR-3410: agents.planner: `http://[fd00::7]:8080/a2a` is plaintext")
-                && w.contains("refused at GA; use https")),
+        out.warnings.iter().any(|w| w
+            .starts_with("BUSBAR-3410: agents.planner: `http://[fd00::7]:8080/a2a` is plaintext")
+            && w.contains("refused at GA; use https")),
         "{:?}",
         out.warnings
     );
@@ -274,9 +286,9 @@ fn allow_private_never_lists_a_metadata_host() {
     for name in ["imds", "gce"] {
         assert!(d["agents"][name].get("allow_private").is_none());
         assert!(
-            out.warnings.iter().any(|w| w
-                .starts_with(&format!("BUSBAR-3410: agents.{name}.allow_private: removed; "))
-                && w.contains("cloud-metadata")),
+            out.warnings.iter().any(|w| w.starts_with(&format!(
+                "BUSBAR-3410: agents.{name}.allow_private: removed; "
+            )) && w.contains("cloud-metadata")),
             "{name}: {:?}",
             out.warnings
         );
@@ -314,4 +326,134 @@ fn allow_private_on_a_loopback_http_registration_lists_it_without_a_plaintext_wa
         "{:?}",
         out.changes
     );
+}
+
+/// A root `rate_card.<model>.cache_write_utok: 0` is 1.5.5's "no separate write tariff": every YAML
+/// path removes it (writes then price at `input_utok`, never 0) with one change line and one
+/// notice. `cache_read_utok: 0`, an explicit write rate and a plane block are left as written.
+#[test]
+fn unfold_zero_cache_write_on_every_yaml_path() {
+    use crate::config::migrate::{migrate_config_with, MigrateOutput};
+    use crate::config::migrate_plugins::NoPlugins;
+    const LINE: &str = "rate_card.m.cache_write_utok: 0 removed (1.5.5 spelling of 'no separate \
+                        write tariff'); cache writes price at input_utok";
+    const CARD: &str = "rate_card:\n  m: {input_utok: 2.5, output_utok: 10, cache_read_utok: 0, \
+                        cache_write_utok: 0}\n";
+    let unfolded = |path: &str, out: &MigrateOutput| {
+        let d = doc(&out.yaml);
+        let entry = &d["rate_card"]["m"];
+        assert!(
+            entry.get("cache_write_utok").is_none(),
+            "{path}: the 1.5.5 zero is removed:\n{}",
+            out.yaml
+        );
+        assert_eq!(entry["cache_read_utok"], Value::from(0), "{path}");
+        assert_eq!(entry["input_utok"], Value::from(2.5), "{path}");
+        assert_eq!(
+            out.changes.iter().filter(|c| *c == LINE).count(),
+            1,
+            "{path}: one change line: {:?}",
+            out.changes
+        );
+        assert_eq!(out.notices, [LINE], "{path}: one notice");
+    };
+
+    let memory = format!("store: {{ module: memory }}\n{CARD}");
+    let out = migrate_config_with(&memory, &NoPlugins).expect("migrates");
+    unfolded("--migrate-config", &out);
+    let out = crate::config::normalize_authored_with_detection(&memory, None, &NoPlugins)
+        .expect("fast path normalizes");
+    unfolded("startup fast path", &out);
+    let out =
+        crate::config::normalize_authored(CARD, &NoPlugins).expect("structural branch normalizes");
+    unfolded("startup structural branch", &out);
+    let legacy =
+        format!("config: {{ overlay: overlay.json }}\nstore: {{ module: memory }}\n{CARD}");
+    let proof = crate::config::recognize_authored_schema(&legacy)
+        .expect("detects")
+        .expect("a legacy root grammar");
+    let out = crate::config::normalize_historical_config(&proof, &legacy, &NoPlugins)
+        .expect("historical normalizes");
+    unfolded("startup legacy root", &out);
+
+    // A rerun on the output is a no-op; a re-stated 0 is removed again with the same line.
+    let first = migrate_config_with(&memory, &NoPlugins).expect("migrates");
+    let again = migrate_config_with(&first.yaml, &NoPlugins).expect("reruns");
+    assert!(
+        !again.changes.iter().any(|c| c.contains("cache_write_utok")),
+        "{:?}",
+        again.changes
+    );
+    assert!(again.notices.is_empty());
+    let restated = migrate_config_with(&memory, &NoPlugins).expect("reruns a re-stated zero");
+    unfolded("rerun on a re-stated 0", &restated);
+
+    // An explicit write rate and a plane `rate_card:` block are untouched.
+    let out = migrate_config_with(
+        "store: { module: memory }\n\
+         rate_card:\n  m: {input_utok: 2.5, output_utok: 10, cache_write_utok: 3.125}\n\
+         llm:\n  rate_card:\n    m: {input_utok: 2.5, cache_write_utok: 0}\n",
+        &NoPlugins,
+    )
+    .expect("migrates");
+    let d = doc(&out.yaml);
+    assert_eq!(d["rate_card"]["m"]["cache_write_utok"], Value::from(3.125));
+    assert_eq!(
+        d["llm"]["rate_card"]["m"]["cache_write_utok"],
+        Value::from(0)
+    );
+    assert!(out.notices.is_empty(), "{:?}", out.notices);
+}
+
+/// R37 `startup-discarded-state-pointer` (LINT-RULES): a conversion step that removes an authored
+/// key pointing at external state must name the serve-time guard that keeps that state from being
+/// silently dropped. Every literal-key removal in the conversion sources is listed here, whichever
+/// mapping call spells it.
+#[test]
+fn selector_removals_name_their_serve_guard() {
+    const ALLOWED: &[(&str, &str)] = &[
+        // The 1.5.5 file-overlay selector: serving refuses while the selected file still holds
+        // settings the Store has not imported.
+        ("overlay", "overlay_migrate::admit_legacy"),
+        // Folded into `export:` instances by the same conversion.
+        ("observability", "lossless: no external state"),
+        // A 1.5.5 zero write tariff: writes price at `input_utok`, reported as a notice.
+        ("cache_write_utok", "lossless: no external state"),
+        // Retired metadata carve-outs: each removed entry is named in BUSBAR-3411.
+        ("allow_metadata_hosts", "lossless: no external state"),
+    ];
+    const NEEDLES: &[&str] = &[".remove(Value::from(", "swap_remove_key("];
+    let sources = [
+        ("migrate_1_6.rs", include_str!("../migrate_1_6.rs")),
+        ("migrate.rs", include_str!("../migrate.rs")),
+        ("migrate_export.rs", include_str!("../migrate_export.rs")),
+    ];
+    let mut seen = Vec::new();
+    for (file, source) in sources {
+        for needle in NEEDLES {
+            for (at, _) in source.match_indices(needle) {
+                let rest = &source[at + needle.len()..];
+                let args = &rest[..rest.find(')').expect("a closed call")];
+                let Some(open) = args.find('"') else {
+                    continue;
+                };
+                let literal = &args[open + 1..];
+                let key = &literal[..literal.find('"').expect("a closed key literal")];
+                assert!(
+                    ALLOWED.iter().any(|(allowed, _)| *allowed == key),
+                    "{file} removes the authored key `{key}` with no named serve guard: add it to \
+                     ALLOWED with the guard that keeps its external state from being silently \
+                     dropped, or `lossless: no external state`"
+                );
+                seen.push(key);
+            }
+        }
+    }
+    for (allowed, guard) in ALLOWED {
+        assert!(!guard.is_empty());
+        assert!(
+            seen.contains(allowed),
+            "stale allowlist entry `{allowed}`: no conversion removes it any more"
+        );
+    }
 }

@@ -131,7 +131,7 @@ pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
             "[error] {}\n  - {refusal}",
             busbar_kernel::diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded("config errors")
         );
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     })
 }
 
@@ -140,7 +140,7 @@ pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
 pub fn trust_store(cfg: &RootCfg) -> Arc<busbar_core_connector::tls::store::TrustStore> {
     trust_store_of(&cfg.outbound_tls).unwrap_or_else(|errors| {
         eprintln!("busbar: config errors:\n  - {}", errors.join("\n  - "));
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     })
 }
 
