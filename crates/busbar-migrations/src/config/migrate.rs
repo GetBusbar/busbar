@@ -78,13 +78,11 @@ pub(super) mod vocabulary {
         pub const PROVIDERS_FILE: &str = "providers_file";
         pub const RATE_CARD: &str = "rate_card";
         pub const RATE_SWEEP_INTERVAL: &str = "rate_sweep_interval";
-        pub const REFRESH_TTL: &str = "refresh_ttl";
         pub const REQUESTS: &str = "requests";
         pub const RESPONSE_HEADERS: &str = "response_headers";
         pub const ROLE_BINDINGS: &str = "role_bindings";
         pub const RPM_LIMIT: &str = "rpm_limit";
         pub const SERVER_TIMING: &str = "server_timing";
-        pub const SERVERS: &str = "servers";
         pub const SETTINGS: &str = "settings";
         pub const SHA256: &str = "sha256";
         pub const SIGNALS: &str = "signals";
@@ -93,13 +91,11 @@ pub(super) mod vocabulary {
         pub const TIMEOUT_SECS: &str = "timeout_secs";
         pub const TOKENS: &str = "tokens";
         pub const TOKEN: &str = "token";
-        pub const TOOLS: &str = "tools";
         pub const TPM_LIMIT: &str = "tpm_limit";
         pub const TRIP: &str = "trip";
         pub const URL: &str = "url";
         pub const USAGE_FLUSH_INTERVAL_MS: &str = "usage_flush_interval_ms";
         pub const USER: &str = "user";
-        pub const VERIFY_TTL: &str = "verify_ttl";
         pub const WINDOW_S: &str = "window_s";
         pub const WINDOW_SECS: &str = "window_secs";
     }
@@ -228,7 +224,7 @@ fn migrate_document(
     migrate_hooks_block(&mut root, &mut changes, &mut todos);
     migrate_pools(&mut root, &mut changes, &mut todos);
 
-    migrate_unified_pools(&mut root, &mut changes, &mut todos);
+    check_top_level_pool_plane(&root, &mut todos);
 
     migrate_hook_stages(&mut root, &mut changes);
 
@@ -248,8 +244,6 @@ fn migrate_document(
 
     migrate_store_module(&mut root, &mut changes, &mut todos);
     super::former_names::migrate(&mut root, &mut changes, &mut todos);
-
-    migrate_tools_verify_ttl(&mut root, &mut changes, &mut warnings);
 
     if source_specific {
         super::migrate_plugins::migrate(
@@ -1631,92 +1625,31 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
     }
 }
 
-fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    use busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS;
+/// The top-level `pools:` key is the model plane's alone (a released 1.5.5 key).
+fn check_top_level_pool_plane(root: &Mapping, todos: &mut Vec<String>) {
     let pools_key = busbar_contract::section::RESERVED_POOLS_KEY;
-    let sections = [NAMED_MAP_SECTIONS[2], NAMED_MAP_SECTIONS[3]];
-
-    let mut moving: Vec<(String, &'static str, Value, Value)> = Vec::new();
-    for (old, section) in [("tool_pools", sections[0]), ("agent_pools", sections[1])] {
-        if root
-            .get(Value::from(old))
-            .is_some_and(|value| !value.is_mapping())
-        {
-            todos.push(format!(
-                "{old}: is not a mapping; it was left unchanged for manual migration"
-            ));
-            continue;
-        }
-        if let Taken::Got(folded) = take_mapping(root, old, "", todos) {
-            for (name, def) in folded {
-                moving.push((old.to_string(), section, name, def));
-            }
-        }
-    }
-
-    let model = |root: &Mapping, member: &str| -> bool {
+    let model = |member: &str| -> bool {
         matches!(root.get(Value::from(field::MODELS)), Some(Value::Mapping(m)) if m.contains_key(Value::from(member)))
     };
-    if let Some(Value::Mapping(pools)) = root.get(Value::from(pools_key)) {
-        for (name, def) in pools {
-            let Some(n) = name.as_str() else { continue };
-            if busbar_contract::section::RESERVED_SECTION_KEYS.contains(&n) {
-                continue;
-            }
-            let bare: Option<Vec<&str>> = def
-                .get(field::MEMBERS)
-                .and_then(Value::as_sequence)
-                .and_then(|m| m.iter().map(Value::as_str).collect());
-            if bare.is_some_and(|m| !m.is_empty() && !m.iter().any(|x| model(root, x))) {
-                todos.push(format!(
-                    "`{pools_key}.{n}` names no `models:` entry: the top-level `{pools_key}:` is the \
-                     model plane's alone. Move it under the section of the plane its members are \
-                     registered on (`<section>.{pools_key}.{n}`), with the same `members:` and \
-                     `repeatable:`."
-                ));
-            }
-        }
-    }
-
-    let mut left: Vec<(String, Value, Value)> = Vec::new();
-    for (old, section, name, def) in moving {
-        let n = name.as_str().unwrap_or("?").to_string();
-        if root.get(Value::from(section)).is_some_and(|dest| {
-            !dest.is_mapping() || dest.get(pools_key).is_some_and(|pools| !pools.is_mapping())
-        }) {
-            todos.push(format!("{old}: could not move into malformed {section} or {section}.{pools_key}; source and destination were left unchanged for manual migration"));
-            left.push((old, name, def));
+    let Some(Value::Mapping(pools)) = root.get(Value::from(pools_key)) else {
+        return;
+    };
+    for (name, def) in pools {
+        let Some(n) = name.as_str() else { continue };
+        if busbar_contract::section::RESERVED_SECTION_KEYS.contains(&n) {
             continue;
         }
-        if !matches!(root.get(Value::from(section)), Some(Value::Mapping(_))) {
-            root.insert(section.into(), Value::Mapping(Mapping::new()));
-        }
-        let Some(Value::Mapping(sec)) = root.get_mut(Value::from(section)) else {
-            continue;
-        };
-        if !matches!(sec.get(Value::from(pools_key)), Some(Value::Mapping(_))) {
-            sec.insert(pools_key.into(), Value::Mapping(Mapping::new()));
-        }
-        let Some(Value::Mapping(dest)) = sec.get_mut(Value::from(pools_key)) else {
-            continue;
-        };
-        if dest.contains_key(&name) {
+        let bare: Option<Vec<&str>> = def
+            .get(field::MEMBERS)
+            .and_then(Value::as_sequence)
+            .and_then(|m| m.iter().map(Value::as_str).collect());
+        if bare.is_some_and(|m| !m.is_empty() && !m.iter().any(|x| model(x))) {
             todos.push(format!(
-                "`{old}.{n}` could not be moved to `{section}.{pools_key}`: a pool of that name \
-                 already exists there. Rename one of the two and re-run `--migrate-config`."
+                "`{pools_key}.{n}` names no `models:` entry: the top-level `{pools_key}:` is the \
+                 model plane's alone. Move it under the section of the plane its members are \
+                 registered on (`<section>.{pools_key}.{n}`), with the same `members:` and \
+                 `repeatable:`."
             ));
-            left.push((old, name, def));
-            continue;
-        }
-        changes.push(format!("{old}.{n} -> {section}.{pools_key}.{n}"));
-        dest.insert(name, def);
-    }
-    for (old, name, def) in left {
-        if !matches!(root.get(Value::from(old.as_str())), Some(Value::Mapping(_))) {
-            root.insert(old.as_str().into(), Value::Mapping(Mapping::new()));
-        }
-        if let Some(Value::Mapping(back)) = root.get_mut(Value::from(old.as_str())) {
-            back.insert(name, def);
         }
     }
 }
