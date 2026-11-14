@@ -30,6 +30,15 @@ pub enum IoFailure {
     Fault,
 }
 
+/// THE ONE place the SDK makes an [`IoFailure::NoTicket`] it hands plugin code: noted for the door
+/// entry's R28 judgement (`ready-after-no-ticket`, debug builds). A source scan keeps every SDK site on
+/// it.
+#[must_use]
+pub(crate) fn no_ticket() -> IoFailure {
+    super::door::handing_no_ticket();
+    IoFailure::NoTicket
+}
+
 impl IoFailure {
     /// The failure's text (empty = none).
     #[must_use]
@@ -134,7 +143,7 @@ impl<'h> Io<'h> {
             return Poll::Ready(Err(IoFailure::Unarmed));
         };
         if self.ticket.is_none() && crate::abi::host::io::may_pend(op) {
-            return Poll::Ready(Err(IoFailure::NoTicket));
+            return Poll::Ready(Err(no_ticket()));
         }
         let seq = self.issued;
         self.issued = self.issued.wrapping_add(1);
