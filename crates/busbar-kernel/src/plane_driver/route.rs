@@ -242,6 +242,14 @@ pub trait FarEnd: Sync {
         None
     }
 
+    /// Whether the walk's LAST attempted member failed on its own credential (its auth fields
+    /// answered nothing, or its open or first read failed on the credential): an exhausted walk
+    /// then ends `CredentialUnavailable`, never a retryable overload.
+    fn credential_refused(&self, token: &Pass<Route>) -> bool {
+        let _ = token;
+        false
+    }
+
     fn stated(&self, token: &Pass<Route>, labels: busbar_kernel_egress::ports::StatedLabels) {
         let _ = (token, labels);
     }
