@@ -193,55 +193,19 @@ impl Admits for SocketAdmits {
 
 const REBALANCE_MARGIN: u32 = 2;
 
-const HANDOFF_CHANNEL_DEPTH: usize = 16;
+pub(crate) const HANDOFF_CHANNEL_DEPTH: usize = 16;
 
 #[repr(align(64))]
-struct PaddedCount(std::sync::atomic::AtomicU32);
+pub(crate) struct PaddedCount(pub(crate) std::sync::atomic::AtomicU32);
 
 pub struct ConnBalancer {
-    counts: Arc<[PaddedCount]>,
-    txs: Arc<[tokio::sync::mpsc::Sender<Admitted>]>,
-    me: usize,
-    rx: tokio::sync::mpsc::Receiver<Admitted>,
+    pub(crate) counts: Arc<[PaddedCount]>,
+    pub(crate) txs: Arc<[tokio::sync::mpsc::Sender<Admitted>]>,
+    pub(crate) me: usize,
+    pub(crate) rx: tokio::sync::mpsc::Receiver<Admitted>,
 }
 
 impl ConnBalancer {
-    pub fn build(n: usize) -> Vec<ConnBalancer> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: one count cell per accept worker, built once when the listener starts"
-        )]
-        let counts: Arc<[PaddedCount]> = (0..n)
-            .map(|_| PaddedCount(std::sync::atomic::AtomicU32::new(0)))
-            .collect();
-        // busbar:expect(bp::fresh_buffer, reason = "boot: one hand-off sender per accept worker, built once when the listener starts")
-        let mut txs = Vec::with_capacity(n);
-        // busbar:expect(bp::fresh_buffer, reason = "boot: one hand-off receiver per accept worker, built once when the listener starts")
-        let mut rxs = Vec::with_capacity(n);
-        for _ in 0..n {
-            let (tx, rx) = tokio::sync::mpsc::channel(HANDOFF_CHANNEL_DEPTH);
-            txs.push(tx);
-            rxs.push(rx);
-        }
-        // busbar:expect(bp::into_alloc, reason = "boot: the senders are shared once across the accept workers when the listener starts")
-        let txs: Arc<[_]> = txs.into();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: one balancer per accept worker, built once when the listener starts"
-        )]
-        let balancers = rxs
-            .into_iter()
-            .enumerate()
-            .map(|(me, rx)| ConnBalancer {
-                counts: counts.clone(),
-                txs: txs.clone(),
-                me,
-                rx,
-            })
-            .collect();
-        balancers
-    }
-
     fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
         use std::sync::atomic::Ordering;
         let mine = self.counts[self.me].0.load(Ordering::Relaxed);
@@ -876,11 +840,22 @@ where
             return;
         };
         runtime.spawn(async move {
-            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            use tokio::io::AsyncWriteExt as _;
             let _ = io.shutdown().await;
-            let mut sink = [0_u8; 16 * 1024];
+            // Drained bytes are discarded unread, so the sink is never zeroed: each read fills
+            // only what it returns.
+            let mut sink = [std::mem::MaybeUninit::<u8>::uninit(); 16 * 1024];
             let _ = tokio::time::timeout(LINGER_TOTAL, async {
-                while let Ok(Ok(n)) = tokio::time::timeout(LINGER_IDLE, io.read(&mut sink)).await {
+                while let Ok(Ok(n)) = tokio::time::timeout(
+                    LINGER_IDLE,
+                    std::future::poll_fn(|cx| {
+                        let mut read = tokio::io::ReadBuf::uninit(&mut sink);
+                        tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut io), cx, &mut read)
+                            .map_ok(|()| read.filled().len())
+                    }),
+                )
+                .await
+                {
                     if n == 0 {
                         break;
                     }
