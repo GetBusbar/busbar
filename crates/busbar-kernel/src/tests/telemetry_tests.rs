@@ -1080,3 +1080,118 @@ static TELEMETRY_MOUNTED_PHASE: crate::plane_driver::registry::PlaneDecl =
         resolve_provider: None,
         door: None,
     };
+
+#[test]
+fn mounted_plane_request_series_are_banked_and_allocation_free() {
+    const CHILD: &str = "BUSBAR_TEST_MOUNTED_PLANE_REQUEST_SERIES_BANKED_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::mounted_plane_request_series_are_banked_and_allocation_free"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the mounted-plane case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    const MOUNTED: &str = "telemetry-mounted-phase";
+    crate::plane_driver::registry::publish_planes(&[&TELEMETRY_PLANE, &TELEMETRY_MOUNTED_PHASE]);
+    let app = AppSlots::build(
+        &[("mounted-pool", vec![])],
+        &[],
+        |_| None,
+        model_plane_key(),
+    );
+    let protocol = shipped_protocols().0;
+    let finish = |outcome: &'static str, seconds: f64| {
+        request_finished_in(
+            &app,
+            MOUNTED,
+            protocol,
+            POOL_LABEL_UNRESOLVED,
+            outcome,
+            seconds,
+        );
+    };
+
+    // Metrics off: a registered mounted-plane request lands in its banked slots, so the request
+    // thread builds no cache key and no owned label (E5: 6 allocations per request before).
+    assert!(!crate::snapshot::retaining());
+    finish("ok", 0.001);
+    #[cfg(not(target_env = "msvc"))]
+    {
+        let allocation = crate::mallctl::thread_allocated().expect("thread.allocatedp");
+        let before = allocation.get();
+        for _ in 0..1000 {
+            finish("ok", 0.001);
+        }
+        assert_eq!(
+            allocation.get(),
+            before,
+            "a registered mounted-plane request must not allocate on the request thread"
+        );
+    }
+
+    // Metrics on: the banked series render with the same family, labels and counts as the
+    // macro path did.
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let labels = |outcome: &'static str| {
+        [
+            ("plane", MOUNTED),
+            ("ingress_protocol", protocol),
+            ("pool", POOL_LABEL_UNRESOLVED),
+            ("outcome", outcome),
+        ]
+    };
+    let ok0 = metric_sum(crate::snapshot::PLANE_REQUESTS_TOTAL, &labels("ok"));
+    let err0 = metric_sum(crate::snapshot::PLANE_REQUESTS_TOTAL, &labels("error"));
+    let duration_labels = [
+        ("plane", MOUNTED),
+        ("ingress_protocol", protocol),
+        ("pool", POOL_LABEL_UNRESOLVED),
+    ];
+    let count_name = format!("{}_count", crate::snapshot::PLANE_REQUEST_DURATION_SECONDS);
+    let count0 = metric_sum(&count_name, &duration_labels);
+    finish("ok", 0.004);
+    finish("ok", 0.004);
+    finish("error", 0.002);
+    assert_eq!(
+        (metric_sum(crate::snapshot::PLANE_REQUESTS_TOTAL, &labels("ok")) - ok0).round() as u64,
+        2
+    );
+    assert_eq!(
+        (metric_sum(crate::snapshot::PLANE_REQUESTS_TOTAL, &labels("error")) - err0).round() as u64,
+        1
+    );
+    assert_eq!(
+        (metric_sum(&count_name, &duration_labels) - count0).round() as u64,
+        3,
+        "every mounted-plane duration sample must reach the summary"
+    );
+
+    // A pool the bank did not register still counts, through the uncached fallback.
+    let miss = [("plane", MOUNTED), ("pool", "mounted-unregistered-pool")];
+    let miss0 = metric_sum(crate::snapshot::PLANE_REQUESTS_TOTAL, &miss);
+    request_finished_in(
+        &app,
+        MOUNTED,
+        protocol,
+        "mounted-unregistered-pool",
+        "ok",
+        0.001,
+    );
+    assert_eq!(
+        (metric_sum(crate::snapshot::PLANE_REQUESTS_TOTAL, &miss) - miss0).round() as u64,
+        1,
+        "an unbanked mounted-plane label must still be counted"
+    );
+}
