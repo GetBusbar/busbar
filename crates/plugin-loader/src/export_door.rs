@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
@@ -195,12 +195,13 @@ struct Shared {
     facts: ExportFacts,
     recorder: Option<busbar_contract::export_calls::RecorderRequirements>,
     queue: Mutex<VecDeque<Line>>,
-    /// Bytes of the lines in `queue`; only changed under the queue lock.
-    queued_bytes: AtomicUsize,
     /// Lines shed since the flusher last folded them into the observer.
     shed_pending: AtomicU64,
 
     flusher: Mutex<Option<Waker>>,
+    /// Deliver what is queued, then end the flusher once nothing is in
+    /// flight. Set on drop before `stop`, which sheds what is still queued.
+    drain: AtomicBool,
     stop: AtomicBool,
 
     abandon: AtomicBool,
@@ -233,32 +234,20 @@ impl Shared {
         }
     }
 
-    /// Whether the queue already holds a full batch (rule b).
-    fn full(q: &VecDeque<Line>, queued_bytes: usize) -> bool {
-        q.len() >= MAX_BATCH_LINES || queued_bytes >= MAX_BATCH_BYTES
-    }
-
-    /// The next batch: everything queued for the front line's stream, up to
-    /// `MAX_BATCH_LINES` and `MAX_BATCH_BYTES`. `only_full` takes nothing
-    /// unless a full batch is already waiting.
-    fn take(&self, only_full: bool) -> Option<(u8, Vec<Line>)> {
+    fn take(&self, room: usize) -> Option<(u8, Vec<Line>)> {
         let mut q = self.lock();
-        if only_full && !Self::full(&q, self.queued_bytes.load(Ordering::Relaxed)) {
-            return None;
-        }
         let stream = q.front()?.stream;
-        let (mut lines, mut bytes, mut taken) = (Vec::new(), 0usize, 0usize);
+        let share = q.len().div_ceil(room.max(1)).clamp(1, MAX_BATCH_LINES);
+        let (mut lines, mut bytes) = (Vec::new(), 0usize);
         while let Some(l) = q.front() {
             let fits = lines.is_empty()
-                || (lines.len() < MAX_BATCH_LINES && bytes + l.bytes.len() < MAX_BATCH_BYTES);
+                || (lines.len() < share && bytes + l.bytes.len() < MAX_BATCH_BYTES);
             if l.stream != stream || !fits {
                 break;
             }
             bytes += l.bytes.len() + 1;
-            taken += l.bytes.len();
             lines.extend(q.pop_front());
         }
-        self.queued_bytes.fetch_sub(taken, Ordering::Relaxed);
         Some((stream, lines))
     }
 
@@ -342,13 +331,8 @@ impl Shared {
             while let Poll::Ready(Some(())) = inflight.poll_next_unpin(cx) {}
             *self.flusher.lock().unwrap_or_else(|p| p.into_inner()) = Some(cx.waker().clone());
             self.fold_sheds();
-            let stopping = self.stop.load(Ordering::Acquire);
-            if stopping && self.abandon.load(Ordering::Acquire) {
-                let shed = {
-                    let mut q = self.lock();
-                    self.queued_bytes.store(0, Ordering::Relaxed);
-                    std::mem::take(&mut *q)
-                };
+            if self.stop.load(Ordering::Acquire) {
+                let shed = { std::mem::take(&mut *self.lock()) };
                 if !shed.is_empty() {
                     tracing::warn!(
                         plugin = %self.plugin.name(),
@@ -358,16 +342,15 @@ impl Shared {
                     fold_shed_lines(self.dispatcher.observing(), self.plugin.name(), shed.len());
                 }
                 drop(shed);
-                return Poll::Ready(());
+                return if inflight.is_empty() || self.abandon.load(Ordering::Acquire) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                };
             }
-            // Nagle rule, no timer: with nothing in flight take everything
-            // queued; with a deliver in flight start another only for a full
-            // batch, so lines arriving meanwhile collect into the next batch.
-            // Stopping drains the queue in batches up to `cap` in flight.
             let mut started = false;
             while inflight.len() < cap {
-                let only_full = !stopping && !inflight.is_empty();
-                let Some((stream, lines)) = self.take(only_full) else {
+                let Some((stream, lines)) = self.take(cap - inflight.len()) else {
                     break;
                 };
                 inflight.push(self.clone().deliver(worker, stream, lines));
@@ -376,8 +359,8 @@ impl Shared {
             if started {
                 continue;
             }
-            if stopping && inflight.is_empty() && self.lock().is_empty() {
-                self.fold_sheds();
+            // Draining ends once everything queued has been delivered.
+            if self.drain.load(Ordering::Acquire) && inflight.is_empty() && self.lock().is_empty() {
                 return Poll::Ready(());
             }
             return Poll::Pending;
@@ -418,7 +401,7 @@ impl std::fmt::Debug for ExportInstance {
 
 impl Drop for ExportInstance {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Release);
+        self.shared.drain.store(true, Ordering::Release);
         self.shared.notify();
         let flusher = self
             .flusher
@@ -426,7 +409,10 @@ impl Drop for ExportInstance {
             .unwrap_or_else(|p| p.into_inner())
             .take();
         if let Some((f, flushed)) = flusher {
+            // Drain within STOP_GRACE; past it, stop: shed what is still
+            // queued and abandon the deliveries still in flight.
             if let Err(RecvTimeoutError::Timeout) = flushed.recv_timeout(STOP_GRACE) {
+                self.shared.stop.store(true, Ordering::Release);
                 self.shared.abandon.store(true, Ordering::Release);
                 self.shared.notify();
             }
@@ -467,9 +453,9 @@ impl ExportInstance {
             facts,
             recorder,
             queue: Mutex::new(VecDeque::new()),
-            queued_bytes: AtomicUsize::new(0),
             shed_pending: AtomicU64::new(0),
             flusher: Mutex::new(None),
+            drain: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             abandon: AtomicBool::new(false),
             node: node_id(),
@@ -676,27 +662,18 @@ impl ExportCalls for ExportInstance {
         if sh.plugin.is_faulted() || !sh.plugin.is_open() {
             return Delivered::Shed;
         }
-        let wake = {
+        {
             let mut q = sh.lock();
             if q.len() >= MAX_QUEUED_LINES {
                 return Delivered::Shed;
             }
-            let len = line.len();
             q.push_back(Line {
                 stream,
                 bytes: line,
                 _hold: hold,
             });
-            let queued = sh.queued_bytes.fetch_add(len, Ordering::Relaxed) + len;
-            // Wake the flusher only when it may have something new to start:
-            // the queue went non-empty, or a full batch is now waiting.
-            q.len() == 1
-                || q.len() == MAX_BATCH_LINES
-                || (queued >= MAX_BATCH_BYTES && queued - len < MAX_BATCH_BYTES)
-        };
-        if wake {
-            sh.notify();
         }
+        sh.notify();
         Delivered::Queued
     }
 

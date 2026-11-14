@@ -531,6 +531,12 @@ pub(crate) mod testing {
         SCOPE.with(std::cell::Cell::get)
     }
 
+    /// Files this thread's folds under `scope`: a thread a test spawns takes
+    /// the test's scope from `scope()` so its folds are read back by it.
+    pub(crate) fn enter(scope: u64) {
+        SCOPE.with(|s| s.set(scope));
+    }
+
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     pub(crate) static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
