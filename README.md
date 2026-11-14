@@ -43,7 +43,7 @@ provider credentials at the boundary, preserves supported native SDK
 workflows, and puts policy, budgets, routing, resilience, and execution
 evidence in one enforcement point.
 
-> **Upgrading from 1.5.5?** Read [What's new in 1.6.0](docs/whats-new-1.6.md): your config, keys
+> **Upgrading from 1.5.5?** Read [Migrating to 1.6](https://getbusbar.com/docs/migration-1-6/): your config, keys
 > and data carry over, one command converts the config, and every change you might notice is listed.
 
 > **What this README demonstrates today:** Busbar's model execution
@@ -251,7 +251,7 @@ docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/bu
 
 `busbar --validate` checks the selected config and provider catalog, plugin declarations and local artifacts, and built-in `env:` / `file:` secret references without starting the server or opening a Store. It makes no network calls and does not read the Store-backed admin overlay. A pass checks those operator inputs; boot separately recovers and validates the effective configuration and opens its runtime dependencies. Full walkthrough: [Getting started](https://getbusbar.com/docs/getting-started/).
 
-Runs on x86_64 and 64-bit ARM (Linux, macOS, Windows, Docker). On ARM Linux there are two builds of equal standing: the default (ARMv8.1+ — any cloud ARM, Raspberry Pi 5) and an `-armv8.0` compat build for Raspberry Pi 4-class boards — the ["which ARM build?" table](docs/getting-started.md#step-1-get-the-binary) picks for you in one glance.
+Runs on x86_64 and 64-bit ARM (Linux, macOS, Windows, Docker). On ARM Linux there are two builds of equal standing: the default (ARMv8.1+ — any cloud ARM, Raspberry Pi 5) and an `-armv8.0` compat build for Raspberry Pi 4-class boards — the ["which ARM build?" table](https://getbusbar.com/getting-started/) picks for you in one glance.
 
 ### Persistence
 
@@ -259,7 +259,7 @@ A `store:` block is required (1.6.0; `busbar --migrate-config` inserts `store: {
 keys, usage counters, ledgers, the audit trail and rate-card history all reset on restart (one WARN at boot says so). The admin-API config overlay is anchored in the base configuration's Store, so it also resets with a memory Store. There is no independent writable overlay file. Durable keys/usage/ledgers/audit, card history and admin config edits need a durable Store plugin (`sqlite`,
 `postgres`, `mysql` or `valkey`, each its own signed release) wired up with four config keys, not
 just a mounted volume — see [Durable store: giving persistence a writable
-volume](docs/getting-started.md#durable-store-giving-persistence-a-writable-volume) for the
+volume](https://getbusbar.com/getting-started/) for the
 complete recipe.
 
 ---
