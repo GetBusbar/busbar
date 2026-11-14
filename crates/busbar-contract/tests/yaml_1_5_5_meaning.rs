@@ -24,9 +24,9 @@
 //! refusal's libyaml wording and position, and the per-document results of the multi-document
 //! `Deserializer` iterator (3 records; `busbar_contract::yaml` has no multi-document reader, and
 //! the whole-input read those records also hold, a refusal, is checked). A tagged node is
-//! compared by its value: an untyped read keeps a tagged node's value, not its tag (row 19; 1
-//! record, `mutated-oracle-config#117`, with a non-specific `!` key tag). `ACCEPTED_DIFFERENCES`
-//! names any recorded case the owner accepts reading differently; it is empty.
+//! compared with its tag, as 1.5.5's `Value::Tagged` kept it (row 19; 1 record,
+//! `mutated-oracle-config#117`, with a non-specific `!` key tag). `ACCEPTED_DIFFERENCES` names any
+//! recorded case the owner accepts reading differently; it is empty.
 //!
 //! Also ported, as ordinary tests below, the meaning cases of serde_yaml_ng's own suite that
 //! busbar-yaml carried (`test_de.rs`, `test_value.rs`, `test_error.rs`, `test_serde.rs`): what
@@ -155,27 +155,113 @@ fn merge_key_is_a_literal_key() {
     assert!(!item.contains_key("a"), "the merge must not be expanded");
 }
 
-/// Row 17: a duplicate key is refused, naming the line and column of the repeat.
+/// Row 17: a duplicate key means what it meant to 1.5.5's reader. An untyped read refuses it in
+/// serde_yaml's words, naming the line and column of the repeat; a struct refuses it with serde's
+/// `duplicate field`; a map keeps the last value.
 #[test]
-fn duplicate_keys_are_refused_with_line_and_column() {
-    let doc = "a: 1\nb: 2\na: 3\n";
-    let error = yaml::from_str::<Value>(doc).expect_err("duplicate key refused");
+fn duplicate_keys_mean_what_they_meant_to_each_reader() {
+    let error = yaml::from_str::<Value>("a: 1\nb: 2\na: 3\n").expect_err("duplicate key refused");
+    assert_eq!(
+        error.to_string(),
+        "duplicate entry with key \"a\" at line 3 column 1"
+    );
     let at = error.location().expect("the refusal names a position");
     assert_eq!((at.line(), at.column()), (3, 1), "{error}");
 
-    let error = yaml::from_str::<Named>("name: x\nname: y\n").expect_err("duplicate field");
-    assert_eq!(error.location().map(|l| l.line()), Some(2), "{error}");
+    let error = yaml::from_str::<Value>("outer:\n  a: 1\n  a: 2\n").expect_err("nested");
+    assert_eq!(
+        error.to_string(),
+        "outer: duplicate entry with key \"a\" at line 3 column 3"
+    );
 
-    let error = yaml::from_str::<std::collections::BTreeMap<String, u32>>("k: 1\nk: 2\n")
-        .expect_err("duplicate map key refused");
-    assert_eq!(error.location().map(|l| l.line()), Some(2), "{error}");
+    let error = yaml::mapping_from_str("k: 1\nk: 2\n").expect_err("a mapping refuses it too");
+    assert!(
+        error
+            .to_string()
+            .starts_with("duplicate entry with key \"k\""),
+        "{error}"
+    );
+
+    let error = yaml::from_str::<Named>("name: x\nname: y\n").expect_err("duplicate field");
+    assert!(
+        error.to_string().starts_with("duplicate field `name`"),
+        "{error}"
+    );
+
+    let read: BTreeMap<String, u32> = yaml::from_str("k: 1\nk: 2\n").expect("a map keeps the last");
+    assert_eq!(read, BTreeMap::from([("k".to_owned(), 2)]));
 }
 
-/// Row 19: an application tag is accepted, as 1.5.5 accepted it; an untyped read gives the
-/// tagged node's value.
+/// Row 17, through a tree already read: a `Mapping` built from a `Value` with a repeated key is
+/// refused, as serde_yaml's `Mapping` refused it.
 #[test]
-fn application_tags_are_accepted() {
-    assert_eq!(tree("k: !Variant payload\n").at("k"), &text("payload"));
+fn a_mapping_from_a_tree_refuses_a_repeated_key() {
+    let repeated = Value::Map(vec![
+        (text("k"), Value::from(1)),
+        (text("k"), Value::from(2)),
+    ]);
+    let error = yaml::from_value::<Mapping>(repeated).expect_err("duplicate key refused");
+    assert_eq!(error.to_string(), "duplicate entry with key \"k\"");
+}
+
+/// Row 19: an application tag is accepted, as 1.5.5 accepted it, and an untyped read keeps it
+/// on the node, as 1.5.5's `Value::Tagged` did; lookups see through it to the value.
+#[test]
+fn application_tags_are_kept_by_untyped_reads() {
+    let doc = tree("k: !Variant payload\n");
+    assert_eq!(doc.at("k"), &yaml::tagged("!Variant", text("payload")));
+    assert_eq!(yaml::tag_of(doc.at("k")).as_deref(), Some("!Variant"));
+    assert_eq!(doc.at("k").as_str(), Some("payload"));
+    assert_eq!(tree("k: !!str payload\n").at("k"), &text("payload"));
+}
+
+/// Row 19: `!Variant` in a tree read on into an enum field selects the variant, as serde_yaml's
+/// `from_value` read a `Value::Tagged`.
+#[test]
+fn tags_in_a_tree_select_enum_variants() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    enum Shape {
+        Unit,
+        Circle(f64),
+        Rect { w: u32, h: u32 },
+        Pair(u8, u8),
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Shapes {
+        plain: Shape,
+        circle: Shape,
+        rect: Shape,
+        pair: Shape,
+        maybe: Option<Shape>,
+    }
+    let doc = tree(
+        "plain: Unit\ncircle: !Circle 1.5\nrect: !Rect {w: 2, h: 3}\npair: !Pair [1, 2]\n\
+         maybe: !Circle 2\n",
+    );
+    assert_eq!(
+        yaml::from_value::<Shapes>(doc).unwrap(),
+        Shapes {
+            plain: Shape::Unit,
+            circle: Shape::Circle(1.5),
+            rect: Shape::Rect { w: 2, h: 3 },
+            pair: Shape::Pair(1, 2),
+            maybe: Some(Shape::Circle(2.0)),
+        }
+    );
+}
+
+/// A tagged tree writes its tags back and reads back to the same tree, as serde_yaml wrote a
+/// `Value::Tagged`.
+#[test]
+fn tagged_trees_round_trip_through_text() {
+    let doc = tree("shape: !Circle 1.5\nlist:\n- !Rect {w: 2, h: 3}\n- plain\n");
+    let written = yaml::to_string(&doc).unwrap();
+    assert!(written.contains("!Circle"), "{written}");
+    assert!(written.contains("!Rect"), "{written}");
+    assert_eq!(tree(&written), doc, "{written}");
+
+    let through_value: Value = yaml::from_value(doc.clone()).unwrap();
+    assert_eq!(through_value, doc, "a tree read from a tree keeps its tags");
 }
 
 /// The tree keeps key order, after reading and after edits.
@@ -306,8 +392,8 @@ fn recorded(want: &serde_json::Value) -> Value {
                         .collect(),
                 );
             }
-            if form.contains_key("tag") {
-                return recorded(&form["value"]);
+            if let Some(tag) = form.get("tag").and_then(J::as_str) {
+                return yaml::tagged(tag, recorded(&form["value"]));
             }
             panic!("an unknown recorded form: {want}");
         }
@@ -344,7 +430,8 @@ fn first_difference(want: &Value, got: &Value, at: &str) -> Option<String> {
                     .or_else(|| first_difference(xv, yv, &here))
             })
         }
-        (Value::Float(_) | Value::Array(_) | Value::Map(_), _) => Some(format!(
+        (Value::Tag(x, xv), Value::Tag(y, yv)) if x == y => first_difference(xv, yv, at),
+        (Value::Float(_) | Value::Array(_) | Value::Map(_) | Value::Tag(..), _) => Some(format!(
             "at `{at}` 1.5.5 read {}, now {}",
             brief(want),
             brief(got)
@@ -1096,19 +1183,29 @@ fn billion_laughs_is_refused() {
     assert!(yaml::from_str::<BTreeMap<String, X>>(&doc).is_err());
 }
 
-/// test_error `test_duplicate_keys`: a repeated key is refused whatever its kind: a string,
-/// null spelled two ways, an integer, an empty mapping.
+/// test_error `test_duplicate_keys`: a repeated key is refused whatever its kind, a string, null
+/// spelled two ways, an integer, an empty mapping, each named as serde_yaml named it, at the
+/// repeat.
 #[test]
 fn duplicate_keys_of_every_kind_are_refused() {
-    for doc in [
-        "---\nthing: true\nthing: false\n",
-        "---\nnull: true\n~: false\n",
-        "---\n99: true\n99: false\n",
-        "---\n{}: true\n{}: false\n",
+    for (doc, refusal) in [
+        (
+            "---\nthing: true\nthing: false\n",
+            "duplicate entry with key \"thing\"",
+        ),
+        (
+            "---\nnull: true\n~: false\n",
+            "duplicate entry with null key",
+        ),
+        ("---\n99: true\n99: false\n", "duplicate entry with key 99"),
+        ("---\n{}: true\n{}: false\n", "duplicate entry in YAML map"),
     ] {
-        assert!(
-            yaml::from_str::<Value>(doc).is_err(),
-            "{doc:?} must be refused"
+        let error = yaml::from_str::<Value>(doc).expect_err(doc);
+        assert!(error.to_string().starts_with(refusal), "{doc:?}: {error}");
+        assert_eq!(
+            error.location().map(|l| l.line()),
+            Some(3),
+            "{doc:?}: {error}"
         );
     }
 }

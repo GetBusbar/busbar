@@ -250,8 +250,7 @@ fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
     assert_eq!(
         e.to_string(),
         "the reserved `pools.upstream_credentials:` all-pools default must be `own` or \
-         `passthrough`: unknown variant `borrowed`, expected one of `own`, `passthrough`, \
-         `connection`"
+         `passthrough`: unknown variant `borrowed`, expected `own` or `passthrough`"
     );
 }
 

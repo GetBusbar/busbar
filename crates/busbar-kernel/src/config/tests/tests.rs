@@ -2698,12 +2698,9 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
         .contains("auth.policy: unknown field `slef_mint`"));
     assert_eq!(typo.location().unwrap().line(), 5);
     assert!(refusal("auth: 5\n").to_string().contains("invalid type"));
-    // The repeated-key refusal is worded by the YAML reader: its exact text, key and position.
-    assert_eq!(
-        refusal("auth:\n  policy: {}\n  policy: {}\n").to_string(),
-        "auth.?: duplicate mapping key: policy, set DuplicateKeyPolicy in Options if acceptable \
-         at line 5 column 3"
-    );
+    assert!(refusal("auth:\n  policy: {}\n  policy: {}\n")
+        .to_string()
+        .contains("duplicate field `policy`"));
     let empty = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\nauth:\n")
         .expect("an empty auth block parses");
     assert!(empty.auth.is_none());
@@ -2728,12 +2725,9 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
     for field in ["oauth_as", "credentials"] {
         let duplicate =
             parse(&format!("{field}: {{}}\n{field}: {{}}\n")).expect_err("duplicate core section");
-        assert_eq!(
-            duplicate.to_string(),
-            format!(
-                "?: duplicate mapping key: {field}, set DuplicateKeyPolicy in Options if \
-                 acceptable at line 4 column 1"
-            )
+        assert!(
+            duplicate.to_string().contains("duplicate field"),
+            "{duplicate}"
         );
     }
     let empty = parse("oauth_as: null\ncredentials: null\n").expect("null optional sections");

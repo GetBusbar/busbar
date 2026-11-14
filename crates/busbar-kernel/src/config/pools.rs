@@ -500,7 +500,7 @@ impl<'de> Deserialize<'de> for OnExhaustedCfg {
             queue: QueueInner,
         }
 
-        let value = busbar_contract::yaml::Value::deserialize(deserializer)?;
+        let value = busbar_contract::yaml::untyped(deserializer)?;
         match value {
             busbar_contract::yaml::Value::Text(word) => match word.as_str() {
                 "reject" => Ok(OnExhaustedCfg::Reject),

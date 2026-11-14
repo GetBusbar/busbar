@@ -130,7 +130,7 @@ impl<'de> Visitor<'de> for Read<'_> {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         use serde::Deserialize as _;
         let Read::Section { section, noun } = self else {
-            let read = yaml::Value::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            let read = yaml::untyped(de::value::MapAccessDeserializer::new(map))?;
             return self.done(read);
         };
 
@@ -154,19 +154,19 @@ impl<'de> Visitor<'de> for Read<'_> {
 
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
         use serde::Deserialize as _;
-        let read = yaml::Value::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
+        let read = yaml::untyped(de::value::SeqAccessDeserializer::new(seq))?;
         self.done(read)
     }
 
     fn visit_enum<A: de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
         use serde::Deserialize as _;
-        let read = yaml::Value::deserialize(de::value::EnumAccessDeserializer::new(data))?;
+        let read = yaml::untyped(de::value::EnumAccessDeserializer::new(data))?;
         self.done(read)
     }
 
     fn visit_some<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         use serde::Deserialize as _;
-        let read = yaml::Value::deserialize(de)?;
+        let read = yaml::untyped(de)?;
         self.done(read)
     }
 

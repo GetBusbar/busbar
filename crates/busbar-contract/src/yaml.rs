@@ -16,17 +16,23 @@
 //! - Numbers with underscores (`1_000`) are strings when read untyped.
 //! - `1:30` (sexagesimal) is a string.
 //! - `<<` is a literal key; merge keys are not expanded.
-//! - A duplicate key is refused, with the line and column of the repeat.
+//! - A duplicate key means what it meant to the reader, as serde_yaml left it to the visitor: an
+//!   untyped read ([`Value`], [`Mapping`]) refuses it (`duplicate entry with key "k"`, with the
+//!   line and column of the repeat), a struct refuses it with serde's `duplicate field`, and a
+//!   map (`HashMap`, `BTreeMap`, `IndexMap`) keeps the last value.
 //! - `.inf`, `-.inf` and `.nan` are floats.
-//! - Application tags (`!Tag value`) are accepted, as 1.5.5 accepted them. An untyped read gives
-//!   the node's value; the admin source bridge (busbar-kernel `document_source`) carries the tag
-//!   itself through an edit.
+//! - Application tags (`!Tag value`) are accepted, as 1.5.5 accepted them, and an untyped read
+//!   keeps them: a tagged node is a [`Value::Tag`] whose number names the tag through this
+//!   module's registry ([`tag_id`], [`tag_name`]), as serde_yaml's `Value::Tagged` named it. Read
+//!   on into an enum, `!Variant` selects the variant; written out, the tag is written back.
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, DeserializeSeed};
 use serde::Serialize;
 
 pub use ciborium::Value;
@@ -141,9 +147,10 @@ impl Serialize for Mapping {
 }
 
 impl<'de> serde::Deserialize<'de> for Mapping {
-    /// A YAML mapping, keeping its key order; null reads as an empty mapping, as serde_yaml's did.
+    /// A YAML mapping, keeping its key order; null reads as an empty mapping, and a repeated key
+    /// is refused (`duplicate entry with key "k"`), as serde_yaml's did.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match untag(<Value as serde::Deserialize>::deserialize(deserializer)?) {
+        match untag(untyped(deserializer)?) {
             Value::Map(pairs) => Ok(Self(pairs)),
             Value::Null => Ok(Self::new()),
             other => Err(serde::de::Error::invalid_type(
@@ -191,7 +198,9 @@ pub mod prelude {
 pub fn options() -> serde_saphyr::Options {
     use serde_saphyr::{DuplicateKeyPolicy, MergeKeyPolicy, NonFiniteFloatPolicy};
     serde_saphyr::options! {
-        duplicate_keys: DuplicateKeyPolicy::Error,
+        // serde_yaml's rule: each repeated entry reaches the reader, which decides (a struct
+        // refuses it, a map keeps the last value, an untyped read refuses it; see `untyped`).
+        duplicate_keys: DuplicateKeyPolicy::PassThrough,
         merge_keys: MergeKeyPolicy::AsOrdinary,
         strict_booleans: true,
         legacy_octal_numbers: false,
@@ -278,6 +287,15 @@ impl From<serde_saphyr::Error> for Error {
                 placed_suffix = !message.starts_with("missing field ");
             }
         }
+        // serde-saphyr's own duplicate refusal names its options; `options()` passes duplicates
+        // to the reader, so it should not arise, but if it does it reads as serde_yaml's.
+        if let serde_saphyr::Error::DuplicateMappingKey { key, .. } = &error {
+            message = match key {
+                Some(key) => format!("{DUPLICATE_ENTRY}with key {key:?}"),
+                None => format!("{DUPLICATE_ENTRY}in YAML map"),
+            };
+            placed_suffix = location.is_some();
+        }
         Self {
             message,
             path: None,
@@ -289,11 +307,46 @@ impl From<serde_saphyr::Error> for Error {
 
 impl Error {
     fn at_path(mut self, path: serde_path_to_error::Path) -> Self {
-        let path = path.to_string();
-        if path != "." {
-            self.path = Some(path);
+        use serde_path_to_error::Segment;
+        let mut segments: Vec<&Segment> = path.iter().collect();
+        // A repeated key is refused while its key is read, so the tracked path ends in that
+        // unnamed key; serde_yaml named the mapping holding it.
+        if self.message.starts_with(DUPLICATE_ENTRY)
+            && matches!(segments.last(), Some(Segment::Unknown))
+        {
+            segments.pop();
+        }
+        if !segments.is_empty() {
+            let mut text = String::new();
+            for (at, segment) in segments.iter().enumerate() {
+                if at > 0 && !matches!(segment, Segment::Seq { .. }) {
+                    text.push('.');
+                }
+                text.push_str(&segment.to_string());
+            }
+            self.path = Some(text);
         }
         self
+    }
+}
+
+/// How serde_yaml began its refusal of a repeated key in an untyped mapping.
+const DUPLICATE_ENTRY: &str = "duplicate entry ";
+
+/// serde_yaml's refusal of a repeated mapping key, naming the key as it did.
+fn duplicate_entry(key: &Value) -> String {
+    match key {
+        Value::Null => format!("{DUPLICATE_ENTRY}with null key"),
+        Value::Bool(b) => format!("{DUPLICATE_ENTRY}with key `{b}`"),
+        Value::Integer(i) => format!("{DUPLICATE_ENTRY}with key {}", i128::from(*i)),
+        Value::Float(f) if f.is_nan() => format!("{DUPLICATE_ENTRY}with key .nan"),
+        Value::Float(f) if f.is_infinite() => {
+            let sign = if f.is_sign_negative() { "-" } else { "" };
+            format!("{DUPLICATE_ENTRY}with key {sign}.inf")
+        }
+        Value::Float(f) => format!("{DUPLICATE_ENTRY}with key {f:?}"),
+        Value::Text(s) => format!("{DUPLICATE_ENTRY}with key {s:?}"),
+        _ => format!("{DUPLICATE_ENTRY}in YAML map"),
     }
 }
 
@@ -304,8 +357,262 @@ impl From<serde_saphyr::SerializeError> for Error {
 }
 
 /// Read a YAML document into `T`.
+///
+/// An untyped read (`T` is [`Value`] or [`Mapping`]) means what serde_yaml's `Value` read meant:
+/// a repeated mapping key is refused, and an application tag is kept as a [`Value::Tag`].
 pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
+    if untyped_target::<T>() {
+        let tree = with_deserializer(text, |d| Node.deserialize(d))?;
+        return T::deserialize(deserializer(tree));
+    }
     with_deserializer(text, |d| T::deserialize(d))
+}
+
+/// Whether `T` (under any references) is the untyped tree or its mapping: those reads and writes
+/// go through this module's tag-aware, duplicate-refusing builder and writer. Named by type so
+/// that `from_str` needs no `'static` bound.
+fn untyped_target<T: ?Sized>() -> bool {
+    let name = std::any::type_name::<T>().trim_start_matches('&');
+    name == std::any::type_name::<Value>() || name == std::any::type_name::<Mapping>()
+}
+
+/// Read one node as an untyped [`Value`] from any deserializer, as serde_yaml's `Value` read it:
+/// a repeated mapping key is refused (`duplicate entry with key "k"`), and an application tag is
+/// kept as a [`Value::Tag`]. For a `Value` field of a typed struct, which ciborium's own
+/// `Deserialize` would read without either: `#[serde(deserialize_with = "yaml::untyped")]`.
+pub fn untyped<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Value, D::Error> {
+    Node.deserialize(deserializer)
+}
+
+/// [`untyped`] for an optional field: `null` (or absent, with `#[serde(default)]`) is `None`.
+pub fn untyped_option<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    let value = untyped(deserializer)?;
+    Ok((!value.is_null()).then_some(value))
+}
+
+/// A [`Value`] read through [`untyped`], for containers (`IndexMap<String, Untyped>`) whose
+/// members serde would otherwise read with ciborium's own `Deserialize`.
+#[derive(Debug, Clone)]
+pub struct Untyped(pub Value);
+
+impl<'de> serde::Deserialize<'de> for Untyped {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        untyped(deserializer).map(Untyped)
+    }
+}
+
+// ---- Application tags ----
+
+/// The first CBOR tag number the registry hands out: far above the IANA-registered ones, so an
+/// application tag never reads as a CBOR meaning.
+const APPLICATION_TAG_BASE: u64 = 0x7961_6d6c_0000_0000;
+
+#[derive(Default)]
+struct TagNames {
+    ids: HashMap<String, u64>,
+    names: Vec<String>,
+}
+
+fn tag_names() -> std::sync::MutexGuard<'static, TagNames> {
+    static NAMES: OnceLock<Mutex<TagNames>> = OnceLock::new();
+    NAMES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The [`Value::Tag`] number for the application tag `name` (`!Name`, as written), registered for
+/// the life of the process on first use; the same name always gets the same number.
+#[must_use]
+pub fn tag_id(name: &str) -> u64 {
+    let mut names = tag_names();
+    if let Some(id) = names.ids.get(name) {
+        return *id;
+    }
+    let id = APPLICATION_TAG_BASE + names.names.len() as u64;
+    names.names.push(name.to_owned());
+    names.ids.insert(name.to_owned(), id);
+    id
+}
+
+/// The application tag a [`Value::Tag`] number stands for, when the registry handed it out.
+#[must_use]
+pub fn tag_name(id: u64) -> Option<String> {
+    let at = usize::try_from(id.checked_sub(APPLICATION_TAG_BASE)?).ok()?;
+    tag_names().names.get(at).cloned()
+}
+
+/// `value` under the application tag `name` (`!Name`), as an untyped read gives a tagged node.
+#[must_use]
+pub fn tagged(name: &str, value: Value) -> Value {
+    Value::Tag(tag_id(name), Box::new(value))
+}
+
+/// The application tag on `value`, when it is a tagged node.
+#[must_use]
+pub fn tag_of(value: &Value) -> Option<String> {
+    match value {
+        Value::Tag(id, _) => tag_name(*id),
+        _ => None,
+    }
+}
+
+/// Builds one untyped node, asking serde-saphyr for the node's tag first (its `Tagged` protocol:
+/// the node as the sequence `[value, tag?]`). Other deserializers answer with the node itself.
+struct Node;
+
+impl<'de> DeserializeSeed<'de> for Node {
+    type Value = Value;
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
+        de.deserialize_newtype_struct(TAGGED, Node)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for Node {
+    type Value = Value;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("any YAML value")
+    }
+    fn visit_newtype_struct<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
+        de.deserialize_any(Untyped)
+    }
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Value, S::Error> {
+        let value = seq
+            .next_element_seed(UntypedSeed)?
+            .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+        Ok(match seq.next_element::<String>()? {
+            Some(tag) if !tag.starts_with("tag:yaml.org,2002:") => tagged(&tag, value),
+            _ => value,
+        })
+    }
+}
+
+struct UntypedSeed;
+
+impl<'de> DeserializeSeed<'de> for UntypedSeed {
+    type Value = Value;
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
+        de.deserialize_any(Untyped)
+    }
+}
+
+/// A mapping key, refused when it repeats one of `0` (the pairs read so far). Refused while the
+/// key is read, so serde-saphyr places the refusal at the repeat.
+struct Key<'p>(&'p [(Value, Value)]);
+
+impl<'de> DeserializeSeed<'de> for Key<'_> {
+    type Value = Value;
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
+        let key = Node.deserialize(de)?;
+        if self.0.iter().any(|(seen, _)| same_tree(seen, &key)) {
+            return Err(serde::de::Error::custom(duplicate_entry(&key)));
+        }
+        Ok(key)
+    }
+}
+
+/// The node itself, its tag already read: ciborium's `Value` visitor, with tagged children and
+/// refused repeated keys.
+struct Untyped;
+
+macro_rules! visit_into_value {
+    ($($visit:ident($ty:ty)),+ $(,)?) => {
+        $(
+            fn $visit<E: serde::de::Error>(self, v: $ty) -> Result<Value, E> {
+                Ok(Value::from(v))
+            }
+        )+
+    };
+}
+
+impl<'de> serde::de::Visitor<'de> for Untyped {
+    type Value = Value;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("any YAML value")
+    }
+    visit_into_value! {
+        visit_bool(bool),
+        visit_f32(f32),
+        visit_f64(f64),
+        visit_i8(i8),
+        visit_i16(i16),
+        visit_i32(i32),
+        visit_i64(i64),
+        visit_i128(i128),
+        visit_u8(u8),
+        visit_u16(u16),
+        visit_u32(u32),
+        visit_u64(u64),
+        visit_u128(u128),
+        visit_char(char),
+        visit_str(&str),
+        visit_string(String),
+        visit_bytes(&[u8]),
+        visit_byte_buf(Vec<u8>),
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_none<E: serde::de::Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_some<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
+        Node.deserialize(de)
+    }
+    fn visit_newtype_struct<D: serde::Deserializer<'de>>(self, de: D) -> Result<Value, D::Error> {
+        Node.deserialize(de)
+    }
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Value, S::Error> {
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+        while let Some(item) = seq.next_element_seed(Node)? {
+            items.push(item);
+        }
+        Ok(Value::Array(items))
+    }
+    fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Value, M::Error> {
+        let mut pairs = Pairs::with_capacity(map.size_hint().unwrap_or(0).min(4096));
+        while let Some(key) = map.next_key_seed(Key(&pairs))? {
+            let value = map.next_value_seed(Node)?;
+            pairs.push((key, value));
+        }
+        Ok(Value::Map(pairs))
+    }
+    /// A tagged node handed over as an enum: ciborium's own tag protocol (a [`ValueDeserializer`]
+    /// over a [`Value::Tag`]), or a serde_yaml-style variant, kept as the tag `!variant`.
+    fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Value, A::Error> {
+        use serde::de::VariantAccess;
+        let (variant, content): (String, _) = data.variant()?;
+        if variant == CBOR_TAGGED {
+            content.tuple_variant(2, CborTagContent)
+        } else {
+            let value = content.newtype_variant_seed(Node)?;
+            Ok(tagged(&format!("!{variant}"), value))
+        }
+    }
+}
+
+/// ciborium's variant name for a tagged item, in its `Value`'s serde form.
+const CBOR_TAGGED: &str = "@@TAGGED@@";
+
+/// The `(tag number, value)` content of ciborium's tagged-item variant.
+struct CborTagContent;
+
+impl<'de> serde::de::Visitor<'de> for CborTagContent {
+    type Value = Value;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a tag number and a value")
+    }
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Value, S::Error> {
+        let id: u64 = seq
+            .next_element()?
+            .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+        let value = seq
+            .next_element_seed(Node)?
+            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+        Ok(Value::Tag(id, Box::new(value)))
+    }
 }
 
 /// Read a UTF-8 YAML document into `T`.
@@ -348,8 +655,8 @@ where
 }
 
 /// The first application tag (`!Name`, or a non-core tag URI) anywhere in the document, keys
-/// included; `None` when it has none. An untyped [`Value`] read keeps a tagged node's value but
-/// not its tag, so a reader that must refuse or carry tags asks here first.
+/// included; `None` when it has none. For a reader that must refuse tags before reading (a typed
+/// read ignores a tag outside an enum).
 pub fn first_application_tag(text: &str) -> Result<Option<String>, Error> {
     with_deserializer(text, |d| {
         serde::de::DeserializeSeed::deserialize(FindTag, d)
@@ -457,17 +764,46 @@ impl<'de> serde::de::Visitor<'de> for FindTagInside {
     }
 }
 
-/// Write `value` as a YAML document.
+/// Write `value` as a YAML document. A [`Value`] or [`Mapping`] writes its application tags back
+/// (`!Name value`), as serde_yaml wrote a `Value::Tagged`.
 pub fn to_string<T: Serialize + ?Sized>(value: &T) -> Result<String, Error> {
+    if untyped_target::<T>() {
+        let tree = Value::serialized(value).map_err(Error::unplaced)?;
+        return Ok(serde_saphyr::to_string(&Writable(&tree))?);
+    }
     Ok(serde_saphyr::to_string(&value)?)
 }
 
-/// Write `value` as a YAML document to `writer`.
+/// Write `value` as a YAML document to `writer`, as [`to_string`] writes it.
 pub fn to_writer<W: std::io::Write, T: Serialize + ?Sized>(
     mut writer: W,
     value: &T,
 ) -> Result<(), Error> {
+    if untyped_target::<T>() {
+        let tree = Value::serialized(value).map_err(Error::unplaced)?;
+        return Ok(serde_saphyr::to_io_writer(&mut writer, &Writable(&tree))?);
+    }
     Ok(serde_saphyr::to_io_writer(&mut writer, &value)?)
+}
+
+/// A tree written as YAML: a registered application tag through serde-saphyr's `Tagged`, so it
+/// is written as the node's tag; any other node as ciborium writes it.
+struct Writable<'v>(&'v Value);
+
+impl Serialize for Writable<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Tag(id, inner) => match tag_name(*id) {
+                Some(tag) => serde_saphyr::Tagged(Writable(inner), Some(tag)).serialize(serializer),
+                None => Writable(inner).serialize(serializer),
+            },
+            Value::Array(items) => serializer.collect_seq(items.iter().map(Writable)),
+            Value::Map(pairs) => {
+                serializer.collect_map(pairs.iter().map(|(k, v)| (Writable(k), Writable(v))))
+            }
+            other => other.serialize(serializer),
+        }
+    }
 }
 
 /// Read a [`Value`] tree into `T`, in memory, as serde_yaml's `from_value` did: through
@@ -486,9 +822,12 @@ pub fn from_value<T: DeserializeOwned>(value: Value) -> Result<T, Error> {
 ///   (keys read as values in turn), bytes as bytes;
 /// - every number type takes any number, so an integer reads into an `f32`/`f64` field;
 /// - null reads as `None`, as unit, as an empty sequence and as an empty mapping;
-/// - an enum is a string (a unit variant) or, as written YAML spells it, a single-key mapping
-///   (the variant and its content);
-/// - a tag (`Value::Tag`) is transparent: its value is read in its place;
+/// - an enum is a string (a unit variant), a single-key mapping (the variant and its content), or
+///   a tagged node: `!Variant content` selects `Variant` (the tag without its `!`), as serde_yaml
+///   0.9 read a `Value::Tagged`;
+/// - any other read of a tagged node reads its value, except `any`, which hands the visitor the
+///   tag in ciborium's own form (an enum, as serde_yaml handed its `Value::Tagged`), so a
+///   [`Value`] read from this deserializer keeps it;
 /// - human-readable, as YAML is; type errors are serde's `invalid type: ..., expected ...` texts.
 #[derive(Debug, Clone)]
 pub struct ValueDeserializer {
@@ -522,6 +861,22 @@ fn untag(mut value: Value) -> Value {
             Value::Tag(_, inner) => value = *inner,
             other => return other,
         }
+    }
+}
+
+/// The value under any tags, by reference.
+fn bare(value: &Value) -> &Value {
+    match value {
+        Value::Tag(_, inner) => bare(inner),
+        other => other,
+    }
+}
+
+/// The value under any tags, mutably.
+fn bare_mut(value: &mut Value) -> &mut Value {
+    match value {
+        Value::Tag(_, inner) => bare_mut(inner),
+        other => other,
     }
 }
 
@@ -626,7 +981,8 @@ impl<'de> serde::Deserializer<'de> for ValueDeserializer {
     type Error = Error;
 
     fn deserialize_any<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-        match untag(self.value) {
+        match self.value {
+            Value::Tag(id, value) => visitor.visit_enum(CborTag { id, value: *value }),
             Value::Null => visitor.visit_unit(),
             Value::Bool(b) => visitor.visit_bool(b),
             Value::Integer(i) => visit_integer(i, visitor),
@@ -725,8 +1081,9 @@ impl<'de> serde::Deserializer<'de> for ValueDeserializer {
         }
     }
 
+    /// Only a bare null is `None`; a tagged node is `Some`, its tag kept, as serde_yaml read it.
     fn deserialize_option<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-        match untag(self.value) {
+        match self.value {
             Value::Null => visitor.visit_none(),
             other => visitor.visit_some(deserializer(other)),
         }
@@ -799,11 +1156,25 @@ impl<'de> serde::Deserializer<'de> for ValueDeserializer {
 
     fn deserialize_enum<V: serde::de::Visitor<'de>>(
         self,
-        _name: &'static str,
-        _variants: &'static [&'static str],
+        name: &'static str,
+        variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Error> {
-        let (variant, content) = match untag(self.value) {
+        let (variant, content) = match self.value {
+            Value::Tag(id, content) => match tag_name(id) {
+                Some(tag) => {
+                    let variant = tag.strip_prefix('!').unwrap_or(&tag).to_owned();
+                    (Value::Text(variant), Some(*content))
+                }
+                None => {
+                    return serde::Deserializer::deserialize_enum(
+                        deserializer(*content),
+                        name,
+                        variants,
+                        visitor,
+                    )
+                }
+            },
             variant @ Value::Text(_) => (variant, None),
             Value::Map(mut m) if m.len() == 1 => {
                 let (variant, content) = m.swap_remove(0);
@@ -826,6 +1197,58 @@ impl<'de> serde::Deserializer<'de> for ValueDeserializer {
         visitor: V,
     ) -> Result<V::Value, Error> {
         visitor.visit_unit()
+    }
+}
+
+/// A [`Value::Tag`] handed to a visitor in ciborium's form: the variant `@@TAGGED@@`, whose
+/// tuple content is the tag number and the value.
+struct CborTag {
+    id: u64,
+    value: Value,
+}
+
+impl<'de> serde::de::EnumAccess<'de> for CborTag {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V: serde::de::DeserializeSeed<'de>>(
+        self,
+        seed: V,
+    ) -> Result<(V::Value, Self), Error> {
+        let variant =
+            seed.deserialize(serde::de::value::StrDeserializer::<Error>::new(CBOR_TAGGED))?;
+        Ok((variant, self))
+    }
+}
+
+impl<'de> serde::de::VariantAccess<'de> for CborTag {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Error> {
+        Err(invalid_type(&self.value, &"a tagged value"))
+    }
+
+    fn newtype_variant_seed<T: serde::de::DeserializeSeed<'de>>(
+        self,
+        seed: T,
+    ) -> Result<T::Value, Error> {
+        seed.deserialize(deserializer(self.value))
+    }
+
+    fn tuple_variant<V: serde::de::Visitor<'de>>(
+        self,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        visit_sequence(vec![Value::from(self.id), self.value], visitor)
+    }
+
+    fn struct_variant<V: serde::de::Visitor<'de>>(
+        self,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        Err(invalid_type(&self.value, &visitor))
     }
 }
 
@@ -1192,8 +1615,9 @@ pub trait ValueExt {
 }
 
 impl ValueExt for Value {
+    // Every read looks through a tag to the tagged value, as serde_yaml's `Value` methods did.
     fn get<I: Index>(&self, index: I) -> Option<&Value> {
-        match self {
+        match bare(self) {
             Value::Map(m) => index.position(m).map(|at| &m[at].1),
             Value::Array(s) => index.element(s),
             _ => None,
@@ -1201,7 +1625,7 @@ impl ValueExt for Value {
     }
 
     fn get_mut<I: Index>(&mut self, index: I) -> Option<&mut Value> {
-        match self {
+        match bare_mut(self) {
             Value::Map(m) => index.position(m).map(|at| &mut m[at].1),
             Value::Array(s) => index.element_mut(s),
             _ => None,
@@ -1213,10 +1637,11 @@ impl ValueExt for Value {
     }
 
     fn at_mut<I: Index>(&mut self, index: I) -> &mut Value {
-        if self.is_null() {
-            *self = Value::Map(Pairs::new());
+        let value = bare_mut(self);
+        if value.is_null() {
+            *value = Value::Map(Pairs::new());
         }
-        match self {
+        match value {
             Value::Map(m) => {
                 let at = match index.position(m) {
                     Some(at) => at,
@@ -1235,36 +1660,36 @@ impl ValueExt for Value {
     }
 
     fn as_str(&self) -> Option<&str> {
-        self.as_text()
+        bare(self).as_text()
     }
 
     fn as_mapping(&self) -> Option<&Pairs> {
-        self.as_map()
+        bare(self).as_map()
     }
 
     fn as_mapping_mut(&mut self) -> Option<&mut Pairs> {
-        self.as_map_mut()
+        bare_mut(self).as_map_mut()
     }
 
     fn as_sequence(&self) -> Option<&Vec<Value>> {
-        self.as_array()
+        bare(self).as_array()
     }
 
     fn as_sequence_mut(&mut self) -> Option<&mut Vec<Value>> {
-        self.as_array_mut()
+        bare_mut(self).as_array_mut()
     }
 
     fn as_u64(&self) -> Option<u64> {
-        self.as_integer().and_then(|i| u64::try_from(i).ok())
+        bare(self).as_integer().and_then(|i| u64::try_from(i).ok())
     }
 
     fn as_i64(&self) -> Option<i64> {
-        self.as_integer().and_then(|i| i64::try_from(i).ok())
+        bare(self).as_integer().and_then(|i| i64::try_from(i).ok())
     }
 
     #[allow(clippy::cast_precision_loss)]
     fn as_f64(&self) -> Option<f64> {
-        match self {
+        match bare(self) {
             Value::Float(f) => Some(*f),
             Value::Integer(i) => Some(i128::from(*i) as f64),
             _ => None,
@@ -1272,19 +1697,20 @@ impl ValueExt for Value {
     }
 
     fn is_mapping(&self) -> bool {
-        self.is_map()
+        bare(self).is_map()
     }
 
     fn is_sequence(&self) -> bool {
-        self.is_array()
+        bare(self).is_array()
     }
 
     fn is_string(&self) -> bool {
-        self.is_text()
+        bare(self).is_text()
     }
 
     fn is_number(&self) -> bool {
-        self.is_integer() || self.is_float()
+        let value = bare(self);
+        value.is_integer() || value.is_float()
     }
 
     fn is_u64(&self) -> bool {
@@ -1296,7 +1722,7 @@ impl ValueExt for Value {
     }
 
     fn is_f64(&self) -> bool {
-        self.is_float()
+        bare(self).is_float()
     }
 }
 

@@ -202,8 +202,12 @@ where
 {
     use serde::de::Error as _;
 
+    // Each member is read as serde_yaml read a `Value`: repeated keys refused, tags kept.
     let mut raw: indexmap::IndexMap<String, crate::yaml::Value> =
-        indexmap::IndexMap::deserialize(deserializer)?;
+        indexmap::IndexMap::<String, crate::yaml::Untyped>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(name, value)| (name, value.0))
+            .collect();
 
     for reserved in RESERVED_SECTION_KEYS {
         if *reserved == USAGE_OBSERVATIONS_KEY {
@@ -231,14 +235,25 @@ where
 
     let upstream_credentials = match raw.shift_remove("upstream_credentials") {
         None => None,
-        Some(v) => Some(
-            crate::yaml::from_value::<crate::config::UpstreamCreds>(v).map_err(|e| {
-                D::Error::custom(format!(
-                    "the reserved `{section}.upstream_credentials:` all-{section} default must be \
-                 `own` or `passthrough`: {e}"
-                ))
-            })?,
-        ),
+        Some(v) => {
+            // An unknown word is refused in 1.5.5's words, which name the two operator modes
+            // (`connection` is set by the host, never written here by an operator).
+            let word = v.as_text().map(str::to_owned);
+            Some(
+                crate::yaml::from_value::<crate::config::UpstreamCreds>(v).map_err(|e| {
+                    let detail = match word {
+                        Some(word) => {
+                            format!("unknown variant `{word}`, expected `own` or `passthrough`")
+                        }
+                        None => e.to_string(),
+                    };
+                    D::Error::custom(format!(
+                        "the reserved `{section}.upstream_credentials:` all-{section} default \
+                         must be `own` or `passthrough`: {detail}"
+                    ))
+                })?,
+            )
+        }
     };
 
     let mut entries = indexmap::IndexMap::new();

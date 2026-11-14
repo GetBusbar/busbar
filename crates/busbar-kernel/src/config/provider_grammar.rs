@@ -305,11 +305,7 @@ mod tests {
         let error = read(&key, "[{globs: [], enabled: true, enabled: false}]")
             .unwrap_err()
             .to_string();
-        assert_eq!(
-            error,
-            "[0].?: duplicate mapping key: enabled, set DuplicateKeyPolicy in Options if \
-             acceptable at line 1 column 29"
-        );
+        assert!(error.contains("duplicate field `enabled`"), "{error}");
     }
     #[test]
     fn open_tables_preserve_unknown_and_required_nullable_values() {

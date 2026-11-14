@@ -108,7 +108,7 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
         let (key, lifted) = (self.key, self.lifted);
         match self.dest {
             Dest::Endpoint => {
-                let section = busbar_contract::yaml::Value::deserialize(de)?;
+                let section = busbar_contract::yaml::untyped(de)?;
                 if !section.is_null() {
                     lifted.declared_raw.insert(key, section.clone());
                 }

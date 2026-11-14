@@ -867,7 +867,7 @@ pub struct DeployCfg {
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
     pub oauth_as: Option<busbar_contract::yaml::Value>,
     /// `credentials:` — how a recoverable credential is kept at rest ([`CredentialsCfg`]): the
     /// `at_rest` key it is sealed under, and the `previous` one a rotation still opens.
