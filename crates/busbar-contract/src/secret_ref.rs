@@ -129,7 +129,7 @@ impl SecretRef {
         Ok(Self::Template(TemplateReference {
             text: Zeroizing::new(text.into()),
             source: FillSource {
-                module: source.plugin.clone(),
+                module: source.module().to_owned(),
                 setting: source.setting.clone(),
             },
         }))
@@ -198,7 +198,7 @@ impl SecretRef {
         let source = sources
             .with_role(crate::abi::mechanism::door::SUGAR_ROLE_FILL)
             .ok_or("no admitted source declares the template fill role")?;
-        if template.source.module != source.plugin || template.source.setting != source.setting {
+        if !source.answers(&template.source.module) || template.source.setting != source.setting {
             return Err("template source differs from the admitted fill source declaration");
         }
         Ok(())
@@ -424,6 +424,10 @@ pub struct Sugar {
     pub word: String,
     /// The plugin whose Statement declares it.
     pub plugin: String,
+    /// The other names that Statement lets config give the plugin (its `REWRITE_ALIAS` words, in
+    /// Statement order). The first is the module a canonical reference names (`module: env`, as
+    /// 1.5.5 wrote it), so sugar and canonical forms read as one module.
+    pub aliases: Vec<String>,
     /// The settings key the value lands under (`REWRITE_SUGAR`'s `to`).
     pub setting: String,
     /// The placeholder its refusals show for the value (`REWRITE_SUGAR_SHOWN`; the settings key
@@ -435,10 +439,20 @@ pub struct Sugar {
 }
 
 impl Sugar {
+    /// The module a canonical reference to this owner names: its first alias, else its name.
+    pub fn module(&self) -> &str {
+        self.aliases.first().unwrap_or(&self.plugin)
+    }
+
+    /// Whether `module` names this owner: its Statement name or any alias it declares.
+    pub fn answers(&self, module: &str) -> bool {
+        self.plugin == module || self.aliases.iter().any(|alias| alias == module)
+    }
+
     /// Validate only the scalar source position this owner explicitly declared.
     /// The result names declaration metadata, never the configured value.
     pub fn reference_refusal(&self, source: &SourceReference) -> Option<String> {
-        if self.plugin != source.module {
+        if !self.answers(&source.module) {
             return None;
         }
         match source
@@ -463,7 +477,7 @@ impl Sugar {
     /// Build the canonical reference named by this admitted owner's declaration.
     pub fn reference(&self, value: impl Into<String>) -> SecretRef {
         SecretRef::Source(SourceReference {
-            module: self.plugin.clone(),
+            module: self.module().to_owned(),
             settings: serde_json::Map::from_iter([(
                 self.setting.clone(),
                 serde_json::Value::String(value.into()),
@@ -501,9 +515,14 @@ impl Sugars {
         rewrites: &[(u32, String, String)],
     ) -> Result<(), String> {
         use crate::abi::mechanism::door::{
-            REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
-            SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
+            REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE,
+            REWRITE_SUGAR_SHOWN, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
         };
+        let aliases: Vec<String> = rewrites
+            .iter()
+            .filter(|(class, from, _)| *class == REWRITE_ALIAS && from != plugin)
+            .map(|(_, from, _)| from.clone())
+            .collect();
         let mut mine: Vec<Sugar> = Vec::new();
         for (class, from, to) in rewrites {
             if *class != REWRITE_SUGAR {
@@ -536,6 +555,7 @@ impl Sugars {
             mine.push(Sugar {
                 word: from.clone(),
                 plugin: plugin.to_string(),
+                aliases: aliases.clone(),
                 setting: to.clone(),
                 shown: to.clone(),
                 names: format!("the {to}"),
