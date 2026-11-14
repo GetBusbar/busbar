@@ -78,6 +78,7 @@ impl<'r> ExportRows<'r> {
         self
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_envelope(mut self, envelope: Arc<dyn EnvelopeSink>) -> Self {
         self.envelope = Some(envelope);

@@ -3,7 +3,6 @@
 
 use std::fmt;
 use std::mem::size_of;
-use std::path::Path;
 use std::ptr::addr_of;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Op};
@@ -306,7 +305,8 @@ pub fn enter_door(door_fn: RawDoorFn) -> *const Door {
     crate::ffi_thread::on_plugin_thread(call).unwrap_or(std::ptr::null())
 }
 
-pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
+#[cfg(any(test, feature = "test-support", feature = "pack"))]
+pub fn rendering_of_library(path: &std::path::Path) -> Result<Option<Vec<u8>>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` outlives every use of it.
@@ -322,7 +322,10 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
     rendering.map(Some)
 }
 
-pub fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, LoadError> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn door_addresses_of_library(
+    path: &std::path::Path,
+) -> Result<Option<(usize, usize)>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` outlives every use of it.
@@ -747,8 +750,9 @@ pub(crate) static UNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 #[cfg(test)]
 pub(crate) static HUNG_WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn load_dropped<K: Kind>(
-    path: &Path,
+    path: &std::path::Path,
     stated: &[u8],
     bind: Bind,
 ) -> Result<Plugin<K>, LoadError> {
@@ -778,6 +782,7 @@ pub(crate) fn prepare_dropped_bytes<K: Kind>(
     admit_library::<K>(Lib(Some(lib), Some(staged)), stated)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn bind_library<K: Kind>(lib: Lib, stated: &[u8], bind: Bind) -> Result<Plugin<K>, LoadError> {
     admit_library::<K>(lib, stated)?.bind(bind)
 }

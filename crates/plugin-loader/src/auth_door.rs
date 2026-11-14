@@ -1001,6 +1001,7 @@ impl AuthInstance {
         &self.label
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn ticks_ended(&self) -> bool {
         self.schedule

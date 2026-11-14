@@ -4,7 +4,6 @@
 #![deny(unsafe_code)]
 
 use libloading::Library;
-use std::path::Path;
 
 // busbar:request-path
 #[cfg_attr(
@@ -291,6 +290,7 @@ pub mod rows;
 pub use sign::EgressPolicy;
 
 impl LinkedPlugin {
+    #[cfg(test)]
     pub fn first_party_door(
         kind: &str,
         name: &str,
@@ -310,27 +310,6 @@ pub use registry::{
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
 pub use stage::{install_native_load_guard, sweep_dead_staging, NativeLoadGuard};
-
-/// Run plugin lifecycle work synchronously on the loader's permanent worker pool.
-///
-/// The completion rendezvous finishes before this returns, including when the callback panics,
-/// so closures and results may borrow caller-owned data without being `'static`. Both must be
-/// `Send` because the callback runs, and its result is produced, on another thread.
-/// Callback panics return their original payload as `Err`; the worker remains available.
-/// This does not change ABI ownership or the existing request call/free paths.
-///
-/// # Panics
-///
-/// Worker acquisition or rendezvous failures retain the private worker's panic behavior. A panic
-/// does not guarantee that the callback started; callers must retain their resource cleanup
-/// invariants on that path.
-pub fn run_plugin_lifecycle<F, R>(f: F) -> std::thread::Result<R>
-where
-    F: FnOnce() -> R + Send,
-    R: Send,
-{
-    ffi_thread::on_plugin_thread(f)
-}
 
 pub fn intern_name(name: &str) -> &'static str {
     use std::collections::HashSet;
@@ -386,6 +365,7 @@ thread_local! {
     pub(crate) static UNLOADS_ON_WORKER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn plugin_library_filename(crate_snake: &str) -> String {
     #[cfg(target_os = "windows")]
     {
@@ -401,6 +381,7 @@ pub fn plugin_library_filename(crate_snake: &str) -> String {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn is_library_file(file: &str) -> bool {
     if cfg!(target_os = "windows") {
         let b = file.as_bytes();
@@ -414,7 +395,8 @@ fn is_library_file(file: &str) -> bool {
     file.ends_with(ext)
 }
 
-pub fn list_plugin_files(dir: &Path) -> Vec<String> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn list_plugin_files(dir: &std::path::Path) -> Vec<String> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;

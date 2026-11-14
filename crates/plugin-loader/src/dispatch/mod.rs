@@ -80,10 +80,13 @@ use busbar_contract::abi::mechanism::KindCode;
 pub use answer::{Answer, Context};
 pub use inline::{InlineTicket, InlineTickets};
 pub use kinds::plane::PlaneCancel;
+#[cfg(any(test, feature = "test-support"))]
+pub use load::load_dropped;
+#[cfg(any(test, feature = "test-support", feature = "pack"))]
+pub use load::rendering_of_library;
 pub use load::{
-    admit_linked, load_dropped, load_dropped_bytes, load_linked, rendering_of,
-    rendering_of_library, rendering_of_loaded, rendering_of_macro, LinkedRow, LoadError,
-    LoadedDoor, ManifestFacts,
+    admit_linked, load_dropped_bytes, load_linked, rendering_of, rendering_of_loaded,
+    rendering_of_macro, LinkedRow, LoadError, LoadedDoor, ManifestFacts,
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{
