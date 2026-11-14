@@ -101,6 +101,10 @@ impl AuthRows {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(name.to_string());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the auth plugin that did not load"
+        )]
         let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
 
@@ -108,6 +112,7 @@ impl AuthRows {
             Some(logs) => sink.to_file(&logs(), label).map_err(refused)?,
             None => sink.bind(),
         };
+        // busbar:expect(bp::into_alloc, reason = "boot: a loaded auth instance keeps its label")
         let bind = Bind {
             instance: Arc::from(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
@@ -120,6 +125,10 @@ impl AuthRows {
                 ConnTable::Probe
             },
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names why the auth plugin did not load"
+        )]
         let loaded = match row.door() {
             Some(door) => LinkedRow::of_raw(door).and_then(|r| load_linked::<Auth>(&r, bind)),
             None => match row.manifest.stated_rendering().map_err(refused)? {
@@ -127,6 +136,10 @@ impl AuthRows {
                 Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
             },
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names why the auth plugin did not load"
+        )]
         let plugin = loaded.map_err(|e| refused(e.to_string()))?;
         Ok(Door::Memory(plugin, sink))
     }
@@ -147,12 +160,19 @@ impl AuthRows {
 
     #[must_use]
     pub fn linked_names(&self) -> Vec<String> {
-        self.registry
+        // busbar:expect(bp::clone_alloc, reason = "config: lists the linked auth modules config may name")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: lists the linked auth modules config may name"
+        )]
+        let names = self
+            .registry
             .linked()
             .iter()
             .filter(|p| p.manifest.kind == AUTH)
             .map(|p| p.manifest.alias.clone())
-            .collect()
+            .collect();
+        names
     }
 
     #[must_use]
@@ -178,6 +198,7 @@ impl AuthRows {
             .chain(self.registry.loadable());
         rows.filter(|p| p.manifest.kind == AUTH).find_map(|row| {
             let principal = self.stated(row)?.operator_principal?;
+            // busbar:expect(bp::clone_alloc, reason = "config: names the operator auth plugin when config is read")
             Some((row.manifest.alias.clone(), principal))
         })
     }
@@ -189,12 +210,19 @@ impl AuthRows {
             .linked()
             .iter()
             .chain(self.registry.loadable());
-        rows.filter(|p| p.manifest.kind == AUTH)
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: lists the credential-reading auth plugins when config is read"
+        )]
+        let readers = rows
+            .filter(|p| p.manifest.kind == AUTH)
             .filter_map(|row| {
                 let facts = self.stated(row)?;
+                // busbar:expect(bp::clone_alloc, reason = "config: lists the credential-reading auth plugins when config is read")
                 (facts.facts & FACT_READS_CREDENTIALS != 0).then(|| row.manifest.alias.clone())
             })
-            .collect()
+            .collect();
+        readers
     }
 
     #[must_use]
@@ -231,13 +259,17 @@ impl AuthRows {
         {
             return None;
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: names an inbound auth style when config is read"
+        )]
         let mut names = vec![
             row.manifest.name.clone(),
             row.key().to_string(),
             row.manifest.alias.clone(),
         ];
         names.extend(stated_aliases(row));
-        names.sort();
+        names.sort_unstable();
         names.dedup();
         Some(busbar_contract::auth_calls::InboundStyle {
             module: row.manifest.name.clone(),
@@ -252,10 +284,15 @@ impl AuthRows {
             .linked()
             .iter()
             .chain(self.registry.loadable());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: finds the default inbound style when config is read"
+        )]
         let stating: Vec<(String, Vec<String>)> = rows
             .filter(|p| p.manifest.kind == AUTH)
             .filter_map(|row| {
                 let facts = self.stated(row)?;
+                // busbar:expect(bp::clone_alloc, reason = "config: finds the default inbound style when config is read")
                 (facts.facts & FACT_DEFAULT_INBOUND_STYLE != 0)
                     .then(|| (row.manifest.alias.clone(), facts.carriers))
             })
@@ -263,9 +300,14 @@ impl AuthRows {
         match stating.as_slice() {
             [] => Ok(Vec::new()),
             [(_, carriers)] => Ok(carriers.clone()),
-            many => Err(two_default_inbound_styles(
-                &many.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(),
-            )),
+            many => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: names every auth plugin stating the default inbound style"
+                )]
+                let rows = many.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>();
+                Err(two_default_inbound_styles(&rows))
+            }
         }
     }
 
@@ -293,11 +335,16 @@ impl AuthRows {
                 }
             };
             if let Some(kind) = mine.iter().find(|k| f.credential_kinds.contains(k)) {
-                return Err(format!(
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: two auth plugins read the same credential kind"
+                )]
+                let refused = format!(
                     "auth plugins '{alias}' and '{}' both declare they read the credential kind \
                      '{kind}'; one verifier reads a credential kind",
                     other.manifest.alias
-                ));
+                );
+                return Err(refused);
             }
         }
         Ok(())
@@ -319,6 +366,10 @@ impl AuthRows {
         label: &str,
         settings: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Result<Arc<AuthInstance>, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names a configured auth module no plugin answers to"
+        )]
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
@@ -330,11 +381,19 @@ impl AuthRows {
             .unwrap_or_default();
         self.one_reader_per_kind(row, &kinds)?;
         let (settings, secrets) = crate::auth_door::split_secrets(&plugin, settings);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an auth instance's settings render once, when it opens"
+        )]
         let text = settings.encode().map_err(|error| error.to_string())?;
         let seal = self
             .dispatcher
             .seal()
             .ok_or("auth opening requires the host settings seal")?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the auth plugin that did not open"
+        )]
         let opened = AuthInstance::open(
             plugin,
             sink,
@@ -367,19 +426,24 @@ impl AuthRows {
                     continue;
                 }
             };
-            let Some(decl) = outbound_styles(&plugin)
-                .into_iter()
+            let Some((flags, points)) = outbound_styles(&plugin)
+                .iter()
                 .find(|s| s.name == style)
+                .map(|s| (s.flags, s.points))
             else {
                 continue;
             };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: binding an outbound style renders its settings once"
+            )]
             let settings = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
             let auth =
                 OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &settings)?;
             return Ok(Some(busbar_contract::auth_calls::OutboundServing {
                 auth: Arc::new(auth),
-                flags: decl.flags,
-                points: decl.points,
+                flags,
+                points,
             }));
         }
         unloaded.map_or(Ok(None), Err)
@@ -391,10 +455,15 @@ fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
         Some(door) => LinkedRow::of_raw(door).ok().map(|r| r.statement),
         None => row.manifest.stated_rendering().ok().flatten(),
     };
-    stated
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an auth plugin's stated aliases, read when config names a module"
+    )]
+    let aliases = stated
         .and_then(|s| read(&s).ok())
         .map(|r| crate::boot::rewrites(&r, REWRITE_ALIAS).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    aliases
 }
 
 impl busbar_contract::auth_calls::AuthAxis for AuthRows {
@@ -446,11 +515,16 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
 
 #[must_use]
 pub fn two_default_inbound_styles(rows: &[&str]) -> String {
-    format!(
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: names every auth plugin stating the default inbound style"
+    )]
+    let refused = format!(
         "more than one auth plugin states the default inbound style ({}): at most one may; \
          remove all but one",
         rows.join(", ")
-    )
+    );
+    refused
 }
 
 #[cfg(test)]

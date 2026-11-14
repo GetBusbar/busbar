@@ -290,6 +290,10 @@ c_entry! {
             if check_spawn_in(i).is_err() {
                 return Answered::fault();
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: spawning a configured child process borrows its argument and environment lists"
+            )]
             // SAFETY: the caller's strings and lists, live for the call.
             let parsed = unsafe {
                 let program = text(i.program);

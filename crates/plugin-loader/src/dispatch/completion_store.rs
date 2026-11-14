@@ -4,6 +4,44 @@
 use super::*;
 use busbar_contract::abi::sdk::completion_retirement::{Acknowledgement, Capability, Domain};
 
+impl Held {
+    /// A ticket's first result of an op: empty, stamped with the op's fresh epoch.
+    pub(super) fn fresh(epoch: u64) -> Self {
+        Held {
+            epoch,
+            entries: Default::default(),
+            inspections: Default::default(),
+            conditionals: Default::default(),
+            conditional_units: Default::default(),
+            retirement: Default::default(),
+        }
+    }
+}
+
+thread_local! {
+    /// The retired results a retirement takes out under the shard lock, to drop after it: one
+    /// buffer per thread, reused (its capacity kept) by every retirement on the thread.
+    static RETIRED: std::cell::Cell<Vec<(Bound, Entry)>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// This thread's retirement buffer, lent for one retirement: dropping it (after the shard lock is
+/// released) drops the retired results and hands the emptied buffer back.
+struct Retired(Vec<(Bound, Entry)>);
+
+impl Retired {
+    fn lend() -> Self {
+        Retired(RETIRED.take())
+    }
+}
+
+impl Drop for Retired {
+    fn drop(&mut self) {
+        let mut kept = std::mem::take(&mut self.0);
+        kept.clear();
+        RETIRED.set(kept);
+    }
+}
+
 impl ServiceStore {
     pub(crate) fn retirement_input(
         &self,
@@ -15,14 +53,9 @@ impl ServiceStore {
             return None;
         }
         let mut map = self.lock(ticket);
-        let held = map.entry(ticket).or_insert_with(|| Held {
-            epoch: self.epochs.fetch_add(1, Ordering::Relaxed) + 1,
-            entries: HashMap::new(),
-            inspections: HashMap::new(),
-            conditionals: HashMap::new(),
-            conditional_units: HashMap::new(),
-            retirement: HashMap::new(),
-        });
+        let held = map
+            .entry(ticket)
+            .or_insert_with(|| Held::fresh(self.epochs.fetch_add(1, Ordering::Relaxed) + 1));
         let (known_owner, nonce, acknowledged) =
             *held.retirement.entry(caller).or_insert_with(|| {
                 (
@@ -53,7 +86,8 @@ impl ServiceStore {
         let digest =
             busbar_contract::abi::sdk::completion_retirement::ack_digest(ack).map_err(|_| ())?;
         let ticket = capability.ticket;
-        let mut removed = Vec::with_capacity(ack.handles.len());
+        let mut removed = Retired::lend();
+        removed.0.reserve(ack.handles.len());
         let retired_conns = {
             let mut map = self.lock(ticket);
             let held = map
@@ -91,7 +125,7 @@ impl ServiceStore {
             wake.conn_state.retire(ticket, &ack.handles, || {
                 self.held.retire(ticket, caller, &ack.handles, || {
                     for handle in ack.handles.iter().filter(|h| h.domain == Domain::Host) {
-                        removed.push(
+                        removed.0.push(
                             held.entries
                                 .remove(&Issue {
                                     caller,
