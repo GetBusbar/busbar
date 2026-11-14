@@ -222,6 +222,7 @@ fn unit() -> UnitCheckpoint {
         terminal: None,
         audit: Some(serde_json::to_vec(&audit).unwrap()),
         measurement: None,
+        unread: None,
     }
 }
 

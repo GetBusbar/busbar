@@ -43,6 +43,10 @@ pub struct UnitCheckpoint {
     pub audit: Option<Vec<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measurement: Option<crate::host_measurement::MeasurementEvidence>,
+    /// The provider answered but its final stated usage was not billed: the `ReasonCode` name that
+    /// ended the unit first (`BUSBAR-5046`). Absent when nothing went unread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<String>,
 }
 
 impl UnitCheckpoint {

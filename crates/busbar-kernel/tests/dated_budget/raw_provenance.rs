@@ -373,6 +373,7 @@ fn open_route_cancel_and_session_cleanup_keep_the_admissions_original_entry() {
             far_end_answered: true,
             streamed: true,
             billed: vec![(INPUT_INDEX, RAW_COUNT)],
+            unread: None,
         },
     );
     money.settle_end(

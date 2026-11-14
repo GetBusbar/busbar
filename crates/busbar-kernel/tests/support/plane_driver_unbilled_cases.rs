@@ -149,7 +149,7 @@ impl Gate {
 }
 
 enum Flight {
-    Now(OnPieceOut),
+    Now(Box<OnPieceOut>),
     Held(Arc<Gate>),
 }
 
@@ -187,7 +187,7 @@ impl PieceInFlight for Flight {
     }
     fn out(&self) -> Option<OnPieceOut> {
         match self {
-            Flight::Now(out) => Some(*out),
+            Flight::Now(out) => Some(**out),
             Flight::Held(gate) => *gate.answer.lock().unwrap(),
         }
     }
@@ -379,7 +379,7 @@ impl PlaneCalls for Scripted {
                 // SAFETY: the driver's member string, alive for the call.
                 *self.member.lock().unwrap() = unsafe { text(i.member) }.to_vec();
                 self.far_pieces.store(0, Ordering::SeqCst);
-                Box::new(Flight::Now(o))
+                Box::new(Flight::Now(Box::new(o)))
             }
             FROM_FAR_END => {
                 let member = self.member.lock().unwrap().clone();
@@ -397,10 +397,10 @@ impl PlaneCalls for Scripted {
                     self.held_notice.notify_one();
                     Box::new(Flight::Held(gate))
                 } else {
-                    Box::new(Flight::Now(out))
+                    Box::new(Flight::Now(Box::new(out)))
                 }
             }
-            _ => Box::new(Flight::Now(o)),
+            _ => Box::new(Flight::Now(Box::new(o))),
         }
     }
 }
@@ -480,12 +480,8 @@ impl FarEnd for Pool {
         self.current.lock().unwrap().pop_front()
     }
 
-    fn write<'a>(
-        &'a self,
-        _: &'a Pass<Route>,
-        _: OutboundRequest,
-    ) -> impl Future<Output = bool> + Send + 'a {
-        async { false }
+    async fn write(&self, _: &Pass<Route>, _: OutboundRequest) -> bool {
+        false
     }
 }
 
