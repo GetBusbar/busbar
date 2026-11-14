@@ -128,10 +128,12 @@ mod tests {
         else {
             panic!()
         };
-        assert!(
-            busbar_kernel::persistence::import_target::records::recovery::legacy_head_authorizes(
-                &address
+        assert_eq!(
+            busbar_kernel::persistence::import_target::records::recovery::legacy_head_address(
+                &op, head
             )
+            .unwrap(),
+            address
         );
         assert_eq!(value, head);
         let Route::Record { address, value } = route_record(

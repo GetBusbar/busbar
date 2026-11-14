@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A frozen legacy Applied decision is not a native executable receipt. This
-//! immutable disposition authorizes the existing current-owner adoption path;
-//! original selected heads and journal frames remain unchanged.
+//! Cold adoption of a retired native writer's recovery heads. Each adoption
+//! fixes one immutable child descriptor; original selected heads and journal
+//! frames remain unchanged.
 use super::*;
 use crate::governance::recovery::MigratedChildContext;
 use crate::governance::{recovery::RecoveryKind, GovState};
@@ -52,38 +52,6 @@ pub(super) fn copy_guards(guards: &[Predicate]) -> Arc<[Predicate]> {
     out
 }
 
-/// Stable facts supplied only after the migration provider checks its actual
-/// native source fence, complete original ancestry, and matching old receipt.
-/// A fresh fence challenge is deliberately not part of the immutable row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AppliedImportEvidence {
-    pub source_dataset: [u8; 16],
-    pub source_snapshot: [u8; 16],
-    pub source_content_digest: [u8; 32],
-    pub source_schema_digest: [u8; 32],
-    pub upgrade: [u8; 16],
-    pub fence_enforcement: [u8; 32],
-    pub route: [u8; 32],
-    pub receipt_evidence: [u8; 32],
-    pub historical_body_digest: [u8; 32],
-    pub recovery_closure_digest: [u8; 32],
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AppliedProof {
-    initial: RecoveryEvent,
-    selected: RecoveryEvent,
-    original_head: Vec<u8>,
-    evidence: AppliedImportEvidence,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Disposition {
-    version: u8,
-    proof: AppliedProof,
-    digest: [u8; 32],
-}
 fn imported_address(operation: &[u8; 16]) -> Address {
     #[expect(
         clippy::disallowed_methods,
@@ -414,9 +382,10 @@ impl StoreRecovery {
             self.adopt_at_with(&resolution, &pending.transitions, &pending.guards)
                 .await?;
         }
-        for (operation, tip) in heads(&self.store).await? {
-            let imported = imported_address(&operation);
-            let Some(raw) = read(&self.store, vec![imported.clone()])
+        // Only an unreleased 1.6.0-dev importer wrote these rows. Refuse rather
+        // than adopt such an operation natively without its native receipt.
+        for (operation, _) in heads(&self.store).await? {
+            if read(&self.store, vec![imported_address(&operation)])
                 .await?
                 .pop()
                 .flatten()
@@ -452,36 +421,12 @@ impl StoreRecovery {
             if selection.initial != disposition.proof.initial
                 || selection.selected != disposition.proof.selected
             {
-                return Err(invalid(
-                    "migrated Applied disposition differs from original selected ancestry",
+                return Err(RecoveryError::Invalid(
+                    "store carries a recovery disposition written by an unreleased 1.6.0-dev \
+                     import; upgrade from 1.5.5"
+                        .into(),
                 ));
             }
-            let (descriptor, context_guard) = self.imported_context(&disposition, &raw).await?;
-            let resolution = disposition.resolution(&selection.selected);
-            let transitions = match selection.selected.kind {
-                RecoveryKind::Correction => {
-                    GovState::stage_foreign_correction_verdict(&selection.selected, &resolution)?
-                }
-                RecoveryKind::Usage | RecoveryKind::Metering => {
-                    GovState::stage_imported_raw_verdict(
-                        &selection.selected,
-                        &resolution,
-                        &descriptor.context,
-                    )?
-                }
-            };
-            self.adopt_at_with(
-                &resolution,
-                &transitions,
-                &[
-                    Predicate {
-                        address: imported,
-                        expected: ExpectedValue::Exact(raw),
-                    },
-                    context_guard,
-                ],
-            )
-            .await?;
         }
         self.adopt_native_foreign().await
     }
@@ -627,25 +572,11 @@ impl StoreRecovery {
                 reason: "native writer permanently retired; canonical operation receipt checked"
                     .into(),
             };
-            let imported = imported_address(&operation);
-            let imported_raw = read(&self.store, vec![imported.clone()])
-                .await?
-                .pop()
-                .flatten();
-            let provenance = if let Some(raw) = imported_raw {
-                let disposition = Disposition::decode(&imported, raw.expose(&crate::seal::lend()))?;
-                guards.push(Predicate {
-                    address: imported,
-                    expected: ExpectedValue::Exact(raw),
-                });
-                disposition.digest
-            } else {
-                let mut hash = Sha256::new();
-                hash.update(b"busbar.recovery.native-child-custody/1\0");
-                hash.update(self.store.info().dataset.0);
-                hash.update(selection.initial.fingerprint()?);
-                hash.finalize().into()
-            };
+            let mut hash = Sha256::new();
+            hash.update(b"busbar.recovery.native-child-custody/1\0");
+            hash.update(self.store.info().dataset.0);
+            hash.update(selection.initial.fingerprint()?);
+            let provenance: [u8; 32] = hash.finalize().into();
             let (descriptor, context_guard) = self
                 .context_for(provenance, operation, &raw_head, &guards)
                 .await?;

@@ -314,10 +314,7 @@ async fn sink(store: Arc<CoreStore>, node: u64) -> StoreRecovery {
     StoreRecovery::new(journal, crate::teller::Kernel::new().durability_token()).unwrap()
 }
 
-async fn imported_usage(
-    backend: Arc<Backend>,
-    applied_head: bool,
-) -> (RecoveryEvent, RecoveryEvent) {
+async fn native_usage(backend: Arc<Backend>, applied_head: bool) -> (RecoveryEvent, RecoveryEvent) {
     use crate::governance::{ExactUsageDelta, GovState};
     let source = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
     let child = GovState::usage_recovery_child(
@@ -367,36 +364,6 @@ async fn imported_usage(
     } else {
         initial.clone()
     };
-    let raw = backend
-        .state
-        .lock()
-        .unwrap()
-        .rows
-        .get(&address(&initial.operation_id))
-        .unwrap()
-        .clone();
-    let evidence = imported::AppliedImportEvidence {
-        source_dataset: [1; 16],
-        source_snapshot: [2; 16],
-        source_content_digest: [3; 32],
-        source_schema_digest: [4; 32],
-        upgrade: [5; 16],
-        fence_enforcement: [6; 32],
-        route: [7; 32],
-        receipt_evidence: [8; 32],
-        historical_body_digest: [9; 32],
-        recovery_closure_digest: [10; 32],
-    };
-    for (at, bytes) in imported::applied_disposition_rows(
-        &initial,
-        &selected,
-        raw.expose(&crate::seal::lend()),
-        &evidence,
-    )
-    .unwrap()
-    {
-        backend.state.lock().unwrap().rows.insert(at, bytes);
-    }
     (initial, selected)
 }
 
@@ -519,13 +486,7 @@ async fn native_writer_retirement_unknown_retries_exact_fence_and_blocks_delayed
 #[tokio::test]
 async fn native_writer_retirement_adopts_current_intent_without_migration_or_duplicate_charge() {
     let backend = Arc::new(Backend::default());
-    let (initial, _) = imported_usage(backend.clone(), false).await;
-    backend
-        .state
-        .lock()
-        .unwrap()
-        .rows
-        .retain(|address, _| address.namespace != *b"busbar.recimp1\0\0");
+    let (initial, _) = native_usage(backend.clone(), false).await;
     native_writer_lease(&backend, 1, 10_000);
     let target = sink(Arc::new(attach(backend.clone(), 2).await), 8).await;
     let selected = target.replay_selections().await.unwrap().pop().unwrap();
@@ -585,60 +546,10 @@ async fn native_writer_retirement_cancellation_retains_original_target_and_candi
 }
 
 #[tokio::test]
-async fn imported_applied_intent_retains_exact_descriptor_after_unknown_and_original_ancestry() {
-    let backend = Arc::new(Backend::default());
-    let (initial, _) = imported_usage(backend.clone(), false).await;
-    let target = sink(Arc::new(attach(backend.clone(), 2).await), 8).await;
-    backend.lose_reply.store(true, Ordering::SeqCst);
-    assert!(target.adopt_imported().await.is_err());
-    let descriptor_attempt = backend.state.lock().unwrap().sent.last().unwrap().clone();
-    let selected = target.replay_selections().await.unwrap().pop().unwrap();
-    assert_eq!(selected.initial, initial);
-    assert_eq!(selected.selected.state, RecoveryState::VerdictLanded);
-    let custody: serde_json::Value = serde_json::from_slice(&selected.selected.payload).unwrap();
-    assert_eq!(custody["handoffs"][0]["first_sent_at_ms"], 10_000);
-    let child_payload: Vec<u8> =
-        serde_json::from_value(custody["handoffs"][0]["payload"].clone()).unwrap();
-    let remainder: crate::governance::raw_recovery::UsageCustody =
-        serde_json::from_slice(&child_payload).unwrap();
-    assert_eq!(remainder.plain.requests, 7);
-    let repeated = backend
-        .state
-        .lock()
-        .unwrap()
-        .sent
-        .iter()
-        .filter(|attempt| attempt.fingerprint() == descriptor_attempt.fingerprint())
-        .count();
-    assert_eq!(repeated, 2);
-    let guards = backend
-        .state
-        .lock()
-        .unwrap()
-        .sent
-        .last()
-        .unwrap()
-        .candidate()
-        .predicates
-        .iter()
-        .map(|guard| guard.address.namespace)
-        .collect::<Vec<_>>();
-    assert!(guards.contains(b"busbar.recimp1\0\0"));
-    assert!(guards.contains(b"busbar.recctx1\0\0"));
-    target.replay_selections().await.unwrap();
-}
-
-#[tokio::test]
 async fn native_writer_retirement_resolves_exact_applied_receipt_without_reapplying_chunk() {
     use crate::governance::GovState;
     let backend = Arc::new(Backend::default());
-    let (initial, _) = imported_usage(backend.clone(), false).await;
-    backend
-        .state
-        .lock()
-        .unwrap()
-        .rows
-        .retain(|address, _| address.namespace != *b"busbar.recimp1\0\0");
+    let (initial, _) = native_usage(backend.clone(), false).await;
     let source = attach(backend.clone(), 1).await;
     let cells = GovState::legacy_usage_values(&initial).unwrap();
     let cells = cells
@@ -678,33 +589,20 @@ async fn native_writer_retirement_resolves_exact_applied_receipt_without_reapply
 }
 
 #[tokio::test]
-async fn imported_applied_cold_descriptor_reuses_winning_birth_before_planning() {
+async fn dev_import_disposition_row_is_refused_before_native_adoption() {
     let backend = Arc::new(Backend::default());
-    let (initial, _) = imported_usage(backend.clone(), false).await;
-    let target = sink(Arc::new(attach(backend.clone(), 2).await), 8).await;
-    backend.lose_reply.store(true, Ordering::SeqCst);
-    assert!(target.adopt_imported().await.is_err());
-    backend.clock_seconds.store(50, Ordering::SeqCst);
-    let restarted = sink(Arc::new(attach(backend, 3).await), 9).await;
-    let selected = restarted.replay_selections().await.unwrap().pop().unwrap();
-    assert_eq!(selected.initial, initial);
-    let custody: serde_json::Value = serde_json::from_slice(&selected.selected.payload).unwrap();
-    assert_eq!(custody["handoffs"][0]["first_sent_at_ms"], 10_000);
-    assert!(target.replay_selections().await.is_err());
-}
-
-#[tokio::test]
-async fn imported_applied_head_preserves_authorized_children_and_refuses_unretired_new_owner() {
-    let backend = Arc::new(Backend::default());
-    let (initial, original) = imported_usage(backend.clone(), true).await;
-    let target = sink(Arc::new(attach(backend.clone(), 2).await), 8).await;
-    let selected = target.replay_selections().await.unwrap().pop().unwrap();
-    assert_eq!(selected.initial, initial);
-    assert_eq!(selected.selected.state, RecoveryState::Applied);
-    assert_eq!(selected.selected.payload, original.payload);
-    let competitor = sink(Arc::new(attach(backend, 3).await), 9).await;
+    let (initial, _) = native_usage(backend.clone(), false).await;
+    backend.state.lock().unwrap().rows.insert(
+        Address {
+            namespace: *b"busbar.recimp1\0\0",
+            key: initial.operation_id.to_vec(),
+        },
+        Secret::new(b"dev import disposition".to_vec()),
+    );
+    native_writer_lease(&backend, 1, 10_000);
+    let target = sink(Arc::new(attach(backend, 2).await), 8).await;
     assert!(
-        matches!(competitor.replay_selections().await, Err(RecoveryError::Unavailable(message)) if message.contains("writer lease"))
+        matches!(target.replay_selections().await, Err(RecoveryError::Invalid(message)) if message.contains("unreleased 1.6.0-dev"))
     );
 }
 fn attestation(event: &RecoveryEvent) -> RecoveryResolution {
