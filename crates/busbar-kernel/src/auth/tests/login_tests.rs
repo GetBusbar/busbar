@@ -114,7 +114,11 @@ fn the_client_secret_is_lent_at_open() {
         crate::config::secret::test_resolved_value(&resolved)["client_id"],
         "client-abc"
     );
-    assert_eq!(login_label("idp"), "idp#login");
+    assert_eq!(
+        crate::auth::instances::instance_label("idp"),
+        "identity-providers.idp",
+        "one instance per provider, whatever role opened it"
+    );
 }
 
 #[test]

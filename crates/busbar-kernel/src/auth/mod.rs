@@ -689,6 +689,24 @@ impl AdminAuthChain {
         registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
+        Self::build_on(
+            cfg,
+            registry.as_ref(),
+            secret_resolver,
+            &mut instances::AuthInstances::default(),
+            &|| crate::preflight::auth_axis(registry.clone()),
+        )
+    }
+
+    /// [`Self::build`] over the build's shared `instances`: a provider another role already
+    /// opened is handed over, not opened again (WASTE-AUTH-SECRETS W1).
+    pub(crate) fn build_on(
+        cfg: &AuthCfg,
+        registry: &dyn busbar_contract::plugin_rows::PluginRows,
+        secret_resolver: &crate::config::secret::SecretResolver,
+        instances: &mut instances::AuthInstances,
+        open_axis: &dyn Fn() -> Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
+    ) -> Result<Self, String> {
         let mut modules: std::collections::HashMap<String, AdminModule> =
             std::collections::HashMap::new();
         let op = crate::config::operator_provider();
@@ -699,40 +717,49 @@ impl AdminAuthChain {
                 module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
                 other => {
                     let name = entry.name.as_str();
-                    let resolved = crate::config::secret::resolve_settings(
-                        &entry.settings,
-                        &registry.secret_slots(other),
-                        &registry.reference_slots(other),
-                        other,
-                        secret_resolver,
-                        &busbar_contract::config_time::ConfigScope::config_time(),
-                    )
-                    .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
                     let refused = |e: String| {
                         format!(
                             "auth.admin_auth provider '{name}' (module '{other}') could not be \
                              loaded as a `kind: auth` plugin: {e}"
                         )
                     };
+                    let calls = instances.instance(name, || {
+                        let mut resolved = instances::provider_settings(
+                            cfg,
+                            name,
+                            other,
+                            &entry.settings,
+                            registry,
+                            secret_resolver,
+                            |e| format!("identity-providers.{name} settings: {e}"),
+                        )?;
 
-                    let axis = match &axis {
-                        Some(axis) => axis.clone(),
-                        None => {
-                            let opened =
-                                crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
+                        let axis = match &axis {
+                            Some(axis) => axis.clone(),
+                            None => {
+                                let opened = open_axis().ok_or_else(|| {
                                     refused(format!("no `kind: auth` plugin answers to '{other}'"))
                                 })?;
-                            axis.insert(opened).clone()
+                                axis.insert(opened).clone()
+                            }
+                        };
+
+                        if !axis.answers(other) {
+                            return Err(refused(auth_refusal(registry, other)));
                         }
-                    };
+                        instances::lend_login_secret(
+                            cfg,
+                            name,
+                            other,
+                            registry,
+                            secret_resolver,
+                            &mut resolved,
+                        )?;
 
-                    if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry.as_ref(), other)));
-                    }
-
-                    let label = format!("admin_auth.{name}");
-
-                    let calls = axis.open(other, &label, &resolved).map_err(refused)?;
+                        let opened = axis.open(other, &instances::instance_label(name), &resolved);
+                        drop(resolved);
+                        opened.map_err(refused)
+                    })?;
 
                     modules.insert(name.to_string(), AdminModule { calls });
                 }
@@ -760,6 +787,23 @@ impl AuthMiddleware {
         registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
+        Self::build_on(
+            cfg,
+            registry.as_ref(),
+            secret_resolver,
+            &mut instances::AuthInstances::default(),
+            &|| crate::preflight::auth_axis(registry.clone()),
+        )
+    }
+
+    /// [`Self::new`] over the build's shared `instances` (WASTE-AUTH-SECRETS W1).
+    pub(crate) fn build_on(
+        cfg: &AuthCfg,
+        registry: &dyn busbar_contract::plugin_rows::PluginRows,
+        secret_resolver: &crate::config::secret::SecretResolver,
+        instances: &mut instances::AuthInstances,
+        open_axis: &dyn Fn() -> Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
+    ) -> Result<Self, String> {
         let mut keys_in_chain = false;
         let mut chain: Vec<ChainEntry> = Vec::new();
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
@@ -769,39 +813,49 @@ impl AuthMiddleware {
                     keys_in_chain = true;
                 }
                 other => {
-                    let resolved = crate::config::secret::resolve_settings(
-                        &entry.settings,
-                        &registry.secret_slots(other),
-                        &registry.reference_slots(other),
-                        other,
-                        secret_resolver,
-                        &busbar_contract::config_time::ConfigScope::config_time(),
-                    )
-                    .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
                     let refused = |e: String| {
                         format!(
                             "auth.chain module '{other}' could not be loaded as a `kind: auth` \
                              plugin: {e}"
                         )
                     };
-                    let axis = match &axis {
-                        Some(axis) => axis.clone(),
-                        None => {
-                            let opened =
-                                crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
+                    let name = entry.name.as_str();
+                    let calls = instances.instance(name, || {
+                        let mut resolved = instances::provider_settings(
+                            cfg,
+                            name,
+                            other,
+                            &entry.settings,
+                            registry,
+                            secret_resolver,
+                            |e| format!("auth.chain module '{other}' settings: {e}"),
+                        )?;
+                        let axis = match &axis {
+                            Some(axis) => axis.clone(),
+                            None => {
+                                let opened = open_axis().ok_or_else(|| {
                                     refused(format!("no `kind: auth` plugin answers to '{other}'"))
                                 })?;
-                            axis.insert(opened).clone()
+                                axis.insert(opened).clone()
+                            }
+                        };
+
+                        if !axis.answers(other) {
+                            return Err(refused(auth_refusal(registry, other)));
                         }
-                    };
+                        instances::lend_login_secret(
+                            cfg,
+                            name,
+                            other,
+                            registry,
+                            secret_resolver,
+                            &mut resolved,
+                        )?;
+                        let opened = axis.open(other, &instances::instance_label(name), &resolved);
 
-                    if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry.as_ref(), other)));
-                    }
-                    let opened = axis.open(other, &entry.name, &resolved);
-
-                    drop(resolved);
-                    let calls = opened.map_err(refused)?;
+                        drop(resolved);
+                        opened.map_err(refused)
+                    })?;
                     chain.push(ChainEntry {
                         provider: entry.name.clone(),
                         name: calls.name().to_string(),
@@ -822,7 +876,7 @@ impl AuthMiddleware {
         if keys_in_chain {
             let axis = match &axis {
                 Some(axis) => Some(axis.clone()),
-                None => crate::preflight::auth_axis(registry.clone()),
+                None => open_axis(),
             };
             for module in axis.iter().flat_map(|a| a.credential_readers()) {
                 let calls = axis
@@ -859,7 +913,7 @@ impl AuthMiddleware {
 
         let carriers = match &axis {
             Some(axis) => axis.default_inbound_style()?,
-            None => crate::preflight::auth_axis(registry.clone())
+            None => open_axis()
                 .map(|axis| axis.default_inbound_style())
                 .transpose()?
                 .unwrap_or_default(),
@@ -873,8 +927,7 @@ impl AuthMiddleware {
             })
             .or_else(|| match &axis {
                 Some(axis) => axis.issued_credential(),
-                None => crate::preflight::auth_axis(registry.clone())
-                    .and_then(|axis| axis.issued_credential()),
+                None => open_axis().and_then(|axis| axis.issued_credential()),
             });
         Ok(Self {
             keys_in_chain,
@@ -1008,22 +1061,16 @@ impl AuthMiddleware {
         Ok(complete_chain(None))
     }
 
-    pub fn flush_verified(&self, module: Option<&str>) -> Result<u64, String> {
-        let mut flushed = 0;
-        let mut failure = None;
-        for entry in self
-            .chain
+    /// The instances the chain holds for `provider` (all, for `None`), in chain order: the admin
+    /// flush refreshes each distinct one once ([`instances::flush_distinct`]).
+    pub(crate) fn chain_instances<'a>(
+        &'a self,
+        provider: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a std::sync::Arc<dyn AuthCalls>> + 'a {
+        self.chain
             .iter()
-            .filter(|e| module.is_none_or(|m| m == e.provider))
-        {
-            match entry.calls.refresh() {
-                Ok(count) => flushed += count,
-                Err(error) => {
-                    failure.get_or_insert(error);
-                }
-            }
-        }
-        failure.map_or(Ok(flushed), Err)
+            .filter(move |e| provider.is_none_or(|m| m == e.provider))
+            .map(|e| &e.calls)
     }
 
     pub async fn run_chain_on_request_path(
@@ -2785,6 +2832,8 @@ pub mod self_keys;
 pub mod exchange;
 
 pub mod login;
+
+pub mod instances;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]
