@@ -554,8 +554,12 @@ pub fn install(seed: &Path, destination: &Path, now: Option<SystemTime>) -> Resu
                 copy(&path, &target, stamp)?;
             } else if meta.is_file() {
                 io(std::fs::copy(&path, &target), &path)?;
+                // Cargo runs a restored build script again whenever its rerun-if
+                // inputs differ; the sealed seed and the archive carry no mode bits.
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let mode = if build_script(&name) { 0o755 } else { 0o644 };
                 io(
-                    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)),
+                    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode)),
                     &target,
                 )?;
                 let file = io(
@@ -570,6 +574,11 @@ pub fn install(seed: &Path, destination: &Path, now: Option<SystemTime>) -> Resu
         Ok(())
     }
     copy(seed, destination, stamp)
+}
+
+/// A compiled build script executable: build/<unit>/build-script-<name>[-<hash>].
+pub fn build_script(name: &str) -> bool {
+    (name.starts_with("build-script-") || name.starts_with("build_script_")) && !name.contains('.')
 }
 
 /// The controller-owned seed must lie outside every candidate-mounted root.
@@ -1044,11 +1053,17 @@ pub fn account(q: &mut Q) -> R<()> {
 
 // ---- producer ------------------------------------------------------------------------
 
-/// Exact manifest graph and lock; every Rust file becomes an inert stub.
+/// Exact manifest graph and lock; every Rust file becomes an inert stub,
+/// except `[patch]` path crates that registry dependencies compile against
+/// (their own units are still stripped before upload).
 pub fn stub_workspace(source: &Path, destination: &Path, revision: Option<&str>) -> R<()> {
-    super::seed::manifest_snapshot(source, destination, revision)?;
+    let kept = super::seed::manifest_snapshot(source, destination, revision, true)?;
     for path in sp::rglob(destination) {
-        if path.extension().is_some_and(|e| e == "rs") && path.is_file() {
+        let relative = path.strip_prefix(destination).unwrap_or(&path);
+        if path.extension().is_some_and(|e| e == "rs")
+            && path.is_file()
+            && !kept.iter().any(|prefix| relative.starts_with(prefix))
+        {
             sp::write(&path, STUB)?;
         }
     }
@@ -1284,41 +1299,10 @@ pub fn produce(q: &mut Q) -> R<()> {
         .set("schema", "busbar.plugin-dependency-units-producer/1".into());
     let mut registry = GitLab::new(env("CI_JOB_TOKEN"));
     let vector = sp::read_json(&q.root.join("scripts/ci-product-pins.json"))?;
-    let mut rows = Vec::new();
-    q.receipt.set(
-        "dependency_units_shard",
-        object([
-            ("index", shard.unwrap_or_default().into()),
-            ("total", PRODUCER_SHARDS.into()),
-        ]),
-    );
-    for product in vector.at("products").as_array().unwrap_or(&[]).to_vec() {
-        let repo = product.at("repo").as_str().unwrap_or("");
-        if Some(product_shard(repo)) != shard {
-            continue;
-        }
-        let repository = format!("GetBusbar/{repo}");
-        let entry = q.policy.at("repositories").at(&repository);
-        if *entry == Value::Null || entry.at("language").as_str() == Some("c") {
-            continue;
-        }
-        let row = match produce_product(q, &product, &mut registry) {
-            Ok(row) => row,
-            Err(error) if error.kind != sp::Kind::Interrupted => object([
-                ("repo", product.at("repo").clone()),
-                ("status", "failed".into()),
-                (
-                    "reason",
-                    error.message.chars().take(500).collect::<String>().into(),
-                ),
-            ]),
-            Err(error) => return Err(error),
-        };
-        rows.push(row);
-        q.receipt
-            .set("dependency_units_produced", Value::Array(rows.clone()));
-        q.save()?;
-    }
+    let shard = shard.unwrap_or_default();
+    let rows = produce_units(q, shard, &vector, &mut |q, product| {
+        produce_product(q, product, &mut registry)
+    })?;
     // The same shard's products also publish their core product-inputs test
     // image (images.rs), built with the consumer's exact recipe.
     let shard_products: Vec<Value> = vector
@@ -1326,7 +1310,7 @@ pub fn produce(q: &mut Q) -> R<()> {
         .as_array()
         .unwrap_or(&[])
         .iter()
-        .filter(|p| Some(product_shard(p.at("repo").as_str().unwrap_or(""))) == shard)
+        .filter(|p| product_shard(p.at("repo").as_str().unwrap_or("")) == shard)
         .cloned()
         .collect();
     if let Err(error) = super::images::produce(q, &shard_products, None) {
@@ -1346,7 +1330,68 @@ pub fn produce(q: &mut Q) -> R<()> {
         );
         q.save()?;
     }
-    Ok(())
+    // Every product (and the shard's images) is attempted first; a fill that
+    // published nothing must not pass.
+    failed_units(&rows)
+}
+
+/// This shard's dependency units, one row per Rust product; one product's
+/// failure never blocks the others. Each row is recorded as it lands.
+fn produce_units(
+    q: &mut Q,
+    shard: u64,
+    vector: &Value,
+    build: &mut dyn FnMut(&mut Q, &Value) -> R<Value>,
+) -> R<Vec<Value>> {
+    let mut rows = Vec::new();
+    q.receipt.set(
+        "dependency_units_shard",
+        object([("index", shard.into()), ("total", PRODUCER_SHARDS.into())]),
+    );
+    for product in vector.at("products").as_array().unwrap_or(&[]).to_vec() {
+        let repo = product.at("repo").as_str().unwrap_or("");
+        if product_shard(repo) != shard {
+            continue;
+        }
+        let repository = format!("GetBusbar/{repo}");
+        let entry = q.policy.at("repositories").at(&repository);
+        if *entry == Value::Null || entry.at("language").as_str() == Some("c") {
+            continue;
+        }
+        let row = match build(q, &product) {
+            Ok(row) => row,
+            Err(error) if error.kind != sp::Kind::Interrupted => object([
+                ("repo", product.at("repo").clone()),
+                ("status", "failed".into()),
+                (
+                    "reason",
+                    error.message.chars().take(500).collect::<String>().into(),
+                ),
+            ]),
+            Err(error) => return Err(error),
+        };
+        rows.push(row);
+        q.receipt
+            .set("dependency_units_produced", Value::Array(rows.clone()));
+        q.save()?;
+    }
+    Ok(rows)
+}
+
+/// A producer whose any product failed fails the job, naming every failure.
+fn failed_units(rows: &[Value]) -> R<()> {
+    let failed: Vec<&str> = rows
+        .iter()
+        .filter(|row| row.at("status").as_str() == Some("failed"))
+        .map(|row| row.at("repo").as_str().unwrap_or(""))
+        .collect();
+    if failed.is_empty() {
+        return Ok(());
+    }
+    Err(sp::violation(format!(
+        "dependency units failed for {}",
+        failed.join(", ")
+    )))
 }
 
 #[cfg(test)]

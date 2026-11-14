@@ -586,6 +586,29 @@ fn installed_copy_has_one_timestamp() {
 }
 
 #[test]
+fn installed_build_scripts_stay_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let unit = f.base.join("exec-seed/debug/build/ring-0123456789abcdef");
+    std::fs::create_dir_all(&unit).unwrap();
+    std::fs::write(unit.join("build-script-build"), b"#!").unwrap();
+    std::fs::write(unit.join("build-script-build.d"), b"dep").unwrap();
+    std::fs::write(unit.join("build_script_build-0123456789abcdef"), b"#!").unwrap();
+    install(&f.base.join("exec-seed"), &f.base.join("exec-copy"), None).unwrap();
+    let copied = f.base.join("exec-copy/debug/build/ring-0123456789abcdef");
+    let mode = |name: &str| {
+        std::fs::metadata(copied.join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode("build-script-build"), 0o755);
+    assert_eq!(mode("build_script_build-0123456789abcdef"), 0o755);
+    assert_eq!(mode("build-script-build.d"), 0o644);
+}
+
+#[test]
 fn strip_keeps_only_registry_and_git_units() {
     let f = fixture();
     let target = f.base.join("t");
@@ -740,6 +763,72 @@ fn pipeline_declares_the_parallel_producer_with_per_index_exclusion() {
 }
 
 #[test]
+fn a_producer_with_any_failed_product_fails_after_trying_all() {
+    // Fill 3002 reported pass while every product failed and nothing was published.
+    let mut f = fixture();
+    let products: Vec<String> = (0..24).map(|i| format!("busbar-plane-{i:02}")).collect();
+    let vector = Value::Object(vec![(
+        "products".into(),
+        Value::Array(
+            products
+                .iter()
+                .map(|r| object([("repo", r.as_str().into())]))
+                .collect(),
+        ),
+    )]);
+    f.q.policy = Value::Object(vec![(
+        "repositories".into(),
+        Value::Object(
+            products
+                .iter()
+                .map(|r| {
+                    (
+                        format!("GetBusbar/{r}"),
+                        object([("language", "rust".into())]),
+                    )
+                })
+                .collect(),
+        ),
+    )]);
+    let mine: Vec<String> = products
+        .iter()
+        .filter(|r| product_shard(r) == 2)
+        .cloned()
+        .collect();
+    let mut seen = Vec::new();
+    let rows = produce_units(&mut f.q, 2, &vector, &mut |_, product| {
+        let repo = product.at("repo").as_str().unwrap().to_owned();
+        seen.push(repo.clone());
+        if repo == mine[0] {
+            return Err(sp::runtime("dubious ownership"));
+        }
+        Ok(object([
+            ("repo", repo.as_str().into()),
+            ("status", "published".into()),
+        ]))
+    })
+    .unwrap();
+    assert_eq!(seen, mine);
+    assert_eq!(
+        failed_units(&rows).unwrap_err().message,
+        format!("dependency units failed for {}", mine[0])
+    );
+    assert_eq!(
+        f.q.receipt
+            .at("dependency_units_produced")
+            .index(0)
+            .at("status")
+            .as_str(),
+        Some("failed")
+    );
+    assert_eq!(
+        f.q.receipt.at("dependency_units_shard"),
+        &object([("index", 2u64.into()), ("total", PRODUCER_SHARDS.into())])
+    );
+    assert!(failed_units(&rows[1..]).is_ok());
+}
+
+#[test]
 fn producer_commands_are_the_plugin_steps() {
     let source = include_str!("../plugins.rs");
     for (name, argv) in plugin_commands("NAME") {
@@ -797,6 +886,67 @@ fn stub_workspace_keeps_manifests_and_neutralises_code() {
     assert_eq!(std::fs::read(stub.join("crate/src/lib.rs")).unwrap(), STUB);
     assert_eq!(std::fs::read(stub.join("crate/data.json")).unwrap(), b"");
     assert!(!stub.join(".cargo").exists());
+}
+
+#[test]
+fn stub_workspace_keeps_real_source_of_patched_path_crates() {
+    // busbar-store-postgres patches postgres-protocol from vendor/; stubbing it broke
+    // postgres-types (registry) in fill 3003.
+    let f = fixture();
+    let source = f.base.join("patched-src");
+    std::fs::create_dir_all(source.join("crate/src")).unwrap();
+    std::fs::create_dir_all(source.join("vendor/proto/src")).unwrap();
+    std::fs::write(
+        source.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crate\"]\nexclude = [\"vendor/proto\"]\n\
+         [patch.crates-io]\nproto = { path = \"vendor/proto\" }\n",
+    )
+    .unwrap();
+    std::fs::write(source.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        source.join("crate/Cargo.toml"),
+        "[package]\nname = \"crate\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("crate/src/lib.rs"),
+        "compile_error!(\"candidate\");",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("vendor/proto/Cargo.toml"),
+        "[package]\nname = \"proto\"\n",
+    )
+    .unwrap();
+    std::fs::write(source.join("vendor/proto/src/lib.rs"), "pub mod types {}").unwrap();
+    std::fs::write(source.join("vendor/proto/src/data.bin"), b"real").unwrap();
+    let stub = f.base.join("patched-stub");
+    stub_workspace(&source, &stub, None).unwrap();
+    assert_eq!(std::fs::read(stub.join("crate/src/lib.rs")).unwrap(), STUB);
+    assert_eq!(
+        std::fs::read_to_string(stub.join("vendor/proto/src/lib.rs")).unwrap(),
+        "pub mod types {}"
+    );
+    assert_eq!(
+        std::fs::read(stub.join("vendor/proto/src/data.bin")).unwrap(),
+        b"real"
+    );
+    for (index, bad) in ["../outside", "/abs", ".cargo/x", ".git", "."]
+        .iter()
+        .enumerate()
+    {
+        std::fs::write(
+            source.join("Cargo.toml"),
+            format!("[patch.crates-io]\nproto = {{ path = \"{bad}\" }}\n"),
+        )
+        .unwrap();
+        let error =
+            stub_workspace(&source, &f.base.join(format!("bad-stub-{index}")), None).unwrap_err();
+        assert_eq!(
+            error.message, "patched path escapes the manifest graph",
+            "{bad}"
+        );
+    }
 }
 
 /// Manual interop check: `DEPCACHE_INTEROP=<archive>:<files.json>` unpacks a
