@@ -1448,13 +1448,29 @@ fn neutral_fields(fields: &busbar_kernel::plane_driver::HeadFields) -> Vec<u8> {
     block
 }
 
-/// Queues a whole rendered answer on `out` without waiting for the writer: its head, then its
-/// body as the stream's last data.
+/// The head fields of a WHOLE answer of `len` body bytes on HTTP: its length is stated, unless
+/// the fields already name the framing or there is no body.
+fn whole_fields(
+    mut fields: busbar_kernel::plane_driver::HeadFields,
+    len: usize,
+) -> busbar_kernel::plane_driver::HeadFields {
+    let framed = fields.iter().any(|(name, _)| {
+        name.eq_ignore_ascii_case(b"content-length")
+            || name.eq_ignore_ascii_case(b"transfer-encoding")
+    });
+    if len != 0 && !framed {
+        fields.push((b"content-length".to_vec(), len.to_string().into_bytes()));
+    }
+    fields
+}
+
+/// Queues a whole rendered answer on `out` without waiting for the writer: its head, stating its
+/// length, then its body as the stream's last data.
 fn queue_whole(out: &Emitter, rendered: busbar_kernel::plane_driver::Rendered) {
     let (done, _) = oneshot::channel();
     out.send(Op::Head {
         status: rendered.status,
-        fields: neutral_fields(&rendered.fields),
+        fields: neutral_fields(&whole_fields(rendered.fields, rendered.body.len())),
         end: rendered.body.is_empty(),
         done,
     });
