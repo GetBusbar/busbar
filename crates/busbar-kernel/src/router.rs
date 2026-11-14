@@ -1,11 +1,6 @@
 use axum::Router;
 
-#[allow(unused_imports)]
-use crate::{
-    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
-    export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,
-    plugin_routes, profile, state, store, telemetry, trust,
-};
+use crate::{auth, config, endpoints, ingress, limits, state};
 
 pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
 
@@ -74,8 +69,13 @@ impl ServerTiming {
     }
 
     fn now() -> Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the opt-in server-timing header takes its request's one start reading"
+        )]
+        let start = std::time::Instant::now();
         Self {
-            start: std::time::Instant::now(),
+            start,
             upstream_us: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT)),
         }
     }
@@ -95,12 +95,20 @@ impl ServerTiming {
     /// The header's value as of now: `busbar;dur=<ms>`.
     #[must_use]
     pub fn value(&self) -> String {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the opt-in server-timing header reads its elapsed time once, as the head is written"
+        )]
         let total_us = u64::try_from(self.start.elapsed().as_micros()).unwrap_or(u64::MAX);
         let upstream_us = self.upstream_us.load(std::sync::atomic::Ordering::Relaxed);
-        format!(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the opt-in server-timing header's value; http header values are owned"
+        )]
+        return format!(
             "busbar;dur={:.3}",
             server_timing_dur_ms(total_us, upstream_us)
-        )
+        );
     }
 }
 
@@ -185,8 +193,8 @@ pub fn fallback_error_response(
     }
 
     {
-        use crate::admin::gate::{ApiError, API_ROOT};
-        if path == API_ROOT || path.starts_with(&format!("{API_ROOT}/")) {
+        use crate::admin::gate::ApiError;
+        if under_api_root(path) {
             if status == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
                 return crate::admin::gate::error_envelope(status.as_u16(), kind, message);
             }
@@ -204,7 +212,10 @@ pub fn fallback_error_response(
     crate::ingress::native::native_error(planes.ingress_of(path), status, kind, message)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "config: the refusal renderer receives every field of the refusal it renders"
+)]
 pub(crate) fn kernel_refusal_response(
     handle: &state::AppHandle,
     planes: &crate::plane_driver::dispatch::PlaneDispatch,
@@ -215,9 +226,7 @@ pub(crate) fn kernel_refusal_response(
     kind: &str,
     message: &str,
 ) -> axum::response::Response {
-    use crate::admin::gate::API_ROOT;
-    let native_api =
-        !is_private_listener() && (path == API_ROOT || path.starts_with(&format!("{API_ROOT}/")));
+    let native_api = !is_private_listener() && under_api_root(path);
     if !native_api {
         let refusal = busbar_kernel::plane_routes::KernelRefusal {
             reason,
@@ -237,9 +246,15 @@ pub(crate) fn kernel_refusal_response(
     fallback_error_response(planes, path, status, kind, message)
 }
 
+/// Whether `path` is the admin API root or under it (`API_ROOT` or `API_ROOT/...`).
+fn under_api_root(path: &str) -> bool {
+    path.strip_prefix(crate::admin::gate::API_ROOT)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
 fn target_of(uri: &axum::http::Uri) -> &str {
     uri.path_and_query()
-        .map_or(uri.path(), axum::http::uri::PathAndQuery::as_str)
+        .map_or_else(|| uri.path(), axum::http::uri::PathAndQuery::as_str)
 }
 
 pub(crate) async fn method_not_allowed_handler(
@@ -284,8 +299,9 @@ pub(crate) async fn reshape_body_limit_413(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let path = req.uri().path().to_owned();
-    let target = target_of(req.uri()).to_owned();
+    // The URI's parts share the request head's bytes: kept by reference count, not copied, in
+    // case the response is a 413 that names them.
+    let uri = req.uri().clone();
     let resp = next.run(req).await;
 
     if resp.status() != axum::http::StatusCode::PAYLOAD_TOO_LARGE {
@@ -297,8 +313,8 @@ pub(crate) async fn reshape_body_limit_413(
             &handle,
             &app.planes,
             busbar_contract::caps::ReasonCode::BodyTooLarge,
-            &path,
-            &target,
+            uri.path(),
+            target_of(&uri),
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
             busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             OVERSIZED_MESSAGE,
@@ -397,7 +413,6 @@ async fn reshape_oversized_413_with(
     render()
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     build_router_with_limits(
         app,
@@ -408,7 +423,6 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     .0
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_router_with_limits(
     app: std::sync::Arc<state::App>,
     request_body_max_bytes: usize,
@@ -417,6 +431,7 @@ pub fn build_router_with_limits(
 ) -> (Router, std::sync::Arc<state::AppHandle>) {
     let plugin_routes = app.plugin_routes.clone();
 
+    // busbar:expect(bp::clone_alloc, reason = "boot: the router is built once per App snapshot")
     let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
@@ -516,6 +531,10 @@ fn base_data_router_scoped(
     }
 
     let unslotted: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(());
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the router is built once per App snapshot"
+    )]
     let door_paths: std::collections::BTreeSet<String> =
         doors.iter().map(|spec| spec.path.clone()).collect();
     for spec in doors {
@@ -948,6 +967,10 @@ fn request_panicked(
     payload: &(dyn std::any::Any + Send),
 ) -> axum::response::Response {
     let message = panic_payload_message(payload);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a request panicked; its 500 names where, when the hook did not"
+    )]
     let (location, backtrace) = take_panic_seen().map_or_else(
         || {
             (
@@ -1038,11 +1061,19 @@ pub(crate) fn install_request_panic_hook() {
                 previous(info);
                 return;
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a request panicked; the hook records where"
+            )]
             let location = info.location().map_or_else(
                 || "<no location>".to_string(),
                 |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
             );
             let captured = std::backtrace::Backtrace::capture();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a request panicked; the hook records its backtrace"
+            )]
             let backtrace = if captured.status() == std::backtrace::BacktraceStatus::Captured {
                 captured.to_string()
             } else {
@@ -1133,7 +1164,10 @@ pub fn build_split_routers_serving_doors(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "boot: a listener's routers are built once from every input the listener serves"
+)]
 pub fn build_split_routers_serving_listener(
     app: std::sync::Arc<state::App>,
     data_plugins: &crate::plugin_routes::PluginRouteTable,
@@ -1144,6 +1178,7 @@ pub fn build_split_routers_serving_listener(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+    // busbar:expect(bp::clone_alloc, reason = "boot: the router is built once per App snapshot")
     let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
@@ -1217,7 +1252,10 @@ pub fn build_admin_router_on_with_dispatch_layer(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "boot: a listener's routers are built once from every input the listener serves"
+)]
 pub fn build_data_router_on(
     handle: &std::sync::Arc<state::AppHandle>,
     plugins: &crate::plugin_routes::PluginRouteTable,
@@ -1276,7 +1314,6 @@ impl std::fmt::Debug for PreparedListener {
 }
 
 impl PreparedListener {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         app: &state::App,
         plugins: &crate::plugin_routes::PluginRouteTable,
@@ -1306,11 +1343,20 @@ impl PreparedListener {
                 root_surface,
             )
         }))
-        .map_err(|_| "candidate physical routes cannot be mounted together".to_string())?;
+        .map_err(|_| {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the candidate listener is refused"
+            )]
+            let why = "candidate physical routes cannot be mounted together".to_string();
+            why
+        })?;
+        // busbar:expect(bp::clone_alloc, reason = "boot: a prepared listener keeps its refusals once, beside its core routes")
+        let core_routes = core_routes.with_door_refusals(refusals.clone());
         Ok(Self {
             data: None,
             router,
-            core_routes: core_routes.with_door_refusals(refusals.clone()),
+            core_routes,
             refusals,
             refuse_by_path,
             root_surface,
@@ -1441,10 +1487,13 @@ pub fn serve_listener_generations(
     apply_inbound_concurrency_limit(router, max_inbound_concurrent)
 }
 
-pub(crate) fn project_auth_scope_caps(
-    a: &config::AuthCfg,
-) -> std::collections::HashMap<String, String> {
-    a.chain
+pub(crate) fn project_auth_scope_caps<M: FromIterator<(String, String)>>(a: &config::AuthCfg) -> M {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the auth scope ceilings are projected once per App snapshot"
+    )]
+    return a
+        .chain
         .iter()
         .chain(a.admin_auth.iter())
         .filter_map(|e| {
@@ -1452,7 +1501,7 @@ pub(crate) fn project_auth_scope_caps(
                 .as_ref()
                 .map(|sc| (e.name.clone(), sc.clone()))
         })
-        .collect()
+        .collect();
 }
 
 pub(crate) fn apply_inbound_concurrency_limit(

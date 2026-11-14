@@ -9,8 +9,10 @@
 //! This custody is process-local: restart requires enrollment again. No plaintext secret is
 //! serialized into a plane record, and no restart can resurrect revoked credentials.
 
-use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
+
+use indexmap::{Equivalent, IndexMap};
 
 use busbar_contract::abi::host::service::{
     OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_PUBLISH_BODY, OUTBOUND_REVOKE,
@@ -46,13 +48,18 @@ impl Prepared {
         {
             return None;
         }
-        Some(Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a protected body outlives the host call that lent it, so the host keeps one copy until dispatch takes it"
+        )]
+        let prepared = Self {
             need: ask.need,
             member: ask.member.to_owned(),
             resource: ask.resource.to_owned(),
             expires: ask.expires_at_unix,
             body: Secret::new(ask.credential.to_vec()),
-        })
+        };
+        Some(prepared)
     }
 
     pub fn take(
@@ -78,11 +85,53 @@ impl AsRef<[u8]> for Body {
     }
 }
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct Key {
     instance: Incarnation,
     owner: String,
     connection: String,
+}
+
+impl Hash for Key {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        KeyRef {
+            instance: &self.instance,
+            owner: &self.owner,
+            connection: &self.connection,
+        }
+        .hash(state);
+    }
+}
+
+/// A borrowed [`Key`]: a bind looks its connection up without copying the owner or connection.
+#[derive(Hash)]
+struct KeyRef<'a> {
+    instance: &'a Incarnation,
+    owner: &'a str,
+    connection: &'a str,
+}
+
+impl Equivalent<Key> for KeyRef<'_> {
+    fn equivalent(&self, key: &Key) -> bool {
+        *self.instance == key.instance
+            && self.owner == key.owner
+            && self.connection == key.connection
+    }
+}
+
+impl KeyRef<'_> {
+    fn to_key(&self) -> Key {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: enrolling a new outbound connection stores its owner and connection identity"
+        )]
+        let key = Key {
+            instance: self.instance.clone(),
+            owner: self.owner.to_owned(),
+            connection: self.connection.to_owned(),
+        };
+        key
+    }
 }
 
 struct Entry {
@@ -147,8 +196,13 @@ impl Bound {
         if row.body {
             return Some(Presentation::Body(row.credential.clone()?));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: busbar-contract AuthField owns its name bytes; the enrolled field name is copied until the contract can borrow it"
+        )]
+        let name = row.field_name.as_bytes().to_vec();
         Some(Presentation::Field(AuthField {
-            name: row.field_name.as_bytes().to_vec(),
+            name,
             value: row.credential.clone()?,
             sensitive: true,
             query: false,
@@ -159,7 +213,7 @@ impl Bound {
 
 #[derive(Default)]
 pub struct Custody {
-    entries: Mutex<HashMap<Key, Arc<Mutex<Entry>>>>,
+    entries: Mutex<IndexMap<Key, Arc<Mutex<Entry>>, foldhash::fast::RandomState>>,
 }
 
 impl Custody {
@@ -183,10 +237,10 @@ impl Custody {
         {
             return Err(REFUSED);
         }
-        let key = Key {
-            instance: caller.incarnation().clone(),
-            owner: owner.to_owned(),
-            connection: ask.connection.to_owned(),
+        let key = KeyRef {
+            instance: caller.incarnation(),
+            owner,
+            connection: ask.connection,
         };
         let mut entries = self
             .entries
@@ -220,15 +274,24 @@ impl Custody {
                 let next = row.revision.checked_add(1).ok_or(REFUSED)?;
                 row.revision = next;
                 row.expires = ask.expires_at_unix;
-                row.field_name = ask.field_name.to_owned();
-                row.credential = Some(Secret::new(ask.credential.to_vec()));
+                ask.field_name.clone_into(&mut row.field_name);
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: re-publishing an enrolled credential stores the new secret once"
+                )]
+                let credential = Secret::new(ask.credential.to_vec());
+                row.credential = Some(credential);
                 return Ok((next, None));
             }
             if ask.expected_revision != 0 || entries.len() >= MAX_CONNECTIONS {
                 return Err(REFUSED);
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: enrolling a new outbound connection stores its credential row once"
+            )]
             entries.insert(
-                key,
+                key.to_key(),
                 Arc::new(Mutex::new(Entry {
                     body,
                     revision: 1,
@@ -252,8 +315,12 @@ impl Custody {
             if entries.len() >= MAX_CONNECTIONS {
                 return Err(REFUSED);
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a revocation tombstone stores the connection row once"
+            )]
             entries.insert(
-                key,
+                key.to_key(),
                 Arc::new(Mutex::new(Entry {
                     body: false,
                     revision: 1,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -94,15 +94,23 @@ impl Drop for Head {
 
 impl Head {
     fn path_and_query(&self) -> String {
-        match &self.query {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refused request's target is rendered once into its refusal"
+        )]
+        return match &self.query {
             Some(query) => format!("{}?{query}", self.target),
             None => self.target.clone(),
-        }
+        };
     }
 
     fn stripped(&self, strips: &[Strip]) -> Option<Self> {
         use zeroize::Zeroize as _;
         let mut head = self.clone();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: filters this request's own head fields (bounded by the head), never accumulated state"
+        )]
         head.fields.retain_mut(|(name, value)| {
             let remove = strips.iter().any(|strip| {
                 strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name)
@@ -112,6 +120,10 @@ impl Head {
             }
             !remove
         });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the stripped query keys a line's auth declares, bounded by that declaration"
+        )]
         let keys: Vec<&str> = strips
             .iter()
             .filter(|strip| strip.place == StripPlace::Query)
@@ -255,19 +267,28 @@ impl Refusal {
         use futures::FutureExt as _;
         use http_body_util::BodyExt as _;
         let (parts, body) = resp.into_parts();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refusal response is copied once into its owned wire refusal"
+        )]
         let body = body
             .collect()
             .now_or_never()
             .and_then(Result::ok)
             .map(|c| c.to_bytes().to_vec())
             .unwrap_or_default();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refusal response is copied once into its owned wire refusal"
+        )]
+        let fields = parts
+            .headers
+            .iter()
+            .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
+            .collect();
         Self {
             status: u32::from(parts.status.as_u16()),
-            fields: parts
-                .headers
-                .iter()
-                .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
-                .collect(),
+            fields,
             body,
         }
     }
@@ -410,13 +431,16 @@ impl std::fmt::Debug for Seals {
     }
 }
 
+/// The opened auths a listener's lines name, by name.
+pub type Auths = HashMap<String, Arc<dyn AuthCalls>>;
+
 /// One listener's table at one generation.
 #[derive(Clone)]
 pub struct Listener {
     /// The sealed guest list.
     pub guests: GuestList,
     /// The opened auths a line names, by name.
-    pub auths: HashMap<String, Arc<dyn AuthCalls>>,
+    pub auths: Auths,
     /// The size gate's limit: a `HeadBody` line holds the body to it (l.940).
     pub body_limit: u64,
     /// The generation's application state: its mount table shapes the refusals, its governance
@@ -494,7 +518,11 @@ pub struct LineSpec {
 impl Listener {
     #[must_use]
     pub fn specs(&self) -> Vec<LineSpec> {
-        (0u32..)
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a listener's line specs are listed when it is published"
+        )]
+        return (0u32..)
             .zip(self.guests.lines().iter().zip(&self.ids))
             .map(|(i, (l, id))| {
                 let points = l.auth.points().bits();
@@ -509,7 +537,7 @@ impl Listener {
                     },
                 }
             })
-            .collect()
+            .collect();
     }
 }
 
@@ -606,9 +634,7 @@ impl UpgradePermit {
                 .replay
                 .as_ref()
                 .is_some_and(|replay| replay.won.get() != Some(&true))
-            || request
-                .deadline
-                .is_some_and(|at| std::time::Instant::now() >= at)
+            || request.deadline.is_some_and(|at| deadline_passed(Some(at)))
         {
             return None;
         }
@@ -668,7 +694,7 @@ impl RequestAdmission {
         } else if self
             .inner
             .deadline
-            .is_some_and(|at| std::time::Instant::now() >= at)
+            .is_some_and(|at| deadline_passed(Some(at)))
         {
             Some(ReasonCode::DeadlineExceeded)
         } else {
@@ -712,12 +738,17 @@ impl RequestAdmission {
     }
 
     pub(crate) fn principal(&self, principal: &str) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the verified principal is kept once per admitted request, for its audit row"
+        )]
+        let principal = principal.to_owned();
         *self
             .inner
             .pending
             .principal
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(principal.to_owned());
+            .unwrap_or_else(PoisonError::into_inner) = Some(principal);
     }
 
     /// Finish a host refusal before the teller has taken ownership.
@@ -834,7 +865,7 @@ async fn claim_request_replay(
     if !alive.load(std::sync::atomic::Ordering::Acquire) {
         return false;
     }
-    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+    if deadline_passed(deadline) {
         return false;
     }
     let Some(replay) = replay else {
@@ -848,21 +879,29 @@ async fn claim_request_replay(
 }
 
 fn same_request(left: &Head, right: &Head) -> bool {
-    fn fields(head: &Head) -> std::collections::BTreeMap<String, Vec<&[u8]>> {
-        let mut fields = std::collections::BTreeMap::<String, Vec<&[u8]>>::new();
-        for (name, value) in &head.fields {
-            fields
-                .entry(name.to_ascii_lowercase())
-                .or_default()
-                .push(value);
-        }
-        fields
-    }
     left.method == right.method
         && left.target == right.target
         && left.authority == right.authority
         && left.query == right.query
-        && fields(left) == fields(right)
+        && left
+            .fields
+            .iter()
+            .all(|(name, _)| field_values(left, name).eq(field_values(right, name)))
+        && right.fields.iter().all(|(name, _)| has_field(left, name))
+}
+
+/// A head's values for one field name (ASCII case-insensitive), in wire order.
+fn field_values<'h>(head: &'h Head, name: &'h str) -> impl Iterator<Item = &'h [u8]> + 'h {
+    head.fields
+        .iter()
+        .filter(move |(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_slice())
+}
+
+fn has_field(head: &Head, name: &str) -> bool {
+    head.fields
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case(name))
 }
 
 fn continuation_head(original: &Head, current: &Head, strips: &[Strip]) -> bool {
@@ -875,26 +914,14 @@ fn continuation_head(original: &Head, current: &Head, strips: &[Strip]) -> bool 
     {
         return false;
     }
-    fn fields(head: &Head) -> std::collections::BTreeMap<String, Vec<&[u8]>> {
-        let mut fields = std::collections::BTreeMap::<String, Vec<&[u8]>>::new();
-        for (name, value) in &head.fields {
-            fields
-                .entry(name.to_ascii_lowercase())
-                .or_default()
-                .push(value);
-        }
-        fields
-    }
-    let mut current_fields = fields(current);
-    for (name, values) in fields(original) {
-        let retained = current_fields.remove(&name).unwrap_or_default();
+    for (name, _) in &original.fields {
         if strips
             .iter()
-            .any(|strip| strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(&name))
+            .any(|strip| strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name))
         {
-            let mut retained = retained.into_iter();
+            let mut retained = field_values(current, name);
             let mut next = retained.next();
-            for value in values {
+            for value in field_values(original, name) {
                 if next == Some(value) {
                     next = retained.next();
                 }
@@ -902,11 +929,15 @@ fn continuation_head(original: &Head, current: &Head, strips: &[Strip]) -> bool 
             if next.is_some() {
                 return false;
             }
-        } else if values != retained {
+        } else if !field_values(original, name).eq(field_values(current, name)) {
             return false;
         }
     }
-    if !current_fields.is_empty() {
+    if current
+        .fields
+        .iter()
+        .any(|(name, _)| !has_field(original, name))
+    {
         return false;
     }
     let mut retained = current
@@ -962,7 +993,8 @@ struct UnitState {
     alive: Arc<std::sync::atomic::AtomicBool>,
     answers: Vec<Option<Judged>>,
 
-    providers: Vec<String>,
+    /// The line's auth chain, in walk order: shared with the table, never copied per unit.
+    providers: Arc<[String]>,
 
     identities: Vec<Option<VerifiedIdentity>>,
     replays: Vec<Option<Arc<ReplayAdmission>>>,
@@ -991,7 +1023,7 @@ impl UnitState {
         generation: u64,
         line: u32,
         secret: [u64; 2],
-        providers: &[String],
+        providers: &Arc<[String]>,
         binding: RequestBinding,
         table: Arc<Table>,
     ) -> Self {
@@ -1009,7 +1041,7 @@ impl UnitState {
             deadline: None,
             alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             answers: vec![None; providers.len()],
-            providers: providers.to_vec(),
+            providers: Arc::clone(providers),
             identities: vec![None; providers.len()],
             replays: vec![None; providers.len()],
             replay: None,
@@ -1146,10 +1178,14 @@ fn peer_capacity(existing: bool, held: usize) -> Result<(), &'static str> {
 }
 
 fn take_framing_peers<T>(peers: &mut HashMap<(u64, u64, u64), T>, framing: u64) -> Vec<T> {
-    peers
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a framing's close releases its peer rows once"
+    )]
+    return peers
         .extract_if(|(_, _, f), _| *f == framing)
         .map(|(_, peer)| peer)
-        .collect()
+        .collect();
 }
 
 fn peer_payload_empty(unit: UnitRef, head: &Head, body: Option<&[u8]>) -> bool {
@@ -1157,17 +1193,26 @@ fn peer_payload_empty(unit: UnitRef, head: &Head, body: Option<&[u8]>) -> bool {
 }
 
 fn inbound_answer(fixed: Option<Fixed>, unit: UnitRef, peer: bool, strips: &[Strip]) -> Answer {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
+    )]
+    let strips = if peer { Vec::new() } else { strips.to_vec() };
     Answer {
         flow: match fixed {
             Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
             Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
         },
         unit,
-        strips: if peer { Vec::new() } else { strips.to_vec() },
+        strips,
     }
 }
 
 fn checked_line_ids(ids: &[u64], lines: usize) -> Result<HashMap<u64, u32>, &'static str> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a listener's line ids are indexed once, when it is installed"
+    )]
     let lines_by_id: HashMap<u64, u32> = ids.iter().copied().zip(0u32..).collect();
     if ids.len() != lines || lines_by_id.len() != lines || !ids.iter().all(|id| is_line_id(*id)) {
         return Err(IDS_REFUSED);
@@ -1205,6 +1250,10 @@ fn matched_handin_line<'a>(
     if auth_line != Some(requested) {
         return None;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: guest matching takes a borrowed field list; guest.rs owns that signature (reported)"
+    )]
     let fields: Vec<(&str, &[u8])> = head
         .fields
         .iter()
@@ -1239,7 +1288,21 @@ fn handin_state_matches(
 }
 
 fn position_deadline_expired(deadline: Option<std::time::Instant>) -> bool {
-    deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+    deadline_passed(deadline)
+}
+
+/// Whether `deadline` has passed: the inbound walk's one clock seam. Each stage asks at its own
+/// moment, because the walk awaits plugins between the stages.
+fn deadline_passed(deadline: Option<std::time::Instant>) -> bool {
+    let Some(deadline) = deadline else {
+        return false;
+    };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a request deadline is an opt-in line policy; each walk stage checks it at its own moment"
+    )]
+    let now = std::time::Instant::now();
+    now >= deadline
 }
 
 fn overloaded_refusal(cause: u32, overloaded: bool) -> Option<axum::response::Response> {
@@ -1253,6 +1316,9 @@ fn overloaded_refusal(cause: u32, overloaded: bool) -> Option<axum::response::Re
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
+
+    /// Each line's auth chain in walk order (the keys module last), ordered once at install.
+    providers: Vec<Arc<[String]>>,
 
     lines_by_id: HashMap<u64, u32>,
 
@@ -1313,7 +1379,12 @@ impl std::fmt::Debug for Inbound {
 
 fn fresh_secret() -> Option<[u64; 2]> {
     let mut b = [0u8; 16];
-    getrandom::fill(&mut b).ok()?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a unit's secret is drawn from OS entropy; a seeded userspace CSPRNG is a security design call (reported)"
+    )]
+    let filled = getrandom::fill(&mut b);
+    filled.ok()?;
     let (a, z) = b.split_at(8);
     Some([
         u64::from_le_bytes(a.try_into().ok()?),
@@ -1351,7 +1422,11 @@ fn verify_request(
     body: Option<&[u8]>,
     candidate: Option<&Secret<String>>,
 ) -> VerifyRequest {
-    VerifyRequest {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
+    )]
+    return VerifyRequest {
         point,
         conn,
         unit,
@@ -1370,7 +1445,7 @@ fn verify_request(
         path: head.target.clone(),
         query: head.query.clone(),
         timestamp: crate::store::now(),
-    }
+    };
 }
 
 async fn until_deadline<F: Future>(
@@ -1450,14 +1525,18 @@ pub(crate) fn header_map(head: &Head) -> axum::http::HeaderMap {
     headers
 }
 
-fn ordered(names: &[String]) -> Vec<String> {
+fn ordered(names: &[String]) -> Arc<[String]> {
     let keys = crate::config::KEYS_MODULE;
-    names
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a line's auth chain is ordered once, when its listener is installed"
+    )]
+    return names
         .iter()
         .filter(|n| *n != keys)
         .chain(names.iter().filter(|n| *n == keys).take(1))
         .cloned()
-        .collect()
+        .collect();
 }
 
 fn signed_then_keys(
@@ -1473,6 +1552,7 @@ fn signed_then_keys(
     Vec<Strip>,
     Option<Arc<crate::governance::VirtualKey>>,
 ) {
+    // busbar:expect(bp::fresh_buffer, reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)")
     let mut named = Vec::new();
     if let Some(s) = signed {
         named.extend(s.answer.strips);
@@ -1534,6 +1614,10 @@ fn keys_judged(
     let carriers = app.auth.carriers();
     let headers = header_map(head);
     let candidate = crate::auth::inbound_candidate(app, &headers);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
+    )]
     let strips = carriers
         .iter()
         .map(|c| Strip::field(c.as_str().to_string()))
@@ -1555,7 +1639,7 @@ fn keys_judged(
             Some(VerifiedIdentity {
                 subject: principal.id.clone(),
                 key_id: resolved.as_ref().map(|k| k.id.clone()),
-                key_name: principal.name.clone(),
+                key_name: principal.name,
                 ..VerifiedIdentity::default()
             }),
             strips,
@@ -1599,8 +1683,26 @@ impl Inbound {
         listener: Listener,
     ) -> Result<(), &'static str> {
         let lines_by_id = checked_line_ids(&listener.ids, listener.guests.lines().len())?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: each line's auth chain is ordered once, when its listener is installed"
+        )]
+        let providers: Vec<Arc<[String]>> = listener
+            .guests
+            .lines()
+            .iter()
+            .map(|line| match &line.auth {
+                LineAuth::Chain(names, _) => ordered(names),
+                LineAuth::None => Arc::default(),
+            })
+            .collect();
+        // busbar:expect(bp::clone_alloc, reason = "config: a listener's door refusals are kept once, when it is installed")
         let doors = crate::core_routes::CoreRouteTable::default()
             .with_door_refusals(listener.door_refusals.clone());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a listener's request-point auths are listed once, when it is installed"
+        )]
         let request_auths = listener
             .auths
             .iter()
@@ -1612,17 +1714,23 @@ impl Inbound {
             .chain(std::iter::once(crate::config::KEYS_MODULE.to_owned()))
             .collect();
         let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
+        // busbar:expect(bp::fresh_buffer, reason = "config: installing a listener generation retires the ones it replaces")
         let mut retired = Vec::new();
         let replaced = tables.insert(
             (owner, listener_id, generation),
             Arc::new(Table {
                 listener,
                 doors,
+                providers,
                 lines_by_id,
                 request_auths,
             }),
         );
         retired.extend(replaced);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: installing a listener generation retires the ones it replaces"
+        )]
         tables.retain(|(o, listener, g), table| {
             let keep = *o != owner || *listener != listener_id || g.saturating_add(1) >= generation;
             if !keep {
@@ -1660,7 +1768,12 @@ impl Inbound {
 
     pub fn retire_before(&self, generation: u64) {
         let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
+        // busbar:expect(bp::fresh_buffer, reason = "config: retiring listener generations runs on a config publish")
         let mut retired = Vec::new();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: retiring listener generations runs on a config publish"
+        )]
         tables.retain(|(_, _, old), table| {
             if old.saturating_add(1) < generation {
                 retired.push(Arc::clone(table));
@@ -1675,7 +1788,12 @@ impl Inbound {
 
     pub fn forget_listener(&self, owner: u64, listener: u64) {
         let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
+        // busbar:expect(bp::fresh_buffer, reason = "config: forgetting a listener runs once, as it is removed")
         let mut retired = Vec::new();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: forgetting a listener runs once, as it is removed"
+        )]
         tables.retain(|(o, l, _), table| {
             if *o == owner && *l == listener {
                 retired.push(Arc::clone(table));
@@ -1709,7 +1827,7 @@ impl Inbound {
                     listener,
                     generation,
                     opening: Some(Arc::clone(&table)),
-                    ended_streams: HashSet::new(),
+                    ended_streams: HashSet::default(),
                     status: FramingStatus::Active,
                 });
                 Ok(())
@@ -1817,6 +1935,7 @@ impl Inbound {
             .adoptions
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        // busbar:expect(bp::state_scan, reason = "config: a session adoption (a reconnecting framing) checks the pending adoptions, bounded by open framings")
         if pending.contains_key(&(owner, framing))
             || pending.values().any(|p| p.source.leg == source.leg)
         {
@@ -1840,7 +1959,7 @@ impl Inbound {
                 listener: source.listener,
                 generation,
                 opening: None,
-                ended_streams: HashSet::new(),
+                ended_streams: HashSet::default(),
                 status: FramingStatus::Adopting,
             },
         );
@@ -2066,15 +2185,20 @@ impl Inbound {
             return Err(UNIT_FOREIGN);
         }
         if let (Some(pending), Some(admitted)) = (&unit.pending, &unit.admitted) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the verified principal is kept once per admitted request, for its audit row"
+            )]
+            let principal = admitted.resolved.as_ref().map_or_else(
+                || admitted.identity.subject.clone(),
+                |key| key.id.to_string(),
+            );
             *pending
                 .principal
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) =
-                Some(admitted.resolved.as_ref().map_or_else(
-                    || admitted.identity.subject.clone(),
-                    |key| key.id.to_string(),
-                ));
+                .unwrap_or_else(PoisonError::into_inner) = Some(principal);
         }
+        // busbar:expect(bp::clone_alloc, reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)")
         let admission = RequestAdmission {
             inner: Arc::new(AdmittedRequest {
                 pending: Arc::clone(unit.pending.as_ref().ok_or(UNIT_FOREIGN)?),
@@ -2116,10 +2240,18 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
+        )]
         let retired_bindings: Vec<_> = held
             .extract_if(|(_, f), _| *f == framing)
             .map(|(_, binding)| binding)
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
+        )]
         let retired_adoptions: Vec<_> = self
             .adoptions
             .lock()
@@ -2127,6 +2259,10 @@ impl Inbound {
             .extract_if(|(_, leg), stage| *leg == framing || stage.source.leg == framing)
             .map(|(_, stage)| stage)
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
+        )]
         let retired_grants: Vec<_> = self
             .stream_grants
             .lock()
@@ -2134,12 +2270,20 @@ impl Inbound {
             .extract_if(|(_, f, _), _| *f == framing)
             .map(|(_, grant)| grant)
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
+        )]
         let retired_units: Vec<_> = self
             .units()
             .extract_if(|_, u| u.binding.framing == Some(framing))
             .map(|(_, u)| u)
             .collect();
         let retired_peers = take_framing_peers(&mut self.peers(), framing);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a framing's close releases its rows once (a per-framing index is reported)"
+        )]
         self.framing_conns
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -2167,6 +2311,10 @@ impl Inbound {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&(owner, framing, stream));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: NOT COLD, a stream end sweeps the unit table; needs a per-stream index (reported)"
+        )]
         let retired_units: Vec<_> = self
             .units()
             .extract_if(|_, unit| {
@@ -2221,7 +2369,7 @@ impl Inbound {
         owner: u64,
         generation: u64,
         line: u32,
-        providers: &[String],
+        providers: &Arc<[String]>,
         binding: RequestBinding,
         table: Arc<Table>,
     ) -> Result<UnitRef, &'static str> {
@@ -2243,7 +2391,7 @@ impl Inbound {
             let peers = self.peers();
             if let Some(peer) = peers
                 .get(&(owner, generation, framing))
-                .filter(|p| p.providers == providers)
+                .filter(|p| p.providers == *providers)
             {
                 for inherited in inherited_peer_answers(
                     providers,
@@ -2399,13 +2547,17 @@ impl Inbound {
             .lines()
             .get(line_ix as usize)
             .ok_or(NO_LINE)?;
-        let LineAuth::Chain(names, points) = &line.auth else {
+        let LineAuth::Chain(_, points) = &line.auth else {
             return Err(LINE_OPEN);
         };
         let point = AuthPoint::from_bit(call.point)
             .filter(|p| points.has(*p))
             .ok_or(POINT_UNNEEDED)?;
-        let providers = ordered(names);
+        let providers = table
+            .providers
+            .get(line_ix as usize)
+            .cloned()
+            .unwrap_or_default();
 
         let peer = point == AuthPoint::Peer;
         if peer && !peer_payload_empty(call.unit, &call.head, body.as_deref().map(Vec::as_slice)) {
@@ -2492,6 +2644,10 @@ impl Inbound {
             }
             (Target::Unit(unit.id), unit)
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
+        )]
         let positions: Vec<Position> = providers
             .iter()
             .enumerate()
@@ -2558,9 +2714,7 @@ impl Inbound {
                     if !connection_denied {
                         me.with_state(target, |u| u.signed_pending = true)
                             .ok_or(UNIT_FOREIGN)?;
-                        if deadline.is_some_and(|d| std::time::Instant::now() >= d)
-                            || !points.has(AuthPoint::HeadBody)
-                        {
+                        if deadline_passed(deadline) || !points.has(AuthPoint::HeadBody) {
                             me.preflight_keys(target, keys.index)?;
                             me.record(target, keys.index, &keys.provider, Judging::Nothing, &table);
                             return me.answer(target, unit, peer);
@@ -2618,16 +2772,12 @@ impl Inbound {
                 if let (Some(prefix), Some(token), Some(keys)) = (prefix, token, keys) {
                     if token.starts_with(prefix) && !connection_denied {
                         let key = match table.listener.app.governance.as_ref() {
-                            Some(gov)
-                                if !deadline.is_some_and(|d| std::time::Instant::now() >= d) =>
-                            {
-                                until_deadline(
-                                    deadline,
-                                    gov.peek_ticket_async(prefix, token, crate::store::now()),
-                                )
-                                .await
-                                .flatten()
-                            }
+                            Some(gov) if !deadline_passed(deadline) => until_deadline(
+                                deadline,
+                                gov.peek_ticket_async(prefix, token, crate::store::now()),
+                            )
+                            .await
+                            .flatten(),
                             _ => None,
                         };
                         let flow = if key.is_some() {
@@ -2653,7 +2803,11 @@ impl Inbound {
                                 } else {
                                     Judged::Denied
                                 });
-                                u.admitted = key.map(|key| Admitted {
+                                #[expect(
+                                    clippy::disallowed_methods,
+                                    reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
+                                )]
+                                let admitted = key.map(|key| Admitted {
                                     provider: crate::config::KEYS_MODULE.to_string(),
                                     identity: VerifiedIdentity {
                                         subject: key.id.clone(),
@@ -2663,12 +2817,18 @@ impl Inbound {
                                     },
                                     resolved: Some(key),
                                 });
+                                u.admitted = admitted;
                                 for carrier in table.listener.app.auth.carriers() {
+                                    #[expect(
+                                        clippy::disallowed_methods,
+                                        reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
+                                    )]
                                     let strip = Strip::field(carrier.as_str().to_string());
                                     if !u.strips.contains(&strip) {
                                         u.strips.push(strip);
                                     }
                                 }
+                                // busbar:expect(bp::clone_alloc, reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)")
                                 (retired, u.strips.clone())
                             })
                             .ok_or(UNIT_FOREIGN)?;
@@ -2803,6 +2963,10 @@ impl Inbound {
         let now = crate::store::now();
         let signed_identity = matches!(&judging, Judging::Keys(_, Some(signed))
             if !signed.faulted && matches!(&signed.answer.verified, Verified::Identity(_)));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
+        )]
         let replay_provider = match &judging {
             Judging::Keys(_, Some(signed)) => signed.provider.as_str(),
             _ => provider,
@@ -2893,17 +3057,17 @@ impl Inbound {
         if let Some(f) = h.framing {
             self.same_conn(h.owner, h.generation, f, h.conn)?;
         }
-        let lines = table.listener.guests.lines();
         let unit = if h.unit.is_none() {
-            let names: &[String] = match lines.get(h.line as usize).map(|l| &l.auth) {
-                Some(LineAuth::Chain(names, _)) => names,
-                _ => &[],
-            };
+            let providers = table
+                .providers
+                .get(h.line as usize)
+                .cloned()
+                .unwrap_or_default();
             self.mint(
                 h.owner,
                 h.generation,
                 h.line,
-                &ordered(names),
+                &providers,
                 binding,
                 Arc::clone(&table),
             )?
@@ -2969,7 +3133,10 @@ impl Inbound {
         !still_present(&u.strips, &h.head)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "error: a refusal is finished with every field of the unit it refuses"
+    )]
     fn finish_refusal(
         &self,
         unit: Option<UnitRef>,
@@ -3060,6 +3227,10 @@ impl Inbound {
             .unwrap_or((None, false));
 
         let head = head.or(r.request);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refused unit's path is rendered once into its refusal"
+        )]
         let path = head
             .as_ref()
             .map(|h| h.target.clone())
@@ -3154,6 +3325,10 @@ impl Inbound {
                             fields: Vec::new(),
                             body: Vec::new(),
                         });
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a unit refusal moves its rendered fields into the wire refusal"
+                )]
                 let refusal = Refusal {
                     status: rendered.status,
                     fields: rendered
@@ -3206,8 +3381,9 @@ impl Inbound {
                 .scope
                 .as_ref()
                 .is_none_or(|s| s.legacy_fallback)
-                && (path == crate::admin::gate::API_ROOT
-                    || path.starts_with(&format!("{}/", crate::admin::gate::API_ROOT)));
+                && path
+                    .strip_prefix(crate::admin::gate::API_ROOT)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
             if !native_api {
                 if let Some((reason, status, text)) = refusal {
                     if let Some(rendered) = table

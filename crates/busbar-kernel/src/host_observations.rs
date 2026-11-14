@@ -13,11 +13,16 @@ const REFUSED: &str = "usage observation refused";
 const MAX_UNITS: usize = 4096;
 const MAX_TICKETS: usize = 256;
 type Done = Box<dyn FnOnce(Result<Vec<u8>, &'static str>) + Send>;
-type Invocation = (busbar_contract::services::Incarnation, u64);
-
 #[derive(Default)]
 pub(super) struct ObservationRuntime {
-    units: Mutex<HashMap<Invocation, Arc<Context>>>,
+    units: Mutex<Units>,
+}
+/// Registered units, grouped by the instance incarnation that registered them, so retiring a
+/// ticket across an instance's units reads only that instance's group.
+#[derive(Default)]
+struct Units {
+    by_caller: HashMap<busbar_contract::services::Incarnation, HashMap<u64, Arc<Context>>>,
+    len: usize,
 }
 struct Context {
     money: Arc<PlaneMoney>,
@@ -44,7 +49,7 @@ fn unresolved(result: &Result<Vec<u8>, &'static str>) -> bool {
     })
 }
 fn failed_result(
-    error: crate::plane_driver::ObservationRuntimeError,
+    error: &crate::plane_driver::ObservationRuntimeError,
 ) -> Result<Vec<u8>, &'static str> {
     match error {
         crate::plane_driver::ObservationRuntimeError::Store(
@@ -55,6 +60,35 @@ fn failed_result(
         )])),
         _ => Err(REFUSED),
     }
+}
+
+/// A scope request's answer. Fields in key order: the bytes match the sorted JSON map it replaced.
+#[derive(serde::Serialize)]
+struct ScopeAnswer {
+    closed: bool,
+    scope: wire::ScopeId,
+}
+
+/// The one `RESULT` extension entry carrying `value` as JSON: what
+/// `extensions::encode(&[(wire::RESULT, &serde_json::to_vec(value)?)])` writes, serialized straight
+/// into the answer's own buffer instead of through an intermediate copy.
+fn json_result<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, &'static str> {
+    let key = wire::RESULT.as_bytes();
+    let key_len = u16::try_from(key.len()).map_err(|_| REFUSED)?;
+    // busbar:expect(bp::fresh_buffer, reason = "config: the plane's Done callback owns its answer bytes (busbar-contract); this is the answer itself, written once")
+    let mut out = Vec::with_capacity(2 + key.len() + 4 + 128);
+    out.extend_from_slice(&key_len.to_le_bytes());
+    out.extend_from_slice(key);
+    let at = out.len();
+    out.extend_from_slice(&[0; 4]);
+    serde_json::to_writer(&mut out, value).map_err(|_| REFUSED)?;
+    let Ok(len) = u32::try_from(out.len() - at - 4) else {
+        // `extensions::encode` drops an entry whose value overflows its u32 length.
+        out.clear();
+        return Ok(out);
+    };
+    out[at..at + 4].copy_from_slice(&len.to_le_bytes());
+    Ok(out)
 }
 
 impl Completion {
@@ -126,36 +160,54 @@ impl KernelServices {
             .units
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let key = (caller.incarnation().clone(), unit.get());
-        if let Some(current) = units.get(&key) {
+        if let Some(current) = units
+            .by_caller
+            .get(caller.incarnation())
+            .and_then(|of| of.get(&unit.get()))
+        {
             return if current.policy == policy && Arc::ptr_eq(&current.money, &money) {
                 Ok(())
             } else {
                 Err(REFUSED)
             };
         }
-        if units.len() >= MAX_UNITS {
+        if units.len >= MAX_UNITS {
             return Err(REFUSED);
         }
-        units.insert(
-            key,
-            Arc::new(Context {
-                money,
-                policy,
-                unit,
-                exchanges: Mutex::default(),
-            }),
-        );
+        units.len += 1;
+        units
+            .by_caller
+            .entry(caller.incarnation().clone())
+            .or_default()
+            .insert(
+                unit.get(),
+                Arc::new(Context {
+                    money,
+                    policy,
+                    unit,
+                    exchanges: Mutex::default(),
+                }),
+            );
         Ok(())
     }
 
     /// Ending a request releases transient exchange custody only, never durable reservation.
     pub fn unregister_observation_unit(&self, caller: &Caller, unit: UnitKey) {
-        self.observations
+        let mut units = self
+            .observations
             .units
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&(caller.incarnation().clone(), unit.get()));
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(of) = units.by_caller.get_mut(caller.incarnation()) else {
+            return;
+        };
+        if of.remove(&unit.get()).is_none() {
+            return;
+        }
+        if of.is_empty() {
+            units.by_caller.remove(caller.incarnation());
+        }
+        units.len -= 1;
     }
 
     fn observation_context(&self, caller: &Caller, unit: Option<u64>) -> Option<Arc<Context>> {
@@ -168,7 +220,9 @@ impl KernelServices {
             .units
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&(caller.incarnation().clone(), unit))
+            .by_caller
+            .get(caller.incarnation())?
+            .get(&unit)
             .cloned()
     }
 
@@ -188,28 +242,31 @@ impl KernelServices {
     }
 
     pub(super) fn observation_retire(&self, caller: &Caller, ticket: Ticket, unit: Option<u64>) {
-        let contexts: Vec<_> = match unit {
-            Some(unit) => self
-                .observation_context(caller, Some(unit))
-                .into_iter()
-                .collect(),
-            None => self
-                .observations
-                .units
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .filter(|((incarnation, _), _)| incarnation == caller.incarnation())
-                .map(|(_, context)| context.clone())
-                .collect(),
-        };
-        for context in contexts {
+        let retire = |context: &Context| {
             let mut exchanges = context.exchanges.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(exchange) = exchanges.get_mut(&ticket) {
                 if exchange.result.is_some() {
                     exchanges.remove(&ticket);
                 } else {
                     exchange.retired = true;
+                }
+            }
+        };
+        match unit {
+            Some(unit) => {
+                if let Some(context) = self.observation_context(caller, Some(unit)) {
+                    retire(&context);
+                }
+            }
+            // Units lock before exchanges, as nowhere takes them the other way round.
+            None => {
+                let units = self
+                    .observations
+                    .units
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(of) = units.by_caller.get(caller.incarnation()) {
+                    of.values().for_each(|context| retire(context));
                 }
             }
         }
@@ -317,10 +374,8 @@ impl KernelServices {
                 .submit_observation(context.unit, &observation, observed_at)
                 .await
             {
-                Ok(receipt) => serde_json::to_vec(&receipt)
-                    .map_err(|_| REFUSED)
-                    .map(|bytes| extensions::encode(&[(wire::RESULT, &bytes)])),
-                Err(error) => failed_result(error),
+                Ok(receipt) => json_result(&receipt),
+                Err(error) => failed_result(&error),
             };
             completion.finish(answer);
         }));
@@ -389,12 +444,11 @@ impl KernelServices {
             }
             .await;
             let answer = match result {
-                Ok(scope) => serde_json::to_vec(&serde_json::json!({
-                    "scope": scope, "closed": request.close,
-                }))
-                .map_err(|_| REFUSED)
-                .map(|bytes| extensions::encode(&[(wire::RESULT, &bytes)])),
-                Err(error) => failed_result(error),
+                Ok(scope) => json_result(&ScopeAnswer {
+                    closed: request.close,
+                    scope,
+                }),
+                Err(error) => failed_result(&error),
             };
             completion.finish(answer);
         }));

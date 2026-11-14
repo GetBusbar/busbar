@@ -44,18 +44,14 @@ fn same_resolved_inputs(
 pub mod gate;
 pub mod taps;
 
-#[allow(unused_imports)]
 pub use busbar_contract::hooks::{
     CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
 
-#[allow(unused_imports)]
 pub use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 
-pub fn requested_signals(
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
-) -> RequestedSignals {
+pub fn requested_signals(hooks: &crate::config::hooks::HookRegistry) -> RequestedSignals {
     let mut mask = RequestedSignals::default();
     for hook in hooks.values() {
         for &s in &hook.signals {
@@ -65,7 +61,7 @@ pub fn requested_signals(
     mask
 }
 
-pub fn any_content_hook(hooks: &std::collections::HashMap<String, crate::config::HookCfg>) -> bool {
+pub fn any_content_hook(hooks: &crate::config::hooks::HookRegistry) -> bool {
     hooks.values().any(|h| h.prompt.sends_prompt())
 }
 
@@ -80,7 +76,7 @@ pub struct HookEnv {
     /// every `kind: hook` row, compiled in or dropped in, opened on the hook kind's ABI over the
     /// process's one dispatcher. `None` = this build installs no axis: no hook opens.
     axis: Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>>,
-    route_calls: Arc<std::collections::HashMap<String, RouteCalls>>,
+    route_calls: Arc<foldhash::HashMap<String, RouteCalls>>,
     /// Declared paths read once outside cache admission. Reading a linked row's Statement may
     /// invoke its door, so the cache key must consult this snapshot instead of the registry.
     resolution_paths: Arc<resolution::Paths>,
@@ -101,7 +97,7 @@ pub struct HookEnv {
     /// control-plane reads clone it onto a blocking thread) sees the same set; fresh and empty every
     /// `HookEnv::new`, i.e. every boot/reload, so a still-inert hook re-banners on the NEXT
     /// boot/reload rather than going silent forever.
-    banner_seen: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    banner_seen: std::sync::Arc<std::sync::Mutex<foldhash::HashSet<String>>>,
 }
 
 impl HookEnv {
@@ -117,12 +113,10 @@ impl HookEnv {
         Ok(HookEnv {
             registry,
             axis,
-            route_calls: Arc::new(std::collections::HashMap::new()),
+            route_calls: Arc::default(),
             resolution_paths,
             secret_resolver,
-            banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashSet::new(),
-            )),
+            banner_seen: std::sync::Arc::default(),
         })
     }
 
@@ -136,12 +130,10 @@ impl HookEnv {
         HookEnv {
             registry,
             axis: Some(axis),
-            route_calls: Arc::new(std::collections::HashMap::new()),
+            route_calls: Arc::default(),
             resolution_paths,
             secret_resolver,
-            banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashSet::new(),
-            )),
+            banner_seen: std::sync::Arc::default(),
         }
     }
 
@@ -176,10 +168,14 @@ impl HookEnv {
                 child,
             ));
         }
-        let axis = self
-            .axis
-            .as_ref()
-            .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
+        let axis = self.axis.as_ref().ok_or_else(|| {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal names the module no hook plugin answers to"
+            )]
+            let why = format!("no `kind: hook` plugin answers to '{module}'");
+            why
+        })?;
         let calls = axis.open(module, name, settings, policy_timeout(timeout_ms))?;
         Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
             calls, name, signals, child,
@@ -188,14 +184,19 @@ impl HookEnv {
 
     pub fn route_decls(
         &mut self,
-        hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+        hooks: &crate::config::hooks::HookRegistry,
     ) -> Result<Vec<crate::plugin_routes::RouteDecl>, String> {
         let Some(axis) = self.axis.as_ref() else {
             return Ok(Vec::new());
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: route declarations are collected once per boot or reload, in name order"
+        )]
         let mut names: Vec<_> = hooks.keys().collect();
-        names.sort();
-        let mut calls = std::collections::HashMap::new();
+        names.sort_unstable();
+        let mut calls = foldhash::HashMap::default();
+        // busbar:expect(bp::fresh_buffer, reason = "config: the route declarations are this boot or reload's output")
         let mut declarations = Vec::new();
         for name in names {
             let hook = &hooks[name];
@@ -221,9 +222,12 @@ impl HookEnv {
                 None => axis.open(&hook.plugin, name, &resolved, budget)?,
             };
             if opened.routes() != routes.as_slice() {
-                return Err(format!(
-                    "hook '{name}' route declarations changed while opening"
-                ));
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refusal names the hook whose routes changed"
+                )]
+                let why = format!("hook '{name}' route declarations changed while opening");
+                return Err(why);
             }
             let dispatch: Arc<dyn crate::plugin_routes::PluginHttpDispatch> = Arc::new(HookHttp {
                 calls: opened.clone(),
@@ -273,18 +277,25 @@ impl HookEnv {
 
     pub fn preresolve_hook_secrets(
         &self,
-        hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+        hooks: &crate::config::hooks::HookRegistry,
     ) -> Result<(), String> {
         for (name, hook) in hooks {
             self.resolve_hook_settings(&hook.plugin, &hook.settings)
-                .map_err(|e| format!("hook '{name}' settings: {e}"))?;
+                .map_err(|e| {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: the refusal names the hook whose settings did not resolve"
+                    )]
+                    let why = format!("hook '{name}' settings: {e}");
+                    why
+                })?;
         }
         Ok(())
     }
 
     pub fn preopen_gate_hooks(
         &self,
-        hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+        hooks: &crate::config::hooks::HookRegistry,
     ) -> Result<(), String> {
         preopen_definitions(
             hooks,
@@ -306,7 +317,7 @@ impl HookEnv {
 }
 
 fn preopen_definitions<T>(
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     mut knows: impl FnMut(&str) -> bool,
     mut resolve: impl FnMut(&str, &crate::config::HookCfg) -> Result<T, String>,
     mut open: impl FnMut(&str, &crate::config::HookCfg, T) -> Result<(), String>,
@@ -315,20 +326,32 @@ fn preopen_definitions<T>(
         if hook.kind != crate::config::HookKind::Gate || !knows(&hook.plugin) {
             continue;
         }
-        let resolved = resolve(name, hook).map_err(|e| format!("hook '{name}' settings: {e}"))?;
+        let resolved = resolve(name, hook).map_err(|e| {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal names the hook whose settings did not resolve"
+            )]
+            let why = format!("hook '{name}' settings: {e}");
+            why
+        })?;
         open(name, hook, resolved).map_err(|e| {
-            format!(
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the boot or reload refusal names the gate that failed to open"
+            )]
+            let why = format!(
                 "gate hook '{name}' (plugin '{}') failed to open; refusing to boot/reload \
              with a silently-absent admission gate (fail-closed): {e}",
                 hook.plugin
-            )
+            );
+            why
         })?;
     }
     Ok(())
 }
 
 fn retained_route<'a, T>(
-    routes: &'a std::collections::HashMap<String, T>,
+    routes: &'a foldhash::HashMap<String, T>,
     name: &str,
     matches: impl Fn(&T) -> bool,
 ) -> Option<&'a T> {
@@ -399,9 +422,7 @@ fn ranked_policy(policy: Arc<dyn RoutingPolicy>, timeout: std::time::Duration) -
     }
 }
 
-pub fn default_hook_name(
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
-) -> Option<&str> {
+pub fn default_hook_name(hooks: &crate::config::hooks::HookRegistry) -> Option<&str> {
     hooks
         .iter()
         .find(|(_, h)| h.default)
@@ -410,7 +431,7 @@ pub fn default_hook_name(
 
 pub fn resolve_pool_ordering(
     cfg: &crate::config::PoolCfg,
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     env: &HookEnv,
     default_hook: Option<&str>,
     settings_version: u64,
@@ -422,7 +443,7 @@ pub fn resolve_pool_ordering(
 
 pub fn try_resolve_pool_ordering(
     cfg: &crate::config::PoolCfg,
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     env: &HookEnv,
     default_hook: Option<&str>,
     settings_version: u64,
@@ -439,17 +460,21 @@ pub fn try_resolve_pool_ordering(
     let Some(name) = cfg.policy.native_name() else {
         return Ok(None);
     };
-    let axis = env
-        .axis
-        .as_ref()
-        .ok_or_else(|| format!("ranking strategy '{name}' has no hook axis"))?;
+    let axis = env.axis.as_ref().ok_or_else(|| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal names the ranking strategy with no hook axis"
+        )]
+        let why = format!("ranking strategy '{name}' has no hook axis");
+        why
+    })?;
     let (policy, timeout) = crate::preflight::ranking_on_axis(axis.as_ref(), name)?;
     Ok(Some(ranked_policy(policy, timeout)))
 }
 
 fn inherited_ordering<'a>(
     cfg: &crate::config::PoolCfg,
-    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &'a crate::config::hooks::HookRegistry,
     default_hook: Option<&'a str>,
 ) -> Option<(&'a str, &'a crate::config::HookCfg)> {
     if cfg.base_named {
@@ -468,10 +493,14 @@ fn inherited_ordering<'a>(
 
 pub fn resolve_pool_gates(
     cfg: &crate::config::PoolCfg,
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     env: &HookEnv,
     settings_version: u64,
 ) -> Vec<(u16, ResolvedPolicy)> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a pool's gates are resolved once per boot or reload"
+    )]
     let mut ranked: Vec<(u16, ResolvedPolicy)> = decision_definitions(hooks, &cfg.gates)
         .into_iter()
         .filter_map(|(name, hook)| {
@@ -480,16 +509,21 @@ pub fn resolve_pool_gates(
         })
         .collect();
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: equal priorities keep their definition order, once per boot or reload"
+    )]
     ranked.sort_by_key(|(p, _)| *p);
     ranked
 }
 
 pub fn resolve_pool_rewrites(
     cfg: &crate::config::PoolCfg,
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     env: &HookEnv,
     settings_version: u64,
 ) -> Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)> {
+    // busbar:expect(bp::fresh_buffer, reason = "config: the rewrite chain is resolved once per boot or reload")
     let mut ranked: Vec<(u16, std::time::Duration, Arc<dyn RoutingPolicy>)> = Vec::new();
     for (name, hook) in rewrite_definitions(hooks, &cfg.gates, |name, hook| {
         admits_rewrite(name, hook, env)
@@ -508,8 +542,16 @@ pub fn resolve_pool_rewrites(
             ));
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: equal priorities keep their definition order, once per boot or reload"
+    )]
     ranked.sort_by_key(|(p, _, _)| *p);
-    ranked.into_iter().map(|(_, t, p)| (t, p)).collect()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the rewrite chain is resolved once per boot or reload"
+    )]
+    return ranked.into_iter().map(|(_, t, p)| (t, p)).collect();
 }
 
 fn failed_rewrite(
@@ -519,7 +561,14 @@ fn failed_rewrite(
     if failed_call_refuses(on_error) {
         busbar_contract::hooks::TransformOutcome::Reject {
             status: REQUIRED_HOOK_UNAVAILABLE_STATUS,
-            message: REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+            message: {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a load-bearing rewrite hook failed and the request is refused"
+                )]
+                let message = REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string();
+                message
+            },
         }
     } else {
         busbar_contract::hooks::TransformOutcome::Failed { message }
@@ -590,7 +639,10 @@ impl RoutingPolicy for RewriteOnError {
             .await
     }
 
-    async fn describe(&self, budget: std::time::Duration) -> Option<serde_json::Value> {
+    async fn describe(
+        &self,
+        budget: std::time::Duration,
+    ) -> Option<busbar_contract::hooks::HookSchema> {
         self.inner.describe(budget).await
     }
 
@@ -623,7 +675,7 @@ fn with_rewrite_on_error(
 fn resolve_gate_transport(
     name: &str,
     hook: &crate::config::HookCfg,
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     env: &HookEnv,
     settings_version: u64,
 ) -> Option<ResolvedPolicy> {
@@ -650,7 +702,11 @@ fn hook_inert_gate_banner(
     if kind != crate::config::HookKind::Gate {
         return None;
     }
-    Some(format!(
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the inert-gate banner prints once per hook per boot or reload"
+    )]
+    return Some(format!(
         "hook '{name}' (plugin '{plugin}') grants `prompt: rw` but its signed manifest only \
          declares `needs.prompt: {needs_prompt:?}` — this hook is INERT wherever it is named \
          directly (as a pool `hook:`/`hooks:` entry or in `global_hooks`): it is excluded from the \
@@ -660,7 +716,7 @@ fn hook_inert_gate_banner(
          API still reports it registered with `prompt: \"rw\"`, so nothing else will tell you this. \
          Fix: lower the hook's `prompt:` grant to match the manifest (`ro` or omit), or use a plugin \
          build whose manifest declares `needs: {{ prompt: rw }}`."
-    ))
+    ));
 }
 
 #[derive(Clone, Copy)]
@@ -698,7 +754,7 @@ fn access_from_intent(
     name: &str,
     hook: &crate::config::HookCfg,
     needs: Needs,
-    banner_seen: &std::sync::Mutex<std::collections::HashSet<String>>,
+    banner_seen: &std::sync::Mutex<foldhash::HashSet<String>>,
 ) -> (crate::config::PromptAccess, crate::config::UserAccess) {
     use crate::config::{PromptAccess, UserAccess};
     use busbar_contract::plugin_rows::NeedLevel;
@@ -726,12 +782,7 @@ fn access_from_intent(
 
     if grant_prompt.can_rewrite() && !needs.prompt.wants_rewrite() {
         match hook_inert_gate_banner(name, &hook.plugin, hook.kind, needs.prompt) {
-            Some(banner)
-                if banner_seen
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .insert(name.to_string()) =>
-            {
+            Some(banner) if first_banner(banner_seen, name) => {
                 eprintln!("[error] {banner}");
                 tracing::error!("{banner}");
             }
@@ -765,53 +816,79 @@ fn access_from_intent(
     (eff_prompt, eff_user)
 }
 
+/// Whether `name`'s inert-gate banner has not printed yet this boot or reload (and now records it).
+fn first_banner(banner_seen: &std::sync::Mutex<foldhash::HashSet<String>>, name: &str) -> bool {
+    let mut seen = banner_seen.lock().unwrap_or_else(|p| p.into_inner());
+    if seen.contains(name) {
+        return false;
+    }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a hook's inert-gate banner is recorded once per boot or reload"
+    )]
+    let name = name.to_string();
+    seen.insert(name)
+}
+
 fn projection_grants(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> (bool, bool) {
     let (prompt, user) = effective_access(name, hook, env);
     (prompt.sends_prompt(), user.sends_user())
 }
 
 fn decision_definitions<'a>(
-    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &'a crate::config::hooks::HookRegistry,
     names: &'a [String],
 ) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
-    names
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: hook definitions are listed once per boot or reload"
+    )]
+    return names
         .iter()
         .filter_map(|name| {
             let hook = hooks.get(name)?;
             (hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite())
                 .then_some((name.as_str(), hook))
         })
-        .collect()
+        .collect();
 }
 
 fn tap_definitions<'a>(
-    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &'a crate::config::hooks::HookRegistry,
     names: &'a [String],
     stage: crate::config::HookStage,
 ) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
-    names
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: hook definitions are listed once per boot or reload"
+    )]
+    return names
         .iter()
         .filter_map(|name| {
             let hook = hooks.get(name)?;
             (hook.kind == crate::config::HookKind::Tap && hook.fires_at_stage(stage))
                 .then_some((name.as_str(), hook))
         })
-        .collect()
+        .collect();
 }
 
 fn rewrite_definitions<'a>(
-    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &'a crate::config::hooks::HookRegistry,
     names: &'a [String],
     mut admitted: impl FnMut(&str, &crate::config::HookCfg) -> bool,
 ) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
-    names
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: hook definitions are listed once per boot or reload"
+    )]
+    return names
         .iter()
         .filter_map(|name| {
             let hook = hooks.get(name)?;
             (hook.kind == crate::config::HookKind::Gate && admitted(name, hook))
                 .then_some((name.as_str(), hook))
         })
-        .collect()
+        .collect();
 }
 
 fn admits_rewrite(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> bool {
@@ -916,7 +993,7 @@ type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
 
 mod resolution {
     use super::Resolved;
-    use std::collections::HashMap;
+    use foldhash::HashMap;
     use std::sync::{Condvar, Mutex, OnceLock};
 
     const CAP: usize = 128;
@@ -937,7 +1014,7 @@ mod resolution {
         pub(super) fn new(
             registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         ) -> std::sync::Arc<Self> {
-            let mut modules = HashMap::new();
+            let mut modules = HashMap::default();
             for row in registry.loadable().into_iter().chain(registry.linked()) {
                 if row.kind != busbar_contract::abi::mechanism::kind::HOOK {
                     continue;
@@ -1018,7 +1095,7 @@ mod resolution {
         let encoded = hook.settings.encode().ok()?;
         let seal = crate::seal::lend();
         let settings = std::str::from_utf8(encoded.expose(&seal)).ok()?;
-        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut h = std::hash::BuildHasher::build_hasher(&foldhash::fast::FixedState::default());
 
         registry.hash(&mut h);
         name.hash(&mut h);
@@ -1026,8 +1103,22 @@ mod resolution {
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
         settings.hash(&mut h);
         hook.signals.hash(&mut h);
-        serde_json::to_vec(&hook.child_dispatch).ok()?.hash(&mut h);
+        serde_json::to_writer(HashWriter(&mut h), &hook.child_dispatch).ok()?;
         Some(h.finish())
+    }
+
+    /// Feeds serialized bytes straight into a hasher, so a key never materializes the encoding.
+    struct HashWriter<'a, H>(&'a mut H);
+
+    impl<H: std::hash::Hasher> std::io::Write for HashWriter<'_, H> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     pub(super) enum Admission {
@@ -1126,7 +1217,12 @@ mod resolution {
     }
 
     fn evict_over_cap(inner: &mut Inner) -> Vec<Entry> {
+        // busbar:expect(bp::fresh_buffer, reason = "config: a gate resolution settles once per hook per boot or reload")
         let mut evicted = Vec::new();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a gate resolution settles once per hook per boot or reload"
+        )]
         let dead: Vec<u64> = inner
             .entries
             .iter()
@@ -1172,7 +1268,14 @@ pub async fn push_configure(
                     applied_deadline(CONFIGURE_TIMEOUT_MS),
                 )
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: the admin configure push carries the hook's refusal"
+                    )]
+                    let why = e.to_string();
+                    why
+                })
         },
     )
     .await
@@ -1183,6 +1286,10 @@ async fn configure_resolved<T, F: std::future::Future<Output = Result<(), String
     configure: impl FnOnce(T, ResolvedSettings) -> F,
 ) -> Result<(), String> {
     let Some((transport, resolved)) = loaded else {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the admin configure push names why it was refused"
+        )]
         return Err("hook plugin unresolvable".to_string());
     };
     configure(transport, resolved).await
@@ -1234,6 +1341,10 @@ async fn gate_transport_offloaded(
     env: &HookEnv,
     settings_version: u64,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an admin or reload resolution moves its inputs onto a blocking thread"
+    )]
     let (name_owned, hook, env) = (name.to_string(), hook.clone(), env.clone());
     offload_bounded(name, move || {
         gate_transport_named(&name_owned, &hook, &env, settings_version)
@@ -1292,7 +1403,7 @@ pub async fn fetch_schema(
     hook: &crate::config::HookCfg,
     settings_version: u64,
     env: &HookEnv,
-) -> Option<serde_json::Value> {
+) -> Option<busbar_contract::hooks::HookSchema> {
     let (transport, _resolved) =
         gate_transport_offloaded(name, hook, env, settings_version).await?;
 
@@ -1303,11 +1414,13 @@ pub async fn fetch_schema(
 
 fn resolve_on_error_chain<'a>(
     hook: &'a crate::config::HookCfg,
-    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &'a crate::config::hooks::HookRegistry,
     env: &HookEnv,
     settings_version: u64,
 ) -> (Vec<FallbackHook>, crate::config::PolicyOnError) {
+    // busbar:expect(bp::fresh_buffer, reason = "config: an on_error chain is resolved once per boot or reload")
     let mut chain: Vec<FallbackHook> = Vec::new();
+    // busbar:expect(bp::fresh_buffer, reason = "config: an on_error chain is resolved once per boot or reload")
     let mut visited: Vec<&str> = Vec::new();
     let mut current: &'a str = hook.on_error.as_str();
     loop {
@@ -1356,11 +1469,12 @@ fn gate_on_empty(hook: &crate::config::HookCfg) -> crate::config::PolicyOnError 
 }
 
 pub fn resolve_rewrite_hooks(
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     global_hooks: &[String],
     env: &HookEnv,
     settings_version: u64,
 ) -> Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)> {
+    // busbar:expect(bp::fresh_buffer, reason = "config: the rewrite chain is resolved once per boot or reload")
     let mut ranked: Vec<(u16, std::time::Duration, Arc<dyn RoutingPolicy>)> = Vec::new();
     for (name, hook) in rewrite_definitions(hooks, global_hooks, |name, hook| {
         admits_rewrite(name, hook, env)
@@ -1379,17 +1493,26 @@ pub fn resolve_rewrite_hooks(
             ));
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: equal priorities keep their definition order, once per boot or reload"
+    )]
     ranked.sort_by_key(|(p, _, _)| *p);
-    ranked.into_iter().map(|(_, t, p)| (t, p)).collect()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the rewrite chain is resolved once per boot or reload"
+    )]
+    return ranked.into_iter().map(|(_, t, p)| (t, p)).collect();
 }
 
 pub fn resolve_tap_hooks(
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     global_hooks: &[String],
     env: &HookEnv,
     settings_version: u64,
     stage: crate::config::HookStage,
 ) -> Vec<TapEntry> {
+    // busbar:expect(bp::fresh_buffer, reason = "config: the tap chain is resolved once per boot or reload")
     let mut ranked: Vec<(u16, TapEntry)> = Vec::new();
     for (name, hook) in tap_definitions(hooks, global_hooks, stage) {
         if let Some(ResolvedPolicy::Policy {
@@ -1405,39 +1528,54 @@ pub fn resolve_tap_hooks(
             ));
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: equal priorities keep their definition order, once per boot or reload"
+    )]
     ranked.sort_by_key(|(p, _)| *p);
-    ranked.into_iter().map(|(_, entry)| entry).collect()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the tap chain is resolved once per boot or reload"
+    )]
+    return ranked.into_iter().map(|(_, entry)| entry).collect();
 }
 
 pub fn resolve_gate_hooks(
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     global_hooks: &[String],
     env: &HookEnv,
     settings_version: u64,
 ) -> Vec<(u16, ResolvedPolicy)> {
+    // busbar:expect(bp::fresh_buffer, reason = "config: the gate chain is resolved once per boot or reload")
     let mut ranked: Vec<(u16, ResolvedPolicy)> = Vec::new();
     for (name, hook) in decision_definitions(hooks, global_hooks) {
         if let Some(rp) = resolve_gate_transport(name, hook, hooks, env, settings_version) {
             ranked.push((hook.priority, rp));
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: equal priorities keep their definition order, once per boot or reload"
+    )]
     ranked.sort_by_key(|(p, _)| *p);
     ranked
 }
 
-#[allow(unused_imports)]
 pub use busbar_kernel::config::plane_sections::attach_list;
 
 pub const SECTION_SCOPE: &str = busbar_contract::section::RESERVED_SECTION_KEYS[0];
 
-pub fn resolve_container_gates<'a>(
+pub fn resolve_container_gates<'a, M>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
     section: &[String],
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     env: &HookEnv,
     settings_version: u64,
-) -> std::collections::HashMap<String, Vec<(u16, ResolvedPolicy)>> {
-    let mut out = std::collections::HashMap::new();
+) -> M
+where
+    M: Default + Extend<(String, Vec<(u16, ResolvedPolicy)>)>,
+{
+    let mut out = M::default();
     for (name, own) in containers.chain(std::iter::once((SECTION_SCOPE, &[][..]))) {
         let attached = attach_list(section, own);
         if attached.is_empty() {
@@ -1445,21 +1583,27 @@ pub fn resolve_container_gates<'a>(
         }
         let resolved = resolve_gate_hooks(hooks, &attached, env, settings_version);
         if !resolved.is_empty() {
-            out.insert(name.to_string(), resolved);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a container's resolved hooks are keyed by its name once per boot or reload"
+            )]
+            out.extend([(name.to_string(), resolved)]);
         }
     }
     out
 }
 
-#[allow(clippy::type_complexity)]
-pub fn resolve_container_rewrites<'a>(
+pub fn resolve_container_rewrites<'a, M>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
     section: &[String],
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    hooks: &crate::config::hooks::HookRegistry,
     env: &HookEnv,
     settings_version: u64,
-) -> std::collections::HashMap<String, Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)>> {
-    let mut out = std::collections::HashMap::new();
+) -> M
+where
+    M: Default + Extend<(String, Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)>)>,
+{
+    let mut out = M::default();
     for (name, own) in containers.chain(std::iter::once((SECTION_SCOPE, &[][..]))) {
         let attached = attach_list(section, own);
         if attached.is_empty() {
@@ -1467,7 +1611,11 @@ pub fn resolve_container_rewrites<'a>(
         }
         let resolved = resolve_rewrite_hooks(hooks, &attached, env, settings_version);
         if !resolved.is_empty() {
-            out.insert(name.to_string(), resolved);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a container's resolved hooks are keyed by its name once per boot or reload"
+            )]
+            out.extend([(name.to_string(), resolved)]);
         }
     }
     out
