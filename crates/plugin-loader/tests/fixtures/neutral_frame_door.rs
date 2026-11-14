@@ -495,12 +495,11 @@ fn copy_out(from: &mut VecDeque<u8>, to: *mut u8, n: usize) {
     if n == 0 {
         return;
     }
-    let (a, b) = from.as_slices();
-    let first = a.len().min(n);
+    let n = n.min(from.len());
+    let src = from.make_contiguous();
     // SAFETY: `to` is a host buffer of at least `n` bytes (every caller bounds `n` by its cap).
     unsafe {
-        std::ptr::copy_nonoverlapping(a.as_ptr(), to, first);
-        std::ptr::copy_nonoverlapping(b.as_ptr(), to.add(first), n - first);
+        std::ptr::copy_nonoverlapping(src.as_ptr(), to, n);
     }
     from.drain(..n);
 }
