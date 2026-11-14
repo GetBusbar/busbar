@@ -66,9 +66,8 @@ pub mod validate;
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
-/// The export kind's ABI version. Version 4 carries raw metric text; version 3 supplied
-/// text escaped for one particular wire format and cannot be mixed with this contract.
-pub const ABI_VERSION: u32 = 4;
+/// The export kind's ABI version: v1.5.5 shipped `2`, so 1.6.0 ships `3`.
+pub const ABI_VERSION: u32 = super::versions::EXPORT.raw();
 
 /// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0xfe016c85b529734e;
