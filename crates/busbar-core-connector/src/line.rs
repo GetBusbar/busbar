@@ -79,6 +79,8 @@ struct Seen {
     reusable: bool,
     established: Established,
     cause: Option<ConnCause>,
+    /// The connection failed before its proxy opened the tunnel.
+    failed_at_proxy: bool,
     target: String,
     /// Connection security's handshake had completed (what the far end's certificate hash is read
     /// off).
@@ -99,6 +101,7 @@ impl Seen {
         if self.cause.as_ref() != conn.cause() {
             self.cause = conn.cause().cloned();
         }
+        self.failed_at_proxy = conn.failed_at_proxy();
         if self.target != conn.target() {
             conn.target().clone_into(&mut self.target);
         }
@@ -720,6 +723,13 @@ impl Line {
     pub(crate) fn cause(&self) -> Option<ConnCause> {
         self.fact(|c| c.cause().cloned(), |s| s.cause.clone())
             .flatten()
+    }
+
+    /// Whether the line's connection failed before its proxy opened the tunnel (see
+    /// [`Connection::failed_at_proxy`]).
+    pub(crate) fn failed_at_proxy(&self) -> bool {
+        self.fact(Connection::failed_at_proxy, |s| s.failed_at_proxy)
+            .unwrap_or(false)
     }
 
     /// The dial target the line's connection names, if it still holds one.
