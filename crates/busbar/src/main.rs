@@ -1090,12 +1090,9 @@ async fn run(
         config::overlay::merge_into(&mut cfg, doc);
     }
 
-    config_validate::validate(&cfg).unwrap_or_else(|errors| {
-        die(format!(
-            "effective configuration errors: {}",
-            errors.join("; ")
-        ))
-    });
+    // Semantic validation of this effective configuration runs once, inside the application build
+    // the startup continuation drives (`appbuild` -> `config_validate::check`), before any Store
+    // publication or listener. A second pass here repeated every validator warning at boot.
 
     if cfg.allow_all_metadata {
         tracing::warn!(
