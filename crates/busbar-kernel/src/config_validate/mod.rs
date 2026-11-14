@@ -1379,10 +1379,6 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
 
     // Absence is advisory too: installed planes declare the classes, while their
     // configured definitions enumerate the lanes whose counts can be priced.
-    let empty = std::collections::BTreeMap::new();
-    let card = cfg.rate_card.as_ref().unwrap_or(&empty);
-    let flat_card = cfg.rate_card.is_some()
-        && flat_card_present(card.keys().map(|key| split_plane_lane(key).0));
     let lanes: Vec<String> = cfg
         .models
         .keys()
@@ -1396,8 +1392,14 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             );
         }
     }
-    for d in crate::plane_driver::registry::plane_decls() {
-        validate_plane_card(&d.declaration, card, flat_card, &lanes, errors);
+    // A deployment that configures no rate card anywhere has usage pricing off, as in 1.5.5:
+    // there is no card to complete, so completeness is not judged and boot says nothing about it.
+    // Once any card is present, every plane's lanes are judged against it.
+    if let Some(card) = cfg.rate_card.as_ref() {
+        let flat_card = flat_card_present(card.keys().map(|key| split_plane_lane(key).0));
+        for d in crate::plane_driver::registry::plane_decls() {
+            validate_plane_card(&d.declaration, card, flat_card, &lanes, errors);
+        }
     }
     // After completeness, as 1.5.5 ordered it: the stub for unnamed models prints first.
     if let Some(card) = cfg.rate_card.as_ref() {

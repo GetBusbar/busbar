@@ -195,6 +195,21 @@ pub fn init_logging() -> Result<(), LoggingError> {
     tracing::subscriber::set_global_default(subscriber).map_err(LoggingError::AlreadyInitialized)
 }
 
+/// Run a one-shot CLI judgement (`--validate`) with its warnings on stderr, formatted as boot logs
+/// them. The CLI runs before the process's subscriber is installed, so without this every advisory
+/// the validator raises (a lane a present rate card leaves unpriced, an all-zero card) would be
+/// dropped and the report would read clean.
+pub fn with_warnings_on_stderr<T>(judge: impl FnOnce() -> T) -> T {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::Layer as _;
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .with_filter(tracing_subscriber::filter::LevelFilter::WARN);
+    let subscriber = tracing_subscriber::registry().with(fmt_layer);
+    tracing::subscriber::with_default(subscriber, judge)
+}
+
 #[cfg(test)]
 #[path = "../tests/observability_tests.rs"]
 mod tests;
