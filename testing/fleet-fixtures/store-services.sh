@@ -3,14 +3,14 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 #
 # testing/fleet-fixtures/store-services.sh — the one-command way to stand the durable-store backends
-# up on a laptop, and the namespace machinery the shadow oracle needs to record two binaries against
+# up on a laptop, and the namespace machinery the upgrade corpus needs to record two binaries against
 # them at once. See docs/design/BUSBAR-1.6.0.md THE DESIGN, §2, "Local docker for developers and unattended
 # agents" and "Namespacing — the concurrency hazard the oracle creates".
 #
 # THE GAP THIS CLOSES. busbar has FOUR published durable stores (sqlite, postgres, mysql, valkey) and
 # three of them need a server. Every provisioner of that server lived inside CI — four workflows and
 # scripts/release-check.sh — so a developer, or an unattended agent, had no way at all to run
-# testing/fleet-fixtures/probe-store.sh or testing/shadow-oracle/scripts/store-persist.sh against
+# a store cell such as testing/shadow-oracle/scripts/store-persist.sh against
 # anything but sqlite. A check nobody can run on a laptop is a check nobody exercises against a real
 # artifact before trusting it (testing/fleet-fixtures/lib.sh says this about the probes themselves;
 # it is just as true of the fixtures the probes need).
@@ -34,7 +34,7 @@
 # PORTS — OFFSET, ON PURPOSE, TWICE OVER
 #   15432 / 13306 / 16379, read from service-images.tsv, exactly the offsets release-check.sh uses.
 #   They avoid a developer's OWN postgres on 5432 (the thing that makes a local run destructive), and
-#   they are nowhere near the shadow oracle's own 487xx/488xx band (record.sh's 48811/48812/48781,
+#   they are nowhere near the upgrade corpus's own 487xx/488xx band (record.sh's 48811/48812/48781,
 #   48813 for script cells, 48821/48822 for boot cells, and store-persist.sh's 48831/48832/48791).
 #   Those two bands are disjoint and MUST STAY disjoint; --selftest asserts it rather than trusting it.
 #
@@ -45,7 +45,7 @@
 #   a red that names the service, never a silent skip and never a re-run.
 #
 # NAMESPACES — THE CONCURRENCY HAZARD THE ORACLE CREATES
-#   The shadow-oracle job records the golden AND the candidate in the same job against the same
+#   The upgrade-corpus job records the golden AND the candidate in the same job against the same
 #   services. Postgres and mysql are shared, non-reset databases, so two recordings writing the same
 #   tables make each other's failure — and, worse, the candidate could READ THE GOLDEN'S ROWS and
 #   appear to persist when it did not. `ns` hands each recording its own database (postgres, mysql) or
