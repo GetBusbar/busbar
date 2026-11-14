@@ -49,8 +49,12 @@ async fn minted_ticket(label: &str) -> (Arc<crate::governance::GovState>, String
     (gov, key.id, ticket, now)
 }
 
-/// What the inbound auth point learned about the ticket.
-struct Peeked(Arc<busbar_contract::records::VirtualKey>);
+/// What the inbound auth point learned about the ticket: the key and the verified ticket the
+/// unit's `Derived` record carries to the final gate.
+struct Peeked(
+    Arc<busbar_contract::records::VirtualKey>,
+    crate::governance::VerifiedTicket,
+);
 
 /// The inbound auth point's ticket check.
 async fn auth_point(
@@ -58,7 +62,9 @@ async fn auth_point(
     ticket: &str,
     now: u64,
 ) -> Option<Peeked> {
-    gov.peek_ticket_async(PREFIX, ticket, now).await.map(Peeked)
+    gov.peek_door_ticket_async(PREFIX, ticket, now)
+        .await
+        .map(|(key, verified)| Peeked(key, verified))
 }
 
 /// The final gate's redemption for the same request.
@@ -77,6 +83,7 @@ async fn final_gate(
         Some(gov),
         now,
         &crate::appbuild::AcceptAll,
+        Some(&peeked.1),
     )
     .await
 }
@@ -130,8 +137,9 @@ async fn a_key_revoked_between_the_auth_point_and_the_final_gate_is_refused() {
 
 #[tokio::test]
 async fn a_signing_key_rotated_or_removed_between_the_auth_point_and_the_final_gate_is_refused() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
     for rotated in [Some(8u8), None] {
-        let (gov, _, ticket, now) = minted_ticket("rotated-mid-redemption").await;
+        let (gov, id, ticket, now) = minted_ticket("rotated-mid-redemption").await;
         let peeked = auth_point(&gov, &ticket, now)
             .await
             .expect("the auth point admits a live ticket");
@@ -139,6 +147,18 @@ async fn a_signing_key_rotated_or_removed_between_the_auth_point_and_the_final_g
         assert!(
             final_gate(&gov, &ticket, &peeked, now).await.is_err(),
             "a ticket whose signing key was rotated ({rotated:?}) mid-redemption is refused"
+        );
+        let _ = crate::audit::auditlog::flush_pending().await;
+        assert!(
+            !crate::audit::auditlog::AUDIT_LOG
+                .list_filtered(
+                    0,
+                    16,
+                    Some("ticket_signing_rotated"),
+                    Some(&format!("key:{id}")),
+                )
+                .is_empty(),
+            "the rotation refusal ({rotated:?}) is audited as ticket_signing_rotated"
         );
         gov.set_signing_key(Some(signer(7)));
         assert!(

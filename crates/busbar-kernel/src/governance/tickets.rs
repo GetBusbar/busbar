@@ -194,6 +194,34 @@ fn encoded_record(expires_at: u64, record: &[u8]) -> Secret<Vec<u8>> {
     bytes.extend_from_slice(record);
     Secret::new(bytes)
 }
+/// The audited refusal of a ticket whose signing key changed between its verification and a
+/// later standing re-check.
+const TICKET_SIGNING_ROTATED: &str = "ticket_signing_rotated";
+
+/// A door ticket whose signature was verified and whose claims were parsed once (SP-AU3), with
+/// the signing material it was verified under and, once the inbound auth point read it, its
+/// native record. Prepare and redeem take it by reference and never verify it again.
+pub(crate) struct VerifiedTicket {
+    prefix: String,
+    credential: zeroize::Zeroizing<String>,
+    id: String,
+    claims: super::signing::TokenClaims,
+    material: Arc<SigningMaterial>,
+    record: Option<Secret<Vec<u8>>>,
+}
+
+impl VerifiedTicket {
+    /// Whether this is the ticket `credential` presents on a `prefix` route.
+    pub(crate) fn presented_as(&self, prefix: &str, credential: &str) -> bool {
+        self.prefix == prefix && self.credential.as_str() == credential
+    }
+}
+
+/// Whether two signing materials verify the same tickets: the same key id and verifying key.
+fn same_signing_key(a: &SigningMaterial, b: &SigningMaterial) -> bool {
+    a.signer.kid() == b.signer.kid() && a.signer.verifying_key() == b.signer.verifying_key()
+}
+
 fn record_body_len(bytes: &Secret<Vec<u8>>, expires_at: u64) -> Option<usize> {
     let bytes = bytes.expose(&crate::seal::lend());
     (bytes.len() >= 9 && bytes[0] == 1 && bytes[1..9] == expires_at.to_be_bytes())
@@ -471,16 +499,18 @@ impl GovState {
         }
         settled
     }
+    /// Verify, prepare and redeem one ticket in a single call (tests only; a request carries
+    /// its auth point's verified ticket to the final gate instead).
+    #[cfg(test)]
     pub(crate) async fn admit_ticket_async(
         self: &Arc<Self>,
         prefix: &str,
         credential: &str,
         now: u64,
     ) -> Option<(Arc<VirtualKey>, Vec<u8>)> {
-        let identity = self
-            .prepare_ticket_redemption_async(prefix, credential, now)
-            .await?;
-        self.redeem_verified_ticket_async(identity, now).await
+        let (ticket, _) = self.verify_ticket(prefix, credential, now)?;
+        let identity = self.prepare_verified_ticket(&ticket, now).await?;
+        self.redeem_prepared_ticket(identity, &ticket, now).await
     }
     pub async fn prepare_ticket_redemption_async(
         self: &Arc<Self>,
@@ -488,12 +518,31 @@ impl GovState {
         credential: &str,
         now: u64,
     ) -> Option<VerifiedTicketIdentity> {
-        let (principal, id, expires_at) = self.checked_ticket(prefix, credential, now)?;
+        let (ticket, _) = self.verify_ticket(prefix, credential, now)?;
+        self.prepare_verified_ticket(&ticket, now).await
+    }
+    /// Stage the single-use spend of a verified ticket. The record the auth point read is the
+    /// spend's condition, so a ticket spent since then fails the condition and is refused; a
+    /// ticket verified without an auth point reads its record here. Standing is re-checked after
+    /// that, so the identity carries the key as it stands now.
+    pub(crate) async fn prepare_verified_ticket(
+        self: &Arc<Self>,
+        ticket: &VerifiedTicket,
+        now: u64,
+    ) -> Option<VerifiedTicketIdentity> {
+        let (id, expires_at) = (ticket.id.clone(), ticket.claims.exp);
         let core = self.core_store_handle().ok()?;
-        let operation = if let Some(operation) = self.ticket_operation(&id) {
+        let pending = self.ticket_operation(&id);
+        let original = match (&pending, &ticket.record) {
+            (Some(_), _) => None,
+            (None, Some(record)) => Some(record.clone()),
+            (None, None) => Some(native_record(&core, &id, expires_at).await.ok()??),
+        };
+        let principal = self.standing_of(ticket, now)?;
+        let operation = if let Some(operation) = pending {
             operation
         } else {
-            let original = native_record(&core, &id, expires_at).await.ok()??;
+            let original = original?;
             record_body_len(&original, expires_at)?;
             let record = Secret::new(original.expose(&crate::seal::lend())[9..].to_vec());
             let op_id = request_id(&core)?;
@@ -565,8 +614,8 @@ impl GovState {
             principal,
             expires_at,
             store: core,
-            prefix: prefix.into(),
-            credential: zeroize::Zeroizing::new(credential.into()),
+            prefix: ticket.prefix.clone(),
+            credential: ticket.credential.clone(),
         })
     }
     pub async fn redeem_verified_ticket_async(
@@ -574,19 +623,31 @@ impl GovState {
         identity: VerifiedTicketIdentity,
         now: u64,
     ) -> Option<(Arc<VirtualKey>, Vec<u8>)> {
-        let core = self.core_store_handle().ok()?;
-        if !Arc::ptr_eq(&core, &identity.store) {
-            return None;
-        }
-        let (key, id, exp) = self.checked_ticket(&identity.prefix, &identity.credential, now)?;
-        if id != identity.id
-            || exp != identity.expires_at
-            || key.id != identity.principal.id
+        let (ticket, key) = self.verify_ticket(&identity.prefix, &identity.credential, now)?;
+        if key.id != identity.principal.id
             || key.generation_hash != identity.principal.generation_hash
         {
             return None;
         }
-        let operation = self.ticket_operation(&id)?;
+        self.redeem_prepared_ticket(identity, &ticket, now).await
+    }
+    /// Spend a prepared ticket. The caller prepared `identity` from `ticket` with no `.await`
+    /// since, so its principal is the standing checked then; standing is re-checked once more
+    /// after the spend's own waits.
+    pub(crate) async fn redeem_prepared_ticket(
+        self: &Arc<Self>,
+        identity: VerifiedTicketIdentity,
+        ticket: &VerifiedTicket,
+        now: u64,
+    ) -> Option<(Arc<VirtualKey>, Vec<u8>)> {
+        let core = self.core_store_handle().ok()?;
+        if !Arc::ptr_eq(&core, &identity.store)
+            || identity.id != ticket.id
+            || identity.expires_at != ticket.claims.exp
+        {
+            return None;
+        }
+        let operation = self.ticket_operation(&identity.id)?;
         let _running = operation.runner.enter(false).await.ok()?;
         if operation.delivered.load(Ordering::Acquire)
             || operation.kind != OperationKind::Spend
@@ -599,11 +660,11 @@ impl GovState {
                 if operation.delivered.swap(true, Ordering::AcqRel) {
                     return None;
                 }
-                self.forget_ticket_operation(&id, &operation);
-                let current = self
-                    .checked_ticket(&identity.prefix, &identity.credential, now)?
-                    .0;
-                if current.id != key.id || current.generation_hash != key.generation_hash {
+                self.forget_ticket_operation(&identity.id, &operation);
+                let current = self.standing_of(ticket, now)?;
+                if current.id != identity.principal.id
+                    || current.generation_hash != identity.principal.generation_hash
+                {
                     return None;
                 }
                 Some((
@@ -613,31 +674,42 @@ impl GovState {
             }
             Outcome::ConditionConflict | Outcome::OpIdConflict | Outcome::NoEffect(_) => {
                 operation.delivered.store(true, Ordering::Release);
-                self.forget_ticket_operation(&id, &operation);
+                self.forget_ticket_operation(&identity.id, &operation);
                 None
             }
             Outcome::Pending(_) | Outcome::Reconcile(_) | Outcome::Busy(_) => None,
         }
     }
+    /// The inbound auth point's ticket check: verify the ticket once, read its native record once
+    /// and re-check standing after that read. The verified ticket, with the record it read, is
+    /// carried to the final gate (SP-AU3).
+    pub(crate) async fn peek_door_ticket_async(
+        self: &Arc<Self>,
+        prefix: &str,
+        credential: &str,
+        now: u64,
+    ) -> Option<(Arc<VirtualKey>, VerifiedTicket)> {
+        let (mut ticket, key) = self.verify_ticket(prefix, credential, now)?;
+        let record = native_record(self.core_store().ok()?, &ticket.id, ticket.claims.exp)
+            .await
+            .ok()??;
+        let current = self.standing_of(&ticket, now)?;
+        if current.id != key.id || current.generation_hash != key.generation_hash {
+            return None;
+        }
+        ticket.record = Some(record);
+        Some((current, ticket))
+    }
+    #[cfg(test)]
     pub(crate) async fn peek_ticket_async(
         self: &Arc<Self>,
         prefix: &str,
         credential: &str,
         now: u64,
     ) -> Option<Arc<VirtualKey>> {
-        let (key, id, expires_at) = self.checked_ticket(prefix, credential, now)?;
-        native_record(self.core_store().ok()?, &id, expires_at)
+        self.peek_door_ticket_async(prefix, credential, now)
             .await
-            .ok()??;
-        let (current, current_id, current_expiry) = self.checked_ticket(prefix, credential, now)?;
-        if current.id != key.id
-            || current.generation_hash != key.generation_hash
-            || current_id != id
-            || current_expiry != expires_at
-        {
-            return None;
-        }
-        Some(current)
+            .map(|(key, _)| key)
     }
     pub async fn mint_ticket(
         &self,
@@ -819,12 +891,15 @@ impl GovState {
         }
         Ok((std::mem::take(&mut *identity.credential), exp))
     }
-    fn checked_ticket(
+    /// Verify a door ticket's signature and parse its claims: the one place a ticket is verified
+    /// (SP-AU3). The key it names must stand now. Every later check reads the result through
+    /// `standing_of`.
+    pub(crate) fn verify_ticket(
         &self,
         prefix: &str,
         credential: &str,
         now: u64,
-    ) -> Option<(Arc<VirtualKey>, String, u64)> {
+    ) -> Option<(VerifiedTicket, Arc<VirtualKey>)> {
         if prefix.is_empty() {
             return None;
         }
@@ -839,9 +914,42 @@ impl GovState {
             }
         };
         let id = claims.ticket.clone()?;
-        tick(Derive::TicketStanding);
         let key = self.standing_key(&claims, now)?;
-        Some((key, id, claims.exp))
+        Some((
+            VerifiedTicket {
+                prefix: prefix.into(),
+                credential: zeroize::Zeroizing::new(credential.into()),
+                id,
+                claims,
+                material,
+                record: None,
+            },
+            key,
+        ))
+    }
+    /// Re-check a verified ticket's standing after an `.await`, without verifying its signature
+    /// again. The signing material it verified under must still be this node's: a key rotated to
+    /// another one, or removed, refuses `ticket_signing_rotated`, audited. A reload that keeps the
+    /// same key is not a rotation.
+    fn standing_of(&self, ticket: &VerifiedTicket, now: u64) -> Option<Arc<VirtualKey>> {
+        tick(Derive::TicketStanding);
+        let unchanged = self.signing_material().is_some_and(|current| {
+            Arc::ptr_eq(&current, &ticket.material) || same_signing_key(&current, &ticket.material)
+        });
+        if !unchanged {
+            tracing::warn!(
+                sub = %ticket.claims.sub,
+                "door ticket refused: its signing key was rotated or removed mid-redemption"
+            );
+            crate::audit_ring::AUDIT.record_by(
+                TICKET_SIGNING_ROTATED,
+                &format!("key:{}", ticket.claims.sub),
+                crate::audit_ring::OUTCOME_REJECTED,
+                &ticket.claims.sub,
+            );
+            return None;
+        }
+        self.standing_key(&ticket.claims, now)
     }
 }
 

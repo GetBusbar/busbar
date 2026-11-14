@@ -172,6 +172,7 @@ async fn refused_host_custody_never_spends_the_durable_ticket() {
         Some(&gov),
         now,
         &Refuse,
+        None,
     )
     .await
     .is_err());

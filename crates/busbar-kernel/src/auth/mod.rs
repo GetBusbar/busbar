@@ -2092,6 +2092,7 @@ async fn ticket_verdict(
         gov,
         now,
         &crate::appbuild::AcceptAll,
+        None,
     )
     .await
     .map(|admitted| admitted.map(|(verdict, record, _)| (verdict, record)))
@@ -2111,15 +2112,23 @@ async fn claimed_ticket_verdict(
     gov: Option<&std::sync::Arc<crate::governance::GovState>>,
     now: u64,
     rules: &dyn crate::appbuild::RootRules,
+    carried: Option<&crate::governance::VerifiedTicket>,
 ) -> Result<Option<ClaimedTicketVerdict>, ()> {
     use crate::host_services::{HostTicketAdmission, TicketClaimDisposition};
     match (!signed, prefix, token) {
         (true, Some(prefix), Some(token)) if keys_in_chain && token.starts_with(prefix) => {
             let gov = gov.ok_or(())?;
-            let identity = gov
-                .prepare_ticket_redemption_async(prefix, token, now)
-                .await
-                .ok_or(())?;
+            // The auth point verified this ticket and read its record (SP-AU3); a request whose
+            // auth point verified none, or another credential, verifies it here, once.
+            let verified;
+            let ticket = match carried.filter(|ticket| ticket.presented_as(prefix, token)) {
+                Some(ticket) => ticket,
+                None => {
+                    verified = gov.verify_ticket(prefix, token, now).ok_or(())?.0;
+                    &verified
+                }
+            };
+            let identity = gov.prepare_verified_ticket(ticket, now).await.ok_or(())?;
 
             let reservation = match rules.claim_ticket_admission(&identity) {
                 TicketClaimDisposition::Ordinary => None,
@@ -2131,13 +2140,10 @@ async fn claimed_ticket_verdict(
                 }
                 TicketClaimDisposition::Refused => return Err(()),
             };
-            let (key, record) = if reservation.is_some() {
-                gov.redeem_verified_ticket_async(identity, now).await
-            } else {
-                drop(identity);
-                gov.admit_ticket_async(prefix, token, now).await
-            }
-            .ok_or(())?;
+            let (key, record) = gov
+                .redeem_prepared_ticket(identity, ticket, now)
+                .await
+                .ok_or(())?;
             let admission = match reservation {
                 Some(reservation) => {
                     let spent = crate::plane_driver::SpentTicketReservation::after_redemption(
@@ -2580,6 +2586,9 @@ pub(crate) async fn auth_middleware(
         app.governance.as_ref(),
         busbar_kernel::store::now(),
         app.root_rules.as_ref(),
+        inbound
+            .as_ref()
+            .and_then(crate::inbound::RequestAdmission::carried_ticket),
     )
     .await
     {
