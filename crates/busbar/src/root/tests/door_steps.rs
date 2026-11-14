@@ -2195,6 +2195,81 @@ async fn a_child_of_a_routed_unit_with_no_member_opens_no_money() {
     assert_eq!(usage.requests, 1, "only the parent's admission is counted");
 }
 
+#[test]
+fn opened_lane_refuses_a_routed_unit_with_no_member() {
+    use busbar_contract::caps::ReasonCode;
+    let routed = |label: &str, members: &[&str]| owned(label, members).expect("a route");
+    assert_eq!(
+        super::opened_lane("", None).map_err(|r| r.reason()),
+        Ok(String::new()),
+        "an unrouted unit keeps the empty lane"
+    );
+    assert_eq!(
+        super::opened_lane("", Some(&routed("p", &[]))).map_err(|r| r.reason()),
+        Err(ReasonCode::Unpriced),
+        "a routed unit with no member is refused, never laned \"\""
+    );
+    assert_eq!(
+        super::opened_lane("", Some(&routed("p", &["m", "n"]))).map_err(|r| r.reason()),
+        Ok("m".to_string())
+    );
+    assert_eq!(
+        super::opened_lane("mcp", Some(&routed("p", &["m"]))).map_err(|r| r.reason()),
+        Ok(super::plane_lane("mcp", "m"))
+    );
+}
+
+/// LINT-RULES R61 `no-default-money-lane` (UPG-A31 r4 §8). Interim source law until a custom-lint
+/// runner exists: the lane a money opener (`PlaneMoney::open_admitted` through
+/// `UnitMoney { lane }`, `SpentTicketReservation::adopt`, `PlaneMoney::open_child`) is handed comes
+/// from `opened_lane(..)?`, never from a defaulting fallback that turns "routed, no member" into the
+/// unpriceable lane `""`.
+#[test]
+fn money_openers_take_no_default_lane() {
+    const DEFAULTS: [&str; 4] = [
+        "unwrap_or_default()",
+        "unwrap_or(String::new())",
+        "unwrap_or_else(String::new)",
+        "Default::default()",
+    ];
+    let src = include_str!("../door_steps.rs");
+    for opener in [".open_admitted(", ".adopt(", ".open_child("] {
+        assert!(
+            src.contains(opener),
+            "the money opener {opener} is called in door_steps.rs (non-vacuity)"
+        );
+    }
+    let mut bindings = 0;
+    for (at, _) in src.match_indices("let lane =") {
+        let statement = src[at..].split(';').next().unwrap_or_default();
+        bindings += 1;
+        for banned in DEFAULTS {
+            assert!(
+                !statement.contains(banned),
+                "a lane is bound through {banned}: {statement}"
+            );
+        }
+    }
+    for (at, _) in src.match_indices("lane:") {
+        let field = src[at..].split(['\n', ',']).next().unwrap_or_default();
+        for banned in DEFAULTS {
+            assert!(
+                !field.contains(banned),
+                "a lane field is filled through {banned}: {field}"
+            );
+        }
+    }
+    assert!(
+        bindings >= 2,
+        "the ticket and child lanes are bound with `let lane =`"
+    );
+    assert_eq!(
+        src.matches("opened_lane(&self.facts.plane, ").count(),
+        3,
+        "charge, ticket adopt and child accrual each open their lane through opened_lane"
+    );
+}
+
 fn styled() -> crate::root::loader::dispatch::kinds::plane::ServedFacts {
     use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
     crate::root::loader::dispatch::kinds::plane::ServedFacts {
