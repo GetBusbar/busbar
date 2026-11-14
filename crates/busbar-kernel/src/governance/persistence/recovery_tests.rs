@@ -76,6 +76,11 @@ struct Backend {
     lose_reply: AtomicBool,
     hang: AtomicBool,
     clock_seconds: AtomicU64,
+    /// One-shot: the next commit that puts this selected row is a definite
+    /// ConditionConflict with no effect.
+    conflict_selection: Mutex<Option<Address>>,
+    /// One-shot: the next read that includes this address fails Unavailable.
+    fail_read_of: Mutex<Option<Address>>,
 }
 impl Backend {
     fn read_rows(&self, request: &Read) -> ReadResult {
@@ -134,6 +139,16 @@ impl PersistenceBackend for Backend {
         }
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        {
+            let mut fail = self.fail_read_of.lock().unwrap();
+            if fail
+                .as_ref()
+                .is_some_and(|at| request.addresses.contains(at))
+            {
+                fail.take();
+                return Box::pin(async { Err(Failure::Unavailable) });
+            }
+        }
         let hook = self.read_hook.lock().unwrap().clone();
         if let Some(hook) = hook {
             return hook(request);
@@ -170,6 +185,18 @@ impl PersistenceBackend for Backend {
             }
             let mut state = self.state.lock().unwrap();
             let candidate = prepared.candidate();
+            {
+                let mut conflict = self.conflict_selection.lock().unwrap();
+                let selects = conflict.as_ref().is_some_and(|target| {
+                    candidate.mutations.iter().any(
+                        |mutation| matches!(mutation, Mutation::Put { address, .. } if address == target),
+                    )
+                });
+                if selects {
+                    conflict.take();
+                    return Ok(Decision::ConditionConflict);
+                }
+            }
             if let Some(digest) = state.receipts.get(&candidate.id.operation) {
                 return Ok(if *digest == prepared.fingerprint() {
                     Decision::Applied(candidate.result.clone())
@@ -965,6 +992,24 @@ async fn history_record_cache_bounds_native_proof_and_preserves_miss_and_final_g
     assert!(history.finish().await.is_err());
 }
 
+/// The foreign final guard is unchanged: a foreign owner's append after the
+/// proof still invalidates it, through the store-observed head predicates.
+#[tokio::test]
+async fn history_foreign_proof_is_invalidated_by_foreign_append() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let foreign = sink(Arc::new(attach(backend.clone(), 2).await), 8).await;
+    let mut first = intent();
+    first.operation_id = [21; 16];
+    foreign.persist(&first).await.unwrap();
+    let mut history = History::new(&recovery.store);
+    history.proof(8).await.unwrap();
+    let mut second = intent();
+    second.operation_id = [22; 16];
+    foreign.persist(&second).await.unwrap();
+    assert!(history.finish().await.is_err());
+}
+
 #[tokio::test]
 async fn history_record_cache_never_publishes_an_incomplete_native_proof() {
     let backend = Arc::new(Backend::default());
@@ -1367,4 +1412,125 @@ async fn observing_history_confirms_extended_local_head() {
         observing.finish().await,
         Err(RecoveryError::Unavailable(_))
     ));
+}
+
+/// Before answering any read of `journal`'s original frames, commit one more
+/// live record through that owner, as request-path audits do throughout a
+/// replay. Reads the hook's own append makes are answered plainly.
+fn append_on_every_original_read(
+    backend: &Arc<Backend>,
+    journal: &Arc<RuntimeJournal>,
+) -> Arc<AtomicU64> {
+    let appended = Arc::new(AtomicU64::new(0));
+    let busy = Arc::new(AtomicBool::new(false));
+    let node = journal.node().to_be_bytes();
+    let (owner, journal, count) = (backend.clone(), journal.clone(), appended.clone());
+    *backend.read_hook.lock().unwrap() = Some(Arc::new(move |request: Arc<Read>| {
+        let (backend, journal, count, busy) =
+            (owner.clone(), journal.clone(), count.clone(), busy.clone());
+        let original = request.addresses.iter().any(|at| {
+            at.key.starts_with(b"busbar.journal4\0")
+                && at.key.get(16..24) == Some(&node[..])
+                && at.key.get(24) == Some(&b'R')
+        });
+        Box::pin(async move {
+            if original && !busy.swap(true, Ordering::SeqCst) {
+                live_append(&journal).await;
+                count.fetch_add(1, Ordering::SeqCst);
+                busy.store(false, Ordering::SeqCst);
+            }
+            Ok(backend.read_rows(&request))
+        })
+    }));
+    appended
+}
+
+/// PERFPASS-F2 T2: every own-node head compare in a persist (the preflight
+/// History, the owned proof and the post-selection verification) is
+/// interleaved with a request-path append on this node's own journal. None
+/// of them may lose to it.
+#[tokio::test]
+async fn actual_store_usage_recovery_persists_while_request_audits_append() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+        live_append(&recovery.journal).await;
+        let appended = append_on_every_original_read(&backend, &recovery.journal);
+        let event = intent();
+        let first = recovery.persist(&event).await;
+        assert!(first.is_ok(), "persist lost to a local append: {first:?}");
+        let selected: Vec<_> = recovery
+            .replay_selections()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|selection| selection.selected)
+            .collect();
+        assert_eq!(selected, vec![event.clone()]);
+        let again = recovery.persist(&event).await;
+        assert!(again.is_ok(), "already-selected verify lost: {again:?}");
+        assert!(appended.load(Ordering::SeqCst) > 0, "no append interleaved");
+    })
+    .await
+    .expect("no hang");
+}
+
+/// PERFPASS-F2 T2b: the read paths keep one pin and confirm it against the
+/// live owner, so local appends during their replays cannot refuse them.
+#[tokio::test]
+async fn actual_store_usage_recovery_reads_while_request_audits_append() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+        let event = intent();
+        recovery.persist(&event).await.unwrap();
+        let appended = append_on_every_original_read(&backend, &recovery.journal);
+        let selections = recovery.replay_selections().await;
+        assert!(selections.is_ok(), "{selections:?}");
+        let events = recovery.replay().await;
+        assert!(events.is_ok(), "{events:?}");
+        assert_eq!(events.unwrap(), vec![event]);
+        let foreign = recovery.inspect_foreign().await;
+        assert!(foreign.is_ok(), "{foreign:?}");
+        assert!(appended.load(Ordering::SeqCst) > 0, "no append interleaved");
+    })
+    .await
+    .expect("no hang");
+}
+
+/// PERFPASS-F2 T2c: after a definite no-effect selection, a transient failure
+/// of the post-verification keeps the pending work and is reported as what it
+/// is; the next persist completes it.
+#[tokio::test]
+async fn definite_no_effect_with_transient_verify_keeps_pending() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    let event = intent();
+    let selected = address(&event.operation_id);
+    *backend.conflict_selection.lock().unwrap() = Some(selected.clone());
+    // The ConditionConflict reply arms one failing read of the selected row,
+    // which the post-verification makes first.
+    let (owner, armed) = (backend.clone(), Arc::new(AtomicBool::new(false)));
+    let flag = armed.clone();
+    *backend.after_read.lock().unwrap() = Some(Arc::new(move |_: &Backend, _: &Read| {
+        if owner.conflict_selection.lock().unwrap().is_none() && !flag.swap(true, Ordering::SeqCst)
+        {
+            *owner.fail_read_of.lock().unwrap() = Some(selected.clone());
+        }
+    }));
+    let first = recovery.persist(&event).await;
+    assert!(armed.load(Ordering::SeqCst), "the conflict never happened");
+    assert!(
+        matches!(first, Err(RecoveryError::Unavailable(_))),
+        "a transient verify failure must not discard the pending selection: {first:?}"
+    );
+    assert!(recovery
+        .state
+        .lock()
+        .unwrap()
+        .pending
+        .contains_key(&event.operation_id));
+    backend.after_read.lock().unwrap().take();
+    recovery.persist(&event).await.unwrap();
+    recovery.confirm_owned_checkpoint(&event).await.unwrap();
 }
