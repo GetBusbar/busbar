@@ -239,7 +239,7 @@ async fn a_sealed_audit_record_goes_on_the_journal_whole() {
     assert_eq!((record.wall, record.mono), (sealed.wall, sealed.mono));
     assert_eq!(*decoded, sealed);
     assert_eq!(book.lock().unwrap().record.sealed(), 1);
-    assert_eq!(book.lock().unwrap().audit_records, vec![sealed]);
+    assert_eq!(book.lock().unwrap().audit_records().to_vec(), vec![sealed]);
 }
 
 #[tokio::test]
@@ -269,10 +269,10 @@ async fn range_older_than_ring_is_read_back_after_restart() {
     for unit in 1..=total {
         seal(&book, unit).await;
     }
-    assert_eq!(book.lock().unwrap().audit_records.len(), AUDIT_RING);
+    assert_eq!(book.lock().unwrap().audit_records().len(), AUDIT_RING);
     let reopened = fixture.reopen().await;
-    assert_eq!(reopened.audit_records.len(), AUDIT_RING);
-    assert_eq!(reopened.audit_records[0].seq, 6);
+    assert_eq!(reopened.audit_records().len(), AUDIT_RING);
+    assert_eq!(reopened.audit_records()[0].seq, 6);
     let old = reopened.audit_window(1, 3).await.unwrap();
     assert_eq!(old.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 2, 3]);
     assert!(AuditChain::verify_window(&old).is_ok());
@@ -294,7 +294,7 @@ async fn retained_tamper_and_unsigned_post_bootstrap_are_findings() {
     assert!(book.lock().unwrap().retained_audit_findings().is_empty());
     {
         let mut held = book.lock().unwrap();
-        held.audit_records[1].usage.fee_count += 1;
+        held.audit_records_mut_for_tamper_test()[1].usage.fee_count += 1;
         assert!(held
             .retained_audit_findings()
             .iter()
@@ -303,8 +303,8 @@ async fn retained_tamper_and_unsigned_post_bootstrap_are_findings() {
     let mut reopened = fixture.reopen().await;
     bind(&mut reopened, &fixture).await;
     assert!(reopened.retained_audit_findings().is_empty());
-    reopened.audit_records[0].signature = None;
-    reopened.audit_records[0].key_id = None;
+    reopened.audit_records_mut_for_tamper_test()[0].signature = None;
+    reopened.audit_records_mut_for_tamper_test()[0].key_id = None;
     assert_eq!(
         reopened.retained_audit_findings(),
         vec!["record 1 is unsigned, sealed after the keyset was bound"]
@@ -324,8 +324,8 @@ async fn records_before_bootstrap_remain_valid_and_signed_records_verify_after_r
     let mut reopened = fixture.reopen().await;
     bind(&mut reopened, &fixture).await;
     assert!(reopened.retained_audit_findings().is_empty());
-    reopened.audit_records[1].signature = None;
-    reopened.audit_records[1].key_id = None;
+    reopened.audit_records_mut_for_tamper_test()[1].signature = None;
+    reopened.audit_records_mut_for_tamper_test()[1].key_id = None;
     assert_eq!(
         reopened.retained_audit_findings(),
         vec!["record 2 is unsigned, sealed after the keyset was bound"]
@@ -421,7 +421,7 @@ async fn lost_ack_keeps_exact_candidate_and_restart_resumes_committed_chain() {
         assert_eq!(sent[0].candidate().id, sent[1].candidate().id);
         assert_eq!(sent[0].fingerprint(), sent[1].fingerprint());
     }
-    assert_eq!(fixture.reopen().await.audit_records.len(), 1);
+    assert_eq!(fixture.reopen().await.audit_records().len(), 1);
 }
 
 #[tokio::test]
@@ -447,7 +447,7 @@ async fn pending_read_never_builds_an_empty_local_journal() {
     assert!(parked.load(Ordering::Acquire));
     *fixture.faults.on_read.lock().unwrap() = None;
     gate.notify_one();
-    assert_eq!(rebuilt.await.unwrap().audit_records.len(), 1);
+    assert_eq!(rebuilt.await.unwrap().audit_records().len(), 1);
 }
 
 #[tokio::test]
@@ -487,8 +487,8 @@ async fn registered_peers_keep_separate_records_and_walk_checks_every_original()
     }
     let mut resumed = first_fixture.reopen().await;
     bind(&mut resumed, &first_fixture).await;
-    assert_eq!(resumed.audit_records.len(), 2);
-    assert_eq!(second_fixture.reopen().await.audit_records.len(), 5);
+    assert_eq!(resumed.audit_records().len(), 2);
+    assert_eq!(second_fixture.reopen().await.audit_records().len(), 5);
     let (lane, own, keys, budget) = resumed.stored_walk_inputs();
     let walk = walk_stored_chains(&lane, own, &keys, budget).await;
     let mut both = vec![first.id, second.id];
@@ -522,7 +522,7 @@ async fn stored_walk_preserves_unsigned_prebootstrap_and_reports_unsigned_postbo
         .is_empty());
     {
         let mut held = book.lock().unwrap();
-        held.record = AuditChain::resume(&held.audit_records).sealing_as(7);
+        held.record = AuditChain::resume(held.audit_records()).sealing_as(7);
     }
     let unsigned = seal(&book, 3).await;
     assert!(unsigned.key_id.is_none() && unsigned.signature.is_none());

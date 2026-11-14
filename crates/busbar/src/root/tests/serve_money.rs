@@ -600,9 +600,9 @@ async fn an_unknown_route_is_refused_before_admission_and_opens_no_hold() {
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
     assert_eq!(g.post.open_units(), 0, "no node hold remains");
     let book = g.book.lock().expect("unpoisoned");
-    assert_eq!(book.audit_records.len(), 1, "the refusal is sealed once");
+    assert_eq!(book.audit_records().len(), 1, "the refusal is sealed once");
     assert!(matches!(
-        book.audit_records[0].outcome.unit_end,
+        book.audit_records()[0].outcome.unit_end,
         busbar_contract::caps::Outcome::Refused(
             _,
             busbar_contract::caps::ReasonCode::NoDestination
@@ -708,7 +708,7 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
 
     {
         let book = g.book.lock().expect("unpoisoned");
-        let records = &book.audit_records;
+        let records = book.audit_records();
         assert_eq!(records.len(), 2, "one record per unit: {records:?}");
         let parent = records
             .iter()
@@ -1309,8 +1309,8 @@ async fn a_failed_session_attachment_records_its_fault_and_cleans_up_once() {
             "the carrier closes exactly once for its unit"
         );
         let book = g.book.lock().expect("unpoisoned");
-        assert_eq!(book.audit_records.len(), 1, "one final session record");
-        let record = &book.audit_records[0];
+        assert_eq!(book.audit_records().len(), 1, "one final session record");
+        let record = book.audit_records()[0];
         assert_eq!(record.what.unit_key.get(), admitted[0]);
         assert_eq!(
             record.outcome.unit_end,
@@ -1353,9 +1353,9 @@ async fn an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusi
     assert_eq!(g.money.open_units(), 0);
     {
         let book = g.book.lock().expect("unpoisoned");
-        assert_eq!(book.audit_records.len(), 2);
+        assert_eq!(book.audit_records().len(), 2);
         assert_eq!(
-            book.audit_records
+            book.audit_records()
                 .iter()
                 .filter(|r| r.what.parent.is_some())
                 .count(),
@@ -1388,7 +1388,7 @@ async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound
             g.post.node().sweep(g.post.node().arrived());
             if g.post.open_units() == 0
                 && g.money.open_units() == 0
-                && g.book.lock().expect("unpoisoned").audit_records.len() == 2
+                && g.book.lock().expect("unpoisoned").audit_records().len() == 2
             {
                 break;
             }
@@ -1511,7 +1511,12 @@ async fn a_catalog_never_lends_never_kept_fields_and_preserves_permitted_field_b
         .map(|v| v.as_bytes())
         .collect();
     assert_eq!(values, [PERMITTED_VALUE, b"second value".as_slice()]);
-    assert!(g.book.lock().expect("unpoisoned").audit_records.is_empty());
+    assert!(g
+        .book
+        .lock()
+        .expect("unpoisoned")
+        .audit_records()
+        .is_empty());
     assert_eq!(g.requests().await, 0);
     assert_eq!(g.post.open_units(), 0);
     assert_eq!(g.money.open_units(), 0);
@@ -1563,7 +1568,7 @@ async fn a_session_decode_refusal_uses_the_bound_live_facts() {
     assert_eq!(refused.status, 404);
     let book = g.book.lock().expect("unpoisoned");
     assert_eq!(
-        book.audit_records
+        book.audit_records()
             .last()
             .expect("session audit")
             .what
@@ -2204,12 +2209,12 @@ async fn cancelling_an_actual_owned_session_retires_money_even_without_source_re
         );
         let book = g.book.lock().unwrap();
         assert_eq!(
-            book.audit_records.len(),
+            book.audit_records().len(),
             1,
             "one genuine terminal audit, with no sweep duplicate"
         );
         assert_eq!(
-            book.audit_records[0].outcome.unit_end,
+            book.audit_records()[0].outcome.unit_end,
             Outcome::Aborted(Abort::Kernel {
                 reason: ReasonCode::ClientGone
             })

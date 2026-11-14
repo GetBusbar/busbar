@@ -26,8 +26,7 @@ impl Durability {
         if !sealed.is_empty() {
             self.record = AuditChain::resume(&sealed).sealing_as(self.record.node());
         }
-        let keep = sealed.len().saturating_sub(AUDIT_RING);
-        self.audit_records = sealed.split_off(keep);
+        self.audit_ring = AuditRing::from_sealed(sealed);
     }
 
     /// Bound memory-only hot sealing. Returning this pair is not persistence;
@@ -50,11 +49,7 @@ impl Durability {
         if record.key_id.is_some() && self.audit_signed_from.is_none() {
             self.audit_signed_from = Some(record.seq);
         }
-        self.audit_records.push(record.clone());
-        if self.audit_records.len() > AUDIT_RING {
-            let over = self.audit_records.len() - AUDIT_RING;
-            self.audit_records.drain(..over);
-        }
+        self.audit_ring.push(record.clone());
         Ok((record, run))
     }
 
@@ -86,10 +81,10 @@ impl Durability {
 
     #[must_use]
     pub fn audit_window_at(&self, from: u64, to: u64) -> AuditWindowAt {
-        let covered = self.audit_records.first().is_some_and(|r| r.seq <= from);
+        let covered = self.audit_records().first().is_some_and(|r| r.seq <= from);
         let pick = |r: &&AuditRecord| r.seq >= from && r.seq <= to;
-        if covered || self.audit_records.is_empty() && !self.keeps_chain() {
-            let cached = self.audit_records.iter().filter(pick).take(AUDIT_RING);
+        if covered || self.audit_records().is_empty() && !self.keeps_chain() {
+            let cached = self.audit_records().iter().filter(pick).take(AUDIT_RING);
             return AuditWindowAt::Cached(cached.cloned().collect());
         }
         AuditWindowAt::OnChain {
@@ -110,12 +105,12 @@ impl Durability {
         if since > to || window.len() >= AUDIT_RING || self.record.next_seq() <= since {
             return true;
         }
-        match self.audit_records.first() {
+        match self.audit_records().first() {
             Some(oldest) if oldest.seq <= since => {}
             _ => return false,
         }
         window.extend(
-            self.audit_records
+            self.audit_records()
                 .iter()
                 .filter(|r| r.seq >= since && r.seq <= to)
                 .cloned(),
@@ -127,11 +122,11 @@ impl Durability {
     #[must_use]
     pub fn retained_audit_findings(&self) -> Vec<String> {
         let mut findings = Vec::new();
-        if let Err(broken) = AuditChain::verify_window(&self.audit_records) {
+        if let Err(broken) = AuditChain::verify_window(self.audit_records()) {
             findings.push(format!("{broken:?}"));
         }
         let keys = keyset_of(&self.record);
-        for record in &self.audit_records {
+        for record in self.audit_records() {
             let Some(key_id) = record.key_id.as_deref() else {
                 if self
                     .audit_signed_from

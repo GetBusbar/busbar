@@ -15,7 +15,7 @@ use busbar_kernel_audit::{
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-use super::{Durability, AUDIT_RING};
+use super::Durability;
 
 /// Captured only by NodeEndPost from the actual unit and its pinned host state. The outer
 /// unit.accrued signature binds these facts to the admitted money snapshot and original identity.
@@ -218,14 +218,5 @@ fn publish(book: &Arc<Mutex<Durability>>, record: busbar_kernel_audit::AuditReco
     if record.key_id.is_some() && book.audit_signed_from.is_none() {
         book.audit_signed_from = Some(record.seq);
     }
-    if !book
-        .audit_records
-        .iter()
-        .any(|existing| existing == &record)
-    {
-        book.audit_records.push(record);
-        if book.audit_records.len() > AUDIT_RING {
-            book.audit_records.remove(0);
-        }
-    }
+    book.audit_ring.push_unique(record);
 }
