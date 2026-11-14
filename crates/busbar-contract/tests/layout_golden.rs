@@ -121,7 +121,8 @@ fn compute_layout() -> String {
         [
             id,
             codec,
-            _reserved,
+            slot,
+            seq,
             time,
             predicates,
             predicates_len,
@@ -177,19 +178,11 @@ fn compute_layout() -> String {
             needed_bytes
         ]
     );
-    record!(s, pstore::CommitIn, [head, candidate, result]);
+    record!(s, pstore::CommitIn, [head, candidate]);
     record!(
         s,
         pstore::CommitOut,
-        [
-            head,
-            code,
-            _reserved,
-            observed_at,
-            authority,
-            written,
-            needed
-        ]
+        [head, code, _reserved, observed_at, authority]
     );
     record!(s, pstore::ClockIn, [head, dataset]);
     record!(s, pstore::ClockOut, [head, observed_at, authority]);

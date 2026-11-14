@@ -174,15 +174,13 @@ fn response(request: &native::Request, state: &Native) -> native::Response {
                 snapshot: [6; 16],
             })
         }
-        Request::Finish {
-            activation_receipt, ..
-        } => {
-            if activation_receipt.phase == native::CompletionPhase::Activation {
+        Request::Finish { decision, .. } => {
+            if decision.phase == native::CompletionPhase::Activation {
                 Response::RecoveryReady(recovery())
             } else {
                 Response::ServingReady(native::ServingReady {
                     recovery: recovery(),
-                    completed_checkpoint_digest: activation_receipt.checkpoint_value_digest,
+                    completed_checkpoint_digest: decision.checkpoint_value_digest,
                 })
             }
         }
@@ -404,23 +402,15 @@ fn fixture(legacy: bool, hold: bool) -> (Arc<LoadedPrepared>, Arc<Stats>) {
     .unwrap();
     (Arc::new(prepared), stats)
 }
-fn proof(phase: native::CompletionPhase) -> native::ActivationReceipt {
-    native::ActivationReceipt {
-        attempt: owned::AttemptId {
-            dataset: info().dataset,
-            writer: [2; 16],
-            operation: [3; 16],
-            writer_epoch: 1,
-            execution_epoch: 1,
-        },
-        candidate_fingerprint: [4; 32],
-        original_result: busbar_contract::Secret::new(vec![7]),
+fn proof(phase: native::CompletionPhase) -> native::FinishDecision {
+    native::FinishDecision {
+        phase,
+        phase_digest: [4; 32],
         checkpoint_address: native::completion_marker_address([4; 16]),
         checkpoint_value_digest: [5; 32],
-        phase,
+        marker_value_digest: [6; 32],
     }
 }
-
 #[tokio::test]
 async fn prepared_upgrade_short_target_recovery_and_completion_use_one_native_instance() {
     let (prepared, stats) = fixture(true, false);
@@ -478,7 +468,7 @@ async fn prepared_upgrade_short_target_recovery_and_completion_use_one_native_in
     prepared
         .bootstrap(Arc::new(native::Request::Finish {
             upgrade: upgrade.reference.clone(),
-            activation_receipt: proof(native::CompletionPhase::Activation),
+            decision: proof(native::CompletionPhase::Activation),
         }))
         .await
         .unwrap();
@@ -493,7 +483,7 @@ async fn prepared_upgrade_short_target_recovery_and_completion_use_one_native_in
     stats.fail_ready.store(true, Ordering::SeqCst);
     let completed = Arc::new(native::Request::Finish {
         upgrade: upgrade.reference.clone(),
-        activation_receipt: proof(native::CompletionPhase::Complete),
+        decision: proof(native::CompletionPhase::Complete),
     });
     assert!(prepared.bootstrap(completed.clone()).await.is_err());
     assert!(prepared.serving().is_err());
