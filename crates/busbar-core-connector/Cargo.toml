@@ -35,6 +35,8 @@ dimpl = { workspace = true }
 zeroize = { workspace = true }
 crc32fast = { workspace = true }
 foldhash = { workspace = true }
+# Inline small sets (connect candidates, lent fields and datagram paths) with no heap per call.
+smallvec = { workspace = true }
 
 tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }
@@ -56,3 +58,5 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 busbar-contract = { path = "../busbar-contract", features = ["tls", "test-support", "stage-probe", "test-seal"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
+# The webpki refusal values the dialled-refusal words are pinned against (tests only).
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }

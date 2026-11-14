@@ -1087,7 +1087,6 @@ pub fn open_door(
     checked(plugin, opened(plugin, settings, owned, public_url, &[])?)
 }
 
-#[cfg(any(test, feature = "test-support"))]
 fn opened(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
