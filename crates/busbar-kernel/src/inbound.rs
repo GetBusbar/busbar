@@ -59,7 +59,7 @@ pub const fn is_line_id(id: u64) -> bool {
 }
 
 /// One request's head, as a transport decoded it: neutral fields only.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq)]
 pub struct Head {
     /// The method.
     pub method: String,
@@ -95,7 +95,27 @@ impl Drop for Head {
     }
 }
 
+/// A deep copy of every field, counted (SINGLE-PATH SP-A2): a unit shares its heads, so a copy
+/// is a cost the probes see.
+impl Clone for Head {
+    fn clone(&self) -> Self {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::HeadCopy);
+        self.duplicate()
+    }
+}
+
 impl Head {
+    /// The copy behind [`Clone`], uncounted: the strip builds a different head from it.
+    fn duplicate(&self) -> Self {
+        Self {
+            method: self.method.clone(),
+            target: self.target.clone(),
+            authority: self.authority.clone(),
+            query: self.query.clone(),
+            fields: self.fields.clone(),
+        }
+    }
+
     fn path_and_query(&self) -> String {
         match &self.query {
             Some(query) => format!("{}?{query}", self.target),
@@ -106,7 +126,7 @@ impl Head {
     fn stripped(&self, strips: &[Strip]) -> Option<Self> {
         use zeroize::Zeroize as _;
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
-        let mut head = self.clone();
+        let mut head = self.duplicate();
         head.fields.retain_mut(|(name, value)| {
             let remove = strips.iter().any(|strip| {
                 strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name)
