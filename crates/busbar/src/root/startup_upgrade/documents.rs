@@ -219,6 +219,8 @@ impl Documents {
                 })?;
                 runtime_only = host.runtime_only();
                 let debt = output.todos.len();
+                // Only the decision paths leave in the refusal text: never a reason or a value.
+                let decisions = output.decision_paths().join(", ");
                 // Change lines may quote interpolated values and are zeroized; a notice holds only
                 // an authored key and fixed text, so the operator sees it at WARN.
                 for notice in &output.notices {
@@ -234,9 +236,7 @@ impl Documents {
                     if let Ok(mut state) = self.state.lock() {
                         state.debt = Some(todos);
                     }
-                    return Err(format!(
-                        "configuration migration requires {debt} unresolved configuration decision(s)"
-                    ));
+                    return Err(debt_refusal(debt, &decisions));
                 }
                 output.todos.zeroize();
                 (Zeroizing::new(output.yaml), false)
