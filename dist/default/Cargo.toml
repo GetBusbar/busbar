@@ -978,7 +978,9 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # STYLE_ENDPOINT_TOKEN_URL rank 4. Its mint needs are in the provider class (security item 3,
 # busbar-auth-oauth #43, dev ce2dbffe28): a private token endpoint is refused unless
 # advanced.allow_destinations names it, as BUSBAR-3025 says.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "27d76bf96179c619e3375ca2343da453592ea264" }
+# The mint leaves a pending token exchange to the drive its wake brings (a kept-cycle tick never
+# re-issues it), and seals a minted token by its configured endpoint (UPG-H9).
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "0440e714ea984a209f32294da83fac7a5730db79" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
