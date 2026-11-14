@@ -1,7 +1,7 @@
 use super::*;
 use crate::root::cli::{
     config_override_notice, providers_override_notice, resolve_config_path,
-    signing_key_command_output, value_flag,
+    signing_key_command_output, Argv,
 };
 
 #[test]
@@ -132,37 +132,32 @@ fn ignore_overlay_requested_matches_the_exact_flag_only() {
 
 #[test]
 fn value_flag_parses_all_accepted_forms() {
-    let v = |a: &[&str], long: &str, short: Option<&str>| {
-        value_flag(a.iter().map(|s| s.to_string()), long, short)
-    };
+    let config = |a: &[&str]| Argv::parse(a).config;
+    let providers = |a: &[&str]| Argv::parse(a).providers;
 
     assert_eq!(
-        v(&["--config", "/a/config.yaml"], "--config", Some("-c")),
+        config(&["--config", "/a/config.yaml"]),
         Some("/a/config.yaml".to_string())
     );
 
     assert_eq!(
-        v(&["--config=/b/config.yaml"], "--config", Some("-c")),
+        config(&["--config=/b/config.yaml"]),
         Some("/b/config.yaml".to_string())
     );
 
     assert_eq!(
-        v(&["-c", "/c/config.yaml"], "--config", Some("-c")),
+        config(&["-c", "/c/config.yaml"]),
         Some("/c/config.yaml".to_string())
     );
 
     assert_eq!(
-        v(
-            &["-c", "/first", "--config", "/second"],
-            "--config",
-            Some("-c")
-        ),
+        config(&["-c", "/first", "--config", "/second"]),
         Some("/second".to_string())
     );
 
-    assert_eq!(v(&["--validate"], "--providers", None), None);
+    assert_eq!(providers(&["--validate"]), None);
     assert_eq!(
-        v(&["--providers", "/p/providers.yaml"], "--providers", None),
+        providers(&["--providers", "/p/providers.yaml"]),
         Some("/p/providers.yaml".to_string())
     );
 }
@@ -959,21 +954,15 @@ fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
         "flag",
         "    --planted-serve      serve the planted plane on stdin/stdout",
     )];
-    let args = |a: &[&str]| {
-        a.iter()
-            .map(|s| (*s).to_string())
-            .collect::<Vec<_>>()
-            .into_iter()
-    };
     assert!(line_serve_requested(
         &[planted],
-        args(&["busbar", "--planted-serve"])
+        &Argv::parse(["busbar", "--planted-serve"])
     ));
     assert!(!line_serve_requested(
         &[],
-        args(&["busbar", "--planted-serve"])
+        &Argv::parse(["busbar", "--planted-serve"])
     ));
-    assert!(!line_serve_requested(&[planted], args(&["busbar"])));
+    assert!(!line_serve_requested(&[planted], &Argv::parse(["busbar"])));
 }
 
 /// The crate root denies `dead_code`, `unused_imports` and `unused_macros` outside tests. An

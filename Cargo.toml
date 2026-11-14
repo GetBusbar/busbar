@@ -60,6 +60,8 @@ indexmap = { version = "2", features = ["serde"] }
 itoa = "1"
 # Defaults off: validation is offline, and they pull reqwest and a second crypto backend (aws-lc-rs).
 jsonschema = { version = "0.49", default-features = false }
+# The command-line lexer for `busbar` and `busbar-audit-verify` (C19): zero dependencies.
+lexopt = "0.3"
 libc = "0.2"
 libloading = "0.9"
 loom = "0.7"

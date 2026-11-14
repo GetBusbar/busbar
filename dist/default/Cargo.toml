@@ -198,6 +198,7 @@ zeroize = { workspace = true }
 tracing = { workspace = true }
 # Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
 idna_adapter = { workspace = true }
+lexopt = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
 # THE THREAD-PER-CORE BOOT SEAM — the one unix data-plane topology (non-unix keeps the classic
@@ -1059,6 +1060,8 @@ indexmap = { version = "2", features = ["serde"] }
 # No default features: validation is offline (`validator_for`), never a remote `$ref`. The defaults
 # pulled reqwest 0.13 and rustls on aws-lc-rs, a second crypto backend and a C build (ring only).
 jsonschema = { version = "0.49", default-features = false }
+# The command-line lexer for `busbar` and `busbar-audit-verify` (C19): zero dependencies.
+lexopt = "0.3"
 libc = "0.2"
 libloading = "0.9"
 loom = "0.7"

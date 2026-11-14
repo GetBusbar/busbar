@@ -105,15 +105,10 @@ fn store_boot_refusal(transition: bool, error: String) -> String {
     }
 }
 
-fn line_flag_passed(args: impl Iterator<Item = String>) -> bool {
-    line_serve_requested(&root::cli::help_rows(), args)
-}
-
-fn line_serve_requested(
-    planes: &[&[root::linked::CliHelpRow]],
-    mut args: impl Iterator<Item = String>,
-) -> bool {
-    args.any(|a| root::cli::is_plane_flag(planes, &a))
+fn line_serve_requested(planes: &[&[root::linked::CliHelpRow]], argv: &root::cli::Argv) -> bool {
+    argv.words
+        .iter()
+        .any(|a| root::cli::is_plane_flag(planes, a))
 }
 
 const MAX_WORKER_THREADS: usize = 128;
@@ -154,7 +149,7 @@ fn worker_threads_from_config() -> Option<usize> {
 }
 
 fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize> {
-    let config_path = root::cli::resolve_config_path(root::cli::config_path_flag().as_deref());
+    let config_path = root::cli::resolve_config_path(root::cli::argv().config.as_deref());
     let raw = std::fs::read_to_string(&config_path).ok()?;
     let mut unset = Vec::new();
     let interpolated =
@@ -585,15 +580,15 @@ async fn run(
 ) {
     root::observe::install(catalogue);
 
-    let cli_config = root::cli::config_path_flag();
+    let argv = root::cli::argv();
 
     if let Some(notice) = root::cli::config_override_notice(
-        cli_config.as_deref(),
+        argv.config.as_deref(),
         std::env::var(ENV_CONFIG).ok().as_deref(),
     ) {
         eprintln!("[info] {notice}");
     }
-    let providers_override = root::cli::providers_override();
+    let providers_override = argv.providers.as_deref().map(std::path::PathBuf::from);
     let config_path =
         std::path::PathBuf::from(root::cli::resolve_config_path(cli_config.as_deref()));
     let ignore_overlay = ignore_overlay_requested(std::env::args());
@@ -603,8 +598,8 @@ async fn run(
     }
     let overlay_migration =
         root::overlay_migrate::command(std::env::args().skip(1)).unwrap_or_else(|error| die(error));
-    let principal_transition = root::principal_transition::command(std::env::args().skip(1))
-        .unwrap_or_else(|error| die(error));
+    let principal_transition =
+        root::principal_transition::command(argv).unwrap_or_else(|error| die(error));
     if let Some(command) = principal_transition.as_ref() {
         command
             .validate_record_bootstrap_input(
@@ -942,7 +937,7 @@ async fn run(
         }
 
         if let Some(notice) = root::cli::providers_override_notice(
-            root::cli::value_flag(std::env::args().skip(1), "--providers", None).as_deref(),
+            argv.providers.as_deref(),
             deploy.providers_file(),
         ) {
             eprintln!("[info] {notice}");
@@ -1509,7 +1504,7 @@ async fn run(
     }
 
     let mut served = served;
-    let line_served = line_flag_passed(std::env::args()).then(|| std::mem::take(&mut served));
+    let line_served = line_flag_passed().then(|| std::mem::take(&mut served));
 
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));

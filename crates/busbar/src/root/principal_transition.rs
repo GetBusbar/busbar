@@ -16,6 +16,13 @@ pub const INPUT_FLAG: &str = "--principal-transition";
 pub const ACTION_FLAG: &str = "--transition-action";
 pub const ATTESTATION_FLAG: &str = "--transition-attestation";
 pub const RECORD_BOOTSTRAP_FLAG: &str = "--fresh-record-bootstrap";
+/// The command line's `Argv::transition` slots, in order.
+pub const FLAGS: [&str; 4] = [
+    INPUT_FLAG,
+    ACTION_FLAG,
+    ATTESTATION_FLAG,
+    RECORD_BOOTSTRAP_FLAG,
+];
 const MAX_INPUT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,60 +84,16 @@ impl Command {
     }
 }
 
-/// Parse maintenance's entire argument list, refusing accidental combinations with serving flags.
-pub fn command(args: impl Iterator<Item = String>) -> Result<Option<Command>, &'static str> {
-    let args: Vec<_> = args.collect();
-    let mut input = None;
-    let mut action = None;
-    let mut attestation = None;
-    let mut record_bootstrap = None;
-    let mut other = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        let (flag, assigned) = arg
-            .split_once('=')
-            .map_or((arg.as_str(), None), |(k, v)| (k, Some(v)));
-        if matches!(
-            flag,
-            INPUT_FLAG | ACTION_FLAG | ATTESTATION_FLAG | RECORD_BOOTSTRAP_FLAG
-        ) {
-            let value = assigned.or_else(|| iter.next().map(String::as_str));
-            let value = value
-                .filter(|value| {
-                    !value.is_empty()
-                        && (!value.starts_with('-') || (flag == INPUT_FLAG && *value == "-"))
-                })
-                .ok_or("principal transition flags require explicit values")?;
-            let slot = match flag {
-                INPUT_FLAG => &mut input,
-                ACTION_FLAG => &mut action,
-                RECORD_BOOTSTRAP_FLAG => &mut record_bootstrap,
-                _ => &mut attestation,
-            };
-            if slot.replace(value.to_owned()).is_some() {
-                return Err("duplicate principal transition flag");
-            }
-        } else if arg == "--migrate-config" {
-            // This command owns its next argument, even when the filename looks like
-            // one of our flags. It still cannot be combined with maintenance.
-            iter.next();
-            other = true;
-        } else if matches!(flag, "--config" | "-c" | "--providers") {
-            if flag == "-c" && assigned.is_some() {
-                return Err("use -c <path> or --config=<path>");
-            }
-            assigned
-                .or_else(|| iter.next().map(String::as_str))
-                .filter(|value| !value.is_empty() && !value.starts_with('-'))
-                .ok_or("configuration path flags require explicit values")?;
-        } else {
-            other = true;
-        }
+/// Read maintenance off the command line, refusing accidental combinations with serving flags.
+pub fn command(argv: &super::cli::Argv) -> Result<Option<Command>, &'static str> {
+    if let Some(refusal) = argv.refusal {
+        return Err(refusal);
     }
-    if input.is_none() && action.is_none() && attestation.is_none() && record_bootstrap.is_none() {
+    if argv.transition.iter().all(Option::is_none) {
         return Ok(None);
     }
-    if other {
+    let [input, action, attestation, record_bootstrap] = argv.transition.clone();
+    if argv.safe_mode || !argv.words.is_empty() {
         return Err(
             "principal transition accepts only --config and --providers alongside its flags",
         );
