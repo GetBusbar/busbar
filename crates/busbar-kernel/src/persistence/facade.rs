@@ -419,8 +419,7 @@ impl CoreStore {
             }
             pending.authority
         };
-        let mut operation = [0; 16];
-        busbar_contract::crypto::fill(&mut operation).map_err(|_| AccessError::Entropy)?;
+        let operation = crate::door::op_id().0;
         if operation == [0; 16] {
             return Err(AccessError::Entropy);
         }

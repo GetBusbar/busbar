@@ -1270,7 +1270,6 @@ impl Connection {
             Phase::Ended => return Err(Failure::Closed),
             Phase::Open => self.put(EXCHANGE_STREAM, bytes, true, false)?,
             Phase::Connecting | Phase::Handshaking => {
-                self.early_bytes += bytes.len();
                 self.early
                     .push(Early::of(EXCHANGE_STREAM, bytes, true, false));
             }
@@ -1522,7 +1521,6 @@ impl Connection {
                 self.sealed_sent(stream)?;
             }
             _ => {
-                self.early_bytes += message.len();
                 self.early.push(Early {
                     body_len,
                     sensitive,
@@ -2014,7 +2012,6 @@ impl Connection {
             Phase::Ended if self.framing.is_none() => return Err(Failure::Closed),
             Phase::Open | Phase::Ended => self.put(stream, bytes, end, text)?,
             Phase::Connecting | Phase::Handshaking => {
-                self.early_bytes += bytes.len();
                 self.early.push(Early::of(stream, bytes, end, text));
             }
         }
@@ -2427,7 +2424,6 @@ impl Connection {
             );
             let sealed = sent.and_then(|()| self.sealed_sent(EXCHANGE_STREAM));
             self.early.extend(held);
-            self.early_bytes += held_bytes;
             sealed?;
         } else {
             self.sealed_sent(EXCHANGE_STREAM)?;

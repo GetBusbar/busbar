@@ -280,6 +280,27 @@ impl Node {
             None => Ok(()),
         }
     }
+    /// Settle in-doubt store attempts (≤ 64 per tick) and publish `busbar_store_slots`.
+    pub(crate) async fn settle_store(&self) {
+        let Some(journal) = self.lane.get() else {
+            return;
+        };
+        match journal.settle_store().await {
+            Ok(states) => {
+                for (state, count) in [
+                    ("free", states.free),
+                    ("in_flight", states.in_flight),
+                    ("in_doubt", states.in_doubt),
+                    ("resolved_uncollected", states.resolved_uncollected),
+                    ("reconcile", states.reconcile),
+                ] {
+                    metrics::gauge!(busbar_kernel::snapshot::STORE_SLOTS, "state" => state)
+                        .set(count as f64);
+                }
+            }
+            Err(error) => tracing::warn!(?error, "store slot settle pass failed"),
+        }
+    }
     #[must_use]
     pub fn journal_refusal(&self) -> Option<String> {
         self.lane.get().and_then(|journal| journal.refuses_money())
@@ -1950,13 +1971,9 @@ impl Drop for TerminalConfirmation {
 }
 
 async fn await_terminal(confirmation: Option<TerminalConfirmation>) -> Result<(), String> {
-    if let Some(task) = confirmation {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when the terminal confirmation task fails"
-        )]
-        task.await
-            .map_err(|error| format!("terminal confirmation task failed: {error}"))??;
+    match confirmation {
+        Some(confirmation) => confirmation.wait().await,
+        None => Ok(()),
     }
 }
 
@@ -1974,18 +1991,15 @@ impl StagedAudit {
         if tokio::runtime::Handle::try_current().is_err() {
             custody.terminal(key, false);
             return None;
-        };
-        Some(runtime.spawn(async move {
-            let confirmed = self.journal.confirm(&self.run).await;
-            custody.terminal(key, completed && confirmed.is_ok());
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when the terminal audit is unconfirmed"
-            )]
-            let confirmed =
-                confirmed.map_err(|error| format!("terminal audit is unconfirmed: {error:?}"));
-            confirmed
-        }))
+        }
+        Some(TerminalConfirmation {
+            inner: Some(Confirm {
+                audit: self,
+                custody,
+                key,
+                completed,
+            }),
+        })
     }
 }
 
