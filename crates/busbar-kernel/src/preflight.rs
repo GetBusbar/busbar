@@ -868,7 +868,13 @@ pub(crate) fn resolve_admin_token(
     let op = config::operator_provider();
     let token = resolver
         .resolve_string_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
-        .map_err(|e| unresolved_token(op, &e))?;
+        .map_err(|e| {
+            if e.contains(config::secret::BLANK_MARKER) {
+                blank_token(op)
+            } else {
+                unresolved_token(op, &e)
+            }
+        })?;
     if token.expose(&crate::seal::lend()).trim().is_empty() {
         return Err(blank_token(op));
     }

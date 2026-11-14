@@ -109,12 +109,12 @@ impl SecretResolver {
         }
         let source = secret.source().expect("non-template, non-keyless source");
         let module = source.module.as_str();
-        let empty = || {
+        let blank = || {
             refusal(
                 ERROR_KIND_INVALID,
                 format!(
-                    "secret module '{module}' resolved {} to an EMPTY value; a secret must be \
-                     non-empty (fail-closed)",
+                    "{} resolved to an EMPTY or whitespace-only {BLANK_MARKER} value; a secret \
+                     must have content (fail-closed)",
                     secret.describe()
                 ),
             )
@@ -136,8 +136,8 @@ impl SecretResolver {
                 None => shared.resolve(settings),
             }?;
 
-            if material.expose(&crate::seal::lend()).is_empty() {
-                return Err(empty());
+            if is_blank(material.expose(&crate::seal::lend())) {
+                return Err(blank());
             }
             return Ok(material);
         }
@@ -162,8 +162,8 @@ impl SecretResolver {
                 ),
             )
         })?;
-        if bytes.expose(&crate::seal::lend()).is_empty() {
-            return Err(empty());
+        if is_blank(bytes.expose(&crate::seal::lend())) {
+            return Err(blank());
         }
         Ok(bytes)
     }
