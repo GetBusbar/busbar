@@ -1430,17 +1430,19 @@ fn a_non_fallback_planes_card_is_checked_per_lane_including_absent_cards() {
     let (_, warnings) = capture_rate_warnings(|| {
         validate_plane_card(&CLASS_PLANE, &card, false, &lanes, &mut errors)
     });
-    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with("tools.rate_card is present but 1 class thing has no rate entry")
+            && errors[0].ends_with("\n    c: { units: { calls: 0, bytes: 0 } }\n"),
+        "the unnamed lane is refused with a stub: {errors:?}"
+    );
     assert!(!warnings.contains("lane 'a'"), "{warnings}");
     assert!(
         warnings.contains("lane 'b' billable class(es) bytes"),
         "{warnings}"
     );
-    assert!(
-        warnings.contains("lane 'c' billable class(es) calls, bytes"),
-        "{warnings}"
-    );
 
+    let mut errors = Vec::new();
     let (_, warnings) = capture_rate_warnings(|| {
         validate_plane_card(
             &CLASS_PLANE,
@@ -1537,7 +1539,7 @@ fn a_present_card_refuses_every_configured_lane_it_does_not_name() {
 }
 
 #[test]
-fn missing_model_entries_warn_while_unknown_models_and_invalid_rates_still_fail() {
+fn missing_model_entries_refuse_while_unknown_models_and_invalid_rates_still_fail() {
     let mut cfg = make_root_cfg(
         HashMap::new(),
         [
@@ -1556,9 +1558,18 @@ fn missing_model_entries_warn_while_unknown_models_and_invalid_rates_still_fail(
     cfg.rate_card = Some(card_yaml(
         "a: { input_utok: 1, units: { search_units: 0, images: 0 } }",
     ));
-    let (result, warnings) = capture_rate_warnings(|| validate_cost_metadata(&cfg, &[&FLAT_PLANE]));
-    assert!(result.is_ok(), "{result:?}");
-    assert!(warnings.contains("lane 'b' billable class(es) input, output, cache_read, cache_write, search_units, images"), "{warnings}");
+    let refused = validate_cost_metadata(&cfg, &[&FLAT_PLANE])
+        .expect_err("a present card silent about model 'b' is refused");
+    assert_eq!(
+        refused,
+        vec![
+            "rate_card is present but 1 configured model has no rate entry (rate_card is \
+             AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+             Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
+             \x20   b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"
+                .to_string()
+        ]
+    );
     let mut errors = Vec::new();
     validate_cost_model(&cfg, &mut errors);
     assert!(
