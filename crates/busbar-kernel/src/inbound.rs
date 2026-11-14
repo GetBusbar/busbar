@@ -462,6 +462,7 @@ pub struct ListenerScope {
 
 impl Listener {
     fn admission(&self, head: &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::PlaneAdmission);
         self.scope.as_ref().map_or_else(
             || self.app.planes.admission_for(&head.target).cloned(),
             |scope| (scope.admission)(&self.app, head),
@@ -1434,6 +1435,7 @@ impl AsRef<[u8]> for FieldBytes {
 }
 
 pub(crate) fn header_map(head: &Head) -> axum::http::HeaderMap {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::HeaderMap);
     let mut headers = axum::http::HeaderMap::new();
     for (n, v) in &head.fields {
         if let (Ok(n), Ok(v)) = (

@@ -1096,6 +1096,7 @@ impl AuthMiddleware {
     }
 
     pub fn extract_client_token(&self, headers: &HeaderMap) -> Option<String> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::CredentialExtract);
         carried_credential(&self.carriers, headers)
     }
 
@@ -1251,6 +1252,7 @@ pub(crate) fn inbound_candidate(
     app: &crate::state::App,
     headers: &HeaderMap,
 ) -> Option<busbar_contract::redacted::Secret<String>> {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::CredentialExtract);
     candidate_from_metadata(app.oauth_as.is_some(), app.auth.carriers(), headers)
 }
 
