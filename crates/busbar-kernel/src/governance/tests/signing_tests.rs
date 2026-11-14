@@ -297,3 +297,28 @@ fn subkey_derived_once_per_key_and_domain() {
         "one derivation per (key, domain); dev derives once per signature"
     );
 }
+
+/// Concurrent first signs on one domain: no deadlock, every signature verifies, and the cache ends
+/// with one entry for the domain.
+#[test]
+fn concurrent_subkey_cache_holds_one_entry_per_domain() {
+    const DOMAIN: &str = "agents/card-signing/v1";
+    let s = std::sync::Arc::new(TokenSigner::from_secret_bytes(&[3u8; 32], DEFAULT_KID));
+    let vk = SigningKey::from_bytes(&s.derived_subkey_seed(DOMAIN)).verifying_key();
+    let threads: Vec<_> = (0..8u32)
+        .map(|t| {
+            let s = std::sync::Arc::clone(&s);
+            std::thread::spawn(move || {
+                for i in 0..1_000u32 {
+                    let input = [t.to_le_bytes(), i.to_le_bytes()].concat();
+                    let sig = Signature::from_bytes(&s.sign_with_subkey(DOMAIN, &input));
+                    assert!(vk.verify(&input, &sig).is_ok());
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().expect("signer thread");
+    }
+    assert_eq!(s.subkeys.read().unwrap().len(), 1);
+}
