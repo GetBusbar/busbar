@@ -283,12 +283,12 @@ fn main() {
         for r in &rs {
             if r.status == "ok" {
                 eprintln!(
-                    "  {}: {:.0} rps p50 {:.0} us p99 {:.0} us cpu {:.0} us/req errors {}",
+                    "  {}: {:.0} rps p50 {:.0} us p99 {:.0} us cpu {} us/req errors {}",
                     r.case,
                     r.rps,
                     r.latency_us.p50,
                     r.latency_us.p99,
-                    r.cpu_us_per_req,
+                    r.cpu_us_per_req.map_or("-".into(), |v| format!("{v:.0}")),
                     r.errors.values().sum::<u64>()
                 );
             } else {
