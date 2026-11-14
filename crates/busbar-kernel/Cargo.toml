@@ -28,7 +28,6 @@ tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "io-std", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_urlencoded = { workspace = true }
 url = { workspace = true }
 indexmap = { workspace = true }
 schemars = { workspace = true, optional = true }
@@ -40,7 +39,6 @@ serde_yaml = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 zeroize = { workspace = true }
-http-body = { workspace = true }
 http-body-util = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["recency"] }
@@ -51,10 +49,8 @@ tracing-log = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
 ed25519-dalek = { workspace = true }
-crc32fast = { workspace = true }
 async-trait = { workspace = true }
 arc-swap = { workspace = true }
-httpdate = { workspace = true }
 
 [features]
 openapi-schema = ["dep:schemars"]
@@ -92,5 +88,3 @@ tikv-jemallocator = { workspace = true }
 tikv-jemalloc-sys = { workspace = true }
 libc = { workspace = true }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(txn_fence_red)'] }
