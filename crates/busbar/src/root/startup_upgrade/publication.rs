@@ -316,6 +316,7 @@ impl Publication {
         }
     }
 
+    #[cfg(test)]
     pub fn report(&self) -> Option<&Report> {
         self.report.as_ref()
     }

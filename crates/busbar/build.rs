@@ -168,6 +168,14 @@ fn main() {
 
     println!("cargo::rustc-check-cfg=cfg(linked_axis_body_ingress)");
 
+    println!("cargo::rustc-check-cfg=cfg(linked_transport_rows)");
+    if metadata_map(&manifest, "package.metadata.busbar.linked-axes")
+        .iter()
+        .any(|(f, axes)| enabled(f) && axes.split_whitespace().any(|a| a == "transport"))
+    {
+        println!("cargo::rustc-cfg=linked_transport_rows");
+    }
+
     println!(
         "cargo:rustc-env=BUSBAR_LINKED_AXES={}",
         linked_axis_cfgs(&manifest, &enabled).0.join(" ")

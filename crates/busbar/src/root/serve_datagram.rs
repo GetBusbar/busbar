@@ -284,6 +284,7 @@ impl ClaimDoor {
         Ok(id)
     }
 
+    #[cfg(test)]
     fn emit(
         &self,
         id: u64,
@@ -303,6 +304,7 @@ impl ClaimDoor {
         ok
     }
 
+    #[cfg(test)]
     async fn emit_ready(&self, id: u64, stream: u64, bytes: &[u8], text: bool) -> bool {
         self.assocs
             .emit_ready(
@@ -443,6 +445,7 @@ impl CallerLeg {
         *lock(&self.id) = Some(id);
     }
 
+    #[cfg(test)]
     fn yielded(self: &Arc<Self>, pieces: Vec<Got>, now: Instant) {
         let mut yielded = busbar_core_connector::framer::Yielded::default();
         yielded.pieces = pieces;
@@ -464,6 +467,7 @@ impl CallerLeg {
         }
     }
 
+    #[cfg(test)]
     fn take(self: &Arc<Self>, session: Vec<Got>, _now: Instant) {
         if self
             .take_batch(

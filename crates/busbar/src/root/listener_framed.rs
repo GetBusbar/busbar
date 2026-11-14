@@ -113,6 +113,7 @@ fn configured_framer(
 }
 
 impl DataFramer {
+    #[cfg(test)]
     pub fn validate_policy(&self) -> Result<(), String> {
         self.listener.validate()
     }

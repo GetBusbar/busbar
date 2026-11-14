@@ -15,6 +15,7 @@
 // declarations here, under its own Cargo feature, and nowhere else.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(not(test), deny(dead_code, unused_imports, unused_macros))]
 
 #[cfg(all(not(target_env = "msvc"), not(test)))]
 #[global_allocator]
@@ -1636,6 +1637,7 @@ async fn run(
         ));
     }
 
+    #[cfg(distribution_root)]
     if let Some(book) = &book {
         let app = app_handle.load();
         let ctx = root::linked::BookCtx { book, app: &app };

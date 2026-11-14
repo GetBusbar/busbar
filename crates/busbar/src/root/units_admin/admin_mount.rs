@@ -18,6 +18,7 @@ impl AdminNode {
         crate::root::plane_node::node().mint().get()
     }
 
+    #[cfg(test)]
     pub async fn answer(&self, request: AdminRequest) -> AdminAnswer {
         self.answer_with_admission(request, None).await
     }

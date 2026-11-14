@@ -329,6 +329,7 @@ impl ListenerRegistration {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::root) fn validate(&self) -> Result<(), String> {
         #[expect(
             clippy::disallowed_methods,
