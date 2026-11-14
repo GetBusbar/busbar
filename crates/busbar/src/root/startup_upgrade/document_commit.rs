@@ -105,11 +105,13 @@ pub enum FileOutcome {
     AlreadyConverted,
     InMemoryOnly,
 }
+/// Test probe: what each document's publication came to.
+#[cfg(test)]
 pub struct FileReport {
-    pub path: PathBuf,
     pub outcome: FileOutcome,
 }
 pub struct Report {
+    #[cfg(test)]
     pub files: Vec<FileReport>,
     /// False keeps a native replacement's security and namespace recovery authority pending.
     pub complete: bool,
@@ -589,11 +591,11 @@ impl Inventory {
         }
         Ok(Report {
             complete: true,
+            #[cfg(test)]
             files: self
                 .documents
                 .iter()
-                .map(|held| FileReport {
-                    path: held.publication.path.clone(),
+                .map(|_| FileReport {
                     outcome: FileOutcome::InMemoryOnly,
                 })
                 .collect(),
@@ -647,6 +649,7 @@ impl Inventory {
             return Err(failure());
         }
         let mut report = Report {
+            #[cfg(test)]
             files: Vec::new(),
             complete: false,
         };
@@ -729,7 +732,8 @@ impl Inventory {
                                         Ok(DocumentReplace::Published | DocumentReplace::AlreadyConverted) => {
                                             documents.mark_published(p)?;
                                             self.confirm(checkpoints, proof.migration, Phase::Published(index)).await?;
-                                            report.files.push(FileReport { path: p.path.clone(), outcome: FileOutcome::Published });
+                                            #[cfg(test)]
+                                            report.files.push(FileReport { outcome: FileOutcome::Published });
                                             phase = Phase::Published(index);
                                             continue;
                                         },
@@ -738,8 +742,8 @@ impl Inventory {
                                     }
                                 }
                                 _ => {
+                                    #[cfg(test)]
                                     report.files.push(FileReport {
-                                        path: p.path.clone(),
                                         outcome: FileOutcome::InMemoryOnly,
                                     });
                                     // A visible converted file is not proof that its namespace barrier
@@ -762,10 +766,8 @@ impl Inventory {
             if !completed {
                 self.confirm(checkpoints, proof.migration, phase).await?;
             }
-            report.files.push(FileReport {
-                path: p.path.clone(),
-                outcome,
-            });
+            #[cfg(test)]
+            report.files.push(FileReport { outcome });
         }
         if !completed {
             self.confirm(checkpoints, proof.migration, Phase::Complete)

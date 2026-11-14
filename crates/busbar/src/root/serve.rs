@@ -51,6 +51,7 @@ use busbar_kernel::plane_routes::{
     PlaneRefusalSpec, PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec,
 };
 
+#[cfg(test)]
 pub const DEFAULT_EGRESS_CLASS: u32 = 0;
 
 #[path = "serve_neutral.rs"]
@@ -667,6 +668,7 @@ impl LateServices {
         self.kernel.get().cloned()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn is_installed(&self) -> bool {
         self.slot.is_installed()
@@ -831,6 +833,7 @@ pub struct ServedPlane {
     /// The first generation's snapshot, as the host copied it.
     pub snapshot: OwnedSnapshot,
     /// The `audit_kind` its tail states: what its units are audited under.
+    #[cfg(test)]
     pub audit_kind: &'static str,
     /// Its key, scope kind, billable classes and fee units, read off its tail.
     pub facts: DoorFacts,
@@ -1714,33 +1717,6 @@ impl LeaseTick {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn compose_served(
-    gov: Option<Arc<busbar_kernel::governance::GovState>>,
-    doors: &[(String, DoorPlane)],
-    dispatcher: &Arc<Dispatcher>,
-    late: &LateServices,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
-    public_url: Option<&str>,
-    reach: &crate::root::door_steps::DoorReach<'_>,
-    host: Option<busbar_kernel::plane_driver::GenerationHost>,
-    tables: &ServeTables,
-) -> Result<Served, String> {
-    compose_served_checked(
-        gov,
-        doors,
-        dispatcher,
-        late,
-        sections,
-        public_url,
-        reach,
-        host,
-        tables,
-        &|_| datagram_binds(doors, sections),
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
 pub async fn compose_served_checked(
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
@@ -1810,6 +1786,7 @@ pub async fn compose_served_checked(
     Ok(served)
 }
 
+#[cfg(test)]
 pub fn datagram_binds(
     doors: &[(String, DoorPlane)],
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
@@ -1826,6 +1803,7 @@ pub fn datagram_binds(
     Ok(binds)
 }
 
+#[cfg(test)]
 pub(crate) fn need_binds(
     instance: &str,
     section_name: &str,
@@ -2527,6 +2505,7 @@ pub(crate) async fn compose_planes_over(
             instance: instance.clone(),
             driver,
             snapshot,
+            #[cfg(test)]
             audit_kind: served_facts.audit_kind,
             facts,
             money: plane_money,
@@ -2574,14 +2553,6 @@ where
 
 const SESSION_KEY: &str = "session";
 const MODEL_KEY: &str = "model";
-
-#[must_use]
-pub fn catalog_routes(
-    section: &serde_yaml::Value,
-    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
-) -> serde_yaml::Value {
-    fold_catalog_routes(section, catalog).0
-}
 
 fn fold_catalog_routes(
     section: &serde_yaml::Value,
@@ -3140,90 +3111,12 @@ impl std::fmt::Debug for DataRoutes {
     }
 }
 
-pub fn data_routes(
-    served: Served,
-    data_chain: &[ChainAuth],
-    core: &[(
-        String,
-        busbar_contract::abi::mechanism::route::RouteMethod,
-        busbar_contract::abi::mechanism::route::RouteAuth,
-    )],
-) -> Result<Vec<busbar_kernel::plane_routes::PlaneRouteSpec>, String> {
-    if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok(Vec::new());
-    }
-    door_routes(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        data_chain,
-        core,
-    )
-}
-
 pub type DataMounts = (
     Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
     Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 );
-
-pub fn data_mounts(
-    served: Served,
-    data_chain: &[ChainAuth],
-    core: &[(
-        String,
-        busbar_contract::abi::mechanism::route::RouteMethod,
-        busbar_contract::abi::mechanism::route::RouteAuth,
-    )],
-    upgrades: &[&str],
-    offers: &[TransportOffer],
-) -> Result<DataMounts, String> {
-    door_mounts(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        data_chain,
-        core,
-        upgrades,
-        offers,
-    )
-    .and_then(|m| {
-        busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
-        Ok((m.routes, m.sessions, m.refusals, m.refuse_by_path))
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn data_mounts_with_listeners(
-    served: Served,
-    app: &busbar_kernel::state::App,
-    plan: &ListenerPlan,
-    at: &str,
-    data_chain: &[ChainAuth],
-    core: &[(String, RouteMethod, RouteAuth)],
-    upgrades: &[&str],
-    offers: &[TransportOffer],
-) -> Result<DataMounts, String> {
-    let mounts = door_mounts_planned(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        data_chain,
-        core,
-        upgrades,
-        offers,
-        Some((plan, app, at)),
-    )?;
-    busbar_kernel::plane_routes::pair_door_refusals(
-        &mounts.routes,
-        &mounts.sessions,
-        &mounts.refusals,
-    )?;
-    Ok((
-        mounts.routes,
-        mounts.sessions,
-        mounts.refusals,
-        mounts.refuse_by_path,
-    ))
-}
 
 /// Prepare both the compatibility operator mounts and their neutral governed dispatcher.
 #[allow(clippy::too_many_arguments)]
@@ -3431,13 +3324,6 @@ impl ListenerPlan {
         Ok(claim)
     }
 
-    pub fn hold_refusals(&self, at: &str, refusals: Vec<PlaneRefusalSpec>) {
-        self.refusals
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(at.to_string(), refusals);
-    }
-
     pub fn share_claim_doors(&self, served: &mut Served) -> Result<(), String> {
         served.nests = Some(Arc::clone(&self.nests));
         for need in &self.initial.needs {
@@ -3464,6 +3350,7 @@ impl ListenerPlan {
             .map_err(|_| "physical claim doors were already installed".to_string())
     }
 
+    #[cfg(test)]
     pub fn guests(
         &self,
         app: &busbar_kernel::state::App,
@@ -4656,6 +4543,7 @@ fn mount_paths(path: &str) -> Option<Vec<String>> {
 
 type DoorClaim = (usize, u32);
 
+#[cfg(test)]
 pub fn door_routes(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -4686,6 +4574,7 @@ impl std::fmt::Debug for DoorMounts {
     }
 }
 
+#[cfg(test)]
 pub fn door_mounts(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -6876,6 +6765,7 @@ impl SessionCaller for IngressCaller {
 }
 
 impl IngressReply {
+    #[cfg(test)]
     pub async fn response(self) -> Option<Response> {
         let head = self.head.await.ok()?;
         Some(stated(

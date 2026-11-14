@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![allow(dead_code)]
-
 pub mod adapters;
 pub mod admission;
 pub mod auth_bindings;
@@ -44,6 +42,7 @@ pub mod serve;
 pub mod settings_public;
 pub mod shutdown;
 pub mod startup_upgrade;
+#[cfg(any(test, distribution_root))]
 pub mod transports;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
