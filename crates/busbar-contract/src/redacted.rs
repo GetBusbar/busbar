@@ -250,6 +250,124 @@ impl<T: Zeroize + AsRef<[u8]>, O> PartialEq for Secret<T, O> {
 
 impl<T: Zeroize + AsRef<[u8]>, O> Eq for Secret<T, O> {}
 
+/// ONE SECRET, SHARED (SINGLE-PATH SP-AU6): one [`Secret<Vec<u8>, O>`] that every holder shares.
+/// Cloning a handle clones an [`Arc`](std::sync::Arc), never the bytes, so the plaintext lives in
+/// exactly one heap buffer until the last handle drops; then `Secret`'s own [`Drop`] wipes it,
+/// once. The handle itself wipes nothing, so this type does not claim [`zeroize::ZeroizeOnDrop`].
+///
+/// It is read only as [`Secret`] is, through the same seals: [`SharedSecret::expose`] under a
+/// kernel seal, [`SharedSecret::expose_own`] under its owner's. No API returns the inner `Secret`
+/// or an owned value, and the value is never mutated: a byte copy is an explicit `to_vec` after a
+/// sealed `expose`, a reviewable audit point. [`SharedSecret::ptr_eq`] checks custody without
+/// reading a byte.
+///
+/// Without a seal it does not compile:
+///
+/// ```compile_fail,E0061
+/// let shared = busbar_contract::Secret::new(b"sk-live".to_vec()).share();
+/// let _ = shared.expose();
+/// ```
+pub struct SharedSecret<O = Kernel>(std::sync::Arc<Secret<Vec<u8>, O>>);
+
+impl<O> Secret<Vec<u8>, O> {
+    /// The value MOVED into one [`SharedSecret`] (the same allocation, never a copy).
+    #[must_use]
+    pub fn share(self) -> SharedSecret<O> {
+        SharedSecret(std::sync::Arc::new(self))
+    }
+}
+
+impl SharedSecret {
+    /// Borrow the shared bytes under a kernel seal, exactly as [`Secret::expose`]: AUDIT POINT.
+    pub fn expose<S: crate::plugin::KernelSeal + ?Sized>(&self, seal: &S) -> &Vec<u8> {
+        self.0.expose(seal)
+    }
+}
+
+impl<O: OwnerSeal> SharedSecret<O> {
+    /// Borrow the shared bytes under their owner's seal, exactly as [`Secret::expose_own`].
+    pub fn expose_own(&self, seal: &O) -> &Vec<u8> {
+        self.0.expose_own(seal)
+    }
+}
+
+impl<O> SharedSecret<O> {
+    /// Whether `a` and `b` share one buffer: a custody check that reads no bytes.
+    #[must_use]
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&a.0, &b.0)
+    }
+}
+
+/// Another handle on the same buffer: an `Arc` clone, never a byte copy.
+impl<O> Clone for SharedSecret<O> {
+    fn clone(&self) -> Self {
+        Self(std::sync::Arc::clone(&self.0))
+    }
+}
+
+/// Bytes MOVED into one shared kernel-owned buffer (the same allocation, never a copy), as
+/// [`Secret`]'s own `From` moves them.
+impl From<Vec<u8>> for SharedSecret {
+    fn from(bytes: Vec<u8>) -> Self {
+        Secret::new(bytes).share()
+    }
+}
+
+/// An empty buffer (a passthrough lend with no caller credential).
+impl<O> Default for SharedSecret<O> {
+    fn default() -> Self {
+        Secret::<Vec<u8>, O>::default().share()
+    }
+}
+
+/// `Debug` NEVER reveals the secret, as [`Secret`]'s does not.
+impl<O> fmt::Debug for SharedSecret<O> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+/// `Display` NEVER reveals the secret either.
+impl<O> fmt::Display for SharedSecret<O> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+/// DEV-ONLY (`stage-probe`): whether a [`SharedSecret`]'s one buffer has been released, its last
+/// handle dropped. It holds no handle and offers no read, so it can neither keep the buffer alive
+/// nor reach its bytes. It proves release only; the wipe on release is `Secret`'s own [`Drop`].
+#[cfg(feature = "stage-probe")]
+pub struct SharedSecretWatch<O = Kernel>(std::sync::Weak<Secret<Vec<u8>, O>>);
+
+#[cfg(feature = "stage-probe")]
+impl<O> SharedSecret<O> {
+    /// DEV-ONLY (`stage-probe`): watch this buffer's release.
+    #[must_use]
+    pub fn watch(&self) -> SharedSecretWatch<O> {
+        SharedSecretWatch(std::sync::Arc::downgrade(&self.0))
+    }
+}
+
+#[cfg(feature = "stage-probe")]
+impl<O> SharedSecretWatch<O> {
+    /// Whether every handle on the watched buffer has dropped.
+    #[must_use]
+    pub fn released(&self) -> bool {
+        self.0.strong_count() == 0
+    }
+}
+
+#[cfg(feature = "stage-probe")]
+impl<O> fmt::Debug for SharedSecretWatch<O> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedSecretWatch")
+            .field("released", &self.released())
+            .finish()
+    }
+}
+
 /// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
 #[inline(never)]
 pub fn constant_time_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A, b: &B) -> bool {

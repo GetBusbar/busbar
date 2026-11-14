@@ -812,7 +812,7 @@ impl HeadDefaults {
 /// THE CREDENTIAL A UNIT LENDS its passthrough member (the kernel's caller-credential lending): the
 pub trait LendCredential: Send + Sync {
     /// The credential `unit`'s caller presented, while the unit runs; `None` when it presented
-    fn lent(&self, unit: u64) -> Option<crate::redacted::Secret<Vec<u8>>>;
+    fn lent(&self, unit: u64) -> Option<crate::redacted::SharedSecret>;
 }
 
 /// ONE MEMBER'S AUTH BINDING, as the connector holds it for a plugin's own requests to that member

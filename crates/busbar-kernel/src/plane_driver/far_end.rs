@@ -58,7 +58,6 @@ use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
-use busbar_contract::redacted::Secret;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use busbar_kernel_egress::{
     attempt::attempt_cap_ms,
@@ -1246,7 +1245,7 @@ impl EgressFarEnd<'_> {
 
             caller_credential: if binding.passthrough || self.live_passthrough() {
                 Some(self.route.caller_credential.as_ref().map_or_else(
-                    || Secret::new(Vec::new()),
+                    busbar_contract::SharedSecret::default,
                     crate::auth::CallerCredential::lend,
                 ))
             } else {
