@@ -126,6 +126,7 @@ pub type LayersOf = fn() -> &'static [&'static str];
 /// off the same door. The generated linked table expands one per `transport` row, so every
 /// transport, whatever its crate exports beside `door`, is linked through this one path. Core alone
 /// links no transport, so it expands nowhere there.
+#[cfg(any(test, linked_transport_rows))]
 macro_rules! linked_transport {
     ($door:path) => {{
         fn facts() -> &'static $crate::root::doors::RowFacts {
@@ -167,6 +168,7 @@ macro_rules! linked_transport {
         }
     }};
 }
+#[cfg(any(test, linked_transport_rows))]
 pub(crate) use linked_transport;
 
 pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
@@ -257,13 +259,14 @@ pub struct RootUnit {
 
     pub on_config: Option<fn(&busbar_kernel::config::limits::LimitsResolved)>,
 
+    #[cfg(test)]
     pub opens_book: bool,
 
+    #[cfg(any(test, distribution_root))]
     pub on_book: Option<fn(&BookCtx<'_>)>,
-
-    pub end_post: Option<fn() -> std::sync::Arc<dyn busbar_kernel::plane_driver::EndPost>>,
 }
 
+#[cfg(any(test, distribution_root))]
 pub struct BookCtx<'a> {
     pub book: &'a crate::root::durability::NodeBook,
 
@@ -678,6 +681,7 @@ pub fn declared_diagnostics(
     Ok(declared)
 }
 
+#[cfg(test)]
 pub fn linked_declared_diagnostics(
     linked: &Linked,
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],

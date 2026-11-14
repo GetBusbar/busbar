@@ -275,6 +275,7 @@ impl WalkTelemetry {
         self.names.get(&destination).map_or("", String::as_str)
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn depth(&self, pool: &str) -> i64 {
         self.depths

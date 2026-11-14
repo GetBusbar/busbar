@@ -201,9 +201,15 @@ async fn client(
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = socket.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        super::serve_plain(socket, router, std::future::pending(), None)
-            .await
-            .unwrap();
+        super::serve_admitted(
+            super::SocketAdmits::new(socket),
+            router,
+            None,
+            std::future::pending(),
+            None,
+        )
+        .await
+        .unwrap();
     });
     let io = tokio::net::TcpStream::connect(addr).await.unwrap();
     let (sender, connection) = hyper::client::conn::http2::handshake(
