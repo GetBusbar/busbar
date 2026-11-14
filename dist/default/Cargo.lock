@@ -836,6 +836,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
  "foldhash 0.2.0",
+ "futures",
 ]
 
 [[package]]
