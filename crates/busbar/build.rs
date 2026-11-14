@@ -83,10 +83,6 @@ pub(crate) fn linked_hook_names_source(manifest: &str, enabled: &dyn Fn(&str) ->
     out
 }
 
-pub(crate) fn seam_cfgs() -> Vec<&'static str> {
-    SEAMS.iter().map(|(_, cfg)| *cfg).collect()
-}
-
 #[path = "src/link_policy.rs"]
 mod link_policy;
 
