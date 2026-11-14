@@ -1276,7 +1276,10 @@ fn admits(line: &Line, h: &HandIn, u: &UnitState) -> bool {
         return false;
     }
 
-    !still_present(&u.strips, &h.head)
+    // With an original, `handin_state_matches` already required the handed head to equal it
+    // with every strip applied, so no stripped credential can still be there; only a unit with
+    // no recorded original needs the scan (SINGLE-PATH SP-AU4).
+    u.head.is_some() || !still_present(&u.strips, &h.head)
 }
 
 fn handin_state_matches(
