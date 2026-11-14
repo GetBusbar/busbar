@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub use super::overlay_native::{migration_rows, MigrationRows};
-pub use super::overlay_store::OverlayStore;
+pub use super::overlay_store::{LegacyImportState, OverlayStore};
 use super::{ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, RateEntryCfg, RootCfg, StoreCfg, TlsCfg};
 use crate::diagnostics::{diag_error, CONFIG_OVERLAY_PATCH_UNPARSABLE};
 use busbar_contract::plugin::Kind;

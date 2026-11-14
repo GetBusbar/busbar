@@ -157,3 +157,44 @@ fn the_ungoverned_role_binds_exactly_whom_1_5_5_admitted_ungoverned() {
 
     assert!(synthesize_bound_key("sso", &principal(&[]), &bindings("sso: { eng: {} }")).is_none());
 }
+
+/// R37 `startup-discarded-state-pointer` (LINT-RULES): a conversion step that removes an authored
+/// key pointing at external state must name the serve-time guard that keeps that state from being
+/// silently dropped. Every literal-key removal in the conversion sources is listed here.
+#[test]
+fn selector_removals_name_their_serve_guard() {
+    const ALLOWED: &[(&str, &str)] = &[
+        // The 1.5.5 file-overlay selector: serving refuses while the selected file still holds
+        // settings the Store has not imported.
+        ("overlay", "overlay_migrate::admit_legacy"),
+        // Folded into `export:` instances by the same conversion.
+        ("observability", "lossless: no external state"),
+    ];
+    const NEEDLE: &str = ".remove(Value::from(\"";
+    let sources = [
+        ("migrate_1_6.rs", include_str!("../migrate_1_6.rs")),
+        ("migrate.rs", include_str!("../migrate.rs")),
+        ("migrate_export.rs", include_str!("../migrate_export.rs")),
+    ];
+    let mut seen = Vec::new();
+    for (file, source) in sources {
+        for (at, _) in source.match_indices(NEEDLE) {
+            let rest = &source[at + NEEDLE.len()..];
+            let key = &rest[..rest.find('"').expect("a closed key literal")];
+            assert!(
+                ALLOWED.iter().any(|(allowed, _)| *allowed == key),
+                "{file} removes the authored key `{key}` with no named serve guard: add it to \
+                 ALLOWED with the guard that keeps its external state from being silently \
+                 dropped, or `lossless: no external state`"
+            );
+            seen.push(key);
+        }
+    }
+    for (allowed, guard) in ALLOWED {
+        assert!(!guard.is_empty());
+        assert!(
+            seen.contains(allowed),
+            "stale allowlist entry `{allowed}`: no conversion removes it any more"
+        );
+    }
+}

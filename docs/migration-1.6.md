@@ -169,9 +169,13 @@ still resolves to the image's `/etc/busbar/providers.yaml`, so nothing changes. 
 `providers_file:`, or put a `providers.yaml` beside the mounted config.
 
 `BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; serving never reads it.
-The old `config.overlay` file/boolean field is refused by current configuration parsing. One-time
-migration removes that field while preserving `config.locked`; use `locked: true` to keep an
-immutable/GitOps deployment. 1.6 runtime configuration is persisted through Store. Follow the overlay import instructions below before serving old state.
+The old `config.overlay` file/boolean field is refused by `--validate` (the current reader); serving
+normalizes it at startup. One-time migration removes that field while preserving `config.locked`;
+use `locked: true` to keep an immutable/GitOps deployment. 1.6 runtime configuration is persisted
+through Store. Follow the [overlay import instructions](migration-overlay-1.6.md) before serving
+old state: serving refuses to start while the overlay file 1.5.5 would have read still holds
+settings this Store has not imported (BUSBAR-3027; that guide lists the remedy for each Store
+state). Selectors and `BUSBAR_CONFIG_OVERLAY` that hold nothing get a warning (BUSBAR-3028).
 `BUSBAR_CONFIG`, explicit secret `{ env: NAME }` references, `RUST_LOG` and the
 `TOKIO_WORKER_THREADS` fallback are unchanged. Preserve existing signing-key material and Store
 records when upgrading 1.5.5: existing signed keys do not need to be reminted merely for this upgrade.
@@ -497,4 +501,4 @@ receives identity-provider settings, not deployment credential references.
 
 ## Released 1.5.5 persistent configuration
 
-Run the explicit [file-overlay import](migration-overlay-1.6.md) after configuration migration and before first startup. The original files remain unchanged, the effective Store selection is captured in the new YAML, and the overlay plus digest receipt commit atomically. Current startup never reads the old file or its retired environment selector.
+Run the explicit [file-overlay import](migration-overlay-1.6.md) after configuration migration and before first startup. The original files remain unchanged, the effective Store selection is captured in the new YAML, and the overlay plus digest receipt commit atomically. Current startup never applies the old file or its retired environment selector; it refuses to start while that file still holds settings the Store has not imported (BUSBAR-3027).
