@@ -234,4 +234,40 @@ mod tests {
     fn duplicate_overlay_fields_are_refused_before_plugin_conversion() {
         assert!(migrate_overlay_with(br#"{"groups":{},"groups":{}}"#, &Host).is_err());
     }
+    /// A 1.5.5 overlay card in 1.5.5's exact serialization (`cache_write_utok: 0.0` on every card,
+    /// written by its `f64` default) is converted, by the one function both version-1 entry points
+    /// use (`--migrate-overlay` and the startup Store binding), to a card that prices cache writes
+    /// at input_utok: the zero is removed, named as a change line and as a startup notice.
+    #[test]
+    fn frozen_v1_overlay_binding_prices_writes_at_input() {
+        const LINE: &str = "rate_card.test-model.cache_write_utok: 0 removed (1.5.5 spelling of \
+                            'no separate write tariff'); cache writes price at input_utok";
+        let bytes = br#"{"version":1,"root":{"rate_card":{"test-model":{"input_utok":2.5,"output_utok":10.0,"cache_read_utok":0.0,"cache_write_utok":0.0}}}}"#;
+        let converted = migrate_overlay_with(bytes, &Host).expect("the 1.5.5 overlay converts");
+        assert_eq!(
+            converted.changes.iter().filter(|c| *c == LINE).count(),
+            1,
+            "{:?}",
+            converted.changes
+        );
+        assert_eq!(converted.notices, [LINE]);
+        let root = converted
+            .doc
+            .root
+            .expect("the overlay keeps its root settings");
+        let entry = &root.rate_card.expect("the overlay keeps its card")["test-model"];
+        assert_eq!(entry.cache_write_utok, None, "the 1.5.5 zero is removed");
+        assert_eq!(
+            entry.cache_read_utok, 0.0,
+            "every other tier is kept as written"
+        );
+        assert_eq!(entry.cache_write_rate(), 2.5);
+        // 20 aggregate Chat cache writes price at 20 x 2.5 micro-units, never 0.
+        let rates = entry.raw_tier_rates();
+        assert_eq!(rates.cache_write, rates.input);
+        assert_eq!(
+            rates.cache_write,
+            busbar_kernel_ledger::cost::representable_nano_rate(2.5)
+        );
+    }
 }
