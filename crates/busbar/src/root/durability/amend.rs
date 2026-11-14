@@ -9,7 +9,6 @@ use busbar_kernel_audit::amend::{
 use busbar_kernel_audit::record::OpClassId;
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn verify_held(journal: &NodeAmendments) -> Result<(), String> {
     journal.verify().map_err(|broken| broken.to_string())
 }

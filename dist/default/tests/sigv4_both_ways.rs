@@ -31,7 +31,6 @@
 #![cfg(unix)]
 #![cfg(all(
     linked_section_pools,
-    feature = "root-admin",
     feature = "auth-admin-tokens",
     feature = "auth-sigv4"
 ))]

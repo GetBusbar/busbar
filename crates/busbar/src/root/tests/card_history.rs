@@ -94,7 +94,6 @@ fn the_journals_cards_migrate_under_time_keys_and_collapse_duplicates() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn the_migration_prices_every_instant_as_devs_rebuild_did_with_a_refused_correction() {
     for keyed in [false, true] {
