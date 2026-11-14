@@ -107,12 +107,15 @@ pub(crate) struct TicketCustody {
 }
 
 /// The node's ticket custody. `tickets` is the map; `by_key` partitions it per key id as
-/// `(expires_at, ticket id)`, and `pending` names each unit's one ticket not yet ready. Only
-/// [`TicketEntries::insert`], [`TicketEntries::remove`], [`TicketEntries::take_pending`] and
-/// [`TicketEntries::take_all`] change them, and each keeps the three in step.
+/// `(expires_at, ticket id)`, `pending` names each unit's one ticket not yet ready, and `due`
+/// orders every held ticket by expiry for the sweep. Only [`TicketEntries::insert`],
+/// [`TicketEntries::remove`], [`TicketEntries::take_pending`] and [`TicketEntries::take_all`]
+/// change them, and each keeps the four in step.
 #[derive(Default)]
 struct TicketEntries {
     tickets: BTreeMap<String, TicketEntry>,
+    by_key: foldhash::HashMap<Box<str>, std::collections::BTreeSet<(u64, Box<str>)>>,
+    pending: foldhash::HashMap<busbar_contract::UnitKey, Box<str>>,
     /// Every held ticket by its expiry (unix seconds), so the sweep reads only the due ones.
     due: std::collections::BTreeSet<(u64, String)>,
     cursor: Option<String>,
@@ -122,24 +125,87 @@ struct TicketEntries {
 }
 
 impl TicketEntries {
-    fn insert(&mut self, id: String, entry: TicketEntry) {
-        self.due.insert((entry.expires_at, id.clone()));
-        if let Some(replaced) = self.tickets.insert(id.clone(), entry) {
-            if replaced.expires_at != self.tickets[&id].expires_at {
-                self.due.remove(&(replaced.expires_at, id));
-            }
+    /// Hold `entry` under `id`, indexed by its key, its expiry and, when not ready, by its unit.
+    /// A ticket the map already held under `id` is answered, unindexed, for the caller to drop
+    /// outside the lock.
+    fn insert(&mut self, id: String, entry: TicketEntry) -> Option<TicketEntry> {
+        let replaced = self.remove(&id);
+        let ticket: Box<str> = id.as_str().into();
+        self.by_key
+            .entry(entry.source.key.id.as_str().into())
+            .or_default()
+            .insert((entry.expires_at, ticket.clone()));
+        if !entry.ready {
+            self.pending.insert(entry.source.unit, ticket);
         }
+        self.due.insert((entry.expires_at, id.clone()));
+        self.tickets.insert(id, entry);
+        replaced
     }
 
+    /// Release the ticket `id`, out of every index.
     fn remove(&mut self, id: &str) -> Option<TicketEntry> {
         let entry = self.tickets.remove(id)?;
+        let key = entry.source.key.id.as_str();
+        if let Some(held) = self.by_key.get_mut(key) {
+            held.remove(&(entry.expires_at, Box::from(id)));
+            if held.is_empty() {
+                self.by_key.remove(key);
+            }
+        }
+        if self
+            .pending
+            .get(&entry.source.unit)
+            .is_some_and(|pending| &**pending == id)
+        {
+            self.pending.remove(&entry.source.unit);
+        }
         self.due.remove(&(entry.expires_at, id.to_owned()));
         Some(entry)
     }
 
+    /// Release `unit`'s one ticket not yet ready, if it holds one.
+    fn take_pending(&mut self, unit: busbar_contract::UnitKey) -> Option<TicketEntry> {
+        let id = self.pending.get(&unit)?.clone();
+        self.remove(&id)
+    }
+
+    /// Release every ticket.
     fn take_all(&mut self) -> BTreeMap<String, TicketEntry> {
+        self.by_key.clear();
+        self.pending.clear();
         self.due.clear();
         std::mem::take(&mut self.tickets)
+    }
+
+    /// Whether one more ticket for `key_id` may be held at `now` (Unix seconds): refused when the
+    /// key already holds `per_key` (retry when its own earliest ticket has expired and one sweep
+    /// cycle has passed), or when the node holds [`TICKET_CUSTODY_CAP`] (retry after one cycle).
+    fn admits(
+        &self,
+        key_id: &str,
+        per_key: usize,
+        now: u64,
+    ) -> Result<(), busbar_kernel::governance::TicketRefusal> {
+        use busbar_kernel::governance::TicketRefusal;
+        let held = self.by_key.get(key_id);
+        if held.map_or(0, std::collections::BTreeSet::len) >= per_key {
+            let earliest = held
+                .and_then(std::collections::BTreeSet::first)
+                .map_or(now, |(expires_at, _)| *expires_at);
+            let retry = earliest
+                .saturating_sub(now)
+                .saturating_add(TICKET_SWEEP_CYCLE_SECS);
+            return Err(TicketRefusal::KeySaturated {
+                retry_after_secs: u32::try_from(retry).unwrap_or(u32::MAX).max(1),
+            });
+        }
+        if self.tickets.len() >= TICKET_CUSTODY_CAP {
+            return Err(TicketRefusal::NodeSaturated {
+                retry_after_secs: TICKET_SWEEP_CYCLE_SECS as u32,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -201,15 +267,16 @@ impl Drop for TicketSourceOwner {
                 .entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let ids: Vec<_> = entries
-                .tickets
-                .iter()
-                .filter(|(_, e)| !e.ready && Arc::ptr_eq(&e.source, &self.source))
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.into_iter()
-                .filter_map(|id| entries.remove(&id))
-                .collect::<Vec<_>>()
+            let owned = entries
+                .pending
+                .get(&self.source.unit)
+                .and_then(|id| entries.tickets.get(&**id))
+                .is_some_and(|e| Arc::ptr_eq(&e.source, &self.source));
+            if owned {
+                entries.take_pending(self.source.unit)
+            } else {
+                None
+            }
         };
         drop(pending);
     }
@@ -348,12 +415,22 @@ impl TicketCustody {
             drop(reservation);
             return Err(TicketRefusal::NotKept);
         }
-        entries.version = entries
-            .version
-            .checked_add(1)
-            .ok_or(TicketRefusal::NotKept)?;
-        let version = entries.version;
-        entries.insert(
+        if let Err(refusal) = entries.admits(
+            source.key.id.as_str(),
+            source.per_key,
+            busbar_kernel::store::now(),
+        ) {
+            drop(entries);
+            drop(reservation);
+            return Err(refusal);
+        }
+        let Some(version) = entries.version.checked_add(1) else {
+            drop(entries);
+            drop(reservation);
+            return Err(TicketRefusal::NotKept);
+        };
+        entries.version = version;
+        let replaced = entries.insert(
             identity.id().to_owned(),
             TicketEntry {
                 reservation,
@@ -379,9 +456,9 @@ impl TicketCustody {
                 Some(id) if acknowledged_completed => {
                     let ready = entries.take_pending(key).map(|mut entry| {
                         entry.ready = true;
-                    }
-                } else if let Some(entry) = entries.remove(&id) {
-                    removed.push(entry);
+                        entry
+                    });
+                    ready.and_then(|entry| entries.insert(id, entry))
                 }
                 Some(_) => entries.take_pending(key),
                 None => None,
@@ -620,10 +697,9 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
                 .sources
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .values()
-                .find(|s| {
-                    s.unit.get() == unit
-                        && *s.instance == *caller.namespace().as_ref()
+                .get(&unit_key)
+                .filter(|s| {
+                    *s.instance == *caller.namespace().as_ref()
                         && s.key.as_ref() == principal.as_ref()
                 })
                 .cloned();
