@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! RSA-OAEP (SHA-1, MGF1-SHA-1; RFC 8017 7.1.1) with a public RSA key.
+//! RSA-OAEP (SHA-1, MGF1-SHA-1; RFC 8017 7.1) to a server's PEM public key, over the crypto facade
+//! (decision 224). Only the PEM and DER framing is here; the key check and the encryption are the
+//! backend's.
 
 use base64::Engine as _;
-use num_bigint::BigUint;
-use zeroize::Zeroizing;
 
-use super::digests::sha1;
 use super::Refused;
+use crate::crypto;
 
 const BAD_KEY: Refused = Refused("the server's RSA public key does not parse");
 
-/// Minimum accepted modulus size in bits (2048). A smaller key is too weak.
-const MIN_MODULUS_BITS: u64 = 2048;
-/// Maximum accepted modulus size in bits (8192). A larger key is implausibly expensive.
-const MAX_MODULUS_BITS: u64 = 8192;
-/// Maximum accepted public exponent (2^33 - 1). Larger values make modpow expensive.
-const MAX_EXPONENT_BITS: u64 = 33;
-
+/// One DER item: tag, contents, rest.
 fn der_item(b: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     let (&tag, rest) = b.split_first()?;
     let (&first, rest) = rest.split_first()?;
@@ -37,35 +31,16 @@ fn der_item(b: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     (rest.len() >= len).then(|| (tag, &rest[..len], &rest[len..]))
 }
 
-fn rsa_public_key(der: &[u8]) -> Option<(BigUint, BigUint)> {
-    let (tag, body, _) = der_item(der)?;
-    if tag != 0x30 {
-        return None;
+/// Whether `der` is framed as a `SubjectPublicKeyInfo` or a PKCS#1 `RSAPublicKey`.
+fn framed(der: &[u8]) -> bool {
+    let Some((0x30, body, [])) = der_item(der) else {
+        return false;
+    };
+    match der_item(body) {
+        Some((0x30, _, rest)) => matches!(der_item(rest), Some((0x03, [0, ..], _))),
+        Some((0x02, _, rest)) => matches!(der_item(rest), Some((0x02, _, _))),
+        _ => false,
     }
-    let (t1, first, rest) = der_item(body)?;
-    if t1 == 0x30 {
-        let (t2, bits, _) = der_item(rest)?;
-        if t2 != 0x03 || bits.first() != Some(&0) {
-            return None;
-        }
-
-        return pkcs1_public_key(&bits[1..]);
-    }
-    pkcs1_integers(t1, first, rest)
-}
-
-fn pkcs1_public_key(der: &[u8]) -> Option<(BigUint, BigUint)> {
-    let (tag, body, _) = der_item(der)?;
-    if tag != 0x30 {
-        return None;
-    }
-    let (t1, first, rest) = der_item(body)?;
-    pkcs1_integers(t1, first, rest)
-}
-
-fn pkcs1_integers(t1: u8, first: &[u8], rest: &[u8]) -> Option<(BigUint, BigUint)> {
-    let (t2, e, _) = der_item(rest)?;
-    (t1 == 0x02 && t2 == 0x02).then(|| (BigUint::from_bytes_be(first), BigUint::from_bytes_be(e)))
 }
 
 fn pem_body(pem: &[u8]) -> Option<Vec<u8>> {
@@ -78,63 +53,28 @@ fn pem_body(pem: &[u8]) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD.decode(b64).ok()
 }
 
-fn mgf1_sha1(seed: &[u8], len: usize) -> Zeroizing<Vec<u8>> {
-    let mut out = Zeroizing::new(Vec::with_capacity(len + 20));
-    let mut counter = 0_u32;
-    while out.len() < len {
-        out.extend_from_slice(&sha1(&[seed, &counter.to_be_bytes()])[..]);
-        counter += 1;
+fn der(pem: &[u8]) -> Result<Vec<u8>, Refused> {
+    let der = pem_body(pem).ok_or(BAD_KEY)?;
+    if framed(&der) {
+        Ok(der)
+    } else {
+        Err(BAD_KEY)
     }
-    out.truncate(len);
-    out
 }
 
 /// The SHA-256 of the PEM key's DER body.
 pub(crate) fn key_sha256(pem: &[u8]) -> Result<[u8; 32], Refused> {
-    let der = pem_body(pem).ok_or(BAD_KEY)?;
-    rsa_public_key(&der).ok_or(BAD_KEY)?;
-    Ok(*super::digests::sha256(&[&der]))
+    Ok(crypto::sha256(&der(pem)?))
 }
 
-/// `message` encrypted to the PEM public key `pem` with OAEP over SHA-1 and the 20-byte `seed`.
-pub(crate) fn oaep_sha1(message: &[u8], pem: &[u8], seed: &[u8; 20]) -> Result<Vec<u8>, Refused> {
-    let der = pem_body(pem).ok_or(BAD_KEY)?;
-    let (n, e) = rsa_public_key(&der).ok_or(BAD_KEY)?;
-    // Reject keys that are too small (weak), too large (DoS via modpow), or have an
-    // implausibly large exponent.  The exponent must also be odd (standard RSA requirement).
-    let n_bits = n.bits();
-    if !(MIN_MODULUS_BITS..=MAX_MODULUS_BITS).contains(&n_bits) {
-        return Err(BAD_KEY);
-    }
-    if e.bits() > MAX_EXPONENT_BITS || !e.bit(0) {
-        return Err(BAD_KEY);
-    }
-    let k = usize::try_from(n_bits.div_ceil(8)).map_err(|_| BAD_KEY)?;
-    if k < 2 * 20 + 2 || message.len() > k - 2 * 20 - 2 {
-        return Err(Refused("the password is too long for the server's RSA key"));
-    }
-    let mut db = Zeroizing::new(Vec::with_capacity(k - 21));
-    db.extend_from_slice(&sha1(&[b""])[..]);
-    db.resize(k - 21 - message.len() - 1, 0);
-    db.push(1);
-    db.extend_from_slice(message);
-    for (d, m) in db.iter_mut().zip(mgf1_sha1(seed, k - 21).iter()) {
-        *d ^= m;
-    }
-    let mut masked_seed = Zeroizing::new(*seed);
-    for (s, m) in masked_seed.iter_mut().zip(mgf1_sha1(&db, 20).iter()) {
-        *s ^= m;
-    }
-    let mut em = Zeroizing::new(Vec::with_capacity(k));
-    em.push(0);
-    em.extend_from_slice(&masked_seed[..]);
-    em.extend_from_slice(&db);
-    let c = BigUint::from_bytes_be(&em).modpow(&e, &n);
-    let mut out = c.to_bytes_be();
-    if out.len() < k {
-        let mut padded = vec![0; k - out.len()];
-        padded.append(&mut out);
-        out = padded;
-    }
-    Ok(out)
+/// `message` encrypted to the PEM public key `pem` with OAEP over SHA-1 and a fresh seed.
+pub(crate) fn oaep_sha1(message: &[u8], pem: &[u8]) -> Result<Vec<u8>, Refused> {
+    let der = der(pem)?;
+    crypto::legacy::rsa_oaep_sha1_encrypt(&der, message).map_err(|e| match e {
+        crypto::Error::Unsupported(u) => Refused(u.reason),
+        crypto::Error::Invalid(w) if w.contains("too long") => {
+            Refused("the password is too long for the server's RSA key")
+        }
+        _ => BAD_KEY,
+    })
 }

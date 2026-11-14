@@ -5,12 +5,11 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use sha2::{Digest as _, Sha256};
 
 /// The SHA-256 digest of `data`, raw.
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
-    Sha256::digest(data).into()
+    crate::crypto::sha256(data)
 }
 
 /// The tag a SHA-256 digest is shown under: `sha256/`.

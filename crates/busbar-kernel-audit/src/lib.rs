@@ -15,7 +15,6 @@ pub mod journal;
 pub mod recipe;
 pub mod record;
 pub mod sign;
-mod wiped;
 
 pub use amend::{
     content_access, Access, Adjust, AmendBody, AmendChain, AmendClass, AmendJournal, AmendSink,

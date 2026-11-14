@@ -162,7 +162,7 @@ impl SealedValue {
                 "PBKDF2 iterations outside the supported work bound",
             ));
         }
-        let value = super::pbkdf2_sha256(self.wire(), salt, iterations);
+        let value = super::pbkdf2_sha256(self.wire(), salt, iterations)?;
         Ok(self.transformed(Zeroizing::new(value.to_vec())))
     }
 
@@ -214,9 +214,7 @@ impl SealedValue {
     /// the owner must establish its trust before using it. Existing security requirements are
     /// retained even though the output is ciphertext.
     pub fn rsa_oaep_sha1(&self, public_key_pem: &[u8]) -> Result<Self, Refused> {
-        let mut seed = Zeroizing::new([0_u8; 20]);
-        getrandom::fill(&mut seed[..]).map_err(|_| Refused("no randomness for OAEP"))?;
-        let ciphertext = rsa::oaep_sha1(self.wire(), public_key_pem, &seed)?;
+        let ciphertext = rsa::oaep_sha1(self.wire(), public_key_pem)?;
         Ok(self.transformed(Zeroizing::new(ciphertext)))
     }
 }

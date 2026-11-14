@@ -349,7 +349,6 @@ dependencies = [
  "jsonschema",
  "libc",
  "memchr",
- "num-bigint",
  "proc-macro2",
  "quote",
  "ring",

@@ -28,7 +28,6 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true, features = ["serde"] }
-num-bigint = { workspace = true }
 getrandom = { workspace = true }
 ring = { workspace = true }
 aws-lc-sys = { workspace = true }
