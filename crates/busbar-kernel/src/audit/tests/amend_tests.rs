@@ -74,11 +74,13 @@ async fn a_bound_sink_takes_the_held_tail_then_every_new_amendment() {
         )
         .await
         .unwrap();
-    export_read(
+    export_reads(
         &journal,
-        "sink",
         "logs",
-        crate::export::projection::Members::default(),
+        &[(
+            std::sync::Arc::from("sink"),
+            crate::export::projection::Members::default(),
+        )],
     )
     .await
     .unwrap();

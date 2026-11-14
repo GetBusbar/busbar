@@ -553,6 +553,32 @@ fn reads_under(s: &PluginSink, op: &str) -> usize {
         .count()
 }
 
+/// One event delivered to every sink of `sinks`, their access amendments recorded as one set.
+fn deliver_event_to(
+    sinks: &[PluginSink],
+    stream: ExportStream,
+    op: &str,
+    f: &mut impl FnMut(Projection, bool) -> Rendered,
+) {
+    let mut handed = Handed::default();
+    for s in sinks {
+        deliver_one(s, stream, f, &mut handed);
+    }
+    handed.record(op);
+}
+
+/// One event delivered to the single sink `s`, its access amendment recorded as the event's set.
+fn deliver_event(
+    s: &PluginSink,
+    stream: ExportStream,
+    op: &str,
+    f: &mut impl FnMut(Projection, bool) -> Rendered,
+) {
+    let mut handed = Handed::default();
+    deliver_one(s, stream, f, &mut handed);
+    handed.record(op);
+}
+
 fn payload(_: Projection, _: bool) -> Rendered {
     Rendered {
         line: br#"{"path":"/v1/x"}"#.to_vec(),
@@ -1060,7 +1086,7 @@ async fn export_three_sinks_one_commit_per_event() {
     let sinks: Vec<PluginSink> = (0..3)
         .map(|n| PluginSink {
             name: format!("w2-sink-{n}"),
-            module: format!("w2-sink-{n}"),
+            module: format!("w2-sink-{n}").into(),
             sink: double(Delivered::Queued, None),
             scrape: false,
             projection: Projection::for_test(&[ExportStream::Logs], &[]),
@@ -1091,4 +1117,17 @@ async fn export_three_sinks_one_commit_per_event() {
         "one event's three sink amendments are one commit unit, seen as {:?}",
         order.0.lock().unwrap()
     );
+}
+
+/// W6: ten scrapes inside one STATUS_REFRESH window cross STATUS once, and the next window
+/// crosses again.
+#[test]
+fn scrape_status_crossings_are_once_per_refresh() {
+    let at = std::sync::Mutex::new(None);
+    let start = std::time::Instant::now();
+    let due = (0..10)
+        .filter(|n| status_due(&at, start + std::time::Duration::from_secs(*n)))
+        .count();
+    assert_eq!(due, 1, "ten scrapes in 10 s cross STATUS once");
+    assert!(status_due(&at, start + STATUS_REFRESH));
 }

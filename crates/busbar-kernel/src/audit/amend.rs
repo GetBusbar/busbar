@@ -36,14 +36,45 @@ pub(crate) async fn hook_reads(
     names: &[&str],
     principal: Option<&str>,
     op: &str,
-    members: crate::export::projection::Members,
+    identity: bool,
 ) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
-    let fields = members.names().map(str::to_owned).collect();
-    let now = busbar_kernel::store::now();
-    amendments
-        .record_read(&pass(), Reader::Export, module, None, op, fields, now)
-        .await
-        .map(|_| ())
+    let mut fields = vec!["content".to_string()];
+    fields.extend(identity.then(|| "identity".to_string()));
+    let wall = busbar_kernel::store::now();
+    let facts: Vec<ReadFact<'_>> = names
+        .iter()
+        .map(|&name| ReadFact {
+            reader: Reader::Hook,
+            name,
+            principal,
+            op_class: op,
+            fields: fields.clone(),
+            wall,
+        })
+        .collect();
+    amendments.record_reads(&pass(), &facts).await.map(|_| ())
+}
+
+/// Record that each `(module, members)` export sink was handed its record's members under `op`:
+/// one amendment per sink, staged and confirmed together (one durable commit per event).
+pub(crate) async fn export_reads(
+    amendments: &NodeAmendments,
+    op: &str,
+    handed: &[(std::sync::Arc<str>, crate::export::projection::Members)],
+) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
+    let wall = busbar_kernel::store::now();
+    let facts: Vec<ReadFact<'_>> = handed
+        .iter()
+        .map(|(module, members)| ReadFact {
+            reader: Reader::Export,
+            name: module.as_ref(),
+            principal: None,
+            op_class: op,
+            fields: members.names().map(str::to_owned).collect(),
+            wall,
+        })
+        .collect();
+    amendments.record_reads(&pass(), &facts).await.map(|_| ())
 }
 
 #[cfg(test)]
