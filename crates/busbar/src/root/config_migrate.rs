@@ -695,9 +695,12 @@ impl RootHost {
                 .map_err(|_| refused("current migration plugin statement is unavailable"))?;
             let statement = busbar_contract::abi::mechanism::rendering::read(&row.statement)
                 .map_err(|_| refused("current migration plugin statement is invalid"))?;
-            let probe = self
+            let Some(probe) = self
                 .validation_probe(settings, &statement)
-                .map_err(Checked::Refused)?;
+                .map_err(Checked::Refused)?
+            else {
+                return Ok(());
+            };
             return crate::root::loader::dispatch::migrate::validate_migrated_door(
                 crate::root::loader::dispatch::load::raw(door),
                 &probe,
@@ -714,9 +717,12 @@ impl RootHost {
                 .ok_or_else(|| refused("current migration plugin statement is unavailable"))?;
             let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
                 .map_err(|_| refused("current migration plugin statement is invalid"))?;
-            let probe = self
+            let Some(probe) = self
                 .validation_probe(settings, &statement)
-                .map_err(Checked::Refused)?;
+                .map_err(Checked::Refused)?
+            else {
+                return Ok(());
+            };
             return row.validate_migrated(&probe).map_err(Checked::Refused);
         }
         let fetched = self.fetch(kind, module).map_err(Checked::Unavailable)?;
@@ -729,9 +735,12 @@ impl RootHost {
             .ok_or_else(|| refused("current migration plugin statement is unavailable"))?;
         let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
             .map_err(|_| refused("current migration plugin statement is invalid"))?;
-        let probe = self
+        let Some(probe) = self
             .validation_probe(settings, &statement)
-            .map_err(Checked::Refused)?;
+            .map_err(Checked::Refused)?
+        else {
+            return Ok(());
+        };
         row.validate_migrated(&probe).map_err(Checked::Refused)
     }
 }
