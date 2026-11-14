@@ -35,6 +35,7 @@
 //! 3. a `fields:` list that omits a **pinned** field, or names a field this release does not
 //!    produce.
 
+use crate::diagnostics::coded;
 use busbar_contract::abi::export::{ExportField, ExportStream};
 use serde_json::Value;
 
@@ -216,23 +217,29 @@ pub(crate) fn resolve_projection(
     let before = errors.len();
 
     if durable {
-        errors.push(format!(
+        errors.push(
+            coded::config_export_invalid(format!(
             "export.{name}.durable: `true` is NOT YET IMPLEMENTED in this release — core does not \
              spool this sink's records, so accepting it would promise a completeness guarantee \
              nothing delivers. The key is reserved and the spool arrives in a later release; set \
              `durable: false` (or omit it) meanwhile."
-        ));
+        ))
+            .into(),
+        );
     }
 
     let subscribed: Vec<ExportStream> = match stream_tokens {
         None => module_carries.unwrap_or(PRODUCED_STREAMS).to_vec(),
         Some([]) => {
-            errors.push(format!(
+            errors.push(
+                coded::config_export_invalid(format!(
                 "export.{name}.streams: is EMPTY — a sink that subscribes to no stream receives \
                  nothing at all. Omit the key to take the module's own streams ({}), or name the \
                  streams you want.",
                 tokens(module_carries.unwrap_or(&[]))
-            ));
+            ))
+                .into(),
+            );
             Vec::new()
         }
         Some(list) => {
@@ -240,49 +247,64 @@ pub(crate) fn resolve_projection(
             for tok in list {
                 let Some(stream) = ExportStream::from_token(tok) else {
                     if tok == "audit" {
-                        errors.push(format!(
+                        errors.push(
+                            coded::config_export_invalid(format!(
                             "export.{name}.streams: `audit` is NOT a stream — it was a use case, \
                              not a data type. An auditor is a SINK whose projection includes the \
                              right streams (e.g. `streams: [logs, identity, decisions, events, \
                              costs]`), which is strictly more expressive. The streams are: {}.",
                             ExportStream::vocabulary()
-                        ));
+                        ))
+                            .into(),
+                        );
                     } else {
-                        errors.push(format!(
+                        errors.push(
+                            coded::config_export_invalid(format!(
                             "export.{name}.streams: unknown stream `{tok}`; the streams are: {}.",
                             ExportStream::vocabulary()
-                        ));
+                        ))
+                            .into(),
+                        );
                     }
                     continue;
                 };
                 if !stream_produced(stream) {
-                    errors.push(format!(
+                    errors.push(
+                        coded::config_export_invalid(format!(
                         "export.{name}.streams: `{}` HAS NO PRODUCER in this release — nothing \
                          generates those records yet, so subscribing would deliver nothing while \
                          reporting success. It arrives in a later release. The streams this \
                          release produces are: {}.",
                         stream.as_token(),
                         tokens(PRODUCED_STREAMS)
-                    ));
+                    ))
+                        .into(),
+                    );
                     continue;
                 }
                 if let Some(carried) = module_carries {
                     if !carried.contains(&stream) {
-                        errors.push(format!(
-                            "export.{name}.streams: `module: {module}` cannot carry the `{}` \
+                        errors.push(
+                            coded::config_export_invalid(format!(
+                                "export.{name}.streams: `module: {module}` cannot carry the `{}` \
                              stream (it carries: {}), so this subscription would deliver nothing. \
                              Point a different module at this stream, or drop it from `streams:`.",
-                            stream.as_token(),
-                            tokens(carried)
-                        ));
+                                stream.as_token(),
+                                tokens(carried)
+                            ))
+                            .into(),
+                        );
                         continue;
                     }
                 }
                 if out.contains(&stream) {
-                    errors.push(format!(
-                        "export.{name}.streams: `{}` is listed twice.",
-                        stream.as_token()
-                    ));
+                    errors.push(
+                        coded::config_export_invalid(format!(
+                            "export.{name}.streams: `{}` is listed twice.",
+                            stream.as_token()
+                        ))
+                        .into(),
+                    );
                     continue;
                 }
                 out.push(stream);
@@ -316,23 +338,26 @@ fn resolve_fields_override(
     errors: &mut Vec<String>,
 ) -> Vec<ExportField> {
     if list.is_empty() {
-        errors.push(format!(
+        errors.push(coded::config_export_invalid(format!(
             "export.{name}.fields: is EMPTY — `fields:` is an EXHAUSTIVE OVERRIDE, so an empty list \
              means a record with no fields at all. Omit the key to take each subscribed stream's \
              default fields."
-        ));
+        )).into());
         return Vec::new();
     }
 
     let mut blocked = false;
     for s in subscribed {
         if s.default_fields().is_empty() {
-            errors.push(format!(
+            errors.push(
+                coded::config_export_invalid(format!(
                 "export.{name}.fields: the `{}` stream has no per-record fields to project (its \
                  unit is the documented metric catalog — families, not record fields), so \
                  `fields:` cannot apply to it.",
                 s.as_token()
-            ));
+            ))
+                .into(),
+            );
             blocked = true;
             continue;
         }
@@ -343,14 +368,17 @@ fn resolve_fields_override(
             .find(|p| !produced.contains(p))
             .copied()
         {
-            errors.push(format!(
+            errors.push(
+                coded::config_export_invalid(format!(
                 "export.{name}.fields: the `{}` stream cannot be projected with `fields:` in this \
                  release — its PINNED field `{}` (which `fields:` may never omit, because it is \
                  what makes the records joinable) HAS NO PRODUCER yet and arrives in a later \
                  release. Omit `fields:` to receive the stream's produced default set.",
                 s.as_token(),
                 missing.as_token()
-            ));
+            ))
+                .into(),
+            );
             blocked = true;
         }
     }
@@ -358,23 +386,29 @@ fn resolve_fields_override(
     let mut granted: Vec<ExportField> = Vec::new();
     for tok in list {
         let Some(field) = ExportField::from_token(tok) else {
-            errors.push(format!(
+            errors.push(
+                coded::config_export_invalid(format!(
                 "export.{name}.fields: unknown field `{tok}`. The fields of the subscribed streams \
                  are: {}.",
                 subscribed_field_tokens(subscribed)
-            ));
+            ))
+                .into(),
+            );
             continue;
         };
         if !subscribed
             .iter()
             .any(|s| s.default_fields().contains(&field))
         {
-            errors.push(format!(
+            errors.push(
+                coded::config_export_invalid(format!(
                 "export.{name}.fields: `{tok}` is not a field of any subscribed stream ({}), so it \
                  would never arrive. The fields of the subscribed streams are: {}.",
                 tokens(subscribed),
                 subscribed_field_tokens(subscribed)
-            ));
+            ))
+                .into(),
+            );
             continue;
         }
         if !blocked
@@ -382,15 +416,20 @@ fn resolve_fields_override(
                 .iter()
                 .any(|s| produced_fields(*s).contains(&field))
         {
-            errors.push(format!(
+            errors.push(coded::config_export_invalid(format!(
                 "export.{name}.fields: `{tok}` HAS NO PRODUCER in this release — it is a documented \
                  field of a subscribed stream but nothing fills it in yet, so asking for it \
                  explicitly would leave a permanently-absent key. It arrives in a later release."
-            ));
+            )).into());
             continue;
         }
         if granted.contains(&field) {
-            errors.push(format!("export.{name}.fields: `{tok}` is listed twice."));
+            errors.push(
+                coded::config_export_invalid(format!(
+                    "export.{name}.fields: `{tok}` is listed twice."
+                ))
+                .into(),
+            );
             continue;
         }
         granted.push(field);
@@ -400,7 +439,8 @@ fn resolve_fields_override(
         for s in subscribed {
             for pinned in s.pinned_fields() {
                 if !granted.contains(pinned) {
-                    errors.push(format!(
+                    errors.push(
+                        coded::config_export_invalid(format!(
                         "export.{name}.fields: omits `{}`, which is PINNED on the `{}` stream. \
                          `fields:` bounds what a sink is DISCLOSED, but it must not break the \
                          records' STRUCTURE: {} Add `{}` to `fields:`, or omit `fields:` to take \
@@ -409,7 +449,9 @@ fn resolve_fields_override(
                         s.as_token(),
                         pinned_reason(*pinned),
                         pinned.as_token()
-                    ));
+                    ))
+                        .into(),
+                    );
                 }
             }
         }

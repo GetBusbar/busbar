@@ -1,18 +1,10 @@
-//! The 1.5.5 admin error envelope: `{"error":{"code":"<code>","message":"<message>"}}`.
+//! The admin error envelope: 1.5.5's `{"error":{"code":"<code>","message":"<message>"}}` plus the
+//! catalog code as a top-level `code` (owner decision 2026-11-12).
 
-/// The 1.5.5 admin error envelope around one code and one message.
+/// The admin error envelope around one code and one message.
 #[must_use]
 pub fn envelope_of(code: &str, message: &str) -> String {
-    format!(
-        r#"{{"error":{{"code":{},"message":{}}}}}"#,
-        json_string(code),
-        json_string(message)
-    )
-}
-
-/// `value` as one JSON string literal, quotes included.
-fn json_string(value: &str) -> String {
-    serde_json::Value::from(value).to_string()
+    busbar_kernel::admin::gate::admin_envelope_body(code, message)
 }
 
 #[cfg(test)]

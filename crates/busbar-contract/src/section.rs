@@ -263,21 +263,21 @@ where
     })
 }
 
+crate::coded_text! {
+    /// The coded reserved-name refusal (`BUSBAR-3101`): names the offending word and the section
+    /// it is reserved in, and links the code's page, which lists every reserved name.
+    pub fn reserved_name(noun, name, section) => crate::diagnostic::CONFIG_RESERVED_NAME,
+    RESERVED_NAME_TEXT = "a {noun} may not be named `{name}` (reserved in `{section}:`)"
+}
+
 /// THE SENTENCE an operator reads when they name a registration with a reserved word, written once
 /// for every reserved name: the section-level keys (`hooks`, `upstream_credentials`,
-/// `usage_observations`) and the core-owned settings (`breaker`, ...) alike.
-///
-/// The wording is generic: it names the offending word and links the one docs page that lists every
-/// reserved name. The owner signed this wording on 2026-11-12, a customer-visible difference from
-/// 1.5.5 (which spelled each reserved word's role inline); the oracle records it as an accepted
-/// difference for cell BOOT-P07.
+/// `usage_observations`) and the core-owned settings (`breaker`, ...) alike. Owner decision
+/// 2026-11-12 (operator error codes): one coded sentence, `BUSBAR-3101`, linking the page that lists
+/// every reserved name; 1.5.5 spelled each reserved word's role inline.
 #[must_use]
 pub fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
-    format!(
-        "a {noun} may not be named `{name}`: that name is reserved in the `{section}:` section. \
-         See https://getbusbar.com/docs/configuration#reserved-names for the full list. \
-         Rename the {noun}."
-    )
+    reserved_name(noun, name, section).into()
 }
 
 #[cfg(test)]

@@ -148,6 +148,9 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   1.6.0 Changed: a request whose key row carries an `expires_at` at or before now is refused with the same `401` as an expired token, and the refusal is audited like every other credential refusal; the admin views still show the stored `expires_at`.
   1.5.5 stored the field but enforced only the signed token's own `exp`, so a key row expired out of
   band (a restored backup, a hand-edited or migrated store) kept admitting (owner-signed 2026-10-30).
+- **Every operator-facing error carries a permanent code and a docs link.**
+  1.6.0 Changed: config and boot refusals (`--validate` and startup), `--migrate-config` errors and warnings, and CLI errors read `BUSBAR-NNNN: <what is wrong>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-NNNN`, and admin API error responses add a top-level `code` (`BUSBAR-81xx`) beside the unchanged `error` object.
+  The codes are the diagnostics catalog's (one registry: `crates/busbar-kernel/src/diagnostics/catalog.toml`), never reused, and every code has a generated page under `/docs/1.6/errors/`. A reserved-name refusal now reads ``a pool may not be named `hooks` (reserved in `pools:`)``; data-plane error bodies are unchanged (owner decision 2026-11-12).
 - **A reserved-name refusal is one generic sentence.**
   Reserved-name refusal: a configuration that names a registration with a reserved word is refused with one generic sentence that names the word and links https://getbusbar.com/docs/configuration#reserved-names, the full list of reserved names.
   1.5.5 spelled each reserved word's role inline (owner-signed 2026-11-12).

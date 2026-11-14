@@ -72,7 +72,18 @@ pub(crate) fn build_info_line() -> String {
 }
 
 fn die(msg: impl std::fmt::Display) -> ! {
-    eprintln!("[error] {}: {msg}", diagnostics::BOOT_FATAL_ERROR.banner());
+    eprintln!("[error] {}", diagnostics::BOOT_FATAL_ERROR.coded(msg));
+    std::process::exit(1);
+}
+
+/// [`die`] over a list: the coded head line, then one `  - <item>` line per error, each item
+/// carrying its own code and link.
+fn die_list<T: std::fmt::Display>(head: &str, items: impl IntoIterator<Item = T>) -> ! {
+    let mut out = format!("[error] {}", diagnostics::BOOT_FATAL_ERROR.coded(head));
+    for item in items {
+        out.push_str(&format!("\n  - {item}"));
+    }
+    eprintln!("{out}");
     std::process::exit(1);
 }
 
@@ -109,9 +120,11 @@ fn worker_threads_from_env_noting(name: &str, warnings: &mut Vec<String>) -> Opt
             Ok(n) if n >= 1 => Some(n),
             _ => {
                 warnings.push(format!(
-                    "[warn] {code}: {name}={v:?} is not a positive integer; ignoring it and using \
-                     the default worker-thread count",
-                    code = diagnostics::WORKER_THREADS_INVALID.banner()
+                    "[warn] {}",
+                    diagnostics::WORKER_THREADS_INVALID.coded(format_args!(
+                        "{name}={v:?} is not a positive integer; ignoring it and using the \
+                         default worker-thread count"
+                    ))
                 ));
                 None
             }
@@ -144,8 +157,8 @@ fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize
         Ok(v) => v,
         Err(msg) => {
             warnings.push(format!(
-                "[warn] {}: {msg}",
-                diagnostics::WORKER_THREADS_INVALID.banner()
+                "[warn] {}",
+                diagnostics::WORKER_THREADS_INVALID.coded(msg)
             ));
             None
         }
@@ -1066,13 +1079,13 @@ async fn run(
 
     busbar_core_admin::mark_start();
 
-    let mut cfg = config::resolve(&deploy, &defs)
-        .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
+    let mut cfg =
+        config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
     root::measurements::configure(&cfg.plugin_rate_cards)
         .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
 
     let door_kernel_sections = root::door_steps::kernel_sections(&cfg)
-        .unwrap_or_else(|error| die(format!("config errors:\n  - {error}")));
+        .unwrap_or_else(|error| die_list("config errors", [error]));
 
     dest.replace(root::connector::dest_judge(&cfg));
     root::boot::note_provider_urls(
@@ -1131,7 +1144,7 @@ async fn run(
             .copied(),
     );
 
-    export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
+    export::plugin::open(&cfg.export).unwrap_or_else(|e| die_list("config errors", [e]));
 
     let door_providers = root::door_steps::provider_routes(
         &cfg.providers,
@@ -1446,7 +1459,7 @@ async fn run(
          re-learned from live traffic"
     );
 
-    export::plugin::start().unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
+    export::plugin::start().unwrap_or_else(|e| die_list("config errors", [e]));
 
     let on_host = LINKED.on_host;
     let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_driver::engine_host(&app));
@@ -2353,9 +2366,11 @@ fn spawn_jemalloc_idle_purge_fallback() {
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!(
-                        "[warn] {}: jemalloc idle-purge fallback disabled: could not read \
-                         opt.dirty_decay_ms ({e})",
-                        diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
+                        "[warn] {}",
+                        diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.coded(format_args!(
+                            "jemalloc idle-purge fallback disabled: could not read \
+                             opt.dirty_decay_ms ({e})"
+                        ))
                     );
                     return;
                 }
@@ -2374,8 +2389,10 @@ fn spawn_jemalloc_idle_purge_fallback() {
         });
     if let Err(e) = spawned {
         eprintln!(
-            "[warn] {}: could not spawn the jemalloc idle-purge fallback thread ({e})",
-            diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
+            "[warn] {}",
+            diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.coded(format_args!(
+                "could not spawn the jemalloc idle-purge fallback thread ({e})"
+            ))
         );
     }
 }

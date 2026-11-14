@@ -90,5 +90,52 @@ pub fn error_envelope(status: u16, code: &str, message: &str) -> Response {
 }
 
 pub fn err_json(e: &ApiError) -> Response {
-    error_envelope(e.http_status(), e.code(), &e.message())
+    admin_error_envelope(e.http_status(), e.code(), &e.message())
+}
+
+/// THE ADMIN ERROR'S CATALOG CODE (owner decision 2026-11-12): the admin envelope's `error.code`
+/// is a closed reason vocabulary; each reason reports one `BUSBAR-81xx` catalog code, carried in a
+/// top-level `code` field beside `error` (the envelope's own rule: additive changes go outside
+/// `error`, which stays exactly `code` + `message`). Error paths only.
+#[must_use]
+pub fn admin_diag(code: &str) -> &'static busbar_contract::diagnostic::Diagnostic {
+    use crate::diagnostics as d;
+    match code {
+        "not_found" => &d::ADMIN_NOT_FOUND,
+        "unauthorized" | "invalid_api_key" => &d::ADMIN_UNAUTHORIZED,
+        "method_not_allowed" => &d::ADMIN_METHOD_NOT_ALLOWED,
+        "forbidden" => &d::ADMIN_FORBIDDEN,
+        "invalid_request" => &d::ADMIN_INVALID_REQUEST,
+        "version_conflict" => &d::ADMIN_VERSION_CONFLICT,
+        "conflict" => &d::ADMIN_CONFLICT,
+        "rate_limited" => &d::ADMIN_RATE_LIMITED,
+        "internal" => &d::ADMIN_INTERNAL,
+        "unavailable" => &d::ADMIN_UNAVAILABLE,
+        "unpriced_class" => &d::ADMIN_UNPRICED_CLASS,
+        busbar_contract::protocol::ERR_TYPE_REQUEST_TOO_LARGE => &d::ADMIN_REQUEST_TOO_LARGE,
+        _ => &d::ADMIN_REQUEST_REFUSED,
+    }
+}
+
+/// The admin error envelope body: 1.5.5's `{"error":{"code","message"}}`, unchanged, plus the
+/// catalog code as a top-level `code` (`{"code":"BUSBAR-8101","error":{...}}`).
+#[must_use]
+pub fn admin_envelope_body(code: &str, message: &str) -> String {
+    serde_json::json!({
+        "code": admin_diag(code).banner().to_string(),
+        "error": { "code": code, "message": message },
+    })
+    .to_string()
+}
+
+/// [`error_envelope`] for the ADMIN surface: the same envelope plus the top-level `code`. The plain
+/// [`error_envelope`] stays as it is for the data-plane fallback, whose bodies are client-facing.
+pub fn admin_error_envelope(status: u16, code: &str, message: &str) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (
+        status,
+        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
+        admin_envelope_body(code, message),
+    )
+        .into_response()
 }

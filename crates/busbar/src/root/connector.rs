@@ -125,7 +125,10 @@ pub fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'stat
 
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
     guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
-        eprintln!("busbar: config errors:\n  - {refusal}");
+        eprintln!(
+            "[error] {}\n  - {refusal}",
+            busbar_kernel::diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded("config errors")
+        );
         std::process::exit(2);
     })
 }

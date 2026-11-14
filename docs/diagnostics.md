@@ -2165,6 +2165,149 @@ A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as 
 
 **What to do:** Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear.
 
+<a id="admin-not-found"></a>
+### BUSBAR-8101 — The admin resource named in the request does not exist
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-not-found`
+
+The path names a resource (a key, a group, a hook, an exporter, a plugin) that this deployment does not have, or one that cannot exist in its current mode (a key read with governance disabled). The response's `message` names the missing thing.
+
+**What to do:** List the collection (for example `GET /api/v1/admin/keys`) to find the right name or id, or create the resource first.
+
+<a id="admin-unauthorized"></a>
+### BUSBAR-8102 — The admin request carries no valid admin credential
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-unauthorized`
+
+The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` or `x-admin-token` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).
+
+**What to do:** Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>` or `x-admin-token`. docs/admin-api.md covers the auth chain.
+
+<a id="admin-method-not-allowed"></a>
+### BUSBAR-8103 — The admin path does not take this HTTP method
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-method-not-allowed`
+
+The path exists on the admin surface, but not with the method the request used (for example a `DELETE` on a read-only collection).
+
+**What to do:** Use a method the path documents; the OpenAPI document at /docs/api/ lists every path and method.
+
+<a id="admin-forbidden"></a>
+### BUSBAR-8104 — The admin credential's scope does not cover this call
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-forbidden`
+
+The caller authenticated, but its admin scope (read-only, or a role binding's verb list) does not include this operation. The message names the scope that would have sufficed.
+
+**What to do:** Call with a credential whose scope covers the operation, or widen the role binding's `admin_scope` or `verbs`.
+
+<a id="admin-invalid-request"></a>
+### BUSBAR-8105 — The admin request is malformed or fails validation
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-invalid-request`
+
+The request body or its parameters are not what the operation takes: a malformed JSON body, an unknown or missing field, a value out of range, or a configuration change that fails the same validation `busbar --validate` runs. The message says which.
+
+**What to do:** Fix the request as the message describes; the OpenAPI document at /docs/api/ gives each operation's schema.
+
+<a id="admin-version-conflict"></a>
+### BUSBAR-8106 — The If-Match version is stale
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-version-conflict`
+
+The request's `If-Match` names a version of the resource that is no longer current: someone else changed it after you read it. This is retryable.
+
+**What to do:** Re-read the resource, re-apply your change to the current version, and retry with the new `ETag`.
+
+<a id="admin-conflict"></a>
+### BUSBAR-8107 — The admin request contradicts the server's state
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-conflict`
+
+The request cannot apply to the current state and a retry will not change that: governance is disabled, a base-defined hook cannot be removed, a grant is immutable, a duplicate already exists, or an idempotency key is still in flight. The message says which.
+
+**What to do:** Change the request (or the state it depends on) as the message describes; this is not a transient error.
+
+<a id="admin-rate-limited"></a>
+### BUSBAR-8108 — The admin mutation rate limit is exhausted
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-rate-limited`
+
+The caller has used its per-minute budget of admin mutations. Reads are not limited.
+
+**What to do:** Wait for the window the `retry-after` header gives (at most a minute) and retry; batch changes where the API allows.
+
+<a id="admin-internal"></a>
+### BUSBAR-8109 — The admin call failed inside busbar
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-internal`
+
+An internal failure (a store or plugin error) stopped the call. The response never carries the cause, which may be sensitive; the server log carries it under its own code.
+
+**What to do:** Check the busbar log at the time of the call for the error line and its code, then retry once the cause is fixed.
+
+<a id="admin-unavailable"></a>
+### BUSBAR-8110 — The admin call could not complete within its bound
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-unavailable`
+
+An operation that is normally fast could not start or finish in time (for example the plugin catalog scan), or no administrative surface is mounted on this listener. The call was abandoned rather than left to hang.
+
+**What to do:** Retry after a short wait. If it persists, check the server log and the store's health.
+
+<a id="admin-unpriced-class"></a>
+### BUSBAR-8111 — A usage read names a class the rate card does not price
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-unpriced-class`
+
+A usage query asked for a class the rate card in force does not price, so there is no amount to report for it.
+
+**What to do:** Price the class on the plane's rate card, or drop it from the query.
+
+<a id="admin-request-too-large"></a>
+### BUSBAR-8112 — The admin request body exceeds the configured limit
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-request-too-large`
+
+The request body is larger than the admin surface accepts.
+
+**What to do:** Send a smaller body (split a bulk change into several requests), or raise the configured admin body limit.
+
+<a id="admin-request-refused"></a>
+### BUSBAR-8199 — The admin request was refused
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-request-refused`
+
+The admin surface refused the request for a reason the `error.code` field names. This code covers refusals without a more specific admin code.
+
+**What to do:** Read `error.code` and `error.message` in the response; docs/admin-api.md lists every error code.
+
 ## 9xxx — Boot & lifecycle
 
 <a id="boot-audit-restore-read-failed"></a>
@@ -2298,4 +2441,37 @@ The fallback idle-purge helper (for targets where jemalloc's background purge th
 busbar found audit history in the legacy durable table but could not copy it into the neutral `plane_records` the durable audit seam now reads at boot — a store read/write hiccup, not a chain-verification failure. The migration is IDEMPOTENT and is retried on the next boot, so the pre-existing history reappears once the store is healthy; until then the seam-backed audit read (`GET /audit`) reflects only records written since this boot.
 
 **What to do:** Investigate the governance store's write path at boot (the same store the audit log persists to). Once it accepts writes, restart so the one-time migration completes and the durable history is restored into the seam; a transient hiccup needs no action beyond confirming the store is healthy.
+
+<a id="cli-unrecognized-argument"></a>
+### BUSBAR-9101 — The command line names an argument busbar does not know
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `cli-unrecognized-argument`
+
+busbar was started with an argument that is neither a flag it accepts nor the value of one. Nothing ran; the process exited with the usage status (2).
+
+**What to do:** Check the spelling against `busbar --help`. Configuration is not passed on the command line: put settings in config.yaml and point busbar at it with `--config <path>`.
+
+<a id="cli-invalid-arguments"></a>
+### BUSBAR-9102 — A command's arguments do not fit together
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `cli-invalid-arguments`
+
+A command-line command (an overlay migration or a principal transition) was given arguments it cannot act on: a missing companion flag, a conflicting pair, or a malformed value. The text after the code names which. Nothing ran; the process exited with the usage status (2).
+
+**What to do:** Fix the arguments the message names; `busbar --help` lists every command with its flags.
+
+<a id="cli-flag-requires-value"></a>
+### BUSBAR-9103 — A command-line flag is missing its value
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `cli-flag-requires-value`
+
+A flag that takes a value (such as `--config <path>` or `--providers <path>`) was the last argument, so it has nothing to read. Nothing ran; the process exited with the usage status (2).
+
+**What to do:** Give the flag its value, for example `busbar --config /etc/busbar/config.yaml --validate`.
 

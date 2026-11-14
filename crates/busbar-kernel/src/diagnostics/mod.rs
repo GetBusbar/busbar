@@ -37,6 +37,11 @@
 
 mod emit;
 pub use emit::emit;
+pub mod pages;
+
+#[cfg(test)]
+#[path = "tests/pages_tests.rs"]
+mod pages_tests;
 
 #[cfg(test)]
 #[path = "tests/catalog_tests.rs"]
@@ -86,6 +91,16 @@ impl Catalogue {
 }
 
 include!(concat!(env!("OUT_DIR"), "/diagnostics_catalog.rs"));
+
+/// The page text (template + example) of every templated code the host knows: the catalog's own
+/// [`TEXTS`] and the contract-owned codes the catalog re-exports.
+pub fn all_texts() -> Vec<busbar_contract::diagnostic::ErrorText> {
+    TEXTS
+        .iter()
+        .chain(busbar_contract::diagnostic::CONTRACT_TEXTS)
+        .copied()
+        .collect()
+}
 
 pub fn render_markdown_for(catalog: &[&Diagnostic]) -> String {
     let mut out = String::new();

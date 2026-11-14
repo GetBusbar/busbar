@@ -391,15 +391,13 @@ fn rename_refresh_ttl<'a>(
         let shown = value.as_str().unwrap_or("<non-string>").to_string();
         def.insert(field::VERIFY_TTL.into(), value);
         renamed = true;
-        warnings.push(format!(
-            "{prefix}.{}.refresh_ttl -> verify_ttl (value `{shown}` carried over). The meaning \
-             CHANGED: `refresh_ttl` was a background sweep cadence (default 6h); `verify_ttl` is the \
-             MAX staleness before a `tools/call` re-verifies the upstream live (default 5s). Your \
-             value is now a drift-serving window on the request path — reconsider it: a few seconds \
-             is the new default, `0` is strict-live, and a large value is an explicit security \
-             downgrade.",
-            id.as_str().unwrap_or("?")
-        ));
+        warnings.push(
+            busbar_kernel::diagnostics::coded::migrate_refresh_ttl_meaning_changed(
+                format_args!("{prefix}.{}", id.as_str().unwrap_or("?")),
+                &shown,
+            )
+            .into(),
+        );
     }
     renamed
 }
@@ -588,11 +586,15 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
                         if collapsed(scope) {
                             let old = scope.as_str().unwrap_or("").to_string();
                             *scope = Value::from("full");
-                            warnings.push(format!(
-                                "auth.{list_key} entry '{module}' max_admin_scope: {old} -> full \
-                                 (the delegated {old} scope is retired in 1.5.2; tighten to \
-                                 read-only if full is too broad)"
-                            ));
+                            warnings.push(
+                                busbar_kernel::diagnostics::coded::migrate_admin_scope_widened(
+                                    format_args!(
+                                        "auth.{list_key} entry '{module}' max_admin_scope"
+                                    ),
+                                    old,
+                                )
+                                .into(),
+                            );
                         }
                     }
                 }
@@ -615,11 +617,13 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
                     if collapsed(scope) {
                         let old = scope.as_str().unwrap_or("").to_string();
                         *scope = Value::from("full");
-                        warnings.push(format!(
-                            "role_bindings.{module}.{role}.admin_scope: {old} -> full (the \
-                             delegated {old} scope is retired in 1.5.2; tighten to read-only if \
-                             full is too broad)"
-                        ));
+                        warnings.push(
+                            busbar_kernel::diagnostics::coded::migrate_admin_scope_widened(
+                                format_args!("role_bindings.{module}.{role}.admin_scope"),
+                                old,
+                            )
+                            .into(),
+                        );
                     }
                 }
             }
@@ -1222,12 +1226,12 @@ fn migrate_auth(
             let mut binding = Mapping::new();
             if let Some(pools) = take(&mut b, field::ALLOWED_POOLS) {
                 if pools.as_sequence().is_some_and(|s| s.is_empty()) {
-                    warnings.push(format!(
-                        "auth.role_bindings.{module}.{role_name}.allowed_pools: [] - the MEANING \
-                         of an empty list FLIPPED in 1.5.0: it used to mean ALL pools, it now \
-                         means NO pools. If this role should reach every pool, DELETE the \
-                         allowed_pools line (omitted = all); if it should reach none, keep []."
-                    ));
+                    warnings.push(
+                        busbar_kernel::diagnostics::coded::migrate_empty_allowed_pools_flipped(
+                            &module, &role_name,
+                        )
+                        .into(),
+                    );
                 }
                 binding.insert(field::ALLOWED_POOLS.into(), pools);
             }

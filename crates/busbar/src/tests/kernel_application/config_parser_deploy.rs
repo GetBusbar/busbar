@@ -230,15 +230,14 @@ fn test_pools_reserved_hooks_key() {
 }
 
 #[test]
-fn test_pools_reserved_name_refusal_is_generic_with_docs_link() {
+fn test_pools_reserved_name_refusal_is_the_coded_sentence() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
     let e = serde_yaml::from_str::<busbar_kernel::config::PoolsCfg>("hooks:\n  members: []\n")
         .expect_err("a pool named `hooks` must be rejected");
     assert_eq!(
         e.to_string(),
-        "a pool may not be named `hooks`: that name is reserved in the `pools:` section. See \
-         https://getbusbar.com/docs/configuration#reserved-names for the full list. Rename the pool."
+        busbar_contract::section::reserved_name("pool", "hooks", "pools").to_string()
     );
 }
 

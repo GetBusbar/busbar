@@ -175,3 +175,234 @@ pub const USAGE_TAP_DECODE_FAILED: Diagnostic = Diagnostic {
     since: "1.6.0",
     retired: false,
 };
+
+/// THE ONE DOCS URL BASE for operator error pages (owner decision 2026-11-12). It carries the
+/// release's major.minor, so a message printed by 1.6 links the 1.6 page even after 1.7 ships.
+/// Every docs link a code renders is this base followed by the code's [`Banner`]; nothing else
+/// spells the host, the path or the version.
+pub const ERROR_DOCS_BASE: &str = "https://getbusbar.com/docs/1.6/errors/";
+
+/// The major.minor the docs base links (`"1.6"`), read out of [`ERROR_DOCS_BASE`] so the two can
+/// never disagree. The page generator files pages under this version.
+#[must_use]
+pub fn error_docs_version() -> &'static str {
+    ERROR_DOCS_BASE
+        .trim_end_matches('/')
+        .trim_end_matches("/errors")
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+}
+
+/// `Display`s as the code's docs page, e.g. `https://getbusbar.com/docs/1.6/errors/BUSBAR-3101`.
+/// Zero-allocation; built only from [`ERROR_DOCS_BASE`] and the code.
+#[derive(Debug, Clone, Copy)]
+pub struct DocsUrl(pub u16);
+
+impl fmt::Display for DocsUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{ERROR_DOCS_BASE}{}", Banner(self.0))
+    }
+}
+
+impl Diagnostic {
+    /// This code's docs page (see [`ERROR_DOCS_BASE`]).
+    #[must_use]
+    pub const fn docs_url(&self) -> DocsUrl {
+        DocsUrl(self.code)
+    }
+
+    /// An operator-facing message under this code: `BUSBAR-NNNN: <detail>. See <docs url>`.
+    /// Error paths only — this is the one allocation a refusal makes, and no success path builds
+    /// one. Prefer the typed constructor the catalog generates for a code that has a `text`
+    /// template; this is the primitive those constructors call.
+    #[cold]
+    #[must_use]
+    pub fn coded(&self, detail: impl fmt::Display) -> Coded {
+        let mut detail = detail.to_string();
+        // A one-line detail that already carries a coded message (a serde error wrapping a coded
+        // refusal, a family wrapper around a coded cause) reports THAT code: the most specific one
+        // wins, stays first, and keeps one link, last. A multi-line detail is a list whose items
+        // keep their own codes; it is left as written.
+        let inner = if detail.contains('\n') {
+            None
+        } else {
+            take_inner_code(&mut detail)
+        };
+        let code = inner.unwrap_or(self.code);
+        // The message ends `. See <link>`: a detail's own final period would double it.
+        if detail.ends_with('.') {
+            detail.pop();
+        }
+        Coded { code, detail }
+    }
+}
+
+/// If `detail` holds a coded message (`BUSBAR-NNNN: ... . See <base>BUSBAR-NNNN`), strip its
+/// code prefix and its link in place and return its code. Only [`Coded`]'s own rendering matches:
+/// a prose mention of a code without its link is left alone.
+fn take_inner_code(detail: &mut String) -> Option<u16> {
+    let mut from = 0;
+    while let Some(at) = detail[from..].find("BUSBAR-").map(|i| i + from) {
+        let digits = detail.get(at + 7..at + 11)?;
+        let code: Option<u16> = digits
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| digits.parse().ok())
+            .flatten();
+        if let Some(code) = code.filter(|_| detail[at + 11..].starts_with(": ")) {
+            let link = format!(". See {}", DocsUrl(code));
+            if let Some(l) = detail[at..].find(&link).map(|i| i + at) {
+                detail.replace_range(l..l + link.len(), "");
+                detail.replace_range(at..at + 13, "");
+                return Some(code);
+            }
+        }
+        from = at + 7;
+    }
+    None
+}
+
+/// One operator-facing message: a catalog code, the specific text, and the code's docs link.
+/// `Display`s as `BUSBAR-NNNN: <detail>. See https://getbusbar.com/docs/<major.minor>/errors/BUSBAR-NNNN`:
+/// the code first, the link last. Built only through [`Diagnostic::coded`] (and the typed
+/// constructors over it), so the shape is written once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Coded {
+    code: u16,
+    detail: String,
+}
+
+impl Coded {
+    /// The numeric catalog code this message reports.
+    #[must_use]
+    pub const fn code(&self) -> u16 {
+        self.code
+    }
+
+    /// The specific text, without the code or the link.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+impl fmt::Display for Coded {
+    /// One line: `BUSBAR-NNNN: <detail>. See <link>`. A multi-line detail is a head and a list
+    /// (`config errors:` then `  - <item>` lines, each item carrying its own code): the head line
+    /// takes the code and the link, its trailing `:` or `.` dropped, and the rest follows unchanged.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (head, rest) = match self.detail.split_once('\n') {
+            Some((head, rest)) => (head.trim_end_matches([':', '.']), Some(rest)),
+            None => (self.detail.as_str(), None),
+        };
+        write!(
+            f,
+            "{}: {head}. See {}",
+            Banner(self.code),
+            DocsUrl(self.code)
+        )?;
+        match rest {
+            Some(rest) => write!(f, "\n{rest}"),
+            None => Ok(()),
+        }
+    }
+}
+
+impl From<Coded> for String {
+    fn from(c: Coded) -> String {
+        c.to_string()
+    }
+}
+
+/// The message template and worked example a code's docs page shows, beside its catalog row. The
+/// row (title, summary = cause, action = fix, since, retired) is the [`Diagnostic`]; this is the
+/// rest of the page. `text` is the template the code's typed constructor formats (`{name}`
+/// placeholders, no trailing period); `example` is what triggers it (a config fragment or a
+/// command line) and `example_detail` the template filled in for that example. The page renders
+/// the example message through [`Diagnostic::coded`], so no page text spells a code or a link.
+#[derive(Debug, Clone, Copy)]
+pub struct ErrorText {
+    /// The code this text belongs to.
+    pub code: u16,
+    /// The message template, `{placeholder}` per argument.
+    pub text: &'static str,
+    /// What triggers the code: a config fragment, a command line, a request. May be empty.
+    pub example: &'static str,
+    /// `text` filled in for `example` (what the operator reads, minus the code and the link).
+    pub example_detail: &'static str,
+}
+
+impl ErrorText {
+    /// Whether `detail` is an instance of `text`: every `{placeholder}` matches any non-empty run
+    /// and every other byte matches itself. The drift check between a page's example and the
+    /// template the code's constructor formats.
+    #[must_use]
+    pub fn matches(&self, detail: &str) -> bool {
+        fn go(t: &str, d: &str) -> bool {
+            match t.find('{') {
+                None => t == d,
+                Some(open) => {
+                    let Some(close) = t[open..].find('}') else {
+                        return t == d;
+                    };
+                    let (lit, rest) = (&t[..open], &t[open + close + 1..]);
+                    let Some(after) = d.strip_prefix(lit) else {
+                        return false;
+                    };
+                    (1..=after.len())
+                        .filter(|&i| after.is_char_boundary(i))
+                        .any(|i| go(rest, &after[i..]))
+                }
+            }
+        }
+        go(self.text, detail)
+    }
+}
+
+/// Declares a contract-owned coded message: the template as a `pub const` and a typed constructor
+/// that formats exactly that template (the compiler checks every `{placeholder}` against the
+/// arguments). For codes the contract itself must emit; host codes get the same pair generated
+/// from `catalog.toml`.
+#[macro_export]
+macro_rules! coded_text {
+    ($(#[$meta:meta])* $vis:vis fn $fn:ident($($arg:ident),* $(,)?) => $diag:path, $text_const:ident = $text:literal) => {
+        #[doc = concat!("The message template of [`", stringify!($fn), "`].")]
+        pub const $text_const: &str = $text;
+        $(#[$meta])*
+        #[cold]
+        $vis fn $fn($($arg: impl ::core::fmt::Display),*) -> $crate::diagnostic::Coded {
+            $diag.coded(format!($text, $($arg = $arg),*))
+        }
+    };
+}
+
+/// A registration is named with a word the section reserves. Contract-owned: the section splitter
+/// in [`crate::section`] refuses it, and the host catalog re-exports this row.
+pub const CONFIG_RESERVED_NAME: Diagnostic = Diagnostic {
+    code: 3101,
+    class: Class::Config,
+    slug: "config-reserved-name",
+    title: "A registration is named with a reserved word",
+    severity: Severity::Fatal,
+    summary: "Inside a section that registers named entries (`pools:`, `tools:`, `agents:`, \
+              `streams:`, `decisions:` and the rest), a few keys belong to Busbar: the \
+              section-level `hooks`, `upstream_credentials` and `usage_observations`, and the \
+              core-owned settings `pools`, `breaker`, `on_exhausted`, `affinity`, `gates`, `tier`, \
+              `repeatable`, `work`, `timeout`, `rate_card` and `fees`. A registration that takes one \
+              of those names cannot be told apart from the setting, so the configuration is refused \
+              at `--validate` and at startup.",
+    action: "Rename the registration; any name not on the list works. Then run `busbar --validate`. \
+             The reserved names and what each is for are tabled in docs/configuration.md \
+             (Reserved names).",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The page text of the contract-owned codes, by code (the host catalog adds its own).
+pub static CONTRACT_TEXTS: &[ErrorText] = &[ErrorText {
+    code: CONFIG_RESERVED_NAME.code,
+    text: crate::section::RESERVED_NAME_TEXT,
+    example: "pools:\n  hooks:            # a pool named `hooks`\n    members: [gpt-4o]",
+    example_detail: "a pool may not be named `hooks` (reserved in `pools:`)",
+}];

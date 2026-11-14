@@ -337,16 +337,19 @@ fn the_knob_field_lists_are_the_kernel_types_own() {
 }
 
 #[test]
-fn the_reserved_name_sentence_is_generic_with_docs_link() {
-    use busbar_contract::section::reserved_name_refusal;
-    assert_eq!(
-        reserved_name_refusal("pools", "pool", "hooks"),
-        "a pool may not be named `hooks`: that name is reserved in the `pools:` section. See \
-         https://getbusbar.com/docs/configuration#reserved-names for the full list. Rename the pool."
-    );
-    assert_eq!(
-        reserved_name_refusal("tools", "tool", "breaker"),
-        "a tool may not be named `breaker`: that name is reserved in the `tools:` section. See \
-         https://getbusbar.com/docs/configuration#reserved-names for the full list. Rename the tool."
-    );
+fn the_reserved_name_refusal_is_the_coded_generic_sentence() {
+    use busbar_contract::diagnostic::CONFIG_RESERVED_NAME;
+    use busbar_contract::section::{reserved_name, reserved_name_refusal};
+    for (section, noun, name) in [("pools", "pool", "hooks"), ("tools", "tool", "breaker")] {
+        let coded = reserved_name(noun, name, section);
+        assert_eq!(coded.code(), CONFIG_RESERVED_NAME.code);
+        assert_eq!(
+            coded.detail(),
+            format!("a {noun} may not be named `{name}` (reserved in `{section}:`)")
+        );
+        assert_eq!(
+            reserved_name_refusal(section, noun, name),
+            coded.to_string()
+        );
+    }
 }

@@ -16,7 +16,7 @@ pub fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
             body,
         )
             .into_response(),
-        Err(_) => busbar_kernel::admin::gate::error_envelope(
+        Err(_) => busbar_kernel::admin::gate::admin_error_envelope(
             StatusCode::INTERNAL_SERVER_ERROR.into(),
             "internal",
             "response serialization failed",
@@ -36,7 +36,7 @@ pub fn err_json_cond(e: &AdminError, cond: Cond) -> Response {
 fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
     #[cfg_attr(not(test), allow(unused_mut))]
     let mut resp =
-        busbar_kernel::admin::gate::error_envelope(e.http_status(), e.code(), &e.message());
+        busbar_kernel::admin::gate::admin_error_envelope(e.http_status(), e.code(), &e.message());
     #[cfg(test)]
     if let Some(kind) = crate::v1::contract::taxonomy::err_kind_of(e) {
         resp.extensions_mut()
