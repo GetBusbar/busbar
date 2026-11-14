@@ -1122,9 +1122,9 @@ impl RelendStreak {
     ) {
         use busbar_contract::secret::RelendCause;
         self.failures = self.failures.saturating_add(1);
-        let due = self
-            .reported
-            .is_none_or(|at| now.saturating_duration_since(at) >= std::time::Duration::from_secs(60));
+        let due = self.reported.is_none_or(|at| {
+            now.saturating_duration_since(at) >= std::time::Duration::from_secs(60)
+        });
         if !due || crate::refresh::stopping() {
             return;
         }
@@ -1248,7 +1248,8 @@ impl OpenedSecrets {
                     ));
                     if opened.relends() {
                         crate::refresh::keep(
-                            Arc::downgrade(&source) as std::sync::Weak<dyn crate::refresh::Refreshable>,
+                            Arc::downgrade(&source)
+                                as std::sync::Weak<dyn crate::refresh::Refreshable>,
                             std::time::Instant::now()
                                 + crate::retry::spread(RELEND_EVERY, 0.1, crate::retry::unit()),
                         );

@@ -248,8 +248,7 @@ impl RecoveryResolution {
 
 impl RecoveryEvent {
     pub fn fingerprint(&self) -> Result<[u8; 32], RecoveryError> {
-        use sha2::Digest;
-        let mut digest = sha2::Sha256::new();
+        let mut digest = crate::hashing::Sha256::new();
         digest.update(b"busbar.usage-recovery.event.v1\0");
         serde_json::to_writer(super::DigestWriter(&mut digest), self).map_err(|error| {
             super::rendered_error(

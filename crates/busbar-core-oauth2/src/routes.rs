@@ -638,7 +638,7 @@ fn form_decoded(s: &str) -> String {
 
 fn new_session_id() -> Option<String> {
     let mut bytes = [0u8; 32];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes).ok()?;
+    busbar_contract::crypto::fill(&mut bytes).ok()?;
     let mut id = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         let _ = std::fmt::Write::write_fmt(&mut id, format_args!("{byte:02x}"));

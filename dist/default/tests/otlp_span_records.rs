@@ -405,13 +405,23 @@ fn assert_record_fields(span: &opentelemetry_proto::tonic::trace::v1::Span) {
     assert_eq!(span.kind, 1);
     assert!(span.start_time_unix_nano > 0);
     assert!(span.end_time_unix_nano >= span.start_time_unix_nano);
-    for key in ["code.file.path", "code.module.name", "busbar.target", "busbar.request_id"] {
+    for key in [
+        "code.file.path",
+        "code.module.name",
+        "busbar.target",
+        "busbar.request_id",
+    ] {
         assert!(
             matches!(attribute(&span.attributes, key), Some(Value::StringValue(value)) if !value.is_empty()),
             "missing typed full-span attribute {key}: {span:?}"
         );
     }
-    for key in ["code.line.number", "thread.id", "busbar.busy_ns", "busbar.idle_ns"] {
+    for key in [
+        "code.line.number",
+        "thread.id",
+        "busbar.busy_ns",
+        "busbar.idle_ns",
+    ] {
         assert!(
             matches!(attribute(&span.attributes, key), Some(Value::IntValue(_))),
             "missing typed full-span attribute {key}: {span:?}"

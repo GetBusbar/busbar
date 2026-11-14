@@ -396,8 +396,10 @@ async fn owner_plane_with_store(
         default_grant: vec![SCOPE.into()],
         ..Default::default()
     };
-    let block = serde_yaml::to_value(config.authoring(&busbar_kernel::test_hooks::tokens::seal()))
-        .expect("owner config serializes");
+    let block = busbar_contract::yaml::to_value(
+        config.authoring(&busbar_kernel::test_hooks::tokens::seal()),
+    )
+    .expect("owner config serializes");
     crate::plane::seam_build::<crate::NoConnections>(block, Vec::new(), Vec::new(), None, store)
         .await
         .expect("the actual owner seam builds over the supplied Store product")

@@ -69,11 +69,7 @@ pub fn generation_matches(generation_hash: &str, presented: Option<&str>) -> boo
 
 pub(crate) fn generate_binding_generation() -> Result<String, busbar_contract::crypto::RngError> {
     let mut raw = [0u8; 16];
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a binding generation is drawn once per key mint, rotation or revocation (control plane)"
-    )]
-    getrandom::fill(&mut raw)?;
+    busbar_contract::crypto::fill(&mut raw)?;
     Ok(hex::encode(raw))
 }
 
@@ -560,8 +556,8 @@ fn park_window(parked: &mut Vec<(u64, ExactUsageDelta)>, window: u64, delta: Exa
 }
 
 fn era_bucket(bucket: &str) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, bucket.as_bytes());
-    era_text(EraBucket(&digest.as_ref()[..16]))
+    let digest = busbar_contract::crypto::sha256(bucket.as_bytes());
+    era_text(EraBucket(&digest[..16]))
 }
 
 /// A dated bucket's stored name: the prefix, then the lowercase hex of the digest prefix.
@@ -1401,11 +1397,7 @@ fn draw(alphabet: &str, n: usize) -> Result<String, busbar_contract::crypto::Rng
         return Ok(String::new());
     }
     let mut buf = vec![0u8; n];
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: credential entropy is drawn once per credential mint (control plane)"
-    )]
-    getrandom::fill(&mut buf)?;
+    busbar_contract::crypto::fill(&mut buf)?;
     #[expect(
         clippy::disallowed_methods,
         reason = "config: the minted credential text is built once per credential mint (control plane)"
@@ -1759,10 +1751,7 @@ trait IntoStoreResult<T> {
 impl<T> IntoStoreResult<T> for Result<T, busbar_contract::crypto::RngError> {
     fn store(self) -> RecordStoreResult<T> {
         self.map_err(|e| {
-            rendered_error(
-                RecordStoreError,
-                format_args!("OS CSPRNG (getrandom) unavailable: {e}"),
-            )
+            rendered_error(RecordStoreError, format_args!("OS CSPRNG unavailable: {e}"))
         })
     }
 }
@@ -1806,9 +1795,9 @@ where
 
 /// Feeds serialized bytes straight into a running digest, so a fingerprint hashes the encoding
 /// without first collecting it into a buffer.
-pub(crate) struct DigestWriter<'a, D>(pub(crate) &'a mut D);
+pub(crate) struct DigestWriter<'a>(pub(crate) &'a mut crate::hashing::Sha256);
 
-impl<D: sha2::Digest> std::io::Write for DigestWriter<'_, D> {
+impl std::io::Write for DigestWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0.update(bytes);
         Ok(bytes.len())

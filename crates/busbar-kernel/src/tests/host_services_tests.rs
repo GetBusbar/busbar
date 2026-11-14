@@ -1917,7 +1917,11 @@ fn dest_judge_refuses_the_operator_infrastructure_class() {
     };
     let guard = Arc::new(FakeGuard::default());
     let s = KernelServices::new().with_dest_judge(guard.clone());
-    for flags in [0, svc::DEST_RESOLVE, svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN] {
+    for flags in [
+        0,
+        svc::DEST_RESOLVE,
+        svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN,
+    ] {
         let (_, later) = recorder();
         let got = verdict_now(s.dest_judge(
             "https://db.internal/",
@@ -1927,7 +1931,11 @@ fn dest_judge_refuses_the_operator_infrastructure_class() {
         ));
         assert_eq!(got.outcome, Outcome::Refused, "flags {flags}");
         assert!(got.error.starts_with("BUSBAR-6014: "), "{}", got.error);
-        assert!(got.error.contains("operator-infrastructure"), "{}", got.error);
+        assert!(
+            got.error.contains("operator-infrastructure"),
+            "{}",
+            got.error
+        );
     }
     assert!(
         guard.names.lock().unwrap().is_empty(),

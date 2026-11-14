@@ -123,8 +123,11 @@ catalog-unresolvable:
     std::fs::write(directory.0.join("providers.yaml"), catalog).unwrap();
     let host = super::RootHost::for_document(config, &directory.0.join("config.yaml"));
     let out = migrate_config_with(config, &host).expect("the real linked plane migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("migrated YAML");
-    let mut allowed: Vec<String> = doc["advanced"]["allow_destinations"]
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&out.yaml).expect("migrated YAML");
+    let mut allowed: Vec<String> = doc
+        .at("advanced")
+        .at("allow_destinations")
         .as_sequence()
         .map(|hosts| {
             hosts

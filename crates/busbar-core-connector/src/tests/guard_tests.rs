@@ -438,7 +438,10 @@ fn a_commit_republishes_the_metadata_lists() {
     .unwrap();
     let held = g.clone();
     let listed = [ip("203.0.113.9")];
-    assert_eq!(held.judge_answer("x.test", &listed, EGRESS_PROVIDER), Ok(()));
+    assert_eq!(
+        held.judge_answer("x.test", &listed, EGRESS_PROVIDER),
+        Ok(())
+    );
     g.publish(&blocking);
     assert_eq!(
         verdict(held.judge_answer("x.test", &listed, EGRESS_PROVIDER)),
@@ -448,7 +451,10 @@ fn a_commit_republishes_the_metadata_lists() {
         block_private_addresses: true,
         ..Destinations::default()
     });
-    assert_eq!(held.judge_answer("x.test", &listed, EGRESS_PROVIDER), Ok(()));
+    assert_eq!(
+        held.judge_answer("x.test", &listed, EGRESS_PROVIDER),
+        Ok(())
+    );
 }
 
 /// A bad allowlist entry refuses the boot, naming the key, its index and the entry (userinfo

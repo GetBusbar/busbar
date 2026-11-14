@@ -209,6 +209,10 @@ impl StoreRecovery {
     }
 
     pub(super) async fn adopt_pending(&self) -> Result<(), RecoveryError> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: legacy recovery import runs only during startup upgrade adoption"
+        )]
         let retained = self
             .state
             .lock()

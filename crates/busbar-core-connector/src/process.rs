@@ -67,12 +67,16 @@ pub fn note_proxy_posture(by_address: bool) {
     let Ok(env) = crate::proxy::ProxyEnvValues::from_process_env() else {
         return;
     };
-    let hops: Vec<String> = [env.https.as_deref(), env.http.as_deref(), env.all.as_deref()]
-        .into_iter()
-        .flatten()
-        .filter_map(|v| crate::proxy::parse_proxy(v).ok())
-        .map(|h| h.endpoint())
-        .collect();
+    let hops: Vec<String> = [
+        env.https.as_deref(),
+        env.http.as_deref(),
+        env.all.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|v| crate::proxy::parse_proxy(v).ok())
+    .map(|h| h.endpoint())
+    .collect();
     if hops.is_empty() {
         return;
     }
@@ -94,7 +98,10 @@ pub fn note_proxy_posture(by_address: bool) {
     );
     busbar_kernel::audit_ring::AUDIT.record_by(
         "config.egress_proxy",
-        &format!("proxy:{}:no_proxy={no_proxy}:resolution={mode}", hops.join(",")),
+        &format!(
+            "proxy:{}:no_proxy={no_proxy}:resolution={mode}",
+            hops.join(",")
+        ),
         busbar_kernel::audit_ring::OUTCOME_APPLIED,
         "system",
     );

@@ -6,7 +6,6 @@ use base64::Engine;
 use busbar_contract::crypto::ed25519::{SigningKey, VerifyingKey};
 use busbar_contract::crypto::{self, RngError};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
 
 pub const TOKEN_PREFIX: &str = "bbk_";
@@ -137,11 +136,7 @@ impl TokenSigner {
 
     pub fn generate(kid: impl Into<String>) -> Result<Self, RngError> {
         let mut bytes = [0u8; 32];
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a signing key is generated once, when none is configured"
-        )]
-        getrandom::fill(&mut bytes)?;
+        crypto::fill(&mut bytes)?;
         Ok(Self {
             key: signing_key(&bytes),
             kid: kid.into(),
@@ -167,15 +162,15 @@ impl TokenSigner {
 
     pub fn sign_with_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {
         let key = self.subkey(domain);
-        key.sign(input).to_bytes()
+        key.sign(input)
     }
 
     pub fn subkey_key_info_base64(&self, domain: &str) -> String {
-        let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
+        let key = signing_key(&self.derived_subkey_seed(domain));
         // The SubjectPublicKeyInfo DER is a fixed 44 bytes: built on the stack.
         let mut der = [0u8; ED25519_KEY_INFO_PREFIX.len() + 32];
         der[..ED25519_KEY_INFO_PREFIX.len()].copy_from_slice(&ED25519_KEY_INFO_PREFIX);
-        der[ED25519_KEY_INFO_PREFIX.len()..].copy_from_slice(key.verifying_key().as_bytes());
+        der[ED25519_KEY_INFO_PREFIX.len()..].copy_from_slice(&key.verifying_key().to_bytes());
         base64::engine::general_purpose::STANDARD.encode(der)
     }
 
@@ -196,7 +191,7 @@ impl TokenSigner {
         #[cfg(test)]
         SUBKEY_DERIVATIONS.with(|c| c.set(c.get() + 1));
         let mut seed = self.derived_subkey_seed(domain);
-        let key = Arc::new(SigningKey::from_bytes(&seed));
+        let key = Arc::new(signing_key(&seed));
         zeroize::Zeroize::zeroize(&mut seed);
         if set.len() < MAX_SIGNING_DOMAINS {
             set.push((domain.into(), Arc::clone(&key)));
@@ -271,7 +266,7 @@ impl TokenSigner {
             reason = "config: a signed token is minted once per key mint or token exchange (control plane)"
         )]
         let payload = serde_json::to_vec(claims).expect("TokenClaims serializes");
-        let sig: Signature = self.key.sign(&payload);
+        let sig = self.key.sign(&payload);
         let encoded = |bytes: usize| bytes.div_ceil(3) * 4;
         // busbar:expect(bp::fresh_buffer, reason = "config: a signed token is minted once per key mint or token exchange (control plane)")
         let mut token =
@@ -279,7 +274,7 @@ impl TokenSigner {
         token.push_str(prefix);
         URL_SAFE_NO_PAD.encode_string(&payload, &mut token);
         token.push('.');
-        URL_SAFE_NO_PAD.encode_string(sig.to_bytes(), &mut token);
+        URL_SAFE_NO_PAD.encode_string(sig, &mut token);
         token
     }
 }
@@ -425,13 +420,12 @@ thread_local! {
 /// sha256("busbar/subkey/v1" || secret || domain), hashed as a stream so no heap copy of the root
 /// secret is left behind (the old `concat` was never wiped). Same bytes as before.
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
-    use sha2::Digest;
     // SHA-256 over the three parts in order: the digest of their concatenation, without one.
-    let mut digest = sha2::Sha256::new();
+    let mut digest = crate::hashing::Sha256::new();
     digest.update(b"busbar/subkey/v1");
     digest.update(secret);
     digest.update(domain.as_bytes());
-    digest.finalize().into()
+    digest.finalize()
 }
 
 #[cfg(test)]

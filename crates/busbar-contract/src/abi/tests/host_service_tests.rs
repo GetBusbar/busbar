@@ -614,12 +614,21 @@ fn every_service_field_sits_at_its_op_index() {
         ),
         (offset_of!(HostSlots, hook_child), op::HOOK_CHILD),
         (offset_of!(HostSlots, directory_get), op::DIRECTORY_GET),
-        (offset_of!(HostSlots, directory_lookup), op::DIRECTORY_LOOKUP),
+        (
+            offset_of!(HostSlots, directory_lookup),
+            op::DIRECTORY_LOOKUP,
+        ),
         (offset_of!(HostSlots, directory_scan), op::DIRECTORY_SCAN),
         (offset_of!(HostSlots, directory_count), op::DIRECTORY_COUNT),
-        (offset_of!(HostSlots, directory_create), op::DIRECTORY_CREATE),
+        (
+            offset_of!(HostSlots, directory_create),
+            op::DIRECTORY_CREATE,
+        ),
         (offset_of!(HostSlots, directory_apply), op::DIRECTORY_APPLY),
-        (offset_of!(HostSlots, directory_delete), op::DIRECTORY_DELETE),
+        (
+            offset_of!(HostSlots, directory_delete),
+            op::DIRECTORY_DELETE,
+        ),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");

@@ -73,7 +73,11 @@ impl SecretCalls for Stub {
 
 fn answer(calls: &dyn SecretCalls) -> String {
     let held = calls.resolve(b"{}").expect("answers");
-    String::from_utf8(held.expose(&busbar_contract::plugin::TestKernelSeal).clone()).unwrap()
+    String::from_utf8(
+        held.expose(&busbar_contract::plugin::TestKernelSeal)
+            .clone(),
+    )
+    .unwrap()
 }
 
 #[derive(Default)]
@@ -130,7 +134,10 @@ fn a_slow_open_never_blocks_another_modules_resolution() {
     let (done_tx, done) = mpsc::channel();
     std::thread::spawn(move || {
         let calls = fast
-            .calls("fast", || Ok(Arc::new(stub("fast")) as Arc<dyn SecretCalls>))
+            .calls(
+                "fast",
+                || Ok(Arc::new(stub("fast")) as Arc<dyn SecretCalls>),
+            )
             .expect("opens");
         let _ = done_tx.send(answer(&*calls));
     });
@@ -165,13 +172,21 @@ fn an_in_flight_resolve_on_the_old_instance_completes_after_the_swap() {
         .expect("the resolve is in flight on the old instance");
 
     source.relend_now(Instant::now());
-    assert_eq!(answer(&*source.calls()), "new", "new callers get the successor");
+    assert_eq!(
+        answer(&*source.calls()),
+        "new",
+        "new callers get the successor"
+    );
     assert!(
         !old_closed.load(Ordering::SeqCst),
         "the old instance is not closed under its in-flight caller"
     );
     release.send(()).unwrap();
-    assert_eq!(in_flight.join().unwrap(), "old", "it finishes on what it held");
+    assert_eq!(
+        in_flight.join().unwrap(),
+        "old",
+        "it finishes on what it held"
+    );
     assert!(
         old_closed.load(Ordering::SeqCst),
         "and the old instance closes once its last caller lets go"
@@ -219,6 +234,8 @@ fn a_failed_rotation_reports_8028_once_a_minute_and_keeps_the_source() {
     assert_eq!(codes[0].0, 8028);
     assert_eq!(codes[0].1, tracing::Level::ERROR);
     assert!(codes[0].2.contains(&("cause", "reopen-failed".to_string())));
-    assert!(codes[0].2.contains(&("instance", "secrets.vault".to_string())));
+    assert!(codes[0]
+        .2
+        .contains(&("instance", "secrets.vault".to_string())));
     assert_eq!(report.audits.lock().unwrap()[0].2, "degraded");
 }

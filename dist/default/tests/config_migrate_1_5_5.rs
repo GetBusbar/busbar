@@ -141,10 +141,7 @@ fn a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same() {
         assert_eq!(rate, &want, "{unit}:\n{migrated}");
     }
     for unit in WRITE_TIER_UNITS {
-        assert!(
-            units.contains_key(serde_yaml::Value::from(unit)),
-            "{unit} is priced:\n{migrated}"
-        );
+        assert!(units.contains_key(unit), "{unit} is priced:\n{migrated}");
     }
     assert!(
         summary.contains("  - rate_card.test-model.units: added ")
@@ -259,7 +256,7 @@ fn chat_usage(prompt: u64, written: u64, split: Option<(u64, u64)>, out: u64) ->
 /// Boot `doc` (made servable) against a mock Chat upstream answering `usage`, in `dir`.
 fn boot_chat(
     dir: &Path,
-    mut doc: serde_yaml::Value,
+    mut doc: Value,
     usage: serde_json::Value,
     env: &[(&str, &str)],
 ) -> common::chat_spend::Gateway {
@@ -267,7 +264,7 @@ fn boot_chat(
     let signing = common::chat_spend::signing_key(dir);
     common::chat_spend::serve(&mut doc, data, admin, &signing);
     let config = dir.join("config.yaml");
-    std::fs::write(&config, serde_yaml::to_string(&doc).unwrap()).unwrap();
+    std::fs::write(&config, busbar_contract::yaml::to_string(&doc).unwrap()).unwrap();
     let providers = dir.join("providers.yaml");
     std::fs::write(
         &providers,
@@ -285,8 +282,8 @@ fn a_1_5_5_yaml_zero_cache_write_boots_at_input_rate() {
     let dir = workdir("zero-write-boot");
     let doc = yaml(&std::fs::read_to_string(fixture("rate_card_zero_write.yaml")).unwrap());
     assert_eq!(
-        doc["rate_card"]["test-model"]["cache_write_utok"],
-        yaml("0"),
+        doc.at("rate_card").at("test-model").at("cache_write_utok"),
+        &yaml("0"),
         "the fixture states the 1.5.5 zero"
     );
     let mut gateway = boot_chat(&dir, doc, chat_usage(100, 20, None, 9), &[]);
@@ -338,8 +335,11 @@ fn reload_refuses_a_root_yaml_zero_cache_write() {
     let config = dir.join("config.yaml");
     let clean = std::fs::read_to_string(&config).unwrap();
     let mut edited = yaml(&clean);
-    edited["rate_card"]["test-model"]["cache_write_utok"] = yaml("0");
-    std::fs::write(&config, serde_yaml::to_string(&edited).unwrap()).unwrap();
+    *edited
+        .at_mut("rate_card")
+        .at_mut("test-model")
+        .at_mut("cache_write_utok") = yaml("0");
+    std::fs::write(&config, busbar_contract::yaml::to_string(&edited).unwrap()).unwrap();
     for (path, action) in [
         ("/api/v1/admin/config/reload", "config.reload"),
         ("/api/v1/admin/plugins/reload", "plugin.reload"),
@@ -417,9 +417,13 @@ fn reload_refuses_a_root_yaml_zero_cache_write() {
 fn migrated_ttl_write_units_price_at_the_write_rate() {
     // The fixture's input_utok 3.0 resolves to the integer 3 (see the pinned rate_card test).
     let (migrated, summary, _) = migrate_and_validate("rate_card.yaml");
-    let units = &yaml(&migrated)["rate_card"]["test-model"]["units"];
+    let units = yaml(&migrated)
+        .at("rate_card")
+        .at("test-model")
+        .at("units")
+        .clone();
     for unit in WRITE_TIER_UNITS {
-        assert_eq!(units[unit], yaml("3"), "{unit}:\n{migrated}");
+        assert_eq!(units.at(unit), &yaml("3"), "{unit}:\n{migrated}");
     }
     assert!(write_units_line(&summary).is_some(), "{summary}");
 
@@ -434,11 +438,15 @@ fn migrated_ttl_write_units_price_at_the_write_rate() {
     assert!(raw.contains("cache_write_utok: 3.75"), "{raw}");
     std::fs::write(dir.join("source.yaml"), &raw).unwrap();
     let (written, summary) = migrate(&dir.join("source.yaml"));
-    let units = &yaml(&written)["rate_card"]["test-model"]["units"];
+    let units = yaml(&written)
+        .at("rate_card")
+        .at("test-model")
+        .at("units")
+        .clone();
     for unit in WRITE_TIER_UNITS {
-        assert_eq!(units[unit], yaml("'3.75'"), "{unit}:\n{written}");
+        assert_eq!(units.at(unit), &yaml("'3.75'"), "{unit}:\n{written}");
         let rate: busbar_kernel_ledger::cost::UnitRate =
-            serde_yaml::from_value(units[unit].clone()).expect("an exact UnitRate");
+            busbar_contract::yaml::from_value(units.at(unit).clone()).expect("an exact UnitRate");
         assert_eq!(
             rate,
             busbar_kernel_ledger::cost::UnitRate::from_nanos(3_750)
@@ -467,7 +475,11 @@ fn migrated_ttl_write_units_price_at_the_write_rate() {
     assert!(raw.contains("${RATE}"), "{raw}");
     std::fs::write(dir.join("placeholder.yaml"), &raw).unwrap();
     let (held, summary) = migrate(&dir.join("placeholder.yaml"));
-    let units = &yaml(&held)["rate_card"]["test-model"]["units"];
+    let units = yaml(&held)
+        .at("rate_card")
+        .at("test-model")
+        .at("units")
+        .clone();
     for unit in WRITE_TIER_UNITS {
         assert!(units.get(unit).is_none(), "{unit} stays unpriced:\n{held}");
     }

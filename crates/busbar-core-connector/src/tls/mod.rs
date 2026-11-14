@@ -244,15 +244,13 @@ pub fn build_server_config(
                 clippy::disallowed_methods,
                 reason = "error: config-load refusal text naming the secret source"
             )]
-            let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
-                .build()
-                .map_err(|e| {
-                    format!(
-                        "cannot build client-cert verifier from TLS client_ca ({}): {e}",
-                        ca.describe()
-                    )
-                })?;
-            builder.with_client_cert_verifier(verifier)
+            let verifier = crypto_tls::client_verifier(Arc::new(roots), |b| b).map_err(|e| {
+                format!(
+                    "cannot build client-cert verifier from TLS client_ca ({}): {e}",
+                    ca.describe()
+                )
+            })?;
+            Some(verifier)
         }
         None => None,
     };
@@ -261,21 +259,23 @@ pub fn build_server_config(
         clippy::disallowed_methods,
         reason = "error: config-load refusal text naming the secret sources"
     )]
-    let mut config = builder.with_single_cert(certs, key).map_err(|e| {
-        format!(
+    let config = crypto_tls::server_config(|builder| {
+        let builder = match verifier {
+            Some(verifier) => builder.with_client_cert_verifier(verifier),
+            None => builder.with_no_client_auth(),
+        };
+        let mut config = builder.with_single_cert(certs, key)?;
+        config.alpn_protocols = ALPN_OFFER.iter().map(|p| p.to_vec()).collect();
+        Ok(config)
+    })
+    .map_err(|e| match e {
+        crypto_tls::TlsError::Rustls(e) => format!(
             "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
             tls.cert.describe(),
             tls.key.describe()
-        )
+        ),
+        other => format!("cannot build the TLS server configuration: {other}"),
     })?;
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: rustls owns the listener's ALPN list, built once at config load"
-    )]
-    let alpn = ALPN_OFFER.iter().map(|p| p.to_vec()).collect();
-    config.alpn_protocols = alpn;
-
     Ok(config)
 }
 
@@ -381,7 +381,6 @@ pub fn prepare(
             label: label.to_string(),
         });
     }
-    let _ = installed_crypto();
     #[expect(
         clippy::disallowed_methods,
         reason = "error: the fail-closed refusal names the binding"
@@ -391,7 +390,7 @@ pub fn prepare(
             label: label.to_string(),
             reason,
         })?;
-    Ok(Arc::new(Tls::new(Arc::new(config))))
+    Ok(Arc::new(Tls::new(config)))
 }
 
 #[cfg(test)]

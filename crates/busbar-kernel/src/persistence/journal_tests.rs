@@ -251,13 +251,12 @@ fn chain_break(seq: u64, previous: [u8; 32], before: u64, after: u64) -> Record 
 fn records_seal_keeps_its_sha256_recipe() {
     // The seal moved to ring's SHA-256 for speed; the recipe and its bytes are unchanged.
     fn portable(previous: [u8; 32], bytes: &[u8]) -> [u8; 32] {
-        use sha2::Digest as _;
-        let mut hash = sha2::Sha256::new();
+        let mut hash = crate::hashing::Sha256::new();
         hash.update(b"busbar.journal.original-proof/1\0");
         hash.update(previous);
         hash.update((bytes.len() as u64).to_be_bytes());
         hash.update(bytes);
-        hash.finalize().into()
+        hash.finalize()
     }
     let mut seal = [0u8; 32];
     for len in [0usize, 1, 23, 55, 56, 63, 64, 65, 300, 4096, 70_000] {
