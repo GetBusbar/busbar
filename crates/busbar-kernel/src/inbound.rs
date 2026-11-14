@@ -105,6 +105,7 @@ impl Head {
 
     fn stripped(&self, strips: &[Strip]) -> Option<Self> {
         use zeroize::Zeroize as _;
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
         let mut head = self.clone();
         head.fields.retain_mut(|(name, value)| {
             let remove = strips.iter().any(|strip| {
@@ -465,7 +466,7 @@ pub struct ListenerScope {
 
 impl Listener {
     /// The plane admission for a unit's original head. Read it through [`Derived::admission`],
-    /// which resolves it once per unit; a refusal with no unit resolves it here directly.
+    /// which resolves it once per unit (a refusal with no unit uses a record of its own).
     fn admission(&self, head: &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::PlaneAdmission);
         self.resolve_admission(head)
@@ -1256,6 +1257,31 @@ fn matched_handin_line<'a>(
     }
 }
 
+/// Whether a hand-in on `line` (already matched on the handed head) may continue the unit: its
+/// state agrees with the hand-in, a Chain line's unit is admitted, and no stripped credential
+/// is still present. Runs under the caller's units guard, the same one that records the hand-in.
+fn admits(line: &Line, h: &HandIn, u: &UnitState) -> bool {
+    if !handin_state_matches(
+        u.line,
+        u.generation,
+        u.signed_pending,
+        u.head.as_ref(),
+        &u.strips,
+        h,
+    ) {
+        return false;
+    }
+
+    if matches!(line.auth, LineAuth::Chain(..)) && !matches!(u.fixed(), Some(Fixed::Admitted(_))) {
+        return false;
+    }
+
+    // With an original, `handin_state_matches` already required the handed head to equal it
+    // with every strip applied, so no stripped credential can still be there; only a unit with
+    // no recorded original needs the scan (SINGLE-PATH SP-AU4).
+    u.head.is_some() || !still_present(&u.strips, &h.head)
+}
+
 fn handin_state_matches(
     unit_line: u32,
     generation: u64,
@@ -1366,6 +1392,7 @@ fn same(want: u64, got: u64) -> bool {
 }
 
 fn still_present(strips: &[Strip], head: &Head) -> bool {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
     strips.iter().any(|s| match s.place {
         StripPlace::Field => head
             .fields
@@ -1476,7 +1503,8 @@ impl AsRef<[u8]> for FieldBytes {
 }
 
 /// An inbound unit's original head as an HTTP header map. A unit reads it through
-/// [`Derived::headers`], which builds it once; a refusal with no unit builds it here directly.
+/// [`Derived::headers`], which builds it once; a refusal with no unit reads it through a
+/// [`Derived`] record of its own.
 pub(crate) fn header_map(head: &Head) -> axum::http::HeaderMap {
     busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::HeaderMap);
     build_header_map(head)
@@ -2045,16 +2073,13 @@ impl Inbound {
             }
             return self.table(owner, generation).ok_or(NO_LIST);
         }
-        if !self.verified(owner, Some(generation), None, binding, unit) {
-            return Err(UNIT_FOREIGN);
-        }
-        self.units()
-            .get(&unit.id)
-            .map(|u| Arc::clone(&u.table))
+        // The unit's table comes out of the guard that checked its MAC (SINGLE-PATH SP-AU5).
+        self.verified_table(owner, Some(generation), None, binding, unit)
             .ok_or(UNIT_FOREIGN)
     }
 
     fn units(&self) -> std::sync::MutexGuard<'_, HashMap<u64, UnitState>> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UnitsLock);
         self.units.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -2368,6 +2393,20 @@ impl Inbound {
         binding: RequestBinding,
         r: UnitRef,
     ) -> bool {
+        self.verified_table(owner, generation, line, binding, r)
+            .is_some()
+    }
+
+    /// [`Self::verified`], answering the verified unit's pinned table out of the same units
+    /// guard, so a caller that needs it takes no second lock.
+    fn verified_table(
+        &self,
+        owner: u64,
+        generation: Option<u64>,
+        line: Option<u32>,
+        binding: RequestBinding,
+        r: UnitRef,
+    ) -> Option<Arc<Table>> {
         let held = self
             .framing_listeners
             .lock()
@@ -2377,20 +2416,19 @@ impl Inbound {
                 listener.status != FramingStatus::Active
                     || listener.ended_streams.contains(&binding.stream)
             }) {
-                return false;
+                return None;
             }
         }
         let units = self.units();
-        let Some(u) = units.get(&r.id) else {
-            return false;
-        };
+        let u = units.get(&r.id)?;
         if u.owner != owner
             || u.binding != binding
             || generation.is_some_and(|g| g != u.generation)
             || line.is_some_and(|l| l != u.line)
         {
-            return false;
+            return None;
         }
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UnitMac);
         (self.seals.mac)(&UnitTag {
             secret: u.secret,
             generation: u.generation,
@@ -2399,6 +2437,7 @@ impl Inbound {
             unit: r.id,
         })
         .is_some_and(|mac| same(mac, r.mac))
+        .then(|| Arc::clone(&u.table))
     }
 
     pub fn auth_call(
@@ -2970,18 +3009,27 @@ impl Inbound {
                 binding,
                 Arc::clone(&table),
             )?
-        } else if self.verified(h.owner, None, None, binding, h.unit) {
-            h.unit
         } else {
-            return Err(UNIT_FOREIGN);
+            // `request_table` verified the presented unit (MAC, owner, binding, generation); a
+            // second check here could only refuse what it already refused (SINGLE-PATH SP-AU5).
+            h.unit
         };
-        let flow = if self.admits(&table, &h, unit) {
+        // The claim match reads the handed head and the table only, so it runs outside the
+        // units lock; the unit's own checks and the write then share one guard, so nothing can
+        // claim or retire the unit between them.
+        let line = matched_handin_line(
+            &table.listener.guests,
+            table.line_of(h.auth),
+            h.line,
+            &h.head,
+        );
+        let mut units = self.units();
+        let u = units.get_mut(&unit.id).ok_or(UNIT_FOREIGN)?;
+        let flow = if line.is_some_and(|line| admits(line, &h, u)) {
             FLOW_CONTINUE
         } else {
             FLOW_STOP
         };
-        let mut units = self.units();
-        let u = units.get_mut(&unit.id).ok_or(UNIT_FOREIGN)?;
         if u.head.is_none() {
             u.head = Some(h.head.clone());
         }
@@ -2997,39 +3045,6 @@ impl Inbound {
             };
         }
         Ok((flow, unit))
-    }
-
-    fn admits(&self, table: &Table, h: &HandIn, unit: UnitRef) -> bool {
-        let Some(line) = matched_handin_line(
-            &table.listener.guests,
-            table.line_of(h.auth),
-            h.line,
-            &h.head,
-        ) else {
-            return false;
-        };
-        let units = self.units();
-        let Some(u) = units.get(&unit.id) else {
-            return false;
-        };
-        if !handin_state_matches(
-            u.line,
-            u.generation,
-            u.signed_pending,
-            u.head.as_ref(),
-            &u.strips,
-            h,
-        ) {
-            return false;
-        }
-
-        if matches!(line.auth, LineAuth::Chain(..))
-            && !matches!(u.fixed(), Some(Fixed::Admitted(_)))
-        {
-            return false;
-        }
-
-        !still_present(&u.strips, &h.head)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3114,15 +3129,24 @@ impl Inbound {
                 return Err(UNIT_FOREIGN);
             }
         }
-        let (head, overloaded) = unit
+        let (recorded, overloaded) = unit
             .and_then(|u| {
-                self.units()
-                    .get(&u.id)
-                    .map(|s| (s.head.clone(), s.fixed() == Some(Fixed::Overloaded)))
+                self.units().get(&u.id).map(|s| {
+                    (
+                        s.head.clone().map(|head| (head, Arc::clone(&s.derived))),
+                        s.fixed() == Some(Fixed::Overloaded),
+                    )
+                })
             })
             .unwrap_or((None, false));
 
-        let head = head.or(r.request);
+        // A unit's refusal reads what its auth calls already derived from its original head; a
+        // refusal with no recorded head derives each input once, on a record of its own
+        // (SINGLE-PATH SP-A1 / SP-AU1).
+        let (head, derived) = match recorded {
+            Some((head, derived)) => (Some(head), derived),
+            None => (r.request, Arc::default()),
+        };
         let path = head
             .as_ref()
             .map(|h| h.target.clone())
@@ -3177,11 +3201,11 @@ impl Inbound {
                 };
                 let challenge = if reason == ReasonCode::Unauthenticated {
                     head.as_ref()
-                        .and_then(|head| table.listener.admission(head))
+                        .and_then(|head| derived.admission(&table.listener, head))
                         .map(|admission| {
-                            let present = head.as_ref().is_some_and(|head| {
-                                crate::auth::inbound_candidate(app, &header_map(head)).is_some()
-                            });
+                            let present = head
+                                .as_ref()
+                                .is_some_and(|head| derived.candidate(app, head).is_some());
                             crate::auth::challenge::render(
                                 if present {
                                     crate::auth::challenge::ChallengeError::InvalidToken
@@ -3324,15 +3348,15 @@ impl Inbound {
                         .map(|refuse| (refuse, target));
                     let admission = head
                         .as_ref()
-                        .and_then(|head| table.listener.admission(head));
-                    let client_token_present = head.as_ref().is_some_and(|head| {
-                        crate::auth::inbound_candidate(app, &header_map(head)).is_some()
-                    });
+                        .and_then(|head| derived.admission(&table.listener, head));
+                    let client_token_present = head
+                        .as_ref()
+                        .is_some_and(|head| derived.candidate(app, head).is_some());
                     crate::auth::scoped_unauthorized_with_completion_taps(
                         app,
                         &path,
                         door.as_ref(),
-                        admission.as_ref(),
+                        admission,
                         client_token_present,
                     )
                 }

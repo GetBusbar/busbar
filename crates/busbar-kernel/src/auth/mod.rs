@@ -1255,15 +1255,9 @@ fn unauthorized_ingress_response(ingress: crate::plane_driver::dispatch::Ingress
     crate::ingress::native::native_error(ingress, status, kind, message)
 }
 
-pub(crate) fn inbound_candidate(
-    app: &crate::state::App,
-    headers: &HeaderMap,
-) -> Option<busbar_contract::redacted::Secret<String>> {
-    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::CredentialExtract);
-    candidate_of(app, headers)
-}
-
-/// [`inbound_candidate`] without its probe: the one read the unit's `Derived` record makes.
+/// The inbound candidate credential: a DPoP-bound token first (when this node is an OAuth
+/// authorization server), else the first carrier. Read once per unit, by its `Derived` record,
+/// which counts the read; a refusal with no unit reads it through a record of its own.
 pub(crate) fn candidate_of(
     app: &crate::state::App,
     headers: &HeaderMap,
