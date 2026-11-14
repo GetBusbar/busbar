@@ -189,7 +189,7 @@ pub(crate) enum Parsed {
 pub struct Argv {
     pub(crate) config: Option<String>,
     pub(crate) providers: Option<String>,
-    pub(crate) safe_mode: bool,
+    pub(crate) ignore_overlay: bool,
     /// Every other argument, in order: the first one is the command.
     pub(crate) words: Vec<String>,
     /// The path after a leading `--migrate-config`.
@@ -248,7 +248,7 @@ impl Argv {
                     Some(value) => argv
                         .words
                         .push(format!("{name}={}", value.to_string_lossy())),
-                    None if name == crate::OPTION_SAFE_MODE => argv.safe_mode = true,
+                    None if name == crate::OPTION_IGNORE_OVERLAY => argv.ignore_overlay = true,
                     None => {
                         if name.starts_with("-c=") {
                             argv.refusal
@@ -466,7 +466,10 @@ impl ValidateRefusal {
     /// The coded refusal `--validate` prints for this outcome.
     pub(crate) fn render(&self) -> String {
         match self {
-            Self::Load(e) => format!("[error] {}", diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded(e)),
+            Self::Load(e) => format!(
+                "[error] {}",
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded(e)
+            ),
             Self::Resolve(errs) => refusal_list(
                 &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
                 "config errors",

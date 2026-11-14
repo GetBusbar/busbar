@@ -15,6 +15,7 @@ impl GovState {
         // busbar:expect(bp::fresh_buffer, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
         let mut events = Vec::new();
         let mut cell = BudgetCell::default();
+        // No counts, no row (#42): accrue_raw creates a lane row only from a non-zero count.
         cell.accrue_raw(&snapshot.lane, snapshot.era(), &snapshot.units)
             .map_err(crate::governance::store_error)?;
         let plain = ExactUsageDelta::of(&cell, false);
@@ -304,7 +305,7 @@ impl GovState {
                 .iter()
                 .map(|target| self.budget.shard_index(target.bucket())),
         );
-        shards.sort_unstable();
+        shards.sort();
         shards.dedup();
         let mut guards: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
         guards.extend(shards.iter().map(|index| {
@@ -366,18 +367,23 @@ impl GovState {
                         .models
                         .iter_mut()
                         .find(|m| m.model.as_ref() == lane && m.era == era)
-                        .expect("just accrued model");
-                    for (unit, n) in units {
-                        for flushed in [&mut model.flushed, &mut model.flushed_era] {
-                            match flushed.get_mut(unit) {
-                                Some(raw) => *raw = raw.checked_add(*n)?,
-                                None => {
-                                    // First sight of this unit in the baseline: its one key.
-                                    let first = Count::default().checked_add(*n)?;
-                                    flushed.insert(unit.as_str().into(), first);
+                    {
+                        Some(model) => {
+                            for (unit, n) in units {
+                                for flushed in [&mut model.flushed, &mut model.flushed_era] {
+                                    match flushed.get_mut(unit) {
+                                        Some(raw) => *raw = raw.checked_add(*n)?,
+                                        None => {
+                                            // First sight of this unit in the baseline: its one key.
+                                            let first = Count::default().checked_add(*n)?;
+                                            flushed.insert(unit.as_str().into(), first);
+                                        }
+                                    }
                                 }
                             }
                         }
+                        // A zero-only report creates no row, so there is no baseline to move.
+                        None => assert!(!has_units(units), "just accrued model"),
                     }
                 } else {
                     cell.dirty = true;

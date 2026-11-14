@@ -20,6 +20,8 @@ crate-type = ["cdylib"]
 [dependencies]
 # The crypto facade, re-exported whole as `busbar_contract::crypto`.
 busbar-crypto = { path = "../busbar-crypto" }
+# Calendar dates and RFC 3339 (`civil`).
+time = { workspace = true, features = ["formatting"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 serde-saphyr = { workspace = true }

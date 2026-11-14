@@ -510,7 +510,7 @@ fn a_1_5_5_overlay_zero_cache_write_migrates_to_input_rate() {
     let providers = work.0.join("providers.yaml");
     std::fs::write(&providers, common::chat_spend::providers_yaml(upstream)).unwrap();
     let (data, admin) = (port(), port());
-    let mut doc: serde_yaml::Value = serde_yaml::from_str(&format!(
+    let mut doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&format!(
         "plugins: {plugins}\n\
          store:\n  module: sqlite\n  settings: {{ db_path: {database} }}\n\
          providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\n\
@@ -521,7 +521,7 @@ fn a_1_5_5_overlay_zero_cache_write_migrates_to_input_rate() {
     let signing = common::chat_spend::signing_key(&work.0);
     common::chat_spend::serve(&mut doc, data, admin, &signing);
     let config = work.0.join("config.yaml");
-    std::fs::write(&config, serde_yaml::to_string(&doc).unwrap()).unwrap();
+    std::fs::write(&config, busbar_contract::yaml::to_string(&doc).unwrap()).unwrap();
 
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .current_dir(&work.0)

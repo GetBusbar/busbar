@@ -197,7 +197,11 @@ pub fn process_env(name: &str) -> Option<String> {
 impl TrustStore {
     /// THE STORE `cfg` states, validated at `now`. Every refusal is one coded line naming the key,
     /// the index and the reason; never certificate or key bytes.
-    pub fn build(cfg: &OutboundTlsCfg, now: SystemTime, env: EnvFn<'_>) -> Result<Self, Vec<String>> {
+    pub fn build(
+        cfg: &OutboundTlsCfg,
+        now: SystemTime,
+        env: EnvFn<'_>,
+    ) -> Result<Self, Vec<String>> {
         let mut errors = Vec::new();
         let base = match load_base(cfg.roots, now, env) {
             Ok(b) => b,
@@ -310,7 +314,10 @@ impl TrustStore {
     /// THE CLIENT CONFIG for a dial of `host` (the guard-judged host: a name, or an IP literal,
     /// bracketed or not, with or without a port). `None` = the store is the default and the
     /// connector's own bundled-roots config applies.
-    pub fn config_for(&self, host: &str) -> Result<Option<Arc<rustls::ClientConfig>>, TrustRefusal> {
+    pub fn config_for(
+        &self,
+        host: &str,
+    ) -> Result<Option<Arc<rustls::ClientConfig>>, TrustRefusal> {
         if self.default {
             return Ok(None);
         }
@@ -335,7 +342,11 @@ impl TrustStore {
         Ok(Some(config))
     }
 
-    fn build_for(&self, host: &str, matched: &[usize]) -> Result<rustls::ClientConfig, TrustRefusal> {
+    fn build_for(
+        &self,
+        host: &str,
+        matched: &[usize],
+    ) -> Result<rustls::ClientConfig, TrustRefusal> {
         let withdrawn = self.withdrawn.read().expect("withdrawn").clone();
         let entries: Vec<&Entry> = matched.iter().map(|i| &self.entries[*i]).collect();
         let listed: Vec<&Anchor> = entries.iter().flat_map(|e| e.anchors.iter()).collect();
@@ -360,14 +371,19 @@ impl TrustStore {
                 if !withdrawn.contains(&a.sha256) {
                     roots
                         .add(CertificateDer::from(a.der.clone()))
-                        .map_err(|e| TrustRefusal::Build(format!("anchor {}: {e}", a.fingerprint())))?;
+                        .map_err(|e| {
+                            TrustRefusal::Build(format!("anchor {}: {e}", a.fingerprint()))
+                        })?;
                 }
             }
         }
         if roots.is_empty() {
             return Err(TrustRefusal::NoAnchors(host.to_owned()));
         }
-        let pins: Vec<[u8; 32]> = entries.iter().flat_map(|e| e.pins.iter().copied()).collect();
+        let pins: Vec<[u8; 32]> = entries
+            .iter()
+            .flat_map(|e| e.pins.iter().copied())
+            .collect();
         let pinned = if pins.is_empty() {
             None
         } else {
@@ -459,9 +475,9 @@ impl TrustStore {
             if a.not_after > soon || a.not_after <= unix(now) {
                 continue;
             }
-            let due = warned
-                .get(&a.sha256)
-                .is_none_or(|at| now.duration_since(*at).unwrap_or_default() >= EXPIRY_WARNING_REPEAT);
+            let due = warned.get(&a.sha256).is_none_or(|at| {
+                now.duration_since(*at).unwrap_or_default() >= EXPIRY_WARNING_REPEAT
+            });
             if !due {
                 continue;
             }
@@ -491,7 +507,11 @@ impl TrustStore {
         let mut newly = Vec::new();
         {
             let mut withdrawn = self.withdrawn.write().expect("withdrawn");
-            for a in self.global.iter().chain(self.entries.iter().flat_map(|e| e.anchors.iter())) {
+            for a in self
+                .global
+                .iter()
+                .chain(self.entries.iter().flat_map(|e| e.anchors.iter()))
+            {
                 if a.not_after <= unix(now) && withdrawn.insert(a.sha256) {
                     newly.push(a.clone());
                 }
@@ -592,18 +612,28 @@ fn is_label_name(n: &str) -> bool {
     !n.is_empty()
         && n.len() <= 253
         && n.split('.').all(|l| {
-            !l.is_empty() && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            !l.is_empty()
+                && l.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         })
 }
 
 fn covers(net: IpAddr, len: u8, ip: IpAddr) -> bool {
     match (net, ip) {
         (IpAddr::V4(n), IpAddr::V4(a)) => {
-            let mask = if len == 0 { 0 } else { u32::MAX << (32 - u32::from(len)) };
+            let mask = if len == 0 {
+                0
+            } else {
+                u32::MAX << (32 - u32::from(len))
+            };
             u32::from(n) & mask == u32::from(a) & mask
         }
         (IpAddr::V6(n), IpAddr::V6(a)) => {
-            let mask = if len == 0 { 0 } else { u128::MAX << (128 - u32::from(len)) };
+            let mask = if len == 0 {
+                0
+            } else {
+                u128::MAX << (128 - u32::from(len))
+            };
             u128::from(n) & mask == u128::from(a) & mask
         }
         _ => false,
@@ -767,11 +797,18 @@ fn load_identity(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| bad(format!("cert ({}) does not parse: {e}", id.cert.describe())))?;
     if chain.is_empty() {
-        return Err(bad(format!("cert ({}) holds no certificate", id.cert.describe())));
+        return Err(bad(format!(
+            "cert ({}) holds no certificate",
+            id.cert.describe()
+        )));
     }
     let (key_pem, _) = read_source(&id.key, env).map_err(|e| bad(format!("key: {e}")))?;
-    let key = PrivateKeyDer::from_pem_slice(&key_pem)
-        .map_err(|_| bad(format!("key ({}) holds no private key busbar can read", id.key.describe())))?;
+    let key = PrivateKeyDer::from_pem_slice(&key_pem).map_err(|_| {
+        bad(format!(
+            "key ({}) holds no private key busbar can read",
+            id.key.describe()
+        ))
+    })?;
     let signing = busbar_contract::crypto::tls::signing_key(&key)
         .map_err(|e| bad(format!("the key does not sign for the certificate: {e}")))?;
     let certified = rustls::sign::CertifiedKey::new(chain.clone(), signing);
@@ -800,7 +837,9 @@ fn load_anchors(
     let (pem, file) = read_source(src, env).map_err(refuse)?;
     let text = String::from_utf8_lossy(&pem);
     if text.contains("PRIVATE KEY-----") {
-        return Err(refuse("it holds a private key; a trust anchor is a CA certificate only".into()));
+        return Err(refuse(
+            "it holds a private key; a trust anchor is a CA certificate only".into(),
+        ));
     }
     let certs = CertificateDer::pem_slice_iter(&pem)
         .collect::<Result<Vec<_>, _>>()
@@ -811,12 +850,18 @@ fn load_anchors(
     let file = file.map(|p| (p, sha256(&pem)));
     let mut out = Vec::new();
     for (k, cert) in certs.iter().enumerate() {
-        let at = if certs.len() > 1 { format!("certificate {k}: ") } else { String::new() };
+        let at = if certs.len() > 1 {
+            format!("certificate {k}: ")
+        } else {
+            String::new()
+        };
         let facts = ca_facts(cert.as_ref(), now).map_err(|why| refuse(format!("{at}{why}")))?;
         let mut probe = rustls::RootCertStore::empty();
-        probe
-            .add(cert.clone())
-            .map_err(|e| refuse(format!("{at}rustls does not accept it as a trust anchor: {e}")))?;
+        probe.add(cert.clone()).map_err(|e| {
+            refuse(format!(
+                "{at}rustls does not accept it as a trust anchor: {e}"
+            ))
+        })?;
         out.push(Anchor {
             der: cert.to_vec(),
             sha256: sha256(cert.as_ref()),
@@ -925,7 +970,11 @@ fn system_pem_files(env: EnvFn<'_>) -> (String, Vec<PathBuf>) {
         }
     }
     if files.is_empty() && source.is_empty() {
-        if let Some(found) = SYSTEM_BUNDLES.iter().map(PathBuf::from).find(|p| p.is_file()) {
+        if let Some(found) = SYSTEM_BUNDLES
+            .iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
+        {
             source.push(found.display().to_string());
             files.push(found);
         }
@@ -970,7 +1019,11 @@ fn load_system(now: SystemTime, env: EnvFn<'_>) -> Result<Base, String> {
              certificate ({}); install the distribution's ca-certificates package, set \
              SSL_CERT_FILE, or use `roots: bundled`",
             diag::CONFIG_TLS_TRUST_EMPTY.banner(),
-            if source.is_empty() { "no bundle file was found" } else { source.as_str() }
+            if source.is_empty() {
+                "no bundle file was found"
+            } else {
+                source.as_str()
+            }
         ));
     }
     Ok(Base {
@@ -1006,10 +1059,11 @@ fn sha256(b: &[u8]) -> [u8; 32] {
 
 fn hex(b: &[u8]) -> String {
     use std::fmt::Write as _;
-    b.iter().fold(String::with_capacity(b.len() * 2), |mut s, x| {
-        let _ = write!(s, "{x:02x}");
-        s
-    })
+    b.iter()
+        .fold(String::with_capacity(b.len() * 2), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })
 }
 
 fn unix(t: SystemTime) -> i64 {

@@ -93,7 +93,7 @@ pub fn command(argv: &super::cli::Argv) -> Result<Option<Command>, &'static str>
         return Ok(None);
     }
     let [input, action, attestation, record_bootstrap] = argv.transition.clone();
-    if argv.safe_mode || !argv.words.is_empty() {
+    if argv.ignore_overlay || !argv.words.is_empty() {
         return Err(
             "principal transition accepts only --config and --providers alongside its flags",
         );

@@ -655,7 +655,205 @@ struct SessionLeg {
     far: bool,
 }
 
-type Keep = Arc<Mutex<Option<Box<PieceBufs>>>>;
+pub(crate) type Keep = Arc<Mutex<Option<Box<PieceBufs>>>>;
+
+/// The leg a piece was pushed toward, as the walk's checks read it: the facts of [`Toward`] the
+/// pre-fold refusals and the caller-bound test need, kept where no `Toward` is (a cancelled
+/// flight, a buried unit), so every path judges a settled piece the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Leg {
+    Caller,
+    Session,
+    Response {
+        /// The follow-up request has no verb yet.
+        verb_empty: bool,
+    },
+    FarEnd {
+        /// The attempt has no member (a local answer).
+        member_empty: bool,
+    },
+    #[default]
+    Nowhere,
+}
+
+impl Leg {
+    fn of(toward: &Toward<'_>) -> Self {
+        match toward {
+            Toward::Caller => Leg::Caller,
+            Toward::Session(..) => Leg::Session,
+            Toward::Response(request) => Leg::Response {
+                verb_empty: request.verb.is_empty(),
+            },
+            Toward::FarEnd(request) => Leg::FarEnd {
+                member_empty: request.member.is_empty(),
+            },
+            Toward::Nowhere => Leg::Nowhere,
+        }
+    }
+}
+
+/// Why the walk refuses a READY piece before it takes anything from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreFold {
+    /// A plane contract breach: the walk ends `PlanePanic`.
+    Panic,
+    /// `VERDICT_COUNT_REFUSED`: its usage is never accepted. `done`: the piece closes the unit.
+    CountRefused { done: bool },
+}
+
+/// The driver's facts a piece's attribution reads.
+#[derive(Debug, Clone, Copy)]
+struct Seen {
+    headed: bool,
+    streamed: bool,
+    relayed: bool,
+}
+
+impl Seen {
+    fn of(facts: &Facts) -> Self {
+        Seen {
+            headed: facts.headed,
+            streamed: facts.streamed,
+            relayed: facts.relayed,
+        }
+    }
+}
+
+/// THE PRE-FOLD REFUSALS, shared by the walk and every cancel site that settles a done piece: the
+/// caller-only leg's far-bound bytes, the response leg's checks, and the count refusal.
+fn pre_fold(out: &Answer, leg: Leg, piece_flags: u32, seen: Seen, done: bool) -> Option<PreFold> {
+    // A caller-only leg cannot dispatch another request. Never reinterpret bytes explicitly
+    // addressed upstream as caller output.
+    if out.flags & EMIT_TO_FAR_END != 0 && leg == Leg::Caller {
+        return Some(PreFold::Panic);
+    }
+    if out.flags & EMIT_TO_FAR_END != 0 {
+        if let Leg::Response { verb_empty } = leg {
+            if seen.headed
+                || seen.streamed
+                || out.flags & EMIT_DONE != 0
+                || piece_flags & PIECE_CUT != 0
+                || (verb_empty && (piece_flags & PIECE_LAST == 0 || out.verb.len == 0))
+            {
+                return Some(PreFold::Panic);
+            }
+        }
+    }
+    if let Leg::Response { verb_empty: false } = leg {
+        if out.flags & EMIT_TO_FAR_END == 0 {
+            return Some(PreFold::Panic);
+        }
+    }
+    if out.verdict == VERDICT_COUNT_REFUSED {
+        return Some(PreFold::CountRefused { done });
+    }
+    None
+}
+
+/// The piece's answer is bound for the caller (whether or not it was delivered).
+fn caller_bound(leg: Leg, out: &Answer, emitted: bool) -> bool {
+    match leg {
+        Leg::Caller => true,
+        Leg::Session | Leg::Response { .. } => out.flags & EMIT_TO_FAR_END == 0,
+        Leg::FarEnd { member_empty } => {
+            out.flags & EMIT_TO_FAR_END == 0
+                && (out.flags & EMIT_DONE != 0
+                    || (member_empty && (out.reply_status != 0 || emitted)))
+        }
+        Leg::Nowhere => false,
+    }
+}
+
+fn emitted_of<'b>(bufs: &'b PieceBufs, out: &Answer) -> &'b [u8] {
+    &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())]
+}
+
+/// THE ATTRIBUTION OF A PIECE, before anything bills it: the lane it names, then the member and
+/// provider that served it, when it commits the caller's head. `strict`: an invalid lane is a
+/// plane fault (the walk); otherwise (a unit already closed, its cause set) it is logged and
+/// skipped.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one attribution reads the unit, the piece, its leg, the driver facts and both modes"
+)]
+fn attribute(
+    money: &dyn MoneySeam,
+    ctx: &UnitCtx,
+    out: &Answer,
+    bufs: &PieceBufs,
+    leg: Leg,
+    seen: Seen,
+    billed: bool,
+    strict: bool,
+) -> Result<(), ()> {
+    let lane = bufs.arena(out.lane);
+    if !lane.is_empty() && billed {
+        match std::str::from_utf8(lane) {
+            Ok(lane) => money.laned(ctx, lane),
+            Err(_) if strict => return Err(()),
+            Err(_) => tracing::warn!("a settled piece named a lane that is not UTF-8; skipped"),
+        }
+    }
+    let emitted = !emitted_of(bufs, out).is_empty();
+    let commits = caller_bound(leg, out, emitted)
+        && !seen.headed
+        && !seen.streamed
+        && (out.reply_status != 0 || emitted)
+        && !(out.verdict == VERDICT_RETRY && fails_over(seen.streamed, seen.relayed));
+    if commits && !bufs.member.is_empty() && billed {
+        let member = String::from_utf8_lossy(&bufs.member);
+        money.served(ctx, &member, &bufs.provider);
+    }
+    Ok(())
+}
+
+/// A DONE PIECE WHOSE COUNT THE PLANE REFUSED (`VERDICT_COUNT_REFUSED`), the same everywhere:
+/// nothing from it is accepted (its units, lane or bytes), the unit's accepted units are final,
+/// and the line is the attempt's own member and provider.
+fn refuse_done_count(
+    money: &dyn MoneySeam,
+    ctx: &UnitCtx,
+    leg: Leg,
+    out: &Answer,
+    bufs: &PieceBufs,
+    facts: &mut Facts,
+    billed: bool,
+) {
+    facts.plane_done = true;
+    facts.unread = Some(ReasonCode::Unpriced);
+    let emitted = !emitted_of(bufs, out).is_empty();
+    if caller_bound(leg, out, emitted) && !facts.headed && !bufs.member.is_empty() && billed {
+        let member = String::from_utf8_lossy(&bufs.member);
+        money.served(ctx, &member, &bufs.provider);
+    }
+}
+
+/// A DONE PIECE SETTLED AROUND A BURY (the unit future was dropped): its units were never folded,
+/// so the unit bills what it holds and records that the final report went unread; it is attributed
+/// first, unless the walk would have refused it.
+pub(crate) fn bury_done(
+    money: &dyn MoneySeam,
+    ctx: &UnitCtx,
+    out: &OnPieceOut,
+    bufs: &PieceBufs,
+    leg: Leg,
+    piece_flags: u32,
+    facts: &mut Facts,
+) {
+    let out = Answer::of(out);
+    let billed = takes_lease(ctx.origin, ctx.kernel_verb_only);
+    match pre_fold(&out, leg, piece_flags, Seen::of(facts), true) {
+        Some(PreFold::Panic) => facts.unread = Some(ReasonCode::PlanePanic),
+        Some(PreFold::CountRefused { .. }) => {
+            refuse_done_count(money, ctx, leg, &out, bufs, facts, billed);
+        }
+        None => {
+            let _ = attribute(money, ctx, &out, bufs, leg, Seen::of(facts), billed, false);
+            facts.plane_done = true;
+            facts.unread = Some(ReasonCode::ClientGone);
+        }
+    }
+}
 
 pub(crate) struct Pumping<'u> {
     driver: &'u PlaneDriver,
@@ -1716,40 +1914,8 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             {
                 return Step::End(End::Failed(ReasonCode::PlanePanic));
             }
-            let bufs = &run.bufs;
-            let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
-            let caller_bound = match &*toward {
-                Toward::Caller => true,
-                Toward::Session(..) | Toward::Response(_) => out.flags & EMIT_TO_FAR_END == 0,
-                Toward::FarEnd(request) => {
-                    out.flags & EMIT_TO_FAR_END == 0
-                        && (out.flags & EMIT_DONE != 0
-                            || (request.member.is_empty()
-                                && (out.reply_status != 0 || !emitted.is_empty())))
-                }
-                Toward::Nowhere => false,
-            };
-            let commits = {
-                let st = run.lock();
-                caller_bound
-                    && !st.facts.headed
-                    && !st.facts.streamed
-                    && (out.reply_status != 0 || !emitted.is_empty())
-                    && !(out.verdict == VERDICT_RETRY
-                        && fails_over(st.facts.streamed, st.facts.relayed))
-            };
-            if commits && !bufs.member.is_empty() && run.billed() {
-                let member = String::from_utf8_lossy(&bufs.member);
-                self.driver.money.served(run.ctx, &member, &bufs.provider);
-            }
-            let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
-            let checkpoint = if units.is_empty() || !run.billed() {
-                Checkpoint::Continue
-            } else {
-                let checkpoint = self.driver.money.checkpoint(run.ctx, units);
-                if checkpoint == Checkpoint::Unpriced {
-                    return Step::End(End::Cancel(ReasonCode::Unpriced, Some(done)));
-                }
+            let checkpoint = self.fold_done_units(run, &out);
+            if checkpoint == Checkpoint::Unpriced {
                 let mut st = run.lock();
                 if st.facts.plane_done {
                     // The plane's final report could not be priced: the last accepted one bills.

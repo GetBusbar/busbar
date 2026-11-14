@@ -211,16 +211,17 @@ async fn plain_far() -> String {
 /// A TLS far end offering `h2`, reading whatever comes; and the dial that reaches it, offering
 /// `h2`, with the plain opening `first` on the exchange stream.
 async fn tls_far() -> Dial {
-    crate::tls::install_crypto_provider();
     let ca = crate::test_support::private_ca();
     let anchor = crate::test_support::certs_from_pem(&ca.ca_pem).remove(0);
-    let mut server = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![ca.leaf_der.into()],
-            rustls_pki_types::PrivateKeyDer::try_from(ca.key_der).unwrap(),
-        )
-        .unwrap();
+    let mut server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![ca.leaf_der.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(ca.key_der).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
     server.alpn_protocols = vec![b"h2".to_vec()];
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();

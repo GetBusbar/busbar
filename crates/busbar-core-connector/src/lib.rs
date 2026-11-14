@@ -32,8 +32,8 @@ pub mod compose;
 pub mod datagram;
 mod dialled;
 pub mod doors;
-pub mod egress_audit;
 pub mod dtls;
+pub mod egress_audit;
 pub mod endpoint;
 pub mod fetch;
 pub mod framed_stream;
@@ -78,7 +78,8 @@ use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
     Bytes, ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, HeadDefaults, InstanceId,
-    NeedId, NeedRefusal, OpenDesc, Piece, PieceKind, PollConns, Ticket, NO_TICKET,
+    LocatedTarget, NeedId, NeedRefusal, OpenDesc, OwnedHead, Piece, PieceKind, PollConns, Ticket,
+    NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
@@ -1926,7 +1927,7 @@ impl Connector {
                         "plaintext",
                         Some((u64::from(owner.0), need.0)),
                     );
-                    return Err(ConnError::Refused);
+                    return Err(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                 }
                 Some(Err(v)) => {
                     egress_audit::dial_refused(
@@ -1935,7 +1936,7 @@ impl Connector {
                         egress_audit::verdict_name(v),
                         Some((u64::from(owner.0), need.0)),
                     );
-                    return Err(ConnError::Refused);
+                    return Err(verdict_reason(v, false));
                 }
                 None => {}
             }
@@ -2310,10 +2311,17 @@ impl Connector {
                             egress_audit::verdict_name(v),
                             None,
                         );
+                        held.refused(verdict_reason(v, false));
                         return Err(held.fail(judging, pended_verdict(v)));
                     }
                     Ok(at) if !class_admits(j.egress_class, secure, plain, &[], &target, at) => {
-                        egress_audit::dial_refused(&target, Some(j.egress_class), "plaintext", None);
+                        egress_audit::dial_refused(
+                            &target,
+                            Some(j.egress_class),
+                            "plaintext",
+                            None,
+                        );
+                        held.refused(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                         return Err(held.fail(judging, ConnError::Refused));
                     }
                     _ => {}
@@ -2388,9 +2396,8 @@ impl Connector {
             let target_at = p.target_at;
             let planned = j.planned.take().ok_or(ConnError::Refused)?;
             let crossing = Crossing::begin(held, judging);
-            return crossing.finish(self.settle_proxy(
-                held, planned, &spec, proxy_addr, target_at, waker,
-            ));
+            return crossing
+                .finish(self.settle_proxy(held, planned, &spec, proxy_addr, target_at, waker));
         }
         let addr = match got {
             Ok(at) => at,
@@ -2401,11 +2408,13 @@ impl Connector {
                     egress_audit::verdict_name(v),
                     None,
                 );
+                held.refused(verdict_reason(v, false));
                 return Err(held.fail(judging, pended_verdict(v)));
             }
         };
         if !class_admits(j.egress_class, secure, plain, &j.within, &target, addr) {
             egress_audit::dial_refused(&target, Some(j.egress_class), "plaintext", None);
+            held.refused(NeedRefusal::Policy(refusal_text::PLAINTEXT));
             return Err(held.fail(judging, ConnError::Refused));
         }
 
@@ -2417,7 +2426,10 @@ impl Connector {
         let clear_window = self.holds_clear_window(&planned, addr);
         let crossing = Crossing::begin(held, judging);
         crossing.finish((|| {
-            let mut conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
+            let mut conn = planned.dial_at_any(addr, also).map_err(|f| {
+                held.refused(unreached(&f, false));
+                map(&f)
+            })?;
             if clear_window {
                 conn.hold_clear_window();
             }
@@ -2587,6 +2599,7 @@ impl Connector {
                         egress_audit::verdict_name(v),
                         None,
                     );
+                    *why = Some(verdict_reason(v, false));
                     return Err(ConnError::Refused);
                 }
                 Some(Ok(at))
@@ -2605,6 +2618,7 @@ impl Connector {
                         "plaintext",
                         None,
                     );
+                    *why = Some(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                     return Err(ConnError::Refused);
                 }
                 Some(_) => {}
@@ -2644,7 +2658,10 @@ impl Connector {
                         &self.connect_target(&planned, proxied.target_at),
                         &proxied.spec,
                     );
-                    let conn = planned.dial_through(at, connect).map_err(|f| map(&f))?;
+                    let conn = planned.dial_through(at, connect).map_err(|(hop, f)| {
+                        *why = Some(unreached(&f, hop == Hop::Proxy));
+                        map(&f)
+                    })?;
                     Ok((Some(conn), None))
                 }
             };
@@ -2657,6 +2674,7 @@ impl Connector {
                     egress_audit::verdict_name(v),
                     None,
                 );
+                *why = Some(verdict_reason(v, false));
                 return Err(ConnError::Refused);
             }
             Some(Ok(addr))
@@ -2675,11 +2693,15 @@ impl Connector {
                     "plaintext",
                     None,
                 );
+                *why = Some(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                 return Err(ConnError::Refused);
             }
             Some(Ok(addr)) => {
                 let clear_window = self.holds_clear_window(&planned, addr);
-                let mut conn = planned.dial_at(addr).map_err(|f| map(&f))?;
+                let mut conn = planned.dial_at(addr).map_err(|f| {
+                    *why = Some(unreached(&f, false));
+                    map(&f)
+                })?;
                 if clear_window {
                     conn.hold_clear_window();
                 }
@@ -3002,11 +3024,8 @@ pub(crate) fn offered_name_admitted(target: &str, offered: &str) -> bool {
 /// there is nothing the operator can move it to yet.
 fn log_operator_anchors(owner: InstanceId, need: NeedId, trust_from: &str, roots: &[Vec<u8>]) {
     for der in roots {
-        let digest = busbar_contract::crypto::sha256(der);
-        let sha256: String = digest
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let sha256 =
+            busbar_contract::abi::sdk::digest::lower_hex(&busbar_contract::crypto::sha256(der));
         tracing::info!(
             instance = owner.0,
             need = need.0,
@@ -3204,12 +3223,12 @@ impl DeclaredConns for Connector {
                 &declared,
                 &declared.door,
                 Dial {
-                    tls: match declared.tls {
+                    tls: match declared.tls.clone() {
                         Some(own) => Some(own),
-                        None => self.tls_for(&target)?,
+                        None => self.tls_for(&named)?,
                     },
-                    target,
-                    alpn: declared.alpn,
+                    target: named,
+                    alpn: declared.alpn.clone(),
                     open_timeout: held.open_timeout,
                     anchors: None,
                     opening: Some((opening_fields(desc.fields, None), desc.body.clone())),
@@ -3266,6 +3285,10 @@ impl DeclaredConns for Connector {
             && spec.egress_class == EGRESS_OPERATOR_INFRASTRUCTURE
             && spec.target_from.is_empty()
             && self.framed_transport(&spec.transport);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: an operator CA refused at declaration keeps its refusal text"
+        )]
         let anchored = match trust.filter(|_| outbound) {
             None => Ok(None),
             Some(pem) => tls::client::operator_ca_anchors(pem.as_bytes()).and_then(|roots| {
@@ -3386,7 +3409,7 @@ impl DeclaredConns for Connector {
                  end's certificate is NOT verified. The flag is deprecated and refused from busbar \
                  1.7.0; configure the server's CA instead of disabling verification",
             );
-            crate::tls::client::unverified_client_config().map_err(|_| ConnError::Refused)?
+            Some(crate::tls::client::unverified_client_config().map_err(|_| ConnError::Refused)?)
         } else {
             let declared = self.declared.lock().expect("declared needs");
             let trust_from = declared
@@ -3408,6 +3431,10 @@ impl DeclaredConns for Connector {
         }
         let (line, _) = held.line().ok_or(ConnError::Closed)?;
         let target = line.target().ok_or(ConnError::Closed)?;
+        let config = match config {
+            Some(own) => own,
+            None => self.tls_for(&target)?.ok_or(ConnError::Refused)?,
+        };
         let name = match name {
             Some(n) if !offered_name_admitted(&target, n) => {
                 self.flag_once(
@@ -3423,7 +3450,7 @@ impl DeclaredConns for Connector {
                 );
                 return Err(ConnError::Refused);
             }
-            Some(n) => n.to_owned(),
+            Some(n) => std::borrow::Cow::Borrowed(n),
             None => host_of(&target),
         };
 
@@ -3763,6 +3790,7 @@ impl Connector {
             Option<Arc<rustls::ClientConfig>>,
         ),
         require_secure: bool,
+        declared: &DeclaredNeed,
         why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
         if desc.unit == 0 {
@@ -3821,14 +3849,49 @@ impl Connector {
             (now, open_timeout),
             (egress_class, declared_target, tls),
             require_secure,
-            false,
+            declared,
             why,
         )?;
         let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began)?;
         Ok(held.dialling(dialled))
     }
 
-    /// THE DIALLED EXCHANGE over `door` (a framer of a stream, or a carrier carried as itself):
+    /// THE RENDEZVOUS EXCHANGE of a datagram association: [`Connector::dial_exchange`]'s dial,
+    /// never pooled, because its exchange carries the association's own session description.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the dialled exchange takes the open's every input as its callers resolved them"
+    )]
+    fn dial_rendezvous_exchange(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        door: (Arc<dyn FramerDoor>, Vec<Vec<u8>>),
+        target: &str,
+        timing: (std::time::Instant, Duration),
+        declared: (u32, Option<&str>, Option<Arc<rustls::ClientConfig>>),
+        require_secure: bool,
+        record: &DeclaredNeed,
+        why: &mut Option<NeedRefusal>,
+    ) -> Result<Held, ConnError> {
+        self.dial_exchange_pooling(
+            caller,
+            need,
+            desc,
+            door,
+            target,
+            timing,
+            declared,
+            (false, require_secure, false),
+            (None, None),
+            record,
+            why,
+        )
+    }
+
+    /// THE DIALLED EXCHANGE over `door`, pooled (a prepared one too: preparing means only that its
+    /// opening is written at its commit, never that its line may not be shared).
     #[expect(
         clippy::too_many_arguments,
         reason = "the dialled exchange takes the open's every input as its callers resolved them"
@@ -3840,10 +3903,12 @@ impl Connector {
         desc: &OpenDesc<'_>,
         door: (Arc<dyn FramerDoor>, Vec<Vec<u8>>),
         target: &str,
-        open_timeout: Duration,
-        declared: (u32, Option<String>, Option<Arc<rustls::ClientConfig>>),
-        require_secure: bool,
-        prepare: bool,
+        timing: (std::time::Instant, Duration),
+        declared: (u32, Option<&str>, Option<Arc<rustls::ClientConfig>>),
+        (require_secure, prepare): (bool, bool),
+        head: (Option<&LocatedTarget>, Option<OwnedHead>),
+        record: &DeclaredNeed,
+        why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
         self.dial_exchange_pooling(
             caller,
@@ -3851,16 +3916,20 @@ impl Connector {
             desc,
             door,
             target,
-            open_timeout,
+            timing,
             declared,
-            true,
-            require_secure,
-            prepare,
+            (true, require_secure, prepare),
+            head,
+            record,
+            why,
         )
     }
 
     /// THE DIALLED EXCHANGE over `door` (a framer of a stream, or a carrier carried as itself):
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the dialled exchange takes the open's every input as its callers resolved them"
+    )]
     fn dial_exchange_pooling(
         &self,
         caller: InstanceId,
@@ -3874,9 +3943,9 @@ impl Connector {
             Option<&str>,
             Option<Arc<rustls::ClientConfig>>,
         ),
-        poolable: bool,
-        require_secure: bool,
-        prepare: bool,
+        (poolable, require_secure, prepare): (bool, bool, bool),
+        (located, owned): (Option<&LocatedTarget>, Option<OwnedHead>),
+        record: &DeclaredNeed,
         why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
@@ -3910,9 +3979,12 @@ impl Connector {
         };
 
         let trust = dial.tls.clone().map(Same);
-        let planned = self
-            .plan_carried(&door, dial, carried)
-            .map_err(|f| map(&f))?;
+        // The head's own locate answer when it carried one; else a declared target's kept place.
+        let planned = match carried {
+            Some(carried) => self.plan_carried(&door, dial, Some(carried)),
+            None => self.plan_declared(record, &door, dial),
+        }
+        .map_err(|f| map(&f))?;
         if require_secure && !planned.secure() {
             return Err(ConnError::AuthRefused);
         }
@@ -3979,7 +4051,9 @@ impl Connector {
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
 
         if let Some(declared) = declared_target {
-            let located = self.located(&door, declared).ok_or(ConnError::Refused)?;
+            let located = record
+                .place(&door, declared, || self.located(&door, declared).ok_or(()))
+                .map_err(|()| ConnError::Refused)?;
             if !located.authority.eq_ignore_ascii_case(planned.authority())
                 || located.secure != planned.secure()
             {
@@ -4013,22 +4087,21 @@ impl Connector {
         let mut planned = planned;
         if let Some((shard, key)) = &pooled {
             if let Some(line) = self.pools.lend(*shard, key) {
-                let redial = Redial {
-                    door: Arc::clone(&door),
-                    dial: planned.dial().clone(),
-                    egress_class,
-                    judged_class,
-                    require_secure,
-                    reach,
-                    mark: line.flushed(),
-                };
-                let (opening, words) = planned.into_opening();
-                match line.attach(opening, words) {
-                    Ok(stream) => {
-                        let held = Held::over(Some((line, stream)), None, pooled)
-                            .bounded(now, desc.timeout_ms);
-                        *held.redial.lock().expect("redial") = Some(redial);
-                        return Ok(held);
+                if prepare {
+                    // A prepared exchange reserves a stream; its opening is committed later, on
+                    // this line only. It keeps no Redial: its dial carries no opening, so a redial
+                    // would send nothing. The dial is kept only to dial fresh if the reserve fails.
+                    let fallback = planned.dial().clone();
+                    match line.reserve() {
+                        Ok(stream) => {
+                            return Ok(Held::over(Some((line, stream)), None, pooled)
+                                .bounded(now, desc.timeout_ms));
+                        }
+                        Err((stream, _)) => {
+                            line.leave(stream, false);
+                            self.pools.drop_line(*shard, key, &line);
+                            planned = self.plan(&door, fallback).map_err(|f| map(&f))?;
+                        }
                     }
                 } else {
                     let redial = Redial {
@@ -4044,16 +4117,16 @@ impl Connector {
                     match line.attach(opening, words) {
                         Ok(stream) => {
                             let held = Held::over(Some((line, stream)), None, pooled)
-                                .bounded(desc.timeout_ms);
+                                .bounded(now, desc.timeout_ms);
                             *held.redial.lock().expect("redial") = Some(redial);
                             return Ok(held);
                         }
 
-                    Err((stream, _)) if line.flushed() != redial.mark => {
-                        let held = Held::over(Some((line, stream)), None, pooled)
-                            .bounded(now, desc.timeout_ms);
-                        return Ok(held);
-                    }
+                        Err((stream, _)) if line.flushed() != redial.mark || line.wire_kept() => {
+                            let held = Held::over(Some((line, stream)), None, pooled)
+                                .bounded(now, desc.timeout_ms);
+                            return Ok(held);
+                        }
 
                         Err((stream, _)) => {
                             line.leave(stream, false);
@@ -4090,7 +4163,36 @@ impl Connector {
         require_secure: bool,
         dial_timeout_ms: Option<u64>,
         prepare: bool,
+        head: (Option<&LocatedTarget>, Option<OwnedHead>),
+    ) -> Result<ConnId, ConnError> {
+        let mut why = None;
+        let opened = self.open_timed_reasoned(
+            caller,
+            need,
+            desc,
+            (require_secure, dial_timeout_ms, prepare),
+            head,
+            &mut why,
+        );
+        if let Some(held) = self
+            .declared
+            .lock()
+            .expect("declared needs")
+            .get_mut(&(caller, need))
+        {
+            held.2 = if opened.is_ok() { None } else { why };
+        }
+        opened
+    }
+
+    fn open_timed_reasoned(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        (require_secure, dial_timeout_ms, prepare): (bool, Option<u64>, bool),
         (located, owned): (Option<&LocatedTarget>, Option<OwnedHead>),
+        why: &mut Option<NeedRefusal>,
     ) -> Result<ConnId, ConnError> {
         let started = framer::now();
         self.slab.check_need(caller, need)?;
@@ -4223,11 +4325,12 @@ impl Connector {
                 caller,
                 need,
                 read,
-                &door,
+                door,
                 target,
                 open_timeout,
-                (egress_class, declared_target.clone(), tls.clone()),
+                (egress_class, declared_target, tls.clone()),
                 require_secure,
+                &declared,
                 why,
             )?;
             return self.slab.insert(caller, need, held);
@@ -4273,9 +4376,10 @@ impl Connector {
             (Arc::clone(door), alpn.clone()),
             target,
             (started, open_timeout),
-            (egress_class, declared_target, tls),
-            require_secure,
-            prepare,
+            (egress_class, declared_target, tls.clone()),
+            (require_secure, prepare),
+            (located, owned),
+            &declared,
             why,
         )?;
         if prepare {
@@ -4283,7 +4387,7 @@ impl Connector {
                 target: desc.target.to_owned(),
                 member: desc.member.to_owned(),
                 started,
-                named,
+                named: target.to_owned(),
             });
             held.uncommitted.store(true, Ordering::Release);
         }
@@ -4783,3 +4887,25 @@ mod declared_need_arc_tests;
 #[cfg(test)]
 #[path = "tests/locate_count_tests.rs"]
 mod locate_count_tests;
+
+#[cfg(test)]
+#[path = "tests/pool_prepared_tests.rs"]
+mod pool_prepared_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/compose_absorb_fail_tests.rs"]
+mod compose_absorb_fail_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/pool_prepared_seal_tests.rs"]
+mod pool_prepared_seal_tests;
+
+#[cfg(test)]
+#[path = "tests/pool_prepared_ready_tests.rs"]
+mod pool_prepared_ready_tests;
+
+#[cfg(test)]
+#[path = "tests/pool_prepared_target_tests.rs"]
+mod pool_prepared_target_tests;

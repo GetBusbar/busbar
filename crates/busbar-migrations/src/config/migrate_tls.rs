@@ -22,7 +22,7 @@
 //!
 //! Idempotent: a second run finds nothing to move.
 
-use serde_yaml::{Mapping, Value};
+use busbar_contract::yaml::{MappingExt as _, Pairs, Value, ValueExt as _};
 
 use super::migrate_plugins::Ledger;
 
@@ -47,15 +47,15 @@ fn default_hosts(module: &str) -> &'static [&'static str] {
 }
 
 fn key(k: &str) -> Value {
-    Value::String(k.to_owned())
+    Value::Text(k.to_owned())
 }
 
 /// Apply every trust-store rewrite to `root`.
-pub(super) fn apply(root: &mut Mapping, ledger: &mut Ledger<'_>) {
+pub(super) fn apply(root: &mut Pairs, ledger: &mut Ledger<'_>) {
     let mut entries: Vec<(String, Value, String)> = Vec::new();
     let mut plaintext: Vec<(String, String)> = Vec::new();
     for section in ["identity-providers", "identity_providers", "secrets"] {
-        let Some(Value::Mapping(named)) = root.get_mut(key(section)) else {
+        let Some(Value::Map(named)) = root.get_key_mut(key(section)) else {
             continue;
         };
         for (name, block) in named.iter_mut() {
@@ -64,10 +64,10 @@ pub(super) fn apply(root: &mut Mapping, ledger: &mut Ledger<'_>) {
             plugin_block(&at, block, &mut entries, ledger);
         }
     }
-    if let Some(block) = root.get_mut(key("store")) {
+    if let Some(block) = root.get_key_mut(key("store")) {
         store_block(block, &mut plaintext, ledger);
     }
-    if let Some(Value::Mapping(tools)) = root.get_mut(key("tools")) {
+    if let Some(Value::Map(tools)) = root.get_key_mut(key("tools")) {
         for (name, tool) in tools.iter_mut() {
             let name = name.as_str().unwrap_or_default().to_owned();
             mcp_tool(&format!("tools.{name}"), tool, &mut entries, ledger);
@@ -85,10 +85,10 @@ pub(super) fn apply(root: &mut Mapping, ledger: &mut Ledger<'_>) {
             d.get(key("match")).and_then(Value::as_str) == Some(host.as_str())
                 && d.get(key("plaintext")).and_then(Value::as_bool) == Some(true)
         }) {
-            let mut e = Mapping::new();
-            e.insert(key("match"), Value::String(host.clone()));
-            e.insert(key("plaintext"), Value::Bool(true));
-            destinations.push(Value::Mapping(e));
+            let mut e = Pairs::new();
+            e.insert_key(key("match"), Value::Text(host.clone()));
+            e.insert_key(key("plaintext"), Value::Bool(true));
+            destinations.push(Value::Map(e));
             ledger.changes.push(format!(
                 "BUSBAR-3414: advanced.tls.destinations: added {{match: {host}, plaintext: true}}: \
                  {from} reaches {host} without TLS, which busbar 1.6 admits only to loopback or an \
@@ -100,28 +100,24 @@ pub(super) fn apply(root: &mut Mapping, ledger: &mut Ledger<'_>) {
 }
 
 /// The `advanced.tls.destinations` list, created when absent.
-fn destinations(root: &mut Mapping) -> &mut Vec<Value> {
-    let advanced = root
-        .entry(key("advanced"))
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
+fn destinations(root: &mut Pairs) -> &mut Vec<Value> {
+    let advanced = root.entry_or_insert_with(key("advanced"), || Value::Map(Pairs::new()));
     if !advanced.is_mapping() {
-        *advanced = Value::Mapping(Mapping::new());
+        *advanced = Value::Map(Pairs::new());
     }
     let tls = advanced
         .as_mapping_mut()
         .expect("mapping")
-        .entry(key("tls"))
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
+        .entry_or_insert_with(key("tls"), || Value::Map(Pairs::new()));
     if !tls.is_mapping() {
-        *tls = Value::Mapping(Mapping::new());
+        *tls = Value::Map(Pairs::new());
     }
     let list = tls
         .as_mapping_mut()
         .expect("mapping")
-        .entry(key("destinations"))
-        .or_insert_with(|| Value::Sequence(Vec::new()));
+        .entry_or_insert_with(key("destinations"), || Value::Array(Vec::new()));
     if !list.is_sequence() {
-        *list = Value::Sequence(Vec::new());
+        *list = Value::Array(Vec::new());
     }
     list.as_sequence_mut().expect("sequence")
 }
@@ -140,18 +136,16 @@ fn merge_anchor(
     let entry = match existing {
         Some(e) => e,
         None => {
-            let mut e = Mapping::new();
-            e.insert(key("match"), Value::String(host.to_owned()));
-            destinations.push(Value::Mapping(e));
+            let mut e = Pairs::new();
+            e.insert_key(key("match"), Value::Text(host.to_owned()));
+            destinations.push(Value::Map(e));
             destinations.last_mut().expect("pushed")
         }
     };
     let map = entry.as_mapping_mut().expect("an entry is a mapping");
-    let anchors = map
-        .entry(key("trust_anchors"))
-        .or_insert_with(|| Value::Sequence(Vec::new()));
+    let anchors = map.entry_or_insert_with(key("trust_anchors"), || Value::Array(Vec::new()));
     if !anchors.is_sequence() {
-        *anchors = Value::Sequence(Vec::new());
+        *anchors = Value::Array(Vec::new());
     }
     let list = anchors.as_sequence_mut().expect("sequence");
     let fingerprint = fingerprint(&anchor);
@@ -195,10 +189,12 @@ fn is_ca(pem: &str) -> Option<bool> {
 }
 
 /// The settings of a plugin block: its `settings` mapping, or the block itself (flat form).
-fn settings_of(block: &mut Value) -> Option<&mut Mapping> {
+fn settings_of(block: &mut Value) -> Option<&mut Pairs> {
     let map = block.as_mapping_mut()?;
-    if map.get(key("settings")).is_some_and(Value::is_mapping) {
-        return map.get_mut(key("settings")).and_then(Value::as_mapping_mut);
+    if map.get_key(key("settings")).is_some_and(Value::is_mapping) {
+        return map
+            .get_key_mut(key("settings"))
+            .and_then(Value::as_mapping_mut);
     }
     Some(map)
 }
@@ -247,14 +243,18 @@ fn plugin_block(
     let Some(settings) = settings_of(block) else {
         return;
     };
-    if module.ends_with("ldap") && settings.remove(key("allow_insecure_transport")).is_some() {
+    if module.ends_with("ldap")
+        && settings
+            .remove_key(key("allow_insecure_transport"))
+            .is_some()
+    {
         ledger.todos.push(format!(
             "BUSBAR-3417: {at}.allow_insecure_transport was removed: busbar 1.6 never sends a bind \
              password in clear to a host that is not loopback. Use ldaps:// or start_tls: true, and \
              list the directory's CA under advanced.tls.destinations if it is not publicly trusted"
         ));
     }
-    let Some(ca) = settings.remove(key("ca_cert_pem")) else {
+    let Some(ca) = settings.remove_key(key("ca_cert_pem")) else {
         return;
     };
     if ca.is_null() || ca.as_str().is_some_and(|s| s.trim().is_empty()) {
@@ -262,7 +262,7 @@ fn plugin_block(
     }
     let mut hosts: Vec<String> = url_keys
         .iter()
-        .filter_map(|k| settings.get(key(k)).and_then(url_host))
+        .filter_map(|k| settings.get_key(key(k)).and_then(url_host))
         .collect();
     if hosts.is_empty() {
         hosts = default_hosts(&module)
@@ -316,16 +316,16 @@ fn mcp_tool(
     let Some(map) = tool.as_mapping_mut() else {
         return;
     };
-    let host = map.get(key("url")).and_then(url_host);
-    let Some(Value::Mapping(tls)) = map.get_mut(key("tls")) else {
+    let host = map.get_key(key("url")).and_then(url_host);
+    let Some(Value::Map(tls)) = map.get_key_mut(key("tls")) else {
         return;
     };
-    let Some(ca) = tls.remove(key("ca_cert_pem")) else {
+    let Some(ca) = tls.remove_key(key("ca_cert_pem")) else {
         return;
     };
     let empty = tls.is_empty();
     if empty {
-        map.remove(key("tls"));
+        map.remove_key(key("tls"));
     }
     match (host, ca.is_string()) {
         (Some(h), true) => entries.push((h, ca, format!("{at}.tls"))),
@@ -342,7 +342,7 @@ fn store_block(block: &mut Value, plaintext: &mut Vec<(String, String)>, ledger:
     let Some(settings) = settings_of(block) else {
         return;
     };
-    let Some(url) = settings.get_mut(key("url")) else {
+    let Some(url) = settings.get_key_mut(key("url")) else {
         return;
     };
     match module.as_str() {
@@ -389,7 +389,7 @@ fn postgres_url(url: &mut Value, plaintext: &mut Vec<(String, String)>, ledger: 
             params.retain(|(k, _)| k != "sslmode");
             params.push(("sslmode".into(), "require".into()));
             let q: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            *url = Value::String(format!("{base}?{}", q.join("&")));
+            *url = Value::Text(format!("{base}?{}", q.join("&")));
             ledger.changes.push(format!(
                 "BUSBAR-3412: store.settings.url: sslmode {} rewritten to require for {host}: \
                  busbar 1.6 has no opportunistic TLS. The database must offer TLS; list its CA \
@@ -416,7 +416,7 @@ fn valkey_url(url: &mut Value, ledger: &mut Ledger<'_>) {
     };
     let host = url_host(url).unwrap_or_default();
     if let Some(stripped) = text.strip_suffix("#insecure") {
-        *url = Value::String(stripped.to_owned());
+        *url = Value::Text(stripped.to_owned());
         ledger.changes.push(format!(
             "BUSBAR-3413: store.settings.url: #insecure removed for {host}: the connection is now \
              verified. List the server's CA under advanced.tls.destinations (match: {host}) if it \

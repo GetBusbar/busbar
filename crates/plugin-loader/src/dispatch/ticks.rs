@@ -66,8 +66,11 @@ pub(crate) async fn ticks_on<K: Kind>(
                 }
             }
             (outcome, _) => {
-                let ended =
-                    !plugin.inner.is_open() || plugin.inner.faulted.load(std::sync::atomic::Ordering::Acquire);
+                let ended = !plugin.inner.is_open()
+                    || plugin
+                        .inner
+                        .faulted
+                        .load(std::sync::atomic::Ordering::Acquire);
                 failures = failures.saturating_add(1);
                 let wait = backoff.delay(failures, busbar_contract::retry::unit());
                 let due = reported.is_none_or(|at| at.elapsed() >= REPORT_EVERY);

@@ -4,13 +4,15 @@
 use super::*;
 
 struct Run {
-    yaml: Mapping,
+    yaml: Value,
     changes: Vec<String>,
     todos: Vec<String>,
 }
 
 fn run(yaml: &str) -> Run {
-    let mut root: Mapping = serde_yaml::from_str(yaml).expect("yaml");
+    let mut root: Pairs = busbar_contract::yaml::mapping_from_str(yaml)
+        .expect("yaml")
+        .into();
     let (mut changes, mut todos, mut failures) = (Vec::new(), Vec::new(), Vec::new());
     apply(
         &mut root,
@@ -22,7 +24,7 @@ fn run(yaml: &str) -> Run {
     );
     assert!(failures.is_empty(), "{failures:?}");
     Run {
-        yaml: root,
+        yaml: Value::Map(root),
         changes,
         todos,
     }
@@ -63,14 +65,17 @@ fn each_plugin_ca_becomes_an_exact_host_destination_entry() {
         "{:?}",
         r.changes
     );
-    let ldap = r.yaml["identity-providers"]["corp"]
+    let ldap = r
+        .yaml
+        .at("identity-providers")
+        .at("corp")
         .as_mapping()
         .expect("map");
     assert!(
-        ldap.get(key("ca_cert_pem")).is_none(),
+        ldap.get_key(key("ca_cert_pem")).is_none(),
         "the plugin key is removed"
     );
-    let again = run(&serde_yaml::to_string(&r.yaml).expect("yaml"));
+    let again = run(&busbar_contract::yaml::to_string(&r.yaml).expect("yaml"));
     assert!(again.changes.is_empty(), "idempotent: {:?}", again.changes);
     assert_eq!(dests(&again).len(), 3);
 }
@@ -98,7 +103,10 @@ fn a_referenced_ca_and_oidc_discovered_hosts_become_todos() {
 #[test]
 fn ldap_insecure_transport_is_removed_with_a_todo() {
     let r = run("identity-providers:\n  corp:\n    module: ldap\n    url: ldap://ldap.corp.internal\n    allow_insecure_transport: true\n");
-    assert!(r.yaml["identity-providers"]["corp"]
+    assert!(r
+        .yaml
+        .at("identity-providers")
+        .at("corp")
         .get(key("allow_insecure_transport"))
         .is_none());
     assert!(
@@ -128,7 +136,7 @@ fn postgres_opportunistic_sslmode_becomes_require_and_disable_gets_a_plaintext_e
             "store:\n  module: postgres\n  settings: {{ url: '{url}' }}\n"
         ));
         assert_eq!(
-            r.yaml["store"]["settings"]["url"].as_str(),
+            r.yaml.at("store").at("settings").at("url").as_str(),
             Some(want),
             "{url}"
         );
@@ -139,7 +147,7 @@ fn postgres_opportunistic_sslmode_becomes_require_and_disable_gets_a_plaintext_e
         "{:?}",
         r.changes
     );
-    assert_eq!(dests(&r)[0]["match"].as_str(), Some("10.0.0.9"));
+    assert_eq!(dests(&r)[0].at("match").as_str(), Some("10.0.0.9"));
     let r = run("store:\n  module: postgres\n  settings: { url: 'postgres://u@127.0.0.1/busbar?sslmode=disable' }\n");
     assert!(dests(&r).is_empty(), "loopback needs no entry");
     let r = run("store:\n  module: postgres\n  settings: { url: { env: PG_URL } }\n");
@@ -154,7 +162,7 @@ fn postgres_opportunistic_sslmode_becomes_require_and_disable_gets_a_plaintext_e
 fn valkey_insecure_is_removed_and_a_credentialed_plaintext_url_is_a_todo() {
     let r = run("store:\n  module: valkey\n  settings: { url: 'rediss://cache.internal:6380/0#insecure' }\n");
     assert_eq!(
-        r.yaml["store"]["settings"]["url"].as_str(),
+        r.yaml.at("store").at("settings").at("url").as_str(),
         Some("rediss://cache.internal:6380/0")
     );
     assert!(
@@ -184,11 +192,19 @@ fn mcp_tool_ca_moves_and_its_client_identity_stays() {
     let r = run(&format!(
         "tools:\n  t:\n    url: https://mcp.corp.internal/mcp\n    tls: {{ ca_cert_pem: {PEM:?}, client_identity: {{ cert: x, key: y }} }}\n"
     ));
-    assert_eq!(dests(&r)[0]["match"].as_str(), Some("mcp.corp.internal"));
-    assert!(r.yaml["tools"]["t"]["tls"]
+    assert_eq!(dests(&r)[0].at("match").as_str(), Some("mcp.corp.internal"));
+    assert!(r
+        .yaml
+        .at("tools")
+        .at("t")
+        .at("tls")
         .get(key("client_identity"))
         .is_some());
-    assert!(r.yaml["tools"]["t"]["tls"]
+    assert!(r
+        .yaml
+        .at("tools")
+        .at("t")
+        .at("tls")
         .get(key("ca_cert_pem"))
         .is_none());
 }

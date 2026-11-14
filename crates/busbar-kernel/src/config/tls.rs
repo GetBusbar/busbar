@@ -121,11 +121,12 @@ impl TlsSource {
 
 impl<'de> Deserialize<'de> for TlsSource {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use busbar_contract::yaml::{Value, ValueExt as _};
         use serde::de::Error as _;
-        let value = serde_yaml::Value::deserialize(d)?;
+        let value = busbar_contract::yaml::untyped(d)?;
         match value {
-            serde_yaml::Value::String(pem) => Ok(Self::Inline(pem)),
-            serde_yaml::Value::Mapping(map) => {
+            Value::Text(pem) => Ok(Self::Inline(pem)),
+            Value::Map(map) => {
                 let mut entries = map.into_iter();
                 let (Some((k, v)), None) = (entries.next(), entries.next()) else {
                     return Err(D::Error::custom(

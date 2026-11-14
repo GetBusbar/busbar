@@ -727,127 +727,6 @@ impl fmt::Debug for AdminAuthChain {
     }
 }
 
-impl AdminAuthChain {
-    pub fn build(
-        cfg: &AuthCfg,
-        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-        secret_resolver: &crate::config::secret::SecretResolver,
-    ) -> Result<Self, String> {
-        let mut modules: foldhash::HashMap<String, AdminModule> = foldhash::HashMap::default();
-        let op = crate::config::operator_provider();
-        let is_op = |m: &str| crate::config::names_operator(m);
-        let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
-        for entry in &cfg.admin_auth {
-            match entry.module.as_str() {
-                module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
-                other => {
-                    let name = entry.name.as_str();
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: admin_auth providers resolve once, at config load"
-                    )]
-                    let resolved = crate::config::secret::resolve_settings(
-                        &entry.settings,
-                        &registry.secret_slots(other),
-                        &registry.reference_slots(other),
-                        other,
-                        secret_resolver,
-                        &busbar_contract::config_time::ConfigScope::config_time(),
-                    )
-                    .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: a config-load refusal naming the admin_auth provider"
-                    )]
-                    let refused = |e: String| {
-                        format!(
-                            "auth.admin_auth provider '{name}' (module '{other}') could not be \
-                             loaded as a `kind: auth` plugin: {e}"
-                        )
-                    };
-                    let calls = instances.instance(
-                        name,
-                        other,
-                        registry,
-                        || {
-                            let mut resolved = instances::provider_settings(
-                                cfg,
-                                name,
-                                other,
-                                &entry.settings,
-                                registry,
-                                secret_resolver,
-                                |e| format!("identity-providers.{name} settings: {e}"),
-                            )?;
-
-                    let axis = match &axis {
-                        Some(axis) => axis.clone(),
-                        None => {
-                            #[expect(
-                                clippy::disallowed_methods,
-                                reason = "config: a config-load refusal naming the admin_auth module"
-                            )]
-                            let opened =
-                                crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
-                                    refused(format!("no `kind: auth` plugin answers to '{other}'"))
-                                })?;
-                                axis.insert(opened).clone()
-                            }
-                            instances::lend_login_secret(
-                                cfg,
-                                name,
-                                other,
-                                registry,
-                                secret_resolver,
-                                &mut resolved,
-                            )?;
-
-                        if !axis.answers(other) {
-                            return Err(refused(auth_refusal(registry, other)));
-                        }
-                        instances::lend_login_secret(
-                            cfg,
-                            name,
-                            other,
-                            registry,
-                            secret_resolver,
-                            &mut resolved,
-                        )?;
-
-                    if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry.as_ref(), other)));
-                    }
-
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: the module's label, named once when admin_auth loads"
-                    )]
-                    let label = format!("admin_auth.{name}");
-
-                    let calls = relend::open(
-                        &axis,
-                        other,
-                        &label,
-                        &resolved,
-                        relender(&entry.settings, registry.as_ref(), other, secret_resolver),
-                    )
-                    .map_err(refused)?;
-
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: the admin_auth provider table is built once, at config load"
-                    )]
-                    modules.insert(name.to_string(), AdminModule { calls });
-                }
-            }
-        }
-        Ok(Self {
-            modules,
-            operator: Operator::new(op),
-        })
-    }
-}
-
 impl fmt::Debug for AuthMiddleware {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthMiddleware")
@@ -892,19 +771,6 @@ impl AuthMiddleware {
                 other => {
                     #[expect(
                         clippy::disallowed_methods,
-                        reason = "config: auth.chain modules resolve once, at config load"
-                    )]
-                    let resolved = crate::config::secret::resolve_settings(
-                        &entry.settings,
-                        &registry.secret_slots(other),
-                        &registry.reference_slots(other),
-                        other,
-                        secret_resolver,
-                        &busbar_contract::config_time::ConfigScope::config_time(),
-                    )
-                    .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
-                    #[expect(
-                        clippy::disallowed_methods,
                         reason = "config: a config-load refusal naming the auth.chain module"
                     )]
                     let refused = |e: String| {
@@ -913,47 +779,56 @@ impl AuthMiddleware {
                              plugin: {e}"
                         )
                     };
-                    let axis = match &axis {
-                        Some(axis) => axis.clone(),
-                        None => {
-                            #[expect(
-                                clippy::disallowed_methods,
-                                reason = "config: a config-load refusal naming the auth.chain module"
-                            )]
-                            let opened =
-                                crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
-                                    refused(format!("no `kind: auth` plugin answers to '{other}'"))
-                                })?;
-                                axis.insert(opened).clone()
-                            }
-                        };
-
-                        if !axis.answers(other) {
-                            return Err(refused(auth_refusal(registry, other)));
-                        }
-                        instances::lend_login_secret(
-                            cfg,
-                            name,
-                            other,
-                            registry,
-                            secret_resolver,
-                            &mut resolved,
-                        )?;
-                        let opened = axis.open(other, &instances::instance_label(name), &resolved);
-
-                    if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry.as_ref(), other)));
-                    }
-                    let opened = relend::open(
-                        &axis,
+                    let name = entry.name.as_str();
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: auth.chain modules resolve once, at config load"
+                    )]
+                    let calls = instances.instance(
+                        name,
                         other,
-                        &entry.name,
-                        &resolved,
-                        relender(&entry.settings, registry.as_ref(), other, secret_resolver),
-                    );
+                        registry,
+                        || {
+                            let mut resolved = instances::provider_settings(
+                                cfg,
+                                name,
+                                other,
+                                &entry.settings,
+                                registry,
+                                secret_resolver,
+                                |e| format!("auth.chain module '{other}' settings: {e}"),
+                            )?;
+                            let axis = match &axis {
+                                Some(axis) => axis.clone(),
+                                None => {
+                                    #[expect(
+                                        clippy::disallowed_methods,
+                                        reason = "config: a config-load refusal naming the auth.chain module"
+                                    )]
+                                    let opened = open_axis().ok_or_else(|| {
+                                        refused(format!(
+                                            "no `kind: auth` plugin answers to '{other}'"
+                                        ))
+                                    })?;
+                                    axis.insert(opened).clone()
+                                }
+                            };
 
-                    drop(resolved);
-                    let calls = opened.map_err(refused)?;
+                            if !axis.answers(other) {
+                                return Err(refused(auth_refusal(registry, other)));
+                            }
+                            instances::lend_login_secret(
+                                cfg,
+                                name,
+                                other,
+                                registry,
+                                secret_resolver,
+                                &mut resolved,
+                            )?;
+                            Ok(instances::Prepared { axis, resolved })
+                        },
+                        &refused,
+                    )?;
                     #[expect(
                         clippy::disallowed_methods,
                         reason = "config: the auth chain is built once, at config load"
@@ -1207,12 +1082,14 @@ impl AuthMiddleware {
         Ok(complete_chain(None))
     }
 
-    pub fn flush_verified(&self, module: Option<&str>) -> Result<u64, String> {
-        let mut flushed = 0;
-        let mut failure = None;
+    /// The instances the chain holds for `provider` (all, for `None`), in chain order: the admin
+    /// flush refreshes each distinct one once ([`instances::flush_distinct`]).
+    pub(crate) fn chain_instances<'a>(
+        &'a self,
+        provider: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a std::sync::Arc<dyn AuthCalls>> + 'a {
         // busbar:expect(bp::state_scan, reason = "config: an operator's admin flush walks the configured chain once")
-        for entry in self
-            .chain
+        self.chain
             .iter()
             .filter(move |e| provider.is_none_or(|m| m == e.provider))
             .map(|e| &e.calls)
@@ -2577,7 +2454,7 @@ pub(crate) async fn auth_middleware(
         };
         // The operator adapter alone converts the admitted neutral head back to HTTP.
         *req.headers_mut() = crate::inbound::served_header_map(&context.head);
-        strike_named(&mut req, &mut context.consumed, &inbound.inner.strips);
+        strike_named(&mut req, &mut context.consumed, inbound.inner.strips.iter());
         let token = inbound.client_token().map(str::to_owned).or_else(|| {
             app.oauth_as
                 .as_ref()
@@ -2593,7 +2470,6 @@ pub(crate) async fn auth_middleware(
         .as_ref()
         .map(crate::inbound::RequestAdmission::original_headers);
 
-    let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     // A handle on the received target (shared bytes, no copy): `req` is rewritten below.
     let (uri, method) = (req.uri().clone(), req.method().clone());
     let path = uri.path();
@@ -2689,7 +2565,7 @@ pub(crate) async fn auth_middleware(
                 return Err(sender_constraint_response(
                     &app,
                     &path,
-                    door.as_ref(),
+                    door().as_ref(),
                     admission.as_ref().map(|a| a.resource_metadata.as_str()),
                     reason,
                 ));
@@ -2743,31 +2619,33 @@ pub(crate) async fn auth_middleware(
                 crate::guest::Claimant::Clean(name) if name == "core")
                     && matches!(admission.selected_line().auth, crate::guest::LineAuth::None)
             });
-        let door = if let Some(admission) = inbound.as_ref().filter(|_| !deferred_core_admin) {
-            let verdict = admission.admin_verdict();
-            if admin_door_admits(&verdict.door, req.method().as_str(), target)
-                && !admission.claim_admin_replay().await
-            {
-                admission.refuse(
-                    busbar_contract::caps::StepName::Authenticate,
-                    busbar_contract::caps::ReasonCode::Unauthenticated,
-                );
-                return Err(admin_unauthorized_response());
-            }
-            verdict.door
-        } else {
-            let Ok(door) = judge_admin_door(
-                &app,
-                req.method().as_str(),
-                target,
-                inbound_headers.unwrap_or_else(|| req.headers()),
-                false,
-                true,
-                &mut strips,
-            )
-            .await
-            else {
-                return Err(admin_unavailable_response());
+        let (door, strips) =
+            if let Some(admission) = inbound.as_ref().filter(|_| !deferred_core_admin) {
+                let verdict = admission.admin_verdict();
+                if admin_door_admits(&verdict.door, req.method().as_str(), target)
+                    && !admission.claim_admin_replay().await
+                {
+                    admission.refuse(
+                        busbar_contract::caps::StepName::Authenticate,
+                        busbar_contract::caps::ReasonCode::Unauthenticated,
+                    );
+                    return Err(admin_unauthorized_response());
+                }
+                (verdict.door, Vec::new())
+            } else {
+                let Ok(judged) = judge_admin_door(
+                    &app,
+                    req.method().as_str(),
+                    target,
+                    inbound_headers.unwrap_or_else(|| req.headers()),
+                    false,
+                    true,
+                )
+                .await
+                else {
+                    return Err(admin_unavailable_response());
+                };
+                judged
             };
         let effect_context = effect::Context::new(
             req.method().as_str(),
@@ -2964,10 +2842,15 @@ pub(crate) async fn auth_middleware(
     };
 
     let ticketed = match claimed_ticket_verdict(
-        signed.is_some(),
-        app.auth.keys_in_chain,
-        core_routes.door_ticket(path, req.method()),
-        client_token.as_deref(),
+        PresentedTicket {
+            signed: signed.is_some(),
+            keys_in_chain: app.auth.keys_in_chain,
+            prefix: core_routes.door_ticket(path, req.method()),
+            token: client_token.as_deref(),
+            carried: inbound
+                .as_ref()
+                .and_then(crate::inbound::RequestAdmission::carried_ticket),
+        },
         app.governance.as_ref(),
         now,
         app.root_rules.as_ref(),
@@ -3193,6 +3076,8 @@ pub mod exchange;
 pub mod login;
 
 pub mod login_limits;
+
+pub mod instances;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]
