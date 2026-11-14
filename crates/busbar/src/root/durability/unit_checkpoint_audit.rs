@@ -218,14 +218,5 @@ fn publish(book: &Arc<Mutex<Durability>>, record: busbar_kernel_audit::AuditReco
     if record.key_id.is_some() && book.audit_signed_from.is_none() {
         book.audit_signed_from = Some(record.seq);
     }
-    if !book
-        .audit_records
-        .iter()
-        .any(|existing| existing.seq == record.seq && existing == &record)
-    {
-        book.audit_records.push(record);
-        if book.audit_records.len() > AUDIT_RING {
-            book.audit_records.remove(0);
-        }
-    }
+    book.audit_ring.push_unique(record);
 }
