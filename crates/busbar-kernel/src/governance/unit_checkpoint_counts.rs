@@ -136,12 +136,7 @@ impl GovState {
             )]
             let guards: Vec<_> = shards
                 .iter()
-                .map(|index| {
-                    self.budget.shards[*index]
-                        .map
-                        .read()
-                        .unwrap_or_else(|p| p.into_inner())
-                })
+                .map(|index| self.budget.shard_at(*index).read())
                 .collect();
             let flights = self
                 .budget_flushes
@@ -233,12 +228,7 @@ impl GovState {
         )]
         let mut guards: Vec<_> = shards
             .iter()
-            .map(|index| {
-                self.budget.shards[*index]
-                    .map
-                    .write()
-                    .unwrap_or_else(|p| p.into_inner())
-            })
+            .map(|index| self.budget.shard_at(*index).write())
             .collect();
         let flights = self
             .budget_flushes

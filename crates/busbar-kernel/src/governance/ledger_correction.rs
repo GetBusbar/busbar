@@ -1458,16 +1458,7 @@ impl GovState {
         )]
         let mut guards: Vec<_> = order
             .iter()
-            .map(|shard| {
-                (
-                    *shard,
-                    self.budget
-                        .shard_at(*shard)
-                        .map
-                        .write()
-                        .unwrap_or_else(|p| p.into_inner()),
-                )
-            })
+            .map(|shard| (*shard, self.budget.shard_at(*shard).write()))
             .collect();
 
         for (bucket, window) in &pending.targets {
@@ -1777,16 +1768,7 @@ impl GovState {
                 )]
                 let mut guards: Vec<_> = order
                     .iter()
-                    .map(|shard| {
-                        (
-                            *shard,
-                            self.budget
-                                .shard_at(*shard)
-                                .map
-                                .write()
-                                .unwrap_or_else(|p| p.into_inner()),
-                        )
-                    })
+                    .map(|shard| (*shard, self.budget.shard_at(*shard).write()))
                     .collect();
                 // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
                 let mut replacements = snapshots.clone();
