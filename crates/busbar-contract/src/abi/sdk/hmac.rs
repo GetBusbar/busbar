@@ -91,8 +91,27 @@ const K: [u32; 64] = [
     0xc671_78f2,
 ];
 
+#[cfg(test)]
+thread_local! {
+    /// Compressions (SHA-256 and SHA-1) run on this thread, for the count tests.
+    static COMPRESSIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// Compressions run on this thread so far (test builds only).
+#[cfg(test)]
+pub(crate) fn compressions() -> u64 {
+    COMPRESSIONS.with(core::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn count_compression() {
+    COMPRESSIONS.with(|c| c.set(c.get() + 1));
+}
+
 /// Run SHA-256's compression function (FIPS 180-4, 6.2.2) over one whole `block` into `state`.
 fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
+    #[cfg(test)]
+    count_compression();
     let mut w = Zeroizing::new([0_u32; 64]);
     for (t, word) in block.as_chunks::<4>().0.iter().enumerate() {
         w[t] = u32::from_be_bytes(*word);
@@ -136,25 +155,59 @@ pub(crate) fn sha256_wiped(prefix: Option<&[u8; BLOCK]>, data: &[u8]) -> Zeroizi
     sha256_resume(state, consumed, data)
 }
 
+/// Feed the concatenation of `parts` to `block` one whole block at a time, buffering a partial
+/// block in `buf`. Returns how many bytes `buf` holds at the end and the total length absorbed
+/// (`consumed` + every part). Shared by the SHA-256 and SHA-1 streams.
+pub(crate) fn stream_blocks(
+    buf: &mut [u8; BLOCK],
+    consumed: u64,
+    parts: &[&[u8]],
+    mut block: impl FnMut(&[u8; BLOCK]),
+) -> (usize, u64) {
+    let mut fill = 0_usize;
+    let mut total = consumed;
+    for part in parts {
+        let mut p = *part;
+        total = total.wrapping_add(p.len() as u64);
+        if fill > 0 {
+            let take = (BLOCK - fill).min(p.len());
+            buf[fill..fill + take].copy_from_slice(&p[..take]);
+            fill += take;
+            p = &p[take..];
+            if fill < BLOCK {
+                continue;
+            }
+            block(&*buf);
+            fill = 0;
+        }
+        let (blocks, rest) = p.as_chunks::<BLOCK>();
+        for c in blocks {
+            block(c);
+        }
+        buf[..rest.len()].copy_from_slice(rest);
+        fill = rest.len();
+    }
+    (fill, total)
+}
+
 /// SHA-256 finished from a chaining `state` that has already absorbed `consumed` bytes (whole blocks).
-fn sha256_resume(
+fn sha256_resume(state: Zeroizing<[u32; 8]>, consumed: u64, data: &[u8]) -> Zeroizing<[u8; 32]> {
+    sha256_resume_parts(state, consumed, &[data])
+}
+
+/// [`sha256_resume`] over the concatenation of `parts`, streamed through one wiped block buffer:
+/// no part is copied whole.
+fn sha256_resume_parts(
     mut state: Zeroizing<[u32; 8]>,
     consumed: u64,
-    data: &[u8],
+    parts: &[&[u8]],
 ) -> Zeroizing<[u8; 32]> {
-    let total = data.len() as u64 + consumed;
-    let (blocks, rest) = data.as_chunks::<BLOCK>();
-    for c in blocks {
-        compress(&mut state, c);
-    }
+    let mut buf = Zeroizing::new([0_u8; BLOCK]);
+    let (fill, total) = stream_blocks(&mut *buf, consumed, parts, |b| compress(&mut state, b));
     let mut tail = Zeroizing::new([0_u8; 2 * BLOCK]);
-    tail[..rest.len()].copy_from_slice(rest);
-    tail[rest.len()] = 0x80;
-    let end = if rest.len() + 9 <= BLOCK {
-        BLOCK
-    } else {
-        2 * BLOCK
-    };
+    tail[..fill].copy_from_slice(&buf[..fill]);
+    tail[fill] = 0x80;
+    let end = if fill + 9 <= BLOCK { BLOCK } else { 2 * BLOCK };
     tail[end - 8..end].copy_from_slice(&total.wrapping_mul(8).to_be_bytes());
     for c in tail[..end].as_chunks::<BLOCK>().0 {
         compress(&mut state, c);
@@ -167,14 +220,17 @@ fn sha256_resume(
 }
 
 /// An HMAC-SHA256 key with its ipad/opad blocks already compressed, for many MACs under one key
-/// (PBKDF2): two compressions per MAC instead of four. The states are wiped on drop.
-pub(crate) struct HmacSha256Key {
+/// (PBKDF2, a webhook verifier built once per instance): two compressions per short MAC instead of
+/// four, and a message given in parts is streamed, never joined. The states are wiped on drop.
+pub struct HmacSha256Key {
     inner: Zeroizing<[u32; 8]>,
     outer: Zeroizing<[u32; 8]>,
 }
 
 impl HmacSha256Key {
-    pub(crate) fn new(key: &[u8]) -> Self {
+    /// The key schedule of `key` (RFC 2104; a key past the block size is hashed first).
+    #[must_use]
+    pub fn new(key: &[u8]) -> Self {
         let mut k0 = Zeroizing::new([0_u8; BLOCK]);
         if key.len() > BLOCK {
             k0[..32].copy_from_slice(&sha256_wiped(None, key)[..]);
@@ -195,9 +251,71 @@ impl HmacSha256Key {
         Self { inner, outer }
     }
 
-    pub(crate) fn mac(&self, data: &[u8]) -> Zeroizing<[u8; 32]> {
-        let inner = sha256_resume(self.inner.clone(), BLOCK as u64, data);
+    /// HMAC-SHA256 of `data` under this key, equal to [`hmac_sha256`].
+    #[must_use]
+    pub fn mac(&self, data: &[u8]) -> Zeroizing<[u8; 32]> {
+        self.mac_parts(&[data])
+    }
+
+    /// HMAC-SHA256 of the concatenation of `parts` under this key, equal to [`hmac_sha256`] of the
+    /// joined message. The parts are streamed through a wiped block buffer.
+    #[must_use]
+    pub fn mac_parts(&self, parts: &[&[u8]]) -> Zeroizing<[u8; 32]> {
+        let inner = sha256_resume_parts(self.inner.clone(), BLOCK as u64, parts);
         sha256_resume(self.outer.clone(), BLOCK as u64, &inner[..])
+    }
+}
+
+impl core::fmt::Debug for HmacSha256Key {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("HmacSha256Key(..)")
+    }
+}
+
+/// An HMAC-SHA1 key with its ipad/opad blocks already compressed (see [`HmacSha256Key`]): two
+/// compressions per short MAC, parts streamed. The states are wiped on drop.
+pub struct HmacSha1Key {
+    inner: Zeroizing<[u32; 5]>,
+    outer: Zeroizing<[u32; 5]>,
+}
+
+impl HmacSha1Key {
+    /// The key schedule of the opaque credential `key` (RFC 2104; a key past the block size is
+    /// hashed first).
+    #[must_use]
+    pub fn new(key: &Cred) -> Self {
+        let key = key.wire();
+        let mut k0 = Zeroizing::new([0_u8; BLOCK]);
+        if key.len() > BLOCK {
+            k0[..20].copy_from_slice(&digests::sha1(&[key])[..]);
+        } else {
+            k0[..key.len()].copy_from_slice(key);
+        }
+        let mut pad = Zeroizing::new([0_u8; BLOCK]);
+        let mut inner = Zeroizing::new(digests::SHA1_IV);
+        for (p, k) in pad.iter_mut().zip(k0.iter()) {
+            *p = k ^ 0x36;
+        }
+        digests::sha1_compress(&mut inner, &pad);
+        let mut outer = Zeroizing::new(digests::SHA1_IV);
+        for (p, k) in pad.iter_mut().zip(k0.iter()) {
+            *p = k ^ 0x5c;
+        }
+        digests::sha1_compress(&mut outer, &pad);
+        Self { inner, outer }
+    }
+
+    /// HMAC-SHA1 of the concatenation of `parts` under this key, equal to [`hmac_sha1`].
+    #[must_use]
+    pub fn mac_parts(&self, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
+        let inner = digests::sha1_resume_parts(self.inner.clone(), BLOCK as u64, parts);
+        digests::sha1_resume_parts(self.outer.clone(), BLOCK as u64, &[&inner[..]])
+    }
+}
+
+impl core::fmt::Debug for HmacSha1Key {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("HmacSha1Key(..)")
     }
 }
 
@@ -222,27 +340,7 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Zeroizing<[u8; 32]> {
 
 /// HMAC-SHA1 of the concatenation of `parts` under `key` (RFC 2104). Keys longer than the block
 pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
-    let key = key.wire();
-    let mut k0 = Zeroizing::new([0_u8; BLOCK]);
-    if key.len() > BLOCK {
-        k0[..20].copy_from_slice(&digests::sha1(&[key])[..]);
-    } else {
-        k0[..key.len()].copy_from_slice(key);
-    }
-    let mut pad = Zeroizing::new([0_u8; BLOCK]);
-    for (p, k) in pad.iter_mut().zip(k0.iter()) {
-        *p = k ^ 0x36;
-    }
-    let inner = {
-        let mut inner_parts = Vec::with_capacity(parts.len() + 1);
-        inner_parts.push(&pad[..]);
-        inner_parts.extend_from_slice(parts);
-        digests::sha1(&inner_parts)
-    };
-    for (p, k) in pad.iter_mut().zip(k0.iter()) {
-        *p = k ^ 0x5c;
-    }
-    digests::sha1(&[&pad[..], &inner[..]])
+    HmacSha1Key::new(key).mac_parts(parts)
 }
 
 /// SHA-256 of the concatenation of `parts`. Message copies, digest states and the returned digest

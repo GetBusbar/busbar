@@ -21,54 +21,81 @@ fn padded(data: &[u8], big_endian: bool) -> Zeroizing<Vec<u8>> {
     m
 }
 
-/// SHA-1 of the concatenation of `parts`.
-pub(crate) fn sha1(parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
-    let data = Zeroizing::new(parts.concat());
-    let m = padded(&data, true);
-    let mut h = Zeroizing::new([
-        0x6745_2301_u32,
-        0xEFCD_AB89,
-        0x98BA_DCFE,
-        0x1032_5476,
-        0xC3D2_E1F0,
-    ]);
+/// SHA-1's initial chaining state (FIPS 180-4, 5.3.1).
+pub(crate) const SHA1_IV: [u32; 5] = [
+    0x6745_2301_u32,
+    0xEFCD_AB89,
+    0x98BA_DCFE,
+    0x1032_5476,
+    0xC3D2_E1F0,
+];
+
+/// Run SHA-1's compression function (FIPS 180-4, 6.1.2) over one whole `block` into `h`.
+pub(crate) fn sha1_compress(h: &mut [u32; 5], block: &[u8; 64]) {
+    #[cfg(test)]
+    crate::abi::sdk::hmac::count_compression();
     let mut w = Zeroizing::new([0_u32; 80]);
-    for block in m.as_chunks::<64>().0 {
-        for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
-            w[i] = u32::from_be_bytes(*c);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-        let mut s = Zeroizing::new(*h);
-        for (i, wi) in w.iter().enumerate() {
-            let (f, k) = match i {
-                0..=19 => ((s[1] & s[2]) | (!s[1] & s[3]), 0x5A82_7999),
-                20..=39 => (s[1] ^ s[2] ^ s[3], 0x6ED9_EBA1),
-                40..=59 => ((s[1] & s[2]) | (s[1] & s[3]) | (s[2] & s[3]), 0x8F1B_BCDC),
-                _ => (s[1] ^ s[2] ^ s[3], 0xCA62_C1D6),
-            };
-            let t = s[0]
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(s[4])
-                .wrapping_add(k)
-                .wrapping_add(*wi);
-            s[4] = s[3];
-            s[3] = s[2];
-            s[2] = s[1].rotate_left(30);
-            s[1] = s[0];
-            s[0] = t;
-        }
-        for (hi, si) in h.iter_mut().zip(s.iter()) {
-            *hi = hi.wrapping_add(*si);
-        }
+    for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
+        w[i] = u32::from_be_bytes(*c);
+    }
+    for i in 16..80 {
+        w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+    }
+    let mut s = Zeroizing::new(*h);
+    for (i, wi) in w.iter().enumerate() {
+        let (f, k) = match i {
+            0..=19 => ((s[1] & s[2]) | (!s[1] & s[3]), 0x5A82_7999),
+            20..=39 => (s[1] ^ s[2] ^ s[3], 0x6ED9_EBA1),
+            40..=59 => ((s[1] & s[2]) | (s[1] & s[3]) | (s[2] & s[3]), 0x8F1B_BCDC),
+            _ => (s[1] ^ s[2] ^ s[3], 0xCA62_C1D6),
+        };
+        let t = s[0]
+            .rotate_left(5)
+            .wrapping_add(f)
+            .wrapping_add(s[4])
+            .wrapping_add(k)
+            .wrapping_add(*wi);
+        s[4] = s[3];
+        s[3] = s[2];
+        s[2] = s[1].rotate_left(30);
+        s[1] = s[0];
+        s[0] = t;
+    }
+    for (hi, si) in h.iter_mut().zip(s.iter()) {
+        *hi = hi.wrapping_add(*si);
+    }
+}
+
+/// SHA-1 of the concatenation of `parts`, finished from a chaining state `h` that has already
+/// absorbed `consumed` bytes (whole blocks). The parts are streamed through one wiped block
+/// buffer; no part is copied whole.
+pub(crate) fn sha1_resume_parts(
+    mut h: Zeroizing<[u32; 5]>,
+    consumed: u64,
+    parts: &[&[u8]],
+) -> Zeroizing<[u8; 20]> {
+    let mut buf = Zeroizing::new([0_u8; 64]);
+    let (fill, total) = crate::abi::sdk::hmac::stream_blocks(&mut *buf, consumed, parts, |b| {
+        sha1_compress(&mut h, b);
+    });
+    let mut tail = Zeroizing::new([0_u8; 128]);
+    tail[..fill].copy_from_slice(&buf[..fill]);
+    tail[fill] = 0x80;
+    let end = if fill + 9 <= 64 { 64 } else { 128 };
+    tail[end - 8..end].copy_from_slice(&total.wrapping_mul(8).to_be_bytes());
+    for c in tail[..end].as_chunks::<64>().0 {
+        sha1_compress(&mut h, c);
     }
     let mut out = Zeroizing::new([0_u8; 20]);
     for (o, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(h.iter()) {
         *o = v.to_be_bytes();
     }
     out
+}
+
+/// SHA-1 of the concatenation of `parts`.
+pub(crate) fn sha1(parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
+    sha1_resume_parts(Zeroizing::new(SHA1_IV), 0, parts)
 }
 
 const MD5_S: [u32; 64] = [
