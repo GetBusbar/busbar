@@ -630,15 +630,15 @@ fn the_rule_reads_a_node_wide_count_gate_and_passes_a_per_principal_one() {
             }}
         }}"
     ));
-    let hits = hits(&refused);
+    let found = hits(&refused);
     assert_eq!(
-        hits.len(),
+        found.len(),
         2,
-        "both custody gates, not the plain queue: {hits:?}"
+        "both custody gates, not the plain queue: {found:?}"
     );
     assert!(
-        hits[0].ends_with(" bind") && hits[1].ends_with(" register"),
-        "{hits:?}"
+        found[0].ends_with(" bind") && found[1].ends_with(" register"),
+        "{found:?}"
     );
 
     let passed = planted(&format!(
@@ -662,10 +662,10 @@ fn the_rule_reads_a_node_wide_count_gate_and_passes_a_per_principal_one() {
             }}
         }}"
     ));
-    let hits = hits(&passed);
+    let found = hits(&passed);
     assert!(
-        hits.len() == 1 && hits[0].ends_with(" unguarded"),
+        found.len() == 1 && found[0].ends_with(" unguarded"),
         "`self` in a locked type is shared; a per-principal count passes its function only: \
-         {hits:?}"
+         {found:?}"
     );
 }
