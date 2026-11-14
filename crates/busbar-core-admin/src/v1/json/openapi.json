@@ -2711,6 +2711,17 @@
               "additionalProperties": {
                 "$ref": "#/$defs/MintCeiling"
               }
+            },
+            "max_outstanding_tickets_per_key": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "additionalProperties": false

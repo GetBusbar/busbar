@@ -36,6 +36,16 @@ pub enum TicketRefusal {
     NotKept,
     /// The OS randomness source failed.
     NoRandomness,
+    /// The principal's key holds its maximum of unredeemed tickets on this node.
+    KeySaturated {
+        /// The seconds until that key's earliest ticket expires, plus one sweep cycle.
+        retry_after_secs: u32,
+    },
+    /// This node holds its maximum of unredeemed tickets.
+    NodeSaturated {
+        /// One sweep cycle: an estimate, since any key's redemption frees a slot sooner.
+        retry_after_secs: u32,
+    },
 }
 
 impl TicketRefusal {
@@ -47,6 +57,44 @@ impl TicketRefusal {
             Self::NoLifetime => "no ticket is minted: no lifetime is left under the ceilings",
             Self::NotKept => "no ticket is minted: the store did not keep its record",
             Self::NoRandomness => "no ticket is minted: the randomness source failed",
+            Self::KeySaturated { .. } => {
+                "no ticket is minted: this key holds its maximum of unredeemed tickets; \
+                 redeem or let them expire"
+            }
+            Self::NodeSaturated { .. } => {
+                "no ticket is minted: this node holds its maximum of unredeemed tickets; \
+                 retry shortly"
+            }
+        }
+    }
+
+    /// The refusal's `ticket.mint` code, as the plane reads it from the answer's value.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        use busbar_contract::abi::host::service as svc;
+        match self {
+            Self::NoSigner
+            | Self::NoStanding
+            | Self::NoLifetime
+            | Self::NotKept
+            | Self::NoRandomness => svc::TICKET_REFUSED_OTHER,
+            Self::KeySaturated { .. } => svc::KEY_SATURATED,
+            Self::NodeSaturated { .. } => svc::NODE_SATURATED,
+        }
+    }
+
+    /// The seconds after which a retry may find a free slot; `0` = none stated.
+    #[must_use]
+    pub const fn retry_after_secs(self) -> u32 {
+        match self {
+            Self::KeySaturated { retry_after_secs } | Self::NodeSaturated { retry_after_secs } => {
+                retry_after_secs
+            }
+            Self::NoSigner
+            | Self::NoStanding
+            | Self::NoLifetime
+            | Self::NotKept
+            | Self::NoRandomness => 0,
         }
     }
 }

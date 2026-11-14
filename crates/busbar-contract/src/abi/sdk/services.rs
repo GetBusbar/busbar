@@ -93,7 +93,51 @@ pub enum ServiceError {
 }
 
 /// The answer of a service that may pend.
-pub type Pend<T> = Poll<Result<T, ServiceError>>;
+pub type Pend<T, E = ServiceError> = Poll<Result<T, E>>;
+
+/// Why `ticket.mint` minted no ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MintError {
+    /// The call itself had no answer: unserved, broken, short, or declined without a refusal.
+    Service(ServiceError),
+    /// The host REFUSED the mint, and said why.
+    Refused {
+        /// The refusal code: `TICKET_REFUSED_OTHER`, `KEY_SATURATED` or `NODE_SATURATED`.
+        code: u32,
+        /// The seconds after which a retry may find a free slot; `0` = none stated.
+        retry_after_secs: u32,
+        /// The host's reason, never secret material.
+        reason: &'static str,
+    },
+}
+
+impl From<ServiceError> for MintError {
+    fn from(e: ServiceError) -> Self {
+        Self::Service(e)
+    }
+}
+
+/// The reason a refusal that names none is given.
+const NO_REASON: &str = "the host gave no reason";
+
+/// A REFUSED `ticket.mint`'s answer: its code and retry from `out.value`, its reason from `out.error`.
+fn mint_refused(out: &ServiceOut) -> MintError {
+    let refused = crate::abi::host::service::TicketRefused::of(out.value);
+    let reason = if out.error.ptr.is_null() {
+        NO_REASON
+    } else {
+        // SAFETY: the host's FAILED/REFUSED reason is "valid for the process's life"
+        // (abi/host/service.rs, `ServiceOut::error`): `len` bytes at a non-NULL `ptr`, never freed.
+        let bytes: &'static [u8] =
+            unsafe { std::slice::from_raw_parts(out.error.ptr, out.error.len) };
+        std::str::from_utf8(bytes).unwrap_or(NO_REASON)
+    };
+    MintError::Refused {
+        code: refused.code,
+        retry_after_secs: refused.retry_after_secs,
+        reason,
+    }
+}
 
 /// A service's answer that names things, one span's key each, as views into the caller's buffers,
 /// every one checked present and UTF-8 before it is answered: `trust.due`'s counterparties due for
@@ -587,7 +631,7 @@ impl<K: KindMarker> Services<K> {
         handle: CompletionHandle,
         ttl_secs: u64,
         record: &[u8],
-    ) -> Pend<Minted>
+    ) -> Pend<Minted, MintError>
     where
         K: crate::abi::host::access::Permitted<{ op::TICKET_MINT }>,
     {
@@ -601,7 +645,7 @@ impl<K: KindMarker> Services<K> {
                 into: bufs(buf.as_mut_slice(), &mut []),
             };
             if check_ticket_mint_in(&input).is_err() {
-                return Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)));
+                return Poll::Ready(Err(ServiceError::Declined(Outcome::Refused).into()));
             }
             let crossed = self.cross(
                 op::TICKET_MINT,
@@ -609,31 +653,33 @@ impl<K: KindMarker> Services<K> {
                 &input,
                 check_ticket_mint,
             );
-            if matches!(crossed, Ok((Outcome::Pending, ..))) {
-                return Poll::Pending;
+            match &crossed {
+                Ok((Outcome::Pending, ..)) => return Poll::Pending,
+                Ok((Outcome::Refused, out, _)) => return Poll::Ready(Err(mint_refused(out))),
+                _ => {}
             }
             let out = match crossed.and_then(ready) {
                 Ok(out) => out,
                 Err(ServiceError::Short { bytes, .. }) => {
                     let Ok(bytes) = usize::try_from(bytes) else {
-                        return Poll::Ready(Err(ServiceError::Broken));
+                        return Poll::Ready(Err(ServiceError::Broken.into()));
                     };
                     size = bytes.max(size);
                     continue;
                 }
-                Err(e) => return Poll::Ready(Err(e)),
+                Err(e) => return Poll::Ready(Err(e.into())),
             };
 
             buf.truncate(out.len as usize);
             if std::str::from_utf8(&buf).is_err() {
-                return Poll::Ready(Err(ServiceError::Broken));
+                return Poll::Ready(Err(ServiceError::Broken.into()));
             }
             return Poll::Ready(Ok(Minted {
                 ticket: crate::abi::sdk::cred::Cred::captured(buf),
                 expires_at_unix: out.value,
             }));
         }
-        Poll::Ready(Err(ServiceError::Broken))
+        Poll::Ready(Err(ServiceError::Broken.into()))
     }
 
     /// Publish sealed outbound custody. Credentials remain opaque to plugin code.
