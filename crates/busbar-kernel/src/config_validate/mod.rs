@@ -1177,13 +1177,26 @@ fn unnamed_lanes_refusal(
     missing: &[&str],
 ) -> String {
     let has = if missing.len() == 1 { " has" } else { "s have" };
+    // Both stubs come from the same declared-class seam, so every class a plane declares is in
+    // the paste-ready stub. The fallback (LLM) stub prints the reserved token tiers as `*_utok`
+    // fields, so only its open classes go under `units`.
+    let open = |c: &&str| !d.fallback || !busbar_contract::records::RESERVED_UNITS.contains(c);
+    let zero = priced_classes(d)
+        .filter(open)
+        .map(|c| format!("{c}: 0"))
+        .collect::<Vec<_>>()
+        .join(", ");
     if d.fallback {
         let width = missing.iter().map(|m| m.len()).max().unwrap_or(0) + 1;
+        let units = Some(&zero)
+            .filter(|z| !z.is_empty())
+            .map(|z| format!(", units: {{ {z} }}"))
+            .unwrap_or_default();
         let stub: String = missing
             .iter()
             .map(|m| {
                 format!(
-                    "    {:width$} {{ input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }}\n",
+                    "    {:width$} {{ input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0{units} }}\n",
                     format!("{m}:")
                 )
             })
@@ -1195,10 +1208,6 @@ fn unnamed_lanes_refusal(
             missing.len()
         );
     }
-    let zero = priced_classes(d)
-        .map(|c| format!("{c}: 0"))
-        .collect::<Vec<_>>()
-        .join(", ");
     let stub: String = missing
         .iter()
         .map(|l| format!("    {l}: {{ units: {{ {zero} }} }}\n"))

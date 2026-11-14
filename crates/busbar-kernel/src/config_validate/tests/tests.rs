@@ -1583,7 +1583,7 @@ fn missing_model_entries_refuse_while_unknown_models_and_invalid_rates_still_fai
             "rate_card is present but 1 configured model has no rate entry (rate_card is \
              AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
              Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
-             \x20   b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"
+             \x20   b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0, units: { search_units: 0, images: 0 } }\n"
                 .to_string()
         ]
     );
