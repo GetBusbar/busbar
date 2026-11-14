@@ -66,29 +66,24 @@ impl PersistenceBackend for ReadView {
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
             // Count original-record ADDRESSES, not read calls: a replay may read several
-            // consecutive originals in one call. The fault lands on the 300th original wherever
-            // it falls in the request.
-            let originals = if self.enabled.load(Ordering::SeqCst) {
-                request
-                    .addresses
-                    .iter()
-                    .filter(|at| at.key.get(24) == Some(&b'R'))
-                    .count()
-            } else {
-                0
-            };
-            let before = self.records.fetch_add(originals, Ordering::SeqCst);
-            let at = (originals > 0 && before <= 299 && 299 < before + originals).then(|| {
-                request
-                    .addresses
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, at)| at.key.get(24) == Some(&b'R'))
-                    .nth(299 - before)
-                    .map_or(0, |(index, _)| index)
-            });
-            let inject = at.is_some();
-            if inject {
+            // consecutive originals in one call.
+            let enabled = self.enabled.load(Ordering::SeqCst);
+            let originals = request.addresses.iter().filter_map(ordinal).count();
+            if enabled {
+                self.records.fetch_add(originals, Ordering::SeqCst);
+            }
+            if enabled && matches!(self.fault, ReadFault::MultiRow) && originals > 1 {
+                return Err(Failure::Refused);
+            }
+            let at = request
+                .addresses
+                .iter()
+                .position(|at| ordinal(at) == Some(FAULTED))
+                .filter(|_| enabled);
+            if at.is_some() && request.addresses.len() == 1 {
+                self.single_faulted.store(true, Ordering::SeqCst);
+            }
+            if at.is_some() {
                 match self.fault {
                     ReadFault::Overloaded => return Err(Failure::Overloaded),
                     ReadFault::Unavailable => return Err(Failure::Unavailable),
@@ -97,14 +92,11 @@ impl PersistenceBackend for ReadView {
                 }
             }
             let mut answer = self.actual.read(request).await?;
-            if inject {
-                if let ReadResult::Values { values, .. } = &mut answer {
-                    let at = at.unwrap_or(0);
-                    match self.fault {
-                        ReadFault::Malformed => values[at] = Some(Secret::new(vec![0])),
-                        ReadFault::Missing => values[at] = None,
-                        _ => {}
-                    }
+            if let (Some(at), ReadResult::Values { values, .. }) = (at, &mut answer) {
+                match self.fault {
+                    ReadFault::Malformed => values[at] = Some(Secret::new(vec![0])),
+                    ReadFault::Missing => values[at] = None,
+                    _ => {}
                 }
             }
             Ok(answer)
