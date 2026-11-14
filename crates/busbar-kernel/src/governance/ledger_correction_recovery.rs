@@ -500,6 +500,7 @@ impl RawCell {
 
     fn restore(self, bucket: &str) -> RecordStoreResult<BudgetCell> {
         let mut identities = std::collections::BTreeSet::new();
+        let mut dropped = 0usize;
         #[expect(
             clippy::disallowed_methods,
             reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
@@ -1360,13 +1361,13 @@ pub(super) fn apply_selected_cut(
                 .any(|model| model.model == base.model && model.era == base.era)
             {
                 // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
-                live.models.push(ModelCell {
-                    model: base.model.clone(),
-                    era: base.era,
-                    cur: BTreeMap::new(),
-                    flushed: base.cur.clone(),
-                    flushed_era: base.cur.clone(),
-                });
+                live.models.extend(ModelCell::new(
+                    base.model.clone(),
+                    base.era,
+                    BTreeMap::new(),
+                    base.cur.clone(),
+                    base.cur.clone(),
+                ));
             }
         }
     } else if live.window_start < window {
