@@ -27,6 +27,9 @@ thread_local! {
     static PARENT_FSYNCS: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
     /// One-shot: plant a decoy file at the NEXT write's exact temp path on this thread.
     static PLANT_DECOY: Cell<bool> = const { Cell::new(false) };
+    /// One-shot: plant a symlink to this path at the NEXT write's exact temp path on this thread.
+    #[cfg(unix)]
+    static PLANT_LINK: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 pub(crate) fn fault_arm(step: FaultStep, errno: i32) {
@@ -71,8 +74,17 @@ pub(crate) fn plant_decoy_arm() {
     PLANT_DECOY.with(|c| c.set(true));
 }
 
+#[cfg(unix)]
+pub(crate) fn plant_link_arm(target: &Path) {
+    PLANT_LINK.with(|c| *c.borrow_mut() = Some(target.to_path_buf()));
+}
+
 pub(crate) fn plant_decoy_if_armed(tmp: &Path) {
     if PLANT_DECOY.with(|c| c.replace(false)) {
         let _ = std::fs::write(tmp, b"leftover from a crashed run");
+    }
+    #[cfg(unix)]
+    if let Some(target) = PLANT_LINK.with(|c| c.borrow_mut().take()) {
+        let _ = std::os::unix::fs::symlink(target, tmp);
     }
 }
