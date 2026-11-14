@@ -18,7 +18,6 @@
     "busbar-yaml": { "budget": 10277 }
   },
   "generated": [
-    "crates/busbar-kernel/src/diagnostics/mod.rs:88",
     "crates/busbar/src/main.rs:273",
     "crates/busbar/src/main.rs:275",
     "crates/busbar/src/root/migration_table.rs:4"
