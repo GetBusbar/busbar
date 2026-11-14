@@ -16,7 +16,7 @@ fn jwt(claims: serde_json::Value) -> String {
 }
 
 #[test]
-fn only_a_token_carrying_cnf_jkt_is_dpop_bound() {
+fn a_malformed_jkt_is_bound() {
     assert!(is_dpop_bound(&jwt(
         serde_json::json!({ "sub": "a", "cnf": { "jkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I" } })
     )));
@@ -24,9 +24,20 @@ fn only_a_token_carrying_cnf_jkt_is_dpop_bound() {
     assert!(!is_dpop_bound(&jwt(
         serde_json::json!({ "sub": "a", "cnf": { "x5t#S256": "abc" } })
     )));
-    assert!(!is_dpop_bound(&jwt(
-        serde_json::json!({ "sub": "a", "cnf": { "jkt": 7 } })
-    )));
+    // Any cnf.jkt, whatever its type, demands a proof: a malformed one can only be refused.
+    for jkt in [
+        serde_json::json!(7),
+        serde_json::json!(123),
+        serde_json::json!({}),
+        serde_json::json!(null),
+    ] {
+        assert!(
+            is_dpop_bound(&jwt(
+                serde_json::json!({ "sub": "a", "cnf": { "jkt": jkt } })
+            )),
+            "cnf.jkt {jkt} is bound"
+        );
+    }
     assert!(!is_dpop_bound("an-opaque-reference-token"));
     assert!(!is_dpop_bound(&format!(
         "{}{}",
@@ -79,7 +90,7 @@ fn with_an_authorization_server_a_dpop_bound_bearer_is_refused() {
 }
 
 #[test]
-fn without_an_authorization_server_a_dpop_bound_bearer_is_unconstrained() {
+fn without_an_authorization_server_a_dpop_bound_bearer_is_refused() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
     for carrier in ["authorization", "x-api-key"] {
         let mut headers = axum::http::HeaderMap::new();
@@ -99,9 +110,9 @@ fn without_an_authorization_server_a_dpop_bound_bearer_is_unconstrained() {
         assert!(
             matches!(
                 bearer_constraint(false, bearer.as_deref(), &mut None),
-                SenderConstraint::Unconstrained
+                SenderConstraint::Refused
             ),
-            "the chain still authenticates the token through {carrier}"
+            "a bound token is refused through {carrier} even with no authorization server"
         );
     }
 }
@@ -121,23 +132,21 @@ fn the_bound_bearer_constraint_applies_before_exchange() {
 }
 
 #[test]
-fn without_an_authorization_server_exchange_bearer_constraints_are_identical() {
+fn without_an_authorization_server_exchange_bearer_constraints_are_refused() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
     let unbound = jwt(serde_json::json!({ "sub": "a" }));
-    let bound_unconstrained = matches!(
-        bearer_constraint(false, Some(&bound), &mut None),
-        SenderConstraint::Unconstrained
-    );
-    let unbound_unconstrained = matches!(
-        bearer_constraint(false, Some(&unbound), &mut None),
-        SenderConstraint::Unconstrained
-    );
-    assert_eq!(
-        bound_unconstrained, unbound_unconstrained,
-        "cnf claims do not change the no-AS constraint decision"
+    assert!(
+        matches!(
+            bearer_constraint(false, Some(&bound), &mut None),
+            SenderConstraint::Refused
+        ),
+        "a bound token is refused before the exchange with no authorization server"
     );
     assert!(
-        bound_unconstrained,
-        "the actual chain is still responsible for authentication"
+        matches!(
+            bearer_constraint(false, Some(&unbound), &mut None),
+            SenderConstraint::Unconstrained
+        ),
+        "the actual chain is still responsible for authenticating an unbound token"
     );
 }
