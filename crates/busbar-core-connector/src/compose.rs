@@ -355,6 +355,61 @@ fn failed(e: impl std::fmt::Display) -> Failure {
     Failure::Failed(e.to_string())
 }
 
+/// One read of the clock by a drive, counted.
+fn clock_read() -> Instant {
+    #[cfg(test)]
+    clock_reads::read();
+    Instant::now()
+}
+
+/// What the drives on this thread did with the clock (tests only): how many drives ran, how many
+/// clock reads they made, and the most any one drive made.
+#[cfg(test)]
+pub(crate) mod clock_reads {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DRIVES: Cell<u64> = const { Cell::new(0) };
+        static READS: Cell<u64> = const { Cell::new(0) };
+        static THIS_DRIVE: Cell<u64> = const { Cell::new(0) };
+        static MOST: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// The counts since the last [`take`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct Counted {
+        pub(crate) drives: u64,
+        pub(crate) reads: u64,
+        pub(crate) most_in_one_drive: u64,
+    }
+
+    /// A drive starts.
+    pub(crate) fn drove() {
+        DRIVES.with(|n| n.set(n.get() + 1));
+        THIS_DRIVE.with(|n| n.set(0));
+    }
+
+    /// The drive under way read the clock.
+    pub(crate) fn read() {
+        READS.with(|n| n.set(n.get() + 1));
+        let this = THIS_DRIVE.with(|n| {
+            n.set(n.get() + 1);
+            n.get()
+        });
+        MOST.with(|n| n.set(n.get().max(this)));
+    }
+
+    /// The counts so far, starting them again from zero.
+    pub(crate) fn take() -> Counted {
+        THIS_DRIVE.with(|n| n.set(0));
+        Counted {
+            drives: DRIVES.with(|n| n.replace(0)),
+            reads: READS.with(|n| n.replace(0)),
+            most_in_one_drive: MOST.with(|n| n.replace(0)),
+        }
+    }
+}
+
 /// `protocols`, most preferred first, in the handshake's ProtocolNameList encoding (one length
 fn protocol_name_list(protocols: &[Vec<u8>]) -> Vec<u8> {
     let mut list = Vec::new();
@@ -1546,7 +1601,12 @@ impl Connection {
 
     /// One pass: connect, handshake, flush, read, and keep the deadlines. `Ok(true)` = something
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
-        self.check_open_deadlines(Instant::now())?;
+        #[cfg(test)]
+        clock_reads::drove();
+        // RED STUB (TRANSPORT-TLS T10, rejected forms): the clock is read eagerly at every site, and
+        // the framer deadline is the one seen when the drive started.
+        let framer_at_start = self.framer_deadline;
+        self.check_open_deadlines(clock_read())?;
         let mut moved = false;
         if self.tunnel.as_ref().is_some_and(|t| t.asked) {
             moved |= self.flush(cx)?;
@@ -1557,7 +1617,7 @@ impl Connection {
                     moved = true;
                     if let Some(t) = self.tunnel.as_mut() {
                         t.asked = true;
-                        t.deadline = Some(Instant::now() + crate::proxy::CONNECT_HANDSHAKE);
+                        t.deadline = Some(clock_read() + crate::proxy::CONNECT_HANDSHAKE);
                         let request = std::mem::take(&mut t.request);
                         self.queue(&request, false);
                         moved |= self.flush(cx)?;
@@ -1584,7 +1644,7 @@ impl Connection {
                 moved |= self.read(cx)?;
             }
         }
-        moved |= self.keep_deadlines(cx)?;
+        moved |= self.keep_deadlines(cx, framer_at_start)?;
         Ok(moved)
     }
 
@@ -1727,8 +1787,12 @@ impl Connection {
     }
 
     /// The overall open, CONNECT exchange and framer bounds share the earliest worker timer.
-    fn keep_deadlines(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
-        let now = Instant::now();
+    fn keep_deadlines(
+        &mut self,
+        cx: &mut Context<'_>,
+        framer_at_start: Option<Instant>,
+    ) -> Result<bool, Failure> {
+        let now = clock_read();
         self.check_open_deadlines(now)?;
         if !matches!(self.phase, Phase::Connecting | Phase::Handshaking) && !self.handshaking() {
             self.open_deadline = None;
@@ -1736,7 +1800,7 @@ impl Connection {
         let tunnel_deadline = self.tunnel.as_ref().and_then(|t| t.deadline);
         let mut moved = false;
 
-        let framer_deadline = self.framer_deadline.filter(|_| !self.begin_parked());
+        let framer_deadline = framer_at_start.filter(|_| !self.begin_parked());
         if framer_deadline.is_some_and(|at| at <= now) {
             self.framer_deadline = None;
             if let Some(framing) = self.framing.as_mut() {
@@ -1748,7 +1812,9 @@ impl Connection {
                 moved = true;
             }
         }
-        let framer_deadline = self.framer_deadline.filter(|_| !self.begin_parked());
+        let framer_deadline = framer_at_start
+            .and(self.framer_deadline)
+            .filter(|_| !self.begin_parked());
         let next = [self.open_deadline, tunnel_deadline, framer_deadline]
             .into_iter()
             .flatten()
