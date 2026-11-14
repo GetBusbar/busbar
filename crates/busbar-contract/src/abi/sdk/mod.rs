@@ -614,6 +614,8 @@ pub mod trust;
 
 pub mod life;
 
+pub mod expiry;
+
 /// The settings documents as configure-time code reads them (re-exported by each kind's module).
 pub mod settings;
 

@@ -76,6 +76,10 @@ tls = ["busbar-crypto/tls"]
 # [dev-dependencies]; without it every probe call compiles to nothing.
 stage-probe = []
 
+# Test-only; named only in [dev-dependencies]. Counts every entry `abi::sdk::expiry::Counted`
+# reads or yields, so a test can assert that a request-path operation does not walk its state.
+visit-count = []
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 

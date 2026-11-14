@@ -426,12 +426,15 @@ fn judge_with_plugins(
         if member_protocols.len() > 1 {
             let mut protocols: Vec<&str> = member_protocols.iter().copied().collect();
             protocols.sort_unstable();
-            diag_warn!(
-                CONFIG_POOL_HETEROGENEOUS,
-                pool = %pool_name,
-                protocols = %protocols.join("+"),
-                "heterogeneous pool: cross-protocol failover translates via the IR and may not preserve all provider features"
-            );
+            let (pool, protocols) = (pool_name.to_string(), protocols.join("+"));
+            advisories.raise(move || {
+                diag_warn!(
+                    CONFIG_POOL_HETEROGENEOUS,
+                    pool = %pool,
+                    protocols = %protocols,
+                    "heterogeneous pool: cross-protocol failover translates via the IR and may not preserve all provider features"
+                )
+            });
         }
 
         if let Some(breaker) = &pool_cfg.breaker {
@@ -912,13 +915,19 @@ fn judge_with_plugins(
                     scope,
                 ) {
                     Err(e) => errors.push(coded::config_auth_policy_invalid(e).into()),
-                    Ok(busbar_contract::authz::Scope::Full) => diag_warn!(
-                        CONFIG_AUTH_CHAIN_FULL_SCOPE,
-                        module = %entry.module,
-                        "auth chain entry grants max_admin_scope: full - principals identified by \
-                         this module can hold FULL admin authority (the default ceiling is \
-                         read-only); make sure this chain is trusted end to end"
-                    ),
+                    Ok(busbar_contract::authz::Scope::Full) => {
+                        let module = entry.module.to_string();
+                        advisories.raise(move || {
+                            diag_warn!(
+                                CONFIG_AUTH_CHAIN_FULL_SCOPE,
+                                module = %module,
+                                "auth chain entry grants max_admin_scope: full - principals \
+                                 identified by this module can hold FULL admin authority (the \
+                                 default ceiling is read-only); make sure this chain is trusted \
+                                 end to end"
+                            )
+                        });
+                    }
                     Ok(_) => {}
                 }
             }
@@ -1446,6 +1455,14 @@ fn unnamed_lanes_refusal(
     )
 }
 
+/// One lane a rate card leaves partly unpriced: the BUSBAR-3026 advisory, not a refusal.
+struct UnpricedLane {
+    lane: String,
+    classes: String,
+    card_present: bool,
+    message: String,
+}
+
 #[cfg(test)]
 fn validate_plane_card(
     d: &crate::plane_driver::registry::PlaneDeclaration,
@@ -1455,8 +1472,61 @@ fn validate_plane_card(
     errors: &mut Vec<String>,
 ) {
     let mut advisories = Advisories::default();
-    judge_plane_card(d, card, flat_card, lanes, errors, &mut advisories);
+    let gaps = judge_plane_card(d, card, flat_card, lanes, errors);
+    raise_unpriced(d, gaps, &mut advisories);
     advisories.log();
+}
+
+/// Raise each unpriced lane as its BUSBAR-3026 advisory.
+fn raise_unpriced(
+    d: &crate::plane_driver::registry::PlaneDeclaration,
+    gaps: Vec<UnpricedLane>,
+    advisories: &mut Advisories,
+) {
+    for gap in gaps {
+        let (plane, section) = (d.key, d.config_section);
+        advisories.raise(move || {
+            diag_warn!(
+                CONFIG_RATE_CARD_MISSING,
+                plane = plane,
+                section = section,
+                lane = gap.lane.as_str(),
+                classes = %gap.classes,
+                card_present = gap.card_present,
+                "{}",
+                gap.message
+            )
+        });
+    }
+}
+
+/// The BUSBAR-3026 advisories a present rate card raises, as boot logs them. `--validate` runs
+/// before any log subscriber exists, so it prints these through its own report instead.
+pub fn rate_card_advisories(cfg: &RootCfg) -> Vec<String> {
+    let Some(card) = cfg.rate_card.as_ref() else {
+        return Vec::new();
+    };
+    let flat_card = flat_card_present(card.keys().map(|key| split_plane_lane(key).0));
+    let lanes = priced_lanes(cfg);
+    // Refusals are reported by validation itself; only the advisories are wanted here.
+    let mut refusals = Vec::new();
+    let mut advisories = Vec::new();
+    for d in crate::plane_driver::registry::plane_decls() {
+        for gap in judge_plane_card(&d.declaration, card, flat_card, &lanes, &mut refusals) {
+            advisories.push(gap.message);
+        }
+    }
+    advisories
+}
+
+/// Installed planes declare the classes, while their configured definitions enumerate the lanes
+/// whose counts can be priced.
+fn priced_lanes(cfg: &RootCfg) -> Vec<String> {
+    cfg.models
+        .keys()
+        .cloned()
+        .chain(cfg.plane_defs.values().flat_map(|defs| defs.ledger_lanes()))
+        .collect()
 }
 
 fn judge_plane_card(
@@ -1465,8 +1535,8 @@ fn judge_plane_card(
     flat_card: bool,
     lanes: &[String],
     errors: &mut Vec<String>,
-    advisories: &mut Advisories,
-) {
+) -> Vec<UnpricedLane> {
+    let mut gaps = Vec::new();
     let own = if d.fallback { "" } else { d.key };
     let on: Vec<_> = card
         .iter()
@@ -1514,22 +1584,17 @@ fn judge_plane_card(
         } else {
             "no rate card is configured for this plane; usage-based pricing is disabled"
         };
-        let (plane, section) = (d.key, d.config_section);
-        let (lane, classes) = (lane.to_owned(), missing.join(", "));
-        advisories.raise(move || {
-            let lane = lane.as_str();
-            diag_warn!(
-                CONFIG_RATE_CARD_MISSING,
-                plane = plane,
-                section = section,
-                lane,
-                classes = %classes,
-                card_present = present,
+        let classes = missing.join(", ");
+        gaps.push(UnpricedLane {
+            message: format!(
                 "{}.rate_card has no configured rate for lane '{}' billable class(es) {}; \
                  {}. Raw counts remain available. Configure a rate for each class \
                  (0 explicitly makes it free).",
-                section, lane, classes, pricing
-            )
+                d.config_section, lane, classes, pricing
+            ),
+            lane: lane.to_owned(),
+            classes,
+            card_present: present,
         });
     }
     if !unnamed.is_empty() {
@@ -1653,18 +1718,8 @@ fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Ad
     }
 
     // Completeness per installed plane (rule in validate_plane_card): with a card present, a
-    // lane it does not name is refused; unpriced classes, or no card at all, only warn.
-    // Installed planes declare the classes; configured definitions enumerate the lanes.
-    let empty = std::collections::BTreeMap::new();
-    let card = cfg.rate_card.as_ref().unwrap_or(&empty);
-    let flat_card = cfg.rate_card.is_some()
-        && flat_card_present(card.keys().map(|key| split_plane_lane(key).0));
-    let lanes: Vec<String> = cfg
-        .models
-        .keys()
-        .cloned()
-        .chain(cfg.plane_defs.values().flat_map(|defs| defs.ledger_lanes()))
-        .collect();
+    // lane it does not name is refused; unpriced classes only warn.
+    let lanes = priced_lanes(cfg);
     for lane in &lanes {
         if lane.contains(busbar_kernel_ledger::cost::MEASUREMENT_LANE_PREFIX) {
             errors.push(
@@ -1675,8 +1730,15 @@ fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Ad
             );
         }
     }
-    for d in crate::plane_driver::registry::plane_decls() {
-        judge_plane_card(&d.declaration, card, flat_card, &lanes, errors, advisories);
+    // A deployment that configures no rate card anywhere has usage pricing off, as in 1.5.5:
+    // there is no card to complete, so completeness is not judged and boot says nothing about it.
+    // Once any card is present, every plane's lanes are judged against it.
+    if let Some(card) = cfg.rate_card.as_ref() {
+        let flat_card = flat_card_present(card.keys().map(|key| split_plane_lane(key).0));
+        for d in crate::plane_driver::registry::plane_decls() {
+            let gaps = judge_plane_card(&d.declaration, card, flat_card, &lanes, errors);
+            raise_unpriced(&d.declaration, gaps, advisories);
+        }
     }
     // After completeness, as 1.5.5 ordered it: the stub for unnamed models prints first.
     if let Some(card) = cfg.rate_card.as_ref() {
@@ -2059,7 +2121,7 @@ fn validate_token_endpoint_fields(
         &posture.blocked_hosts,
     ) {
         let target = busbar_kernel_egress::trust::net::redact_userinfo(target);
-        errors.push(coded::config_provider_destination_blocked(format!("provider '{provider_name}' token_url '{target}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)")).into());
+        errors.push(coded::config_provider_destination_blocked(format!("provider '{provider_name}' token_url '{target}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied and no configuration admits them)")).into());
     }
 }
 
@@ -2139,17 +2201,12 @@ fn validate_providers_with(
         let base_url = &provider_cfg.base_url;
         let concrete_target = !is_env_placeholder(base_url);
         if let Some(host) = concrete_target
-            .then(|| {
-                metadata_blocked(
-                    base_url,
-                    &cfg.blocked_metadata_hosts,
-                )
-            })
+            .then(|| metadata_blocked(base_url, &cfg.blocked_metadata_hosts))
             .flatten()
         {
             let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
             errors.push(coded::config_provider_destination_blocked(format!(
-                "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
+                "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied and no configuration admits them; security.blocked_metadata_hosts extends the denylist)"
             )).into());
         }
 
@@ -2160,10 +2217,7 @@ fn validate_providers_with(
                 )).into());
             } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
-                if let Some(host) = metadata_blocked(
-                    &composed,
-                    &cfg.blocked_metadata_hosts,
-                ) {
+                if let Some(host) = metadata_blocked(&composed, &cfg.blocked_metadata_hosts) {
                     let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
                     errors.push(coded::config_provider_destination_blocked(format!(
                         "provider '{provider_name}' base_url+path '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
@@ -2179,10 +2233,7 @@ fn validate_providers_with(
                 )).into());
             } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
-                if let Some(host) = metadata_blocked(
-                    &composed,
-                    &cfg.blocked_metadata_hosts,
-                ) {
+                if let Some(host) = metadata_blocked(&composed, &cfg.blocked_metadata_hosts) {
                     let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
                     errors.push(coded::config_provider_destination_blocked(format!(
                         "provider '{provider_name}' base_url+path_base '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
@@ -2235,13 +2286,13 @@ fn validate_providers_with(
                             format_args!("provider '{provider_name}' {settings}"),
                         )
                         .into();
-                        if !errors.contains(&error) {
+                        if !host_judged(settings) && !errors.contains(&error) {
                             errors.push(error);
                         }
                     } else {
                         errors.push(coded::config_provider_credential_invalid(format!(
                             "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                            provider_cfg.api_key.describe()
+                            describe_reference(&provider_cfg.api_key)
                         )).into());
                     }
                 }
@@ -2251,13 +2302,15 @@ fn validate_providers_with(
                         .check_outbound_settings(style, &params)
                         .unwrap_or_else(|e| vec![e])
                     {
-                        errors.push(
-                            coded::config_provider_credential_invalid(format!(
-                                "provider '{provider_name}' {}",
-                                error.strip_prefix("settings: ").unwrap_or(&error)
-                            ))
-                            .into(),
-                        );
+                        let setting = error.strip_prefix("settings: ").unwrap_or(&error);
+                        if !host_judged(setting) {
+                            errors.push(
+                                coded::config_provider_credential_invalid(format!(
+                                    "provider '{provider_name}' {setting}"
+                                ))
+                                .into(),
+                            );
+                        }
                     }
                 }
             }
@@ -2313,7 +2366,7 @@ fn validate_providers_with(
                     errors.push(
                         coded::config_provider_credential_invalid(format!(
                         "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
+                        describe_reference(&provider_cfg.api_key)
                     ))
                         .into(),
                     );

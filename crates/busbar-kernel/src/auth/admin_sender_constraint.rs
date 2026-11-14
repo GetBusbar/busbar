@@ -26,10 +26,13 @@ pub(super) fn downgraded(app: &App, provider: &str, headers: &HeaderMap) -> bool
     downgraded_in(headers, carriers)
 }
 
-fn downgraded_in(headers: &HeaderMap, carriers: &[String]) -> bool {
+fn downgraded_in<S: AsRef<str>>(
+    headers: &HeaderMap,
+    carriers: impl IntoIterator<Item = S>,
+) -> bool {
     let carriers: Vec<HeaderName> = carriers
-        .iter()
-        .filter_map(|name| HeaderName::from_bytes(name.as_bytes()).ok())
+        .into_iter()
+        .filter_map(|name| HeaderName::from_bytes(name.as_ref().as_bytes()).ok())
         .collect();
     super::dpop::carries_bound(headers, &carriers)
 }
