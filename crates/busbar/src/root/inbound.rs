@@ -254,12 +254,12 @@ pub fn install(dispatcher: &crate::root::loader::dispatch::Dispatcher) -> bool {
     dispatcher.install_auth_handle(Arc::new(LoaderSide(Arc::clone(host()))))
 }
 
-type Staged = (
+pub(crate) type Staged = (
     busbar_kernel::guest::GuestList,
     Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
 );
 
-fn staged() -> std::sync::MutexGuard<'static, Option<Staged>> {
+pub(crate) fn staged() -> std::sync::MutexGuard<'static, Option<Staged>> {
     static STAGED: Mutex<Option<Staged>> = Mutex::new(None);
     STAGED.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -271,12 +271,12 @@ pub fn stage(
     *staged() = Some((guests, refusals));
 }
 
-struct Published {
-    generation: u64,
-    listener: kin::Listener,
+pub(crate) struct Published {
+    pub(crate) generation: u64,
+    pub(crate) listener: kin::Listener,
 }
 
-fn published() -> &'static arc_swap::ArcSwapOption<Published> {
+pub(crate) fn published() -> &'static arc_swap::ArcSwapOption<Published> {
     static ONE: OnceLock<arc_swap::ArcSwapOption<Published>> = OnceLock::new();
     ONE.get_or_init(arc_swap::ArcSwapOption::empty)
 }
@@ -331,10 +331,6 @@ impl ListenerRegistration {
 
     #[cfg(test)]
     pub(in crate::root) fn validate(&self) -> Result<(), String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the unpublished-policy refusal is built only when boot validation fails"
-        )]
         let snapshot = published()
             .load_full()
             .ok_or_else(|| "listener policy has not been published".to_owned())?;
@@ -350,8 +346,6 @@ impl ListenerRegistration {
     }
 
     fn policy(&self) -> Option<StreamPolicy> {
-        use busbar_contract::abi::mechanism::extensions;
-        use busbar_contract::abi::transport::guest_policy::{self, GuestLine, Identity, Policy};
         loop {
             let snapshot = published().load_full()?;
             let cached = self
@@ -370,70 +364,12 @@ impl ListenerRegistration {
             };
             let candidate = match cached {
                 Some(policy) => policy,
-                None => {
-                    let mut listener = selected.as_ref()?.clone();
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: line ids are minted once per published policy generation, then cached"
-                    )]
-                    let ids = listener
-                        .guests
-                        .lines()
-                        .iter()
-                        .map(|_| auth_handle::next_ref_id(auth_handle::RefSpace::Line))
-                        .collect();
-                    listener.ids = ids;
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: guest lines are built once per published policy generation, then cached"
-                    )]
-                    let lines = listener
-                        .specs()
-                        .into_iter()
-                        .zip(listener.guests.lines())
-                        .map(|(spec, line)| {
-                            Some(GuestLine {
-                                line: spec.line,
-                                points: spec.points,
-                                auth: auth_handle::mint_auth_ref(
-                                    self.owner,
-                                    snapshot.generation,
-                                    spec.auth,
-                                )?,
-                                body_limit: spec.body_limit,
-                                methods: line.route.methods,
-                                path_form: line.route.path_form,
-                                path: line.route.path.clone(),
-                                fields: line.route.fields.clone(),
-                                rung: line.route.rung,
-                            })
-                        })
-                        .collect::<Option<Vec<_>>>()?;
-                    let policy = Arc::new(Policy {
-                        listener: self.id,
-                        generation: snapshot.generation,
-                        lines,
-                    });
-                    let bytes =
-                        guest_policy::encode(self.id, snapshot.generation, &policy.lines).ok()?;
-                    let identity = Identity {
-                        listener: self.id,
-                        generation: snapshot.generation,
-                    }
-                    .encode()
-                    .ok()?;
-                    // busbar:expect(bp::into_alloc, reason = "config: the policy extensions are encoded once per published generation, then cached")
-                    StreamPolicy {
-                        policy,
-                        full: extensions::encode(&[(guest_policy::EXT_GUEST_POLICY, &bytes)])
-                            .into(),
-                        current: extensions::encode(&[(
-                            guest_policy::EXT_GUEST_CURRENT,
-                            &identity,
-                        )])
-                        .into(),
-                    }
-                }
+                None => crate::root::cold::listener_stream_policy(
+                    self.owner,
+                    self.id,
+                    snapshot.generation,
+                    selected.as_ref()?,
+                )?,
             };
             let current_generation = published().load_full().map(|now| now.generation);
             if current_generation != Some(snapshot.generation) {
@@ -459,17 +395,7 @@ impl ListenerRegistration {
             };
             if self.installed.load(Ordering::Acquire) < snapshot.generation {
                 let mut listener = selected?;
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: the kernel table is installed once per published policy generation"
-                )]
-                let ids = policy
-                    .policy
-                    .lines
-                    .iter()
-                    .map(|line| line.auth.id)
-                    .collect();
-                listener.ids = ids;
+                listener.ids = crate::root::cold::installed_line_ids(&policy);
                 host()
                     .install_at(self.owner, self.id, snapshot.generation, listener)
                     .ok()?;
@@ -512,65 +438,4 @@ impl Drop for ListenerRegistration {
     }
 }
 
-static GENERATION: AtomicU64 = AtomicU64::new(0);
-
-pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
-    let (guests, door_refusals) = staged().clone()?;
-    let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: the auth table is built once per published configuration"
-    )]
-    let auths = guests
-        .lines()
-        .iter()
-        .filter_map(|l| match &l.auth {
-            busbar_kernel::guest::LineAuth::Chain(names, _) => Some(names),
-            busbar_kernel::guest::LineAuth::None => None,
-        })
-        .flatten()
-        .filter_map(|n| Some((n.clone(), app.auth.position_calls(n)?)))
-        .collect();
-    let body_limit = busbar_kernel::config::limits::installed().map_or(
-        busbar_kernel::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES,
-        |l| l.request_body_max_bytes,
-    ) as u64;
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: line ids are minted once per published configuration"
-    )]
-    let ids = guests
-        .lines()
-        .iter()
-        .map(|_| auth_handle::next_ref_id(auth_handle::RefSpace::Line))
-        .collect();
-    let listener = kin::Listener {
-        guests,
-        auths,
-        body_limit,
-        app: Arc::clone(app),
-        door_refusals,
-        ids,
-
-        signed_ingress: Arc::new(|_, _| false),
-        scope: None,
-    };
-    let snapshot = Arc::new(Published {
-        generation,
-        listener: listener.clone(),
-    });
-    if let Err(e) = host().install(ROOT_OWNER, generation, listener) {
-        tracing::error!(
-            generation,
-            error = e,
-            "the data listener's inbound table was refused"
-        );
-        return None;
-    }
-    let retired = published().swap(Some(snapshot));
-    auth_handle::publish_generation(generation);
-    host().retire_before(generation);
-    drop(retired);
-    Some(generation)
-}
+pub use crate::root::off_path::inbound::publish;

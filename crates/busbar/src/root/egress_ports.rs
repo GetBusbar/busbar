@@ -64,7 +64,7 @@ impl Clock for NodeClock {
 /// is never at capacity.
 #[derive(Debug, Default)]
 pub struct MemberPermits {
-    limits: HashMap<DestinationId, Arc<Semaphore>>,
+    pub(crate) limits: HashMap<DestinationId, Arc<Semaphore>>,
 }
 
 /// One slot, freed when the attempt that holds it drops it.
@@ -82,19 +82,6 @@ impl PermitHandle for Slot {
 }
 
 impl MemberPermits {
-    #[must_use]
-    pub fn new(limits: impl IntoIterator<Item = (DestinationId, usize)>) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the members' permits are built once per configured walk"
-        )]
-        let limits = limits
-            .into_iter()
-            .map(|(d, n)| (d, Arc::new(Semaphore::new(n))))
-            .collect();
-        MemberPermits { limits }
-    }
-
     #[must_use]
     pub fn available(&self, destination: DestinationId) -> Option<usize> {
         self.limits.get(&destination).map(|s| s.available_permits())
@@ -172,9 +159,9 @@ impl Capacity for MemberPermits {
 /// pool, and each pool's live wait-terminal depth.
 #[derive(Debug, Default)]
 pub struct WalkTelemetry {
-    names: HashMap<DestinationId, String>,
-    depths: Mutex<HashMap<String, i64>>,
-    bound: LabelBound,
+    pub(crate) names: HashMap<DestinationId, String>,
+    pub(crate) depths: Mutex<HashMap<String, i64>>,
+    pub(crate) bound: LabelBound,
 }
 
 /// THE WORDS A PLANE MAY STATE AS ITS ATTEMPTS' COUNTER LABELS (`OnPieceOut::metric_pool` /
@@ -184,52 +171,11 @@ pub struct WalkTelemetry {
 /// (`PlaneTail::metric_lanes`). Empty: nothing stated is taken.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LabelBound {
-    reach: HashMap<String, (BTreeSet<String>, BTreeSet<String>)>,
-    vocabulary: BTreeSet<String>,
+    pub(crate) reach: HashMap<String, (BTreeSet<String>, BTreeSet<String>)>,
+    pub(crate) vocabulary: BTreeSet<String>,
 }
 
 impl LabelBound {
-    #[must_use]
-    pub fn new(vocabulary: impl IntoIterator<Item = String>) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a plane's lane vocabulary is gathered once per generation"
-        )]
-        let vocabulary = vocabulary.into_iter().collect();
-        LabelBound {
-            reach: HashMap::default(),
-            vocabulary,
-        }
-    }
-
-    #[must_use]
-    pub fn reaching(
-        mut self,
-        walked: &str,
-        pool_words: impl IntoIterator<Item = String>,
-        entries: impl IntoIterator<Item = String>,
-    ) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a walk's reachable words are gathered once per generation"
-        )]
-        let entries: BTreeSet<String> = entries.into_iter().collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a walk's reachable words are gathered once per generation"
-        )]
-        let pools = pool_words
-            .into_iter()
-            .chain(entries.iter().cloned())
-            .collect();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a walk's reachable words are keyed once per generation"
-        )]
-        self.reach.insert(walked.to_string(), (pools, entries));
-        self
-    }
-
     #[must_use]
     pub fn labels<'a>(
         &self,
@@ -268,20 +214,6 @@ impl LabelBound {
 }
 
 impl WalkTelemetry {
-    #[must_use]
-    pub fn new(names: impl IntoIterator<Item = (DestinationId, String)>) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the members' lane names are gathered once per configured walk"
-        )]
-        let names = names.into_iter().collect();
-        WalkTelemetry {
-            names,
-            depths: Mutex::new(HashMap::default()),
-            bound: LabelBound::default(),
-        }
-    }
-
     #[must_use]
     pub fn bounded(mut self, bound: LabelBound) -> Self {
         self.bound = bound;
@@ -370,11 +302,7 @@ impl Telemetry for WalkTelemetry {
                 *depth
             } else {
                 let depth = 0_i64.saturating_add(delta).max(0);
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "config: a configured pool's depth cell is keyed once, on its first queued wait"
-                )]
-                depths.insert(pool.to_string(), depth);
+                crate::root::cold::first_queued(&mut depths, pool, depth);
                 depth
             }
         };

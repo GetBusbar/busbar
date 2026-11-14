@@ -41,6 +41,9 @@ pub mod auth_bindings;
 pub mod boot;
 pub mod card_history;
 pub mod cli;
+// The one cold module (LINT-RULES LR-167): refusal text and rare first-sight paths the request-path
+// modules beside it call out of line.
+pub(crate) mod cold;
 pub mod config_migrate;
 pub mod connector;
 pub mod credentials;
@@ -226,6 +229,9 @@ pub mod model_egress;
     )
 )]
 pub mod observe;
+// The request-path modules' code that runs off the request path: once per configuration, generation
+// or process lifecycle, never per request.
+pub(crate) mod off_path;
 pub mod overlay_migrate;
 
 // busbar:request-path
