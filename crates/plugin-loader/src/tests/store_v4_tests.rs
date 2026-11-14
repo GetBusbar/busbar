@@ -382,15 +382,9 @@ mod linked {
                     }
                 }
                 wire::slot::COMMIT => {
-                    let input = &*input.cast::<wire::CommitIn>();
-                    let out = &mut *output.cast::<wire::CommitOut>();
-                    // First crossing may have committed: its response buffer is short.
-                    if input.result.cap == 0 {
-                        outcome = Outcome::Failed;
-                        out.needed = 3;
-                    } else {
-                        outcome = Outcome::Refused;
-                    }
+                    // The crossing may have committed: FAILED is an unknown outcome.
+                    let _ = (input, output);
+                    outcome = Outcome::Failed;
                 }
                 wire::slot::CLOCK => {
                     let out = &mut *output.cast::<wire::ClockOut>();
@@ -841,14 +835,24 @@ mod linked {
         })
         .unwrap();
         assert!(matches!(
-            backend.commit(candidate).await,
+            backend
+                .commit(
+                    candidate,
+                    owned::CommitKey::slotted(
+                        0,
+                        1,
+                        &busbar_contract::caps::SlotSeal::acquire_for_tests(),
+                    )
+                    .unwrap(),
+                )
+                .await,
             Err(Failure::Unknown)
         ));
     }
 }
 
 #[test]
-fn commit_keeps_exact_candidate_on_growth_and_rejects_changed_receipt_bytes() {
+fn commit_frames_carry_the_key_and_answers_carry_no_result_bytes() {
     let candidate = owned::PreparedCandidate::new(owned::Candidate {
         id: owned::AttemptId {
             dataset: owned::DatasetId([1; 16]),
@@ -867,33 +871,39 @@ fn commit_keeps_exact_candidate_on_growth_and_rejects_changed_receipt_bytes() {
         result: busbar_contract::redacted::Secret::new(b"abc".to_vec()),
     })
     .unwrap();
+    let key =
+        owned::CommitKey::slotted(7, 11, &busbar_contract::caps::SlotSeal::acquire_for_tests())
+            .unwrap();
     let mut request = CommitRequest {
         source: sdk::Commit::new(&candidate, limits().descriptor_bytes).unwrap(),
-        original: candidate,
-        bytes: zeroize::Zeroizing::new(Vec::new()),
+        key,
     };
-    let before = request.frame().input.candidate;
-    request.grow(0, 3, limits()).unwrap();
+    assert!(
+        request.grow(0, 3, limits()).is_err(),
+        "a commit answer is never short"
+    );
     let mut frame = request.frame();
-    assert_eq!(before.mutations, frame.input.candidate.mutations);
-    assert_eq!(before.result.ptr, frame.input.candidate.result.ptr);
-    assert_eq!(before.id.operation, frame.input.candidate.id.operation);
-    request.bytes.copy_from_slice(b"abc");
+    assert_eq!(
+        (frame.input.candidate.slot, frame.input.candidate.seq),
+        (7, 11)
+    );
     frame.out = ready(frame.out);
     frame.out.code = wire::COMMIT_APPLIED;
     frame.out.authority = [5; 16];
-    frame.out.written = 3;
+    let Ok(owned::Decision::Applied(value)) =
+        request.decode(Outcome::Ready, &frame, limits().decode_bytes, [5; 16])
+    else {
+        panic!("applied")
+    };
+    assert!(value
+        .expose(&busbar_contract::plugin::TestKernelSeal)
+        .is_empty());
+    frame.out.code = wire::COMMIT_STALE;
     assert!(matches!(
         request.decode(Outcome::Ready, &frame, limits().decode_bytes, [5; 16]),
-        Ok(owned::Decision::Applied(_))
-    ));
-    request.bytes.copy_from_slice(b"bad");
-    assert!(matches!(
-        request.decode(Outcome::Ready, &frame, limits().decode_bytes, [5; 16]),
-        Err(ResponseError::Malformed)
+        Ok(owned::Decision::Stale)
     ));
 }
-
 #[test]
 fn fitting_read_buffers_are_presized_p29_performance_0() {
     let items = presized(3, limits(), 0u64);

@@ -457,8 +457,19 @@ async fn first_start_before_plan_freeze_can_resume_but_fences_delayed_old_writes
     assert!(current.permits("one").await.unwrap());
     assert!(!current.permits("unrelated").await.unwrap());
     assert!(matches!(
-        backend.commit(delayed).await.unwrap(),
-        Decision::ExpiredUnknown
+        backend
+            .commit(
+                delayed,
+                busbar_contract::persistence::CommitKey::slotted(
+                    65_535,
+                    1,
+                    &busbar_contract::caps::SlotSeal::acquire_for_tests()
+                )
+                .unwrap()
+            )
+            .await
+            .unwrap(),
+        Decision::Fenced
     ));
     assert_eq!(
         prior.freeze(vec![initial_binding("one", 1)]).await,
@@ -489,7 +500,18 @@ async fn first_start_frozen_plan_and_native_initialization_survive_crash_exactly
     // Native initialization effects and quota/barrier state remain intact through
     // takeover. Successor authority is never permission to reconstruct counters.
     assert!(matches!(
-        backend.commit(delayed_initial_write(&first)).await.unwrap(),
+        backend
+            .commit(
+                delayed_initial_write(&first),
+                busbar_contract::persistence::CommitKey::slotted(
+                    65_535,
+                    1,
+                    &busbar_contract::caps::SlotSeal::acquire_for_tests()
+                )
+                .unwrap()
+            )
+            .await
+            .unwrap(),
         Decision::Applied(_)
     ));
     backend.0.lock().unwrap().lose_reply = true;

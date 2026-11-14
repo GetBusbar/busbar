@@ -1389,7 +1389,7 @@ impl busbar_contract::persistence::PersistenceBackend for Refusing {
     fn commit(
         &self,
         _candidate: busbar_contract::persistence::PreparedCandidate,
-        key: busbar_contract::persistence::CommitKey,
+        _key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
         Box::pin(async { Err(busbar_contract::persistence::Failure::Refused) })
     }

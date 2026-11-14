@@ -66,7 +66,7 @@ impl PersistenceBackend for Backend {
     fn commit(
         &self,
         _: PreparedCandidate,
-        key: busbar_contract::persistence::CommitKey,
+        _key: busbar_contract::persistence::CommitKey,
     ) -> Call<'_, Decision> {
         Box::pin(async { Err(Failure::Refused) })
     }

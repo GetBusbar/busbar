@@ -69,6 +69,7 @@ impl Backend for Witness {
         &self,
         _: &mut Op<'_>,
         _: &owned::PreparedCandidate<Own>,
+        _: busbar_contract::abi::sdk::store::v4::backend::CommitSlot,
     ) -> Step<Result<Committed<Own>, owned::Failure>> {
         Step::Ready(Err(owned::Failure::Refused))
     }
