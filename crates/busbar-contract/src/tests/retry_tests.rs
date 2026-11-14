@@ -14,7 +14,11 @@ fn full_jitter_doubles_to_the_cap_and_never_waits_under_the_floor() {
     assert_eq!(b.ceiling(4), 8 * S, "the cap");
     assert_eq!(b.ceiling(40), 8 * S, "no overflow past the cap");
     for n in 1..8 {
-        assert_eq!(b.delay(n, 0.0), FLOOR, "a zero draw waits the floor, never spins");
+        assert_eq!(
+            b.delay(n, 0.0),
+            FLOOR,
+            "a zero draw waits the floor, never spins"
+        );
         assert_eq!(b.delay(n, 1.0), b.ceiling(n));
         let mid = b.delay(n, 0.5);
         assert!(mid >= FLOOR && mid <= b.ceiling(n), "{mid:?}");
@@ -35,7 +39,11 @@ fn a_spread_cadence_stays_within_its_band() {
     assert_eq!(spread(every, 0.1, 0.0), 27 * S);
     assert_eq!(spread(every, 0.1, 1.0), 33 * S);
     assert_eq!(spread(every, 0.1, 0.5), every);
-    assert_eq!(spread(Duration::ZERO, 0.1, 0.5), FLOOR, "never under the floor");
+    assert_eq!(
+        spread(Duration::ZERO, 0.1, 0.5),
+        FLOOR,
+        "never under the floor"
+    );
 }
 
 #[test]

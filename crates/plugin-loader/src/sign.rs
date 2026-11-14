@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#[cfg(test)]
-use ed25519_dalek::Signature;
-pub use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use busbar_contract::crypto::{self, ed25519};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

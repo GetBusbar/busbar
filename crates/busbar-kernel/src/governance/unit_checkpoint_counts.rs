@@ -15,6 +15,7 @@ impl GovState {
         // busbar:expect(bp::fresh_buffer, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
         let mut events = Vec::new();
         let mut cell = BudgetCell::default();
+        // No counts, no row (#42): accrue_raw creates a lane row only from a non-zero count.
         cell.accrue_raw(&snapshot.lane, snapshot.era(), &snapshot.units)
             .map_err(crate::governance::store_error)?;
         let plain = ExactUsageDelta::of(&cell, false);
@@ -310,7 +311,7 @@ impl GovState {
                 .iter()
                 .map(|target| self.budget.shard_index(target.bucket())),
         );
-        shards.sort_unstable();
+        shards.sort();
         shards.dedup();
         let mut guards: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
         guards.extend(

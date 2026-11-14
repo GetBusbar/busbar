@@ -156,13 +156,15 @@ fn cert() -> Cert {
 
 /// A TLS far end serving `cert`, agreeing `h2` by ALPN.
 fn server(cert: &Cert) -> Arc<rustls::ServerConfig> {
-    let mut s = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![cert.leaf.clone().into()],
-            rustls_pki_types::PrivateKeyDer::try_from(cert.key.clone()).unwrap(),
-        )
-        .unwrap();
+    let mut s = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![cert.leaf.clone().into()],
+                rustls_pki_types::PrivateKeyDer::try_from(cert.key.clone()).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
     s.alpn_protocols = vec![b"h2".to_vec()];
     Arc::new(s)
 }
@@ -170,8 +172,8 @@ fn server(cert: &Cert) -> Arc<rustls::ServerConfig> {
 /// `leaf`'s fingerprint as the connector states it (`ConnFacts::peer_cert`, RFC 5929
 /// `tls-server-end-point`).
 fn fingerprint(leaf: &[u8]) -> String {
-    ring::digest::digest(crate::tls::client::end_point_digest(leaf), leaf)
-        .as_ref()
+    crate::tls::client::end_point_digest(leaf)
+        .digest(leaf)
         .iter()
         .fold(String::new(), |mut hex, b| {
             let _ = write!(hex, "{b:02x}");
@@ -653,7 +655,6 @@ impl Worker {
 /// the first line again and sees cert A).
 #[test]
 fn abandoned_after_facts_redials_h2_shared() {
-    crate::tls::install_crypto_provider();
     let (a, b) = (cert(), cert());
     let rt = runtime();
     let _in = rt.enter();
@@ -734,7 +735,6 @@ fn abandoned_after_facts_redials_h2_shared() {
 /// its own line: accepts=2) and against W1 without step 7 (facts `Pending` while T holds the line).
 #[test]
 fn prepared_on_shared_h2_line_while_out_completes() {
-    crate::tls::install_crypto_provider();
     let a = cert();
     let rt = runtime();
     let _in = rt.enter();
@@ -802,7 +802,6 @@ fn prepared_on_shared_h2_line_while_out_completes() {
 /// the same line and its drive on thread T holds the connection out, then P's facts and commit are
 /// answered at once. Answers P's facts and the scheme its line established.
 fn fresh_line_shared_before_facts(tls: bool) -> (ConnFacts, u8) {
-    crate::tls::install_crypto_provider();
     let a = cert();
     let rt = runtime();
     let _in = rt.enter();
@@ -970,7 +969,6 @@ fn prepared_fresh_h2c_line_lent_while_connecting_waits() {
 /// readiness latched from `Phase::Open && !handshaking() && !opening_owed`.
 #[test]
 fn prepared_facts_wait_for_final_flight_flush() {
-    crate::tls::install_crypto_provider();
     let a = cert();
     let rt = runtime();
     let _in = rt.enter();
@@ -1052,7 +1050,6 @@ fn prepared_facts_wait_for_final_flight_flush() {
 /// gate that omits `!begin_parked()`.
 #[test]
 fn prepared_facts_wait_while_begin_parked() {
-    crate::tls::install_crypto_provider();
     let a = cert();
     let rt = runtime();
     let _in = rt.enter();

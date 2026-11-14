@@ -683,7 +683,7 @@ pub async fn credential_attempt(
 pub fn state_key(app: &crate::state::App) -> Arc<key::StateKey> {
     static PROCESS: std::sync::LazyLock<Arc<key::StateKey>> = std::sync::LazyLock::new(|| {
         let mut material = [0u8; 32];
-        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut material)
+        busbar_contract::crypto::fill(&mut material)
             .expect("OS randomness for the login-state key");
         Arc::new(key::StateKey::derive(&material))
     });
@@ -729,7 +729,7 @@ pub(crate) async fn claim_state_in(
 ) -> StateClaim {
     let _ = store.register_claim_scope(STATE_OWNER, STATE_KIND);
     let mut attempt = [0u8; 16];
-    if ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut attempt).is_err() {
+    if busbar_contract::crypto::fill(&mut attempt).is_err() {
         return StateClaim::Unavailable;
     }
     // A distinct attempt per completion: two concurrent replays of one cookie are two attempts,

@@ -26,8 +26,8 @@ pub use outbound::{
     FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
     OutboundReadyOut, TargetIn, TargetOut,
 };
-pub use serve::{ServeIn, ServeOut};
 pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
+pub use serve::{ServeIn, ServeOut};
 
 /// Pure outbound settings validation support: Statement value `b"\x01"`; on lifecycle
 /// VALIDATE the value is the UTF-8 outbound style. It validates settings without opening an

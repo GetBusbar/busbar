@@ -13,10 +13,9 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     hash.finish()
 }
 
-/// Incremental SHA-256 over ring, which uses the CPU's SHA extensions where present (the portable
-/// `sha2` build hashes in software on aarch64). Same digest, byte for byte.
+/// Incremental SHA-256 through the crypto facade (`crate::crypto::Sha256`).
 #[derive(Clone)]
-pub struct Sha256Stream(ring::digest::Context);
+pub struct Sha256Stream(crate::crypto::Sha256);
 
 impl std::fmt::Debug for Sha256Stream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,7 +33,7 @@ impl Sha256Stream {
     /// An empty SHA-256 state.
     #[must_use]
     pub fn new() -> Self {
-        Self(ring::digest::Context::new(&ring::digest::SHA256))
+        Self(crate::crypto::Sha256::new())
     }
 
     /// Feed `data`.
@@ -45,9 +44,7 @@ impl Sha256Stream {
     /// The digest of everything fed.
     #[must_use]
     pub fn finish(self) -> [u8; 32] {
-        let mut digest = [0u8; 32];
-        digest.copy_from_slice(self.0.finish().as_ref());
-        digest
+        self.0.finish()
     }
 }
 

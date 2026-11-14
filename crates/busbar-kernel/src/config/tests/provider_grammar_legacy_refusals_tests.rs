@@ -62,13 +62,14 @@ fn descriptor_validation_preserves_derived_serde_refusals_byte_for_byte() {
         "[{globs: [], unknown: true}]",
         "[{globs: [], enabled: true, enabled: false}]",
     ] {
-        let legacy = serde_yaml::from_str::<Vec<Rule>>(text)
+        let legacy = busbar_contract::yaml::from_str::<Vec<Rule>>(text)
             .unwrap_err()
             .to_string();
-        let descriptor = ValueSeed::field(&key)
-            .deserialize(serde_yaml::Deserializer::from_str(text))
-            .unwrap_err()
-            .to_string();
+        let descriptor = busbar_contract::yaml::with_deserializer(text, |d| {
+            ValueSeed::field(&key).deserialize(d)
+        })
+        .unwrap_err()
+        .to_string();
         assert_eq!(descriptor, legacy, "{text}");
     }
 }

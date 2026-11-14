@@ -565,7 +565,7 @@ mod standard_crypto {
     }
 
     fn ed25519(value: &str) -> Option<ReleaseKey> {
-        ed25519_dalek::VerifyingKey::from_bytes(&bytes(value))
+        crate::sign::VerifyingKey::from_bytes(&bytes(value))
             .ok()
             .map(ReleaseKey::Ed25519)
     }

@@ -1097,11 +1097,9 @@ fn allow_destination(root: &mut Pairs, plugin: &str, host: &str, ledger: &mut Le
     }
 }
 
-pub(super) fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, String> {
-    let advanced = root
-        .entry(Value::from(field::ADVANCED))
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
-    let Value::Mapping(advanced) = advanced else {
+pub(super) fn push_allowed(root: &mut Pairs, plugin: &str, host: &str) -> Result<bool, String> {
+    let advanced = root.entry_or_insert_with(field::ADVANCED, || Value::Map(Pairs::new()));
+    let Value::Map(advanced) = advanced else {
         return Err(format!(
             "advanced: is not a mapping, so '{host}', which the plugin '{plugin}' needs allowed, \
              was not added to advanced.allow_destinations; add it by hand"
@@ -1122,8 +1120,8 @@ pub(super) fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Resu
     Ok(true)
 }
 
-pub(super) fn already_allowed(root: &Mapping, name: &str) -> bool {
-    let Some(Value::Mapping(advanced)) = root.get(Value::from(field::ADVANCED)) else {
+pub(super) fn already_allowed(root: &Pairs, name: &str) -> bool {
+    let Some(Value::Map(advanced)) = root.get_key(field::ADVANCED) else {
         return false;
     };
     let Some(Value::Array(list)) = advanced.get_key(field::ALLOW_DESTINATIONS) else {

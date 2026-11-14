@@ -258,8 +258,9 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
             "gpt-rt: { provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }\n",
         )
         .expect("the catalog");
-    let section: serde_yaml::Value =
-        serde_yaml::from_str("session: { model: gpt-rt }\nsession_max_secs: 60\n").expect("yaml");
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("session: { model: gpt-rt }\nsession_max_secs: 60\n")
+            .expect("yaml");
     let routes = super::fold_catalog_routes(&section, &catalog).0;
     assert_eq!(
         *routes.at("models").at("gpt-rt"),
@@ -281,11 +282,12 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
         Some((String::new(), vec!["gpt-rt".to_string()])),
         "the door's DIRECT route resolves to the folded entry"
     );
-    let unknown: serde_yaml::Value =
-        serde_yaml::from_str("session: { model: nope }\n").expect("yaml");
+    let unknown: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("session: { model: nope }\n").expect("yaml");
     assert_eq!(super::fold_catalog_routes(&unknown, &catalog).0, unknown);
-    let own: serde_yaml::Value =
-        serde_yaml::from_str("session: { model: gpt-rt }\nmodels: { mine: {} }\n").expect("yaml");
+    let own: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("session: { model: gpt-rt }\nmodels: { mine: {} }\n")
+            .expect("yaml");
     assert_eq!(super::fold_catalog_routes(&own, &catalog).0, own);
 }
 
