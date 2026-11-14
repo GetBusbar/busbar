@@ -34,6 +34,9 @@ pub struct ExportFacts {
     pub one_instance: bool,
     /// Its extensions' `span_records`: it takes each `traces` line's full span record.
     pub span_records: bool,
+    /// Its extensions' `whole_batches`: it carries each DELIVER as one unit, so core hands it
+    /// everything queued (up to a full batch) instead of a per-slot share.
+    pub whole_batches: bool,
 }
 
 fn owned(s: AbiStr) -> Option<String> {
@@ -138,6 +141,7 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     // length (a NULL one reads as none).
     let ext = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) };
     let span_records = busbar_contract::abi::mechanism::extensions::span_records(ext)?;
+    let whole_batches = busbar_contract::abi::mechanism::extensions::whole_batches(ext)?;
     use busbar_contract::abi::mechanism::extensions;
     let public_routes = extensions::route_paths(ext, extensions::EXT_PUBLIC_ROUTES)?;
     let persistent_routes = extensions::route_paths(ext, extensions::EXT_PERSISTENT_ROUTES)?;
@@ -165,6 +169,7 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     Ok(ExportFacts {
         recorder,
         span_records,
+        whole_batches,
         public_routes,
         persistent_routes,
         streams,
