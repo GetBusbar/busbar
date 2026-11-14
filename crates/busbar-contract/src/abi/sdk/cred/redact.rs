@@ -42,6 +42,7 @@ fn echo_len(message: &[u8], secret: &[u8], encoded: bool) -> Option<usize> {
 /// encoded bytes, hex case differences, and form-encoded spaces. Owners supply every spelling
 /// captured during parsing, including superseded values. This cannot inspect derived values.
 pub fn redact_encoded_echoes(text: &str, credentials: &[&Cred]) -> String {
+    // busbar:expect(bp::fresh_buffer, reason = "error: a far end's error text, redacted once on its way to a diagnostic")
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < text.len() {

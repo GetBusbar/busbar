@@ -60,9 +60,9 @@
 //! }
 //! ```
 
+use foldhash::HashMap;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -149,7 +149,7 @@ pub(crate) struct Replies<T>(Arc<ReplyMap<T>>);
 
 impl<T> Default for Replies<T> {
     fn default() -> Self {
-        Self(Arc::new(Mutex::new(HashMap::new())))
+        Self(Arc::new(Mutex::new(HashMap::default())))
     }
 }
 
@@ -167,9 +167,12 @@ impl<T: 'static> Replies<T> {
             // `try_with`: a reply kept while the thread is already exiting stays until its instance drops.
             let _ = CROSSED.try_with(|crossed| {
                 let mut crossed = crossed.borrow_mut();
-                crossed.0.retain(|t| t.strong_count() > 0);
                 if !crossed.0.iter().any(|t| Weak::ptr_eq(t, &table)) {
-                    crossed.0.push(table);
+                    // A dropped table's entry is reused: the list never outgrows the live tables.
+                    match crossed.0.iter_mut().find(|t| t.strong_count() == 0) {
+                        Some(dead) => *dead = table,
+                        None => crossed.0.push(table),
+                    }
                 }
             });
         }
@@ -804,7 +807,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         request: &crate::abi::sdk::plane::conditional::Request,
     ) -> Result<(), &'static str> {
         use crate::abi::sdk::plane::conditional as wire;
-        self.conditional_extension(leases, wire::INTENT, wire::encode_request_held(request)?)
+        self.conditional_extension(leases, wire::INTENT, &wire::encode_request_held(request)?)
     }
 
     /// Lease a read-only original-incarnation observation. Return PENDING, then issue fresh
@@ -817,7 +820,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.conditional_extension(
             leases,
             wire::OBSERVE,
-            zeroize::Zeroizing::new(wire::encode_observation(request)?),
+            &zeroize::Zeroizing::new(wire::encode_observation(request)?),
         )
     }
 
@@ -830,14 +833,14 @@ impl<'a, T: AbiOut> Out<'a, T> {
         use crate::abi::sdk::plane::conditional as wire;
         let encoded = zeroize::Zeroizing::new(wire::encode_settlement_ack(settlement));
         wire::read_settlement_ack(&encoded)?;
-        self.conditional_extension(leases, wire::SETTLEMENT_ACK, encoded)
+        self.conditional_extension(leases, wire::SETTLEMENT_ACK, &encoded)
     }
 
     fn conditional_extension(
         &mut self,
         leases: &Leases,
         key: &str,
-        encoded: zeroize::Zeroizing<Vec<u8>>,
+        encoded: &[u8],
     ) -> Result<(), &'static str> {
         use crate::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
         use crate::abi::sdk::plane::conditional as wire;
@@ -864,7 +867,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
             wire::SETTLEMENT_ACK,
         ] {
             if let Some(value) = wire::entry(prior, other)? {
-                if other != key || wire::entry(&encoded, key)? != Some(value) {
+                if other != key || wire::entry(encoded, key)? != Some(value) {
                     return Err(wire::INVALID);
                 }
                 repeated = true;
@@ -888,7 +891,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
             .ok_or(wire::INVALID)?;
         let mut bytes = crate::abi::sdk::secret_bytes::SecretBytes::with_capacity(len);
         bytes.extend_from_slice(prior);
-        bytes.extend_from_slice(&encoded);
+        bytes.extend_from_slice(encoded);
         self.held_by(&leases.alive);
 
         let flags = ext.flags | if key == wire::INTENT { BLOB_SECRET } else { 0 };

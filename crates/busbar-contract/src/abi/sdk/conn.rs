@@ -453,7 +453,13 @@ fn host_text(s: AbiStr) -> String {
         return String::new();
     }
     // SAFETY: the host's text, `len` bytes, live until its next service on this ticket.
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    let text = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) });
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the host's error text, owned once per failed service"
+    )]
+    let text = text.into_owned();
+    text
 }
 
 fn text(s: Option<&str>) -> AbiStr {

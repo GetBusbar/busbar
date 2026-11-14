@@ -25,6 +25,7 @@ indexmap = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
+foldhash = { workspace = true }
 zeroize = { workspace = true, features = ["serde"] }
 num-bigint = { workspace = true }
 getrandom = { workspace = true }

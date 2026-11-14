@@ -3,7 +3,7 @@
 
 //! THE CALL CAPTURE — how a plugin logs (`BUSBAR-1.6.0.md` decision #85, and THE DESIGN, section 11.2).
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 

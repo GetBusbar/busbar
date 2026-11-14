@@ -377,20 +377,21 @@ pub fn required_kinds(bytes: &[u8]) -> Result<Vec<u32>, &'static str> {
     };
     let mut r = Read(value);
     let n = r.u32()?;
+    // busbar:expect(bp::fresh_buffer, reason = "boot: a Statement's guarded kinds, read once as the plugin loads")
     let mut kinds = Vec::new();
     for _ in 0..n {
         kinds.push(r.u32()?);
     }
     r.end()?;
-    let mut sorted = kinds.clone();
-    sorted.sort_unstable();
-    if sorted.windows(2).any(|w| w[0] == w[1]) {
+    // A handful of kinds: each is compared with those before it, in place.
+    if (1..kinds.len()).any(|i| kinds[..i].contains(&kinds[i])) {
         return Err(INVALID);
     }
     Ok(kinds)
 }
 /// Encode the Statement's protocol support and guarded kind set together.
 pub fn statement(kinds: &[u32]) -> Result<Vec<u8>, &'static str> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the Statement's conditional extension, encoded once as the plugin declares")
     let mut value = Vec::new();
     count(&mut value, kinds.len())?;
     for k in kinds {

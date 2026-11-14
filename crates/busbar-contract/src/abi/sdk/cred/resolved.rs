@@ -23,14 +23,28 @@ pub fn resolved<V: Zeroize + AsRef<[u8]>>(
     out: &mut Out<'_, ResolveOut>,
     value: Held<V>,
 ) -> Outcome {
-    let bytes = value.wire().as_ref();
+    let outcome = write_resolved(input, out, value.wire().as_ref());
+    // The value is consumed: wiped as soon as it is written.
+    drop(value);
+    outcome
+}
+
+fn write_resolved(
+    input: Lent<'_, ResolveIn>,
+    out: &mut Out<'_, ResolveOut>,
+    bytes: &[u8],
+) -> Outcome {
     let mut buf = input.secret_buf();
     if bytes.is_empty() {
         out.set(|o| &o.error_kind, ERROR_KIND_INVALID);
-        return out.fail(Refusal::failed(EMPTY_VALUE.to_string()));
+        return out.fail(Refusal::failed(EMPTY_VALUE));
     }
     if bytes.len() > MAX_SECRET_BYTES {
         out.set(|o| &o.error_kind, ERROR_KIND_INVALID);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: an oversized secret's refusal, written once per refusal"
+        )]
         return out.fail(Refusal::failed(format!(
             "the secret is {} bytes, over the {MAX_SECRET_BYTES}-byte limit a secret may be",
             bytes.len()

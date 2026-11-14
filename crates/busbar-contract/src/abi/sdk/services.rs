@@ -316,15 +316,15 @@ const AUTH_CALL_BYTES: usize = 1024;
 /// The first span capacity [`Services::auth_call`] lends.
 const AUTH_CALL_SPANS: usize = 16;
 
-/// `args`'s field lines as the ABI's [`Field`]s, borrowed from `args`.
-fn view_fields(args: &HeadViewArgs<'_>) -> Vec<Field> {
-    args.fields
-        .iter()
-        .map(|(n, v)| Field {
-            name: text(n),
-            value: raw(v),
-        })
-        .collect()
+/// `args`'s field lines as the ABI's [`Field`]s, borrowed from `args`: on the stack for the usual
+/// head, spilled only past sixteen lines.
+fn view_fields(args: &HeadViewArgs<'_>) -> smallvec::SmallVec<[Field; 16]> {
+    let mut fields = smallvec::SmallVec::new();
+    fields.extend(args.fields.iter().map(|(n, v)| Field {
+        name: text(n),
+        value: raw(v),
+    }));
+    fields
 }
 
 /// `args` as the `in`'s [`HeadView`], over `fields` (its laid-out field lines).
@@ -360,7 +360,13 @@ fn copied(s: AbiStr) -> Option<Vec<u8>> {
     }
     // SAFETY: the host's own bytes, `len` long, valid until the next call on the connection (the
     // `unit.refuse` contract); copied before this returns.
-    Some(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused unit's answer, copied once per refusal"
+    )]
+    let copy = bytes.to_vec();
+    Some(copy)
 }
 
 /// A prompt message borrowed for a safe `hook.call` crossing.
@@ -631,7 +637,6 @@ impl<K: KindMarker> Services<K> {
     }
 
     /// Publish sealed outbound custody. Credentials remain opaque to plugin code.
-    #[allow(clippy::too_many_arguments)]
     pub fn outbound_publish(
         &self,
         handle: CompletionHandle,
@@ -745,7 +750,10 @@ impl<K: KindMarker> Services<K> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the service's ABI fields, one argument each"
+    )]
     fn outbound_authorize(
         &self,
         handle: CompletionHandle,
@@ -1875,13 +1883,13 @@ impl<K: KindMarker> Services<K> {
     where
         K: crate::abi::host::access::Permitted<{ op::HOOK_CALL }>,
     {
-        let messages: Vec<MessageView> = messages
-            .iter()
-            .map(|m| MessageView {
-                role: text(m.role),
-                text: text(m.text),
-            })
-            .collect();
+        // On the stack for the usual few messages; spilled only past sixteen.
+        let mut views = smallvec::SmallVec::<[MessageView; 16]>::new();
+        views.extend(messages.iter().map(|m| MessageView {
+            role: text(m.role),
+            text: text(m.text),
+        }));
+        let messages = views;
         let prompt = PromptView {
             system: system.map_or(NO_TEXT, text),
             message_count: messages.len() as u64,
@@ -1991,7 +1999,10 @@ impl<K: KindMarker> Services<K> {
     }
 
     /// `auth.call`: call the auth `auth` names at `point` through the host (THE DESIGN, Auth points
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the service's ABI fields, one argument each"
+    )]
     pub fn auth_call<O: OwnerSeal>(
         &self,
         handle: CompletionHandle,
@@ -2057,7 +2068,10 @@ impl<K: KindMarker> Services<K> {
     }
 
     /// `unit.hand_in`: hand the request in with the line the transport matched; the kernel's
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the service's ABI fields, one argument each"
+    )]
     pub fn unit_hand_in(
         &self,
         handle: CompletionHandle,
@@ -2095,7 +2109,10 @@ impl<K: KindMarker> Services<K> {
     }
 
     /// `unit.refuse`: the refusal of a request, as the kernel owns and audits it (`cause` one of
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the service's ABI fields, one argument each"
+    )]
     pub fn unit_refuse(
         &self,
         handle: CompletionHandle,
@@ -2141,6 +2158,10 @@ impl<K: KindMarker> Services<K> {
             // `check_unit_refuse`, valid until the next call on the connection; copied below.
             unsafe { std::slice::from_raw_parts(answer.fields, answer.fields_len) }
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refused unit's answer fields, copied once per refusal"
+        )]
         let fields = fields
             .iter()
             .map(|f| {

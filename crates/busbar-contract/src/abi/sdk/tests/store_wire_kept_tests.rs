@@ -451,7 +451,7 @@ mod replay_handles {
         }
         drop(channels);
         let mut closed = script(|s| s.closed_streams.clone());
-        closed.sort();
+        closed.sort_unstable();
         assert_eq!(closed, vec![1, 2, 3]);
     }
 
@@ -473,7 +473,7 @@ mod replay_handles {
         assert!(matches!(result, Step::Pending { .. }));
         drop(op.into_parked());
         let mut closed = script(|s| s.closed_streams.clone());
-        closed.sort();
+        closed.sort_unstable();
         assert_eq!(closed, vec![1, 2, 3]);
         assert!(!channels.active.load(Ordering::Acquire));
     }

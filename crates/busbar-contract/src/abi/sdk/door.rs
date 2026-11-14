@@ -659,7 +659,10 @@ where
 /// The [`OpsHead`] of a `T` table: its `size` and `slots` stamped from `T`, the nine lifecycle
 /// slots as given.
 #[must_use]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per lifecycle op slot of the kind's table"
+)]
 pub const fn ops_head<T: KindOps>(
     validate: Option<Op>,
     open: Option<Op>,

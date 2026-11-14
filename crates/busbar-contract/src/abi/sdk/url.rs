@@ -19,6 +19,7 @@ pub fn percent_decode(s: &[u8]) -> Vec<u8> {
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     };
+    // busbar:expect(bp::fresh_buffer, reason = "config: a configured URL, read once as its instance opens")
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
     while let Some(&c) = s.get(i) {
@@ -87,14 +88,24 @@ pub fn basic_authorization(
     let encoded = Zeroizing::new(STANDARD.encode(&*user_pass));
     #[cfg(test)]
     tests::watch_scratch(encoded.as_bytes());
-    Some(format!("Basic {}", encoded.as_str()))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a configured URL, read once as its instance opens"
+    )]
+    let authorization = format!("Basic {}", encoded.as_str());
+    Some(authorization)
 }
 
 /// `url` with its credential-bearing prefix through the LAST `@` replaced by `with` (`with`
 #[must_use]
 pub fn cut_userinfo(url: &str, with: &str) -> String {
     let Some(at) = url.rfind('@') else {
-        return url.to_string();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a configured URL, read once as its instance opens"
+        )]
+        let whole = url.to_string();
+        return whole;
     };
 
     if let Some((scheme, _)) = url[..at].split_once("://") {
@@ -106,10 +117,19 @@ pub fn cut_userinfo(url: &str, with: &str) -> String {
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
         {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a configured URL, read once as its instance opens"
+            )]
             return format!("{scheme}://{with}{}", &url[at + 1..]);
         }
     }
-    format!("{with}{}", &url[at + 1..])
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a configured URL, read once as its instance opens"
+    )]
+    let cut = format!("{with}{}", &url[at + 1..]);
+    cut
 }
 
 /// Returns a refusal for an ambiguous credential-bearing URL, without exposing its credential.
@@ -118,18 +138,27 @@ pub fn ambiguous_url(url: &str, from_path: &str) -> Option<String> {
     if !from_path.contains('@') {
         return None;
     }
-    Some(format!(
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a configured URL, read once as its instance opens"
+    )]
+    let refusal = format!(
         "settings: url `{}` is ambiguous: it has an `@` after its host, so what comes before that \
          `@` would be read as the host and path, not as a credential. Percent-encode a `/`, `?` or \
          `#` inside the credential (`%2F`, `%3F`, `%23`), or write an `@` meant for the path as \
          `%40`",
         cut_userinfo(url, "***@")
-    ))
+    );
+    Some(refusal)
 }
 
 /// `parts` followed by each of them percent-decoded (lossily read as text), in the same order: the
 #[must_use]
 pub fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a configured URL, read once as its instance opens"
+    )]
     let decoded: Vec<String> = parts
         .iter()
         .map(|p| {
@@ -152,15 +181,33 @@ pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
     if quoted {
         let mut expanded = Zeroizing::new(Vec::with_capacity(parts.len() * 2));
         for part in parts.iter_mut() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a failure text, scrubbed once on its way to a diagnostic"
+            )]
             let escaped = Zeroizing::new(format!("{part:?}"));
             #[cfg(test)]
             tests::watch_scratch(escaped.as_bytes());
             expanded.push(std::mem::take(part));
-            expanded.push(escaped[1..escaped.len() - 1].to_string());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a failure text, scrubbed once on its way to a diagnostic"
+            )]
+            let inner = escaped[1..escaped.len() - 1].to_string();
+            expanded.push(inner);
         }
         parts = expanded;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failure text, scrubbed once on its way to a diagnostic"
+    )]
     parts.retain(|p| !p.is_empty());
+    // Stable: equal-length parts keep their order, so the replacements run as they always did.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failure text, scrubbed once on its way to a diagnostic"
+    )]
     parts.sort_by_key(|p| std::cmp::Reverse(p.len()));
     parts.dedup_by(|removed, kept| {
         if removed == kept {
@@ -170,12 +217,21 @@ pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
             false
         }
     });
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failure text, scrubbed once on its way to a diagnostic"
+    )]
     let mut out = Zeroizing::new(text.to_string());
     #[cfg(test)]
     tests::watch_scratch(out.as_bytes());
     for p in &*parts {
         if out.contains(p.as_str()) {
-            out = Zeroizing::new(out.replace(p.as_str(), CUT));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a failure text, scrubbed once on its way to a diagnostic"
+            )]
+            let cut = out.replace(p.as_str(), CUT);
+            out = Zeroizing::new(cut);
             #[cfg(test)]
             tests::watch_scratch(out.as_bytes());
         }

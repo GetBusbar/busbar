@@ -14,9 +14,13 @@ mod rsa;
 impl Cred {
     /// Whether the credential is a supported PKCS #8 RSA private key.
     pub fn rsa_pkcs8_check(&self) -> Result<(), String> {
-        rsa::Key::from_pkcs8(self.wire())
-            .map(drop)
-            .map_err(|_| "the key is not a supported PKCS #8 RSA key".to_owned())
+        let checked = rsa::Key::from_pkcs8(self.wire()).map(drop);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a configured key that is not one, refused once as its settings are checked"
+        )]
+        let checked = checked.map_err(|_| "the key is not a supported PKCS #8 RSA key".to_owned());
+        checked
     }
 
     /// The RS256 signature of `signing_input`, base64url without padding.

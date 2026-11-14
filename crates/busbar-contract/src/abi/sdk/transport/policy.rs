@@ -3,7 +3,7 @@
 
 //! Host-selected policy loans for streams sharing one framing connection.
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::sync::Arc;
 
 use crate::abi::mechanism::ticket::Ticket;
@@ -46,7 +46,7 @@ impl Loans {
             .map(|bytes| {
                 guest_policy::decode(bytes).map(|policy| Self {
                     current: Arc::new(policy),
-                    opening: HashMap::new(),
+                    opening: HashMap::default(),
                 })
             })
             .transpose()

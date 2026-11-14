@@ -12,7 +12,6 @@ use crate::abi::host::conn::connector::RequestPiece;
 use crate::abi::sdk::conn::{Answer, Connector};
 use crate::abi::sdk::io::{Io, IoAnswer};
 
-#[allow(missing_debug_implementations)]
 pub(crate) enum Part {
     Public(Vec<u8>),
     Sealed(Seal),
@@ -20,7 +19,10 @@ pub(crate) enum Part {
 
 /// Public bytes and sealed pieces in wire order, for a framed field value (a header line). A raw
 /// stream's auth message is one whole [`Seal`]: write it with [`SealedWrite::message`].
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 #[derive(Default)]
 pub struct Parts {
     pub(crate) parts: Vec<Part>,
@@ -66,7 +68,10 @@ impl Parts {
 }
 
 /// Bytes on their way to the host, held where the plugin cannot read them. Park it on the op's
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 pub struct SealedWrite {
     pub(crate) buf: Zeroizing<Vec<u8>>,
     pub(crate) done: usize,
@@ -106,10 +111,13 @@ impl SealedWrite {
                 Part::Sealed(s) => buf.extend_from_slice(s.wire()),
             }
         }
+        // The parts are consumed: their seals are wiped as soon as the wire holds them.
+        let secure = wire.secure;
+        drop(wire);
         Self {
             buf,
             done: 0,
-            secure: wire.secure,
+            secure,
             confirmed: None,
             refused: false,
         }
