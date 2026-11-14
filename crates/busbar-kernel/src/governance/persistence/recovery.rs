@@ -439,6 +439,10 @@ struct History<'a> {
     store: &'a CoreStore,
     proofs: BTreeMap<u64, Arc<VerifiedHead>>,
     records: HistoryRecords,
+    /// Set only for a read-only observation made beside this node's live
+    /// journal owner. That owner keeps appending, so its proof is confirmed as
+    /// a prefix of the owner's current admitted head instead of being pinned.
+    live: Option<&'a RuntimeJournal>,
 }
 impl<'a> History<'a> {
     fn new(store: &'a CoreStore) -> Self {
@@ -446,6 +450,13 @@ impl<'a> History<'a> {
             store,
             proofs: BTreeMap::new(),
             records: HistoryRecords::default(),
+            live: None,
+        }
+    }
+    fn observing(store: &'a CoreStore, journal: &'a RuntimeJournal) -> Self {
+        Self {
+            live: Some(journal),
+            ..Self::new(store)
         }
     }
     async fn proof(&mut self, node: u64) -> Result<Arc<VerifiedHead>, RecoveryError> {
@@ -495,8 +506,14 @@ impl<'a> History<'a> {
         candidate(&decoded)?.ok_or_else(|| invalid("selected frame is not a recovery candidate"))
     }
     async fn finish(&self) -> Result<(), RecoveryError> {
+        let live = self
+            .live
+            .filter(|journal| self.proofs.contains_key(&journal.node()));
         let mut predicates = Vec::new();
         for (node, proof) in &self.proofs {
+            if live.is_some_and(|journal| journal.node() == *node) {
+                continue;
+            }
             predicates.extend(
                 StoreJournal::new(self.store, *node)
                     .map_err(unavailable)?
@@ -504,7 +521,14 @@ impl<'a> History<'a> {
                     .map_err(unavailable)?,
             );
         }
-        check(self.store, predicates).await
+        check(self.store, predicates).await?;
+        if let Some(journal) = live {
+            journal
+                .confirm_live_owned(self.proofs.get(&journal.node()).map(Arc::as_ref))
+                .await
+                .map_err(unavailable)?;
+        }
+        Ok(())
     }
     async fn selection(
         &mut self,
@@ -570,6 +594,16 @@ impl<'a> History<'a> {
             child = Some(CompactCandidate::of(&at, &candidate, newer));
         }
     }
+}
+
+/// How a verification treats this node's own selected journal head.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pin {
+    /// Prove and pin the exact head. Every write path and owned check uses it.
+    Strict,
+    /// A read-only observation beside the live journal owner, which keeps
+    /// appending. Its admission is confirmed once by the caller instead.
+    Live,
 }
 
 #[derive(Clone)]
@@ -676,14 +710,19 @@ impl StoreRecovery {
     }
     async fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let mut history = History::new(&self.store);
-        self.verify_origin_with_history(event, &mut history).await
+        self.verify_origin_with_history(event, Pin::Strict, &mut history)
+            .await
     }
     async fn verify_origin_with_history(
         &self,
         event: &RecoveryEvent,
+        pin: Pin,
         history: &mut History<'_>,
     ) -> Result<(), RecoveryError> {
-        let local = self.owned_with_history(history).await?;
+        let local = match pin {
+            Pin::Strict => Some(self.owned_with_history(history).await?),
+            Pin::Live => None,
+        };
         let current = head(&self.store, &event.operation_id).await?;
         let initial = match &current {
             Some((tip, _)) => {
@@ -734,6 +773,9 @@ impl StoreRecovery {
         }
         history.finish().await?;
         check(&self.store, predicates).await?;
+        let Some(local) = local else {
+            return Ok(());
+        };
         StoreJournal::new(&self.store, self.node)
             .map_err(unavailable)?
             .confirm_owned(&local)
@@ -746,13 +788,14 @@ impl StoreRecovery {
         owned: bool,
     ) -> Result<(), RecoveryError> {
         let mut history = History::new(&self.store);
-        self.verify_checkpoint_with_history(event, owned, &mut history)
+        self.verify_checkpoint_with_history(event, owned, Pin::Strict, &mut history)
             .await
     }
     async fn verify_checkpoint_with_history(
         &self,
         event: &RecoveryEvent,
         owned: bool,
+        pin: Pin,
         history: &mut History<'_>,
     ) -> Result<(), RecoveryError> {
         let (tip, raw) = head(&self.store, &event.operation_id)
@@ -778,9 +821,9 @@ impl StoreRecovery {
                 "checkpoint is outside current selected ancestry".into(),
             ));
         }
-        self.verify_origin_with_history(event, history).await?;
+        self.verify_origin_with_history(event, pin, history).await?;
         history.finish().await?;
-        {
+        if pin == Pin::Strict {
             let proof = self.owned_with_history(history).await?;
             check(
                 &self.store,
@@ -891,12 +934,13 @@ impl StoreRecovery {
                 None
             };
             if selected.as_ref().is_some_and(|s| s.selected == *event) {
-                self.verify_checkpoint_with_history(event, true, &mut history)
+                self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
                     .await?;
                 return Ok(());
             }
             event.follows(selected.as_ref().map(|s| &s.selected))?;
-            self.verify_origin_with_history(event, &mut history).await?;
+            self.verify_origin_with_history(event, Pin::Strict, &mut history)
+                .await?;
             self.owned_with_history(&mut history).await?;
             drop(history);
             let body = body(&Candidate {
@@ -1275,23 +1319,32 @@ impl RecoverySink for StoreRecovery {
     async fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         self.verify_origin_at(event).await
     }
+    /// Read-only listing beside this node's live journal owner, which keeps
+    /// appending. Foreign evidence stays exactly pinned; this node is proved by
+    /// live admission, never by pinning a head its own writer is free to move.
     async fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
-        let local = self.owned().await?;
         let mut result = Vec::new();
         for (operation, tip) in heads(&self.store).await? {
             if tip.node != self.node {
-                let selection = self.selection(&operation, &tip).await?;
-                self.verify_checkpoint_at(&selection.selected, false)
-                    .await?;
+                let mut history = History::observing(&self.store, &self.journal);
+                let selection = history.selection(&operation, &tip, |_, _| Ok(())).await?;
+                history.finish().await?;
+                self.verify_checkpoint_with_history(
+                    &selection.selected,
+                    false,
+                    Pin::Live,
+                    &mut history,
+                )
+                .await?;
                 result.push(RecoveryInspection {
                     owner_node: tip.node,
                     event: selection.selected,
                 });
             }
         }
-        StoreJournal::new(&self.store, self.node)
-            .map_err(unavailable)?
-            .confirm_owned(&local)
+        // An empty listing still proves this node is admitted.
+        self.journal
+            .confirm_live_owned(None)
             .await
             .map_err(unavailable)?;
         Ok(result)
