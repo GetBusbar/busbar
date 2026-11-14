@@ -114,16 +114,7 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                 clippy::disallowed_methods,
                 reason = "boot: names why the store plugin did not load"
             )]
-            let plugin = match door {
-                StoreDoor::Linked(door) => crate::dispatch::LinkedRow::of_kind::<StoreV4>(door)
-                    .and_then(|row| crate::dispatch::load_linked::<StoreV4>(&row, bind)),
-                StoreDoor::Dropped {
-                    file,
-                    bytes,
-                    stated,
-                } => crate::dispatch::load_dropped_bytes::<StoreV4>(&bytes, &file, &stated, bind),
-            }
-            .map_err(|error| error.to_string())?;
+            let plugin = open_store(door, bind).map_err(|error| error.to_string())?;
             let backend =
                 LoadedPersistence::open(plugin, self.dispatcher.clone(), settings, self.limits)
                     .await?;
@@ -500,12 +491,7 @@ impl PersistenceBackend for LoadedPersistence {
             }
             let source = sdk::Commit::new(&candidate, self.limits.descriptor_bytes)
                 .map_err(|_| Failure::Overloaded)?;
-            self.submit(CommitRequest {
-                original: candidate,
-                source,
-                bytes: WipedBytes::default(),
-            })
-            .await
+            self.submit(CommitRequest { source, key }).await
         })
     }
     fn clock(&self, dataset: owned::DatasetId) -> owned::Call<'_, owned::ClockObservation> {
@@ -558,14 +544,10 @@ trait Request: Send + 'static {
     ) -> Result<Self::Value, ResponseError>;
 }
 
-struct Retained<R>(
-    UnsafeCell<R>,
-    #[expect(
-        dead_code,
-        reason = "held, never read: keeps the session alive while the request is retained"
-    )]
-    Option<Arc<Session>>,
-);
+struct Retained<R> {
+    cell: UnsafeCell<R>,
+    _session: Option<Arc<Session>>,
+}
 // SAFETY: Only the caller accesses the request, before submission and after native
 // completion. The dispatcher retains ownership without accessing this cell, including
 // after caller cancellation; native code accesses only stable pointed-to allocations.
@@ -687,7 +669,7 @@ struct ScanRequest {
 }
 struct CommitRequest {
     source: sdk::Commit,
-    bytes: WipedBytes,
+    key: owned::CommitKey,
 }
 struct ClockRequest(owned::DatasetId);
 // SAFETY: output pointers are host-owned allocations exclusively accessed by one
