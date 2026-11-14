@@ -12,14 +12,144 @@
 //! in its login role before; every later role is handed the same instance. Core owns this
 //! decision (decision 185): the loader opens what it is asked to.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use busbar_contract::auth_calls::AuthCalls;
+use busbar_contract::auth_calls::{AuthAxis, AuthCalls};
+use busbar_contract::plugin_rows::PluginRows;
+use busbar_contract::plugin_settings::ResolvedSettings;
 
-/// The instances one build opened, by provider name.
+/// Why a provider's instance was opened in this build rather than carried from the prior one
+/// (WASTE-AUTH-SECRETS W2). Audited with the provider on every open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opening {
+    /// No prior build held the provider.
+    New,
+    /// The provider's resolved settings changed.
+    Settings,
+    /// A resolved secret value changed (a rotation behind the same reference).
+    Secret,
+    /// The plugin binary the row admits changed (or the row is gone).
+    Binary,
+    /// The prior instance is not `reusable()`: quarantined, closed, metadata invalid, its tick
+    /// schedule failed, or an implementor that cannot tell.
+    Unhealthy,
+}
+
+impl Opening {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Settings => "settings",
+            Self::Secret => "secret",
+            Self::Binary => "binary",
+            Self::Unhealthy => "unhealthy",
+        }
+    }
+}
+
+/// A keyed digest of what one provider's instance was opened over. HMAC-SHA256 under a key drawn
+/// once per process and never persisted, so no secret-equivalent hash is kept, not even in memory.
+/// Used ONLY to decide whether the next build may carry the instance (W2); sharing within one
+/// build is by provider name (W1).
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct InstanceIdentity {
+    binary: [u8; 32],
+    settings: [u8; 32],
+    secrets: [u8; 32],
+}
+
+fn identity_key() -> &'static ring::hmac::Key {
+    static KEY: OnceLock<ring::hmac::Key> = OnceLock::new();
+    KEY.get_or_init(|| {
+        ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &ring::rand::SystemRandom::new())
+            .unwrap_or_else(|_| {
+                // No system randomness: a key no two processes share is still required, never a
+                // fixed one. Fall back to the clock and the address of this static.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos());
+                let mut seed = now.to_le_bytes().to_vec();
+                seed.extend_from_slice(&(std::ptr::addr_of!(KEY) as usize).to_le_bytes());
+                ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &seed)
+            })
+    })
+}
+
+fn keyed(parts: &[&[u8]]) -> [u8; 32] {
+    let mut ctx = ring::hmac::Context::with_key(identity_key());
+    for part in parts {
+        ctx.update(&(part.len() as u64).to_le_bytes());
+        ctx.update(part);
+    }
+    let mut out = [0_u8; 32];
+    out.copy_from_slice(ctx.sign().as_ref());
+    out
+}
+
+impl InstanceIdentity {
+    /// The identity of `module` opened over `resolved`: the admitted row (its archive digest, or
+    /// its name and version for a linked row), the settings document without its secret slots,
+    /// and each secret slot's bytes. `None` when the row is gone or the settings cannot be
+    /// encoded: such an instance is never carried.
+    fn of(registry: &dyn PluginRows, module: &str, resolved: &ResolvedSettings) -> Option<Self> {
+        let row = registry.resolve(module)?;
+        let archive = registry.archive_sha256(module).unwrap_or_default();
+        let binary = keyed(&[
+            module.as_bytes(),
+            row.name.as_bytes(),
+            row.version.as_bytes(),
+            &[u8::from(row.linked)],
+            archive.as_bytes(),
+        ]);
+        let (plain, secrets) = resolved.lend_secrets(&registry.secret_slots(module));
+        let encoded = plain.encode().ok()?;
+        let seal = crate::seal::lend();
+        let settings = keyed(&[module.as_bytes(), encoded.expose(&seal).as_slice()]);
+        let slots: Vec<&[u8]> = secrets.iter().map(|s| s.expose(&seal).as_slice()).collect();
+        let secrets = keyed(&slots);
+        Some(Self {
+            binary,
+            settings,
+            secrets,
+        })
+    }
+
+    fn differs(&self, prior: &Self) -> Option<Opening> {
+        if self.binary != prior.binary {
+            Some(Opening::Binary)
+        } else if self.settings != prior.settings {
+            Some(Opening::Settings)
+        } else if self.secrets != prior.secrets {
+            Some(Opening::Secret)
+        } else {
+            None
+        }
+    }
+}
+
+struct Held {
+    calls: Arc<dyn AuthCalls>,
+    identity: Option<InstanceIdentity>,
+}
+
+/// What a role builder prepares for a provider no role of this build has yet: the provider's
+/// resolved settings (the superset, login additions included) and the axis that opens it. The
+/// role's own checks (`answers`) have passed.
+pub(crate) struct Prepared {
+    pub(crate) axis: Arc<dyn AuthAxis>,
+    pub(crate) resolved: ResolvedSettings,
+}
+
+/// The instances one build holds, by provider name. Carried into the next build as its prior
+/// (WASTE-AUTH-SECRETS W2): an unchanged, healthy instance is handed to the new build's roles as
+/// is, with no OPEN, no READY fetch and no new tick schedule.
 #[derive(Default)]
 pub struct AuthInstances {
-    by_provider: indexmap::IndexMap<String, Arc<dyn AuthCalls>>,
+    by_provider: indexmap::IndexMap<String, Held>,
+    prior: Option<Arc<AuthInstances>>,
+    opened: Vec<(String, Opening)>,
+    reused: Vec<String>,
 }
 
 impl std::fmt::Debug for AuthInstances {
@@ -31,19 +161,104 @@ impl std::fmt::Debug for AuthInstances {
 }
 
 impl AuthInstances {
-    /// `provider`'s instance: the one this build already opened for another role, else `open()`'s,
-    /// kept for the roles after this one. A refusal is not kept.
+    /// A build's map over the build before it (`None` at boot).
+    #[must_use]
+    pub fn carrying(prior: Option<Arc<AuthInstances>>) -> Self {
+        Self {
+            prior,
+            ..Self::default()
+        }
+    }
+
+    /// The finished build's map, without its prior: the prior build's unchanged instances it
+    /// took are held here, the rest go with the prior App.
+    #[must_use]
+    pub fn sealed(mut self) -> Arc<Self> {
+        self.prior = None;
+        Arc::new(self)
+    }
+
+    /// Each provider this build OPENED, with why, in order.
+    #[must_use]
+    pub fn opened(&self) -> &[(String, Opening)] {
+        &self.opened
+    }
+
+    /// Each provider this build carried from the prior build unchanged.
+    #[must_use]
+    pub fn reused(&self) -> &[String] {
+        &self.reused
+    }
+
+    /// `provider`'s instance: the one this build already holds for another role; else the prior
+    /// build's, when it was opened over the same identity and reports `reusable()`; else a new
+    /// OPEN over `prepare()`'s settings. A refusal is not kept.
     pub(crate) fn instance(
         &mut self,
         provider: &str,
-        open: impl FnOnce() -> Result<Arc<dyn AuthCalls>, String>,
+        module: &str,
+        registry: &dyn PluginRows,
+        prepare: impl FnOnce() -> Result<Prepared, String>,
+        refused: impl FnOnce(String) -> String,
     ) -> Result<Arc<dyn AuthCalls>, String> {
-        if let Some(calls) = self.by_provider.get(provider) {
-            return Ok(Arc::clone(calls));
+        if let Some(held) = self.by_provider.get(provider) {
+            return Ok(Arc::clone(&held.calls));
         }
-        let calls = open()?;
-        self.by_provider
-            .insert(provider.to_string(), Arc::clone(&calls));
+        let Prepared { axis, resolved } = prepare()?;
+        let identity = InstanceIdentity::of(registry, module, &resolved);
+        let prior = self
+            .prior
+            .as_ref()
+            .and_then(|p| p.by_provider.get(provider))
+            .map(|held| (Arc::clone(&held.calls), held.identity.clone()));
+        let opening = match (&prior, &identity) {
+            (None, _) => Some(Opening::New),
+            (Some(_), None) | (Some((_, None)), Some(_)) => Some(Opening::Binary),
+            (Some((calls, Some(was))), Some(now)) => match now.differs(was) {
+                Some(why) => Some(why),
+                None if calls.reusable() => None,
+                None => Some(Opening::Unhealthy),
+            },
+        };
+        let (opening, carried) = match (opening, prior) {
+            (Some(opening), _) => (opening, None),
+            (None, Some((calls, _))) => (Opening::New, Some(calls)),
+            (None, None) => (Opening::New, None),
+        };
+        if let Some(calls) = carried {
+            drop(resolved);
+            tracing::info!(
+                provider,
+                module,
+                "auth instance carried into the new build unchanged"
+            );
+            self.reused.push(provider.to_string());
+            self.by_provider.insert(
+                provider.to_string(),
+                Held {
+                    calls: Arc::clone(&calls),
+                    identity,
+                },
+            );
+            return Ok(calls);
+        }
+        let opened = axis.open(module, &instance_label(provider), &resolved);
+        drop(resolved);
+        let calls = opened.map_err(refused)?;
+        tracing::info!(
+            provider,
+            module,
+            reason = opening.as_str(),
+            "auth instance opened"
+        );
+        self.opened.push((provider.to_string(), opening));
+        self.by_provider.insert(
+            provider.to_string(),
+            Held {
+                calls: Arc::clone(&calls),
+                identity,
+            },
+        );
         Ok(calls)
     }
 }

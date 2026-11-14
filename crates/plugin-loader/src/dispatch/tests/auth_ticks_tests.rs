@@ -14,6 +14,7 @@ use busbar_contract::abi::sdk::lent::Lent;
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::safe::{Instance, SafeSlot};
 use busbar_contract::abi::sdk::Out;
+use busbar_contract::auth_calls::AuthCalls;
 
 use super::*;
 use crate::auth_door::{AuthInstance, AuthSink};
@@ -119,6 +120,7 @@ macro_rules! door {
 door!(twice, Twice, "ticked-twice");
 door!(forever, Forever, "ticked-forever");
 door!(reloaded, Reloaded, "ticked-reloaded");
+door!(quarantined, Reloaded, "ticked-quarantined");
 
 fn dispatcher() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::new(
@@ -181,6 +183,13 @@ async fn an_inbound_instance_is_ticked_at_each_next_tick_ns_until_it_answers_zer
     }
     until(|| a.ticks_ended()).await;
     assert!(a.ticks_ended(), "the schedule ends on an answer of 0");
+    // T2i: the plugin's own `next_tick_ns == 0` is a completion, not a failure: the instance may
+    // still be carried into the next build (WASTE-AUTH-SECRETS W2).
+    assert!(a.answering());
+    assert!(
+        a.reusable(),
+        "a completed schedule leaves the instance reusable"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -225,4 +234,17 @@ async fn a_dropped_auth_instance_is_let_go_by_its_schedules_driver_ticket() {
         held.upgrade().is_none(),
         "a dropped auth instance is still held: its schedule's driver ticket was never recycled"
     );
+}
+
+/// T2h: a quarantined instance is neither answering nor reusable, so the next build opens it
+/// again (WASTE-AUTH-SECRETS W2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quarantined_auth_instance_is_not_reusable() {
+    let d = dispatcher();
+    let a = opened(&d, quarantined::door, "ticked-quarantined");
+    assert!(a.answering(), "an opened instance answers");
+    assert!(a.reusable(), "an opened, healthy instance is reusable");
+    a.plugin().incomplete_retirement();
+    assert!(!a.answering(), "a quarantined instance does not answer");
+    assert!(!a.reusable(), "a quarantined instance is not reusable");
 }

@@ -241,6 +241,7 @@ fn mixed(reader: Arc<Probe>, providers: &[Arc<Probe>]) -> Kit {
         admin: Default::default(),
         admin_chain: Default::default(),
         admin_modules,
+        auth_instances: Default::default(),
         public_url: Default::default(),
         oauth_as: Default::default(),
         demotion_record: Default::default(),
