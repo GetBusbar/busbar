@@ -16,6 +16,18 @@ fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
     let mut cell = BudgetCell::fresh(0);
     cell.accrue("live-model", 0, &tok(10));
     cell.accrue("dead-model", 0, &tok(0));
+    assert!(
+        !cell.models.iter().any(|m| &*m.model == "dead-model"),
+        "an all-zero accrual interns no row (UPG-H2)"
+    );
+    // A row whose counts were all taken back (e.g. a refund) is the dead entry prune removes.
+    cell.accrue("dead-model", 0, &tok(2));
+    cell.models
+        .iter_mut()
+        .find(|m| &*m.model == "dead-model")
+        .expect("a counted accrual interns its row")
+        .cur
+        .clear();
 
     cell.accrue("flushed-model", 0, &tok(5));
     if let Some(m) = cell
@@ -130,7 +142,7 @@ fn fractional_counts_remain_exact_through_debt_and_mixed_scale_hydration() {
         ],
         ..Default::default()
     };
-    let hydrated = durable_cell(aggregate, era_row, 0).unwrap();
+    let hydrated = durable_cell("", aggregate, era_row, 0).unwrap();
     assert_eq!(hydrated.total_tokens(), whole_count(3));
     assert_eq!(hydrated.requests, 3);
     assert_eq!(hydrated.billable_requests, 3);
@@ -199,7 +211,7 @@ fn durable_usage_hydration_preserves_full_range_and_refuses_negative_totals() {
             }],
             ..Default::default()
         };
-        let hydrated = durable_cell(row, Default::default(), 0);
+        let hydrated = durable_cell("", row, Default::default(), 0);
         if raw < 0 {
             assert!(hydrated.is_err());
         } else {
@@ -219,5 +231,51 @@ fn durable_usage_hydration_refuses_negative_dated_totals() {
         }],
         ..Default::default()
     };
-    assert!(durable_cell(Default::default(), era, 0).is_err());
+    assert!(durable_cell("", Default::default(), era, 0).is_err());
+}
+
+/// UPG-H2 (`laneless-ledger-row`): the sealed constructor refuses only the poison shape.
+#[test]
+fn model_cell_new_refuses_only_an_unnamed_lane_with_no_count() {
+    let era = RawRateEra::legacy(0);
+    let none = std::collections::BTreeMap::new;
+    let one = || {
+        std::collections::BTreeMap::from([(
+            busbar_contract::records::UNIT_INPUT.to_string(),
+            Count::ONE,
+        )])
+    };
+    assert!(
+        ModelCell::new("".into(), era, none(), none(), none()).is_none(),
+        "an unnamed lane with no count prices as LaneUnpriced and carries nothing"
+    );
+    for (cur, flushed, flushed_era) in [
+        (one(), none(), none()),
+        (none(), one(), none()),
+        (none(), none(), one()),
+    ] {
+        assert!(
+            ModelCell::new("".into(), era, cur, flushed, flushed_era).is_some(),
+            "an unnamed lane WITH counts stays visible and fails closed"
+        );
+    }
+    assert!(
+        ModelCell::new("m".into(), era, none(), none(), none()).is_some(),
+        "a named empty row is allowed (dated-era split, correction baselines)"
+    );
+}
+
+/// UPG-H2: an all-zero accrual, named or not, leaves the cell without a new row.
+#[test]
+fn an_all_zero_accrual_interns_no_row() {
+    let mut cell = BudgetCell::fresh(0);
+    let zero = std::collections::BTreeMap::from([(
+        busbar_contract::records::UNIT_INPUT.to_string(),
+        Count::ZERO,
+    )]);
+    cell.accrue_raw("", RawRateEra::legacy(0), &zero).unwrap();
+    cell.accrue_raw("", RawRateEra::legacy(0), &Default::default())
+        .unwrap();
+    cell.accrue_raw("m", RawRateEra::legacy(0), &zero).unwrap();
+    assert!(cell.models.is_empty());
 }

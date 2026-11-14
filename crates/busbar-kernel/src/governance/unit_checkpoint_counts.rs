@@ -185,7 +185,7 @@ impl GovState {
                 .ledger()
                 .get_usage_pair(&target.bucket, &era_bucket(&target.bucket), target.window)
                 .await?;
-            let mut cell = super::state::durable_cell(plain, dated, target.window)?;
+            let mut cell = super::state::durable_cell(&target.bucket, plain, dated, target.window)?;
             cell.last_touch = crate::store::now();
             if let Some(previous) = previous {
                 cell.group_owners = previous.group_owners.clone();
@@ -276,6 +276,12 @@ impl GovState {
         durable: bool,
         before_commit: impl FnOnce() -> Result<(), CountError>,
     ) -> Result<(), CountError> {
+        // A count-free unit (e.g. a pool 503 before any member bound its lane) changes no cell.
+        // This matches `record_counts_served_in_era`, so the served and checkpoint bills agree,
+        // and `finish` below may rely on the accrual having created its row (UPG-H2).
+        if units.values().all(|n| n.is_zero()) {
+            return before_commit();
+        }
         let mut shards: Vec<_> = targets
             .iter()
             .map(|(bucket, _, _)| self.budget.shard_index(bucket))

@@ -467,25 +467,41 @@ impl RawCell {
         })
     }
 
-    fn restore(self) -> RecordStoreResult<BudgetCell> {
+    fn restore(self, bucket: &str) -> RecordStoreResult<BudgetCell> {
         let mut identities = std::collections::BTreeSet::new();
+        let mut dropped = 0usize;
         let models = self
             .models
             .into_iter()
-            .map(|model| {
+            .map(|model| -> RecordStoreResult<Option<ModelCell>> {
                 let era = model.era.into();
                 if !identities.insert((model.model.clone(), era)) {
                     return Err(unresolved("duplicate raw model era in custody"));
                 }
-                Ok(ModelCell {
-                    model: model.model.into(),
+                Ok(ModelCell::new(
+                    model.model.into(),
                     era,
-                    cur: model.current,
-                    flushed: model.flushed,
-                    flushed_era: model.flushed_era,
-                })
+                    model.current,
+                    model.flushed,
+                    model.flushed_era,
+                ))
+            })
+            .filter_map(|row| match row {
+                Ok(None) => {
+                    dropped += 1;
+                    None
+                }
+                Ok(Some(row)) => Some(Ok(row)),
+                Err(e) => Some(Err(e)),
             })
             .collect::<RecordStoreResult<_>>()?;
+        if dropped != 0 {
+            tracing::warn!(
+                bucket,
+                dropped,
+                "correction custody: dropped {dropped} unnamed-lane rows with no counts (UPG-H2)"
+            );
+        }
         let fees = |rows: Vec<(RawEra, u64)>| -> RecordStoreResult<RawFeeEras> {
             let mut identities = std::collections::BTreeSet::new();
             let rows = rows
@@ -613,11 +629,11 @@ impl Custody {
         }
         let mut changed = false;
         for target in &mut self.targets {
-            let mut before = target.before.clone_raw()?;
+            let mut before = target.before.clone_raw(&target.bucket)?;
             before.correction = Some(Box::new(CorrectionBranch {
                 op_id: self.request.op_id,
                 window: target.window,
-                accepted: target.accepted.clone_raw()?,
+                accepted: target.accepted.clone_raw(&target.bucket)?,
             }));
             let Some((plain, dated)) = take_positives_mode(&mut before, target.window, true)?
             else {
@@ -672,7 +688,7 @@ impl Custody {
             } else {
                 &target.before
             };
-            let selected = selected.clone_raw()?;
+            let selected = selected.clone_raw(&target.bucket)?;
             let window = target.window;
             let mut plain = window_debt(&selected, window, false);
             let mut dated = window_debt(&selected, window, true);
@@ -1117,7 +1133,7 @@ impl Custody {
             .unwrap_or_default();
         remaining.merge(&SegmentedUsage::of(&held_plain, &held_dated)?);
 
-        let accepted = target.accepted.clone_raw()?;
+        let accepted = target.accepted.clone_raw(&target.bucket)?;
         let mut dependent_plain = window_debt(&accepted, window, false);
         let mut dependent_dated = window_debt(&accepted, window, true);
         if accepted.window_start == window {
@@ -1187,8 +1203,8 @@ impl Custody {
         }
         let mut targets = Vec::new();
         for target in self.targets {
-            target.before.restore()?;
-            target.accepted.restore()?;
+            target.before.restore(&target.bucket)?;
+            target.accepted.restore(&target.bucket)?;
             targets.push((target.bucket, target.window));
         }
         Ok(PendingCorrection {
@@ -1213,8 +1229,8 @@ impl Custody {
 }
 
 impl RawCell {
-    fn clone_raw(&self) -> RecordStoreResult<BudgetCell> {
-        self.clone().restore()
+    fn clone_raw(&self, bucket: &str) -> RecordStoreResult<BudgetCell> {
+        self.clone().restore(bucket)
     }
 }
 
@@ -1262,13 +1278,13 @@ pub(super) fn apply_selected_cut(
                 .iter()
                 .any(|model| model.model == base.model && model.era == base.era)
             {
-                live.models.push(ModelCell {
-                    model: base.model.clone(),
-                    era: base.era,
-                    cur: BTreeMap::new(),
-                    flushed: base.cur.clone(),
-                    flushed_era: base.cur.clone(),
-                });
+                live.models.extend(ModelCell::new(
+                    base.model.clone(),
+                    base.era,
+                    BTreeMap::new(),
+                    base.cur.clone(),
+                    base.cur.clone(),
+                ));
             }
         }
     } else if live.window_start < window {
