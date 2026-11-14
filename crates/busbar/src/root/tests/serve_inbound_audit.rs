@@ -748,3 +748,138 @@ async fn a_full_audit_store_lane_stops_first_auth_minting_before_any_unit_tag() 
         .unwrap()
         .unwrap();
 }
+
+/// The ops of one whole answer on the HTTP door: a head stating exactly one `content-length`
+/// equal to the body it opens (and no chunking), the whole body, then the stream's empty end.
+/// No `Refuse` may follow, so nothing can cut a stated length short. Returns status and body.
+fn whole_answer(wire: &[crate::root::listener::framed::WireOp]) -> (u32, bytes::Bytes) {
+    use crate::root::listener::framed::WireOp;
+    let [WireOp::Head {
+        status,
+        fields,
+        end: false,
+    }, WireOp::Data { bytes, end: false }, WireOp::Data {
+        bytes: last,
+        end: true,
+    }] = wire
+    else {
+        panic!("not head, whole body, empty end: {wire:?}");
+    };
+    assert!(last.is_empty(), "nothing after the whole body: {wire:?}");
+    let block = String::from_utf8_lossy(fields).to_ascii_lowercase();
+    let lines: Vec<&str> = block
+        .split("\r\n")
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("content-length:"))
+            .copied()
+            .collect::<Vec<_>>(),
+        [format!("content-length: {}", bytes.len()).as_str()],
+        "the head states the whole body's length once: {lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("transfer-encoding:")),
+        "a whole answer is not chunked: {lines:?}"
+    );
+    (*status, bytes.clone())
+}
+
+#[tokio::test]
+async fn unmetered_completion_states_its_length() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("unmetered-completion-length", false).await;
+    let mut served = g.served.clone();
+    // The third claim serves the plane's protected-resource document: an unmetered completion.
+    let snapshot = &mut served.planes[0].snapshot;
+    snapshot.claims[2].verb = "GET".into();
+    snapshot.audience = Some("https://resource.test".into());
+    snapshot.resource_metadata = Some("https://resource.test/framed".into());
+    let routes = crate::root::serve::door_mounts(served, || None, &[], &[], &[], &[])
+        .unwrap()
+        .data;
+    let head = Head {
+        method: "GET".into(),
+        target: "/framed".into(),
+        authority: String::new(),
+        query: None,
+        fields: Vec::new(),
+    };
+    let (_host, admission) = super::admission(Arc::clone(&g.app), routes.guests.clone(), &head);
+    let wire =
+        crate::root::listener::framed::serve_admitted_wire_test(routes, admission, Vec::new())
+            .await;
+    let (status, body) = whole_answer(&wire);
+    assert_eq!(status, 200);
+    let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(document["resource"], "https://resource.test");
+    assert_eq!(g.money.open_units(), 0);
+}
+
+#[tokio::test]
+async fn pre_flight_refusal_render_has_no_trailing_refuse() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed_full(
+        "pre-flight-refusal-length",
+        true,
+        Some(1),
+        Screen::Nothing,
+        None,
+        None,
+        false,
+    )
+    .await;
+    let routes = crate::root::serve::door_mounts(
+        g.served.clone(),
+        || None,
+        &[(busbar_kernel::config::KEYS_MODULE.into(), AuthPoints::HEAD)],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap()
+    .data;
+    let ingress = Ingress::new(&g, &routes);
+    let serve = |stream: u64| {
+        let routes = Arc::clone(&routes);
+        let ingress = &ingress;
+        let token = g.token.clone();
+        async move {
+            let (answer, head) = ingress.authenticate(stream, &token).await;
+            let admission = ingress.claim(stream, &answer, head);
+            let wire = crate::root::listener::framed::serve_admitted_wire_test(
+                routes,
+                admission,
+                vec![Ok(bytes::Bytes::from_static(b"ping"))],
+            )
+            .await;
+            ingress.host.stream_ended(OWNER, FRAMING, stream);
+            wire
+        }
+    };
+    // The one-request budget admits the first call; the second is refused before any egress.
+    let first = serve(1).await;
+    assert!(
+        matches!(
+            first.first(),
+            Some(crate::root::listener::framed::WireOp::Head { status: 200, .. })
+        ),
+        "the budget admits one call: {first:?}"
+    );
+    assert_eq!(g.requests().await, 1);
+    let refused = serve(2).await;
+    let (status, body) = whole_answer(&refused);
+    assert_eq!(status, 429, "{refused:?}");
+    assert!(
+        body.starts_with(b"refused:429:"),
+        "{:?}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(g.requests().await, 1, "the refused call charged nothing");
+    assert_eq!(g.money.open_units(), 0);
+    assert_eq!(g.post.open_units(), 0);
+}
