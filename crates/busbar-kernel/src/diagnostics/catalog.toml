@@ -1637,6 +1637,17 @@ summary = "The deployment set the nuclear `allow_all_metadata` escape hatch, so 
 action = "Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list)."
 
 [[diagnostic]]
+name = "ROUTING_POLICY_ABSTAINED_UNPRICED"
+doc = "A pool's ordering policy made no choice while no member has a known routing cost; the walk is SWRR. Warn-once per policy@pool."
+code = 5046
+class = "Proxy"
+slug = "routing-policy-abstained-unpriced"
+title = "Routing policy made no choice and no member has a known routing cost"
+severity = "Actionable"
+summary = "The pool's ordering policy made no choice and no member has a known routing cost; the pool uses weighted round-robin. Gates never report this. Warned once per policy and pool until the policy ranks that pool again."
+action = "If the policy ranks by cost, price every member's lane in rate_card; a named hook also needs `signals: [candidate_route_cost]`."
+
+[[diagnostic]]
 name = "CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED"
 doc = "`--validate`'s plugin pre-flight (the exact pipeline boot runs) failed. Plugin-trust subject."
 code = 6009

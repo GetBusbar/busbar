@@ -1392,6 +1392,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-5046",
+    "number": 5046,
+    "class": "proxy",
+    "slug": "routing-policy-abstained-unpriced",
+    "title": "Routing policy made no choice and no member has a known routing cost",
+    "severity": "actionable",
+    "summary": "The pool's ordering policy made no choice and no member has a known routing cost; the pool uses weighted round-robin. Gates never report this. Warned once per policy and pool until the policy ranks that pool again.",
+    "action": "If the policy ranks by cost, price every member's lane in rate_card; a named hook also needs `signals: [candidate_route_cost]`.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-6001",
     "number": 6001,
     "class": "plugins",

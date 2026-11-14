@@ -1290,6 +1290,17 @@ The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's cl
 
 **What to do:** Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list).
 
+<a id="routing-policy-abstained-unpriced"></a>
+### BUSBAR-5046 — Routing policy made no choice and no member has a known routing cost
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `routing-policy-abstained-unpriced`
+
+The pool's ordering policy made no choice and no member has a known routing cost; the pool uses weighted round-robin. Gates never report this. Warned once per policy and pool until the policy ranks that pool again.
+
+**What to do:** If the policy ranks by cost, price every member's lane in rate_card; a named hook also needs `signals: [candidate_route_cost]`.
+
 ## 6xxx — Plugins
 
 <a id="plugins-fetch-reload-miss"></a>
