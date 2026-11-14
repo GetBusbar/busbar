@@ -26,6 +26,28 @@ impl RoutingPolicy for Hook {
     }
 }
 
+/// A built-in ranking strategy's answer: a policy that says it is content-blind.
+struct Blind;
+
+#[async_trait::async_trait]
+impl RoutingPolicy for Blind {
+    async fn decide(
+        &self,
+        _: &busbar_contract::hooks::RoutingRequest<'_>,
+        _: &[busbar_contract::hooks::Candidate<'_>],
+        _: &busbar_contract::hooks::RoutingContext<'_>,
+        _: Duration,
+    ) -> busbar_contract::hooks::PolicyResult {
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "blind"
+    }
+    fn content_blind(&self) -> bool {
+        true
+    }
+}
+
 struct Nobody;
 
 impl CallerFacts for Nobody {
@@ -62,15 +84,19 @@ fn policy(content_blind: bool, send_prompt: bool, chained: bool) -> ResolvedPoli
         send_user: false,
         on_empty: PolicyOnError::Reject,
     });
+    let policy: Arc<dyn RoutingPolicy> = if content_blind {
+        Arc::new(Blind)
+    } else {
+        Arc::new(Hook)
+    };
     ResolvedPolicy::Policy {
-        policy: Arc::new(Hook),
+        policy,
         on_error: PolicyOnError::default(),
         on_error_chain: chain.into_iter().collect(),
         timeout: Duration::from_secs(1),
         send_prompt,
         send_user: false,
         on_empty: PolicyOnError::Reject,
-        content_blind,
     }
 }
 

@@ -229,7 +229,6 @@ fn gate(policy: Arc<dyn RoutingPolicy>, on_error: PolicyOnError) -> (u16, Resolv
             send_prompt: true,
             send_user: false,
             on_empty: PolicyOnError::Reject,
-            content_blind: false,
         },
     )
 }
