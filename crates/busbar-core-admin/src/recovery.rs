@@ -495,10 +495,6 @@ mod tests {
         ] {
             assert_eq!(crate::verb::verb_for("POST", path), Some(verb));
             assert_eq!(crate::verbs::required_scope(verb), VerbScope::Full);
-            assert_eq!(
-                crate::rate::MutationClass::for_verb(verb, crate::rate::CONFIG_CLASS_RULES),
-                crate::rate::MutationClass::Crud
-            );
             assert!(crate::verb::verb_for("GET", path).is_none());
         }
         for path in [

@@ -515,34 +515,7 @@ fn every_row_the_plane_decodes_names_a_verb_the_unit_knows() {
 }
 
 #[test]
-fn the_rate_class_is_the_shipped_table_and_not_the_default() {
-    assert_eq!(
-        mutation_class(KernelVerb::PostConfigApply),
-        MutationClass::Config
-    );
-    assert_eq!(
-        mutation_class(KernelVerb::PostConfigReload),
-        MutationClass::Config
-    );
-    assert_eq!(
-        mutation_class(KernelVerb::PostRestart),
-        MutationClass::Config
-    );
-    assert_eq!(
-        mutation_class(KernelVerb::PutAdminAuth),
-        MutationClass::Config
-    );
-    assert_eq!(mutation_class(KernelVerb::PostKeys), MutationClass::Crud);
-    assert_eq!(
-        mutation_class(KernelVerb::PostPluginsInspect),
-        MutationClass::PluginInspect
-    );
-
-    assert_eq!(
-        mutation_class(KernelVerb::GetAudit),
-        MutationClass::Forbidden
-    );
-    assert_eq!(MutationClass::Forbidden.limit(), 0);
+fn the_legacy_audit_read_is_read_only_in_the_kernel() {
     assert!(
         busbar_kernel::admin::scope::admin_required_scope("GET", "/api/v1/admin/audit")
             == Scope::ReadOnly
@@ -2222,11 +2195,6 @@ fn a_ledger_view_is_read_only_in_every_table_that_has_an_opinion() {
             "{path} does not require what the legacy /usage read requires"
         );
         assert_eq!(
-            mutation_class(verb),
-            MutationClass::Forbidden,
-            "{path} would spend a mutation slot per read"
-        );
-        assert_eq!(
             busbar_kernel::admin::scope::admin_required_scope("GET", path),
             Scope::ReadOnly
         );
@@ -2264,7 +2232,6 @@ async fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
             None::<Arc<dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync>>,
-            CONFIG_CLASS_RULES,
             Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
         let answer = verbs
@@ -2295,7 +2262,6 @@ async fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
             a_ledger_request("/api/v1/admin/adjust"),
         ),
         None::<Arc<dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync>>,
-        CONFIG_CLASS_RULES,
         Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );
     assert!(verbs
@@ -2545,11 +2511,6 @@ fn a_chain_read_is_read_only_in_every_table_that_has_an_opinion() {
             busbar_core_admin::required_scope(verb),
             busbar_core_admin::required_scope(KernelVerb::GetAudit),
             "{path} does not require what the legacy /audit read requires"
-        );
-        assert_eq!(
-            mutation_class(verb),
-            MutationClass::Forbidden,
-            "{path} would spend a mutation slot per read"
         );
         assert_eq!(
             busbar_kernel::admin::scope::admin_required_scope("GET", path),

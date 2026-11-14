@@ -101,10 +101,6 @@ fn telemetry_is_a_declared_read_with_bounded_schema_and_unavailable_response() {
     assert_eq!(row.path, "/api/v1/admin/telemetry");
     assert_eq!(row.scope, crate::VerbScope::ReadOnly);
     assert!(crate::VerbScope::ReadOnly.allows(row.scope));
-    assert_eq!(
-        crate::rate::MutationClass::for_verb(row.verb, &[]),
-        crate::rate::MutationClass::Forbidden
-    );
     let doc = crate::v1::json::openapi_doc();
     let operation = &doc["paths"][row.path]["get"];
     assert_eq!(operation["operationId"], "GetTelemetry");
