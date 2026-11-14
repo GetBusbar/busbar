@@ -295,9 +295,5 @@ pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
 pub(crate) mod real_store;
 
 #[cfg(test)]
-#[path = "tests/record_rows_fixture.rs"]
-pub(crate) mod record_rows_fixture;
-
-#[cfg(test)]
 #[path = "tests/kind_boundary_matrix_tests.rs"]
 mod kind_boundary_matrix_tests;

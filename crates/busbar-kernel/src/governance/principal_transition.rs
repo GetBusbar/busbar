@@ -1385,6 +1385,40 @@ impl RecordRows for ReceiptSnapshot {
         }
         Ok(self.0.get(key).cloned())
     }
+    fn record_put(
+        &self,
+        _: RecordSchemaId,
+        _: &[u8],
+        _: &busbar_contract::kinds::RecordBytes,
+    ) -> Result<(), busbar_contract::kinds::StoreError> {
+        Err(busbar_contract::kinds::StoreError::Rejected(
+            "principal snapshot is read only".into(),
+        ))
+    }
+    fn record_scan(
+        &self,
+        _: RecordSchemaId,
+        _: &[u8],
+        _: u32,
+    ) -> Result<
+        Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
+        busbar_contract::kinds::StoreError,
+    > {
+        Err(busbar_contract::kinds::StoreError::Rejected(
+            "principal snapshot does not scan".into(),
+        ))
+    }
+    fn claim(
+        &self,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> Result<bool, busbar_contract::kinds::StoreError> {
+        Err(busbar_contract::kinds::StoreError::Rejected(
+            "principal snapshot cannot claim".into(),
+        ))
+    }
 }
 
 async fn native_receipt_snapshot(
