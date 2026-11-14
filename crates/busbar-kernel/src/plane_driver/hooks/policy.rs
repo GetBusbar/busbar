@@ -163,8 +163,7 @@ pub(super) fn transformed(
     }
     serde_json::from_slice::<serde_json::Value>(&rewrite())
         .ok()
-        .as_ref()
-        .and_then(wire::parse_rewrite)
+        .and_then(wire::take_rewrite)
         .map_or(TransformOutcome::Abstain, TransformOutcome::Rewrite)
 }
 
