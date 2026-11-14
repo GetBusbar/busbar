@@ -1438,16 +1438,6 @@ impl std::fmt::Debug for Inbound {
     }
 }
 
-fn fresh_secret() -> Option<[u64; 2]> {
-    let mut b = [0u8; 16];
-    busbar_contract::crypto::fill(&mut b).ok()?;
-    let (a, z) = b.split_at(8);
-    Some([
-        u64::from_le_bytes(a.try_into().ok()?),
-        u64::from_le_bytes(z.try_into().ok()?),
-    ])
-}
-
 fn same(want: u64, got: u64) -> bool {
     std::hint::black_box(want ^ got) == 0
 }

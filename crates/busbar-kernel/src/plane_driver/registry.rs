@@ -239,6 +239,7 @@ fn distinct_scope_kinds() -> impl Iterator<Item = &'static str> {
         .map(|(_, k)| k)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn scope_kind_at(idx: u32) -> Option<&'static str> {
     distinct_scope_kinds().nth(idx as usize)
 }

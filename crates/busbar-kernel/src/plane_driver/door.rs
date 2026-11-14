@@ -1176,19 +1176,6 @@ fn openapi(decl: &PlaneDecl) -> serde_json::Value {
     paths
 }
 
-fn push_encoded(out: &mut String, name: &str) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    for byte in name.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            out.push(char::from(byte));
-        } else {
-            out.push('%');
-            out.push(char::from(HEX[usize::from(byte >> 4)]));
-            out.push(char::from(HEX[usize::from(byte & 15)]));
-        }
-    }
-}
-
 fn filled(target: &str, name: &str) -> String {
     // busbar:expect(bp::fresh_buffer, reason = "config: an admin verb's plane path is filled once per admin call")
     let mut path = String::with_capacity(target.len() + 3 * name.len());
@@ -1197,7 +1184,7 @@ fn filled(target: &str, name: &str) -> String {
             path.push('/');
         }
         if seg.len() > 1 && seg.starts_with('{') && seg.ends_with('}') {
-            push_encoded(&mut path, name);
+            busbar_contract::net::push_percent_encoded(&mut path, name);
         } else {
             path.push_str(seg);
         }

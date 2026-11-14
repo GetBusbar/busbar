@@ -4253,3 +4253,6 @@ async fn a_shed_followed_by_a_credential_refusal_is_the_walks_answer() {
         );
     }
 }
+
+#[path = "auth_fields_copy_tests.rs"]
+mod auth_fields_copy_tests;
