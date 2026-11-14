@@ -465,7 +465,7 @@ pub struct ListenerScope {
 
 impl Listener {
     /// The plane admission for a unit's original head. Read it through [`Derived::admission`],
-    /// which resolves it once per unit; a refusal with no unit resolves it here directly.
+    /// which resolves it once per unit (a refusal with no unit uses a record of its own).
     fn admission(&self, head: &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::PlaneAdmission);
         self.resolve_admission(head)
@@ -1476,7 +1476,8 @@ impl AsRef<[u8]> for FieldBytes {
 }
 
 /// An inbound unit's original head as an HTTP header map. A unit reads it through
-/// [`Derived::headers`], which builds it once; a refusal with no unit builds it here directly.
+/// [`Derived::headers`], which builds it once; a refusal with no unit reads it through a
+/// [`Derived`] record of its own.
 pub(crate) fn header_map(head: &Head) -> axum::http::HeaderMap {
     busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::HeaderMap);
     build_header_map(head)
@@ -3114,15 +3115,24 @@ impl Inbound {
                 return Err(UNIT_FOREIGN);
             }
         }
-        let (head, overloaded) = unit
+        let (recorded, overloaded) = unit
             .and_then(|u| {
-                self.units()
-                    .get(&u.id)
-                    .map(|s| (s.head.clone(), s.fixed() == Some(Fixed::Overloaded)))
+                self.units().get(&u.id).map(|s| {
+                    (
+                        s.head.clone().map(|head| (head, Arc::clone(&s.derived))),
+                        s.fixed() == Some(Fixed::Overloaded),
+                    )
+                })
             })
             .unwrap_or((None, false));
 
-        let head = head.or(r.request);
+        // A unit's refusal reads what its auth calls already derived from its original head; a
+        // refusal with no recorded head derives each input once, on a record of its own
+        // (SINGLE-PATH SP-A1 / SP-AU1).
+        let (head, derived) = match recorded {
+            Some((head, derived)) => (Some(head), derived),
+            None => (r.request, Arc::default()),
+        };
         let path = head
             .as_ref()
             .map(|h| h.target.clone())
@@ -3177,11 +3187,11 @@ impl Inbound {
                 };
                 let challenge = if reason == ReasonCode::Unauthenticated {
                     head.as_ref()
-                        .and_then(|head| table.listener.admission(head))
+                        .and_then(|head| derived.admission(&table.listener, head))
                         .map(|admission| {
-                            let present = head.as_ref().is_some_and(|head| {
-                                crate::auth::inbound_candidate(app, &header_map(head)).is_some()
-                            });
+                            let present = head
+                                .as_ref()
+                                .is_some_and(|head| derived.candidate(app, head).is_some());
                             crate::auth::challenge::render(
                                 if present {
                                     crate::auth::challenge::ChallengeError::InvalidToken
@@ -3324,15 +3334,15 @@ impl Inbound {
                         .map(|refuse| (refuse, target));
                     let admission = head
                         .as_ref()
-                        .and_then(|head| table.listener.admission(head));
-                    let client_token_present = head.as_ref().is_some_and(|head| {
-                        crate::auth::inbound_candidate(app, &header_map(head)).is_some()
-                    });
+                        .and_then(|head| derived.admission(&table.listener, head));
+                    let client_token_present = head
+                        .as_ref()
+                        .is_some_and(|head| derived.candidate(app, head).is_some());
                     crate::auth::scoped_unauthorized_with_completion_taps(
                         app,
                         &path,
                         door.as_ref(),
-                        admission.as_ref(),
+                        admission,
                         client_token_present,
                     )
                 }
