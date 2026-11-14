@@ -651,6 +651,10 @@ fi
 pin="(the branch file's BUSBAR_ORACLE_* env)"
 RELEASE_REPO="${BUSBAR_ORACLE_RELEASE_REPO:-}"; RELEASE_REF="${BUSBAR_ORACLE_RELEASE_REF:-none}"
 CRATE="${BUSBAR_ORACLE_CRATE:-busbar-release-oracle}"; BINNAME="${BUSBAR_ORACLE_BIN:-busbar-oracle}"
+# The ref names one directory under the oracle cache: refuse anything that is not one plain component.
+case "$RELEASE_REF" in
+  ''|.|..|*/*|*\\*) echo "oracle: BUSBAR_ORACLE_RELEASE_REF is not a single ref name: $RELEASE_REF" >&2; exit 2 ;;
+esac
 
 # Generated helpers belong with build output; the product checkout may be mounted read-only.
 root="${CARGO_TARGET_DIR:-$here/target}/oracle/rust/$RELEASE_REF"

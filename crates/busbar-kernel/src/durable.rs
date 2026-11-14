@@ -5,14 +5,12 @@ use std::io;
 use std::path::Path;
 
 /// Options a FEW call-sites need beyond the default. `Default` = the overlay/state posture (the
-/// common case): OS/umask-default mode, truncate-create the temp.
+/// common case): OS/umask-default mode. Every temp is created exclusively (`O_CREAT | O_EXCL`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DurableOpts {
     /// Unix file mode for the temp (and therefore the published) file, set AT OPEN. `None` =
     /// OS/umask default. A no-op where there are no mode bits.
     pub mode: Option<u32>,
-    /// Refuse to adopt a pre-existing temp (`O_CREAT | O_EXCL`), the anti-pre-plant posture.
-    pub exclusive: bool,
 }
 
 /// Observation of an authored document without following filesystem links.

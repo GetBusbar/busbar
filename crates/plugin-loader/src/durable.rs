@@ -20,7 +20,8 @@
 //!   * a failed write NEVER leaves a stale temp (the "cleaned only on rename failure" class),
 //!   * a RELATIVE path's parent-dir fsync is NEVER skipped (an empty parent resolves to `"."`
 //!     unconditionally),
-//!   * the signing-key posture (0600-at-open + O_EXCL anti-pre-plant + stale-temp pre-removal)
+//!   * every temp is created `O_EXCL` after pre-removing a stale one of its own name, so a link
+//!     planted at the predictable temp name is never written through, and the 0600-at-open mode
 //!     survives via `DurableOpts` with no bespoke code at the call-site.
 
 use std::io;
@@ -40,7 +41,7 @@ pub use documents::{
 };
 
 /// Options a FEW call-sites need beyond the default. `Default` = the overlay/state posture (the
-/// common case): OS/umask-default mode, truncate-create the temp.
+/// common case): OS/umask-default mode.
 #[derive(Clone, Copy, Default)]
 pub struct DurableOpts {
     /// Unix file mode for the temp (and therefore the published) file. `None` = OS/umask default.
@@ -59,12 +60,6 @@ pub struct DurableOpts {
     /// unix guarantee must set the ACL on that directory themselves. Stated here rather than left
     /// implicit because "we write it 0600" reads as a cross-platform claim and is not one.
     pub mode: Option<u32>,
-    /// Refuse to adopt a pre-existing temp (`O_CREAT | O_EXCL`) — the signing-key anti-pre-plant
-    /// posture. When set, the primitive still PRE-REMOVES a stale temp of its OWN about-to-use name
-    /// first (so a leftover from a crashed run can't wedge retry), then creates exclusively — so it
-    /// never adopts a temp it did not just clear. When unset (default) the temp is truncate-created
-    /// (`File::create` semantics).
-    pub exclusive: bool,
 }
 
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -182,17 +177,19 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
     {
         let mut open_opts = std::fs::OpenOptions::new();
         open_opts.write(true);
-        if opts.exclusive {
-            let _ = std::fs::remove_file(&tmp);
-            open_opts.create_new(true);
-        } else {
-            open_opts.create(true).truncate(true);
-        }
+        // Never adopt a pre-existing temp: pre-remove a stale one of our own name (a leftover from a
+        // crashed run must not wedge a retry; unlinking a planted link removes the link, never its
+        // target), then create exclusively (`O_CREAT | O_EXCL`), so the write never lands through a
+        // link or hard link planted at the predictable temp name.
+        let _ = std::fs::remove_file(&tmp);
+        open_opts.create_new(true);
         #[cfg(unix)]
         if let Some(m) = opts.mode {
             use std::os::unix::fs::OpenOptionsExt as _;
             open_opts.mode(m);
         }
+        #[cfg(not(unix))]
+        let _mode_is_unix_only = opts;
         fault_point!(FaultStep::Create);
         let mut f = open_opts.open(&tmp)?;
         fault_point!(FaultStep::Write);
