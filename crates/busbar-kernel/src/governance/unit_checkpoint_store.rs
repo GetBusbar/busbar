@@ -92,11 +92,10 @@ impl UnitCheckpointEvidence {
             audit_driving: tokio::sync::Mutex::new(()),
         }
     }
-    /// The runtime journal's verified head, after driving this owner's staged runs (W1 step 1).
-    /// It replays nothing; every use either commits under the owned H/O predicates or confirms
-    /// them with `confirm_owned_with`, so a stale head fails closed exactly as a replayed one did.
+    /// The runtime's live verified head, confirmed against native custody and
+    /// admission while its publication driver is held. No history is replayed.
     async fn proof(&self) -> RecordStoreResult<Arc<VerifiedHead>> {
-        self.journal.verified_head().await.map_err(error)
+        self.journal.live_proof().await.map_err(error)
     }
     pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<AuditRecord> {
         self.audit_pending
@@ -116,6 +115,10 @@ impl UnitCheckpointEvidence {
     ) -> RecordStoreResult<Option<AuditRecord>> {
         self.journal.flush().await.map_err(error)?;
         let journal = StoreJournal::new(&self.store, self.node).map_err(error)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "once per terminal unit, without the driver (A27c §8b bounds it)"
+        )]
         let mut replay = journal.historical_replay().await.map_err(error)?;
         let mut found = None;
         while let Some(original) = replay.next().await.map_err(error)? {
@@ -291,16 +294,24 @@ impl StoreUnitCheckpoints {
         if head.version != 1 || head.node != self.evidence.node || head.sequence == 0 {
             return Err(refusal("invalid running money head"));
         }
-        let ordinal = self
-            .evidence
-            .journal
-            .locate(proof, head.sequence)
-            .map_err(error)?;
-        let original = StoreJournal::new(&self.evidence.store, head.node)
-            .map_err(error)?
-            .read_verified_record_at(proof, head.sequence, ordinal)
-            .await
-            .map_err(error)?;
+        let journal = StoreJournal::new(&self.evidence.store, head.node).map_err(error)?;
+        // Records after the last chain discontinuity are located in O(1) from
+        // the runtime's verified head; only a cold record is replayed.
+        let ordinal = self.evidence.journal.locate(proof, head.sequence);
+        let original = match ordinal {
+            Some(ordinal) => journal
+                .read_located_record(proof, head.sequence, ordinal)
+                .await
+                .map_err(error)?,
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "cold fallback: record before the last chain discontinuity"
+            )]
+            None => journal
+                .read_verified_record(proof, head.sequence)
+                .await
+                .map_err(error)?,
+        };
         let record = JournalRecord::decode(&original.body).map_err(error)?;
         let mut reader = BodyReader::new(&record.body);
         let tag = reader.text();
@@ -401,36 +412,19 @@ impl StoreUnitCheckpoints {
         // append can move the head between the proof and the CAS.
         let (used, result) = match &pending {
             Pending::Persist(p) => {
-                if !p.appended {
-                    self.evidence.journal.confirm(&p.run).await.map_err(error)?;
-                    p.appended = true;
-                    self.save(Pending::Persist(p.clone()));
-                }
-                if p.selection_proof.is_none() {
-                    p.selection_proof = Some(self.evidence.proof().await?);
-                    self.save(Pending::Persist(p.clone()));
-                }
-                let proof = p
-                    .selection_proof
-                    .as_ref()
-                    .expect("retained selection proof");
-                let ordinals = p
-                    .run
-                    .records()
-                    .iter()
-                    .map(|record| self.evidence.journal.locate(proof, record.node_seq))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(error)?;
-                journal
-                    .select_verified_at(
-                        proof,
+                let operation = p.operation;
+                self.evidence
+                    .journal
+                    .change_live(
                         p.run.records(),
-                        &ordinals,
-                        Selection {
-                            operation_id: p.operation,
-                            address: self.address(&p.snapshot.id),
-                            expected: duplicate_expected(&p.expected),
-                            value: Secret::new(serde_json::to_vec(&p.head).map_err(error)?),
+                        LiveChange::Select {
+                            selection: Selection {
+                                operation_id: p.operation,
+                                address: self.address(&p.snapshot.id),
+                                expected: duplicate_expected(&p.expected),
+                                value: Secret::new(serde_json::to_vec(&p.head).map_err(error)?),
+                            },
+                            guards: &[],
                         },
                         p.selection_proof.clone(),
                         &|proof: &Arc<VerifiedHead>| self.retain_proof(operation, proof),
@@ -451,24 +445,6 @@ impl StoreUnitCheckpoints {
                         },
                         p.proof.clone(),
                         &|proof: &Arc<VerifiedHead>| self.retain_proof(operation, proof),
-                    )
-                    .await
-                    .map_err(error)?
-            }
-            Pending::Remove(p) => {
-                let ordinal = self
-                    .evidence
-                    .journal
-                    .locate(&p.proof, p.record.node_seq)
-                    .map_err(error)?;
-                journal
-                    .delete_verified_at(
-                        &p.proof,
-                        &p.record,
-                        ordinal,
-                        p.operation,
-                        self.address(&p.snapshot.id),
-                        duplicate_expected(&p.expected),
                     )
                     .await
                     .map_err(error)?

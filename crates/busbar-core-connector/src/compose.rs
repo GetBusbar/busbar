@@ -209,10 +209,6 @@ pub struct Connection {
     inbox: VecDeque<Got>,
     /// The bytes the pieces in `inbox` carry, kept as they come and go.
     inbox_bytes: usize,
-    /// The buffer TLS plaintext is gathered in, reused read after read.
-    tls_plain: Vec<u8>,
-    /// The buffer the TLS records owed the far side are gathered in, reused write after write.
-    tls_wire: Vec<u8>,
     receive_held: usize,
     /// The first message, sent once the framing begins.
     opening: Option<Opening>,
@@ -1057,8 +1053,6 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             inbox_bytes: 0,
-            tls_plain: Vec::new(),
-            tls_wire: Vec::new(),
             receive_held: 0,
             opening: dial.opening.take(),
             head_words: std::mem::take(&mut dial.head_words),
@@ -1168,8 +1162,6 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             inbox_bytes: 0,
-            tls_plain: Vec::new(),
-            tls_wire: Vec::new(),
             receive_held: 0,
             opening: dial.opening.take(),
             head_words: std::mem::take(&mut dial.head_words),
@@ -1284,8 +1276,6 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             inbox_bytes: 0,
-            tls_plain: Vec::new(),
-            tls_wire: Vec::new(),
             receive_held: 0,
             opening: None,
             head_words: HeadWords::default(),
@@ -2436,15 +2426,33 @@ impl Connection {
             if tls.read_tls(&mut rest).map_err(failed)? == 0 {
                 break;
             }
-            if let Err(e) = tls.process_new_packets() {
-                if self.side == SIDE_DIAL && crate::egress_audit::is_verification(&e) {
-                    crate::egress_audit::tls_failed(&self.target, &e.to_string());
+            match tls.process_new_packets() {
+                Ok(state) => plaintext = state.plaintext_bytes_to_read(),
+                Err(e) => {
+                    // A dialled refusal is explained; an accepted one (an mTLS client under the
+                    // listener's `client_ca`, no pin) keeps the stack's words exactly.
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: a failed handshake or record keeps its TLS failure text"
+                    )]
+                    let (text, refusal) = {
+                        let text = if matches!(tls, rustls::Connection::Client(_)) {
+                            crate::tls::explain::handshake_refusal(&e)
+                        } else {
+                            e.to_string()
+                        };
+                        let refusal = format!("tls: {text}");
+                        (text, refusal)
+                    };
+                    if self.side == SIDE_DIAL && crate::egress_audit::is_verification(&e) {
+                        crate::egress_audit::tls_failed(&self.target, &text);
+                    }
+                    self.security_error = Some(text);
+                    // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
+                    // peer sees it before the TCP close.
+                    let _ = self.tls_out();
+                    return Err(Failure::Refused(refusal));
                 }
-                self.security_error = Some(e.to_string());
-                // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
-                // peer sees it before the TCP close.
-                let _ = self.tls_out();
-                return Err(Failure::Refused(refusal));
             }
         }
         if end {
@@ -2483,10 +2491,9 @@ impl Connection {
                 self.begin()?;
             }
         }
-        // The plaintext is gathered in the connection's reused buffer, taken out while it is fed
-        // on (and put back, cleared, after).
-        let mut plain = std::mem::take(&mut self.tls_plain);
-        plain.clear();
+        // T6: the plaintext lands in this thread's TLS_PLAIN scratch (never the carrier's), read
+        // exactly: no doubling `Vec`, no 16 KiB stack buffer, and the guard wipes it on every exit.
+        let mut plain = Scratch::take(&TLS_PLAIN);
         let mut closed = false;
         #[cfg(test)]
         let plaintext = plaintext + tls_probe::inflation(plaintext);
@@ -2496,7 +2503,7 @@ impl Connection {
                     .read_into(plaintext, Tail::Trusted, |dst| tls.reader().read(dst))
                     .map_err(|_| Failure::Refused("tls read buffer".into()))?
                 {
-                    Ok(_) => {}
+                    Ok(k) if k == plaintext => {}
                     _ => return Err(Failure::Refused("tls: plaintext count mismatch".into())),
                 }
             }
@@ -2526,11 +2533,9 @@ impl Connection {
             r?;
         }
         self.tls_out()?;
-        if matches!(self.phase, Phase::Open) {
+        if matches!(self.phase, Phase::Open) && (!plain.is_empty() || closed) {
             self.ingest(plain.as_slice(), closed, true)?;
         }
-        plain.clear();
-        self.tls_plain = plain;
         Ok(())
     }
 
@@ -2650,10 +2655,10 @@ impl Connection {
     /// temporary `Vec`, one copy). It marks no frame end.
     fn tls_out(&mut self) -> Result<(), Failure> {
         if let Some(tls) = self.tls.as_mut() {
-            // What TLS owes is gathered in the connection's reused buffer, taken out while it is
-            // queued (and put back, cleared, after).
-            let mut bytes = std::mem::take(&mut self.tls_wire);
-            bytes.clear();
+            let mut sink = OutSink {
+                out: &mut self.out,
+                queued: &mut self.queued,
+            };
             while tls.wants_write() {
                 match tls.write_tls(&mut sink) {
                     Ok(_) => {}
@@ -2667,9 +2672,6 @@ impl Connection {
                     Err(e) => return Err(failed(e)),
                 }
             }
-            self.queue(&bytes, false);
-            bytes.clear();
-            self.tls_wire = bytes;
         }
         Ok(())
     }

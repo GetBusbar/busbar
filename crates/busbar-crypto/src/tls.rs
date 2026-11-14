@@ -175,6 +175,12 @@ pub fn webpki_algs() -> &'static [&'static dyn SignatureVerificationAlgorithm] {
     b::webpki_algs()
 }
 
+/// Whether `e` is the verifier refusing a CA certificate (CA:TRUE) presented as the end entity.
+#[must_use]
+pub fn ca_used_as_end_entity(e: &rustls::Error) -> bool {
+    b::ca_used_as_end_entity(e)
+}
+
 /// A private key loaded through the provider (for certificate resolvers).
 pub fn signing_key(
     key: &rustls_pki_types::PrivateKeyDer<'_>,
