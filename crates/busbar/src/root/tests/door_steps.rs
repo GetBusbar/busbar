@@ -71,7 +71,7 @@ use busbar_contract::section::TOOL_CALL_SECTION_KEY;
 
 use super::DoorPools;
 
-fn pools(yaml: &str) -> DoorPools {
+pub(crate) fn pools(yaml: &str) -> DoorPools {
     declared_by(yaml, TOOL_CALL_SECTION_KEY)
 }
 
@@ -1009,7 +1009,7 @@ fn downgrading(pool: &str, amount: u64, to: &str) -> busbar_kernel::config::grou
     }
 }
 
-async fn downgrade_book(
+pub(crate) async fn downgrade_book(
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
     allowed_pools: Option<Vec<String>>,
 ) -> (
@@ -1435,7 +1435,7 @@ async fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
     );
 }
 
-const DOWNGRADE_SECTION: &str = "models:\n  big: {}\n  small: {}\n  tiny: {}\n\
+pub(crate) const DOWNGRADE_SECTION: &str = "models:\n  big: {}\n  small: {}\n  tiny: {}\n\
      pools:\n  frontier:\n    members: [big]\n  value:\n    members: [small]\n\
      \x20 first:\n    members: [big]\n  second:\n    members: [small]\n  third:\n    members: [tiny]";
 
