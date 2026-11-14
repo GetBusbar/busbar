@@ -127,7 +127,7 @@ impl PersistenceBackend for MemoryBackend {
     fn commit(
         &self,
         prepared: PreparedCandidate,
-        key: busbar_contract::persistence::CommitKey,
+        _key: busbar_contract::persistence::CommitKey,
     ) -> Call<'_, Decision> {
         self.state.lock().unwrap().sent.push(prepared.clone());
         Box::pin(async move {
