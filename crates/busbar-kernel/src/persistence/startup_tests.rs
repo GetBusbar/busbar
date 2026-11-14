@@ -16,6 +16,8 @@ enum Verdict {
 }
 /// (writer, slot) → (seq, fingerprint, verdict): STORE-TRANSACTIONS §2.5.
 type SlotRows = BTreeMap<([u8; 16], u32), (u64, [u8; 32], Verdict)>;
+/// One-shot hook the mock `commit` runs on the locked state before anything else.
+type BeforeCommit = Box<dyn FnOnce(&mut Native) + Send>;
 #[derive(Default)]
 struct Native {
     rows: BTreeMap<Address, Secret<Vec<u8>>>,
@@ -122,7 +124,11 @@ impl PersistenceBackend for Backend {
                     native.now = now;
                 }
                 let fenced = if !native.rows.contains_key(&root_address()) {
-                    !native.rows.is_empty()
+                    // Records in the reserved import set do not count (MIGRATE-ON-BOOT seam).
+                    native
+                        .rows
+                        .keys()
+                        .any(|a| control::counts_toward_empty(NamespaceId(a.namespace)))
                         || !native.slots.is_empty()
                         || !control::initialization(candidate, self.info().dataset)
                 } else {
@@ -155,8 +161,13 @@ impl PersistenceBackend for Backend {
                     Some(Verdict::Conflict)
                 } else {
                     for mutation in &candidate.mutations {
-                        let Mutation::Put { address, value } = mutation else {
-                            panic!("unexpected startup mutation")
+                        let (address, value) = match mutation {
+                            Mutation::Put { address, value } => (address, value),
+                            Mutation::Delete(address) => {
+                                native.rows.remove(address);
+                                continue;
+                            }
+                            _ => panic!("unexpected startup mutation"),
                         };
                         native.rows.insert(address.clone(), value.clone());
                         // Closure deletes every slot row of the closed writer.
@@ -282,11 +293,7 @@ fn writer_row(backend: &Backend, writer: [u8; 16]) -> control::Writer {
 async fn admitted_after_stall(backend: &Arc<Backend>, prior: [u8; 16]) -> Arc<CoreStore> {
     let snapshot = || {
         let native = backend.0.lock().unwrap();
-        (
-            native.rows.clone(),
-            native.sends.len(),
-            native.receipts.len(),
-        )
+        (native.rows.clone(), native.sends.len(), native.slots.len())
     };
     let before = snapshot();
     let birth = birth_of(backend);
@@ -1356,17 +1363,6 @@ async fn live_roll_epoch_exhaustion_is_explicit_and_does_not_send() {
     assert_eq!(start.advance().await.unwrap(), Progress::Retired);
 }
 
-fn writer_row(backend: &Backend, writer: [u8; 16]) -> Option<control::Writer> {
-    let seal = crate::seal::lend();
-    backend
-        .0
-        .lock()
-        .unwrap()
-        .rows
-        .get(&writer_address(writer))
-        .and_then(|value| control::Writer::decode(value.expose(&seal)))
-}
-
 fn writer_rows(backend: &Backend) -> usize {
     backend
         .0
@@ -1439,10 +1435,12 @@ async fn initialized_only(backend: &Arc<Backend>) {
 }
 
 /// 8.2b: racing initializers, plain and with the loser's reply lost. The loser
-/// resolves its lost attempt definitively, re-inspects, builds no candidate and
-/// refuses boot; the winner's writer row is untouched and it finishes first start.
+/// resolves its lost attempt definitively and re-inspects. Under FIRST-START-TAKEOVER it
+/// never refuses: over the winner's live first start it waits (`Pending`) and writes
+/// nothing; over a still-unowned record its Register loses to the winner's and then it
+/// waits. The winner's writer row is untouched and it finishes first start.
 #[tokio::test]
-async fn racing_initializers_loser_refuses_and_winner_finishes() {
+async fn racing_initializers_loser_waits_and_winner_finishes() {
     for lose in [false, true] {
         for loser_reinspects_before_winner_registers in [true, false] {
             let backend = Arc::new(Backend::default());
@@ -1466,25 +1464,45 @@ async fn racing_initializers_loser_refuses_and_winner_finishes() {
             );
             let rows = writer_rows(&backend);
             let sends = backend.0.lock().unwrap().sends.len();
-            assert_eq!(a.advance().await, Err(Error::Conflict));
-            assert_eq!(writer_rows(&backend), rows, "A wrote nothing");
-            assert_eq!(
-                backend.0.lock().unwrap().sends.len(),
-                sends,
-                "A built no candidate"
-            );
-            let store = admitted(&mut b).await;
+            let store = if loser_reinspects_before_winner_registers {
+                // The record is unowned: A builds a Register, sends nothing, and loses it
+                // to B's; then A waits on B's live first start.
+                assert_eq!(a.advance().await, Ok(Progress::Advanced), "A builds");
+                assert_eq!(
+                    backend.0.lock().unwrap().sends.len(),
+                    sends,
+                    "built, not sent"
+                );
+                let store = admitted(&mut b).await;
+                assert_eq!(a.advance().await, Ok(Progress::Advanced), "A loses");
+                assert!(matches!(a.phase, Phase::Inspect));
+                let rows = writer_rows(&backend);
+                assert_eq!(a.advance().await, Ok(Progress::Pending));
+                assert_eq!(writer_rows(&backend), rows, "A wrote nothing");
+                store
+            } else {
+                assert_eq!(a.advance().await, Ok(Progress::Pending));
+                assert_eq!(writer_rows(&backend), rows, "A wrote nothing");
+                assert_eq!(
+                    backend.0.lock().unwrap().sends.len(),
+                    sends,
+                    "A built no candidate"
+                );
+                admitted(&mut b).await
+            };
+            assert!(a.waiting_on().is_some());
             let winner = store.authority().unwrap().writer;
-            assert!(writer_row(&backend, winner).is_some_and(|w| w.admits(1)));
+            assert!(writer_row(&backend, winner).admits(1));
             finish_first_start(&store).await;
-            assert!(writer_row(&backend, winner).is_some_and(|w| w.admits(1)));
+            assert!(writer_row(&backend, winner).admits(1));
         }
     }
 }
 
 /// 8.2b winner-late: B's Initialize applies but its reply is lost; A's is FENCED
-/// and A refuses without registering; B's retry reads back Applied, inspects an
-/// unowned birth record and registers retiring nobody.
+/// and A builds a Register over the unowned birth record without sending it; B's retry
+/// reads back Applied, inspects the unowned record and registers retiring nobody. A's
+/// Register then loses and A waits on B (FIRST-START-TAKEOVER).
 #[tokio::test]
 async fn racing_initializers_winner_late_registers_retiring_nobody() {
     let backend = Arc::new(Backend::default());
@@ -1499,10 +1517,19 @@ async fn racing_initializers_winner_late_registers_retiring_nobody() {
         "B applied, reply lost"
     );
     assert_eq!(a.advance().await, Ok(Progress::Advanced), "A is FENCED");
-    assert_eq!(a.advance().await, Err(Error::Conflict));
+    let sends = backend.0.lock().unwrap().sends.len();
+    assert_eq!(a.advance().await, Ok(Progress::Advanced), "A builds");
+    assert_eq!(
+        backend.0.lock().unwrap().sends.len(),
+        sends,
+        "built, not sent"
+    );
     let rows = writer_rows(&backend);
     let store = admitted(&mut b).await;
     assert_eq!(writer_rows(&backend), rows + 1, "only B's new writer");
+    assert_eq!(a.advance().await, Ok(Progress::Advanced), "A loses");
+    assert_eq!(a.advance().await, Ok(Progress::Pending), "A waits on B");
+    assert_eq!(writer_rows(&backend), rows + 1, "A wrote nothing");
     let seal = crate::seal::lend();
     for (address, value) in &backend.0.lock().unwrap().rows {
         if address.namespace == control::NAMESPACE.0 && address.key != control::DATASET_KEY {
@@ -1515,9 +1542,10 @@ async fn racing_initializers_winner_late_registers_retiring_nobody() {
 
 /// 8.2c: racing Register on first start. B registers; A's reply is lost; A's retry
 /// is a CONDITION_CONFLICT the readback proves final (W absent, birth predicate
-/// failed, no-ABA); A refuses boot and B is not retired.
+/// failed, no-ABA); A re-inspects and waits on B's live first start (FIRST-START-TAKEOVER),
+/// writing nothing, and B is not retired.
 #[tokio::test]
-async fn racing_register_loser_refuses_and_winner_is_not_retired() {
+async fn racing_register_loser_waits_and_winner_is_not_retired() {
     let backend = Arc::new(Backend::default());
     initialized_only(&backend).await;
     let mut a = startup(&backend, false);
@@ -1532,10 +1560,12 @@ async fn racing_register_loser_refuses_and_winner_is_not_retired() {
         Ok(Progress::Advanced),
         "readback: ConditionConflict"
     );
-    assert_eq!(a.advance().await, Err(Error::Conflict));
+    let rows = writer_rows(&backend);
+    assert_eq!(a.advance().await, Ok(Progress::Pending));
+    assert_eq!(writer_rows(&backend), rows, "A wrote nothing");
     let store = admitted(&mut b).await;
     let winner = store.authority().unwrap().writer;
-    assert!(writer_row(&backend, winner).is_some_and(|w| w.admits(1)));
+    assert!(writer_row(&backend, winner).admits(1));
     finish_first_start(&store).await;
 }
 
@@ -1613,4 +1643,699 @@ async fn target_bootstrap_lost_reply_and_peer_initialization() {
         bootstrap.advance().await,
         Err(ImportError::ReconciliationRequired)
     ));
+}
+
+// ---- FIRST-START-TAKEOVER (§8) ------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn t3_crashed_owner_is_taken_over_after_the_window_and_audited_once() {
+    let backend = Arc::new(Backend::default());
+    let owner = admitted(&mut startup(&backend, true))
+        .await
+        .first_start()
+        .unwrap()
+        .owner();
+    let mut b = startup(&backend, false);
+    assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+    tokio::time::advance(Duration::from_secs(89)).await;
+    assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+    let waiting = b.waiting_on().unwrap();
+    assert_eq!(waiting.owner, owner);
+    assert_eq!(waiting.window, FIRST_START_STALL);
+    assert_eq!(waiting.since_change, Duration::from_secs(89));
+    assert!(writer_row(&backend, owner).admits(1));
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let (store, log) = capture_diagnostics(admitted(&mut b)).await;
+    assert!(b.waiting_on().is_none());
+    assert!(!writer_row(&backend, owner).admits(1));
+    let writer = store.authority().unwrap().writer;
+    assert_eq!(birth_of(&backend).owner, Some(writer));
+    assert_eq!(
+        log.matches(&banner(&FIRST_START_TAKEOVER)).count(),
+        1,
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!("previous={}", writer_hex(&owner))),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!("new_writer={}", writer_hex(&writer))),
+        "{log}"
+    );
+    assert!(
+        !log.contains(&banner(&FIRST_START_TAKEOVER_UNCONFIRMED)),
+        "{log}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn t3_restart_resets_the_window() {
+    let backend = Arc::new(Backend::default());
+    let owner = admitted(&mut startup(&backend, true))
+        .await
+        .first_start()
+        .unwrap()
+        .owner();
+    let mut b = startup(&backend, false);
+    assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+    tokio::time::advance(Duration::from_secs(60)).await;
+    assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+    drop(b);
+    let mut restarted = startup(&backend, false);
+    assert_eq!(restarted.advance().await.unwrap(), Progress::Pending);
+    tokio::time::advance(Duration::from_secs(89)).await;
+    assert_eq!(restarted.advance().await.unwrap(), Progress::Pending);
+    assert!(writer_row(&backend, owner).admits(1));
+    tokio::time::advance(Duration::from_secs(1)).await;
+    admitted(&mut restarted).await;
+    assert!(!writer_row(&backend, owner).admits(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn t1_live_owner_is_never_retired_and_the_waiter_registers_after_publication() {
+    let backend = Arc::new(Backend::default());
+    let a = admitted(&mut startup(&backend, true)).await;
+    let proof = a.first_start().unwrap();
+    let mut b = startup(&backend, false);
+    let before = writer_row(&backend, proof.owner());
+    for _ in 0..100 {
+        assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+        assert_eq!(writer_row(&backend, proof.owner()), before);
+        tokio::time::advance(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        proof.freeze(vec![initial_binding("one", 1)]).await,
+        Ok(Progress::Advanced)
+    );
+    assert_eq!(proof.complete("one").await, Ok(Progress::Advanced));
+    assert_eq!(proof.publish().await, Ok(Progress::Advanced));
+    let store = admitted(&mut b).await;
+    assert!(store.first_start().is_none());
+    assert!(writer_row(&backend, proof.owner()).admits(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn t4_stuck_owner_is_fenced_after_takeover() {
+    let backend = Arc::new(Backend::default());
+    let a = admitted(&mut startup(&backend, true)).await;
+    let prior = a.first_start().unwrap();
+    let birth = backend.0.lock().unwrap().rows[&first_start::address()].clone();
+    let successor = admitted_after_stall(&backend, prior.owner()).await;
+    assert!(successor.first_start().is_some());
+    let taken = backend.0.lock().unwrap().rows[&first_start::address()].clone();
+    assert_ne!(taken, birth);
+    assert_eq!(
+        prior.freeze(vec![initial_binding("one", 1)]).await,
+        // A self-fenced FENCED on a first send is final (STORE-TRANSACTIONS section 2.3).
+        Err(Error::Authority)
+    );
+    assert!(!prior.permits("one").await.unwrap());
+    assert_eq!(
+        backend.0.lock().unwrap().rows[&first_start::address()],
+        taken
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn t5_late_progress_makes_the_takeover_lose_and_the_waiter_waits_again() {
+    let backend = Arc::new(Backend::default());
+    let a = admitted(&mut startup(&backend, true)).await;
+    let proof = a.first_start().unwrap();
+    let mut b = startup(&backend, false);
+    let ((), log) = capture_diagnostics(async {
+        assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+        tokio::time::advance(FIRST_START_STALL).await;
+        assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+        assert!(matches!(b.phase, Phase::Register(.., Some(_))));
+        assert_eq!(
+            proof.freeze(vec![initial_binding("one", 1)]).await,
+            Ok(Progress::Advanced)
+        );
+        assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+        assert!(matches!(b.phase, Phase::Inspect));
+        assert_eq!(b.lost, 1);
+        assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+        assert_eq!(b.waiting_on().unwrap().since_change, Duration::ZERO);
+    })
+    .await;
+    assert!(!log.contains(&banner(&FIRST_START_TAKEOVER)), "{log}");
+    assert!(writer_row(&backend, proof.owner()).admits(1));
+    assert_eq!(birth_of(&backend).owner, Some(proof.owner()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn t6_two_waiters_one_takeover_audited_once() {
+    let backend = Arc::new(Backend::default());
+    let owner = admitted(&mut startup(&backend, true))
+        .await
+        .first_start()
+        .unwrap()
+        .owner();
+    let mut b = startup(&backend, false);
+    let mut c = startup(&backend, false);
+    let (store, log) = capture_diagnostics(async {
+        assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+        assert_eq!(c.advance().await.unwrap(), Progress::Pending);
+        tokio::time::advance(FIRST_START_STALL).await;
+        assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+        assert_eq!(c.advance().await.unwrap(), Progress::Advanced);
+        assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+        assert_eq!(c.advance().await.unwrap(), Progress::Advanced);
+        assert!(matches!(c.phase, Phase::Inspect));
+        assert_eq!(c.advance().await.unwrap(), Progress::Pending);
+        admitted(&mut b).await
+    })
+    .await;
+    let writer = store.authority().unwrap().writer;
+    assert_eq!(birth_of(&backend).owner, Some(writer));
+    assert_eq!(c.waiting_on().unwrap().owner, writer);
+    assert!(writer_row(&backend, writer).admits(1));
+    assert!(!writer_row(&backend, owner).admits(1));
+    assert_eq!(
+        log.matches(&banner(&FIRST_START_TAKEOVER)).count(),
+        1,
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!("new_writer={}", writer_hex(&writer))),
+        "{log}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn t8_lost_register_race_on_an_unowned_record_waits_then_registers() {
+    let backend = Arc::new(Backend::default());
+    let mut a = startup(&backend, true);
+    assert_eq!(a.advance().await.unwrap(), Progress::Advanced);
+    assert_eq!(a.advance().await.unwrap(), Progress::Advanced);
+    let mut b = startup(&backend, false);
+    let mut c = startup(&backend, false);
+    assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+    assert_eq!(c.advance().await.unwrap(), Progress::Advanced);
+    assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+    assert_eq!(c.advance().await.unwrap(), Progress::Advanced);
+    assert!(matches!(c.phase, Phase::Inspect));
+    assert_eq!(c.advance().await.unwrap(), Progress::Pending);
+    let store = admitted(&mut b).await;
+    let proof = store.first_start().unwrap();
+    proof.freeze(Vec::new()).await.unwrap();
+    proof.publish().await.unwrap();
+    let late = admitted(&mut c).await;
+    assert!(late.first_start().is_none());
+    assert!(writer_row(&backend, proof.owner()).admits(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn t8_decided_register_losses_are_bounded() {
+    let backend = Arc::new(Backend::default());
+    admitted(&mut startup(&backend, true)).await;
+    let mut b = Startup::new(
+        backend.clone(),
+        Limits {
+            conflict_retries: 16,
+            ..limits()
+        },
+        false,
+    )
+    .unwrap();
+    for loss in 1..=17 {
+        // The record is owned by a live writer: wait out the window, then lose the Register.
+        assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+        tokio::time::advance(FIRST_START_STALL).await;
+        assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+        backend.0.lock().unwrap().force = Some(Ok(Decision::ConditionConflict));
+        let result = b.advance().await;
+        if loss <= 16 {
+            assert_eq!(result, Ok(Progress::Advanced), "loss {loss}");
+            // A forced loss changed nothing, so the same bytes are seen again: drop the stall.
+            b.stall = None;
+        } else {
+            assert_eq!(result, Err(Error::Conflict));
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn t9_window_grows_with_planes_done_and_the_probe_floor_covers_it() {
+    assert_eq!(first_start_probe_floor(0), Duration::from_secs(200));
+    assert_eq!(first_start_probe_floor(7), Duration::from_secs(935));
+    let backend = Arc::new(Backend::default());
+    let a = admitted(&mut startup(&backend, true)).await;
+    let proof = a.first_start().unwrap();
+    let plan = vec![initial_binding("one", 1), initial_binding("two", 2)];
+    proof.freeze(plan).await.unwrap();
+    proof.complete("one").await.unwrap();
+    assert_eq!(stall_window(&birth_of(&backend)), Duration::from_secs(125));
+    proof.complete("two").await.unwrap();
+    assert_eq!(stall_window(&birth_of(&backend)), Duration::from_secs(160));
+    let mut b = startup(&backend, false);
+    assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+    tokio::time::advance(Duration::from_secs(159)).await;
+    assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let store = admitted(&mut b).await;
+    let current = store.first_start().unwrap();
+    assert_eq!(current.complete("one").await, Ok(Progress::Advanced));
+    assert_eq!(current.publish().await, Ok(Progress::Advanced));
+}
+
+#[tokio::test(start_paused = true)]
+async fn t11_abandon_variants_in_the_mock() {
+    // An uncertain step does not block the hand-over.
+    let backend = Arc::new(Backend::default());
+    let a = admitted(&mut startup(&backend, true)).await;
+    let proof = a.first_start().unwrap();
+    proof.freeze(vec![initial_binding("one", 1)]).await.unwrap();
+    backend.0.lock().unwrap().lose_reply = true;
+    assert_eq!(proof.complete("one").await, Ok(Progress::Pending));
+    assert_eq!(proof.abandon().await, Ok(first_start::Abandoned::Retired));
+    let row = writer_row(&backend, proof.owner());
+    assert!(row.retired_through == row.admitted_through);
+    let mut b = startup(&backend, false);
+    assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+    admitted(&mut b).await;
+
+    // Taken over first: nothing written.
+    let backend = Arc::new(Backend::default());
+    let a = admitted(&mut startup(&backend, true)).await;
+    let prior = a.first_start().unwrap();
+    let successor = admitted_after_stall(&backend, prior.owner()).await;
+    let (rows, sends) = {
+        let native = backend.0.lock().unwrap();
+        (native.rows.clone(), native.sends.len())
+    };
+    assert_eq!(
+        prior.abandon().await,
+        Ok(first_start::Abandoned::NotAdmitted)
+    );
+    {
+        let native = backend.0.lock().unwrap();
+        assert!(native.rows == rows);
+        assert_eq!(native.sends.len(), sends);
+    }
+    let current = successor.first_start().unwrap();
+    assert!(writer_row(&backend, current.owner()).admits(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn t11_abandon_race_with_a_takeover_writes_nothing() {
+    let backend = Arc::new(Backend::default());
+    let a = admitted(&mut startup(&backend, true)).await;
+    let proof = a.first_start().unwrap();
+    let mut b = startup(&backend, false);
+    assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+    tokio::time::advance(FIRST_START_STALL).await;
+    assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+    let before = backend.0.lock().unwrap().rows.clone();
+    assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+    let sends = {
+        let mut native = backend.0.lock().unwrap();
+        let after = std::mem::replace(&mut native.rows, before);
+        native.before_commit = Some(Box::new(move |n: &mut Native| n.rows = after));
+        native.sends.len()
+    };
+    assert_eq!(
+        proof.abandon().await,
+        Ok(first_start::Abandoned::NotAdmitted)
+    );
+    assert_eq!(backend.0.lock().unwrap().sends.len(), sends + 1);
+    assert!(!writer_row(&backend, proof.owner()).admits(1));
+    let store = admitted(&mut b).await;
+    assert_eq!(
+        birth_of(&backend).owner,
+        Some(store.authority().unwrap().writer)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn t11_abandon_retries_once_when_only_the_manifest_moved() {
+    let backend = Arc::new(Backend::default());
+    let a = admitted(&mut startup(&backend, true)).await;
+    let proof = a.first_start().unwrap();
+    let sends = {
+        let mut native = backend.0.lock().unwrap();
+        native.before_commit = Some(Box::new(|n: &mut Native| {
+            let seal = crate::seal::lend();
+            let mut manifest = Manifest::decode(n.rows[&manifest_address()].expose(&seal)).unwrap();
+            manifest.registrar.execution_epoch += 1;
+            let registrar = writer_address(manifest.registrar.writer);
+            let row = control::Writer::decode(n.rows[&registrar].expose(&seal)).unwrap();
+            let moved = control::Writer {
+                admitted_through: 2,
+                ..row
+            };
+            n.rows
+                .insert(manifest_address(), Secret::new(manifest.encode().to_vec()));
+            n.rows
+                .insert(registrar, Secret::new(moved.encode().unwrap().to_vec()));
+        }));
+        native.sends.len()
+    };
+    assert_eq!(proof.abandon().await, Ok(first_start::Abandoned::Retired));
+    assert_eq!(backend.0.lock().unwrap().sends.len(), sends + 2);
+    assert!(!writer_row(&backend, proof.owner()).admits(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn t15_lost_takeover_reply_replayed_as_applied_is_audited_once() {
+    let backend = Arc::new(Backend::default());
+    let (owner, mut b) = takeover_built(&backend).await;
+    let n = backend.0.lock().unwrap().sends.len();
+    backend.0.lock().unwrap().lose_reply = true;
+    let (store, log) = capture_diagnostics(async {
+        assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+        assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+        assert!(matches!(b.phase, Phase::Attach(..)));
+        admitted(&mut b).await
+    })
+    .await;
+    {
+        let native = backend.0.lock().unwrap();
+        assert_eq!(native.sends[n], native.sends[n + 1]);
+    }
+    let writer = store.authority().unwrap().writer;
+    assert_eq!(
+        log.matches(&banner(&FIRST_START_TAKEOVER)).count(),
+        1,
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!("previous={}", writer_hex(&owner))),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!("new_writer={}", writer_hex(&writer))),
+        "{log}"
+    );
+    assert!(
+        !log.contains(&banner(&FIRST_START_TAKEOVER_UNCONFIRMED)),
+        "{log}"
+    );
+    assert!(!writer_row(&backend, owner).admits(1));
+    assert_eq!(birth_of(&backend).owner, Some(writer));
+}
+
+#[tokio::test(start_paused = true)]
+async fn t15_takeover_with_an_unknown_outcome_is_unconfirmed() {
+    for lost_first in [false, true] {
+        let backend = Arc::new(Backend::default());
+        let (owner, mut b) = takeover_built(&backend).await;
+        let (result, log) = capture_diagnostics(async {
+            if lost_first {
+                backend.0.lock().unwrap().lose_reply = true;
+                assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+            }
+            // A STALE answer to a self-fenced Register cannot be resolved by readback:
+            // the outcome is unknown (STORE-TRANSACTIONS slot invariant).
+            backend.0.lock().unwrap().force = Some(Ok(Decision::Stale));
+            b.advance().await
+        })
+        .await;
+        assert_eq!(result, Ok(Progress::Reconcile), "lost first: {lost_first}");
+        assert_eq!(
+            log.matches(&banner(&FIRST_START_TAKEOVER_UNCONFIRMED))
+                .count(),
+            1,
+            "{log}"
+        );
+        assert!(log.contains("outcome unknown"), "{log}");
+        assert!(log.contains(&writer_hex(&owner)), "{log}");
+        assert!(!log.contains(&banner(&FIRST_START_TAKEOVER)), "{log}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn t15_refused_takeover_is_unconfirmed_and_writes_nothing() {
+    for (forced, expected) in [
+        (Ok(Decision::OpIdConflict), Error::Authority),
+        (Err(Failure::Refused), Error::Backend(Failure::Refused)),
+    ] {
+        let backend = Arc::new(Backend::default());
+        let (owner, mut b) = takeover_built(&backend).await;
+        let (rows, slots) = {
+            let native = backend.0.lock().unwrap();
+            (native.rows.clone(), native.slots.len())
+        };
+        backend.0.lock().unwrap().force = Some(forced);
+        let (result, log) = capture_diagnostics(b.advance()).await;
+        assert_eq!(result, Err(expected));
+        assert_eq!(
+            log.matches(&banner(&FIRST_START_TAKEOVER_UNCONFIRMED))
+                .count(),
+            1,
+            "{log}"
+        );
+        assert!(log.contains(&format!("refused: {expected:?}")), "{log}");
+        assert!(!log.contains(&banner(&FIRST_START_TAKEOVER)), "{log}");
+        let native = backend.0.lock().unwrap();
+        assert!(native.rows == rows);
+        assert_eq!(native.slots.len(), slots);
+        drop(native);
+        assert!(writer_row(&backend, owner).admits(1));
+    }
+}
+
+const IMPORT_SUMMARY: &[u8] = &[0];
+
+/// A slotted key on one fixed queue slot; `seq` must grow per writer.
+fn slot_key(seq: u64) -> busbar_contract::persistence::CommitKey {
+    busbar_contract::persistence::CommitKey::slotted(
+        65_535,
+        seq,
+        &busbar_contract::caps::SlotSeal::acquire_for_tests(),
+    )
+    .unwrap()
+}
+
+fn import_address(key: &[u8]) -> Address {
+    Address {
+        namespace: control::IMPORT_NAMESPACE.0,
+        key: key.to_vec(),
+    }
+}
+
+/// One R0 page as MIGRATE commits it under the owner's authority: `SUMMARY` and core's R0
+/// progress row, each under an exact predicate. `last` deletes both and the remaining row.
+fn r0_page(
+    store: &CoreStore,
+    backend: &Backend,
+    consumed: u8,
+    fold: bool,
+    last: bool,
+) -> PreparedCandidate {
+    let native = backend.0.lock().unwrap();
+    let seal = crate::seal::lend();
+    let summary = import_address(IMPORT_SUMMARY);
+    let progress = first_start::r0_progress_address();
+    let summary_now = native.rows[&summary].expose(&seal).clone();
+    let progress_now = native.rows.get(&progress).map(|v| v.expose(&seal).clone());
+    let pages = progress_now
+        .as_deref()
+        .and_then(first_start::R0Progress::decode)
+        .map_or(0, |p| p.pages);
+    let mut predicates = vec![exact(summary.clone(), summary_now)];
+    predicates.push(match progress_now {
+        Some(value) => exact(progress.clone(), value),
+        None => Predicate {
+            address: progress.clone(),
+            expected: ExpectedValue::Absent,
+        },
+    });
+    let mutations = if last {
+        vec![
+            Mutation::Delete(progress),
+            Mutation::Delete(summary),
+            Mutation::Delete(import_address(b"row")),
+        ]
+    } else {
+        let mut mutations = vec![Mutation::Put {
+            address: progress,
+            value: Secret::new(
+                first_start::R0Progress {
+                    version: 1,
+                    pages: pages + 1,
+                    cursor: Vec::new(),
+                }
+                .encode()
+                .unwrap(),
+            ),
+        }];
+        if fold {
+            mutations.push(Mutation::Put {
+                address: summary,
+                value: Secret::new(vec![consumed]),
+            });
+        }
+        mutations
+    };
+    drop(native);
+    PreparedCandidate::new(Candidate {
+        id: store.next_id().unwrap(),
+        codec: CANDIDATE_VERSION,
+        predicates,
+        mutations,
+        time: None,
+        result: Secret::new(Vec::new()),
+    })
+    .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn t16_an_importing_owner_is_never_taken_over() {
+    for fold in [true, false] {
+        let backend = Arc::new(Backend::default());
+        {
+            let mut native = backend.0.lock().unwrap();
+            native
+                .rows
+                .insert(import_address(IMPORT_SUMMARY), Secret::new(vec![0]));
+            native
+                .rows
+                .insert(import_address(b"row"), Secret::new(b"1.5.5".to_vec()));
+        }
+        let a = admitted(&mut startup(&backend, true)).await;
+        let proof = a.first_start().unwrap();
+        let birth = backend.0.lock().unwrap().rows[&first_start::address()].clone();
+        let writer = writer_row(&backend, proof.owner());
+        let mut b = startup(&backend, false);
+        let mut page = 0u8;
+        for step in 0..2400u32 {
+            if step > 0 && step.is_multiple_of(240) {
+                page += 1;
+                let decision = backend
+                    .commit(
+                        r0_page(&a, &backend, page, fold, false),
+                        slot_key(u64::from(page)),
+                    )
+                    .await
+                    .unwrap();
+                assert!(matches!(decision, Decision::Applied(_)), "page {page}");
+                proof.note_r0_commit();
+            }
+            let sends = backend.0.lock().unwrap().sends.len();
+            assert_eq!(b.advance().await.unwrap(), Progress::Pending, "step {step}");
+            assert_eq!(
+                backend.0.lock().unwrap().sends.len(),
+                sends,
+                "B built a candidate"
+            );
+            tokio::time::advance(Duration::from_millis(250)).await;
+        }
+        assert!(matches!(
+            backend
+                .commit(
+                    r0_page(&a, &backend, page + 1, fold, true),
+                    slot_key(u64::from(page) + 1),
+                )
+                .await
+                .unwrap(),
+            Decision::Applied(_)
+        ));
+        assert!(!backend
+            .0
+            .lock()
+            .unwrap()
+            .rows
+            .keys()
+            .any(|k| k.namespace == control::IMPORT_NAMESPACE.0
+                || *k == first_start::r0_progress_address()));
+        assert_eq!(
+            backend.0.lock().unwrap().rows[&first_start::address()],
+            birth
+        );
+        assert_eq!(writer_row(&backend, proof.owner()), writer);
+        proof.freeze(Vec::new()).await.unwrap();
+        proof.publish().await.unwrap();
+        let store = admitted(&mut b).await;
+        assert!(store.first_start().is_none());
+        assert!(writer_row(&backend, proof.owner()).admits(1));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn t16_a_page_racing_the_takeover_makes_it_lose() {
+    let backend = Arc::new(Backend::default());
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .insert(import_address(IMPORT_SUMMARY), Secret::new(vec![0]));
+    let a = admitted(&mut startup(&backend, true)).await;
+    let proof = a.first_start().unwrap();
+    let mut b = startup(&backend, false);
+    let ((), log) = capture_diagnostics(async {
+        assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+        tokio::time::advance(FIRST_START_STALL).await;
+        assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+        assert!(matches!(
+            backend
+                .commit(r0_page(&a, &backend, 1, true, false), slot_key(1))
+                .await
+                .unwrap(),
+            Decision::Applied(_)
+        ));
+        assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+        assert_eq!(b.lost, 1);
+        assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+    })
+    .await;
+    assert!(!log.contains(&banner(&FIRST_START_TAKEOVER)), "{log}");
+    assert!(writer_row(&backend, proof.owner()).admits(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn t18_the_slow_step_check_measures_each_r0_gap() {
+    for slow in [false, true] {
+        let backend = Arc::new(Backend::default());
+        let a = admitted(&mut startup(&backend, true)).await;
+        let fs = a.first_start().unwrap();
+        let ((), log) = capture_diagnostics(async {
+            for page in 0..4 {
+                let gap = if slow && page == 2 { 50 } else { 40 };
+                tokio::time::advance(Duration::from_secs(gap)).await;
+                fs.note_r0_commit();
+            }
+            tokio::time::advance(Duration::from_secs(40)).await;
+            fs.freeze(Vec::new()).await.unwrap();
+        })
+        .await;
+        let slow_steps = log
+            .matches(&banner(&crate::diagnostics::FIRST_START_SLOW_STEP))
+            .count();
+        if slow {
+            assert_eq!(slow_steps, 1, "{log}");
+            assert!(log.contains("r0-commit"), "{log}");
+        } else {
+            assert_eq!(slow_steps, 0, "{log}");
+        }
+    }
+}
+
+#[test]
+fn r0_progress_row_has_a_fixed_layout_and_refuses_anything_else() {
+    let row = first_start::R0Progress {
+        version: 1,
+        pages: 7,
+        cursor: b"cursor".to_vec(),
+    };
+    let bytes = row.encode().unwrap();
+    assert_eq!(&bytes[..8], b"bbr0prg1");
+    assert_eq!(bytes.len(), 24 + 6);
+    assert_eq!(first_start::R0Progress::decode(&bytes), Some(row.clone()));
+    let mut wrong = bytes.clone();
+    wrong[0] ^= 1;
+    assert_eq!(first_start::R0Progress::decode(&wrong), None);
+    let mut version = bytes.clone();
+    version[8] = 2;
+    assert_eq!(first_start::R0Progress::decode(&version), None);
+    assert_eq!(
+        first_start::R0Progress::decode(&bytes[..bytes.len() - 1]),
+        None
+    );
+    let mut long = bytes.clone();
+    long.push(0);
+    assert_eq!(first_start::R0Progress::decode(&long), None);
+    assert_eq!(first_start::R0Progress { version: 2, ..row }.encode(), None);
 }

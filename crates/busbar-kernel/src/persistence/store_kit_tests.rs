@@ -9,8 +9,8 @@ use super::*;
 use crate::persistence::startup;
 use busbar_contract::persistence::{
     control, Address, AttemptId, BackendInfo, Call, ClockObservation, CommitKey, DatasetId,
-    Decision, Durability, ExpectedValue, Failure, Mutation, Page, PreparedCandidate, Read,
-    ReadResult, Scan,
+    Decision, Durability, ExpectedValue, Failure, Mutation, NamespaceId, Page, PreparedCandidate,
+    Read, ReadResult, Scan,
 };
 use busbar_contract::Secret;
 use futures::FutureExt;

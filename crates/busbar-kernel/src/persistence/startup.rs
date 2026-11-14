@@ -286,7 +286,10 @@ pub struct Startup {
     limits: Limits,
     initialize_empty: bool,
     phase: Phase,
-    /// Definitive CAS losses of Initialize or Register (STORE-TRANSACTIONS §2.3).
+    /// The first-start owner's progress rows as last observed (FIRST-START-TAKEOVER §2.1).
+    stall: Option<Stall>,
+    /// Definitive CAS losses of Initialize or Register, bounded by `limits.conflict_retries`
+    /// (STORE-TRANSACTIONS §2.3, FIRST-START-TAKEOVER §2.5).
     lost: usize,
 }
 
@@ -315,6 +318,7 @@ impl Startup {
             limits,
             initialize_empty,
             phase: Phase::Inspect,
+            stall: None,
             lost: 0,
         })
     }
@@ -340,13 +344,41 @@ impl Startup {
                 }
                 self.phase = Phase::Inspect;
             }
-            Phase::Register(manifest, authority, birth, attempt) => {
+            Phase::Register(manifest, authority, birth, attempt, takeover) => {
                 let result = attempt.submit().await;
+                // A decided CONDITION_CONFLICT applied nothing: re-inspect (§2.5), bounded by
+                // `conflict_retries` (STORE-TRANSACTIONS §2.3).
                 if is_loss(&result, false) {
+                    if let Some(t) = &takeover {
+                        tracing::debug!(
+                            previous = %writer_hex(&t.previous),
+                            "first start takeover lost to a concurrent write; re-inspecting"
+                        );
+                    }
                     return self.lose();
                 }
-                if let Some(progress) = settle(result)? {
-                    return Ok(progress);
+                match settle(result) {
+                    Err(error) => {
+                        if let Some(t) = &takeover {
+                            takeover_unconfirmed(t, authority.writer, Outcome::Refused(&error));
+                        }
+                        return Err(error);
+                    }
+                    Ok(Some(Progress::Reconcile)) => {
+                        if let Some(t) = &takeover {
+                            takeover_unconfirmed(t, authority.writer, Outcome::Unknown);
+                        }
+                        return Ok(Progress::Reconcile);
+                    }
+                    // Pending: the same attempt and its facts are resubmitted next advance.
+                    Ok(Some(progress)) => return Ok(progress),
+                    Ok(None) => {
+                        if let Some(t) = &takeover {
+                            takeover_applied(t, authority.writer);
+                        }
+                        self.stall = None;
+                        self.phase = Phase::Attach(manifest, authority, birth);
+                    }
                 }
             }
             Phase::Attach(manifest, authority, birth) => {
@@ -569,12 +601,6 @@ impl Startup {
                     .as_ref()
                     .map(|bytes| Birth::decode(bytes.expose(&seal), info.dataset))
                     .transpose()?;
-                // Interim rule until FIRST-START-TAKEOVER lands: after a definitive loss,
-                // an unpublished birth record (owned or not) builds no candidate. The
-                // loser refuses boot in this boot, writing nothing and retiring nobody.
-                if self.lost > 0 && birth.as_ref().is_some_and(|birth| !birth.published) {
-                    return Err(Error::Conflict);
-                }
                 let mut predicates = vec![
                     exact(root_address(), root_bytes.expose(&seal).clone()),
                     exact(manifest_address(), bytes.expose(&seal).clone()),
