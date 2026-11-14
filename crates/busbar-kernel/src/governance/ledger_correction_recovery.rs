@@ -887,7 +887,8 @@ impl Custody {
                     RawDecision::Applied => target.accepted,
                     RawDecision::ConditionConflict => target.before,
                 };
-                Ok((target.bucket, target.window, cut.restore()?))
+                let cell = cut.restore(&target.bucket)?;
+                Ok((target.bucket, target.window, cell))
             })
             .collect()
     }
