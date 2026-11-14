@@ -7215,8 +7215,8 @@ pub(crate) fn report_of(
             fee = fee.max(u32::from(!matches!(sum, Some(n) if n.is_zero())));
             continue;
         }
-        if let Some(name) = facts.classes.get(u.class as usize) {
-            let count = u.count().ok()?;
+        if let Some(name) = facts.classes.get(class as usize) {
+            let count = sum?;
             // Counts are nonnegative, so a class totals zero only when every count is zero: a zero
             // count never opens an entry (no zero row to sweep out afterwards).
             if count.is_zero() {
