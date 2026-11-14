@@ -1065,11 +1065,11 @@ impl Connection {
 
     /// THE ONE READINESS CONDITION a prepared exchange's facts wait for, as
     /// [`Connection::poll_prepared`] tests it after its flush: open past its handshake and framing
-    /// begin, and every byte of protocol output gone to the carrier and flushed.
+    /// begin (a parked begin owes its opening, which [`Connection::is_open`] already refuses), and
+    /// every byte of protocol output gone to the carrier and flushed.
     fn prepared_now(&self) -> bool {
         self.is_open()
             && !self.handshaking()
-            && !self.begin_parked()
             && self.out.is_empty()
             && self.ends.is_empty()
             && !self.unflushed
