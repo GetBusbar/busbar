@@ -45,6 +45,11 @@ fn default_index() -> String {
 
 pub const INDEX_ENV: &str = "BUSBAR_PLUGIN_INDEX";
 
+/// The release downloader the migrate host fetches the index and plugin assets with.
+fn release_download(url: &str) -> Result<Vec<u8>, String> {
+    crate::root::plugin_fetch::downloader(&[])(url)
+}
+
 /// THE RELEASE INDEX: every plugin the index knows, each with its repository, the repositories it
 /// was published from before, its kind, the words a configuration may name it by, and its
 /// releases with the ABI version each was built for.
@@ -281,6 +286,10 @@ pub struct RootHost {
     local: OnceCell<PluginRegistry>,
 
     index: OnceCell<Result<Index, String>>,
+    /// Where the release index is read from: `BUSBAR_PLUGIN_INDEX` if set, else the release default.
+    pub(in crate::root) index_source: String,
+    /// How the index (over https) and plugin assets are downloaded.
+    pub(in crate::root) download: fn(&str) -> Result<Vec<u8>, String>,
 
     fetched: OnceCell<FetchedDir>,
     startup: Option<std::sync::Arc<crate::root::startup_upgrade::documents::Documents>>,
@@ -410,6 +419,8 @@ impl RootHost {
             providers_file,
             local: OnceCell::new(),
             index: OnceCell::new(),
+            index_source: std::env::var(INDEX_ENV).unwrap_or_else(|_| default_index()),
+            download: release_download,
             fetched: OnceCell::new(),
             startup: None,
             templates: Default::default(),
@@ -540,13 +551,13 @@ impl RootHost {
     fn index(&self) -> Result<&Index, String> {
         self.index
             .get_or_init(|| {
-                let source = std::env::var(INDEX_ENV).unwrap_or_else(|_| default_index());
+                let source = &self.index_source;
                 let bytes = if source.starts_with(HTTPS_SOURCE_PREFIX)
                     || source.starts_with(HTTP_SOURCE_PREFIX)
                 {
-                    crate::root::plugin_fetch::downloader(&[])(&source)?
+                    (self.download)(source)?
                 } else {
-                    std::fs::read(&source).map_err(|e| format!("{source}: {e}"))?
+                    std::fs::read(source).map_err(|e| format!("{source}: {e}"))?
                 };
                 Index::parse(&bytes).map_err(|e| format!("{source}: not a release index: {e}"))
             })
@@ -618,8 +629,8 @@ impl RootHost {
             .get()
             .expect("the staging directory was created")
             .0;
-        let bytes = crate::root::plugin_fetch::downloader(&[])(&target.url)
-            .map_err(|e| format!("downloading {}: {e}", target.url))?;
+        let bytes =
+            (self.download)(&target.url).map_err(|e| format!("downloading {}: {e}", target.url))?;
         std::fs::write(dir.join(&target.filename), bytes)
             .map_err(|e| format!("{}: {e}", dir.display()))?;
         let mut cfg = self.plugins.clone().unwrap_or_default();
