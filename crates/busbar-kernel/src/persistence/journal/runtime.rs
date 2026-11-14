@@ -76,6 +76,15 @@ struct State {
     failed: Option<RuntimeError>,
 }
 
+/// Publication progress mirrored from `State` for confirm waiters, so a
+/// confirm whose own ticket is already applied never queues behind the driver
+/// that is committing later tickets.
+#[derive(Debug, Clone, Copy, Default)]
+struct Progress {
+    completed: u64,
+    failed: Option<RuntimeError>,
+}
+
 pub struct RuntimeJournal {
     owner: Arc<()>,
     store: Arc<CoreStore>,
@@ -83,6 +92,7 @@ pub struct RuntimeJournal {
     budget: BufferBudget,
     state: Mutex<State>,
     driving: tokio::sync::Mutex<()>,
+    progress: tokio::sync::watch::Sender<Progress>,
 }
 impl RuntimeJournal {
     /// Root constructs exactly one shared owner and passes this same Arc to
@@ -124,7 +134,33 @@ impl RuntimeJournal {
                 failed: None,
             }),
             driving: tokio::sync::Mutex::new(()),
+            progress: tokio::sync::watch::Sender::new(Progress::default()),
         }))
+    }
+
+    /// Mirror `completed` and `failed` to confirm waiters. Called with `state`
+    /// still locked, so the watch is never behind `state` by more than one publish.
+    fn publish(&self, state: &State) {
+        let (completed, failed) = (state.completed, state.failed);
+        self.progress.send_modify(|progress| {
+            progress.completed = completed;
+            progress.failed = failed;
+        });
+    }
+
+    /// Record a sticky failure and publish it to every confirm waiter.
+    fn fail(&self, state: &mut State, error: RuntimeError) -> RuntimeError {
+        state.failed = Some(error);
+        self.publish(state);
+        error
+    }
+
+    /// The sticky custody failure, if any: exactly the error a drive would
+    /// return first. O(1); never drives, waits for or retries a held run.
+    pub fn failed(&self) -> Option<RuntimeError> {
+        self.state
+            .lock()
+            .map_or(Some(RuntimeError::Corrupt), |state| state.failed)
     }
 
     pub fn node(&self) -> u64 {
@@ -335,6 +371,7 @@ impl RuntimeJournal {
         if !Arc::ptr_eq(&self.owner, &run.owner) {
             return Err(RuntimeError::Authority);
         }
+        let mut progress = self.progress.subscribe();
         // An equal local ticket from another owner is not an ownership proof.
         let target = {
             let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
@@ -350,7 +387,25 @@ impl RuntimeJournal {
             }
             run.ticket
         };
-        self.drive_through(target).await
+        // Lock order is not ticket order: a driver holding the lock for a later
+        // ticket also applies this one. Return as soon as this ticket is applied
+        // (or custody fails) instead of queueing for that driver's later commits.
+        // A tokio Mutex waiter is cancel-safe, so the losing branch is dropped.
+        tokio::select! {
+            biased;
+            failed = async {
+                progress
+                    .wait_for(|p| p.failed.is_some() || p.completed >= target)
+                    .await
+                    .map_or(Some(RuntimeError::Corrupt), |p| p.failed)
+            } => {
+                match failed {
+                    Some(error) => Err(error),
+                    None => self.confirm_completed(run),
+                }
+            }
+            driver = self.driving.lock() => self.drive_locked(driver, target).await,
+        }
     }
 
     fn confirm_completed(&self, run: &StagedRun) -> std::result::Result<(), RuntimeError> {
@@ -413,7 +468,16 @@ impl RuntimeJournal {
     }
 
     async fn drive_through(&self, target: u64) -> std::result::Result<(), RuntimeError> {
-        let _driver = self.driving.lock().await;
+        let driver = self.driving.lock().await;
+        self.drive_locked(driver, target).await
+    }
+
+    /// The serial publication loop. The caller holds `driving` for its whole run.
+    async fn drive_locked(
+        &self,
+        _driver: tokio::sync::MutexGuard<'_, ()>,
+        target: u64,
+    ) -> std::result::Result<(), RuntimeError> {
         loop {
             let (run, proof) = {
                 let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
@@ -481,26 +545,24 @@ impl RuntimeJournal {
                     let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
                     let pending = state.pending.pop_front().ok_or(RuntimeError::Corrupt)?;
                     if !Arc::ptr_eq(&pending.run, &run) {
-                        state.failed = Some(RuntimeError::Corrupt);
-                        return Err(RuntimeError::Corrupt);
+                        return Err(self.fail(&mut state, RuntimeError::Corrupt));
                     }
                     state.completed = run.ticket;
                     state.verified = verified;
                     state.records -= run.records.len();
                     state.bytes -= run.bytes;
+                    self.publish(&state);
                 }
                 super::super::commit::SubmitResult::Decided(_) => {
-                    self.state.lock().map_err(|_| RuntimeError::Corrupt)?.failed =
-                        Some(RuntimeError::Conflict);
-                    return Err(RuntimeError::Conflict);
+                    let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+                    return Err(self.fail(&mut state, RuntimeError::Conflict));
                 }
                 super::super::commit::SubmitResult::NoEffect(error) => {
                     return Err(RuntimeError::Backend(error));
                 }
                 super::super::commit::SubmitResult::Reconcile => {
-                    self.state.lock().map_err(|_| RuntimeError::Corrupt)?.failed =
-                        Some(RuntimeError::Reconcile);
-                    return Err(RuntimeError::Reconcile);
+                    let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+                    return Err(self.fail(&mut state, RuntimeError::Reconcile));
                 }
                 super::super::commit::SubmitResult::Uncertain
                 | super::super::commit::SubmitResult::Busy => return Err(RuntimeError::Pending),

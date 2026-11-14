@@ -245,6 +245,15 @@ impl Node {
         }
         Ok(())
     }
+    /// The journal's sticky custody failure on a finish path, in O(1). A unit
+    /// waits only for its own record; held runs of other units stay with the
+    /// lease-tick retry and the admission refusal at unit open.
+    pub(crate) fn journal_failed(&self) -> Result<(), String> {
+        match self.lane.get().and_then(|journal| journal.failed()) {
+            Some(error) => Err(format!("native journal: {error:?}")),
+            None => Ok(()),
+        }
+    }
     #[must_use]
     pub fn journal_refusal(&self) -> Option<String> {
         self.lane.get().and_then(|journal| journal.refuses_money())
@@ -598,7 +607,7 @@ impl Node {
                 tracing::error!(reason = error, "unit terminal audit remains unconfirmed");
                 return None;
             }
-            if let Err(error) = self.retry_held_journal().await {
+            if let Err(error) = self.journal_failed() {
                 tracing::error!(reason = error, "unit audit remains unconfirmed");
                 return None;
             }
@@ -934,7 +943,7 @@ impl Node {
                 if let Err(error) = await_terminal(confirmation).await {
                     return journal_unavailable("", &error);
                 }
-                match self.retry_held_journal().await {
+                match self.journal_failed() {
                     Ok(()) => response,
                     Err(error) => journal_unavailable("", &error),
                 }
@@ -1142,10 +1151,9 @@ impl http_body::Body for LateBody {
             let journal = this.journal.clone();
             this.confirmation = Some(Box::pin(async move {
                 await_terminal(terminal).await?;
-                journal
-                    .flush()
-                    .await
-                    .map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
+                journal.failed().map_or(Ok(()), |error| {
+                    Err(format!("terminal audit is unconfirmed: {error:?}"))
+                })
             }));
         }
         if let Some(confirmation) = &mut this.confirmation {
@@ -1265,7 +1273,7 @@ impl SessionSlot<'_> {
     pub async fn finish(mut self, post: &NodeEndPost) -> Result<(), String> {
         let confirmation = self.finish_inner(post, None, Evidence::default());
         await_terminal(confirmation).await?;
-        self.occupied.node.retry_held_journal().await
+        self.occupied.node.journal_failed()
     }
 
     pub async fn finish_with<U: Units>(
@@ -1276,7 +1284,7 @@ impl SessionSlot<'_> {
         let evidence = units.evidence(&self.ctx);
         let confirmation = self.finish_inner(post, None, evidence);
         await_terminal(confirmation).await?;
-        self.occupied.node.retry_held_journal().await
+        self.occupied.node.journal_failed()
     }
 
     fn finish_inner(
@@ -1802,16 +1810,63 @@ impl Accruing {
     }
 }
 
-// Serving waits for both native confirmation and ticket readiness. Dropping the
-// JoinHandle only detaches the owned task; cancellation never abandons its original.
-type TerminalConfirmation = tokio::task::JoinHandle<Result<(), String>>;
+// Serving waits for both native confirmation and ticket readiness. The awaiting
+// task runs the confirmation itself; a confirmation dropped unfinished (never
+// awaited, or its awaiter cancelled mid-confirm) is restarted in one detached
+// task, so cancellation never abandons its original. `confirm` is cancel-safe.
+struct TerminalConfirmation {
+    inner: Option<Confirm>,
+}
+
+struct Confirm {
+    audit: StagedAudit,
+    custody: Arc<crate::root::serve::TicketCustody>,
+    key: UnitKey,
+    completed: bool,
+}
+
+impl Confirm {
+    async fn run(self) -> Result<(), String> {
+        let confirmed = self.audit.journal.confirm(&self.audit.run).await;
+        self.custody
+            .terminal(self.key, self.completed && confirmed.is_ok());
+        confirmed.map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
+    }
+}
+
+impl TerminalConfirmation {
+    async fn wait(mut self) -> Result<(), String> {
+        let Some(inner) = self.inner.as_ref() else {
+            return Ok(());
+        };
+        let confirmed = inner.audit.journal.confirm(&inner.audit.run).await;
+        let Some(inner) = self.inner.take() else {
+            return Ok(());
+        };
+        inner
+            .custody
+            .terminal(inner.key, inner.completed && confirmed.is_ok());
+        confirmed.map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
+    }
+}
+
+impl Drop for TerminalConfirmation {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn(inner.run())),
+            Err(_) => inner.custody.terminal(inner.key, false),
+        }
+    }
+}
 
 async fn await_terminal(confirmation: Option<TerminalConfirmation>) -> Result<(), String> {
-    if let Some(task) = confirmation {
-        task.await
-            .map_err(|error| format!("terminal confirmation task failed: {error}"))??;
+    match confirmation {
+        Some(confirmation) => confirmation.wait().await,
+        None => Ok(()),
     }
-    Ok(())
 }
 
 struct StagedAudit {
@@ -1825,15 +1880,18 @@ impl StagedAudit {
         key: UnitKey,
         completed: bool,
     ) -> Option<TerminalConfirmation> {
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        if tokio::runtime::Handle::try_current().is_err() {
             custody.terminal(key, false);
             return None;
-        };
-        Some(runtime.spawn(async move {
-            let confirmed = self.journal.confirm(&self.run).await;
-            custody.terminal(key, completed && confirmed.is_ok());
-            confirmed.map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
-        }))
+        }
+        Some(TerminalConfirmation {
+            inner: Some(Confirm {
+                audit: self,
+                custody,
+                key,
+                completed,
+            }),
+        })
     }
 }
 
