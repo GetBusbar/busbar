@@ -69,6 +69,51 @@ struct Attempt {
     proof: Arc<VerifiedHead>,
     runs: usize,
 }
+
+/// The selected-row change a domain owner asks `change_live` to make.
+pub(crate) enum LiveChange<'a> {
+    Select {
+        selection: Selection,
+        guards: &'a [Predicate],
+    },
+    Delete {
+        operation_id: [u8; 16],
+        address: Address,
+        expected: ExpectedValue,
+    },
+}
+
+/// A live node journal is contiguous after its last discontinuity: each
+/// append is written at `R(head.count)` with `node_seq == previous + 1`. So a
+/// record of that window sits at `count - (sequence - seq)` for any head of
+/// this journal.
+fn ordinal_of(proof: &VerifiedHead, contiguous_from: u64, sequence: u64) -> Option<u64> {
+    if sequence == 0 || sequence < contiguous_from || sequence > proof.head.sequence {
+        return None;
+    }
+    let ordinal = proof
+        .head
+        .count
+        .checked_sub(proof.head.sequence.checked_sub(sequence)?)?;
+    (ordinal >= 1).then_some(ordinal)
+}
+
+/// `prior` must be a prefix of `current`: same dataset, node and owner, and
+/// no later sequence.
+fn prefix_of(
+    prior: &VerifiedHead,
+    current: &VerifiedHead,
+) -> std::result::Result<(), RuntimeError> {
+    if prior.dataset != current.dataset
+        || prior.node != current.node
+        || prior.owner != current.owner
+        || prior.head.sequence > current.head.sequence
+    {
+        return Err(RuntimeError::Authority);
+    }
+    Ok(())
+}
+
 struct PendingRun {
     run: Arc<StagedRun>,
     attempt: Option<Attempt>,
@@ -119,6 +164,10 @@ impl RuntimeJournal {
             return Err(RuntimeError::Invalid);
         }
         let journal = StoreJournal::new(&store, node).map_err(RuntimeError::from)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the one replay that builds the live head"
+        )]
         let mut replay = journal
             .historical_replay()
             .await
@@ -304,6 +353,10 @@ impl RuntimeJournal {
         budget: BufferBudget,
     ) -> std::result::Result<Vec<JournalRecord>, RuntimeError> {
         let journal = StoreJournal::new(&self.store, node).map_err(RuntimeError::from)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "read-only history of a foreign node, off the live path"
+        )]
         let mut replay = journal
             .historical_replay()
             .await
@@ -548,21 +601,9 @@ impl RuntimeJournal {
         prior: Option<&VerifiedHead>,
     ) -> std::result::Result<(), RuntimeError> {
         let _driver = self.driving.lock().await;
-        let verified = {
-            let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
-            if let Some(error) = state.failed {
-                return Err(error);
-            }
-            state.verified.clone()
-        };
+        let verified = self.live_head()?;
         if let Some(prior) = prior {
-            if prior.dataset != verified.dataset
-                || prior.node != verified.node
-                || prior.owner != verified.owner
-                || prior.head.sequence > verified.head.sequence
-            {
-                return Err(RuntimeError::Authority);
-            }
+            prefix_of(prior, &verified)?;
         }
         StoreJournal::new(&self.store, self.node)
             .map_err(RuntimeError::from)?
@@ -618,11 +659,183 @@ impl RuntimeJournal {
         Ok((proof, group))
     }
 
+    /// `confirm_live_owned` plus a domain's extra predicates (its selected row
+    /// or scan-generation guard) in the same authoritative read.
+    pub(crate) async fn confirm_live_owned_with(
+        &self,
+        extra: &[Predicate],
+    ) -> std::result::Result<(), RuntimeError> {
+        let _driver = self.driving.lock().await;
+        let verified = self.live_head()?;
+        StoreJournal::new(&self.store, self.node)
+            .map_err(RuntimeError::from)?
+            .confirm_owned_with(&verified, extra)
+            .await
+            .map_err(RuntimeError::from)
+    }
+
+    /// Flush staged runs, then confirm this owner's live verified head against
+    /// native custody and admission in one read while the driver is held. The
+    /// head was built by the opening replay and extended only by this owner's
+    /// Applied appends, so no history is replayed here.
+    pub(crate) async fn live_proof(&self) -> std::result::Result<Arc<VerifiedHead>, RuntimeError> {
+        let driver = self.driving.lock().await;
+        self.drive_locked(&driver, self.staged_target()?).await?;
+        let verified = self.live_head()?;
+        StoreJournal::new(&self.store, self.node)
+            .map_err(RuntimeError::from)?
+            .confirm_owned(&verified)
+            .await
+            .map_err(RuntimeError::from)?;
+        Ok(verified)
+    }
+
+    /// O(1) original ordinal of this node's record `sequence` within `proof`,
+    /// for records after the last chain discontinuity. `None` means the record
+    /// is outside that window and needs the historical replay.
+    pub(crate) fn locate(&self, proof: &VerifiedHead, sequence: u64) -> Option<u64> {
+        if proof.node != self.node {
+            return None;
+        }
+        let contiguous_from = self.state.lock().ok()?.contiguous_from;
+        ordinal_of(proof, contiguous_from, sequence)
+    }
+
+    /// Change a domain's selected row against originals of this node, built and
+    /// submitted only while the publication driver is held, so no append can
+    /// move the selected head between the proof and the CAS.
+    ///
+    /// `retained` is `Some` only when re-driving an earlier attempt: that exact
+    /// proof is reused so the logical claim digest is unchanged. `None` uses
+    /// the live head. `retain` is called exactly once, synchronously, under the
+    /// driver, with the proof this call will CAS against, before any native
+    /// claim; the caller stores it in its retained custody there. No journal
+    /// replay runs while the driver is held: originals before the last chain
+    /// discontinuity are located by replay before the driver is taken.
+    pub(crate) async fn change_live(
+        &self,
+        records: &[Record],
+        change: LiveChange<'_>,
+        retained: Option<Arc<VerifiedHead>>,
+        retain: &(dyn Fn(&Arc<VerifiedHead>) + Send + Sync),
+    ) -> std::result::Result<(Arc<VerifiedHead>, WriteResult), RuntimeError> {
+        let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
+        let (pre, contiguous_from) = {
+            let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+            if let Some(error) = state.failed {
+                return Err(error);
+            }
+            (state.verified.clone(), state.contiguous_from)
+        };
+        let basis = retained.clone().unwrap_or_else(|| pre.clone());
+        // Cold originals (before a quarantine bridge) are located by the
+        // existing historical replay here, outside the driver.
+        let mut cold = Vec::new();
+        cold.try_reserve_exact(records.len())
+            .map_err(|_| RuntimeError::Budget)?;
+        for record in records {
+            cold.push(if record.node_seq < contiguous_from {
+                let (ordinal, original) = journal
+                    .locate_verified_record(&basis, record.node_seq)
+                    .await
+                    .map_err(RuntimeError::from)?;
+                if original.identity() != record.identity() || original.body != record.body {
+                    return Err(RuntimeError::Corrupt);
+                }
+                Some(ordinal)
+            } else {
+                None
+            });
+        }
+        let driver = self.driving.lock().await;
+        self.drive_locked(&driver, self.staged_target()?).await?;
+        let proof = match retained {
+            Some(proof) => proof,
+            None => {
+                let live = self.live_head()?;
+                if !Arc::ptr_eq(&live, &pre) {
+                    prefix_of(&pre, &live)?;
+                }
+                live
+            }
+        };
+        let mut located = Vec::new();
+        located
+            .try_reserve_exact(records.len())
+            .map_err(|_| RuntimeError::Budget)?;
+        for (record, cold) in records.iter().zip(cold) {
+            let ordinal = match cold {
+                Some(ordinal) => ordinal,
+                None => ordinal_of(&proof, contiguous_from, record.node_seq)
+                    .ok_or(RuntimeError::Invalid)?,
+            };
+            located.push((ordinal, record));
+        }
+        // Retain before any claim and before the first await below: every
+        // later return or cancellation leaves the caller holding the exact
+        // proof whose digest CoreStore may retain.
+        retain(&proof);
+        let (selection, delete, guards) = match change {
+            LiveChange::Select { selection, guards } => (selection, false, guards),
+            LiveChange::Delete {
+                operation_id,
+                address,
+                expected,
+            } => (
+                Selection {
+                    operation_id,
+                    address,
+                    expected,
+                    value: Secret::default(),
+                },
+                true,
+                &[][..],
+            ),
+        };
+        let result = journal
+            .change_selection_at(&proof, &located, selection, delete, guards)
+            .await
+            .map_err(RuntimeError::from)?;
+        drop(driver);
+        Ok((proof, result))
+    }
+
+    fn live_head(&self) -> std::result::Result<Arc<VerifiedHead>, RuntimeError> {
+        let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+        if let Some(error) = state.failed {
+            return Err(error);
+        }
+        Ok(state.verified.clone())
+    }
+
+    fn staged_target(&self) -> std::result::Result<u64, RuntimeError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| RuntimeError::Corrupt)?
+            .next_ticket
+            .saturating_sub(1))
+    }
+
+    /// Test probe: whether the publication driver is free right now.
+    #[cfg(test)]
+    pub(crate) fn driver_is_free(&self) -> bool {
+        self.driving.try_lock().is_ok()
+    }
+
     /// Group commit: each pass appends every run already pending (bounded by the
     /// store limits) in one store append, so concurrent waiters share one round
     /// trip instead of queueing one append each behind the driver lock.
     async fn drive_through(&self, target: u64) -> std::result::Result<(), RuntimeError> {
-        let _driver = self.driving.lock().await;
+        let driver = self.driving.lock().await;
+        self.drive_locked(&driver, target).await
+    }
+
+    async fn drive_locked(
+        &self,
+        _driver: &tokio::sync::MutexGuard<'_, ()>,
+        target: u64,
+    ) -> std::result::Result<(), RuntimeError> {
         let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
         let limits = self.store.limits();
         loop {
