@@ -12,20 +12,34 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANI
 use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
 
+// The versions v1.5.5 shipped (tag v1.5.5). These never change: 1.6.0 is each one plus one.
+/// `plugin-abi/src/lib.rs:71` `TRANSPORT_VERSION`.
+const V155_MECHANISM: u32 = 1;
+/// `plugin-abi/src/lib.rs:128`.
+const V155_STORE: u32 = 2;
+/// `plugin-abi/src/lib.rs:379`.
+const V155_SECRET: u32 = 1;
+/// `plugin-abi/src/lib.rs:395`.
+const V155_AUTH: u32 = 2;
+/// `plugin-abi/src/hook.rs:38`.
+const V155_HOOK: u32 = 1;
+/// `plugin-abi/src/export.rs:36`.
+const V155_EXPORT: u32 = 2;
+
 #[test]
-fn current_abi_generations_are_explicit() {
+fn every_abi_version_is_its_v155_value_plus_one() {
     assert_eq!(busbar_contract::abi::ABI_MAJOR, 1);
     assert_eq!(busbar_contract::abi::ABI_MINOR, 0);
-    assert_eq!(MECHANISM_VERSION, 4);
-    assert_eq!(store::ABI_VERSION, 3);
-    assert_eq!(secret::ABI_VERSION, 2);
-    assert_eq!(auth::ABI_VERSION, 3);
-    assert_eq!(hook::ABI_VERSION, 2);
-    assert_eq!(export::ABI_VERSION, 4);
-    // Plane and Transport are new kinds since v1.5.5.
+    assert_eq!(MECHANISM_VERSION, V155_MECHANISM + 1);
+    assert_eq!(store::ABI_VERSION, V155_STORE + 1);
+    assert_eq!(secret::ABI_VERSION, V155_SECRET + 1);
+    assert_eq!(auth::ABI_VERSION, V155_AUTH + 1);
+    assert_eq!(hook::ABI_VERSION, V155_HOOK + 1);
+    assert_eq!(export::ABI_VERSION, V155_EXPORT + 1);
+    // Plane and Transport are new kinds since v1.5.5: they start at 1.
     assert_eq!(plane::ABI_VERSION, 1);
     assert_eq!(transport::ABI_VERSION, 1);
-    assert_eq!(store::v4::ABI_VERSION, 3);
+    assert_eq!(store::v4::ABI_VERSION, store::ABI_VERSION);
     // The public Store kind exposes the current primitive table directly.
     assert_eq!(store::v4::LAYOUT_FINGERPRINT, store::LAYOUT_FINGERPRINT);
     assert_eq!(store::LAYOUT_FINGERPRINT, 0xd66505223254d413);
