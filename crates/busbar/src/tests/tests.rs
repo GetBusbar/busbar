@@ -979,14 +979,8 @@ fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
 /// test-only. A new site fails this test; adding one to the list needs owner review.
 #[test]
 fn no_dead_code_escape_outside_the_listed_test_only_sites() {
-    const LISTED: &[(&str, usize)] = &[
-        // owner test-source re-exports, `owner_test_sources!`, `door_cells_secret_driven`,
-        // `DOOR_BLACKBOX`, `DRIVER_WORDS` (3), and the linked-transport integration-test items (5)
-        ("build.rs", 12),
-        ("src/test_source_gen_tests.rs", 1),
-        ("src/root/tests/door_rig.rs", 1),
-        ("src/root/tests/test_plugins.rs", 1),
-    ];
+    // No site is listed: LR-135 forbids every dead_code/unused escape, generated code included.
+    const LISTED: &[(&str, usize)] = &[];
     let lints = ["dead_code", "unused_imports", "unused_macros"];
     let escapes = ["allow(", "expect("];
     let krate = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/busbar");
