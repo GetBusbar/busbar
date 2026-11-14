@@ -439,6 +439,12 @@ impl SecureString {
         std::mem::take(&mut self.0)
     }
 
+    /// The room held before the next growth.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+
     /// The text's bytes, without a copy, still in custody.
     #[must_use]
     pub fn into_bytes(mut self) -> SecureVec {

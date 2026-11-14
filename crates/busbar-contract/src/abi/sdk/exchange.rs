@@ -409,6 +409,9 @@ impl Drop for ReadBuf {
     }
 }
 
+/// Drop wipes every byte a read may have written; the rest was never written.
+impl zeroize::ZeroizeOnDrop for ReadBuf {}
+
 fn piece(kind: u32) -> Box<RequestPiece> {
     Box::new(RequestPiece {
         kind,

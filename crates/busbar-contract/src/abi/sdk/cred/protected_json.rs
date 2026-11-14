@@ -361,9 +361,7 @@ impl<C: Custody> Pick<'_, C> {
     fn written<T: serde::Serialize, E: Error>(self, value: &T) -> Result<SelectedJson, E> {
         let mut out = Guarded::empty(self.0.custody);
         out.json::<T, E>(value)?;
-        Ok(SelectedJson::Value(Opaque::new(std::mem::take(
-            &mut *out.exact(),
-        ))))
+        Ok(SelectedJson::Value(Opaque::new(out.exact().into_vec())))
     }
 }
 
@@ -403,9 +401,9 @@ impl<'de, C: Custody> Visitor<'de> for Pick<'_, C> {
     }
 
     fn visit_borrowed_str<E: Error>(self, value: &'de str) -> Result<SelectedJson, E> {
-        let mut text = self.0.decoded::<E>(value, Held::Value)?;
+        let text = self.0.decoded::<E>(value, Held::Value)?;
         Ok(SelectedJson::Value(Opaque::new(
-            std::mem::take(&mut *text).into_bytes(),
+            text.into_string().into_bytes(),
         )))
     }
 
@@ -417,9 +415,7 @@ impl<'de, C: Custody> Visitor<'de> for Pick<'_, C> {
             lead: b"",
         }
         .visit_seq(seq)?;
-        Ok(SelectedJson::Value(Opaque::new(std::mem::take(
-            &mut *out.exact(),
-        ))))
+        Ok(SelectedJson::Value(Opaque::new(out.exact().into_vec())))
     }
 
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<SelectedJson, A::Error> {
@@ -430,9 +426,7 @@ impl<'de, C: Custody> Visitor<'de> for Pick<'_, C> {
             lead: b"",
         }
         .visit_map(map)?;
-        Ok(SelectedJson::Value(Opaque::new(std::mem::take(
-            &mut *out.exact(),
-        ))))
+        Ok(SelectedJson::Value(Opaque::new(out.exact().into_vec())))
     }
 }
 
@@ -905,7 +899,7 @@ mod tests {
         let token = token.unwrap();
         assert_eq!(token.as_str(), "A\n\u{1D11E}");
         assert_eq!(token.capacity(), br"A\n\uD834\uDD1E".len());
-        assert_eq!(empty.as_deref().map(String::as_str), Some(""));
+        assert_eq!(empty.as_deref(), Some(""));
         assert!(nullable.is_none());
         assert!(absent.is_none());
     }

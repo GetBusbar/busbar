@@ -154,8 +154,8 @@ impl<'de, C: Custody> Visitor<'de> for Tree<'_, C> {
     }
 
     fn visit_borrowed_str<E: Error>(self, value: &'de str) -> Result<SettingsValue, E> {
-        let mut text = self.0.decoded::<E>(value, Held::Value)?;
-        Ok(SettingsValue(Value::String(std::mem::take(&mut *text))))
+        let text = self.0.decoded::<E>(value, Held::Value)?;
+        Ok(SettingsValue(Value::String(text.into_string())))
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<SettingsValue, A::Error> {
@@ -169,7 +169,7 @@ impl<'de, C: Custody> Visitor<'de> for Tree<'_, C> {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<SettingsValue, A::Error> {
         let mut tree = SettingsValue::object();
         while let Some(key) = map.next_key_seed(AnyKey(self.0))? {
-            let ObjectKey::Text(mut key) = key else {
+            let ObjectKey::Text(key) = key else {
                 return Ok(SettingsValue(Value::Number(
                     map.next_value_seed(NumberText)?,
                 )));
@@ -178,7 +178,10 @@ impl<'de, C: Custody> Visitor<'de> for Tree<'_, C> {
                 return Err(A::Error::custom("duplicate configuration field"));
             }
             let mut value = map.next_value_seed(Tree(self.0, false))?;
+            let mut key = key.into_string();
             tree.put(&mut key, &mut value.0);
+            // A duplicate leaves the key here: wipe it on the way out.
+            drop(crate::secure::SecureString::from(key));
         }
         Ok(tree)
     }
