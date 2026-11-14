@@ -296,13 +296,13 @@ impl BudgetCell {
         {
             // A zero-count row, as `durable_cell` hydrates one, for the prune fixtures.
             // `accrue_raw` never creates one (LINT-RULES R35).
-            self.models.push(ModelCell {
-                model: model.into(),
+            self.models.extend(ModelCell::new(
+                model.into(),
                 era,
-                cur: counts,
-                flushed: Default::default(),
-                flushed_era: Default::default(),
-            });
+                counts,
+                Default::default(),
+                Default::default(),
+            ));
             return;
         }
         self.accrue_raw(model, era, &counts)
@@ -349,22 +349,33 @@ impl BudgetCell {
                 .models
                 .iter()
                 .position(|m| &*m.model == model && m.era == era);
-            let i = at.unwrap_or_else(|| {
-                cell.models.push(ModelCell {
-                    model: model.into(),
-                    era,
-                    cur: Default::default(),
-                    flushed: Default::default(),
-                    flushed_era: Default::default(),
-                });
-                cell.models.len() - 1
-            });
+            let checked = "sum checked before the cell changed";
+            let Some(i) = at else {
+                // An all-zero accrual leaves the cell alone: a row with no count carries nothing,
+                // and an unnamed one would price as LaneUnpriced for the whole bucket (UPG-H2).
+                let mut cur = std::collections::BTreeMap::new();
+                for (k, v) in units {
+                    if !v.is_zero() {
+                        let first = Count::default().checked_add(*v).expect(checked);
+                        cur.insert(k.clone(), first);
+                    }
+                }
+                if !cur.is_empty() {
+                    cell.models.extend(ModelCell::new(
+                        model.into(),
+                        era,
+                        cur,
+                        Default::default(),
+                        Default::default(),
+                    ));
+                }
+                return;
+            };
             let cur = &mut cell.models[i].cur;
             for (k, v) in units {
                 if v.is_zero() {
                     continue;
                 }
-                let checked = "sum checked before the cell changed";
                 match cur.get_mut(k) {
                     Some(slot) => *slot = slot.checked_add(*v).expect(checked),
                     None => {
@@ -1930,8 +1941,16 @@ mod limits_tests;
 mod budget_cell_tests;
 
 #[cfg(test)]
+#[path = "tests/unit_checkpoint_race_tests.rs"]
+mod unit_checkpoint_race_tests;
+
+#[cfg(test)]
 #[path = "tests/budget_shard_flush_tests.rs"]
 mod budget_shard_flush_tests;
+
+#[cfg(test)]
+#[path = "tests/model_cell_constructor_rule.rs"]
+mod model_cell_constructor_rule;
 
 #[cfg(test)]
 #[path = "tests/metering_recovery_live_append_tests.rs"]
