@@ -87,10 +87,16 @@ impl BinaryInfo {
         };
         let pgo = field("pgo=").unwrap_or_else(|| "unknown".into());
         let commit = field("source-commit=").filter(|c| c != "unverified");
-        let git_sha = sha_override
+        // Cleaned once here so the report's and the output stem's byte slices only see ASCII and
+        // the stem can never carry a path separator.
+        let git_sha: String = sha_override
             .map(str::to_string)
             .or(commit)
-            .unwrap_or_else(|| "unknown".into());
+            .unwrap_or_else(|| "unknown".into())
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(40)
+            .collect();
         BinaryInfo {
             path: bin.display().to_string(),
             sha256,
