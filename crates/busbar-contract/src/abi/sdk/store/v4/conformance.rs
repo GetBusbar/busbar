@@ -55,18 +55,19 @@ const WRITER: [u8; 16] = [0x18; 16];
 /// Operation ids of the data commits; the bootstrap commit is operation 1.
 const OPS: u128 = 1 << 64;
 
-/// One store under test, opened on a fresh, empty dataset the case bootstraps.
-#[async_trait::async_trait]
+/// One store under test, opened on a fresh, empty dataset the case bootstraps. Both observations
+/// are synchronous: a store's own blocking client runs on a thread of its own (a blocking client
+/// may not run inside the case's runtime).
 pub trait Subject: Send + Sync {
     /// The opened store.
     fn store(&self) -> Arc<dyn PersistenceBackend>;
     /// Everything the store holds, counted outside the store's own code, in the store's unit:
     /// rows or keys across every table it owns (data, control, receipts, slots), or resident
     /// bytes ([`resident_bytes`]) for a store that lives in this process.
-    async fn retained(&self) -> u64;
+    fn retained(&self) -> u64;
     /// Move the host clock this store's code reads (`clock.now`, wall and monotonic) forward by
     /// `by`. A store whose code reads no host clock has nothing to move.
-    async fn jump(&self, by: Duration);
+    fn jump(&self, by: Duration);
     /// How far `retained` moves between two observations of equal content (allocator or page
     /// noise). A row count has none.
     fn noise(&self) -> u64 {
@@ -96,11 +97,11 @@ pub async fn state_does_not_grow_over_commits<S: Subject + ?Sized>(subject: &S) 
     for n in 0..WARM {
         put(CASE, &*store, OPS + u128::from(n), n).await;
     }
-    let warm = subject.retained().await;
+    let warm = subject.retained();
     for n in WARM..COMMITS {
         put(CASE, &*store, OPS + u128::from(n), n).await;
     }
-    let after = subject.retained().await;
+    let after = subject.retained();
     assert!(
         after <= warm.saturating_add(subject.noise()),
         "{CASE}: LR-118: the store held {warm} after {WARM} commits and {after} after {COMMITS}: \
@@ -119,9 +120,9 @@ pub async fn nothing_changes_after_clock_jump<S: Subject + ?Sized>(subject: &S) 
         put(CASE, &*store, OPS + u128::from(n), n).await;
     }
     let held = values(CASE, &*store).await;
-    let retained = subject.retained().await;
+    let retained = subject.retained();
 
-    subject.jump(JUMP).await;
+    subject.jump(JUMP);
     if let Err(failure) = store.clock(store.info().dataset).await {
         panic!("{CASE}: the clock after the jump answered {failure:?}");
     }
@@ -132,7 +133,7 @@ pub async fn nothing_changes_after_clock_jump<S: Subject + ?Sized>(subject: &S) 
         values(CASE, &*store).await == held,
         "{CASE}: LR-118: the store answers different values after a {JUMP:?} clock jump"
     );
-    let after = subject.retained().await;
+    let after = subject.retained();
     assert!(
         after.abs_diff(retained) <= subject.noise(),
         "{CASE}: LR-118: the store held {retained} before a {JUMP:?} clock jump and {after} after: \
