@@ -312,6 +312,7 @@ pub fn signatures() {
     rsa::verify_pkcs1_sha256(&pubk, MSG, ossl).unwrap();
     let pss = include_bytes!("../fixtures/rsa_pss.sig");
     rsa::verify_pss_sha256(&pubk, MSG, pss).unwrap();
+    rsa::verify_pss_sha256(&pubk, MSG, &key.sign_pss_sha256(MSG).unwrap()).unwrap();
     assert_eq!(
         rsa::verify_pss_sha256(&pubk, b"other", pss),
         Err(Error::Mismatch)

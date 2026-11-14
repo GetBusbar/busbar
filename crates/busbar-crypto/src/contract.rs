@@ -121,6 +121,7 @@ const _: () = {
     let _: fn(&b::rsa::SigningKey) -> usize = b::rsa::SigningKey::modulus_len;
     let _: fn(&b::rsa::SigningKey) -> Vec<u8> = b::rsa::SigningKey::public_key;
     let _: fn(&b::rsa::SigningKey, &[u8]) -> R<Vec<u8>> = b::rsa::SigningKey::sign_pkcs1_sha256;
+    let _: fn(&b::rsa::SigningKey, &[u8]) -> R<Vec<u8>> = b::rsa::SigningKey::sign_pss_sha256;
     let _: fn() -> R<b::ecdh_p256::EphemeralKey> = b::ecdh_p256::EphemeralKey::generate;
     let _: fn(&b::ecdh_p256::EphemeralKey) -> &[u8] = b::ecdh_p256::EphemeralKey::public_key;
     let _: fn(b::ecdh_p256::EphemeralKey, &[u8]) -> R<[u8; 32]> = b::ecdh_p256::agree;
