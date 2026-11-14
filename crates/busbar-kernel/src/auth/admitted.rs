@@ -96,14 +96,16 @@ async fn complete_context(
             .collect::<Vec<_>>(),
     );
     let ticketed = claimed_ticket_verdict(
-        request.inner.signed,
-        app.auth.keys_in_chain,
-        request.ticket_prefix(),
-        client_token.as_deref(),
+        PresentedTicket {
+            signed: request.inner.signed,
+            keys_in_chain: app.auth.keys_in_chain,
+            prefix: request.ticket_prefix(),
+            token: client_token.as_deref(),
+            carried: request.carried_ticket(),
+        },
         app.governance.as_ref(),
         busbar_kernel::store::now(),
         app.root_rules.as_ref(),
-        request.carried_ticket(),
     )
     .await
     .map_err(|()| AdmittedRefusal::Identity(IdentityRefusal::Denied))?;

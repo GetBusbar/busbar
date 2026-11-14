@@ -76,14 +76,16 @@ async fn final_gate(
 ) -> Result<Option<ClaimedTicketVerdict>, ()> {
     let _ = &peeked.0;
     claimed_ticket_verdict(
-        false,
-        true,
-        Some(PREFIX),
-        Some(ticket),
+        PresentedTicket {
+            signed: false,
+            keys_in_chain: true,
+            prefix: Some(PREFIX),
+            token: Some(ticket),
+            carried: Some(&peeked.1),
+        },
         Some(gov),
         now,
         &crate::appbuild::AcceptAll,
-        Some(&peeked.1),
     )
     .await
 }
