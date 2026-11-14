@@ -83,17 +83,17 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-pub const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-
-pub const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
-
+/// FNV-1a 64 over the string's bytes (fnv's `FnvHasher`, the published offset basis and prime).
 pub fn fnv1a_u64(s: &str) -> u64 {
-    let mut hash = FNV1A_OFFSET_BASIS;
-    for &byte in s.as_bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(FNV1A_PRIME);
-    }
-    hash
+    fnv1a_bytes(s.as_bytes())
+}
+
+/// FNV-1a 64 over `bytes`; in-memory keys only (shards, sticky routing, the gate's session key).
+pub fn fnv1a_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::Hasher as _;
+    let mut hasher = fnv::FnvHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 #[must_use]

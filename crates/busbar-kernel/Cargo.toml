@@ -39,6 +39,7 @@ base64 = { workspace = true }
 sonic-rs = { workspace = true }
 serde_yaml = { workspace = true }
 futures = { workspace = true }
+fnv = { workspace = true }
 bytes = { workspace = true }
 zeroize = { workspace = true }
 http-body = { workspace = true }
