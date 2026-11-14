@@ -5,6 +5,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::sync::{Arc, RwLock};
 
 pub const TOKEN_PREFIX: &str = "bbk_";
 
@@ -94,9 +96,16 @@ impl std::fmt::Display for VerifyError {
     }
 }
 
+/// Bound on cached domain subkeys per signer. Domains come only from admitted plane decls, so a
+/// real deployment holds a handful; a domain past the bound is derived per call, never cached.
+const MAX_SIGNING_DOMAINS: usize = 8;
+
 pub struct TokenSigner {
     key: SigningKey,
     kid: String,
+    /// Domain subkeys derived from `key`, each once. The cache lives and dies with this signer, so
+    /// a rotation (a new `TokenSigner`, even under the same kid) starts empty and derives afresh.
+    subkeys: RwLock<Vec<(Box<str>, Arc<SigningKey>)>>,
 }
 
 impl std::fmt::Debug for TokenSigner {
@@ -113,6 +122,7 @@ impl TokenSigner {
         Self {
             key: SigningKey::from_bytes(bytes),
             kid: kid.into(),
+            subkeys: RwLock::default(),
         }
     }
 
@@ -126,6 +136,7 @@ impl TokenSigner {
         Ok(Self {
             key: SigningKey::from_bytes(&bytes),
             kid: kid.into(),
+            subkeys: RwLock::default(),
         })
     }
 
@@ -159,10 +170,29 @@ impl TokenSigner {
         base64::engine::general_purpose::STANDARD.encode(der)
     }
 
-    fn subkey(&self, domain: &str) -> SigningKey {
+    /// The domain subkey, derived at most once per (signer, domain).
+    fn subkey(&self, domain: &str) -> Arc<SigningKey> {
+        let cached = |set: &[(Box<str>, Arc<SigningKey>)]| {
+            set.iter()
+                .find(|(d, _)| &**d == domain)
+                .map(|(_, k)| Arc::clone(k))
+        };
+        if let Some(k) = cached(&self.subkeys.read().unwrap_or_else(|e| e.into_inner())) {
+            return k;
+        }
+        let mut set = self.subkeys.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(k) = cached(&set) {
+            return k;
+        }
         #[cfg(test)]
         SUBKEY_DERIVATIONS.with(|c| c.set(c.get() + 1));
-        SigningKey::from_bytes(&self.derived_subkey_seed(domain))
+        let mut seed = self.derived_subkey_seed(domain);
+        let key = Arc::new(SigningKey::from_bytes(&seed));
+        zeroize::Zeroize::zeroize(&mut seed);
+        if set.len() < MAX_SIGNING_DOMAINS {
+            set.push((domain.into(), Arc::clone(&key)));
+        }
+        key
     }
 
     pub fn mint(&self, sub: &str, exp: u64, generation: Option<&str>) -> String {
@@ -384,6 +414,8 @@ thread_local! {
     pub(crate) static SUBKEY_DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// sha256("busbar/subkey/v1" || secret || domain), hashed as a stream so no heap copy of the root
+/// secret is left behind (the old `concat` was never wiped). Same bytes as before.
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
     use sha2::Digest;
     // SHA-256 over the three parts in order: the digest of their concatenation, without one.
