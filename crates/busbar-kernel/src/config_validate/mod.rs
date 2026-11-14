@@ -2121,7 +2121,7 @@ fn validate_token_endpoint_fields(
         &posture.blocked_hosts,
     ) {
         let target = busbar_kernel_egress::trust::net::redact_userinfo(target);
-        errors.push(coded::config_provider_destination_blocked(format!("provider '{provider_name}' token_url '{target}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)")).into());
+        errors.push(coded::config_provider_destination_blocked(format!("provider '{provider_name}' token_url '{target}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied and no configuration admits them)")).into());
     }
 }
 
@@ -2206,7 +2206,7 @@ fn validate_providers_with(
         {
             let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
             errors.push(coded::config_provider_destination_blocked(format!(
-                "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
+                "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied and no configuration admits them; security.blocked_metadata_hosts extends the denylist)"
             )).into());
         }
 
