@@ -168,7 +168,6 @@ fn batch_never_grants_authority_or_fills_omitted_classes() {
 
 #[test]
 fn pre_measurement_layout_and_old_mechanism_renderings_are_refused() {
-    assert_eq!(MECHANISM_VERSION, 4);
     let st = statement("usage", "1", 1);
     let mut bytes = unsafe { rendering::render(&st) }.unwrap();
     bytes[..8].copy_from_slice(b"BBSTMT03");
@@ -177,7 +176,7 @@ fn pre_measurement_layout_and_old_mechanism_renderings_are_refused() {
         .what
         .contains("measurement"));
     bytes[..8].copy_from_slice(b"BBSTMT04");
-    bytes[8..12].copy_from_slice(&3u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&(MECHANISM_VERSION - 1).to_le_bytes());
     assert!(rendering::read(&bytes)
         .unwrap_err()
         .what
