@@ -108,16 +108,29 @@ impl<T: AsFd> Registered<T> {
     }
 
     /// One non-blocking attempt of a sized `op` in `dir` (`want` = the bytes asked for).
-    /// `WouldBlock` clears readiness and waits for a fresh edge, as [`Registered::poll_io`].
+    /// `WouldBlock` clears readiness and waits for a fresh edge (as [`Registered::poll_io`]). On
+    /// edge-triggered selectors only ([`SHORT_CLEARS`], tokio `PollEvented`'s gate), a SHORT
+    /// transfer (`0 < n < want`) also clears it, so the next attempt waits for a fresh edge
+    /// instead of making a syscall that answers `EAGAIN`. `READ_CLOSED` / `WRITE_CLOSED` stay set
+    /// (tokio masks them out of a clear), so a FIN is never lost.
     pub fn poll_io_sized(
         &self,
         dir: Direction,
         want: usize,
         cx: &mut Context<'_>,
-        op: impl FnMut(&T) -> io::Result<usize>,
+        mut op: impl FnMut(&T) -> io::Result<usize>,
     ) -> Poll<io::Result<usize>> {
-        let _ = want;
-        self.poll_io(dir, cx, op)
+        loop {
+            let ready = std::task::ready!(self.poll_ready(dir, cx))?;
+            match op(self.get_ref()) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => ready.clear_ready(),
+                Ok(n) if SHORT_CLEARS && n > 0 && n < want => {
+                    ready.clear_ready();
+                    return Poll::Ready(Ok(n));
+                }
+                other => return Poll::Ready(other),
+            }
+        }
     }
 }
 
