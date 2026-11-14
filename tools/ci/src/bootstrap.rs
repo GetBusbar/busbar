@@ -343,6 +343,61 @@ fn expected_work(env: &Env) -> PathBuf {
     ))
 }
 
+/// Kinds whose expensive bootstrap an authenticated equal-input original may replace.
+pub const RETAINABLE: [&str; 2] = ["native-qualification", "core-conformance"];
+
+/// The retention decision, made before any bootstrap download: true only after
+/// the trusted ci_retention module authenticated an equal-input successful
+/// original and wrote boundary-evidence/retained.json naming it. Anything else
+/// runs fresh; evidence left behind without retaining fails the job.
+fn retained(trusted: &Path, checkout: &Path, revision: &str, job: &str) -> Result<bool> {
+    if !RETAINABLE.contains(&job) {
+        return Ok(false);
+    }
+    let output = checkout.join("boundary-evidence/retained.json");
+    let argv = retention_command(trusted, checkout, revision, &output);
+    decide_retention(&argv, &output)
+}
+
+fn decide_retention(argv: &[String], output: &Path) -> Result<bool> {
+    // Same inputs as the former in-YAML call: the job's own environment.
+    let options = Options {
+        env: std::env::vars().collect(),
+        interruptible: true,
+        ..Default::default()
+    };
+    let decided = proc::run(argv, &options)?.status.success();
+    let regular = fs::symlink_metadata(output).is_ok_and(|m| m.file_type().is_file());
+    if decided && regular {
+        return Ok(true);
+    }
+    require(
+        fs::symlink_metadata(output).is_err(),
+        "retention decision left evidence without retaining",
+    )?;
+    Ok(false)
+}
+
+pub fn retention_command(
+    trusted: &Path,
+    checkout: &Path,
+    revision: &str,
+    output: &Path,
+) -> Vec<String> {
+    vec![
+        "/usr/bin/python3".into(),
+        "-I".into(),
+        "-B".into(),
+        path_text(&trusted.join("scripts/architecture/ci_retention.py")),
+        "--policy".into(),
+        revision.into(),
+        "--checkout".into(),
+        path_text(checkout),
+        "--output".into(),
+        path_text(output),
+    ]
+}
+
 fn outer(args: &[String]) -> Result<()> {
     proc::install_signal_handlers();
     let (trusted, checkout, work) = (
@@ -377,6 +432,9 @@ fn outer(args: &[String]) -> Result<()> {
         "controller binary is outside the job staging root",
     )?;
     let binary_sha = sha256::file(&binary)?;
+    if retained(&trusted, &checkout, &revision, &env["CI_JOB_NAME"])? {
+        return Ok(());
+    }
     let archive = work.join("public-tools.tar");
     fetch::fetch(PACKAGE, &token, &archive, ARCHIVE_BYTES, ARCHIVE_SHA256)?;
     io(
@@ -1593,6 +1651,57 @@ pub fn main(command: &str, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retention_runs_the_trusted_module_and_retains_only_on_regular_evidence() {
+        let argv = retention_command(
+            Path::new("/w/trusted"),
+            Path::new("/home/fleeting/builds/x"),
+            &"a".repeat(40),
+            Path::new("/home/fleeting/builds/x/boundary-evidence/retained.json"),
+        );
+        assert_eq!(
+            argv,
+            strings(&[
+                "/usr/bin/python3",
+                "-I",
+                "-B",
+                "/w/trusted/scripts/architecture/ci_retention.py",
+                "--policy",
+                &"a".repeat(40),
+                "--checkout",
+                "/home/fleeting/builds/x",
+                "--output",
+                "/home/fleeting/builds/x/boundary-evidence/retained.json",
+            ])
+        );
+        assert_eq!(RETAINABLE, ["native-qualification", "core-conformance"]);
+        let root = std::env::temp_dir().join(format!("busbar-ci-retention-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let output = root.join("retained.json");
+        let decide = |script: &str| {
+            let _ = fs::remove_file(&output);
+            let argv = strings(&["/bin/sh", "-c", script, "retention", &path_text(&output)]);
+            decide_retention(&argv, &output)
+        };
+        // Retained: exit 0 with a regular evidence file.
+        assert_eq!(decide("printf '{}' > \"$1\""), Ok(true));
+        // Fresh: nonzero without evidence, or exit 0 without evidence.
+        assert_eq!(decide("exit 1"), Ok(false));
+        assert_eq!(decide("exit 0"), Ok(false));
+        // Evidence without retaining, or a symlink, fails the job.
+        assert!(decide("printf '{}' > \"$1\"; exit 1").is_err());
+        assert!(decide("ln -s /etc/hosts \"$1\"").is_err());
+        assert!(decide("mkdir \"$1\"").is_err());
+        let _ = fs::remove_dir_all(&output);
+        // Other kinds never consult retention.
+        assert_eq!(
+            retained(&root, &root, &"a".repeat(40), "native-isolation-diagnostic"),
+            Ok(false)
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     fn environment() -> Env {
         [

@@ -267,7 +267,7 @@ fn loop_rows(selection: &[&str]) -> Result<Vec<Value>> {
     json::parse(text.as_bytes())?
         .at("loopdevices")
         .as_array()
-        .cloned()
+        .map(<[_]>::to_vec)
         .ok_or_else(|| "invalid losetup output".to_owned())
 }
 
