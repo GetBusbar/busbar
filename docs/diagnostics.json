@@ -439,7 +439,7 @@
     "title": "A deprecated environment variable is set and still honored — RETIRED",
     "severity": "actionable",
     "summary": "RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.",
-    "action": "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md.",
+    "action": "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.",
     "since": "1.5.0",
     "retired": true
   },
@@ -488,6 +488,18 @@
     "severity": "actionable",
     "summary": "A plugin declares billable classes for a configured lane, but that lane lacks one or more rates. Startup continues and raw counts remain available. With a present card, missing classes remain unpriced; a rate on another lane does not price them. With no card for the plane, usage-based pricing is disabled. An explicit zero rate is a configured free class, not a missing rate. Class-parent relationships are reporting and cap projections, not inherited prices.",
     "action": "Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-3029",
+    "number": 3029,
+    "class": "config",
+    "slug": "retired-env-var-ignored",
+    "title": "A retired launch environment variable is set and IGNORED",
+    "severity": "actionable",
+    "summary": "busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.",
+    "action": "Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.",
     "since": "1.6.0",
     "retired": false
   },
