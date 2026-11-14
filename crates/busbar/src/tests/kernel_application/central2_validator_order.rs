@@ -1,60 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
-use std::time::{Duration, Instant};
 #[test]
 fn secrets_block_rejects_builtin_resolver_names() {
     const CHILD: &str = "BUSBAR_CENTRAL2_VALIDATOR_CHILD";
     const WITNESS: &str = "actual root validator phase assertions completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root usage witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root usage witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "usage");
 
     for reserved in ["env", "file"] {
         crate::dist_root_install::install();
@@ -145,55 +96,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
 fn one_validator_refuses_in_one_order() {
     const CHILD: &str = "BUSBAR_CENTRAL2_VALIDATOR_CHILD";
     const WITNESS: &str = "actual root validator phase assertions completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root usage witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root usage witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)

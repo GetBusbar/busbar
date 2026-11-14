@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use busbar_kernel::governance::GovState;
 
-use crate::root::test_plugins as plugins;
 use crate::test_common as common;
 
 const AUDIENCE: &str = "api://admin-mint-ceiling";
@@ -16,55 +15,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     const CHILD: &str = "BUSBAR_ADMIN_MINT_ROW_071D58CAEE11";
     const WITNESS: &str =
         "actual root case test_admin_v1_scope_ladder_e2e_with_group_mapped_principals completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let principal = busbar_kernel::auth::Principal {
@@ -76,29 +27,10 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
 
     let allowed_modes = vec!["user-bound".to_string()];
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(&format!("binding-ceiling-{}", allowed_modes.join("-")));
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
+        "binding-ceiling-{}",
+        allowed_modes.join("-")
+    ));
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -224,55 +156,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
     const CHILD: &str = "BUSBAR_ADMIN_MINT_ROW_A4CEB07F3D0C";
     const WITNESS: &str =
         "actual root case test_admin_v1_scope_ladder_e2e_with_group_mapped_principals completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let principal = busbar_kernel::auth::Principal {
@@ -284,29 +168,10 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
 
     let allowed_modes = vec!["time-bound".to_string()];
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(&format!("binding-ceiling-{}", allowed_modes.join("-")));
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
+        "binding-ceiling-{}",
+        allowed_modes.join("-")
+    ));
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -431,55 +296,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     const CHILD: &str = "BUSBAR_ADMIN_MINT_ROW_7704756781AC";
     const WITNESS: &str =
         "actual root case test_admin_v1_scope_ladder_e2e_with_group_mapped_principals completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     async fn live_rows(gov: &GovState) -> usize {
@@ -493,32 +310,10 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
 
     let body = serde_json::json!({"name":"svc","expires_in":"48h"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(&format!(
+    let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "block-ttl-ceiling-{}",
         busbar_contract::redacted::sha256_hex(body.to_string().as_bytes())
     ));
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -612,87 +407,17 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
     const CHILD: &str = "BUSBAR_ADMIN_MINT_ROW_BD360208D7DF";
     const WITNESS: &str =
         "actual root case test_admin_v1_scope_ladder_e2e_with_group_mapped_principals completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const CEIL: u64 = 24 * 3600;
 
     let t0 = busbar_kernel::store::now();
     let body = serde_json::json!({"name":"svc"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(&format!(
+    let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "block-ttl-ceiling-{}",
         busbar_contract::redacted::sha256_hex(body.to_string().as_bytes())
     ));
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -787,55 +512,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     const CHILD: &str = "BUSBAR_ADMIN_MINT_ROW_54BE816778E7";
     const WITNESS: &str =
         "actual root case test_admin_v1_scope_ladder_e2e_with_group_mapped_principals completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const ROLE_TTL: u64 = 3600;
 
@@ -849,32 +526,10 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     let body =
         serde_json::json!({"name":"svc","allowed_pools":["pool-forbidden"],"expires_in":"10m"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(&format!(
+    let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "role-mint-ceiling-{}",
         busbar_contract::redacted::sha256_hex(body.to_string().as_bytes())
     ));
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -1002,55 +657,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
     const CHILD: &str = "BUSBAR_ADMIN_MINT_ROW_E93F494407E5";
     const WITNESS: &str =
         "actual root case test_admin_v1_scope_ladder_e2e_with_group_mapped_principals completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const ROLE_TTL: u64 = 3600;
 
@@ -1063,32 +670,10 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
 
     let body = serde_json::json!({"name":"svc","allowed_pools":["pool-ok"],"expires_in":"24h"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(&format!(
+    let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "role-mint-ceiling-{}",
         busbar_contract::redacted::sha256_hex(body.to_string().as_bytes())
     ));
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -1216,55 +801,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
     const CHILD: &str = "BUSBAR_ADMIN_MINT_ROW_2FA2917C0833";
     const WITNESS: &str =
         "actual root case test_admin_v1_scope_ladder_e2e_with_group_mapped_principals completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     const ROLE_TTL: u64 = 3600;
 
@@ -1277,32 +814,10 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
 
     let body = serde_json::json!({"name":"svc","allowed_pools":["pool-ok"],"expires_in":"10m"});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    crate::dist_root_install::install();
-    let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(&format!(
+    let (module, directory, settings) = crate::distribution::rig::actual_store(&format!(
         "role-mint-ceiling-{}",
         busbar_contract::redacted::sha256_hex(body.to_string().as_bytes())
     ));
-    let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &std::fs::read(store_library).expect("the actual Store artifact reads"),
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
