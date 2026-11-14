@@ -1396,7 +1396,149 @@ fn retired_busbar_providers_env_does_not_override_the_config_catalog() {
         "{stdout}"
     );
     assert!(!stdout.contains(bogus.to_str().unwrap()), "{stdout}");
-    assert!(!stderr.contains("BUSBAR_PROVIDERS"), "{stderr}");
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with(&ignored_notice("BUSBAR_PROVIDERS"))
+                && line.contains("providers_file"))
+            .count(),
+        1,
+        "decision 160: retired runtime input is ignored and reported, never honoured: {stderr}"
+    );
+    assert!(
+        !stderr.contains(bogus.to_str().unwrap()),
+        "the notice never echoes the value: {stderr}"
+    );
+    assert!(!stderr.contains("DEPRECATED"), "{stderr}");
+    assert!(!stderr.contains("honored"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The leading text of the BUSBAR-3029 notice for one retired launch variable. The code comes
+/// from the catalog, never a literal.
+#[cfg(linked_section_pools)]
+fn ignored_notice(name: &str) -> String {
+    format!(
+        "[warn] {}: {name} is set but ignored",
+        busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner()
+    )
+}
+
+/// `needles` appear in `line` in this order, case-insensitively: the busbar-release FIX cell's
+/// `(?i)a[^\n]*b[^\n]*c` match, on one line.
+#[cfg(linked_section_pools)]
+fn line_has_in_order(line: &str, needles: &[&str]) -> bool {
+    let line = line.to_ascii_lowercase();
+    let mut rest = line.as_str();
+    needles.iter().all(|needle| {
+        let needle = needle.to_ascii_lowercase();
+        match rest.find(&needle) {
+            Some(at) => {
+                rest = &rest[at + needle.len()..];
+                true
+            }
+            None => false,
+        }
+    })
+}
+
+#[cfg(linked_section_pools)]
+#[test]
+fn boot_reports_a_set_retired_worker_threads_variable_as_ignored() {
+    let dir = fixture_dir("retired-workers-boot");
+    write_configs(&dir, "goovernance: {}\n");
+    let out = command(&dir)
+        .env("BUSBAR_WORKER_THREADS", "4")
+        .output()
+        .expect("run busbar");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(1), "boot refuses the bad key: {stderr}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    let notice = lines
+        .iter()
+        .position(|line| {
+            line.starts_with(&ignored_notice("BUSBAR_WORKER_THREADS"))
+                && line.contains("advanced.worker_threads")
+        })
+        .unwrap_or_else(|| {
+            panic!("boot must report the ignored BUSBAR_WORKER_THREADS: {stderr}")
+        });
+    let refusal_code = busbar_kernel::diagnostics::BOOT_FATAL_ERROR
+        .banner()
+        .to_string();
+    let refusal = lines
+        .iter()
+        .position(|line| line.contains(&refusal_code))
+        .unwrap_or_else(|| panic!("boot must refuse with {refusal_code}: {stderr}"));
+    assert!(
+        notice < refusal,
+        "the notice prints before a config refusal, so it is never lost: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(linked_section_pools)]
+#[test]
+fn validate_reports_each_retired_launch_variable_as_ignored() {
+    const RETIRED: [(&str, &str, &str); 4] = [
+        ("BUSBAR_PROVIDERS", "/nonexistent/old.yaml", "providers_file"),
+        ("BUSBAR_WORKER_THREADS", "4", "advanced.worker_threads"),
+        ("BUSBAR_UPSTREAM_HTTP1_ONLY", "", "advanced.upstream_http1_only"),
+        (
+            "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
+            "1",
+            "advanced.upstream_h2_prior_knowledge",
+        ),
+    ];
+    let dir = fixture_dir("retired-env-validate");
+    write_configs(&dir, "");
+    let run = |set: &[(&str, &str)]| {
+        let mut c = command(&dir);
+        for (name, _, _) in RETIRED {
+            c.env_remove(name);
+        }
+        for (name, value) in set {
+            c.env(name, value);
+        }
+        let out = c.arg("--validate").output().expect("run busbar --validate");
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let all: Vec<(&str, &str)> = RETIRED.iter().map(|(n, v, _)| (*n, *v)).collect();
+    let (code, stderr) = run(&all);
+    assert_eq!(code, 0, "a retired variable never refuses: {stderr}");
+    let banner = busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED
+        .banner()
+        .to_string();
+    let notices: Vec<&str> = stderr.lines().filter(|l| l.contains(&banner)).collect();
+    assert_eq!(notices.len(), RETIRED.len(), "one notice per variable: {stderr}");
+    for (line, (name, _, key)) in notices.iter().zip(RETIRED) {
+        assert!(
+            line.starts_with(&ignored_notice(name)) && line.contains(key),
+            "table order, each naming its config key; expected {name} -> {key}, got: {line}"
+        );
+    }
+    assert!(
+        notices.iter().any(|line| line_has_in_order(
+            line,
+            &["BUSBAR_PROVIDERS", "ignored", "providers.yaml"]
+        )),
+        "the busbar-release FIX cell's match must hold: {stderr}"
+    );
+
+    let (code, stderr) = run(&[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(!stderr.contains(&banner), "nothing set, nothing reported: {stderr}");
+
+    let (code, stderr) = run(&[("BUSBAR_PROVIDERS", "")]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        !stderr.contains(&banner),
+        "an empty BUSBAR_PROVIDERS selected nothing, so it is not reported: {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

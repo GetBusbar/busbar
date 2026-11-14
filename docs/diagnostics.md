@@ -415,7 +415,7 @@ A model has a `rate_card` entry present but every tier (input, output, cache_rea
 
 RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.
 
-**What to do:** Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md.
+**What to do:** Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.
 
 <a id="config-overlay-rejected"></a>
 ### BUSBAR-3023 — Config overlay rejected at read (the reason, naming the key and the file) — RETIRED *(retired)*
@@ -460,6 +460,17 @@ A provider's `base_url` or `token_url` names a private or loopback address (an R
 A plugin declares billable classes for a configured lane, but that lane lacks one or more rates. Startup continues and raw counts remain available. With a present card, missing classes remain unpriced; a rate on another lane does not price them. With no card for the plane, usage-based pricing is disabled. An explicit zero rate is a configured free class, not a missing rate. Class-parent relationships are reporting and cap projections, not inherited prices.
 
 **What to do:** Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup.
+
+<a id="retired-env-var-ignored"></a>
+### BUSBAR-3029 — A retired launch environment variable is set and IGNORED
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `retired-env-var-ignored`
+
+busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.
+
+**What to do:** Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.
 
 ## 4xxx — Auth & identity
 
