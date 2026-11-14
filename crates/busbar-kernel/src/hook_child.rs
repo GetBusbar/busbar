@@ -195,7 +195,7 @@ impl HookChildInvocation for Invocation {
         if !Arc::ptr_eq(&parent, &self.memo.parent) {
             return Ran::Now(Stored::refused("hook parent authority changed"));
         }
-        let mut ancestry = services.units().child_ancestry(self.unit);
+        let mut ancestry = ancestry_of(&services, self.unit);
         if ancestry.iter().any(|name| name == &self.hook) {
             return Ran::Now(Stored::refused("hook child cycle"));
         }
@@ -264,6 +264,12 @@ pub(crate) struct Scope {
     pub services: Arc<KernelServices>,
     pub unit: u64,
 }
+
+/// The hook children a unit was nested through, for the cycle check.
+fn ancestry_of(services: &KernelServices, unit: u64) -> Vec<Arc<str>> {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AncestryCheck);
+    services.units().child_ancestry(unit)
+}
 tokio::task_local! { pub(crate) static SCOPE: Scope; }
 
 /// Only request-stage host execution can mint this authority. Repeated stage entries keep the
@@ -276,10 +282,7 @@ pub(crate) fn invocation(
     let grant = grant?;
     SCOPE
         .try_with(|scope| {
-            if scope
-                .services
-                .units()
-                .child_ancestry(scope.unit)
+            if ancestry_of(&scope.services, scope.unit)
                 .iter()
                 .any(|h| h.as_ref() == hook)
             {
@@ -311,9 +314,7 @@ pub(crate) fn invocation(
 pub(crate) fn recursive(hook: &str) -> bool {
     SCOPE
         .try_with(|s| {
-            s.services
-                .units()
-                .child_ancestry(s.unit)
+            ancestry_of(&s.services, s.unit)
                 .iter()
                 .any(|h| h.as_ref() == hook)
         })
@@ -434,6 +435,30 @@ mod tests {
                 assert_eq!(call.constraints.as_ref().unwrap().grant.revision, 1);
             })
             .await;
+    }
+
+    #[tokio::test]
+    async fn a_stage_reads_its_units_child_ancestry_once() {
+        let route = Arc::new(Route::default());
+        let (services, caller) = setup(route.clone());
+        let probe = busbar_contract::stage_probe::Scope::open();
+        SCOPE
+            .scope(Scope { services, unit: 7 }, async {
+                assert!(!recursive("gate"));
+                let child = invocation("gate", Some(&grant()), Duration::from_secs(1)).unwrap();
+                assert_eq!(
+                    request(&*child, &caller, b"payload").unwrap().bytes,
+                    b"answer"
+                );
+            })
+            .await;
+        assert_eq!(
+            probe.count(busbar_contract::stage_probe::Derive::AncestryCheck),
+            1,
+            "the recursion check, the invocation and the child request share one ancestry read"
+        );
+        let calls = route.calls.lock().unwrap();
+        assert_eq!(calls[0].ancestry.as_slice(), &[Arc::<str>::from("gate")]);
     }
 
     #[tokio::test]
