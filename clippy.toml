@@ -1,0 +1,10 @@
+# Rules the existing clippy step (`cargo clippy ... -- -D warnings`, the core-clippy job) enforces on
+# every workspace member and target. Each known-bad pattern becomes a rule here (LINT-RULES §2.1).
+# The one exception is a single-line `#[expect(clippy::..., reason = "...")]` at a cold site.
+disallowed-methods = [
+    # UPG-A27c: a journal proof taken by replaying the whole journal is O(journal) and, when it is
+    # used to select under the publication driver, races concurrent appends. Live paths prove the
+    # head with `RuntimeJournal::live_proof` and find records with `RuntimeJournal::locate`.
+    { path = "busbar_kernel::persistence::journal::StoreJournal::historical_replay", reason = "O(journal); live paths use RuntimeJournal::live_proof / locate" },
+    { path = "busbar_kernel::persistence::journal::StoreJournal::read_verified_record", reason = "O(journal); live paths use RuntimeJournal::live_proof / locate" },
+]
