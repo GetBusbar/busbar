@@ -1676,6 +1676,9 @@ impl LeaseTick {
         type JournalFlush =
             std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
         let mut flushing: Option<JournalFlush> = None;
+        // The store settle pass is its own future: a stalled store never blocks the flush.
+        let mut settling: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
+            None;
         loop {
             tokio::select! {
                 biased;
@@ -1691,6 +1694,10 @@ impl LeaseTick {
                     if sweep.is_none() {
                         let custody = Arc::clone(&this.node.ticket_custody);
                         sweep = Some(Box::pin(async move { custody.sweep().await }));
+                    }
+                    if settling.is_none() {
+                        let node = Arc::clone(&this.node);
+                        settling = Some(Box::pin(async move { node.settle_store().await }));
                     }
                 }
                 result = async {
@@ -1708,6 +1715,12 @@ impl LeaseTick {
                         None => std::future::pending().await,
                     }
                 } => { sweep = None; }
+                () = async {
+                    match settling.as_mut() {
+                        Some(settling) => settling.await,
+                        None => std::future::pending().await,
+                    }
+                } => { settling = None; }
             }
         }
     }

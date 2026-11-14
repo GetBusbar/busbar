@@ -516,7 +516,7 @@ impl SweepState {
                         }
                     }
                     Decision::TimeGuardFailed { .. } => Ok(SweepOutcome::ClockRewound),
-                    Decision::ExpiredUnknown => {
+                    Decision::Fenced | Decision::Stale => {
                         self.pending = Some(pending);
                         Ok(SweepOutcome::Reconcile(submission.id))
                     }
@@ -617,7 +617,7 @@ fn outcome(submission: Submission, expires_at: u64) -> Result<Option<Outcome>, E
                     Outcome::AlreadyClaimed
                 }
             }
-            Decision::ExpiredUnknown => Outcome::Reconcile(claim),
+            Decision::Fenced | Decision::Stale => Outcome::Reconcile(claim),
             Decision::OpIdConflict => return Err(Error::Access(AccessError::OperationConflict)),
         },
         SubmitResult::NoEffect(failure) => return Err(Error::Backend(failure)),

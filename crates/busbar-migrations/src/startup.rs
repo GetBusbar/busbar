@@ -946,23 +946,64 @@ impl StartupUpgrade {
             return Err(Error::IdentityMismatch);
         }
         let replace = match self.finish_request.as_deref() {
-            Some(native::Request::Finish {
-                activation_receipt, ..
-            }) => activation_receipt.phase != proof.phase,
+            Some(native::Request::Finish { decision, .. }) => decision.phase != proof.phase,
             None => true,
             _ => return Err(Error::InvalidState),
         };
         if replace {
+            let reference = upgrade.reference.clone();
+            // The host verifies the proof once for every store (decision 185): one
+            // coherent READ of the checkpoint and the completion marker on the target.
+            let session = {
+                let manifest = self
+                    .coordinator
+                    .as_ref()
+                    .ok_or(Error::InvalidState)?
+                    .manifest();
+                busbar_kernel::persistence::lifecycle::Session {
+                    upgrade: manifest.migration,
+                    source: busbar_contract::persistence::DatasetId(manifest.source.dataset),
+                    target: busbar_contract::persistence::DatasetId(manifest.target.dataset),
+                }
+            };
+            let target = self.target.as_ref().ok_or(Error::InvalidState)?.clone();
+            let info = target.info();
+            let observed = target
+                .read(Arc::new(busbar_contract::persistence::Read {
+                    dataset: info.dataset,
+                    addresses: vec![
+                        proof.checkpoint_address.clone(),
+                        native::completion_marker_address(session.upgrade),
+                    ],
+                    time: None,
+                }))
+                .await;
+            let values = match observed {
+                Ok(busbar_contract::persistence::ReadResult::Values {
+                    observed_at,
+                    values,
+                }) if observed_at.authority == info.clock_authority && values.len() == 2 => values,
+                Err(
+                    busbar_contract::persistence::Failure::Unavailable
+                    | busbar_contract::persistence::Failure::Unknown,
+                ) => return Ok(None),
+                _ => return Err(Error::Corrupt),
+            };
+            let seal = crate::seal::lend();
+            let decision = busbar_kernel::persistence::lifecycle::verify_activation(
+                &proof,
+                session,
+                values[0]
+                    .as_ref()
+                    .map(|value| value.expose(&seal).as_slice()),
+                values[1]
+                    .as_ref()
+                    .map(|value| value.expose(&seal).as_slice()),
+            )
+            .map_err(native_error)?;
             self.finish_request = Some(Arc::new(native::Request::Finish {
-                upgrade: upgrade.reference.clone(),
-                activation_receipt: native::ActivationReceipt {
-                    attempt: proof.attempt,
-                    candidate_fingerprint: proof.candidate_fingerprint,
-                    original_result: proof.original_result.clone(),
-                    checkpoint_address: proof.checkpoint_address.clone(),
-                    checkpoint_value_digest: proof.checkpoint_value_digest,
-                    phase: proof.phase,
-                },
+                upgrade: reference,
+                decision,
             }));
         }
         match self

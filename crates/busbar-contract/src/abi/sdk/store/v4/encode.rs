@@ -280,15 +280,13 @@ pub fn scan<O>(
     Ok(out)
 }
 
-/// Encode a decision using its original receipt observation on replay.
-/// A short result requires replay of the exact original candidate and identity.
+/// Encode a decision; an equal-sequence replay carries the slot row's observation.
+/// No result bytes are echoed, so a commit answer is never short.
 pub fn commit<O>(
     input: &wire::CommitIn,
     observed_at: owned::ClockObservation,
     result: Result<&owned::Decision<O>, owned::Failure>,
-    bytes: &mut [u8],
 ) -> Result<wire::CommitOut, EncodeError> {
-    buffer(input.result, bytes)?;
     let mut out: wire::CommitOut = output();
     let decision = match result {
         Ok(decision) => decision,
@@ -307,17 +305,7 @@ pub fn commit<O>(
     out.authority = observed_at.authority;
     out.observed_at = observed_at.unix_seconds;
     out.code = match decision {
-        owned::Decision::Applied(value) => {
-            let needed = count(value.0.len())?;
-            if value.0.len() > bytes.len() {
-                out.needed = needed;
-                head::<wire::CommitOut>(&mut out.head, Outcome::Failed);
-                return Ok(out);
-            }
-            bytes[..value.0.len()].copy_from_slice(&value.0);
-            out.written = needed;
-            wire::COMMIT_APPLIED
-        }
+        owned::Decision::Applied(_) => wire::COMMIT_APPLIED,
         owned::Decision::ConditionConflict => wire::COMMIT_CONDITION_CONFLICT,
         owned::Decision::TimeGuardFailed {
             observed_at: actual,
@@ -328,7 +316,8 @@ pub fn commit<O>(
             wire::COMMIT_TIME_GUARD_FAILED
         }
         owned::Decision::OpIdConflict => wire::COMMIT_OPID_CONFLICT,
-        owned::Decision::ExpiredUnknown => wire::COMMIT_EXPIRED_UNKNOWN,
+        owned::Decision::Fenced => wire::COMMIT_FENCED,
+        owned::Decision::Stale => wire::COMMIT_STALE,
     };
     head::<wire::CommitOut>(&mut out.head, Outcome::Ready);
     Ok(out)

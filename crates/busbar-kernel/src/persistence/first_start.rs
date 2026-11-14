@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 
 use super::{commit::Attempt, facade::WriterAuthority, startup};
 
-const NAMESPACE: NamespaceId = NamespaceId(*b"busbar.birth1\0\0\0");
+const NAMESPACE: NamespaceId = busbar_contract::persistence::witness::BIRTH_NAMESPACE;
 
 /// The selected initial instance and its exact admitted plugin/configuration digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,7 +116,7 @@ fn validate_plan(plan: &[Binding]) -> Result<(), startup::Error> {
 pub(super) fn address() -> Address {
     Address {
         namespace: NAMESPACE.0,
-        key: b"initial".to_vec(),
+        key: busbar_contract::persistence::witness::BIRTH_KEY.to_vec(),
     }
 }
 
@@ -398,7 +398,7 @@ impl FirstStart {
             attempt.clone()
         } else {
             let attempt = Arc::new(
-                Attempt::new(candidate, self.backend.clone())
+                Attempt::proven(candidate, self.backend.clone())
                     .map_err(|_| startup::Error::Authority)?,
             );
             state.pending = Some((next.clone(), attempt.clone()));

@@ -956,7 +956,7 @@ fn outcome(submission: Submission) -> Result<Outcome> {
             Decision::Applied(_) => Outcome::Applied,
             Decision::ConditionConflict => Outcome::Conflict,
             Decision::OpIdConflict => Outcome::OpIdConflict,
-            Decision::ExpiredUnknown => Outcome::Reconcile(submission.id),
+            Decision::Fenced | Decision::Stale => Outcome::Reconcile(submission.id),
             _ => return Err(Error::Corrupt),
         },
         SubmitResult::NoEffect(f) => Outcome::NoEffect(f),

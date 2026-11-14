@@ -350,8 +350,8 @@ impl StoreCheckpoints {
             &crate::seal::lend(),
         )
         .map_err(|_| Error::Bounds)?;
-        let attempt =
-            Attempt::new(candidate, self.backend.clone()).map_err(|_| Error::IdentityMismatch)?;
+        let attempt = Attempt::proven(candidate, self.backend.clone())
+            .map_err(|_| Error::IdentityMismatch)?;
         state.pending = Some(Pending {
             migration,
             protected: protected.clone(),

@@ -874,7 +874,7 @@ impl ObservationStore {
             SubmitResult::Decided(decision) => match decision.as_ref() {
                 Decision::Applied(_) => Ok(true),
                 Decision::ConditionConflict => Ok(false),
-                Decision::ExpiredUnknown => Err(Error::Pending {
+                Decision::Fenced | Decision::Stale => Err(Error::Pending {
                     operation: submission.id,
                     scope,
                 }),

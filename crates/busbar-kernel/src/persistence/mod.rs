@@ -28,10 +28,12 @@ pub mod import_target;
 #[allow(dead_code)]
 pub mod journal;
 pub(crate) mod keys;
+pub mod lifecycle;
 pub mod objects;
 pub mod observations;
 pub(crate) mod partition;
 pub mod recovery_api;
 pub(crate) mod scan;
 pub mod scoped;
+mod slot_seal;
 pub mod startup;

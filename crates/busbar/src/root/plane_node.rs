@@ -245,6 +245,27 @@ impl Node {
         }
         Ok(())
     }
+    /// Settle in-doubt store attempts (≤ 64 per tick) and publish `busbar_store_slots`.
+    pub(crate) async fn settle_store(&self) {
+        let Some(journal) = self.lane.get() else {
+            return;
+        };
+        match journal.settle_store().await {
+            Ok(states) => {
+                for (state, count) in [
+                    ("free", states.free),
+                    ("in_flight", states.in_flight),
+                    ("in_doubt", states.in_doubt),
+                    ("resolved_uncollected", states.resolved_uncollected),
+                    ("reconcile", states.reconcile),
+                ] {
+                    metrics::gauge!(busbar_kernel::snapshot::STORE_SLOTS, "state" => state)
+                        .set(count as f64);
+                }
+            }
+            Err(error) => tracing::warn!(?error, "store slot settle pass failed"),
+        }
+    }
     #[must_use]
     pub fn journal_refusal(&self) -> Option<String> {
         self.lane.get().and_then(|journal| journal.refuses_money())

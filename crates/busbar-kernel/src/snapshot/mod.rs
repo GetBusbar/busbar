@@ -251,6 +251,10 @@ pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_
 
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
 
+/// Store slot-queue gauge; `state` is free, in_flight, in_doubt, resolved_uncollected or reconcile,
+/// and the states add up to `pending_operations` (STORE-TRANSACTIONS §2.7).
+pub const STORE_SLOTS: &str = "busbar_store_slots";
+
 use busbar_contract::export_calls::Family;
 use std::time::Duration;
 

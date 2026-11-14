@@ -9,15 +9,17 @@
 
 pub mod backend;
 pub mod bootstrap;
+#[cfg(feature = "test-seal")]
+pub mod conformance;
 pub mod decode;
 pub mod door;
 pub mod encode;
 pub mod metadata;
 pub mod response;
-pub mod retirement;
+pub mod slot;
 
 use crate::abi::mechanism::call::{Blob, InHead, BLOB_OCTETS, BLOB_SECRET};
-use crate::abi::store::{v4 as wire, HostBuf};
+use crate::abi::store::v4 as wire;
 use crate::persistence::{self as owned, ExpectedValue, Mutation};
 
 /// Failure before any native submission; no backend mutation has been attempted.
@@ -163,9 +165,11 @@ impl Commit {
     }
 
     /// Borrow a raw input frame; this owner must outlive its execution/ticket.
-    pub fn frame(&self, head: InHead, result: HostBuf) -> wire::CommitIn {
+    /// The key's `(slot, seq)` is copied onto the wire candidate (N1).
+    pub fn frame(&self, head: InHead, key: owned::CommitKey) -> wire::CommitIn {
         let source = self.candidate.candidate();
         let id = source.id;
+        let (slot, seq) = key.wire();
         wire::CommitIn {
             head,
             candidate: wire::Candidate {
@@ -177,7 +181,8 @@ impl Commit {
                     execution_epoch: id.execution_epoch,
                 },
                 codec: source.codec,
-                _reserved: 0,
+                slot,
+                seq,
                 time: time(source.time),
                 predicates: self.predicates.as_ptr(),
                 predicates_len: self.predicates.len(),
@@ -185,7 +190,6 @@ impl Commit {
                 mutations_len: self.mutations.len(),
                 result: blob(&source.result.0),
             },
-            result,
         }
     }
 }
