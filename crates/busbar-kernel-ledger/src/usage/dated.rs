@@ -95,37 +95,6 @@ impl<'h> DatedHistory<'h> {
     }
 }
 
-/// **A DATED BUDGET CELL, PRICED.** `money = f(ledger counts, dated ratecard)` over one bucket.
-pub fn price_dated<'r>(
-    rows: impl IntoIterator<Item = (&'r str, u64, &'r BTreeMap<String, u64>), IntoIter: Clone>,
-    fees: impl IntoIterator<Item = (u64, u64), IntoIter: Clone>,
-    window_start_ms: u64,
-    live: &RateCard,
-    dated: Option<DatedHistory<'_>>,
-) -> Result<Money, MoneyError> {
-    price_dated_at(
-        rows.into_iter()
-            .map(|(lane, era, counts)| (lane, RawRateEra::legacy(era), counts)),
-        fees.into_iter()
-            .map(|(era, count)| (RawRateEra::legacy(era), count)),
-        window_start_ms,
-        live,
-        dated,
-        true,
-    )
-}
-
-/// Price counts carrying exact serving-entry provenance, while preserving legacy timestamp rows.
-pub fn price_dated_raw<'r>(
-    rows: impl IntoIterator<Item = (&'r str, RawRateEra, &'r BTreeMap<String, u64>), IntoIter: Clone>,
-    fees: impl IntoIterator<Item = (RawRateEra, u64), IntoIter: Clone>,
-    window_start_ms: u64,
-    live: &RateCard,
-    dated: Option<DatedHistory<'_>>,
-) -> Result<Money, MoneyError> {
-    price_dated_at(rows, fees, window_start_ms, live, dated, false)
-}
-
 /// Price exact fractional counts through the same dated lookup and final projection.
 pub fn price_dated_counts_raw<'r>(
     rows: impl IntoIterator<
