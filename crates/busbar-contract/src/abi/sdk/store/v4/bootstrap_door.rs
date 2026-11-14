@@ -129,28 +129,18 @@ impl Preparation {
             }
             (Request::CheckFence { upgrade }, Response::Fence(fence))
                 if upgrade.id == fence.upgrade && self.source.as_ref() == Some(&fence.source) => {}
-            (
-                Request::Finish {
-                    upgrade,
-                    activation_receipt,
-                },
-                Response::RecoveryReady(ready),
-            ) if upgrade.id == ready.upgrade
-                && activation_receipt.phase == native::CompletionPhase::Activation =>
+            (Request::Finish { upgrade, decision }, Response::RecoveryReady(ready))
+                if upgrade.id == ready.upgrade
+                    && decision.phase == native::CompletionPhase::Activation =>
             {
                 self.phase = native::Phase::RecoveryReady;
                 self.recovery = Some(ready.clone());
             }
-            (
-                Request::Finish {
-                    upgrade,
-                    activation_receipt,
-                },
-                Response::ServingReady(ready),
-            ) if upgrade.id == ready.recovery.upgrade
-                && self.recovered.as_ref() == Some(&ready.recovery)
-                && self.recovery.as_ref() == Some(&ready.recovery)
-                && activation_receipt.phase == native::CompletionPhase::Complete =>
+            (Request::Finish { upgrade, decision }, Response::ServingReady(ready))
+                if upgrade.id == ready.recovery.upgrade
+                    && self.recovered.as_ref() == Some(&ready.recovery)
+                    && self.recovery.as_ref() == Some(&ready.recovery)
+                    && decision.phase == native::CompletionPhase::Complete =>
             {
                 self.phase = native::Phase::Open;
             }

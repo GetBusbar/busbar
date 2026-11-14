@@ -8,7 +8,7 @@
 //! carry content-free typed failures. Blobs and vector counts use u32 lengths.
 
 use super::*;
-use crate::persistence::{Address, AttemptId, Durability};
+use crate::persistence::{Address, Durability};
 use crate::redacted::OwnerSeal;
 use std::mem::size_of;
 use zeroize::Zeroize;
@@ -213,25 +213,17 @@ impl Writer {
         self.id(&r.activation_receipt_digest)?;
         self.id(&r.selector_digest)
     }
-    fn receipt<O>(&mut self, r: &ActivationReceipt<O>) -> Result<(), Error> {
-        self.id(&r.attempt.dataset.0)?;
-        valid(r.attempt.writer_epoch != 0 && r.attempt.execution_epoch != 0)?;
-        self.u64(r.attempt.writer_epoch)?;
-        self.id(&r.attempt.writer)?;
-        self.u64(r.attempt.execution_epoch)?;
-        self.id(&r.attempt.operation)?;
-        self.id(&r.candidate_fingerprint)?;
-        // Primitive Applied receipts may carry an empty result. Preserve those
-        // exact bytes; identity, fingerprint and checkpoint remain mandatory.
-        self.secret(&r.original_result)?;
-        self.id(&r.checkpoint_address.namespace)?;
-        valid(!r.checkpoint_address.key.is_empty())?;
-        self.blob(&r.checkpoint_address.key)?;
-        self.id(&r.checkpoint_value_digest)?;
-        self.byte(match r.phase {
+    fn decision(&mut self, d: &FinishDecision) -> Result<(), Error> {
+        self.byte(match d.phase {
             CompletionPhase::Activation => 0,
             CompletionPhase::Complete => 1,
-        })
+        })?;
+        self.id(&d.phase_digest)?;
+        self.id(&d.checkpoint_address.namespace)?;
+        valid(!d.checkpoint_address.key.is_empty())?;
+        self.blob(&d.checkpoint_address.key)?;
+        self.id(&d.checkpoint_value_digest)?;
+        self.id(&d.marker_value_digest)
     }
     fn catalogue(&mut self, catalogue: &[super::super::archive::Table]) -> Result<(), Error> {
         self.budget
@@ -525,36 +517,22 @@ impl<'a> Reader<'a> {
             selector_digest: self.id()?,
         })
     }
-    fn receipt<O>(
-        &mut self,
-        make: fn(Vec<u8>) -> Secret<Vec<u8>, O>,
-    ) -> Result<ActivationReceipt<O>, Error> {
-        let attempt = AttemptId {
-            dataset: DatasetId(self.id()?),
-            writer_epoch: self.u64()?,
-            writer: self.id()?,
-            execution_epoch: self.u64()?,
-            operation: self.id()?,
-        };
-        valid(attempt.writer_epoch != 0 && attempt.execution_epoch != 0)?;
-        let candidate_fingerprint = self.id()?;
-        let original_result = self.secret(make)?;
-        let namespace = self.id()?;
-        let key = self.public_blob()?;
-        valid(!key.is_empty())?;
-        let checkpoint_value_digest = self.id()?;
+    fn decision(&mut self) -> Result<FinishDecision, Error> {
         let phase = match self.byte()? {
             0 => CompletionPhase::Activation,
             1 => CompletionPhase::Complete,
             _ => return Err(Error::Corrupt),
         };
-        Ok(ActivationReceipt {
-            attempt,
-            candidate_fingerprint,
-            original_result,
-            checkpoint_address: Address { namespace, key },
-            checkpoint_value_digest,
+        let phase_digest = self.id()?;
+        let namespace = self.id()?;
+        let key = self.public_blob()?;
+        valid(!key.is_empty())?;
+        Ok(FinishDecision {
             phase,
+            phase_digest,
+            checkpoint_address: Address { namespace, key },
+            checkpoint_value_digest: self.id()?,
+            marker_value_digest: self.id()?,
         })
     }
     fn catalogue(&mut self) -> Result<Vec<super::super::archive::Table>, Error> {
@@ -694,12 +672,9 @@ pub fn encode_request<O>(request: &Request<O>, bounds: Bounds) -> Result<Secret<
             w.bounds(*bounds)?;
         }
         Request::Target { upgrade } | Request::CheckFence { upgrade } => w.upgrade(upgrade)?,
-        Request::Finish {
-            upgrade,
-            activation_receipt,
-        } => {
+        Request::Finish { upgrade, decision } => {
             w.upgrade(upgrade)?;
-            w.receipt(activation_receipt)?;
+            w.decision(decision)?;
         }
     }
     Ok(w.out)
@@ -747,7 +722,7 @@ fn request_with<O>(
         },
         5 => Request::Finish {
             upgrade: r.upgrade(make)?,
-            activation_receipt: r.receipt(make)?,
+            decision: r.decision()?,
         },
         _ => return Err(Error::Corrupt),
     };

@@ -10,14 +10,7 @@ use busbar_contract::{persistence::*, Secret};
 use super::{Error, Id};
 
 pub(super) fn address(migration: Id, operation: Id) -> Address {
-    let mut key = Vec::with_capacity(33);
-    key.push(b's');
-    key.extend_from_slice(&migration);
-    key.extend_from_slice(&operation);
-    Address {
-        namespace: super::coordinator::NAMESPACE,
-        key,
-    }
+    busbar_contract::persistence::witness::step(migration, operation)
 }
 
 pub(super) fn attach(mut candidate: Candidate, migration: Id) -> Result<PreparedCandidate, Error> {

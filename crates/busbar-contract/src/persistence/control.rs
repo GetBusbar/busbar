@@ -4,12 +4,12 @@
 //! Generic execution-fence records, shared by the host and Store adapters.
 //!
 //! These records carry no domain policy. The adapter reads them at its atomic
-//! serialization point, after receipt lookup. Core prepares changes through
-//! ordinary conditional commits. A successful prior receipt precedes all fences.
+//! serialization point, after the slot row. Core prepares changes through
+//! ordinary conditional commits. The slot row precedes all fences.
 //! Adapters must reject deletion, range deletion, malformed replacements and
 //! backwards transitions in this namespace; an absent control record is never an
 //! implicit grant. Dataset initialization requires a separately proven empty
-//! logical dataset (records and receipts), not merely an absent key in an
+//! logical dataset (records and slot rows), not merely an absent key in an
 //! existing dataset. Physical backend identity metadata grants no execution authority.
 
 use super::{
@@ -25,7 +25,7 @@ pub const DATASET_KEY: &[u8] = b"d";
 /// exact sixteen bytes and a present value is its nonzero little-endian u64.
 /// A missing record means generation zero. Ordinary candidates may predicate on
 /// these records but must never mutate them directly. Each committed candidate
-/// advances every mutated namespace once, atomically with its effects and receipt.
+/// advances every mutated namespace once, atomically with its effects and slot row.
 pub const GENERATION_NAMESPACE: NamespaceId = NamespaceId(*b"busbar.scan.v1\0\0");
 
 /// Known control keys; an unrecognized key is not an extensible grant format.
@@ -99,8 +99,8 @@ pub fn replacement(
 /// additional records cannot use either reserved adapter namespace.
 ///
 /// The adapter must additionally prove, under the same native atomic guard, that
-/// the canonical dataset has no records, receipts or previous authority. Legacy
-/// or partially initialized data is never fresh. Receipt lookup still comes first.
+/// the canonical dataset has no records, slot rows or previous authority. Legacy
+/// or partially initialized data is never fresh.
 #[must_use]
 pub fn initialization<O>(candidate: &Candidate<O>, dataset: DatasetId) -> bool {
     if candidate.codec != CANDIDATE_VERSION
@@ -238,10 +238,10 @@ impl Dataset {
 /// Contiguous execution epochs admitted to a registered writer.
 ///
 /// Epochs at or below the retired floor never execute again, including after
-/// receipt collection. Epochs above the admitted ceiling have not been granted.
+/// writer closure. Epochs above the admitted ceiling have not been granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Writer {
-    /// Irreversible lower fence; receipts may outlive it but it never decreases.
+    /// Irreversible lower fence; it never decreases.
     pub retired_through: u64,
     /// Highest epoch ever admitted; it never decreases or wraps.
     pub admitted_through: u64,

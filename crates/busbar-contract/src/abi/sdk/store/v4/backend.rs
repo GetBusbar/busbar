@@ -10,18 +10,54 @@ use crate::abi::sdk::store::{Op, Step};
 use crate::persistence::*;
 use crate::redacted::OwnerSeal;
 
-/// A commit's definitive answer and its original serialization observation.
+/// The validated `(slot, seq)` of one commit, decoded from the wire candidate (N1).
+///
+/// A slotted send names `slot < MAX_SLOTS` with `seq >= 1`; a self-fenced send names
+/// `SLOT_SELF_FENCED` with `seq == 0`. Anything else is refused before any read, so a
+/// store never sizes per-writer state from an unchecked slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitSlot {
+    slot: u32,
+    seq: u64,
+}
+
+impl CommitSlot {
+    /// Validate wire slot fields; `None` means the send must be refused untouched.
+    #[must_use]
+    pub fn decode(slot: u32, seq: u64) -> Option<Self> {
+        let valid = if slot == SLOT_SELF_FENCED {
+            seq == 0
+        } else {
+            slot < MAX_SLOTS && seq >= 1
+        };
+        valid.then_some(Self { slot, seq })
+    }
+
+    /// The queue slot, or `None` for a self-fenced send (no slot row is read or written).
+    #[must_use]
+    pub fn slot(self) -> Option<u32> {
+        (self.slot != SLOT_SELF_FENCED).then_some(self.slot)
+    }
+
+    /// The lease sequence; zero for a self-fenced send.
+    #[must_use]
+    pub fn seq(self) -> u64 {
+        self.seq
+    }
+}
+
+/// A commit's definitive answer and its serialization observation.
 #[derive(Debug)]
 pub struct Committed<O> {
-    /// Original receipt observation, including on replay.
+    /// Serialization observation; on an equal-sequence replay, the slot row's.
     pub observed_at: ClockObservation,
-    /// Original opaque result or no-effect decision.
+    /// The verdict. `Applied` carries empty bytes: results are never echoed.
     pub decision: Decision<O>,
 }
 
 /// Mandatory native Store v4 operations. Pending continuations live in `Op`.
 ///
-/// The backend must preserve the contract's atomicity, fencing and receipt semantics.
+/// The backend must preserve the contract's atomicity, fencing and slot-row semantics.
 /// It must never infer rollback from cancellation. `info` becomes fixed after connect.
 pub trait Backend: Send + Sync + Sized + 'static {
     /// Custody seal minted by this plugin, independent of kernel custody.
@@ -66,11 +102,14 @@ pub trait Backend: Send + Sync + Sized + 'static {
     ) -> Step<Result<ReadResult<Self::Owner>, Failure>>;
     /// Ordered generation-checked page.
     fn scan(&self, op: &mut Op<'_>, request: &Scan) -> Step<Result<Page<Self::Owner>, Failure>>;
-    /// Atomic effects and receipt; return the receipt's original observation on replay.
+    /// Atomic effects and slot row (STORE-TRANSACTIONS §2.5): STALE below the recorded
+    /// sequence, the recorded verdict replayed at an equal one, FENCED when the epoch is
+    /// not admitted, and every evaluated verdict recorded. Self-fenced sends skip the row.
     fn commit(
         &self,
         op: &mut Op<'_>,
         request: &PreparedCandidate<Self::Owner>,
+        slot: CommitSlot,
     ) -> Step<Result<Committed<Self::Owner>, Failure>>;
     /// Authoritative dataset clock.
     fn clock(&self, op: &mut Op<'_>, dataset: DatasetId)

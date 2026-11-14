@@ -1,28 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! One immutable candidate and one fixed backend, retained across cancellation.
+//! One immutable candidate, its dedupe key and one fixed backend, retained across
+//! cancellation (STORE-TRANSACTIONS §2.2-§2.3).
 //!
-//! Submission performs at most one native call. Callers choose when to retry;
-//! uncertainty never authorizes replanning, and elapsed replay authority never
-//! starts over on retry. This module does not acknowledge durable acceptance.
+//! Submission performs at most one native commit call. A slotted attempt is deduped by
+//! its (writer, slot, seq) row, which never expires, so a retry is always safe. A
+//! self-fenced attempt can apply at most once by its own witness; when a retry after a
+//! possible earlier effect is answered "did not apply", one readback of the witness
+//! and every predicate decides it. Uncertainty never authorizes replanning.
 
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
 
 use busbar_contract::persistence::{
-    BackendInfo, Decision, Failure, PersistenceBackend, PreparedCandidate,
+    Address, BackendInfo, CommitKey, Decision, ExpectedValue, Failure, Mutation,
+    PersistenceBackend, PreparedCandidate, Read, ReadResult, SelfFenced, WitnessKind,
 };
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::Secret;
 
 use super::candidate_codec::{self, CodecError};
-
-const REPLAY_HORIZON: Duration = Duration::from_secs(24 * 60 * 60);
+use crate::diagnostics::Diagnostic;
 
 /// Content-free rejection of an attempt aimed at another dataset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DatasetMismatch;
+
+/// An attempt could not be bound to its backend and key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindError {
+    /// The immutable candidate names another dataset.
+    DatasetMismatch,
+    /// The candidate is not provably single-shot, or the proof is for another candidate.
+    NotSelfFenced,
+    /// A slotted attempt was given a self-fenced key.
+    Key,
+}
 
 /// Content-free snapshot decoding or allocation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,14 +50,14 @@ pub enum RestoreError {
     Snapshot(SnapshotError),
 }
 
-/// Public observation of custody, without exposing candidate or receipt contents.
+/// Public observation of custody, without exposing candidate contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     /// No send has an unresolved possible effect.
     Prepared,
     /// One caller currently owns the native crossing.
     InFlight,
-    /// A send may have applied; only exact replay may resolve it.
+    /// A send may have applied; only exact replay or readback may resolve it.
     Uncertain,
     /// A definitive decision has been cached.
     Resolved,
@@ -61,7 +74,7 @@ pub enum SubmitResult {
     NoEffect(Failure),
     /// Execution may have occurred; retain this attempt for exact replay.
     Uncertain,
-    /// Replay authority is unavailable or a later rejection cannot resolve history.
+    /// The outcome cannot be decided automatically; reconcile the retained evidence.
     Reconcile,
     /// Another caller currently owns the native crossing.
     Busy,
@@ -77,46 +90,102 @@ enum Phase {
 
 struct Inner {
     phase: Phase,
-    first_send: Option<Instant>,
+    audited: Option<&'static Diagnostic>,
 }
 
-/// Shared custody of immutable input and its original backend instance.
+#[derive(Clone, Copy)]
+enum Kind {
+    Slotted,
+    SelfFenced(SelfFenced),
+    /// Restored custody: never submitted.
+    Restored,
+}
+
+/// Shared custody of immutable input, its dedupe key and its original backend.
 ///
 /// Retain this owner while unresolved. Dropping a submission future relinquishes
 /// its waiter, marks the attempt uncertain, and does not drop its candidate.
 /// Replacing the application's backend cannot retarget this owner.
 pub struct Attempt {
     candidate: PreparedCandidate,
+    key: Option<CommitKey>,
+    kind: Kind,
     backend: Arc<dyn PersistenceBackend>,
     info: BackendInfo,
     inner: Mutex<Inner>,
 }
 
+/// The answer a self-fenced readback starts from: all three mean "this send did not apply".
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NotApplied {
+    Conflict,
+    Fenced,
+    Refused,
+}
+
 impl Attempt {
-    /// Bind validated input to one opened backend before any native crossing.
-    pub fn new(
+    fn bind(
         candidate: PreparedCandidate,
+        key: Option<CommitKey>,
+        kind: Kind,
         backend: Arc<dyn PersistenceBackend>,
-    ) -> Result<Self, DatasetMismatch> {
+    ) -> Result<Self, BindError> {
         let info = backend.info();
         if candidate.candidate().id.dataset != info.dataset {
-            return Err(DatasetMismatch);
+            return Err(BindError::DatasetMismatch);
         }
         Ok(Self {
             candidate,
+            key,
+            kind,
             backend,
             info,
             inner: Mutex::new(Inner {
                 phase: Phase::Prepared,
-                first_send: None,
+                audited: None,
             }),
         })
     }
 
+    /// Bind a candidate to the queue slot the facade leased for it.
+    pub(crate) fn slotted(
+        candidate: PreparedCandidate,
+        key: CommitKey,
+        backend: Arc<dyn PersistenceBackend>,
+    ) -> Result<Self, BindError> {
+        if key.is_self_fenced() {
+            return Err(BindError::Key);
+        }
+        Self::bind(candidate, Some(key), Kind::Slotted, backend)
+    }
+
+    /// Bind a candidate that can apply at most once by its own witness. The proof
+    /// must be [`SelfFenced::check`] of this exact candidate.
+    pub fn self_fenced(
+        candidate: PreparedCandidate,
+        proof: SelfFenced,
+        backend: Arc<dyn PersistenceBackend>,
+    ) -> Result<Self, BindError> {
+        if SelfFenced::check(&candidate) != Ok(proof) {
+            return Err(BindError::NotSelfFenced);
+        }
+        let key = CommitKey::self_fenced(&proof);
+        Self::bind(candidate, Some(key), Kind::SelfFenced(proof), backend)
+    }
+
+    /// Check and bind a self-fenced candidate in one step.
+    pub fn proven(
+        candidate: PreparedCandidate,
+        backend: Arc<dyn PersistenceBackend>,
+    ) -> Result<Self, BindError> {
+        let proof = SelfFenced::check(&candidate).map_err(|_| BindError::NotSelfFenced)?;
+        Self::self_fenced(candidate, proof, backend)
+    }
+
     /// Restore immutable candidate custody only, with submission prohibited.
     ///
-    /// A candidate snapshot has no trustworthy same-process first-send clock.
-    /// It cannot establish complete durable intent or durable acceptance.
+    /// A restored candidate has no leased slot. It cannot establish complete durable
+    /// intent or durable acceptance.
     pub fn restore_candidate<S: KernelSeal + ?Sized>(
         snapshot: &Secret<Vec<u8>>,
         allocation_budget: usize,
@@ -125,7 +194,8 @@ impl Attempt {
     ) -> Result<Self, RestoreError> {
         let candidate = candidate_codec::decode(snapshot, allocation_budget, seal)
             .map_err(|error| RestoreError::Snapshot(SnapshotError(error)))?;
-        let attempt = Self::new(candidate, backend).map_err(|_| RestoreError::DatasetMismatch)?;
+        let attempt = Self::bind(candidate, None, Kind::Restored, backend)
+            .map_err(|_| RestoreError::DatasetMismatch)?;
         attempt.lock().phase = Phase::Reconcile;
         Ok(attempt)
     }
@@ -149,6 +219,12 @@ impl Attempt {
         &self.candidate
     }
 
+    /// The dedupe key this attempt travels with; `None` for restored custody.
+    #[must_use]
+    pub fn key(&self) -> Option<CommitKey> {
+        self.key
+    }
+
     /// Authority facts captured from the original backend at construction.
     #[must_use]
     pub fn backend_info(&self) -> BackendInfo {
@@ -167,11 +243,17 @@ impl Attempt {
         }
     }
 
-    /// Make at most one native commit call with the exact original candidate.
+    /// The last audited diagnostic this attempt emitted, if any.
+    #[must_use]
+    pub fn audited(&self) -> Option<&'static Diagnostic> {
+        self.lock().audited
+    }
+
+    /// Make at most one native commit call with the exact original candidate and key,
+    /// plus at most one readback for a self-fenced attempt.
     ///
-    /// Cancellation after the crossing begins preserves uncertainty. The first
-    /// send starts one monotonic 24-hour horizon, including refused sends; retries
-    /// never extend it. No lock is held while awaiting the backend.
+    /// Cancellation after the crossing begins preserves uncertainty. No lock is held
+    /// while awaiting the backend.
     pub async fn submit(&self) -> SubmitResult {
         let uncertain = {
             let mut inner = self.lock();
@@ -182,15 +264,10 @@ impl Attempt {
                 Phase::Prepared => false,
                 Phase::Uncertain => true,
             };
-            let now = Instant::now();
-            if inner
-                .first_send
-                .is_some_and(|first| now.saturating_duration_since(first) >= REPLAY_HORIZON)
-            {
+            let Some(_) = self.key else {
                 inner.phase = Phase::Reconcile;
                 return SubmitResult::Reconcile;
-            }
-            inner.first_send.get_or_insert(now);
+            };
             inner.phase = Phase::InFlight;
             uncertain
         };
@@ -200,17 +277,14 @@ impl Attempt {
             attempt: self,
             armed: true,
         };
-        let reply = self.backend.commit(self.candidate.clone()).await;
-        let (phase, result) = match reply {
-            Ok(Decision::Applied(value)) if value == self.candidate.candidate().result => {
-                let decision = Arc::new(Decision::Applied(value));
-                (
-                    Phase::Resolved(decision.clone()),
-                    SubmitResult::Decided(decision),
-                )
-            }
-            Ok(Decision::Applied(_)) => (Phase::Uncertain, SubmitResult::Uncertain),
-            Ok(Decision::ExpiredUnknown) => (Phase::Reconcile, SubmitResult::Reconcile),
+        let key = self.key.expect("checked above");
+        let reply = self.backend.commit(self.candidate.clone(), key).await;
+        let fence = match self.kind {
+            Kind::SelfFenced(proof) => Some(proof),
+            _ => None,
+        };
+        let step = match reply {
+            Ok(Decision::Applied(_)) => Step::Resolved(self.applied()),
             Ok(Decision::TimeGuardFailed { observed_at })
                 if observed_at.authority != self.info.clock_authority
                     || self
@@ -219,24 +293,197 @@ impl Attempt {
                         .time
                         .is_none_or(|guard| guard.permits(observed_at.unix_seconds)) =>
             {
-                (Phase::Uncertain, SubmitResult::Uncertain)
+                self.audit(&crate::diagnostics::STORE_TIME_GUARD_INCONSISTENT, || {
+                    format!(
+                        "observed authority {:02x?} at {}, guard {:?}",
+                        observed_at.authority,
+                        observed_at.unix_seconds,
+                        self.candidate.candidate().time
+                    )
+                });
+                Step::Reconcile
             }
-            Ok(_) if uncertain => (Phase::Reconcile, SubmitResult::Reconcile),
-            Ok(decision) => {
+            Ok(Decision::ConditionConflict) => match fence {
+                Some(proof) if uncertain => Step::Readback(proof, NotApplied::Conflict),
+                _ => Step::Resolved(Decision::ConditionConflict),
+            },
+            Ok(decision @ Decision::TimeGuardFailed { .. }) => Step::Resolved(decision),
+            Ok(Decision::Fenced) => match (fence, uncertain) {
+                (Some(proof), true) => Step::Readback(proof, NotApplied::Fenced),
+                (Some(_), false) => Step::Resolved(Decision::Fenced),
+                (None, false) => Step::NoEffect(Failure::Refused),
+                (None, true) => {
+                    self.audit(
+                        &crate::diagnostics::STORE_COMMIT_FENCED_IN_DOUBT,
+                        String::new,
+                    );
+                    Step::Reconcile
+                }
+            },
+            Ok(Decision::Stale) => {
+                self.audit(&crate::diagnostics::STORE_SLOT_INVARIANT, String::new);
+                if uncertain || fence.is_some() {
+                    Step::Reconcile
+                } else {
+                    Step::NoEffect(Failure::Refused)
+                }
+            }
+            Ok(Decision::OpIdConflict) => Step::Resolved(Decision::OpIdConflict),
+            Err(failure @ (Failure::Refused | Failure::Overloaded)) if !uncertain => {
+                Step::NoEffect(failure)
+            }
+            Err(Failure::Refused) => match fence {
+                Some(proof) => Step::Readback(proof, NotApplied::Refused),
+                None => Step::Uncertain,
+            },
+            Err(_) => Step::Uncertain,
+        };
+        let step = match step {
+            Step::Readback(proof, answer) => self.readback(proof, answer).await,
+            other => other,
+        };
+        let (phase, result) = match step {
+            Step::Resolved(decision) => {
                 let decision = Arc::new(decision);
                 (
                     Phase::Resolved(decision.clone()),
                     SubmitResult::Decided(decision),
                 )
             }
-            Err(failure @ (Failure::Refused | Failure::Overloaded)) if !uncertain => {
-                (Phase::Prepared, SubmitResult::NoEffect(failure))
-            }
-            Err(_) => (Phase::Uncertain, SubmitResult::Uncertain),
+            Step::NoEffect(failure) => (Phase::Prepared, SubmitResult::NoEffect(failure)),
+            Step::Uncertain | Step::Readback(..) => (Phase::Uncertain, SubmitResult::Uncertain),
+            Step::Reconcile => (Phase::Reconcile, SubmitResult::Reconcile),
         };
         self.lock().phase = phase;
         crossing.armed = false;
         result
+    }
+
+    /// ResolveByReadback (§2.3): one read of the witness and every predicate address.
+    async fn readback(&self, proof: SelfFenced, answer: NotApplied) -> Step {
+        let body = self.candidate.candidate();
+        let (first, pair) = proof.witness_puts();
+        let witness: Vec<(&Address, &Secret<Vec<u8>>)> = [Some(first), pair]
+            .into_iter()
+            .flatten()
+            .filter_map(|index| match body.mutations.get(index) {
+                Some(Mutation::Put { address, value }) => Some((address, value)),
+                _ => None,
+            })
+            .collect();
+        if witness.len() != 1 + usize::from(pair.is_some()) {
+            return Step::Uncertain;
+        }
+        let mut addresses: Vec<Address> = Vec::new();
+        for address in witness
+            .iter()
+            .map(|(address, _)| *address)
+            .chain(body.predicates.iter().map(|p| &p.address))
+        {
+            if !addresses.contains(address) {
+                addresses.push(address.clone());
+            }
+        }
+        let count = addresses.len();
+        let observed = self
+            .backend
+            .read(Arc::new(Read {
+                dataset: self.info.dataset,
+                addresses: addresses.clone(),
+                time: None,
+            }))
+            .await;
+        // (a) nothing learned.
+        let values = match observed {
+            Ok(ReadResult::Values {
+                observed_at,
+                values,
+            }) if observed_at.authority == self.info.clock_authority && values.len() == count => {
+                values
+            }
+            _ => return Step::Uncertain,
+        };
+        let at = |address: &Address| {
+            addresses
+                .iter()
+                .position(|a| a == address)
+                .and_then(|i| values[i].as_ref())
+        };
+        // (b) the witness shows this attempt's effect.
+        let applied = match proof.kind() {
+            WitnessKind::Absent => at(witness[0].0).is_some(),
+            WitnessKind::Value => witness
+                .iter()
+                .all(|(address, value)| at(address) == Some(*value)),
+            WitnessKind::Exact => at(witness[0].0) == Some(witness[0].1),
+        };
+        if applied {
+            return Step::Resolved(self.applied());
+        }
+        // (c) an Exact witness moved past both its expected and its successor value.
+        if proof.kind() == WitnessKind::Exact {
+            let before = body
+                .predicates
+                .iter()
+                .find(|p| p.address == *witness[0].0)
+                .map(|p| &p.expected);
+            if let Some(ExpectedValue::Exact(x)) = before {
+                if at(witness[0].0) != Some(x) {
+                    self.audit(&crate::diagnostics::STORE_SELF_FENCED_AMBIGUOUS, || {
+                        "exact witness superseded".to_owned()
+                    });
+                    return Step::Reconcile;
+                }
+            }
+        }
+        // (d) a fence is final.
+        if answer == NotApplied::Fenced {
+            return Step::Resolved(Decision::Fenced);
+        }
+        let fails = body.predicates.iter().any(|p| {
+            let value = at(&p.address);
+            match &p.expected {
+                ExpectedValue::Absent => value.is_some(),
+                ExpectedValue::Exact(expected) => value != Some(expected),
+            }
+        });
+        match (fails, proof.no_aba(), answer) {
+            // (e) did not apply and never will.
+            (true, true, _) => Step::Resolved(Decision::ConditionConflict),
+            // (g) the only case a retry can still change.
+            (false, _, NotApplied::Refused) => Step::Uncertain,
+            // (f) a domain predicate could return; (h) an evaluated conflict that holds again.
+            _ => {
+                self.audit(&crate::diagnostics::STORE_SELF_FENCED_AMBIGUOUS, || {
+                    if fails {
+                        "failed predicate may return".to_owned()
+                    } else {
+                        "conflict on predicates that hold".to_owned()
+                    }
+                });
+                Step::Reconcile
+            }
+        }
+    }
+
+    /// Stores never echo result bytes; an applied decision carries this candidate's own.
+    fn applied(&self) -> Decision {
+        Decision::Applied(self.candidate.candidate().result.clone())
+    }
+
+    fn audit(&self, diagnostic: &'static Diagnostic, detail: impl FnOnce() -> String) {
+        let id = self.candidate.candidate().id;
+        let (slot, seq) = self.key.map_or((0, 0), CommitKey::wire);
+        crate::diag_warn!(
+            diagnostic,
+            dataset = ?id.dataset.0,
+            writer = ?id.writer,
+            slot,
+            seq,
+            detail = %detail(),
+            "store commit needs attention"
+        );
+        self.lock().audited = Some(diagnostic);
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -246,6 +493,14 @@ impl Attempt {
             inner
         })
     }
+}
+
+enum Step {
+    Resolved(Decision),
+    NoEffect(Failure),
+    Uncertain,
+    Reconcile,
+    Readback(SelfFenced, NotApplied),
 }
 
 struct Crossing<'a> {

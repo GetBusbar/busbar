@@ -105,6 +105,61 @@ The admin /usage read ran on a `spawn_blocking` task that failed to join (cancel
 
 **What to do:** Investigate the logged context and store backend — a blocking-task panic is a bug or a resource failure. Capture the error and file a bug if it recurs; the request was safely failed.
 
+<a id="store-inflight-exhausted"></a>
+### BUSBAR-1010 — Store in-flight queue exhausted: new store writes are refused until slots free up
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `store-inflight-exhausted`
+
+Every pending-operation slot of this writer is held, so new store commits answer Overloaded and money-path arrivals are refused with DurabilityUnavailable. Emitted when exhaustion starts and again when it ends, with the in_doubt, resolved_uncollected and reconcile counts of the held slots.
+
+**What to do:** store unreachable or slow (in_doubt); a domain not collecting answers (resolved_uncollected, a bug); operator reconciliation pending (reconcile). See the busbar_store_slots gauge.
+
+<a id="store-commit-fenced-in-doubt"></a>
+### BUSBAR-1011 — A store commit whose earlier send may have applied was fenced on retry
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `store-commit-fenced-in-doubt`
+
+A slotted commit lost its reply, and its retry found the writer's epoch no longer admitted (the writer was closed, which also deleted its slot rows). Whether the earlier send applied cannot be decided automatically, so the operation is held for reconciliation instead of being assumed either way.
+
+**What to do:** Reconcile the named operation against the store's records before reusing its effects. This follows a writer closure (recovery adoption or shutdown) while a commit was in doubt.
+
+<a id="store-slot-invariant"></a>
+### BUSBAR-1012 — A live store commit was answered STALE: the slot queue invariant was broken
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `store-slot-invariant`
+
+The store reported that a later sequence of this commit's slot was already evaluated. A live attempt holds its slot, so this means the slot was leased twice or the store's slot row is wrong. Nothing was applied by this send; an in-doubt attempt is held for reconciliation.
+
+**What to do:** This is a bug in the slot facade or the store plugin. Capture the log line (writer, slot) and file a bug; reconcile any held operation.
+
+<a id="store-self-fenced-ambiguous"></a>
+### BUSBAR-1013 — A self-fenced store commit's readback could not decide whether it applied
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `store-self-fenced-ambiguous`
+
+An administrative commit that can apply at most once lost its reply, and the readback of its witness and predicates could not prove it applied or prove it never will (a record moved past both values, a domain predicate could return to its expected value, or the store refused a predicate that holds). It is held for reconciliation instead of being assumed.
+
+**What to do:** Reconcile the named administrative step (boot registration, writer transition, first start or migration step) against the store before retrying it.
+
+<a id="store-time-guard-inconsistent"></a>
+### BUSBAR-1014 — The store answered an inconsistent time-guard failure
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `store-time-guard-inconsistent`
+
+The store reported a time-guard failure whose observation came from another clock authority, or whose time the commit's guard permits, or for a commit with no guard. That is a store fault; retrying would replay the same recorded verdict, so the operation is held for reconciliation.
+
+**What to do:** Check the store plugin and its clock authority. Capture the log line (store, writer, slot, observed authority and time, the guard) and reconcile the held operation.
+
 ## 2xxx — Audit chain
 
 <a id="audit-chain-verify-failed"></a>

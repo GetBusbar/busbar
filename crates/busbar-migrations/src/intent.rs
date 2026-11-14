@@ -22,10 +22,9 @@ use busbar_kernel::persistence::{
     import_target::target as startup,
 };
 
-pub(super) const NAMESPACE: Id = *b"busbar.migint1\0\0";
+pub(super) const NAMESPACE: Id = busbar_contract::persistence::witness::INTENT_NAMESPACE.0;
 const HEADER: usize = 160;
-const GUARD: usize = 48;
-const HORIZON: u64 = 24 * 60 * 60;
+const GUARD: usize = busbar_contract::persistence::witness::GUARD_LEN;
 
 fn checkpoint_phase(
     candidate: &PreparedCandidate,
@@ -318,7 +317,7 @@ impl ColdWriterRegistration {
             })
             .map_err(|_| Error::Corrupt)?;
             self.pending = Some(
-                Attempt::new(candidate, self.backend.clone())
+                Attempt::proven(candidate, self.backend.clone())
                     .map_err(|_| Error::IdentityMismatch)?,
             );
         }
@@ -371,7 +370,6 @@ struct Header {
     operation: Id,
     fingerprint: Digest32,
     prepared_at: ClockObservation,
-    deadline: u64,
     length: usize,
     original: WriterAuthority,
 }
@@ -383,7 +381,6 @@ pub struct OutstandingIntent {
     pub candidate: Secret<Vec<u8>>,
     pub fingerprint: Digest32,
     pub prepared_at: ClockObservation,
-    pub replay_deadline: u64,
     pub original: WriterAuthority,
 }
 
@@ -520,7 +517,6 @@ impl StoreIntent {
             candidate: Secret::new(bytes[HEADER..].to_vec()),
             fingerprint: header.fingerprint,
             prepared_at: header.prepared_at,
-            replay_deadline: header.deadline,
             original: header.original,
         }))
     }
@@ -602,7 +598,6 @@ impl StoreIntent {
             busbar_contract::persistence::lifecycle::ActivationReceipt {
                 attempt: candidate.candidate().id,
                 candidate_fingerprint: header.fingerprint,
-                original_result: Secret::new(capsule[end..].to_vec()),
                 checkpoint_address: marker.checkpoint_address,
                 checkpoint_value_digest: marker.checkpoint_value_digest,
                 phase: marker.phase,
@@ -740,7 +735,6 @@ impl StoreIntent {
                     bytes[104..112].try_into().map_err(|_| Error::Corrupt)?,
                 ),
             },
-            deadline: u64::from_le_bytes(bytes[112..120].try_into().map_err(|_| Error::Corrupt)?),
             length,
             original: WriterAuthority {
                 writer: bytes[128..144].try_into().map_err(|_| Error::Corrupt)?,
@@ -755,7 +749,7 @@ impl StoreIntent {
         if header.migration == [0; 16]
             || header.operation == [0; 16]
             || header.prepared_at.authority != self.info.clock_authority
-            || header.prepared_at.unix_seconds.checked_add(HORIZON) != Some(header.deadline)
+            || bytes[112..120].iter().any(|byte| *byte != 0)
             || header.original.writer == [0; 16]
             || header.original.writer == self.cold.writer
             || header.original.writer_epoch == 0
@@ -781,7 +775,6 @@ impl StoreIntent {
         bytes[56..88].copy_from_slice(&header.fingerprint);
         bytes[88..104].copy_from_slice(&header.prepared_at.authority);
         bytes[104..112].copy_from_slice(&header.prepared_at.unix_seconds.to_le_bytes());
-        bytes[112..120].copy_from_slice(&header.deadline.to_le_bytes());
         bytes[120..128].copy_from_slice(&(snapshot.len() as u64).to_le_bytes());
         bytes[128..144].copy_from_slice(&header.original.writer);
         bytes[144..152].copy_from_slice(&header.original.writer_epoch.to_le_bytes());
@@ -905,7 +898,7 @@ impl StoreIntent {
             state,
             desired_guard,
             desired_payload,
-            attempt: Attempt::new(candidate, self.backend.clone())
+            attempt: Attempt::proven(candidate, self.backend.clone())
                 .map_err(|_| Error::IdentityMismatch)?,
         })
     }
@@ -1050,7 +1043,7 @@ impl StoreIntent {
                 operation: header.operation,
                 writer: header.original.writer,
                 next,
-                attempt: Attempt::new(candidate, self.backend.clone())
+                attempt: Attempt::proven(candidate, self.backend.clone())
                     .map_err(|_| Error::IdentityMismatch)?,
             });
         }
@@ -1132,8 +1125,8 @@ impl IntentStore for StoreIntent {
                 .await;
         }
         // Root generations and retired execution floors never move backwards.
-        // The original candidate now cannot execute for the first time. This
-        // direct crossing is solely a receipt lookup; no Attempt/Instant is reset.
+        // The original candidate now cannot execute for the first time, so its
+        // single-shot witness decides it directly: no commit crosses here.
         *recovery = None;
         let snapshot = Secret::new(
             observed
@@ -1145,63 +1138,56 @@ impl IntentStore for StoreIntent {
         );
         let candidate = self.decode(migration, header.operation, &snapshot)?;
         let marker = super::witness::expected(&candidate, migration)?;
-        let decision = self
-            .backend
-            .commit(candidate.clone())
-            .await
-            .map_err(Error::Backend)?;
         let mut applied_result = None;
-        let kind = match decision {
-            Decision::Applied(value) if value == candidate.candidate().result => {
-                applied_result = Some(value);
+        let generation_address = Address {
+            namespace: control::GENERATION_NAMESPACE.0,
+            key: super::coordinator::NAMESPACE.to_vec(),
+        };
+        let checkpoint_address = super::coordinator::address(migration);
+        let values = self
+            .values(vec![
+                super::witness::address(migration, header.operation),
+                generation_address.clone(),
+                checkpoint_address.clone(),
+            ])
+            .await?;
+        let kind = match &values[0] {
+            Some(actual) if actual == &marker => {
+                // The marker is unique to this candidate, so it applied; its result
+                // is the candidate's own (STORE-TRANSACTIONS §2.2, r5 N3).
+                applied_result = Some(candidate.candidate().result.clone());
                 ResolutionKind::Applied
             }
-            Decision::ExpiredUnknown => {
-                let generation_address = Address {
-                    namespace: control::GENERATION_NAMESPACE.0,
-                    key: super::coordinator::NAMESPACE.to_vec(),
-                };
-                let checkpoint_address = super::coordinator::address(migration);
-                let values = self
-                    .values(vec![
-                        super::witness::address(migration, header.operation),
-                        generation_address.clone(),
-                        checkpoint_address.clone(),
-                    ])
-                    .await?;
-                match &values[0] {
-                    Some(actual) if actual == &marker => ResolutionKind::Applied,
-                    Some(_) => return Err(Error::Corrupt),
-                    None => {
-                        let body = candidate.candidate();
-                        let generation = body
-                            .predicates
-                            .iter()
-                            .find(|p| p.address == generation_address);
-                        let checkpoint = body
-                            .predicates
-                            .iter()
-                            .find(|p| p.address == checkpoint_address);
-                        let matches =
-                            |expected: &ExpectedValue, actual: &Option<Secret<Vec<u8>>>| {
-                                match expected {
-                                    ExpectedValue::Absent => actual.is_none(),
-                                    ExpectedValue::Exact(value) => actual.as_ref() == Some(value),
-                                }
-                            };
-                        if !generation.is_some_and(|p| matches(&p.expected, &values[1]))
-                            || !checkpoint.is_some_and(|p| matches(&p.expected, &values[2]))
-                            || !body.mutations.iter().any(|m| matches!(m, Mutation::Put { address, .. } if *address == checkpoint_address))
-                        { return Ok(ReconciliationProgress::Unresolved); }
-                        // The original checkpoint bytes AND its native monotonic
-                        // namespace generation are unchanged after irreversible
-                        // retirement. Any application would atomically advance
-                        // that generation, so absence here has ABA protection.
-                        ResolutionKind::ProvenNoEffect
-                    }
+            Some(_) => return Err(Error::Corrupt),
+            None => {
+                let body = candidate.candidate();
+                let generation = body
+                    .predicates
+                    .iter()
+                    .find(|p| p.address == generation_address);
+                let checkpoint = body
+                    .predicates
+                    .iter()
+                    .find(|p| p.address == checkpoint_address);
+                let matches =
+                    |expected: &ExpectedValue, actual: &Option<Secret<Vec<u8>>>| match expected {
+                        ExpectedValue::Absent => actual.is_none(),
+                        ExpectedValue::Exact(value) => actual.as_ref() == Some(value),
+                    };
+                if !generation.is_some_and(|p| matches(&p.expected, &values[1]))
+                    || !checkpoint.is_some_and(|p| matches(&p.expected, &values[2]))
+                    || !body.mutations.iter().any(
+                        |m| matches!(m, Mutation::Put { address, .. } if *address == checkpoint_address),
+                    )
+                {
+                    return Ok(ReconciliationProgress::Unresolved);
                 }
+                // The original checkpoint bytes AND its native monotonic
+                // namespace generation are unchanged after irreversible
+                // retirement. Any application would atomically advance
+                // that generation, so absence here has ABA protection.
+                ResolutionKind::ProvenNoEffect
             }
-            _ => return Err(Error::ReconciliationRequired),
         };
         let resolution = IntentResolution {
             fingerprint: header.fingerprint,
@@ -1265,11 +1251,6 @@ impl IntentStore for StoreIntent {
             operation,
             fingerprint: candidate.fingerprint(),
             prepared_at: observed.at,
-            deadline: observed
-                .at
-                .unix_seconds
-                .checked_add(HORIZON)
-                .ok_or(Error::Bounds)?,
             length: snapshot.expose(&crate::seal::lend()).len(),
             original: WriterAuthority {
                 writer_epoch: candidate.candidate().id.writer_epoch,

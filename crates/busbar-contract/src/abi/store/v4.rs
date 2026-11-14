@@ -8,8 +8,11 @@
 //! Output descriptors and bytes are host-owned; no payload lease is introduced.
 //! Counts and checked aggregate allocation sizes use the host admission budget, not
 //! the plane's 512-byte record limit or its conditional extension's 16-MiB ceiling.
-//! COMMIT short-buffer recovery retains and resubmits the exact candidate and id;
-//! it never replans or remints an id to obtain the original result.
+//! COMMIT dedupes by the caller's queue position: each candidate names a slot and a
+//! strictly increasing sequence for that slot. The store keeps one row per (writer,
+//! slot) with the last evaluated sequence and its verdict, replays an equal sequence,
+//! and refuses a lower one as STALE. The slot row precedes fences; nothing is retained
+//! per operation and no result bytes are echoed.
 //! COMMIT uses FAILED for an unknown transport outcome and REFUSED for a definitive
 //! no-effect rejection; neither is a READY commit verdict. A later failure does not
 //! resolve any earlier unknown send.
@@ -39,7 +42,7 @@ pub mod slot {
     pub const READ: u32 = LIFECYCLE_SLOTS;
     /// Ordered namespace page.
     pub const SCAN: u32 = LIFECYCLE_SLOTS + 1;
-    /// Atomic candidate and receipt.
+    /// Atomic candidate and slot row.
     pub const COMMIT: u32 = LIFECYCLE_SLOTS + 2;
     /// Authoritative UTC observation.
     pub const CLOCK: u32 = LIFECYCLE_SLOTS + 3;
@@ -94,7 +97,7 @@ abi_struct! {
         pub operation: [u8; 16],
         /// Dataset writer epoch.
         pub writer_epoch: u64,
-        /// Registered execution epoch; receipts precede fence checks.
+        /// Registered execution epoch; the slot row precedes fence checks.
         pub execution_epoch: u64,
     }
 
@@ -136,9 +139,11 @@ abi_struct! {
         pub id: AttemptId,
         /// Canonical candidate encoding version.
         pub codec: u32,
-        /// Must be zero.
-        pub _reserved: u32,
-        /// Optional transaction-time guard, checked after receipt lookup.
+        /// Writer queue slot below MAX_SLOTS, or SLOT_SELF_FENCED.
+        pub slot: u32,
+        /// Lease sequence of this slot: at least one when slotted, zero when self-fenced.
+        pub seq: u64,
+        /// Optional transaction-time guard, checked after the slot row.
         pub time: TimeGuard,
         /// Borrowed pre-mutation comparisons.
         pub predicates: *const Predicate,
@@ -300,28 +305,22 @@ abi_struct! {
         pub head: InHead,
         /// Borrowed immutable candidate.
         pub candidate: Candidate,
-        /// Host-owned original applied result buffer.
-        pub result: HostBuf,
     }
 
     /// Execution decision; uncertainty is never converted to no-effect rejection.
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub struct CommitOut {
-        /// Shared answer head; payloads are host-owned.
+        /// Shared answer head.
         pub head: OutHead,
-        /// COMMIT_APPLIED through COMMIT_EXPIRED_UNKNOWN on READY.
+        /// COMMIT_APPLIED through COMMIT_STALE on READY.
         pub code: u32,
         /// Must be zero.
         pub _reserved: u32,
-        /// Authoritative serialization time, or original receipt observation on replay.
+        /// Authoritative serialization time, or the slot row's observation on replay.
         pub observed_at: u64,
         /// Stable identity of the authoritative clock source.
         pub authority: [u8; 16],
-        /// Original result bytes written only for COMMIT_APPLIED.
-        pub written: u64,
-        /// Full result size on short FAILED; zero otherwise.
-        pub needed: u64,
     }
 
     /// Observe authoritative time for this dataset.
@@ -394,7 +393,7 @@ abi_struct! {
         pub read: Option<Op>,
         /// Ordered bounded namespace scan.
         pub scan: Option<Op>,
-        /// Atomic conditional candidate and receipt.
+        /// Atomic conditional candidate and slot row.
         pub commit: Option<Op>,
         /// Authoritative UTC observation.
         pub clock: Option<Op>,
@@ -440,16 +439,23 @@ pub const SCAN_STALE: u32 = 2;
 pub const SCAN_EXHAUSTED: u32 = 1;
 /// Another page exists; next is its exclusive cursor.
 pub const SCAN_CONTINUE: u32 = 2;
-/// Effects and receipt committed; replay returns original result.
+/// Effects and slot row committed; an equal-sequence replay returns this verdict.
 pub const COMMIT_APPLIED: u32 = 1;
 /// This execution did not apply because a predicate failed.
 pub const COMMIT_CONDITION_CONFLICT: u32 = 2;
 /// This execution did not apply because the time guard failed.
 pub const COMMIT_TIME_GUARD_FAILED: u32 = 3;
-/// This identity is already bound to another candidate.
+/// This (writer, slot, seq) is already bound to another candidate.
 pub const COMMIT_OPID_CONFLICT: u32 = 4;
-/// Receipt unavailable and execution authority retired; never execute anew.
-pub const COMMIT_EXPIRED_UNKNOWN: u32 = 5;
+/// Epoch not admitted; this send applied nothing.
+pub const COMMIT_FENCED: u32 = 5;
+/// The slot already evaluated a later sequence; this send applied nothing and never will.
+pub const COMMIT_STALE: u32 = 6;
+/// Slot value of a self-fenced candidate, which must carry sequence zero.
+pub const SLOT_SELF_FENCED: u32 = u32::MAX;
+/// Exclusive upper bound of a writer's queue slots; each store keeps at most this many
+/// rows per writer and refuses any other slot value.
+pub const MAX_SLOTS: u32 = 65_536;
 
 /// Primitive names, in mandatory table order.
 pub const NAMES: [&str; 5] = ["read", "scan", "commit", "clock", "bootstrap"];
@@ -671,33 +677,26 @@ pub mod check {
         Ok(())
     }
 
-    /// Check commit verdict and original result buffer dimensions.
-    /// A short result preserves exact candidate/id custody for receipt replay.
+    /// Check the commit verdict. A commit writes no output bytes, so it has no
+    /// short-buffer state; STALE is legal only for a slotted candidate.
     ///
     /// # Errors
-    /// A verdict, reserved field or short-buffer convention is malformed.
+    /// A verdict or reserved field is malformed.
     pub fn commit(outcome: Outcome, input: &CommitIn, out: &CommitOut) -> Result<(), Fault> {
         zero(u64::from(out._reserved), "store.v4.commit.reserved")?;
-        result(
-            outcome,
-            out.written,
-            out.needed,
-            input.result.cap as u64,
-            usize::MAX as u64,
-            "store.v4.commit.result",
-        )?;
         if outcome == Outcome::Ready {
             code(
                 u64::from(out.code),
                 u64::from(COMMIT_APPLIED),
-                u64::from(COMMIT_EXPIRED_UNKNOWN),
+                u64::from(COMMIT_STALE),
                 "store.v4.commit.code",
             )?;
-            if out.code != COMMIT_APPLIED {
-                zero(out.written, "store.v4.commit.unapplied_result")?;
+            if out.code == COMMIT_STALE && input.candidate.slot == SLOT_SELF_FENCED {
+                return Err(fault(
+                    Rule::Contradiction,
+                    "store.v4.commit.stale_self_fenced",
+                ));
             }
-        } else {
-            zero(out.written, "store.v4.commit.result_on_failure")?;
         }
         Ok(())
     }

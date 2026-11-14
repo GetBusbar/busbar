@@ -4,7 +4,7 @@
 //! Neutral asynchronous persistence boundary shared by core and the loader.
 //!
 //! Domain records and policy do not cross this interface. Implementations must
-//! evaluate conditions, epoch admission, mutations and receipts atomically. These
+//! evaluate the slot row, conditions, epoch admission and mutations atomically. These
 //! types do not enable a backend: ABI admission and qualification remain required.
 
 use std::future::Future;
@@ -14,10 +14,15 @@ use crate::redacted::{Kernel, Secret};
 
 pub mod archive;
 pub mod axis;
+mod commit_key;
 pub mod control;
 pub mod legacy_row;
 pub mod lifecycle;
 pub mod source_fence;
+
+pub use commit_key::{
+    witness, CommitKey, NotSelfFenced, SelfFenced, WitnessKind, MAX_SLOTS, SLOT_SELF_FENCED,
+};
 
 /// A persistence call whose input remains owned until completion or cancellation.
 pub type Call<'a, T> = Pin<Box<dyn Future<Output = Result<T, Failure>> + Send + 'a>>;
@@ -33,7 +38,7 @@ pub struct NamespaceId(pub [u8; 16]);
 /// Acknowledgement guarantee verified by the adapter for its opened configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Durability {
-    /// State and receipts are lost with the process.
+    /// State and slot rows are lost with the process.
     Ephemeral,
     /// Acknowledgement requires persistence on the authoritative local storage.
     Local,
@@ -110,7 +115,7 @@ pub struct AttemptId {
     pub writer_epoch: u64,
     /// Registered writer identity; never reused after restore.
     pub writer: [u8; 16],
-    /// Writer execution epoch, fenced before receipt collection.
+    /// Writer execution epoch; fenced once its writer closes.
     pub execution_epoch: u64,
     /// Unique operation identity within the registered writer.
     pub operation: [u8; 16],
@@ -166,9 +171,9 @@ pub struct Candidate<O = Kernel> {
     pub codec: u32,
     /// Conditions evaluated before any mutation.
     pub predicates: Vec<Predicate<O>>,
-    /// Effects committed atomically with the applied receipt.
+    /// Effects committed atomically with the slot row.
     pub mutations: Vec<Mutation<O>>,
-    /// Evaluated at serialization, after checking for an existing receipt.
+    /// Evaluated at serialization, after the slot row.
     pub time: Option<TimeGuard>,
     /// Original result/reference bytes; never a plaintext secret response.
     pub result: Secret<Vec<u8>, O>,
@@ -216,7 +221,7 @@ impl<O> Candidate<O> {
     ///
     /// This does not authorize execution or establish resource admission. The host
     /// checks its allocation budget before constructing wire arrays; the backend
-    /// checks epoch admission and predicates atomically with receipt publication.
+    /// checks epoch admission and predicates atomically with its slot row.
     pub fn validate(&self) -> Result<(), InvalidCandidate> {
         use InvalidCandidate as E;
 
@@ -435,7 +440,8 @@ fn candidate_fingerprint<O>(candidate: &Candidate<O>) -> [u8; 32] {
 /// Definitive or unresolved execution decision; transport errors remain separate.
 #[derive(Debug)]
 pub enum Decision<O = Kernel> {
-    /// Matching applied receipt, whether newly committed or replayed.
+    /// Applied, newly or as an equal-sequence replay. Stores answer with empty bytes;
+    /// the host attempt rebuilds the candidate's own result.
     Applied(Secret<Vec<u8>, O>),
     /// This execution applied nothing because a predicate failed.
     ConditionConflict,
@@ -444,10 +450,12 @@ pub enum Decision<O = Kernel> {
         /// Store-authoritative observation at serialization.
         observed_at: ClockObservation,
     },
-    /// The operation identity is bound to different immutable candidate bytes.
+    /// The (writer, slot, seq) is bound to different immutable candidate bytes.
     OpIdConflict,
-    /// Execution authority retired and the result is unavailable; never execute anew.
-    ExpiredUnknown,
+    /// The epoch is not admitted; this send applied nothing.
+    Fenced,
+    /// The slot already evaluated a later sequence; this send applied nothing and never will.
+    Stale,
 }
 
 /// Failure classification does not erase an earlier uncertain execution.
@@ -538,8 +546,8 @@ pub trait PersistenceBackend: Send + Sync {
     fn read(&self, request: std::sync::Arc<Read>) -> Call<'_, ReadResult>;
     /// Scan one coherent generation-checked page.
     fn scan(&self, request: std::sync::Arc<Scan>) -> Call<'_, Page>;
-    /// Commit all effects and their receipt, or return a truthful decision.
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision>;
+    /// Commit all effects and the key's slot row, or return a truthful decision.
+    fn commit(&self, candidate: PreparedCandidate, key: CommitKey) -> Call<'_, Decision>;
     /// Observe authoritative UTC seconds; not a substitute for atomic time guards.
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation>;
 }
