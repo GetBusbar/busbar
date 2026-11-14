@@ -63,7 +63,7 @@ pub(super) fn parse(
             }
             classes.push(index);
         }
-        let serving_subject = crate::root::door_steps::plane_lane(&facts.plane, &member);
+        let serving_subject = crate::root::door_steps::plane_lane(facts.plane.lane_prefix(), &member);
         #[expect(
             clippy::disallowed_methods,
             reason = "config: a policy's rated subjects are spelled once per generation"
