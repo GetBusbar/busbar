@@ -13,8 +13,6 @@ pub const OUTCOME_DEGRADED: &str = "degraded";
 pub const OUTCOME_DISPATCHED: &str = "dispatched";
 /// Call stream: the call did NOT go out.
 pub const OUTCOME_REFUSED: &str = "refused";
-/// Usage residual: the provider reported a count no billing class records, and it was NOT billed
-pub const OUTCOME_UNBILLED: &str = "unbilled";
 
 /// The caller holds no grant for this capability. Lands at ADMISSION, before any upstream is
 pub const REASON_NOT_GRANTED: &str = "not_granted";

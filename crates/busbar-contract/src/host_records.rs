@@ -35,8 +35,6 @@ pub enum Decision {
 pub const RETENTION_AGE: u32 = 0;
 /// Retain active records: only terminal rows older than the cutoff are eligible for removal.
 pub const RETENTION_TERMINAL_ONLY: u32 = 1;
-/// Retention of usage-ledger windows.
-pub const RETENTION_USAGE_WINDOWS: u32 = 2;
 
 /// Shared conditional host-record codec.
 pub mod conditional;

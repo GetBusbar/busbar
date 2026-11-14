@@ -3,8 +3,6 @@
 
 //! THE AUTH KIND'S SHARED PLUGIN PIECES (`abi::auth`): what the auth plugins wrote alike, stated
 
-use std::borrow::Cow;
-
 use crate::abi::auth::{
     retry_after_extensions, IdentifyOut, IdentityBuf, IDENTITY_HAS_TTL, LOGIN_IDENTITY,
     LOGIN_OUTAGE, SPAN_ABSENT,
@@ -47,17 +45,6 @@ pub fn json_error(what: &'static str) -> impl FnOnce(serde_json::Error) -> Strin
         );
         answer
     }
-}
-
-/// `complete_login`'s answer that is not an identity: `verdict`
-pub fn login_declined(
-    verdict: u32,
-    why: impl Into<Cow<'static, str>>,
-    out: &mut Out<'_, IdentifyOut>,
-) -> Outcome {
-    out.set(|o| &o.verdict, verdict);
-    out.reason(why);
-    Outcome::Ready
 }
 
 /// No span: the field is absent.

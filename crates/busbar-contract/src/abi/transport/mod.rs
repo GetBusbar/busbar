@@ -526,15 +526,11 @@ pub const FAULT_HEALTHY: u8 = 4;
 /// The destination throttled the request: transient health, rate-limit retry policy.
 pub const FAULT_RATE_LIMIT: u8 = 5;
 
-/// [`Claim::status_at`]: no status.
-pub const STATUS_AT_NONE: u8 = 0;
 /// [`Claim::status_at`]: the first frame carries the status.
 pub const STATUS_AT_FIRST_FRAME: u8 = 1;
 /// [`Claim::status_at`]: the terminal frame carries the status.
 pub const STATUS_AT_TERMINAL: u8 = 2;
 
-/// [`Claim::unit0_trigger`]: none.
-pub const UNIT0_NONE: u8 = 0;
 /// [`Claim::unit0_trigger`]: the first bytes.
 pub const UNIT0_FIRST_BYTES: u8 = 1;
 /// [`Claim::unit0_trigger`]: the first line.

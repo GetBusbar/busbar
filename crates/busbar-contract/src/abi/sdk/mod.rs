@@ -240,7 +240,7 @@ pub mod lent;
     )
 )]
 pub mod safe;
-pub use lent::{open_failed, HostBuf, Lent, LentList, SignalScalar};
+pub use lent::{open_failed, HostBuf, Lent, LentList};
 
 // busbar:request-path
 #[cfg_attr(
