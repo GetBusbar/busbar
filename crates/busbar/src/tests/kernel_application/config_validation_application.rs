@@ -3032,6 +3032,32 @@ fn rate_card_for_actual_plane(
     card
 }
 
+/// The paste-ready stub line the refusal prints for an unnamed model on the actual fallback
+/// plane: the four reserved `*_utok` tiers plus every open class the plane declares, in
+/// declaration order. `key` is the already-aligned `name:` column.
+fn llm_stub(key: &str) -> String {
+    let plane = busbar_kernel::plane_driver::registry::plane_decl_for(
+        busbar_kernel::plane_driver::dispatch::fallback_key(),
+    )
+    .expect("the actual fallback plane is registered");
+    let open = (plane.billable_classes.iter())
+        .map(|c| c.class)
+        .filter(|c| {
+            !busbar_contract::records::RESERVED_UNITS.contains(c) && !plane.fee_units.contains(c)
+        })
+        .map(|c| format!("{c}: 0"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let units = if open.is_empty() {
+        String::new()
+    } else {
+        format!(", units: {{ {open} }}")
+    };
+    format!(
+        "    {key} {{ input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0{units} }}\n"
+    )
+}
+
 fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
     entries
         .iter()
@@ -3050,9 +3076,10 @@ fn test_validate_completeness_refusal_precedes_the_unknown_model_error() {
         errors[0],
         "rate_card is present but 2 configured models have no rate entry (rate_card is \
          AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
-         Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
-         \x20   b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n\
-         \x20   c: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n",
+         Paste these under rate_card and fill in your rates (micro-units per token):\n\n"
+            .to_string()
+            + &llm_stub("b:")
+            + &llm_stub("c:"),
     );
     assert!(
         errors[1].starts_with("rate_card names model 'nope'"),
@@ -3072,7 +3099,7 @@ fn test_validate_missing_rates_warn_but_unknown_models_still_refuse() {
         .join("\n");
     assert!(
         joined.contains("rate_card is present but 1 configured model has no rate entry")
-            && joined.contains("    claude-opus-4: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"),
+            && joined.contains(&llm_stub("claude-opus-4:")),
         "the configured model the card does not name is refused with a stub: {joined}"
     );
 
@@ -3109,9 +3136,9 @@ fn test_validate_unpriced_class_with_billing_on_refuses_boot() {
         vec![
             "rate_card is present but 1 configured model has no rate entry (rate_card is \
              AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
-             Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
-             \x20   claude-opus-4: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"
+             Paste these under rate_card and fill in your rates (micro-units per token):\n\n"
                 .to_string()
+                + &llm_stub("claude-opus-4:")
         ],
         "the refusal names the unpriced model with a stub"
     );
@@ -3181,10 +3208,10 @@ fn test_validate_rate_card_refuses_naming_every_missing_model() {
         vec![
             "rate_card is present but 2 configured models have no rate entry (rate_card is \
              AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
-             Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
-             \x20   alpha:           { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n\
-             \x20   long-model-name: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"
+             Paste these under rate_card and fill in your rates (micro-units per token):\n\n"
                 .to_string()
+                + &llm_stub("alpha:          ")
+                + &llm_stub("long-model-name:")
         ],
         "the refusal names every missing model, aligned"
     );
