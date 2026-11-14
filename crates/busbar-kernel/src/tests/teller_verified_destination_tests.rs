@@ -71,7 +71,7 @@ struct Fixture {
     audited_seen: Mutex<Vec<busbar_contract::caps::AuditFacts>>,
 }
 
-impl crate::teller::DoorSeats for Fixture {
+impl crate::teller::seats::DoorSeats for Fixture {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         SeatVerdict::proceed(token, arrival_record())
     }
