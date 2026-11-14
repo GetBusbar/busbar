@@ -46,6 +46,15 @@ pub enum ConnFailure {
     Fault,
 }
 
+/// THE ONE place the SDK makes a [`ConnFailure::NoTicket`] it hands plugin code: noted for the door
+/// entry's R28 judgement (`ready-after-no-ticket`, debug builds). A source scan keeps every SDK site on
+/// it.
+#[must_use]
+pub(crate) fn no_ticket() -> ConnFailure {
+    super::door::handing_no_ticket();
+    ConnFailure::NoTicket
+}
+
 impl std::fmt::Display for ConnFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -496,7 +505,7 @@ impl<K: KindMarker> Connector<'_, K> {
         };
 
         if self.ticket.is_none() && op != service::CLOSE {
-            return Poll::Ready(Err(ConnFailure::NoTicket));
+            return Poll::Ready(Err(no_ticket()));
         }
         let seq = self.issued;
         self.issued += 1;
@@ -817,7 +826,7 @@ impl<K: KindMarker> Connector<'_, K> {
             return fail(0, blank, ConnFailure::Unarmed);
         };
         if self.ticket.is_none() {
-            return fail(0, blank, ConnFailure::NoTicket);
+            return fail(0, blank, no_ticket());
         }
         let handle = CompletionHandle {
             ticket: self.ticket,

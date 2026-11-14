@@ -1272,7 +1272,7 @@ fn serve(
                 return Served::Answer(Ok(0));
             }
             if !cx.can_pend() {
-                return Served::Answer(Err(ConnFailure::NoTicket));
+                return Served::Answer(Err(crate::abi::sdk::conn::no_ticket()));
             }
             let mut services = match cx.connector() {
                 Ok(services) => services,
@@ -1451,6 +1451,10 @@ fn serve(
 #[cfg(test)]
 #[path = "../tests/store_wire_kept_tests.rs"]
 mod kept_tests;
+
+#[cfg(all(test, debug_assertions))]
+#[path = "../tests/store_wire_probe_tests.rs"]
+mod probe_tests;
 
 #[cfg(test)]
 #[path = "../tests/store_wire_sealed_tests.rs"]

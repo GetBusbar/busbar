@@ -229,7 +229,7 @@ impl<'a> Op<'a> {
     pub fn connector(&mut self) -> Result<Services<'_, 'a>, ConnFailure> {
         let host = self.host.ok_or(ConnFailure::Unarmed)?;
         if !self.can_pend() {
-            return Err(ConnFailure::NoTicket);
+            return Err(crate::abi::sdk::conn::no_ticket());
         }
         let started_at = self.replay.unwrap_or(self.issued);
         let conn = host.connector_from(self.ticket, started_at);
