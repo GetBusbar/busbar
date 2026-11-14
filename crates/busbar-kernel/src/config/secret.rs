@@ -6,6 +6,15 @@
 
 pub use busbar_contract::secret_ref::SecretRef;
 
+/// The marker every blank-secret refusal carries, so a caller can keep its own operator text.
+pub(crate) const BLANK_MARKER: &str = "(BLANK)";
+
+/// A value with no content: empty, or valid UTF-8 that is only (Unicode) whitespace. Bytes that
+/// are not UTF-8 (a raw binary key) are never blank.
+fn is_blank(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|s| s.trim().is_empty())
+}
+
 pub struct SecretResolver {
     plugin: Option<ScopedPluginResolveFn>,
 }
@@ -106,12 +115,12 @@ impl SecretResolver {
         }
         let source = secret.source().expect("non-template, non-keyless source");
         let module = source.module.as_str();
-        let empty = || {
+        let blank = || {
             refusal(
                 ERROR_KIND_INVALID,
                 format!(
-                    "secret module '{module}' resolved {} to an EMPTY value; a secret must be \
-                     non-empty (fail-closed)",
+                    "{} resolved to an EMPTY or whitespace-only {BLANK_MARKER} value; a secret \
+                     must have content (fail-closed)",
                     secret.describe()
                 ),
             )
@@ -133,8 +142,8 @@ impl SecretResolver {
                 None => shared.resolve(settings),
             }?;
 
-            if material.expose(&crate::seal::lend()).is_empty() {
-                return Err(empty());
+            if is_blank(material.expose(&crate::seal::lend())) {
+                return Err(blank());
             }
             return Ok(material);
         }
@@ -159,8 +168,8 @@ impl SecretResolver {
                 ),
             )
         })?;
-        if bytes.expose(&crate::seal::lend()).is_empty() {
-            return Err(empty());
+        if is_blank(bytes.expose(&crate::seal::lend())) {
+            return Err(blank());
         }
         Ok(bytes)
     }
