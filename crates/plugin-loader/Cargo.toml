@@ -22,6 +22,7 @@ required-features = ["pack"]
 name = "c_abi"
 path = "tests/c_abi.rs"
 test = false
+required-features = ["test-support"]
 
 [[example]]
 name = "dispatch_test_plugin"

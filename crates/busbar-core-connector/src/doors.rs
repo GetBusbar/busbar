@@ -159,7 +159,7 @@ impl Live {
         i.generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         i.settings = settings_arg(blob.as_deref());
         let mut f = Frame::new(i, blank_out::<OutHead>());
-        let called = self.plugin.call(life::REFRESH, &mut f);
+        let called = self.plugin.answer(life::REFRESH, &mut f);
         if called.outcome == Outcome::Ready {
             return Ok(());
         }
@@ -288,7 +288,7 @@ impl Dispatched {
         let mut i: OpenIn = blank_in();
         i.settings = settings_arg(blob.as_deref());
         let mut f = Frame::new(i, blank_out::<OpenOut>());
-        let opened = plugin.call(life::OPEN, &mut f);
+        let opened = plugin.answer(life::OPEN, &mut f);
         if opened.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
             #[expect(
                 clippy::disallowed_methods,
@@ -361,7 +361,7 @@ impl Dispatched {
 /// One crossing through the dispatcher: the host's `in`/`out` copied in, the answer copied back.
 fn go<I: InFrame, O: OutFrame>(p: &Plugin<TransportKind>, s: u32, i: &mut I, o: &mut O) -> Crossed {
     let mut f = Frame::new(*i, *o);
-    let c = p.call(s, &mut f);
+    let c = p.answer(s, &mut f);
     *i = f.input;
     *o = f.out;
     Crossed {
@@ -393,7 +393,7 @@ fn go_inline<I: InFrame, O: OutFrame>(
     o: &mut O,
 ) -> Crossed {
     let mut f = Frame::new(*i, *o);
-    let c = p.call_inline(ticket, resume, s, &mut f);
+    let c = p.answer_inline(ticket, resume, s, &mut f);
     *i = f.input;
     *o = f.out;
     Crossed {

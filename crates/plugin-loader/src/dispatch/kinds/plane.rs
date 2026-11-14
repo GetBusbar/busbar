@@ -2079,26 +2079,41 @@ pub struct OwnedSnapshot {
 }
 
 impl crate::dispatch::Plugin<Plane> {
-    pub fn open(
-        &self,
-        frame: &mut crate::dispatch::Frame<PlaneOpenIn, PlaneOpenOut>,
-    ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
-        let called = self.call(life::OPEN, frame);
-        let copy = (called.outcome == Outcome::Ready)
-            .then(|| copy_snapshot(frame.out.snapshot, self.dialects()))
-            .flatten();
-        (called, copy)
+    test_support_pub! {
+        fn open(
+            &self,
+            frame: &mut crate::dispatch::Frame<PlaneOpenIn, PlaneOpenOut>,
+        ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
+            let called = self.call(life::OPEN, frame);
+            let copy = (called.outcome == Outcome::Ready)
+                .then(|| copy_snapshot(frame.out.snapshot, self.dialects()))
+                .flatten();
+            (called, copy)
+        }
     }
 
-    pub fn refresh(
+    /// OPEN, its snapshot copied while the answer's lease is held, then the lease released: the
+    /// public plane open, which leaves the caller nothing to hand back.
+    pub fn answer_open(
         &self,
-        frame: &mut crate::dispatch::Frame<RefreshIn, PlaneRefreshOut>,
-    ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
-        let called = self.call(life::REFRESH, frame);
-        let copy = (called.outcome == Outcome::Ready)
-            .then(|| copy_snapshot(frame.out.snapshot, self.dialects()))
-            .flatten();
-        (called, copy)
+        frame: &mut crate::dispatch::Frame<PlaneOpenIn, PlaneOpenOut>,
+    ) -> (crate::dispatch::Answered, Option<OwnedSnapshot>) {
+        let (called, copy) = self.open(frame);
+        lifecycle::release(self, called.lease);
+        (called.into(), copy)
+    }
+
+    test_support_pub! {
+        fn refresh(
+            &self,
+            frame: &mut crate::dispatch::Frame<RefreshIn, PlaneRefreshOut>,
+        ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
+            let called = self.call(life::REFRESH, frame);
+            let copy = (called.outcome == Outcome::Ready)
+                .then(|| copy_snapshot(frame.out.snapshot, self.dialects()))
+                .flatten();
+            (called, copy)
+        }
     }
 }
 
