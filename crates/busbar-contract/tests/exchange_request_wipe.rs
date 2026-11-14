@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::abi::sdk::exchange::{Exchange, Request};
-use zeroize::Zeroizing;
+use busbar_contract::secure::SecureVec;
 
 thread_local! {
     static WATCH: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
@@ -119,7 +119,7 @@ fn the_registered_payload_witness_distinguishes_plain_and_wiped_vectors() {
     drop(plain);
     assert_eq!(WIPED.with(Cell::get), Some(false));
 
-    let wiped = Zeroizing::new(b"wiped-initialized-control".to_vec());
+    let wiped = SecureVec::from(b"wiped-initialized-control".to_vec());
     watch(&wiped);
     drop(wiped);
     assert_eq!(WIPED.with(Cell::get), Some(true));

@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
+
+use crate::secure::SecureVec;
 
 use super::op::{Checkout, Op, Step};
 use crate::abi::mechanism::ticket::Ticket;
@@ -64,13 +66,13 @@ enum Ask {
 /// bytes stay initialized and are wiped in place: draining would leave a duplicate in the tail.
 #[derive(Default)]
 struct Output {
-    bytes: Zeroizing<Vec<u8>>,
+    bytes: SecureVec,
     done: usize,
 }
 
 impl Output {
     fn append(&mut self, bytes: &[u8]) {
-        crate::secure::append(&mut self.bytes, bytes);
+        self.bytes.extend_from_slice(bytes);
         #[cfg(test)]
         sealed_tests::watch(&self.bytes);
     }
@@ -508,14 +510,14 @@ impl Drop for Lease {
 /// keeps it across a PENDING answer, and gives it back when it answers. The list holds at most as
 /// many as ran at once, and never more than [`READ_BUFS_KEPT`].
 #[derive(Debug, Default)]
-pub(crate) struct ReadBufs(Mutex<Vec<Zeroizing<Vec<u8>>>>);
+pub(crate) struct ReadBufs(Mutex<Vec<SecureVec>>);
 
 /// The most read buffers an instance keeps between ops.
 const READ_BUFS_KEPT: usize = 64;
 
 impl ReadBufs {
     /// A kept buffer, or a new one when none is free.
-    fn take(&self) -> Zeroizing<Vec<u8>> {
+    fn take(&self) -> SecureVec {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -524,13 +526,13 @@ impl ReadBufs {
     }
 
     /// A buffer for an op with no instance to keep it (a detached op).
-    fn fresh() -> Zeroizing<Vec<u8>> {
-        Zeroizing::new(vec![0_u8; READ_CHUNK])
+    fn fresh() -> SecureVec {
+        SecureVec::zeroed(READ_CHUNK)
     }
 
     /// Keep `buf` for the next op (dropped past [`READ_BUFS_KEPT`]).
-    fn give(&self, mut buf: Zeroizing<Vec<u8>>) {
-        buf.as_mut_slice().zeroize();
+    fn give(&self, mut buf: SecureVec) {
+        buf[..].zeroize();
         let mut kept = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if kept.len() < READ_BUFS_KEPT {
             kept.push(buf);
@@ -720,7 +722,7 @@ struct Running<T> {
     body: Mutex<Body<T>>,
     channels: OpChannels<Channel>,
     active: usize,
-    buf: Mutex<Option<Zeroizing<Vec<u8>>>>,
+    buf: Mutex<Option<SecureVec>>,
     _claim: Option<ChannelClaim>,
 }
 
@@ -882,10 +884,9 @@ fn run_channels<T: 'static>(
             }
             _ => {
                 let read = if matches!(ask, Ask::Read) {
-                    buf.get_or_insert_with(|| {
+                    &mut buf.get_or_insert_with(|| {
                         cx.reads().map_or_else(ReadBufs::fresh, ReadBufs::take)
-                    })
-                    .as_mut_slice()
+                    })[..]
                 } else {
                     &mut []
                 };
@@ -949,11 +950,7 @@ fn ready_quantum(can_wake: bool, units: &mut usize) -> bool {
     can_wake
 }
 
-fn park_ready<T: 'static>(
-    cx: &mut Op<'_>,
-    running: Running<T>,
-    buf: Option<Zeroizing<Vec<u8>>>,
-) -> Step<T> {
+fn park_ready<T: 'static>(cx: &mut Op<'_>, running: Running<T>, buf: Option<SecureVec>) -> Step<T> {
     let host = cx.host().copied().expect("cooperative wake was checked");
     let ticket = cx.ticket();
     *running.buf.lock().unwrap_or_else(PoisonError::into_inner) = buf;

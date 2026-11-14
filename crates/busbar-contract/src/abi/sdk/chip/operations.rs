@@ -5,8 +5,8 @@
 //! authentication method nor authorize a connection. Their outputs remain in custody, and carry
 //! the union of their inputs' connection-security requirements.
 
+use crate::secure::SecureVec;
 use base64::Engine as _;
-use zeroize::Zeroizing;
 
 use super::{digests, rsa, Refused};
 use crate::abi::sdk::cred::{Cred, Seal};
@@ -69,7 +69,7 @@ impl SealedValue {
         self.0.wire()
     }
 
-    fn transformed(&self, bytes: Zeroizing<Vec<u8>>) -> Self {
+    fn transformed(&self, bytes: SecureVec) -> Self {
         Self(Cred::captured(bytes).require_secure_if(self.secure_required()))
     }
 
@@ -122,7 +122,7 @@ impl SealedValue {
             })
             .expect("sealed composition length exceeds address space");
         // Exact size, filled in place: the wiping buffer never grows (LINT-RULES LR-117).
-        let mut bytes = Zeroizing::new(vec![0_u8; total]);
+        let mut bytes = SecureVec::zeroed(total);
         let mut at = 0;
         let mut put = |part: &[u8]| {
             bytes[at..at + part.len()].copy_from_slice(part);
@@ -156,13 +156,13 @@ impl SealedValue {
             Digest::Sha1 => digests::sha1(&[self.wire()]).to_vec(),
             Digest::Sha256 => digests::sha256(&[self.wire()]).to_vec(),
         };
-        self.transformed(Zeroizing::new(bytes))
+        self.transformed(SecureVec::from(bytes))
     }
 
     /// HMAC-SHA-256 with this value as the key and a sealed message.
     pub fn hmac_sha256(&self, message: &Self) -> Self {
         let mac = crate::abi::sdk::hmac::hmac_sha256(self.wire(), message.wire());
-        self.transformed(Zeroizing::new(mac.to_vec()))
+        self.transformed(SecureVec::from(mac.to_vec()))
             .require_secure_if(message.secure_required())
     }
 
@@ -175,7 +175,7 @@ impl SealedValue {
             ));
         }
         let value = super::pbkdf2_sha256(self.wire(), salt, iterations)?;
-        Ok(self.transformed(Zeroizing::new(value.to_vec())))
+        Ok(self.transformed(SecureVec::from(value.to_vec())))
     }
 
     /// XOR equally sized sealed values. Only their already-public lengths affect failure.
@@ -188,9 +188,9 @@ impl SealedValue {
             .iter()
             .zip(other.wire())
             .map(|(a, b)| a ^ b)
-            .collect();
+            .collect::<Vec<u8>>();
         Ok(self
-            .transformed(Zeroizing::new(bytes))
+            .transformed(SecureVec::from(bytes))
             .require_secure_if(other.secure_required()))
     }
 
@@ -204,18 +204,18 @@ impl SealedValue {
             .iter()
             .zip(mask.iter().cycle())
             .map(|(a, b)| a ^ b)
-            .collect();
-        Ok(self.transformed(Zeroizing::new(bytes)))
+            .collect::<Vec<u8>>();
+        Ok(self.transformed(SecureVec::from(bytes)))
     }
 
     /// Lowercase hexadecimal encoding, still sealed.
     pub fn hex_lower(&self) -> Self {
-        self.transformed(Zeroizing::new(hex::encode(self.wire()).into_bytes()))
+        self.transformed(SecureVec::from(hex::encode(self.wire()).into_bytes()))
     }
 
     /// Standard padded base64 encoding, still sealed.
     pub fn base64(&self) -> Self {
-        self.transformed(Zeroizing::new(
+        self.transformed(SecureVec::from(
             base64::engine::general_purpose::STANDARD
                 .encode(self.wire())
                 .into_bytes(),
@@ -227,7 +227,7 @@ impl SealedValue {
     /// retained even though the output is ciphertext.
     pub fn rsa_oaep_sha1(&self, public_key_pem: &[u8]) -> Result<Self, Refused> {
         let ciphertext = rsa::oaep_sha1(self.wire(), public_key_pem)?;
-        Ok(self.transformed(Zeroizing::new(ciphertext)))
+        Ok(self.transformed(SecureVec::from(ciphertext)))
     }
 }
 
@@ -242,7 +242,7 @@ impl Cred {
     pub fn normalize_ascii_spaces(&self) -> SealedValue {
         // At most as long as the input: written in place into one exact allocation and cut to
         // length, so the wiping buffer never grows (LINT-RULES LR-117).
-        let mut out = Zeroizing::new(vec![0_u8; self.len()]);
+        let mut out = SecureVec::zeroed(self.len());
         let mut n = 0;
         let mut pending = false;
         for &byte in self.wire() {

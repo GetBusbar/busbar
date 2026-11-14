@@ -241,7 +241,7 @@ where
     let upstream_credentials = match raw.shift_remove("upstream_credentials") {
         None => None,
         Some(v) => {
-            let word = v.as_str().map(str::to_owned);
+            let word = crate::yaml::ValueExt::as_str(&v).map(str::to_owned);
             Some(
                 crate::yaml::from_value::<crate::config::UpstreamCreds>(v).map_err(|e| {
                     // A scalar that names no mode keeps 1.5.5's sentence byte for byte; the

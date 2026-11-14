@@ -24,6 +24,7 @@ use busbar_contract::secret::{
     RelendCause, RelendRefused, SecretAxis, SecretCalls, SecretRefused, SecretRelent,
 };
 use busbar_contract::secret_ref::SecretRef;
+use busbar_contract::secure::SecureVec;
 
 use crate::boot::Candidate;
 use crate::dispatch::kinds::secret::Secret;
@@ -216,7 +217,7 @@ impl std::fmt::Debug for LoadedSecret {
 }
 
 struct Lending {
-    settings: zeroize::Zeroizing<Vec<u8>>,
+    settings: SecureVec,
     held: Mutex<SecretValue<Vec<u8>>>,
 }
 
@@ -224,11 +225,7 @@ impl Lending {
     fn new(settings: &[u8], cap: usize) -> (Arc<Self>, ResolveIn) {
         let mut held = SecretValue::zeroed(cap);
         let (buf, cap) = held.lend_mut();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a secret reference resolves when config is loaded; the lent settings outlive a timed-out wait"
-        )]
-        let settings = zeroize::Zeroizing::new(settings.to_vec());
+        let settings = SecureVec::from(settings);
         let lending = Arc::new(Self {
             settings,
             held: Mutex::new(held),
@@ -356,8 +353,8 @@ fn answer_text(error: Option<&[u8]>, fallback: std::fmt::Arguments<'_>) -> Strin
 /// open is resumed later, and an open that outlives its wait is finished or cancelled by the
 /// dispatcher, never against freed memory).
 struct OpenLent {
-    settings: zeroize::Zeroizing<Vec<u8>>,
-    _secrets: Vec<zeroize::Zeroizing<Vec<u8>>>,
+    settings: SecureVec,
+    _secrets: Vec<SecureVec>,
     blobs: Vec<Blob>,
 }
 
@@ -376,12 +373,11 @@ impl LoadedSecret {
         settings: &[u8],
         secrets: &[SecretValue<Vec<u8>>],
     ) -> Result<Self, String> {
-        let owned: Vec<zeroize::Zeroizing<Vec<u8>>> = match (secrets.is_empty(), dispatcher.seal())
-        {
+        let owned: Vec<SecureVec> = match (secrets.is_empty(), dispatcher.seal()) {
             (true, _) => Vec::new(),
             (false, Some(seal)) => secrets
                 .iter()
-                .map(|s| zeroize::Zeroizing::new(s.expose(seal).clone()))
+                .map(|s| SecureVec::from(s.expose(seal).as_slice()))
                 .collect(),
             (false, None) => {
                 return Err(format!(
@@ -396,7 +392,7 @@ impl LoadedSecret {
             .map(|s| blob(s, BLOB_OCTETS, BLOB_SECRET))
             .collect();
         let lent = Arc::new(OpenLent {
-            settings: zeroize::Zeroizing::new(settings.to_vec()),
+            settings: SecureVec::from(settings),
             _secrets: owned,
             blobs,
         });

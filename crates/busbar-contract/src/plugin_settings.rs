@@ -7,11 +7,12 @@
 
 mod owned;
 
+use crate::secure::{SecureString, SecureVec};
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::fmt;
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// An operator's settings object. Debug reveals names only, and every owned string is wiped.
 /// No map/value accessor or typed owner-schema decoder is available to host code.
@@ -709,15 +710,13 @@ impl<'de> Deserialize<'de> for Tree {
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Tree, A::Error> {
                 let mut tree = Tree(Value::Object(Map::new()));
-                while let Some((mut key, mut value)) =
-                    map.next_entry::<Zeroizing<String>, Tree>()?
-                {
+                while let Some((key, mut value)) = map.next_entry::<SecureString, Tree>()? {
                     let object = tree.0.as_object_mut().expect("object");
                     if let Some(replaced) = object.get_mut(key.as_str()) {
                         wipe(replaced);
                         *replaced = value.take();
                     } else {
-                        object.insert(std::mem::take(&mut *key), value.take());
+                        object.insert(key.into_string(), value.take());
                     }
                 }
                 Ok(tree)
@@ -743,8 +742,8 @@ impl<'de> Deserialize<'de> for Tree {
                 ))
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Tree, A::Error> {
-                let key = map.next_key::<Zeroizing<String>>()?;
-                if key.as_deref().map(String::as_str) != Some(RAW_JSON_TOKEN) {
+                let key = map.next_key::<SecureString>()?;
+                if key.as_deref() != Some(RAW_JSON_TOKEN) {
                     return Err(de::Error::custom("invalid raw settings document"));
                 }
                 let tree = map.next_value_seed(RawTree)?;
@@ -781,7 +780,7 @@ impl<'de> Visitor<'de> for RawTree {
         Ok(Tree(std::mem::take(&mut held.0)))
     }
     fn visit_string<E: de::Error>(self, text: String) -> Result<Tree, E> {
-        self.visit_str(&Zeroizing::new(text))
+        self.visit_str(&SecureString::from(text))
     }
 }
 
@@ -829,26 +828,10 @@ mod exact_number_tests {
 pub(crate) fn encode_guarded<T: Serialize + ?Sized>(
     value: &T,
 ) -> Result<crate::Secret<Vec<u8>>, serde_json::Error> {
-    let mut output = Wiping(Zeroizing::new(Vec::new()));
+    // Growth moves into a new guarded allocation and wipes the previous block before freeing it.
+    let mut output = SecureVec::new();
     serde_json::to_writer(&mut output, value)?;
-    Ok(crate::Secret::new(std::mem::take(&mut *output.0)))
-}
-
-/// Growth moves into a new guarded allocation and wipes the previous block before freeing it.
-struct Wiping(Zeroizing<Vec<u8>>);
-impl std::io::Write for Wiping {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .len()
-            .checked_add(bytes.len())
-            .ok_or_else(|| std::io::Error::other("settings too large"))?;
-        // The SDK's one wiping growth path (LINT-RULES LR-117).
-        crate::secure::append(&mut self.0, bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
+    Ok(crate::Secret::new(output.into_vec()))
 }
 
 #[cfg(test)]

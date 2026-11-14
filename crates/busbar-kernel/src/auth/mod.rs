@@ -1429,7 +1429,7 @@ pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
 
 pub(crate) type RefusalDoor = (
     busbar_kernel::plane_routes::PlaneRefuseFn,
-    zeroize::Zeroizing<String>,
+    busbar_contract::secure::SecureString,
 );
 
 fn refuse_door((refuse, target): &RefusalDoor) -> Response {
@@ -2540,7 +2540,7 @@ pub(crate) async fn auth_middleware(
                 let door = core_routes.door_refusal(path, req.method()).map(|refuse| {
                     (
                         refuse.clone(),
-                        zeroize::Zeroizing::new(
+                        busbar_contract::secure::SecureString::from(
                             req.uri()
                                 .path_and_query()
                                 .map_or(path, |target| target.as_str())
@@ -2613,7 +2613,10 @@ pub(crate) async fn auth_middleware(
     let door = || -> Option<RefusalDoor> {
         core_routes.door_refusal(path, &method).map(|refuse| {
             let target = uri.path_and_query().map_or(path, |t| t.as_str()).to_owned();
-            (refuse.clone(), zeroize::Zeroizing::new(target))
+            (
+                refuse.clone(),
+                busbar_contract::secure::SecureString::from(target),
+            )
         })
     };
 

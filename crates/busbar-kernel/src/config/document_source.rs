@@ -7,10 +7,11 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
+use busbar_contract::secure::{SecureString, SecureVec};
 use busbar_contract::yaml::{MappingExt, Value, ValueExt};
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 use super::{wipe_yaml, DocumentPatch, WipedYaml};
 
@@ -31,12 +32,12 @@ impl<T: Zeroize> Drop for PathMap<T> {
 
 #[derive(Default)]
 struct Spellings {
-    values: PathMap<Zeroizing<String>>,
-    keys: PathMap<Zeroizing<String>>,
+    values: PathMap<SecureString>,
+    keys: PathMap<SecureString>,
     /// Application tags (`!Name`) on values and on keys, by path, carried through an edit.
-    value_tags: PathMap<Zeroizing<String>>,
-    key_tags: PathMap<Zeroizing<String>>,
-    map_names: PathMap<Vec<Zeroizing<String>>>,
+    value_tags: PathMap<SecureString>,
+    key_tags: PathMap<SecureString>,
+    map_names: PathMap<Vec<SecureString>>,
 }
 
 pub(super) struct SourceDocument {
@@ -55,8 +56,8 @@ impl SourceDocument {
             value,
             spellings: Spellings::default(),
         };
-        let mut path = Zeroizing::new(Vec::new());
-        busbar_contract::yaml::with_deserializer(text, |d| {
+        let mut path = Vec::<String>::new();
+        let read = busbar_contract::yaml::with_deserializer(text, |d| {
             TagFirst(ReadSource {
                 shape: &source.value.0,
                 path: &mut path,
@@ -64,9 +65,13 @@ impl SourceDocument {
                 wide: &wide,
             })
             .deserialize(d)
-        })
-        .map_err(|_| "invalid configuration YAML".to_owned())?;
+        });
+        if read.is_err() {
+            path.zeroize();
+            return Err("invalid configuration YAML".to_owned());
+        }
         normalize_keys(&mut source.value.0, &mut path, &source.spellings);
+        path.zeroize();
         Ok(source)
     }
 
@@ -88,10 +93,10 @@ impl SourceDocument {
             .map_err(|error| error.to_string())?;
         let mut changed = PathMap::<()>::default();
         for (path, _) in &prepared.set {
-            changed.0.insert((**path).clone(), ());
+            changed.0.insert(plain(path), ());
         }
         for path in &prepared.remove {
-            changed.0.insert((**path).clone(), ());
+            changed.0.insert(plain(path), ());
         }
         forget(&mut self.spellings.values, &changed, false);
         forget(&mut self.spellings.keys, &changed, true);
@@ -100,8 +105,9 @@ impl SourceDocument {
         // Record explicit numeric spelling at the resolved append index before removals shift it.
         if let Some(set) = patch.0.get("set").and_then(serde_json::Value::as_object) {
             for ((_, value), (path, _)) in set.iter().zip(&prepared.set) {
-                let mut path = path.clone();
+                let mut path = plain(path);
                 collect_numbers(value, &mut path, &mut self.spellings.values);
+                path.zeroize();
             }
         }
         // Removals use original-snapshot paths. Mirror the same descending traversal for every
@@ -118,22 +124,18 @@ impl SourceDocument {
         Ok(())
     }
 
-    pub fn to_yaml_bytes(&self) -> Result<Zeroizing<Vec<u8>>, String> {
-        let mut bytes = Zeroizing::new(Vec::new());
+    pub fn to_yaml_bytes(&self) -> Result<SecureVec, String> {
+        let mut bytes = SecureVec::new();
         if let Some(tag) = self.spellings.value_tags.0.get(&Vec::<String>::new()) {
             write_tag(&mut bytes, tag);
             if container(&self.value.0) {
-                bytes.push(b'\n');
+                bytes.extend_from_slice(b"\n");
             }
         }
-        emit(
-            &self.value.0,
-            &mut Zeroizing::new(Vec::new()),
-            0,
-            &self.spellings,
-            &mut bytes,
-        )
-        .map_err(|_| "patched document encoding failed".to_owned())?;
+        let mut path = Vec::<String>::new();
+        let emitted = emit(&self.value.0, &mut path, 0, &self.spellings, &mut bytes);
+        path.zeroize();
+        emitted.map_err(|_| "patched document encoding failed".to_owned())?;
         Ok(bytes)
     }
 }
@@ -145,9 +147,9 @@ pub(super) fn compact(patch: &DocumentPatch, yaml: &str) -> Result<DocumentPatch
         return Ok(patch.clone());
     }
     struct Checkpoint {
-        prefix: Zeroizing<Vec<String>>,
+        prefix: Vec<SecureString>,
         first_stage: usize,
-        bytes: Zeroizing<Vec<u8>>,
+        bytes: SecureVec,
     }
     let mut document = SourceDocument::parse(yaml)?;
     let mut result = patch.clone();
@@ -173,7 +175,8 @@ pub(super) fn compact(patch: &DocumentPatch, yaml: &str) -> Result<DocumentPatch
         document.apply(&DocumentPatch(stage.clone()))?;
         let mut keep = Vec::new();
         for checkpoint in checkpoints {
-            if subtree_bytes(&document, &checkpoint.prefix)?.as_deref() == Some(&*checkpoint.bytes)
+            if subtree_bytes(&document, &checkpoint.prefix)?.as_deref()
+                == Some(checkpoint.bytes.as_slice())
             {
                 let stages = result
                     .0
@@ -199,17 +202,19 @@ pub(super) fn compact(patch: &DocumentPatch, yaml: &str) -> Result<DocumentPatch
     // Bind compaction to the full source semantics, including lexical spellings. A candidate
     // that cannot replay identically is discarded; the original bounded patch remains valid.
     let mut replay = SourceDocument::parse(yaml)?;
-    if replay.apply(&result).is_err() || replay.to_yaml_bytes()? != document.to_yaml_bytes()? {
+    if replay.apply(&result).is_err()
+        || replay.to_yaml_bytes()?.as_slice() != document.to_yaml_bytes()?.as_slice()
+    {
         return Ok(patch.clone());
     }
     result.check_limits().map_err(|error| error.to_string())?;
     Ok(result)
 }
 
-fn first_sequence(mut value: &Value, path: &[String]) -> Option<Zeroizing<Vec<String>>> {
+fn first_sequence(mut value: &Value, path: &[SecureString]) -> Option<Vec<SecureString>> {
     for (depth, key) in path.iter().enumerate() {
         if value.as_sequence().is_some() {
-            return Some(Zeroizing::new(path[..depth].to_vec()));
+            return Some(path[..depth].to_vec());
         }
         value = value.as_mapping()?.get_key(key.as_str())?;
     }
@@ -218,8 +223,8 @@ fn first_sequence(mut value: &Value, path: &[String]) -> Option<Zeroizing<Vec<St
 
 fn subtree_bytes(
     document: &SourceDocument,
-    prefix: &[String],
-) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    prefix: &[SecureString],
+) -> Result<Option<SecureVec>, String> {
     let mut value = &document.value.0;
     for key in prefix {
         let Some(child) = value.as_mapping().and_then(|map| map.get_key(key.as_str())) else {
@@ -227,19 +232,20 @@ fn subtree_bytes(
         };
         value = child;
     }
-    let mut bytes = Zeroizing::new(Vec::new());
-    emit(
-        value,
-        &mut Zeroizing::new(prefix.to_vec()),
-        0,
-        &document.spellings,
-        &mut bytes,
-    )
-    .map_err(|_| "configuration sequence checkpoint encoding failed".to_owned())?;
+    let mut bytes = SecureVec::new();
+    let mut path = plain(prefix);
+    let emitted = emit(value, &mut path, 0, &document.spellings, &mut bytes);
+    path.zeroize();
+    emitted.map_err(|_| "configuration sequence checkpoint encoding failed".to_owned())?;
     Ok(Some(bytes))
 }
 
-fn sequence_parent(mut value: &Value, path: &[String]) -> bool {
+/// A decoded pointer as the plain path keys the spelling maps use (they wipe their keys).
+fn plain(path: &[SecureString]) -> Vec<String> {
+    path.iter().map(|part| part.as_str().to_owned()).collect()
+}
+
+fn sequence_parent(mut value: &Value, path: &[SecureString]) -> bool {
     for key in &path[..path.len() - 1] {
         if let Some(map) = value.as_mapping() {
             let Some(child) = map.get_key(key.as_str()) else {
@@ -261,11 +267,16 @@ fn sequence_parent(mut value: &Value, path: &[String]) -> bool {
     value.as_sequence().is_some()
 }
 
-fn shift_after_remove<T: Zeroize>(map: &mut PathMap<T>, removed: &[String]) {
+fn shift_after_remove<T: Zeroize>(map: &mut PathMap<T>, removed: &[SecureString]) {
     let depth = removed.len() - 1;
     let index = super::sequence_index(&removed[depth]).expect("validated index");
     for (mut path, mut value) in std::mem::take(&mut map.0) {
-        if path.len() > depth && path[..depth] == removed[..depth] {
+        if path.len() > depth
+            && path[..depth]
+                .iter()
+                .zip(&removed[..depth])
+                .all(|(a, b)| a.as_str() == b.as_str())
+        {
             let member = super::sequence_index(&path[depth]).expect("sequence spelling index");
             if member == index {
                 path.zeroize();
@@ -284,13 +295,14 @@ fn shift_after_remove<T: Zeroize>(map: &mut PathMap<T>, removed: &[String]) {
 fn collect_numbers(
     value: &serde_json::Value,
     path: &mut Vec<String>,
-    values: &mut PathMap<Zeroizing<String>>,
+    values: &mut PathMap<SecureString>,
 ) {
     match value {
         serde_json::Value::Number(number) => {
-            values
-                .0
-                .insert(path.clone(), Zeroizing::new(number.to_string()));
+            values.0.insert(
+                path.clone(),
+                SecureString::from_args(format_args!("{number}")),
+            );
         }
         serde_json::Value::Object(map) => {
             for (key, value) in map {
@@ -420,11 +432,11 @@ impl<'de> DeserializeSeed<'de> for ReadSource<'_> {
             Value::Null => serde::de::IgnoredAny::deserialize(de).map(|_| ()),
             Value::Text(value) if !self.wide.contains(&(value.as_ptr() as usize)) => {
                 // Decoded string content is already retained by the wiping source tree.
-                let _text = Zeroizing::new(String::deserialize(de)?);
+                let _text = SecureString::deserialize(de)?;
                 Ok(())
             }
             _ => {
-                let text = Zeroizing::new(String::deserialize(de)?);
+                let text = SecureString::deserialize(de)?;
                 self.spellings.values.0.insert(self.path.clone(), text);
                 Ok(())
             }
@@ -477,7 +489,7 @@ impl<'de> Visitor<'de> for TagFirst<'_> {
             spellings
                 .value_tags
                 .0
-                .insert(path.clone(), Zeroizing::new(tag));
+                .insert(path.clone(), SecureString::from(tag));
         }
         Ok(())
     }
@@ -533,12 +545,12 @@ impl<'de> Visitor<'de> for ReadSource<'_> {
             let (name, key_tag) = map
                 .next_key_seed(TaggedKey)?
                 .ok_or_else(|| serde::de::Error::custom("source map changed"))?;
-            let name = Zeroizing::new(name);
-            let key_tag = key_tag.map(Zeroizing::new);
-            if !seen.0.insert((*name).clone()) {
+            let name = SecureString::from(name);
+            let key_tag = key_tag.map(SecureString::from);
+            if !seen.0.insert(name.as_str().to_owned()) {
                 return Err(serde::de::Error::custom("duplicate source map key"));
             }
-            self.path.push((*name).clone());
+            self.path.push(name.as_str().to_owned());
             if let Some(tag) = key_tag {
                 self.spellings.key_tags.0.insert(self.path.clone(), tag);
             }
@@ -594,10 +606,10 @@ fn normalize_keys(value: &mut Value, path: &mut Vec<String>, spellings: &Spellin
             let names = &spellings.map_names.0[path.as_slice()];
             for ((mut key, mut value), name) in std::mem::take(map).into_iter().zip(names) {
                 wipe_yaml(&mut key);
-                path.push((**name).clone());
+                path.push(name.as_str().to_owned());
                 normalize_keys(&mut value, path, spellings);
                 path.pop().expect("path member").zeroize();
-                map.insert_key(Value::Text((**name).clone()), value);
+                map.insert_key(Value::Text(name.as_str().to_owned()), value);
             }
         }
         Value::Array(values) => {
@@ -611,10 +623,12 @@ fn normalize_keys(value: &mut Value, path: &mut Vec<String>, spellings: &Spellin
     }
 }
 
-fn indent(bytes: &mut Vec<u8>, n: usize) {
-    bytes.extend(std::iter::repeat_n(b' ', n));
+fn indent(bytes: &mut SecureVec, n: usize) {
+    for _ in 0..n {
+        bytes.extend_from_slice(b" ");
+    }
 }
-fn quoted(bytes: &mut Vec<u8>, text: &str) -> Result<(), ()> {
+fn quoted(bytes: &mut SecureVec, text: &str) -> Result<(), ()> {
     serde_json::to_writer(bytes, text).map_err(|_| ())
 }
 fn container(value: &Value) -> bool {
@@ -625,33 +639,33 @@ fn container(value: &Value) -> bool {
     }
 }
 /// Write a carried tag and the space after it: a local `!Name` as written, a URI as `!<uri>`.
-fn write_tag(bytes: &mut Vec<u8>, tag: &str) {
+fn write_tag(bytes: &mut SecureVec, tag: &str) {
     if tag.starts_with('!') {
         bytes.extend_from_slice(tag.as_bytes());
     } else {
         bytes.extend_from_slice(b"!<");
         bytes.extend_from_slice(tag.as_bytes());
-        bytes.push(b'>');
+        bytes.extend_from_slice(b">");
     }
-    bytes.push(b' ');
+    bytes.extend_from_slice(b" ");
 }
 fn after_marker(
     value: &Value,
     path: &mut Vec<String>,
     depth: usize,
     spellings: &Spellings,
-    bytes: &mut Vec<u8>,
+    bytes: &mut SecureVec,
 ) -> Result<(), ()> {
-    bytes.push(b' ');
+    bytes.extend_from_slice(b" ");
     if let Some(tag) = spellings.value_tags.0.get(path.as_slice()) {
         write_tag(bytes, tag);
     }
     if container(value) {
-        bytes.push(b'\n');
+        bytes.extend_from_slice(b"\n");
         emit(value, path, depth + 2, spellings, bytes)
     } else {
         scalar(value, path, spellings, bytes)?;
-        bytes.push(b'\n');
+        bytes.extend_from_slice(b"\n");
         Ok(())
     }
 }
@@ -660,7 +674,7 @@ fn emit(
     path: &mut Vec<String>,
     depth: usize,
     spellings: &Spellings,
-    bytes: &mut Vec<u8>,
+    bytes: &mut SecureVec,
 ) -> Result<(), ()> {
     match value {
         Value::Map(map) if !map.is_empty() => {
@@ -676,7 +690,7 @@ fn emit(
                 } else {
                     quoted(bytes, key)?;
                 }
-                bytes.push(b':');
+                bytes.extend_from_slice(b":");
                 after_marker(value, path, depth, spellings, bytes)?;
                 path.pop().expect("path member").zeroize();
             }
@@ -685,7 +699,7 @@ fn emit(
             for (index, value) in values.iter().enumerate() {
                 path.push(index.to_string());
                 indent(bytes, depth);
-                bytes.push(b'-');
+                bytes.extend_from_slice(b"-");
                 after_marker(value, path, depth, spellings, bytes)?;
                 path.pop().expect("path member").zeroize();
             }
@@ -693,7 +707,7 @@ fn emit(
         _ => {
             indent(bytes, depth);
             scalar(value, path, spellings, bytes)?;
-            bytes.push(b'\n');
+            bytes.extend_from_slice(b"\n");
         }
     }
     Ok(())
@@ -702,7 +716,7 @@ fn scalar(
     value: &Value,
     path: &[String],
     spellings: &Spellings,
-    bytes: &mut Vec<u8>,
+    bytes: &mut SecureVec,
 ) -> Result<(), ()> {
     if let Some(raw) = spellings.values.0.get(path) {
         bytes.extend_from_slice(raw.as_bytes());
@@ -711,14 +725,13 @@ fn scalar(
     match value {
         Value::Text(text) => quoted(bytes, text),
         _ => {
-            let mut encoded = Zeroizing::new(Vec::new());
-            busbar_contract::yaml::to_writer(&mut *encoded, value).map_err(|_| ())?;
-            while encoded
-                .last()
-                .is_some_and(|byte| byte.is_ascii_whitespace())
-            {
-                encoded.pop();
-            }
+            let mut encoded = SecureVec::new();
+            busbar_contract::yaml::to_writer(&mut encoded, value).map_err(|_| ())?;
+            let kept = encoded
+                .iter()
+                .rposition(|byte| !byte.is_ascii_whitespace())
+                .map_or(0, |last| last + 1);
+            encoded.truncate(kept);
             bytes.extend_from_slice(&encoded);
             Ok(())
         }

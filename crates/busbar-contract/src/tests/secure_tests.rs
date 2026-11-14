@@ -213,9 +213,9 @@ fn secure_vec_read_into_rejects_overlong_count() {
     );
 }
 
-// SECURE-TYPES (core #164): the types that replace `zeroize::Zeroizing`. RED until they land.
+// SECURE-TYPES (core #164): the types that replace the banned zeroize wrapper. RED until they land.
 
-/// RED against a `Zeroizing<String>` that grows in place: growth moves the text into a fresh
+/// RED against a wiping String wrapper that grows in place: growth moves the text into a fresh
 /// block and wipes the old block before it is freed.
 #[test]
 fn secure_string_growth_wipes_old_block() {

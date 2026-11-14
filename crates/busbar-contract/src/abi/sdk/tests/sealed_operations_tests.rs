@@ -2,10 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{Cred, CredentialPart as Part, Digest, SealedValue};
-use zeroize::Zeroizing;
 
 fn credential(bytes: &[u8]) -> Cred {
-    Cred::captured(Zeroizing::new(bytes.to_vec()))
+    Cred::captured(crate::secure::SecureVec::from(bytes.to_vec()))
 }
 
 fn value(bytes: &[u8]) -> SealedValue {

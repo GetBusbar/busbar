@@ -655,7 +655,7 @@ struct BootstrapIo {
     session: Arc<Session>,
     settings: Arc<OpenLent>,
     body: Arc<sdk::bootstrap::Bootstrap>,
-    output: UnsafeCell<zeroize::Zeroizing<Vec<u8>>>,
+    output: UnsafeCell<SecureVec>,
 }
 // SAFETY: only one retained dispatcher future owns each crossing. Output is read
 // or resized only after that crossing retires; detached outcomes never resize it.
@@ -703,11 +703,7 @@ async fn invoke(
         session,
         settings,
         body,
-        output: UnsafeCell::new(zeroize::Zeroizing::new(vec![
-            0;
-            (bounds.bytes as usize)
-                .min(1024)
-        ])),
+        output: UnsafeCell::new(SecureVec::zeroed((bounds.bytes as usize).min(1024))),
     });
     let until = deadline();
     for attempt in 0..2 {
@@ -735,7 +731,7 @@ async fn invoke(
             drop(lease);
             // SAFETY: this native crossing retired, so the next frame may change only its output allocation.
             let output = unsafe { &mut *io.output.get() };
-            *output = zeroize::Zeroizing::new(vec![0; needed]);
+            *output = SecureVec::zeroed(needed);
             continue;
         }
         if done.outcome != Outcome::Ready {

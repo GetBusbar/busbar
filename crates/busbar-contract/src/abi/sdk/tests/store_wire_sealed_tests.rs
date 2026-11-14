@@ -236,7 +236,7 @@ type Answer = Result<(), ConnFailure>;
 type Retained = Arc<Mutex<Option<Wire>>>;
 
 fn seal(required: bool) -> Seal {
-    let cred = Cred::captured(zeroize::Zeroizing::new(CANARY.to_vec()));
+    let cred = Cred::captured(crate::secure::SecureVec::from(CANARY.to_vec()));
     if required {
         cred.require_secure().field()
     } else {

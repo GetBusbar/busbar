@@ -5,12 +5,14 @@
 
 use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
+
+use crate::secure::SecureVec;
 
 /// Unread connection bytes. Slice access borrows the storage; consuming or clearing bytes wipes
 /// their old positions. Growth retires the previous allocation through its wiping owner.
 #[derive(Default)]
-pub struct Input(Zeroizing<Vec<u8>>);
+pub struct Input(SecureVec);
 
 impl Input {
     /// Borrow the unread bytes.
@@ -24,7 +26,7 @@ impl Input {
     }
 
     pub(super) fn extend_from_slice(&mut self, bytes: &[u8]) {
-        crate::secure::append(&mut self.0, bytes);
+        self.0.extend_from_slice(bytes);
         #[cfg(test)]
         crate::abi::sdk::secret_bytes::watch(&self.0);
     }
@@ -43,7 +45,7 @@ impl Input {
             Bound::Unbounded => self.0.len(),
         };
         assert!(start <= end && end <= self.0.len(), "wire input range");
-        let bytes = Zeroizing::new(self.0[start..end].to_vec());
+        let bytes = SecureVec::from(&self.0[start..end]);
         #[cfg(test)]
         crate::abi::sdk::secret_bytes::watch(&bytes);
         let old_len = self.0.len();
@@ -90,7 +92,7 @@ impl std::fmt::Debug for Input {
 
 /// Bytes removed from [`Input`], with a wiping owner for the not-yet-yielded contents.
 pub struct Drain {
-    bytes: Zeroizing<Vec<u8>>,
+    bytes: SecureVec,
     front: usize,
     back: usize,
 }

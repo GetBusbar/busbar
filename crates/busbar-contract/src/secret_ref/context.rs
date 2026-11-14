@@ -402,9 +402,9 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         use crate::plugin_settings::Tree;
-        use zeroize::Zeroizing;
+        use crate::secure::SecureString;
         let mut held = Tree::default();
-        while let Some(mut key) = map.next_key::<Zeroizing<String>>()? {
+        while let Some(key) = map.next_key::<SecureString>()? {
             // serde_json (arbitrary_precision) carries a number as this synthetic one-entry map;
             // its value is the literal's text, so it is refused before that value is read.
             if key.as_str() == JSON_NUMBER_TOKEN {
@@ -417,7 +417,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
                     "duplicate secret-reference member (value not echoed)",
                 ));
             }
-            object.insert(std::mem::take(&mut *key), std::mem::take(&mut value.0));
+            object.insert(key.into_string(), std::mem::take(&mut value.0));
         }
         let object = held.0.as_object().expect("reference map");
         if !object.contains_key("module") && !object.contains_key("template") && object.len() == 1 {

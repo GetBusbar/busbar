@@ -4,7 +4,7 @@
 //! The STUN core speaks itself: recognising a connectivity check addressed to THIS session, and
 
 use busbar_contract::crypto;
-use zeroize::Zeroizing;
+use busbar_contract::secure::SecureVec;
 
 /// STUN's magic cookie (RFC 8489 §5).
 const MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
@@ -54,9 +54,9 @@ impl std::fmt::Debug for IceCredentials {
 pub(crate) struct Keys {
     local_ufrag_prefix: Vec<u8>,
     /// The local ICE password: the MESSAGE-INTEGRITY (HMAC-SHA1) key of checks to us.
-    local: Zeroizing<Vec<u8>>,
+    local: SecureVec,
     /// The remote ICE password: the key of our probes and of their answers.
-    remote: Zeroizing<Vec<u8>>,
+    remote: SecureVec,
     probe_username: Vec<u8>,
 }
 
@@ -72,8 +72,8 @@ impl Keys {
         );
         Keys {
             local_ufrag_prefix,
-            local: Zeroizing::new(local.pwd.as_bytes().to_vec()),
-            remote: Zeroizing::new(remote.pwd.as_bytes().to_vec()),
+            local: SecureVec::from(local.pwd.as_bytes()),
+            remote: SecureVec::from(remote.pwd.as_bytes()),
             probe_username,
         }
     }

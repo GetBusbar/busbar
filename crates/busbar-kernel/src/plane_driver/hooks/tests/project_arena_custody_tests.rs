@@ -168,7 +168,7 @@ fn returned(_buffers: ProjectBufs, fail: bool) -> Result<(), ()> {
 }
 
 #[test]
-fn the_passive_owner_distinguishes_unwiped_and_zeroizing_destruction() {
+fn the_passive_owner_distinguishes_unwiped_and_wiping_destruction() {
     let probe = Probe::start();
     let plain = ObservedArena::from(PAYLOAD.to_vec());
     drop(plain);
@@ -176,7 +176,8 @@ fn the_passive_owner_distinguishes_unwiped_and_zeroizing_destruction() {
     drop(probe);
 
     let probe = Probe::start();
-    let held = zeroize::Zeroizing::new(ObservedArena::from(PAYLOAD.to_vec()));
+    let mut held = ObservedArena::from(PAYLOAD.to_vec());
+    zeroize::Zeroize::zeroize(&mut held);
     drop(held);
     probe.finish();
 }

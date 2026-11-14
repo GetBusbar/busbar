@@ -26,6 +26,7 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::InstanceDecl;
+use busbar_contract::secure::SecureVec;
 
 use crate::dispatch::lifecycle;
 use crate::dispatch::{
@@ -1159,12 +1160,8 @@ pub fn refresh_door_on(
 
     // A queued or watchdog-detached crossing must never retain a loan into this caller's
     // stack. The dispatch job owns both byte buffers until it releases the input frame.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a plane refresh owns its settings across a detachable crossing"
-    )]
-    let settings = zeroize::Zeroizing::new(settings.to_vec());
-    let extensions = zeroize::Zeroizing::new(if owned.is_empty() {
+    let settings = SecureVec::from(settings);
+    let extensions = SecureVec::from(if owned.is_empty() {
         Vec::new()
     } else {
         busbar_contract::abi::mechanism::extensions::encode(&[(plane::EXT_OWNED, owned)])

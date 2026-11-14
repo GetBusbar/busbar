@@ -64,7 +64,7 @@ pub enum Progress {
 /// ciphertext, generic plugin payloads and old uncertain candidates MUST carry
 /// `preserve_exact`; their decoder/codec semantics must not be rewritten.
 pub struct Record {
-    pub key: zeroize::Zeroizing<Vec<u8>>,
+    pub key: busbar_contract::secure::SecureVec,
     pub value: Secret<Vec<u8>>,
     pub preserve_exact: bool,
 }

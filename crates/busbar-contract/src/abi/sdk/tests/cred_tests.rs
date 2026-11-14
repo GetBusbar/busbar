@@ -111,7 +111,7 @@ fn a_settings_error_names_the_path() {
 
 #[test]
 fn a_sealed_write_assembles_in_order() {
-    let c = Cred::captured(zeroize::Zeroizing::new(b"k".to_vec()));
+    let c = Cred::captured(crate::secure::SecureVec::from(b"k".to_vec()));
     let w = Parts::new()
         .public(b"authorization: ")
         .sealed(c.bearer())
@@ -124,7 +124,7 @@ fn a_sealed_write_assembles_in_order() {
 
 #[test]
 fn a_form_body_encodes_as_serde_urlencoded_and_seals_its_credential() {
-    let secret = Cred::captured(zeroize::Zeroizing::new(b"s&=e cr+t".to_vec()));
+    let secret = Cred::captured(crate::secure::SecureVec::from(b"s&=e cr+t".to_vec()));
     let body = super::FormBody::new()
         .public("grant_type", "client_credentials")
         .public("client_id", "a b")
@@ -157,7 +157,7 @@ fn a_jws_assertion_verifies_under_the_keys_public_half() {
     let der = base64::engine::general_purpose::STANDARD
         .decode(JWS_TEST_KEY_B64)
         .expect("b64");
-    let key = Cred::captured(zeroize::Zeroizing::new(der.clone()));
+    let key = Cred::captured(crate::secure::SecureVec::from(der.clone()));
     key.rsa_pkcs8_check().expect("a PKCS #8 RSA key");
     let input = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ4In0";
     let sig = key.jws_rs256(input.as_bytes()).expect("signs");
@@ -165,7 +165,7 @@ fn a_jws_assertion_verifies_under_the_keys_public_half() {
         .decode(sig.wire())
         .expect("b64url");
     let pair = crate::crypto::rsa::SigningKey::from_pkcs8(&der).expect("key");
-    let expected = zeroize::Zeroizing::new(
+    let expected = crate::secure::SecureVec::from(
         pair.sign_pkcs1_sha256(input.as_bytes())
             .expect("reference signature"),
     );
@@ -186,9 +186,11 @@ fn a_jws_assertion_verifies_under_the_keys_public_half() {
     );
     let w = body.encoded().expect("encodes");
     assert!(w.buf.starts_with(format!("assertion={input}.").as_bytes()));
-    assert!(Cred::captured(zeroize::Zeroizing::new(b"nope".to_vec()))
-        .rsa_pkcs8_check()
-        .is_err());
+    assert!(
+        Cred::captured(crate::secure::SecureVec::from(b"nope".to_vec()))
+            .rsa_pkcs8_check()
+            .is_err()
+    );
 }
 
 #[test]
@@ -198,7 +200,7 @@ fn jws_requires_a_complete_pkcs8_rsa_key_on_validation_and_signing() {
         .decode(JWS_TEST_KEY_B64)
         .expect("fixture");
     let refuses = |bytes: Vec<u8>| {
-        let key = Cred::captured(zeroize::Zeroizing::new(bytes));
+        let key = Cred::captured(crate::secure::SecureVec::from(bytes));
         assert!(key.rsa_pkcs8_check().is_err());
         assert!(key.jws_rs256(b"header.payload").is_err());
     };
@@ -242,7 +244,7 @@ fn jws_rejects_an_inconsistent_private_exponent_before_signing() {
         &[0x02, 0x82, 0x01, 0x00]
     );
     der[PRIVATE_EXPONENT_END - 1] ^= 2;
-    let key = Cred::captured(zeroize::Zeroizing::new(der));
+    let key = Cred::captured(crate::secure::SecureVec::from(der));
     assert!(key.rsa_pkcs8_check().is_err());
     assert!(key.jws_rs256(b"header.payload").is_err());
     let body = super::FormBody::new().value(
@@ -273,9 +275,9 @@ fn jws_preserves_pkcs8_algorithm_and_optional_attribute_rules() {
         .expect("fixture");
     let mut content = der[4..].to_vec();
     content.extend_from_slice(&[0xa0, 0]);
-    let attributed = Cred::captured(zeroize::Zeroizing::new(sequence(&content)));
+    let attributed = Cred::captured(crate::secure::SecureVec::from(sequence(&content)));
     attributed.rsa_pkcs8_check().expect("optional attributes");
-    let original = Cred::captured(zeroize::Zeroizing::new(der.clone()));
+    let original = Cred::captured(crate::secure::SecureVec::from(der.clone()));
     assert_eq!(
         attributed
             .jws_rs256(b"header.payload")
@@ -284,7 +286,7 @@ fn jws_preserves_pkcs8_algorithm_and_optional_attribute_rules() {
         original.jws_rs256(b"header.payload").expect("signs").wire()
     );
     content.extend_from_slice(&[0xa0, 0]);
-    let duplicate = Cred::captured(zeroize::Zeroizing::new(sequence(&content)));
+    let duplicate = Cred::captured(crate::secure::SecureVec::from(sequence(&content)));
     assert!(duplicate.rsa_pkcs8_check().is_err());
     assert!(duplicate.jws_rs256(b"header.payload").is_err());
     let mut missing_null = der[4..].to_vec();
@@ -292,14 +294,14 @@ fn jws_preserves_pkcs8_algorithm_and_optional_attribute_rules() {
     assert_eq!(&missing_null[16..18], &[5, 0]);
     missing_null.drain(16..18);
     missing_null[4] = 11;
-    let key = Cred::captured(zeroize::Zeroizing::new(sequence(&missing_null)));
+    let key = Cred::captured(crate::secure::SecureVec::from(sequence(&missing_null)));
     assert!(key.rsa_pkcs8_check().is_err());
     assert!(key.jws_rs256(b"header.payload").is_err());
     let mut inner_trailing = der[4..].to_vec();
     let private_len = u16::from_be_bytes([inner_trailing[20], inner_trailing[21]]);
     inner_trailing[20..22].copy_from_slice(&(private_len + 1).to_be_bytes());
     inner_trailing.push(0);
-    let key = Cred::captured(zeroize::Zeroizing::new(sequence(&inner_trailing)));
+    let key = Cred::captured(crate::secure::SecureVec::from(sequence(&inner_trailing)));
     assert!(key.rsa_pkcs8_check().is_err());
     assert!(key.jws_rs256(b"header.payload").is_err());
 }
@@ -307,7 +309,7 @@ fn jws_preserves_pkcs8_algorithm_and_optional_attribute_rules() {
 /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4): the operator's URL decides. A secure scheme or a
 #[test]
 fn the_requirement_travels_with_every_seal() {
-    let c = Cred::captured(zeroize::Zeroizing::new(b"pw".to_vec()));
+    let c = Cred::captured(crate::secure::SecureVec::from(b"pw".to_vec()));
     assert!(!c.secure_required() && !c.bearer().secure_required());
     let c = c.require_secure_if(false).require_secure_if(true);
     assert!(c.secure_required());
@@ -334,7 +336,7 @@ fn the_requirement_travels_with_every_seal() {
 #[test]
 fn header_field_values_reject_del_between_allowed_bytes() {
     for (byte, accepted) in [(0x7e, true), (0x7f, false), (0x80, true)] {
-        let credential = Cred::captured(zeroize::Zeroizing::new(vec![byte]));
+        let credential = Cred::captured(crate::secure::SecureVec::from(vec![byte]));
         assert_eq!(
             credential.is_field_value(),
             accepted,
@@ -346,7 +348,7 @@ fn header_field_values_reject_del_between_allowed_bytes() {
 #[test]
 fn header_field_values_allow_tab_but_reject_neighboring_controls() {
     for (byte, accepted) in [(0x08, false), (0x09, true), (0x0a, false)] {
-        let credential = Cred::captured(zeroize::Zeroizing::new(vec![byte]));
+        let credential = Cred::captured(crate::secure::SecureVec::from(vec![byte]));
         assert_eq!(
             credential.is_field_value(),
             accepted,
@@ -358,7 +360,7 @@ fn header_field_values_allow_tab_but_reject_neighboring_controls() {
 #[test]
 fn header_field_values_allow_space_at_the_visible_byte_boundary() {
     for (byte, accepted) in [(0x1f, false), (0x20, true), (0x21, true)] {
-        let credential = Cred::captured(zeroize::Zeroizing::new(vec![byte]));
+        let credential = Cred::captured(crate::secure::SecureVec::from(vec![byte]));
         assert_eq!(
             credential.is_field_value(),
             accepted,
@@ -385,7 +387,7 @@ fn a_settings_enum_object_with_more_than_one_key_is_refused() {
 }
 
 /// SECURE-TYPES (core #164): a plugin captures a credential in a `busbar_contract::secure`
-/// buffer, never in the banned `zeroize::Zeroizing`. RED until `Cred::captured` takes `SecureVec`.
+/// buffer, never in the banned wrapper. RED until `Cred::captured` takes `SecureVec`.
 #[test]
 fn cred_captured_takes_secure_vec() {
     let c = Cred::captured(crate::secure::SecureVec::from(b"k".to_vec()));

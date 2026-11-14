@@ -7,7 +7,7 @@ use busbar_contract::persistence::{
     legacy_row::{self, Cell},
     lifecycle::{codec, source::SourceChunk},
 };
-use zeroize::Zeroizing;
+use busbar_contract::secure::SecureVec;
 busbar_contract::own_seal!(SpoolOwner);
 
 impl NativeSnapshot {
@@ -193,7 +193,7 @@ impl NativeSnapshot {
                 // family, group length, group, sequence, then one 8-byte fact index: exact size,
                 // written in place, so the wiping buffer never grows (LINT-RULES LR-117).
                 let prefix = length.checked_add(17).ok_or(Error::Bounds)?;
-                let mut key = Zeroizing::new(vec![0_u8; prefix + 8]);
+                let mut key = SecureVec::zeroed(prefix + 8);
                 key[0] = match chunk.family {
                     native::source::HistoricalFamily::Identity => 0,
                     native::source::HistoricalFamily::Accounting => 1,

@@ -3,7 +3,7 @@
 
 //! `<scheme> <credential>`: an HTTP `Authorization` value under a scheme the caller names (RFC 9110,
 
-use zeroize::Zeroizing;
+use crate::secure::SecureVec;
 
 use crate::abi::sdk::cred::{Cred, Seal};
 
@@ -13,9 +13,9 @@ impl Cred {
         let scheme = scheme.as_ref();
         // Exact size in one allocation (`concat`): the wiping buffer never grows (LR-117).
         let v = if self.is_empty() {
-            Zeroizing::new(scheme.to_vec())
+            SecureVec::from(scheme.to_vec())
         } else {
-            Zeroizing::new([scheme, b" ", self.wire()].concat())
+            SecureVec::from([scheme, b" ", self.wire()].concat())
         };
         self.seal(v)
     }

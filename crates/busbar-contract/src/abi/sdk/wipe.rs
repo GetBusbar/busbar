@@ -30,7 +30,8 @@ fn wipe_spare(spare: &mut [core::mem::MaybeUninit<u8>]) {
 }
 
 /// A byte buffer that wipes its whole allocation when it drops (or is zeroized), through
-/// [`wipe_bytes`]: a drop-in for `Zeroizing<Vec<u8>>` on per-call buffers.
+/// [`wipe_bytes`], for per-call buffers. It derefs to the bytes as a slice only: a holder replaces
+/// the buffer whole and never grows it in place.
 #[derive(Default)]
 pub struct WipedBytes(Vec<u8>);
 
@@ -46,17 +47,23 @@ impl WipedBytes {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
+
+    /// The allocation's capacity, every byte of which is wiped.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
 }
 
 impl core::ops::Deref for WipedBytes {
-    type Target = Vec<u8>;
-    fn deref(&self) -> &Vec<u8> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
         &self.0
     }
 }
 
 impl core::ops::DerefMut for WipedBytes {
-    fn deref_mut(&mut self) -> &mut Vec<u8> {
+    fn deref_mut(&mut self) -> &mut [u8] {
         &mut self.0
     }
 }
@@ -74,6 +81,70 @@ impl Drop for WipedBytes {
 }
 
 impl zeroize::ZeroizeOnDrop for WipedBytes {}
+
+/// A reply head that wipes its status, reason, fields and body when it drops: the field type of
+/// [`ProtectedResponse::head`](super::exchange::ProtectedResponse::head), the exchange's reply and
+/// [`ExchangeFailure`](super::exchange::ExchangeFailure)'s head. `ExchangeResponse` itself has no
+/// `Drop`, so its fields still move out (`reply.body`); this holder wipes whatever is left.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ResponseHead(super::exchange::ExchangeResponse);
+
+impl ResponseHead {
+    /// Take ownership of `response`; it is wiped when this drops.
+    #[must_use]
+    pub fn new(response: super::exchange::ExchangeResponse) -> Self {
+        Self(response)
+    }
+}
+
+impl From<super::exchange::ExchangeResponse> for ResponseHead {
+    fn from(response: super::exchange::ExchangeResponse) -> Self {
+        Self(response)
+    }
+}
+
+impl core::fmt::Debug for ResponseHead {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl core::ops::Deref for ResponseHead {
+    type Target = super::exchange::ExchangeResponse;
+    fn deref(&self) -> &super::exchange::ExchangeResponse {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for ResponseHead {
+    fn deref_mut(&mut self) -> &mut super::exchange::ExchangeResponse {
+        &mut self.0
+    }
+}
+
+impl zeroize::Zeroize for ResponseHead {
+    fn zeroize(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl Drop for ResponseHead {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for ResponseHead {}
+
+/// A conditional plane request is secret in every instance: it wipes its candidate on drop. The
+/// body lives here, outside the request-path tree.
+impl Drop for super::plane::conditional::Request {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for super::plane::conditional::Request {}
 
 #[cfg(test)]
 #[path = "tests/wipe_tests.rs"]

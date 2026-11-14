@@ -47,11 +47,11 @@ fn hmac_sha1_answers_rfc_2202_with_multipart_messages() {
         ),
     ];
     for &(key, message, expected) in cases {
-        let key = Cred::captured(Zeroizing::new(key.to_vec()));
-        let digest: Zeroizing<[u8; 20]> = hmac_sha1(&key, &[message]);
+        let key = Cred::captured(crate::secure::SecureVec::from(key.to_vec()));
+        let digest: crate::secure::SecureArray<20> = hmac_sha1(&key, &[message]);
         assert_eq!(hex::encode(&digest[..]), expected);
         for split in 0..=message.len() {
-            let digest: Zeroizing<[u8; 20]> =
+            let digest: crate::secure::SecureArray<20> =
                 hmac_sha1(&key, &[&message[..split], b"", &message[split..]]);
             assert_eq!(hex::encode(&digest[..]), expected, "split {split}");
         }
@@ -62,7 +62,7 @@ fn hmac_sha1_answers_rfc_2202_with_multipart_messages() {
 fn hmac_sha1_accepts_empty_key_and_message() {
     let key = Cred::empty();
     for parts in [&[][..], &[b"".as_slice()][..]] {
-        let digest: Zeroizing<[u8; 20]> = hmac_sha1(&key, parts);
+        let digest: crate::secure::SecureArray<20> = hmac_sha1(&key, parts);
         assert_eq!(
             hex::encode(&digest[..]),
             "fbdb1d1b18aa6c08324b7d64b71fb76370690e1d"
@@ -86,10 +86,10 @@ fn public_wiped_sha256_answers_fips_vectors() {
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
         ),
     ] {
-        let digest: Zeroizing<[u8; 32]> = sha256(&[message]);
+        let digest: crate::secure::SecureArray<32> = sha256(&[message]);
         assert_eq!(hex::encode(&digest[..]), expected);
     }
-    let digest: Zeroizing<[u8; 32]> = sha256(&[]);
+    let digest: crate::secure::SecureArray<32> = sha256(&[]);
     assert_eq!(digest[..], crate::abi::sdk::digest::sha256(b""));
 }
 
@@ -102,7 +102,8 @@ fn the_sdk_sha256_matches_sha256_at_every_padding_boundary() {
     for n in 0..=data.len() {
         let msg = &data[..n];
         for split in [0, msg.len() / 2, msg.len()] {
-            let digest: Zeroizing<[u8; 32]> = sha256(&[&msg[..split], b"", &msg[split..]]);
+            let digest: crate::secure::SecureArray<32> =
+                sha256(&[&msg[..split], b"", &msg[split..]]);
             assert_eq!(
                 digest[..],
                 crate::abi::sdk::digest::sha256(msg),
@@ -136,8 +137,8 @@ fn block_sized_and_one_over_keys_are_split_at_the_block_boundary() {
             sha256,
             "sha256, {n}-byte key"
         );
-        let cred = Cred::captured(Zeroizing::new(key));
-        let d: Zeroizing<[u8; 20]> = hmac_sha1(&cred, &[msg]);
+        let cred = Cred::captured(crate::secure::SecureVec::from(key));
+        let d: crate::secure::SecureArray<20> = hmac_sha1(&cred, &[msg]);
         assert_eq!(hex::encode(&d[..]), sha1, "sha1, {n}-byte key");
     }
 }
@@ -152,7 +153,7 @@ fn precomputed_keys_answer_the_one_shot_macs_over_any_split() {
     for key_len in [0_usize, 1, 20, 63, 64, 65, 131] {
         let key: Vec<u8> = (0..key_len).map(|i| (i as u8) ^ 0xa5).collect();
         let k256 = HmacSha256Key::new(&key);
-        let cred = Cred::captured(Zeroizing::new(key.clone()));
+        let cred = Cred::captured(crate::secure::SecureVec::from(key.clone()));
         let k1 = HmacSha1Key::new(&cred);
         for n in [0_usize, 1, 55, 56, 63, 64, 65, 119, 120, 128, 150] {
             let msg = &data[..n];

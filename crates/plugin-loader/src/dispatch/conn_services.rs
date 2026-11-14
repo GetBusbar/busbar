@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use futures::FutureExt as _;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
@@ -29,6 +29,7 @@ use busbar_contract::auth_calls::{Fields, FieldsRequest};
 use busbar_contract::conn::{
     ConnError, ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind,
 };
+use busbar_contract::secure::SecureVec;
 use std::future::Future as _;
 
 use super::services::{service, write_out, Answered};
@@ -373,7 +374,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                             member: member.to_owned(),
                             dial_timeout_ms,
                             head: None,
-                            body: Zeroizing::new(Vec::new()),
+                            body: SecureVec::new(),
                         },
                         prepared: None,
                         preparing: false,
@@ -1433,7 +1434,7 @@ enum Conn {
         member: String,
         dial_timeout_ms: u64,
         head: Option<Head>,
-        body: Zeroizing<Vec<u8>>,
+        body: SecureVec,
     },
     /// Open on the connection table.
     Open(ConnId),
@@ -1461,7 +1462,7 @@ struct Authing {
     within: Vec<IpAddr>,
     member: String,
     head: Head,
-    body: Zeroizing<Vec<u8>>,
+    body: SecureVec,
 }
 
 impl std::fmt::Debug for Authing {
@@ -1932,19 +1933,13 @@ extern "C" fn write_request(
                             "the request body passed the host's bound",
                         );
                     }
-                    if body.len().saturating_add(bytes.len()) > body.capacity() {
-                        let needed = body.len().saturating_add(bytes.len());
-                        // A fresh block of the final capacity; the old one is wiped as its
-                        // `Zeroizing` drops (LINT-RULES LR-117).
-                        let mut grown = Vec::with_capacity(
-                            needed
-                                .max(body.capacity().saturating_mul(2))
-                                .min(REQUEST_HELD_MAX),
+                    // The buffer grows into a fresh block and wipes the old one itself.
+                    if body.extend(bytes).is_err() {
+                        return Answered::bare(
+                            Outcome::Refused,
+                            "the request body could not be held",
                         );
-                        grown.extend_from_slice(&body[..]);
-                        *body = Zeroizing::new(grown);
                     }
-                    busbar_contract::secure::append(body, bytes);
                     Answered::ready(0, bytes.len() as u64)
                 }
                 (REQUEST_END, true) => {
@@ -2096,7 +2091,7 @@ fn open_with(
     unit: u64,
     (target, within, member): (&str, &[IpAddr], &str),
     h: &Head,
-    body: Zeroizing<Vec<u8>>,
+    body: SecureVec,
     auth: &[busbar_contract::auth_calls::AuthField],
     seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
     prepared: Option<Arc<Prepared>>,
@@ -2981,7 +2976,7 @@ mod creating_authority_tests {
                         member: String::new(),
                         dial_timeout_ms: 0,
                         head: None,
-                        body: Zeroizing::new(Vec::new()),
+                        body: SecureVec::new(),
                     },
                     prepared: None,
                     preparing: false,
@@ -3022,7 +3017,7 @@ mod creating_authority_tests {
                             timeout_ms: 0,
                             dial_timeout_ms: 0,
                         }),
-                        body: Zeroizing::new(Vec::new()),
+                        body: SecureVec::new(),
                     },
                     prepared: None,
                     preparing: false,
@@ -3322,7 +3317,7 @@ mod creating_authority_tests {
                         timeout_ms: 0,
                         dial_timeout_ms: 0,
                     }),
-                    body: Zeroizing::new(Vec::new()),
+                    body: SecureVec::new(),
                 },
                 prepared: None,
                 preparing: false,

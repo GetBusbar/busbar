@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use zeroize::Zeroizing;
-
 use crate::abi::sdk::cred::Cred;
 
 fn cred(s: &str) -> Cred {
-    Cred::captured(Zeroizing::new(s.as_bytes().to_vec()))
+    Cred::captured(crate::secure::SecureVec::from(s.as_bytes().to_vec()))
 }
 
 #[test]

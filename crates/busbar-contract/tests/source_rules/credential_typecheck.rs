@@ -94,7 +94,14 @@ pub(super) fn bare(ty: &syn::Type) -> bool {
             let name = last.ident.to_string();
             if matches!(
                 name.as_str(),
-                "Secret" | "SecretRef" | "Zeroizing" | "Redacted" | "Cred" | "SealedValue"
+                "Secret"
+                    | "SecretRef"
+                    | "SecureVec"
+                    | "SecureString"
+                    | "SecureArray"
+                    | "Redacted"
+                    | "Cred"
+                    | "SealedValue"
             ) {
                 return false;
             }
@@ -352,11 +359,16 @@ fn guarded_constructor(expr: &syn::Expr) -> bool {
         .map(|s| s.ident.to_string())
         .collect();
     names.len() >= 2
-        && matches!(
-            names[names.len() - 2].as_str(),
-            "Secret" | "Zeroizing" | "Cred"
-        )
-        && matches!(names[names.len() - 1].as_str(), "new" | "held" | "captured")
+        && match names[names.len() - 2].as_str() {
+            "Secret" | "Cred" => {
+                matches!(names[names.len() - 1].as_str(), "new" | "held" | "captured")
+            }
+            // The secure types adopt or copy their contents through `From`.
+            "SecureVec" | "SecureString" | "SecureArray" => {
+                matches!(names[names.len() - 1].as_str(), "new" | "from")
+            }
+            _ => false,
+        }
 }
 
 fn raw_url_value(expr: &syn::Expr) -> bool {

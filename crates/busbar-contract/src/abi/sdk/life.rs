@@ -59,7 +59,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::task::Poll;
 
-use zeroize::Zeroizing;
+use crate::secure::SecureVec;
 
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, InHead, MetricEntry, OutHead, Outcome, BLOB_SECRET, METRIC_ADD,
@@ -187,7 +187,7 @@ fn elide_quoted_value(message: &str) -> String {
 /// What one lease holds: bytes, zeroized on drop when secret.
 enum Lease {
     Bytes { _held: Box<[u8]> },
-    Secret { _held: Zeroizing<Vec<u8>> },
+    Secret { _held: SecureVec },
     Kept(Box<dyn std::any::Any + Send + Sync>),
 }
 
@@ -265,7 +265,7 @@ impl Leases {
         if bytes.is_empty() {
             return absent();
         }
-        let held = Zeroizing::new(bytes);
+        let held = SecureVec::from(bytes);
         let blob = Blob {
             ptr: held.as_ptr(),
             len: held.len(),

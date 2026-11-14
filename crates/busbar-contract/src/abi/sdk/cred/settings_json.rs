@@ -190,7 +190,7 @@ impl super::Cred {
         let Value::String(s) = v else {
             return None;
         };
-        let bytes = zeroize::Zeroizing::new(core::mem::take(s).into_bytes());
+        let bytes = crate::secure::SecureVec::from(core::mem::take(s).into_bytes());
         *v = Value::Null;
         Some(Self::from_bytes(bytes))
     }

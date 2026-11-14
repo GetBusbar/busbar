@@ -2,9 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use super::digests::{md5, sha1};
 use crate::abi::sdk::cred::Cred;
-use zeroize::Zeroizing;
 fn cred(s: &str) -> Cred {
-    Cred::captured(Zeroizing::new(s.as_bytes().to_vec()))
+    Cred::captured(crate::secure::SecureVec::from(s.as_bytes().to_vec()))
 }
 
 #[test]

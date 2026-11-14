@@ -129,7 +129,7 @@ pub(crate) struct Held {
 type Positions = IndexMap<Position, Held>;
 
 struct RetainedClaim {
-    token: zeroize::Zeroizing<String>,
+    token: busbar_contract::secure::SecureString,
     expires_at: u64,
 }
 
@@ -212,7 +212,7 @@ impl ChainBook {
         rows: &crate::host_records_async::AsyncRecords,
         input: OrdinaryChain<'_>,
         operation: [u8; 16],
-    ) -> Result<(zeroize::Zeroizing<Request>, ConditionalPosition), &'static str> {
+    ) -> Result<(Request, ConditionalPosition), &'static str> {
         let OrdinaryChain {
             instance,
             schema,
@@ -263,12 +263,12 @@ impl ChainBook {
             life,
             action,
         };
-        let mut request = zeroize::Zeroizing::new(Request {
+        let mut request = Request {
             version: busbar_contract::host_records::conditional::VERSION,
             op_id: busbar_contract::records::OpId(operation),
             predicates: vec![],
             mutations: vec![],
-        });
+        };
         let position = chain.prepare_observed(instance, &mut request, observed)?;
         Ok((request, position))
     }
@@ -496,6 +496,41 @@ impl zeroize::Zeroize for ConditionalChain {
         zeroize::Zeroize::zeroize(&mut self.scope);
         zeroize::Zeroize::zeroize(&mut self.life);
         zeroize::Zeroize::zeroize(&mut self.action);
+    }
+}
+impl Drop for ConditionalChainAction {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+impl zeroize::ZeroizeOnDrop for ConditionalChainAction {}
+impl Drop for ConditionalChain {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+impl zeroize::ZeroizeOnDrop for ConditionalChain {}
+
+/// Volatile-wipe `value`. The one call the request-path modules make for a value they own and
+/// cannot give a `Drop` of their own (a marked module may not name `Zeroize::zeroize`).
+pub(crate) fn wipe<T: zeroize::Zeroize + ?Sized>(value: &mut T) {
+    zeroize::Zeroize::zeroize(value);
+}
+
+/// A transaction candidate in the host's custody: wiped on every exit, as the caller's copy
+/// of its contents is.
+pub(crate) struct CandidateCustody(pub crate::host_records::ConditionalCandidate);
+
+impl std::ops::Deref for CandidateCustody {
+    type Target = crate::host_records::ConditionalCandidate;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for CandidateCustody {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
     }
 }
 

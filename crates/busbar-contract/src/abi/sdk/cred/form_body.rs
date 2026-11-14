@@ -3,7 +3,7 @@
 
 //! An `application/x-www-form-urlencoded` body whose credential values are the chip's: the
 
-use zeroize::Zeroizing;
+use crate::secure::SecureVec;
 
 use super::{Cred, SealedWrite};
 
@@ -76,13 +76,13 @@ fn encoded_len(bytes: &[u8]) -> Option<usize> {
     })
 }
 
-fn encode(out: &mut Vec<u8>, bytes: &[u8]) {
+fn encode(out: &mut SecureVec, bytes: &[u8]) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     for &b in bytes {
         if kept(b) {
-            out.push(b);
+            out.extend_from_slice(&[b]);
         } else if b == b' ' {
-            out.push(b'+');
+            out.extend_from_slice(b"+");
         } else {
             out.extend_from_slice(&[b'%', HEX[usize::from(b >> 4)], HEX[usize::from(b & 15)]]);
         }
@@ -168,15 +168,15 @@ impl FormBody {
                 }
             }
         }
-        let mut out = Zeroizing::new(Vec::new());
-        out.try_reserve_exact(len).map_err(|_| too_large())?;
+        // Sized by the counting pass above: the buffer never grows.
+        let mut out = SecureVec::with_capacity(len).map_err(|_| too_large())?;
         let mut signatures = signatures.iter();
         for (i, (name, value)) in self.pairs.iter().enumerate() {
             if i > 0 {
-                crate::secure::append(&mut out, b"&");
+                out.extend_from_slice(b"&");
             }
             encode(&mut out, name.as_bytes());
-            crate::secure::append(&mut out, b"=");
+            out.extend_from_slice(b"=");
             match value {
                 FormValue::Public(v) => encode(&mut out, v.as_bytes()),
                 FormValue::Sealed(c) => encode(&mut out, c.wire()),

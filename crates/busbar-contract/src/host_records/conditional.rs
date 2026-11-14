@@ -10,7 +10,8 @@ use crate::abi::mechanism::extensions;
 use crate::abi::sdk::secret_bytes::SecretBytes;
 use crate::bounded::MAX_RECORD_BYTES;
 use crate::records::OpId;
-use zeroize::{Zeroize, Zeroizing};
+use crate::secure::{SecureString, SecureVec};
+use zeroize::Zeroize;
 
 /// The request and result codec version.
 pub const VERSION: u32 = 1;
@@ -209,12 +210,11 @@ impl Request {
 
     /// Encode one bounded, versioned request. Lengths and counts are little-endian `u64`.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
-        let mut encoded = self.encode_held()?;
-        Ok(std::mem::take(&mut *encoded))
+        Ok(self.encode_held()?.into_vec())
     }
 
     /// Encode under wiping custody, including every allocation retired during growth. Retain
-    pub fn encode_held(&self) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    pub fn encode_held(&self) -> Result<SecureVec, &'static str> {
         self.validate()?;
         let mut writer = Writer(SecretBytes::default());
         writer.push(&self.version.to_le_bytes())?;
@@ -255,7 +255,7 @@ impl Request {
         if extensions::entry_len(INTENT, &writer.0) as u64 > HARD_MAX_BYTES {
             return Err("record transaction exceeds ABI byte bound");
         }
-        Ok(writer.0.into_zeroizing())
+        Ok(writer.0.into_secure())
     }
 
     /// Decode one complete request, refusing unknown versions and trailing or truncated bytes.
@@ -266,44 +266,42 @@ impl Request {
             return Err("unsupported record transaction version");
         }
         let op_id = OpId(reader.take(16)?.try_into().map_err(|_| WIRE)?);
-        let mut request = Zeroizing::new(Self {
+        let mut request = Self {
             version,
             op_id,
             predicates: Vec::new(),
             mutations: Vec::new(),
-        });
+        };
         let count = reader.count()?;
         for _ in 0..count {
-            let mut schema = Zeroizing::new(reader.text()?);
+            let schema = SecureString::from(reader.text()?);
             #[cfg(test)]
             crate::abi::sdk::secret_bytes::watch(schema.as_bytes());
-            let mut key = held_copy(reader.bytes()?);
-            let mut expected = Zeroizing::new(match reader.byte()? {
+            let key = held_copy(reader.bytes()?);
+            // Built after the last fallible read and pushed at once: no early return leaves it.
+            let expected = match reader.byte()? {
                 0 => Expected::Absent,
-                1 => {
-                    let mut bytes = held_copy(reader.bytes()?);
-                    Expected::Bytes(std::mem::take(&mut *bytes))
-                }
+                1 => Expected::Bytes(held_copy(reader.bytes()?).into_vec()),
                 _ => return Err(WIRE),
-            });
+            };
             request.predicates.reserve(1);
             request.predicates.push(Predicate {
-                schema: std::mem::take(&mut *schema),
-                key: std::mem::take(&mut *key),
-                expected: std::mem::replace(&mut *expected, Expected::Absent),
+                schema: schema.into_string(),
+                key: key.into_vec(),
+                expected,
             });
         }
         let count = reader.count()?;
         for _ in 0..count {
             let tag = reader.byte()?;
-            let mut schema = Zeroizing::new(reader.text()?);
+            let schema = SecureString::from(reader.text()?);
             #[cfg(test)]
             crate::abi::sdk::secret_bytes::watch(schema.as_bytes());
-            let mut key = held_copy(reader.bytes()?);
-            let mut value = if tag == 0 {
+            let key = held_copy(reader.bytes()?);
+            let value = if tag == 0 {
                 held_copy(reader.bytes()?)
             } else {
-                Zeroizing::new(Vec::new())
+                SecureVec::new()
             };
             let exact_key_length = if tag == 2 {
                 u64::from_le_bytes(reader.take(8)?.try_into().map_err(|_| WIRE)?)
@@ -316,17 +314,17 @@ impl Request {
             request.mutations.reserve(1);
             request.mutations.push(match tag {
                 0 => Mutation::Put {
-                    schema: std::mem::take(&mut *schema),
-                    key: std::mem::take(&mut *key),
-                    value: std::mem::take(&mut *value),
+                    schema: schema.into_string(),
+                    key: key.into_vec(),
+                    value: value.into_vec(),
                 },
                 1 => Mutation::Delete {
-                    schema: std::mem::take(&mut *schema),
-                    key: std::mem::take(&mut *key),
+                    schema: schema.into_string(),
+                    key: key.into_vec(),
                 },
                 2 => Mutation::DeleteRange {
-                    schema: std::mem::take(&mut *schema),
-                    prefix: std::mem::take(&mut *key),
+                    schema: schema.into_string(),
+                    prefix: key.into_vec(),
                     exact_key_length,
                 },
                 _ => unreachable!("the mutation tag was checked before handoff"),
@@ -334,14 +332,18 @@ impl Request {
         }
         reader.finish()?;
         request.validate()?;
-        Ok(Self {
-            version,
-            op_id,
-            predicates: std::mem::take(&mut request.predicates),
-            mutations: std::mem::take(&mut request.mutations),
-        })
+        Ok(request)
     }
 }
+
+// The request is secret in every instance and no code moves a field out of it by value.
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for Request {}
 
 /// Whether a Statement advertises this exact supported version. Malformed statements fail closed.
 #[must_use]
@@ -441,8 +443,8 @@ fn strict_entry<'a>(bytes: &'a [u8], wanted: &str) -> Result<Option<&'a [u8]>, &
     Ok(found)
 }
 
-fn held_copy(bytes: &[u8]) -> Zeroizing<Vec<u8>> {
-    let bytes = Zeroizing::new(bytes.to_vec());
+fn held_copy(bytes: &[u8]) -> SecureVec {
+    let bytes = SecureVec::from(bytes);
     #[cfg(test)]
     crate::abi::sdk::secret_bytes::watch(&bytes);
     bytes

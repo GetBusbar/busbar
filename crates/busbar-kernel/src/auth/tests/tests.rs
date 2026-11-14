@@ -443,7 +443,7 @@ fn a_door_refusal_retains_its_exact_query_in_a_wiping_target() {
                 .body(Body::empty())
                 .unwrap()
         }),
-        zeroize::Zeroizing::new(target.to_owned()),
+        busbar_contract::secure::SecureString::from(target),
     );
     wiped_when_dropped(&door.1);
     let response = refuse_door(&door);

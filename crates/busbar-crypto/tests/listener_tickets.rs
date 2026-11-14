@@ -17,13 +17,11 @@ const LEAF_KEY: &[u8] = include_bytes!("../fixtures/leaf.key.der");
 
 /// One listener's config: its own `ListenerTickets`, installed the only way the facade allows.
 fn listener(label: &str) -> Arc<ServerConfig> {
-    let tickets = ListenerTickets::new(label).expect("the backend issues session tickets");
+    // The handshakes here need no passing time: the clock stands still at one reading.
+    let tickets = ListenerTickets::new(label, || 1).expect("the backend issues session tickets");
     tls::server_config(move |b| {
-        let chain = vec![
-            CertificateDer::from(LEAF.to_vec()),
-            CertificateDer::from(CA.to_vec()),
-        ];
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(LEAF_KEY.to_vec()));
+        let chain = vec![CertificateDer::from(LEAF), CertificateDer::from(CA)];
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(LEAF_KEY));
         let mut c = b.with_no_client_auth().with_single_cert(chain, key)?;
         tickets.install(&mut c);
         Ok(c)
@@ -33,7 +31,7 @@ fn listener(label: &str) -> Arc<ServerConfig> {
 
 fn client() -> Arc<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
-    roots.add(CertificateDer::from(CA.to_vec())).unwrap();
+    roots.add(CertificateDer::from(CA)).unwrap();
     let verifier = tls::server_verifier(Arc::new(roots)).unwrap();
     tls::client_config(|b| Ok(b.with_webpki_verifier(verifier).with_no_client_auth())).unwrap()
 }

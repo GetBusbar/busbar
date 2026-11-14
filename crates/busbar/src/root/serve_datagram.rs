@@ -906,7 +906,7 @@ pub(super) struct Description {
 impl Description {
     pub(super) fn into_bytes(mut self) -> bytes::Bytes {
         struct Delivered {
-            bytes: zeroize::Zeroizing<Vec<u8>>,
+            bytes: busbar_contract::secure::SecureVec,
             _custody: busbar_core_connector::publication::ReaderCustody,
             _transfer: busbar_core_connector::publication::Transfer,
         }
@@ -919,7 +919,7 @@ impl Description {
         let custody = self._custody.reader();
         let transfer = custody.copying();
         bytes::Bytes::from_owner(Delivered {
-            bytes: zeroize::Zeroizing::new(std::mem::take(&mut self.bytes)),
+            bytes: busbar_contract::secure::SecureVec::from(std::mem::take(&mut self.bytes)),
             _custody: custody,
             _transfer: transfer,
         })
