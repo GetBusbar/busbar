@@ -710,7 +710,7 @@ impl<R: Read + Seek> VerifiedArchive<R> {
             .seek(SeekFrom::Start(entry.offset))
             .map_err(io)?;
         // Zeroed to its exact length before it is wiping, so it never grows (LR-117).
-        let mut bytes = Vec::new();
+        let mut bytes: Vec<u8> = Vec::new();
         bytes
             .try_reserve_exact(entry.length)
             .map_err(|_| Error::Allocation)?;
@@ -751,7 +751,7 @@ fn get<R: Read>(
         return Err(Error::Budget);
     }
     // Zeroed to its exact length before it is wiping, so it never grows (LR-117).
-    let mut bytes = Vec::new();
+    let mut bytes: Vec<u8> = Vec::new();
     bytes
         .try_reserve_exact(length)
         .map_err(|_| Error::Allocation)?;
