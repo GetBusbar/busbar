@@ -130,6 +130,15 @@ rev = "1c190f7dda55dc7df4781b7ecea9faa671fc76fd"
 repos = ["busbar-transport-ws"]
 reason = "Existing core-approved tungstenite patch, matching core Cargo.lock and the WS workspace patch at the same full revision."
 
+# Dependency ladder S2 / F9 (DEPENDENCY-LADDER r4): the valkey store's vendored rdb-parser moves to a
+# fork of nmvk/valkey-rdb-tools whose diff equals the vendored patch. Not on crates.io, so the store
+# names it as a git dependency at this revision; the row admits the source for that repo only.
+[git-sources.rdb-parser]
+git = "https://github.com/GetBusbar/valkey-rdb-tools"
+rev = "1e6e453b4cc1e4977d688a93b0fb1226c6b58c24"
+repos = ["busbar-store-valkey"]
+reason = "rdb-parser (nmvk/valkey-rdb-tools 364d0e03 plus the strict profile, aggregate budgets and zeroized buffers the store already vendors). Replaces busbar-store-valkey vendor/rdb-parser (5,692 lines) under the dependency ladder (209): rung 2, patch the crate, never vendor our own. BSD-3-Clause; one dependency (zeroize)."
+
 # ── Extra semver lines (Cargo.lock parity, ARCHITECT 2026-10-05) ──────────────────────────────────
 # Parity is ONE vetted version per semver-compatible line, shared by busbar and its plugins: where busbar's
 # lock holds a version in a crate's compatible line, a plugin's lock holds exactly that version (any drift
