@@ -339,6 +339,17 @@ impl<'a> StoreJournal<'a> {
         previous: &VerifiedHead,
         records: &[Record],
     ) -> Result<WriteResult> {
+        self.append_runs(previous, &[records]).await
+    }
+
+    /// Append contiguous runs as ONE candidate. The claim digest and candidate
+    /// are byte-identical to `append` over the runs concatenated in order, so a
+    /// group commit need not copy every record into one joined slice.
+    pub(crate) async fn append_runs(
+        &self,
+        previous: &VerifiedHead,
+        runs: &[&[Record]],
+    ) -> Result<WriteResult> {
         if previous.dataset != self.store.info().dataset || previous.node != self.node {
             return Err(Error::Authority);
         }
@@ -347,7 +358,8 @@ impl<'a> StoreJournal<'a> {
             return Err(Error::Authority);
         }
         let limits = self.store.limits();
-        if records.is_empty() || records.len() > limits.scan_items {
+        let count = runs.iter().map(|run| run.len()).sum::<usize>();
+        if count == 0 || count > limits.scan_items {
             return Err(Error::Budget);
         }
         let mut bytes = 0usize;
@@ -355,7 +367,7 @@ impl<'a> StoreJournal<'a> {
         digest.update(b"busbar.journal.append/1\0");
         digest.update(previous.head.encode().expose(&crate::seal::lend()));
         digest.update(owner.expose(&crate::seal::lend()));
-        for record in records {
+        for record in runs.iter().copied().flatten() {
             bytes = bytes
                 .checked_add(record.body.len())
                 .ok_or(Error::Overflow)?;
@@ -399,13 +411,13 @@ impl<'a> StoreJournal<'a> {
         ];
         let mut mutations = Vec::new();
         predicates
-            .try_reserve_exact(records.len())
+            .try_reserve_exact(count)
             .map_err(|_| Error::Budget)?;
         mutations
-            .try_reserve_exact(records.len() + 2)
+            .try_reserve_exact(count + 2)
             .map_err(|_| Error::Budget)?;
         let mut head = previous.head;
-        for record in records {
+        for record in runs.iter().copied().flatten() {
             let decoded = checked_record(self.node, &record.body, head)?;
             if decoded.identity() != record.identity() {
                 return Err(Error::Corrupt);
