@@ -659,7 +659,7 @@ impl IoHost for HostIo {
         let mut cx = Context::from_waker(waker);
         match &e.kind {
             Kind::Stream { sock, .. } => {
-                polled(sock.poll_io(Direction::Read, &mut cx, |mut s| s.read(buf)))
+                polled(sock.poll_io_sized(Direction::Read, buf.len(), &mut cx, |mut s| s.read(buf)))
             }
             Kind::Program(p) => loop {
                 if let Err(err) = std::task::ready!(p.stdout.poll_read_ready(&mut cx)) {
@@ -681,9 +681,12 @@ impl IoHost for HostIo {
         };
         let mut cx = Context::from_waker(waker);
         match &e.kind {
-            Kind::Stream { sock, .. } => {
-                polled(sock.poll_io(Direction::Write, &mut cx, |mut s| s.write(bytes)))
-            }
+            Kind::Stream { sock, .. } => polled(sock.poll_io_sized(
+                Direction::Write,
+                bytes.len(),
+                &mut cx,
+                |mut s| s.write(bytes),
+            )),
             Kind::Program(p) => {
                 let stdin = p.stdin.lock().unwrap_or_else(PoisonError::into_inner);
                 let Some(w) = stdin.as_ref() else {
