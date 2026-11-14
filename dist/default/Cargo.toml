@@ -54,9 +54,6 @@ hex = { workspace = true }
 # The fleet-shared rate-card history (`root::card_store`, MONEY-DESIGN §3a): its entry, VOID and
 # local-spool records are typed JSON.
 serde = { workspace = true }
-# The canary harness (`tests/canary/`) dlopens a dropped-in plugin's cdylib itself to wrap its door
-# in the recording shim; already the loader's dependency.
-libloading = { workspace = true }
 # The deployment keyset (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13): `root::keyset` mints the one
 # ed25519 seed that signs the audit chain and the ledger's checkpoints from the OS CSPRNG.
 getrandom = { workspace = true }

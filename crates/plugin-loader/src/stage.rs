@@ -6,6 +6,64 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+// THE ONE LOAD (LINT-RULES R23). Every dynamic library this process loads is opened here, by
+// `dlopen_on_worker`, and libloading is busbar-plugin-loader's alone (cargo-deny). Signed images
+// arrive through `load_library_from_bytes` under the native load guard; the standalone path loads
+// (`dispatch::load`, `keep_door`) are refused once that guard is installed.
+
+/// Open the library at `path` on the permanent plugin thread.
+pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
+    // SAFETY: loading an operator-placed library runs its init code, which is the same trust as
+    // compiling it in. Callers apply the trust gate first.
+    match crate::ffi_thread::on_plugin_thread(|| {
+        crate::ffi_thread::debug_assert_permanent("dlopen");
+        unsafe { Library::new(path) }
+    }) {
+        Ok(r) => r.map_err(|e| e.to_string()),
+
+        Err(_) => Err("the library's initializer panicked while loading".to_string()),
+    }
+}
+
+/// Unload `lib` on the permanent plugin thread, so its finalizers never run on a caller thread
+/// that may retire (`ffi_thread`).
+pub(crate) fn dlclose_on_worker(lib: Library) {
+    #[cfg(test)]
+    crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
+    let _ = crate::ffi_thread::on_plugin_thread(move || {
+        crate::ffi_thread::debug_assert_permanent("dlclose");
+        drop(lib);
+    });
+}
+
+/// The door of the library at `path`, loaded through this module and kept for the life of the
+/// process: for a harness that wraps a dropped-in door itself (`dist/default` `tests/canary`).
+/// Refused once the native load guard is installed, like every standalone path load.
+pub fn keep_door(
+    path: &std::path::Path,
+) -> Result<busbar_contract::abi::sdk::door::RawDoorFn, String> {
+    allow_standalone_path_load()?;
+    let lib = dlopen_on_worker(path.as_os_str())?;
+    // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism, and `lib` is never unloaded
+    // (forgotten below), so the function pointer stays valid for the process.
+    let door = unsafe {
+        lib.get::<busbar_contract::abi::sdk::door::RawDoorFn>(
+            busbar_contract::abi::mechanism::DOOR_SYMBOL,
+        )
+        .map(|s| *s)
+    };
+    match door {
+        Ok(door) => {
+            std::mem::forget(lib);
+            Ok(door)
+        }
+        Err(e) => {
+            dlclose_on_worker(lib);
+            Err(e.to_string())
+        }
+    }
+}
+
 const STAGING_PREFIX: &str = "busbar-plugins-";
 
 const STAGING_PARENT_STEM: &str = "busbar-plugin-staging";
@@ -421,7 +479,7 @@ fn load_via_staged_file(
     // SAFETY: running an operator-trusted plugin's init code - the same trust as compiling it in.
     // The file was created by us, in a directory we created 0700, from already-verified bytes,
     // and was verified at its name through the pin immediately above.
-    let lib = match crate::dlopen_on_worker(std::ffi::OsStr::new(&path)) {
+    let lib = match crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path)) {
         Ok(lib) => lib,
         Err(e) => {
             abandon(pin, &path);
@@ -429,7 +487,7 @@ fn load_via_staged_file(
         }
     };
     if let Err(why) = verify_pinned(&pin, &path, bytes) {
-        crate::dlclose_on_worker(lib);
+        crate::stage::dlclose_on_worker(lib);
         abandon(pin, &path);
         return Err(format!(
             "refusing to load plugin '{display}': its staged file changed while it was loading \
@@ -502,7 +560,7 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
     // SAFETY: same operator-trust as any plugin load; the fd content is exactly the verified bytes
     // and is not reachable by path from any other process's namespace. The name is not held by any
     // resident image: a released image that stays resident keeps its fd, so `N` is not free.
-    let lib = crate::dlopen_on_worker(std::ffi::OsStr::new(&path))
+    let lib = crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path))
         .map_err(|e| format!("failed to load plugin '{display}' from memfd: {e}"))?;
     Ok((lib, Staged::Memfd { fd: Some(fd) }))
 }
