@@ -98,7 +98,7 @@ fn supported_abi_is_one_version_per_kind() {
         ("secret", abi::secret::ABI_VERSION, 2),
         ("auth", abi::auth::ABI_VERSION, 3),
         ("hook", abi::hook::ABI_VERSION, 2),
-        ("export", abi::export::ABI_VERSION, 4),
+        ("export", abi::export::ABI_VERSION, 3),
         ("plane", abi::plane::ABI_VERSION, 1),
         ("transport", abi::transport::ABI_VERSION, 1),
     ];

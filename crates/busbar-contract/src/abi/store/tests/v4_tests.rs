@@ -7,8 +7,9 @@ use crate::abi::sdk::door::{blank_in, blank_out};
 
 #[test]
 fn primitive_slots_and_layout_match_the_canonical_store_contract() {
-    assert_eq!(super::super::ABI_VERSION, 3);
-    assert_eq!(ABI_VERSION, 3);
+    let store = crate::abi::versions::STORE.raw();
+    assert_eq!(super::super::ABI_VERSION, store);
+    assert_eq!(ABI_VERSION, store);
     assert_eq!(CODEC_VERSION, 1);
     assert_eq!(CODEC_VERSION, crate::persistence::CANDIDATE_VERSION);
     assert_eq!(

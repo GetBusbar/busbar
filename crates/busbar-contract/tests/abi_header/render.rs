@@ -16,6 +16,7 @@ pub const ABI: &str = "crates/busbar-contract/src/abi";
 /// `(kind, golden alias prefix, path under abi/, is a folder)`. The order is the order of the
 pub const SOURCES: &[(&str, &str, &str, bool)] = &[
     ("mech", "Mech", "mechanism", true),
+    ("mech", "Mech", "versions.rs", false),
     ("measurement", "measurement::", "measurement.rs", false),
     ("store", "Store", "store", true),
     ("store", "Store", "../records/op_id.rs", false),
@@ -814,6 +815,16 @@ impl ConstTable<'_> {
                     _ => return Err("an operator the generator does not evaluate".to_string()),
                 };
                 v.ok_or_else(|| "arithmetic that overflows or underflows".to_string())
+            }
+            // `versions::X.raw()` and `AbiVersion(n)`: a version number read through its one home.
+            syn::Expr::MethodCall(m) if m.method == "raw" && m.args.is_empty() => {
+                self.eval(&m.receiver, kind, scope, depth + 1)
+            }
+            syn::Expr::Call(c)
+                if c.args.len() == 1
+                    && matches!(&*c.func, syn::Expr::Path(p) if p.path.is_ident("AbiVersion")) =>
+            {
+                self.eval(&c.args[0], kind, scope, depth + 1)
             }
             syn::Expr::Call(c) => {
                 let name = match &*c.func {

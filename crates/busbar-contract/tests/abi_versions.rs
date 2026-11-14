@@ -45,6 +45,25 @@ fn every_abi_version_is_its_v155_value_plus_one() {
     assert_eq!(store::LAYOUT_FINGERPRINT, 0xd66505223254d413);
 }
 
+/// One home per number: every public version constant is the one `versions.rs` states.
+#[test]
+fn every_version_constant_is_read_from_versions_rs() {
+    use busbar_contract::abi::versions::{self, AbiVersion};
+    for (constant, home) in [
+        (MECHANISM_VERSION, versions::MECHANISM),
+        (store::ABI_VERSION, versions::STORE),
+        (secret::ABI_VERSION, versions::SECRET),
+        (auth::ABI_VERSION, versions::AUTH),
+        (hook::ABI_VERSION, versions::HOOK),
+        (export::ABI_VERSION, versions::EXPORT),
+        (plane::ABI_VERSION, versions::PLANE),
+        (transport::ABI_VERSION, versions::TRANSPORT),
+    ] {
+        assert_eq!(AbiVersion::from_wire(constant), home);
+        assert_eq!(home.to_string(), constant.to_string());
+    }
+}
+
 #[test]
 fn a_kind_code_names_its_own_version_and_nothing_else() {
     let want = [
