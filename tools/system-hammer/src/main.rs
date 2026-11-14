@@ -178,6 +178,13 @@ fn ceiling(
     }
 }
 
+/// Takes the work root for this run. The hammer deletes it when done, so it
+/// must only ever delete a directory it created itself.
+fn claim_work(dir: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn main() {
     let a = match parse() {
         Ok(a) => a,
@@ -247,6 +254,10 @@ fn main() {
         .then(|| ceiling(&rt, a.mock_threads, Proto::H1, 64, 2.0));
     if let Some(c) = driver_ceiling {
         eprintln!("driver ceiling: {:.0} rps (echo, c=64, h1)", c.rps);
+    }
+    if let Err(e) = claim_work(&a.work) {
+        eprintln!("{e}");
+        std::process::exit(2);
     }
     let env = run::Env {
         bin: bin.clone(),
@@ -351,5 +362,22 @@ fn main() {
             eprintln!("report: {} and {}", json_path.display(), txt_path.display());
         }
         Err(e) => eprintln!("report: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::claim_work;
+
+    #[test]
+    fn refuses_existing_work_dir_and_keeps_its_contents() {
+        let d = std::env::temp_dir().join(format!("hammer-claim-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("keep"), b"x").unwrap();
+        assert!(claim_work(&d).is_err());
+        assert!(d.join("keep").exists());
+        let fresh = d.join("fresh");
+        assert!(claim_work(&fresh).is_ok() && fresh.is_dir());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }
