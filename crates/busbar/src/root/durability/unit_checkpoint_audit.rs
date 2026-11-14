@@ -221,7 +221,7 @@ fn publish(book: &Arc<Mutex<Durability>>, record: busbar_kernel_audit::AuditReco
     if !book
         .audit_records
         .iter()
-        .any(|existing| existing == &record)
+        .any(|existing| existing.seq == record.seq && existing == &record)
     {
         book.audit_records.push(record);
         if book.audit_records.len() > AUDIT_RING {

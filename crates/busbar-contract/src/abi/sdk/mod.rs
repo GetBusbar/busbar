@@ -62,6 +62,8 @@ pub mod hmac;
 pub mod cred;
 
 pub(crate) mod secret_bytes;
+/// Byte buffers that wipe their whole allocation, word-wise, before it is freed.
+pub mod wipe;
 
 pub mod chip;
 
