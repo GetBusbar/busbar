@@ -1871,7 +1871,23 @@ pub(in crate::root) async fn serve_admitted_wire_test(
                     wire.push(WireOp::Data { bytes, end });
                     let _ = done.send(true);
                 }
-                Op::Trailers { done, .. } => {
+                Op::FieldHead {
+                    status,
+                    fields,
+                    timing,
+                    end,
+                    done,
+                } => {
+                    let mut block = Vec::new();
+                    encode_fields(&mut block, &fields, timing.as_deref());
+                    wire.push(WireOp::Head {
+                        status,
+                        fields: block,
+                        end,
+                    });
+                    let _ = done.send(true);
+                }
+                Op::Trailers { done, .. } | Op::FieldTrailers { done, .. } => {
                     wire.push(WireOp::Trailers);
                     let _ = done.send(true);
                 }
