@@ -252,6 +252,15 @@ fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
         })
 }
 
+/// The opening's fields, copied out of the borrowed head an opener lent.
+fn copied_fields(fields: &[(&str, &[u8])]) -> Vec<(String, Vec<u8>)> {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::OutboundHead);
+    fields
+        .iter()
+        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+        .collect()
+}
+
 /// Host defaults remain in the signed wire head, but cannot authorize caller framing fields.
 fn request_head_is_refused(
     caller: InstanceId,
@@ -2508,13 +2517,7 @@ impl DeclaredConns for Connector {
                     alpn: declared.alpn,
                     open_timeout: held.open_timeout,
                     anchors: None,
-                    opening: Some((
-                        desc.fields
-                            .iter()
-                            .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
-                            .collect(),
-                        desc.body.clone(),
-                    )),
+                    opening: Some((copied_fields(desc.fields), desc.body.clone())),
                     head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
                 },
             )
@@ -3034,15 +3037,7 @@ impl Connector {
             tls: tls.or_else(|| self.tls.clone()),
             alpn,
             open_timeout,
-            opening: (!prepare).then(|| {
-                (
-                    desc.fields
-                        .iter()
-                        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
-                        .collect(),
-                    desc.body.clone(),
-                )
-            }),
+            opening: (!prepare).then(|| (copied_fields(desc.fields), desc.body.clone())),
             head_words: if prepare {
                 (Vec::new(), Vec::new())
             } else {
@@ -3302,13 +3297,7 @@ impl Connector {
                 tls: None,
                 alpn,
                 open_timeout,
-                opening: Some((
-                    desc.fields
-                        .iter()
-                        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
-                        .collect(),
-                    desc.body.clone(),
-                )),
+                opening: Some((copied_fields(desc.fields), desc.body.clone())),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
             let via = Via {
@@ -3367,13 +3356,7 @@ impl Connector {
                 tls: None,
                 alpn,
                 open_timeout,
-                opening: Some((
-                    desc.fields
-                        .iter()
-                        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
-                        .collect(),
-                    desc.body.clone(),
-                )),
+                opening: Some((copied_fields(desc.fields), desc.body.clone())),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
             let (framer, via) = self.ride_on(&door).ok_or(ConnError::Refused)?;

@@ -1487,6 +1487,7 @@ impl EgressFarEnd<'_> {
 
         let (_, path) = split(&url);
 
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::OutboundHead);
         let mut head = Head(Vec::with_capacity(
             request.fields.len() + auth.len() + defaults.len(),
         ));
