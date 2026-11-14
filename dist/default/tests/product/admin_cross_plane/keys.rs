@@ -3665,7 +3665,7 @@ async fn named_map_app(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
-    named_map_app_opts(tag, reference_corp_ad, true, ServeTables::default()).await
+    named_map_app_opts(tag, reference_corp_ad, true, false, ServeTables::default()).await
 }
 
 async fn named_map_app_serving(
@@ -3677,13 +3677,14 @@ async fn named_map_app_serving(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
-    named_map_app_opts(tag, false, true, tables).await
+    named_map_app_opts(tag, false, true, false, tables).await
 }
 
 async fn named_map_app_opts(
     tag: &str,
     reference_corp_ad: bool,
     base_export: bool,
+    ephemeral: bool,
     tables: ServeTables,
 ) -> (
     std::path::PathBuf,
@@ -3736,7 +3737,14 @@ async fn named_map_app_opts(
     .expect("the provider catalog parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs)
         .expect("the actual admin deployment resolves");
-    let store = crate::root::real_store::core().await;
+    let store = if ephemeral {
+        crate::root::real_store::core_over(Arc::new(crate::root::real_store::EphemeralInfo(
+            crate::root::real_store::native_backend().await,
+        )))
+        .await
+    } else {
+        crate::root::real_store::core().await
+    };
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(store.clone())
         .expect("the configured Store opens its overlay");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -4081,7 +4089,7 @@ existing instances of the same module still apply live";
     );
 
     let (dir, _overlay, addr, handle) =
-        named_map_app_opts("bootfrozen", false, false, ServeTables::default()).await;
+        named_map_app_opts("bootfrozen", false, false, false, ServeTables::default()).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
         r.header("x-admin-token", "admintok")
@@ -4204,6 +4212,166 @@ existing instances of the same module still apply live";
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 204, "a removal applies live");
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// UPG-A30c: on an in-memory (Ephemeral) Store a named-map mutation whose own restart-only
+/// contribution is non-empty is refused with 409 `conflict`, because the restart that would open
+/// the sink is the same event that erases the definition. A mutation with no restart effect (the
+/// DELETE of an overlay-only exporter, an identity provider) still applies live.
+#[tokio::test]
+async fn test_admin_v1_named_map_restart_only_refused_on_ephemeral_store() {
+    async fn config_version(client: &reqwest::Client, addr: std::net::SocketAddr) -> u64 {
+        let body: serde_json::Value = client
+            .get(format!("http://{addr}/api/v1/admin/config/settings"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        body["config_version"].as_u64().expect("config_version")
+    }
+    async fn reqlog_status(client: &reqwest::Client, addr: std::net::SocketAddr) -> u16 {
+        client
+            .get(format!("http://{addr}/api/v1/admin/export/reqlog"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+    linked_export_axis();
+    let (dir, overlay, addr, handle) =
+        named_map_app_opts("ephemeral", false, false, true, ServeTables::default()).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+
+    let before = config_version(&client, addr).await;
+    let def = serde_json::json!({
+        "module": "request-log-file",
+        "settings": {"path": dir.join("req.jsonl").to_string_lossy()}
+    });
+    let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/reqlog")))
+        .body(def.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        status, 409,
+        "an exporter create on an in-memory Store can never push: {body}"
+    );
+    assert_eq!(body["error"]["code"], "conflict", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("export.reqlog") && m.contains("BUSBAR-8016")),
+        "the refusal names the restart-only entry: {body}"
+    );
+    assert_eq!(
+        reqlog_status(&client, addr).await,
+        404,
+        "nothing was stored"
+    );
+    assert!(
+        busbar_kernel::config::overlay::read_async(&overlay)
+            .await
+            .is_none_or(|doc| !doc.named_maps.contains_key("export")),
+        "the overlay holds no export map"
+    );
+    assert_eq!(
+        config_version(&client, addr).await,
+        before,
+        "no generation was installed"
+    );
+
+    busbar_kernel::config::overlay::persist_named_map_async(
+        Some(&overlay),
+        busbar_kernel::config::named_map::NamedMapSection::Export,
+        "reqlog",
+        Some(&def),
+    )
+    .await
+    .expect("seed the overlay-only exporter");
+    let r = admin(client.post(format!("http://{addr}/api/v1/admin/config/reload")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+    assert_eq!(
+        reqlog_status(&client, addr).await,
+        200,
+        "the seeded exporter is installed"
+    );
+
+    let r = admin(client.patch(format!("http://{addr}/api/v1/admin/export/reqlog/settings")))
+        .body(
+            serde_json::json!({"settings": {"path": dir.join("req2.jsonl").to_string_lossy()}})
+                .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        status, 409,
+        "a settings change that needs a restart is refused: {body}"
+    );
+    assert_eq!(body["error"]["code"], "conflict", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("export.reqlog")),
+        "{body}"
+    );
+    let stored = busbar_kernel::config::overlay::read_async(&overlay)
+        .await
+        .expect("the seeded overlay reads");
+    assert_eq!(
+        stored.named_maps["export"]["reqlog"]["settings"]["path"],
+        serde_json::json!(dir.join("req.jsonl").to_string_lossy()),
+        "the first path is still the stored one"
+    );
+
+    let r = admin(client.delete(format!("http://{addr}/api/v1/admin/export/reqlog")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        204,
+        "a removal with no restart effect applies live"
+    );
+    assert!(r.bytes().await.unwrap().is_empty(), "204 carries no body");
+    assert_eq!(
+        reqlog_status(&client, addr).await,
+        404,
+        "the entry was removed"
+    );
+
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/idp2"
+    )))
+    .body(serde_json::json!({"module": "keys", "max_admin_scope": "read-only"}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "a live named-map change is admitted: {:?}",
+        r.text().await
+    );
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);

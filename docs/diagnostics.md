@@ -2161,9 +2161,9 @@ A governance-store `settings` value holds a secret reference that does not resol
 - **Since:** 1.6.0
 - **Slug:** `governance-store-ephemeral`
 
-busbar selected the in-memory (ephemeral) governance store, so virtual keys, groups' usage, and ledgers live only in RAM and are LOST on restart. This is the default when no durable store plugin is configured — fine for a trial or local development, but not for anything that must retain keys or spend across restarts.
+busbar selected the in-memory (ephemeral) governance store, so virtual keys, groups' usage, and ledgers live only in RAM and are LOST on restart. This is the default when no durable store plugin is configured — fine for a trial or local development, but not for anything that must retain keys or spend across restarts. Admin-API config changes are held in the same RAM: live ones apply until restart; restart-only ones (including creating or replacing an exporter) are refused, because the restart would discard them.
 
-**What to do:** Configure a durable governance store plugin for persistence if keys, usage, or budgets must survive a restart. No action is needed for ephemeral/dev use.
+**What to do:** Configure a durable governance store plugin for persistence if keys, usage, or budgets must survive a restart. No action is needed for ephemeral/dev use. To change a restart-only setting or add an exporter, edit config.yaml and restart.
 
 <a id="durable-keys-inert"></a>
 ### BUSBAR-8017 — Durable keys are inert (keys exist but `keys` is not in the running auth chain)

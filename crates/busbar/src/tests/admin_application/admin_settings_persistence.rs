@@ -909,3 +909,89 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let _ = std::fs::remove_dir_all(&dir);
     println!("{WITNESS}");
 }
+
+/// UPG-A30c: on an in-memory (Ephemeral) Store a restart-only setting can never take effect: the
+/// restart that would apply it is the same event that erases it. Both forms of
+/// `PUT /config/settings` refuse it with 409 `conflict` before any Store write or swap; a live
+/// setting still applies.
+#[tokio::test]
+async fn test_admin_v1_config_settings_restart_only_refused_on_ephemeral_store() {
+    const CHILD: &str = "BUSBAR_ADMIN_SETTINGS_EPHEMERAL_RESTART_CHILD";
+    const WITNESS: &str = "ephemeral restart-only settings assertions completed";
+    if super::config_document_patch::ran_in_child(CHILD, WITNESS) {
+        return;
+    }
+    let fixture = super::config_document_patch::ephemeral_admin(
+        "admin-settings-ephemeral-restart",
+        |rules| rules,
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("http://{}/api/v1/admin/config/settings", fixture.addr);
+    let set = serde_json::Map::from_iter([(
+        "/advanced/response_headers/server_timing".to_owned(),
+        serde_json::json!(true),
+    )]);
+    for (form, body, named) in [
+        (
+            "typed",
+            serde_json::json!({"advanced": {"response_headers": {"server_timing": true}}}),
+            "advanced.response_headers",
+        ),
+        (
+            "document",
+            serde_json::json!({"document_patch": {"set": set, "remove": []}}),
+            "/advanced/response_headers",
+        ),
+    ] {
+        let before = fixture.handle.load();
+        let response = client
+            .put(&endpoint)
+            .header("If-Match", format!("\"{}\"", before.config_version))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let refusal: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(
+            status, 409,
+            "{form}: a restart-only change on an in-memory Store is refused: {refusal}"
+        );
+        assert_eq!(refusal["error"]["code"], "conflict", "{form}: {refusal}");
+        let message = refusal["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(named)
+                && message.contains("in-memory")
+                && message.contains("BUSBAR-8016"),
+            "{form}: the refusal names the entry and the in-memory Store: {refusal}"
+        );
+        assert!(
+            Arc::ptr_eq(&before, &fixture.handle.load()),
+            "{form}: no generation installed"
+        );
+        assert!(
+            busbar_kernel::config::overlay::read_async(&fixture.overlay)
+                .await
+                .is_none_or(|doc| doc.root.is_none() && doc.document_patch.is_none()),
+            "{form}: nothing was written to the overlay"
+        );
+    }
+    let before = fixture.handle.load();
+    let response = client
+        .put(&endpoint)
+        .header("If-Match", format!("\"{}\"", before.config_version))
+        .json(&serde_json::json!({"per_request_fee": 3}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(status, 200, "control: a live setting applies: {body}");
+    assert!(
+        !Arc::ptr_eq(&before, &fixture.handle.load()),
+        "control: the live setting installed a generation"
+    );
+    drop(fixture);
+    println!("{WITNESS}");
+}

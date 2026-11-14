@@ -110,3 +110,7 @@ mod hook_route_timeout_tests;
 #[cfg(test)]
 #[path = "tests/secret_once_tests.rs"]
 mod secret_once_tests;
+
+#[cfg(test)]
+#[path = "tests/restart_scoped_law.rs"]
+mod restart_scoped_law;
