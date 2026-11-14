@@ -557,3 +557,16 @@ async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
 }
 
 const IN_TOK_DEC: i64 = 4;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn far_end_bodies_are_not_built_per_request() {
+        let src = include_str!("mod.rs");
+        let h = &src[src.find("async fn handle(").unwrap()..src.find("const IN_TOK_DEC").unwrap()];
+        assert!(
+            !h.contains("json!("),
+            "handle() builds a JSON value per request"
+        );
+    }
+}
