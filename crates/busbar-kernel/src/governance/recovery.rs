@@ -1433,7 +1433,7 @@ pub(in crate::governance) mod tests {
         confirmed_adoptions: Mutex<ConfirmedAdoptions>,
         lose_adoption_reply: AtomicBool,
         pub(in crate::governance) persists: std::sync::atomic::AtomicUsize,
-        pub(in crate::governance) persisted_ops: Mutex<Vec<[u8; 16]>>,
+        pub(in crate::governance) persisted_ops: Mutex<Vec<([u8; 16], u64)>>,
     }
     #[async_trait::async_trait]
     impl RecoverySink for Journal {
@@ -1442,7 +1442,10 @@ pub(in crate::governance) mod tests {
         }
         async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
             self.persists.fetch_add(1, Ordering::Relaxed);
-            self.persisted_ops.lock().unwrap().push(event.operation_id);
+            self.persisted_ops
+                .lock()
+                .unwrap()
+                .push((event.operation_id, event.revision));
             if self
                 .foreign
                 .lock()
@@ -1685,7 +1688,10 @@ pub(in crate::governance) mod tests {
             persisted,
             "an already selected event with nothing pending is not re-persisted"
         );
-        assert_eq!(sink.selected.lock().unwrap().as_slice(), &[event.clone()]);
+        assert_eq!(
+            sink.selected.lock().unwrap().as_slice(),
+            std::slice::from_ref(&event)
+        );
         sink.fail_after_write.store(false, Ordering::Relaxed);
         let next = successor(&event, RecoveryState::Applied);
         book.keep(&next).await.unwrap();
@@ -2018,13 +2024,18 @@ pub(in crate::governance) mod tests {
         assert_eq!(selected.body_fingerprint, child.body_fingerprint);
         let ops = sink.persisted_ops.lock().unwrap().clone();
         assert!(
-            ops.iter().any(|op| *op == child.operation_id),
+            ops.iter().any(|(op, _)| *op == child.operation_id),
             "the new child is selected through persist"
         );
+        // The parent may advance (Applied -> Settled is a new revision and a
+        // real write); what must not happen is persisting the revision that
+        // is already selected.
         assert_eq!(
-            ops.iter().filter(|op| **op == parent.operation_id).count(),
+            ops.iter()
+                .filter(|(op, revision)| *op == parent.operation_id && *revision == parent.revision)
+                .count(),
             0,
-            "the already selected parent is not persisted again"
+            "the already selected parent revision is not persisted again"
         );
     }
 
