@@ -666,6 +666,8 @@ pub struct AuthInstance {
     lifecycle: Mutex<()>,
 
     schedule: Option<tokio::task::JoinHandle<()>>,
+    // Set by the tick schedule when it stops without the plugin's own `next_tick_ns == 0`.
+    tick_failed: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for AuthInstance {
@@ -1133,6 +1135,18 @@ impl AuthCalls for AuthInstance {
                 recalled: false,
             },
         ))
+    }
+
+    fn answering(&self) -> bool {
+        // The conditions under which a crossing fails closed today: invalid metadata answers
+        // `Failed`, a faulted or closed instance answers FAULT with no crossing.
+        self.metadata_valid.load(Ordering::Acquire)
+            && !self.shared.plugin.is_faulted()
+            && self.shared.plugin.is_open()
+    }
+
+    fn reusable(&self) -> bool {
+        self.answering() && !self.tick_failed.load(Ordering::Acquire)
     }
 
     fn refresh(&self) -> Result<u64, String> {

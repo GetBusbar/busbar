@@ -765,16 +765,20 @@ impl AdminAuthChain {
                              loaded as a `kind: auth` plugin: {e}"
                         )
                     };
-                    let calls = instances.instance(name, || {
-                        let mut resolved = instances::provider_settings(
-                            cfg,
-                            name,
-                            other,
-                            &entry.settings,
-                            registry,
-                            secret_resolver,
-                            |e| format!("identity-providers.{name} settings: {e}"),
-                        )?;
+                    let calls = instances.instance(
+                        name,
+                        other,
+                        registry,
+                        || {
+                            let mut resolved = instances::provider_settings(
+                                cfg,
+                                name,
+                                other,
+                                &entry.settings,
+                                registry,
+                                secret_resolver,
+                                |e| format!("identity-providers.{name} settings: {e}"),
+                            )?;
 
                     let axis = match &axis {
                         Some(axis) => axis.clone(),
@@ -789,7 +793,14 @@ impl AdminAuthChain {
                                 })?;
                                 axis.insert(opened).clone()
                             }
-                        };
+                            instances::lend_login_secret(
+                                cfg,
+                                name,
+                                other,
+                                registry,
+                                secret_resolver,
+                                &mut resolved,
+                            )?;
 
                         if !axis.answers(other) {
                             return Err(refused(auth_refusal(registry, other)));
