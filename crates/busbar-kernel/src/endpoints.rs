@@ -113,8 +113,11 @@ pub async fn stats(
     Json(json!({ "pools": pools, "lanes": lanes })).into_response()
 }
 
+/// `plane` is the door's card qualifier (`DoorFacts.plane`), not a plane key: it is translated
+/// through [`plane_of_qualifier`](crate::plane_driver::dispatch::plane_of_qualifier) first.
 #[must_use]
 pub fn catalog_names(app: &App, gov: &GovCtx, plane: &str) -> Vec<String> {
+    let plane = crate::plane_driver::dispatch::plane_of_qualifier(plane);
     // Names from another plane must never be flattened into this plane's authority. The same
     // alias can exist under different scope kinds with different grants.
     if plane != crate::plane_driver::dispatch::fallback_key() {
