@@ -53,8 +53,6 @@ busbar-default::bin/busbar root::serve::money_tests::datagram_opening_tests::dro
 busbar-default::bin/busbar root::serve::money_tests::datagram_opening_tests::dropping_the_datagram_opener_before_admission_retires_its_opening	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::money_tests::neutral_ingress_tests::inbound_audit::pre_flight_refusal_render_has_no_trailing_refuse	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::money_tests::neutral_ingress_tests::inbound_audit::unmetered_completion_states_its_length	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::serve::plane_a2a_door::a_submission_whose_task_the_store_refuses_answers_the_engines_503	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::serve::plane_a2a_door::a2a_actual_parity::actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_a2a_door::each_registration_presents_its_own_certificate_and_not_another_registrations	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_a2a_door::the_callers_busbar_key_is_absent_from_the_stream_wire_too	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_a2a_door::the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registrations_certificate	CDT-KNOWN-RED	stable
