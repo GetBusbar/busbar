@@ -175,8 +175,7 @@ fn plane_context_refuses_the_retired_private_reach_role() {
         tail.trust_keys = &key;
         tail.trust_keys_len = 1;
     })
-    .err()
-    .expect("a retired trust role refuses the plane");
+    .expect_err("a retired trust role refuses the plane");
     for part in [
         "BUSBAR-6017",
         "`allow_private`",

@@ -155,7 +155,7 @@ impl Feed {
 
     pub(crate) fn bytes(&mut self, b: &[u8]) {
         self.count(b.len());
-        self.0.update(&b[..]);
+        self.0.update(b);
     }
 
     pub(crate) fn text(&mut self, s: &str) {

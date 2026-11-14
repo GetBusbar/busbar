@@ -20,7 +20,7 @@ pub mod migration_table;
 pub mod overlay_legacy;
 mod retired;
 
-use busbar_contract::yaml::{self, prelude::*, same_tree};
+use busbar_contract::yaml::{self, prelude::*};
 
 /// The actual default used by supported released configurations that omitted Store.
 #[must_use]
