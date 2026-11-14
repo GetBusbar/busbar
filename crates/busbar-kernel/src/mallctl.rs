@@ -7,13 +7,14 @@
 //! of controls busbar reads and writes are called here with the same `mallctl(3)` calls, the same
 //! value types and the same error texts, so behaviour is unchanged.
 //!
-//! The FFI is confined to [`read`], [`write`] and [`ThreadCounter::get`]. Each control is named by
-//! a `&CStr`, so the name is NUL-terminated by construction, and values are limited to the plain
-//! integer and boolean types [`Value`] admits, for which every bit pattern jemalloc writes is valid.
+//! The FFI is confined to [`read`], [`write`] and, in test builds only, the per-thread counters
+//! (`ThreadCounter`, behind `cfg(test)` or the dev-only `test-support` feature: only the allocation
+//! tests read them). Each control is named by a `&CStr`, so the name is NUL-terminated by
+//! construction, and values are limited to the plain integer and boolean types [`Value`] admits,
+//! for which every bit pattern jemalloc writes is valid.
 
 use std::ffi::{c_void, CStr};
 use std::fmt;
-use std::marker::PhantomData;
 
 /// A `mallctl` failure: jemalloc's error number, shown with the text `tikv-jemalloc-ctl` printed.
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -134,12 +135,14 @@ pub fn write<T: Value>(name: &CStr, value: T) -> Result<(), Error> {
 /// One of the calling thread's cumulative allocation counters (`thread.allocatedp` /
 /// `thread.deallocatedp`): jemalloc hands out a pointer into its thread-local state, read here
 /// without a `mallctl` call each time. Not `Send`: the pointer is only meaningful on the thread
-/// that asked for it.
+/// that asked for it. Test builds only (`cfg(test)` or the dev-only `test-support` feature).
+#[cfg(any(test, feature = "test-support"))]
 pub struct ThreadCounter {
     counter: *const u64,
-    _thread_bound: PhantomData<*const u64>,
+    _thread_bound: std::marker::PhantomData<*const u64>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl ThreadCounter {
     /// The counter's current value.
     #[must_use]
@@ -151,6 +154,7 @@ impl ThreadCounter {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn thread_counter(name: &CStr) -> Result<ThreadCounter, Error> {
     let mut counter: *mut u64 = std::ptr::null_mut();
     let mut len = std::mem::size_of::<*mut u64>();
@@ -171,7 +175,7 @@ fn thread_counter(name: &CStr) -> Result<ThreadCounter, Error> {
     }
     Ok(ThreadCounter {
         counter,
-        _thread_bound: PhantomData,
+        _thread_bound: std::marker::PhantomData,
     })
 }
 
@@ -179,6 +183,7 @@ fn thread_counter(name: &CStr) -> Result<ThreadCounter, Error> {
 ///
 /// # Errors
 /// jemalloc was built without per-thread statistics.
+#[cfg(any(test, feature = "test-support"))]
 pub fn thread_allocated() -> Result<ThreadCounter, Error> {
     thread_counter(c"thread.allocatedp")
 }
@@ -187,6 +192,7 @@ pub fn thread_allocated() -> Result<ThreadCounter, Error> {
 ///
 /// # Errors
 /// jemalloc was built without per-thread statistics.
+#[cfg(any(test, feature = "test-support"))]
 pub fn thread_deallocated() -> Result<ThreadCounter, Error> {
     thread_counter(c"thread.deallocatedp")
 }
