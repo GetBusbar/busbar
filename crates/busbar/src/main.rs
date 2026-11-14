@@ -338,6 +338,10 @@ static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
     std::sync::LazyLock::new(resolve_worker_threads);
 
 fn main() {
+    // First, before anything touches crypto: the backend's power-on self-test gates boot (#172).
+    if let Err(e) = busbar_contract::crypto::self_test() {
+        die(e);
+    }
     if let Err(e) = busbar_kernel::observability::init_log_bridge() {
         eprintln!("busbar: the `log` bridge is not installed: {e}");
     }

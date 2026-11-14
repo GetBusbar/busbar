@@ -143,6 +143,7 @@ const _: () = {
         b::webpki_algs;
     let _: fn(&rustls::ClientConfig) -> R<()> = b::approve_client_config;
     let _: fn(&rustls::ServerConfig) -> R<()> = b::approve_server_config;
+    let _: fn(&rustls::Error) -> bool = b::ca_used_as_end_entity;
     let _: fn() -> R<dimpl::crypto::CryptoProvider> = b::dtls_provider;
     let _: fn() -> R<b::DtlsCert> = b::dtls_self_signed;
     let _: fn(&b::DtlsCert) -> &[u8] = b::DtlsCert::der;
