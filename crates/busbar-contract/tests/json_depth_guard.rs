@@ -73,7 +73,7 @@ fn fixture_body(case: &serde_json::Value) -> String {
 fn the_floor_is_128_and_the_shared_fixture_holds_it() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../testing/plane-copies/json-depth.json"
+        "/tests/fixtures/json-depth.json"
     );
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))

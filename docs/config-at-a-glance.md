@@ -5,7 +5,7 @@ reference**: every section header links to the exhaustive per-field docs in
 [configuration.md](configuration.md), so you can see the shape of a complete deployment and click
 straight through to the detail for any part. For the per-field tables with defaults and validation
 rules use [configuration.md](configuration.md); for a bootable file use
-[`examples/clean-config-1.5.0.yaml`](../examples/clean-config-1.5.0.yaml).
+[`dist/default/tests/fixtures/clean-config-1.5.0.yaml`](../dist/default/tests/fixtures/clean-config-1.5.0.yaml).
 
 > A fully hyperlinked version of this page (where every key, value, module name and enum links to
 > its own spec section) lives at **<https://getbusbar.com/docs/config-at-a-glance/>**. This file is

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 const INTERVAL_SECS: u64 = 1;
 
-const PROVIDERS: &str = include_str!("../../../testing/root-fixtures/health-probe-providers.yaml");
+const PROVIDERS: &str = include_str!("fixtures/health-probe-providers.yaml");
 
 const WINDOW_TICKS: u64 = 6;
 
