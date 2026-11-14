@@ -1658,6 +1658,41 @@ pub const TICKET_NONE: u64 = 0;
 /// `ticket.take`: the record of the ticket that admitted the unit, written once.
 pub const TICKET_TAKEN: u64 = 1;
 
+/// A REFUSED `ticket.mint`'s code: no ticket is minted, for a reason the reason text gives.
+pub const TICKET_REFUSED_OTHER: u32 = 0;
+/// A REFUSED `ticket.mint`'s code: the principal's key holds its maximum of unredeemed tickets.
+pub const KEY_SATURATED: u32 = 1;
+/// A REFUSED `ticket.mint`'s code: this node holds its maximum of unredeemed tickets.
+pub const NODE_SATURATED: u32 = 2;
+
+/// A REFUSED `ticket.mint`'s `ServiceOut::value`: its refusal `code` ([`TICKET_REFUSED_OTHER`],
+/// [`KEY_SATURATED`], [`NODE_SATURATED`]) in the high 32 bits, and the seconds after which a retry
+/// may find a free slot (`0` = none stated) in the low 32. [`TicketRefused::of`] reads it back.
+#[must_use]
+pub const fn ticket_refused(code: u32, retry_after_secs: u32) -> u64 {
+    ((code as u64) << 32) | retry_after_secs as u64
+}
+
+/// A REFUSED `ticket.mint`'s value, read back ([`ticket_refused`]'s inverse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TicketRefused {
+    /// The refusal code: [`TICKET_REFUSED_OTHER`], [`KEY_SATURATED`] or [`NODE_SATURATED`].
+    pub code: u32,
+    /// The seconds after which a retry may find a free slot; `0` = none stated.
+    pub retry_after_secs: u32,
+}
+
+impl TicketRefused {
+    /// The refusal `value` carries.
+    #[must_use]
+    pub const fn of(value: u64) -> Self {
+        Self {
+            code: (value >> 32) as u32,
+            retry_after_secs: value as u32,
+        }
+    }
+}
+
 /// [`op::TICKET_TAKE`]'s `in`: the record stored with the ticket that admitted the unit the calling
 /// crossing serves. The gate consumed the ticket when it admitted the unit; the record is handed
 /// back ONCE. READY [`TICKET_TAKEN`] with the record in the bytes written (no span), or

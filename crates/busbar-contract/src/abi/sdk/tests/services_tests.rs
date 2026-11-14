@@ -2355,7 +2355,82 @@ fn a_minted_ticket_that_is_not_text_is_broken() {
     };
     assert_eq!(
         service_ready(services(&t).ticket_mint(handle(), 600, b"{}")).map(|m| m.expires_at_unix),
-        Err(ServiceError::Broken)
+        Err(crate::abi::sdk::MintError::Service(ServiceError::Broken))
+    );
+}
+
+const MINT_REFUSAL: &str = "no ticket is minted: this key holds its maximum of unredeemed tickets";
+
+/// A host that refuses the mint with a saturation code, a retry and its reason.
+extern "C" fn mints_refused(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    // SAFETY: a live `out`; the reason is a `'static` string, valid for the process's life.
+    unsafe {
+        (*out).error = crate::abi::mechanism::call::AbiStr {
+            ptr: MINT_REFUSAL.as_ptr(),
+            len: MINT_REFUSAL.len(),
+        };
+    }
+    answer(
+        out,
+        Outcome::Refused,
+        crate::abi::host::service::ticket_refused(crate::abi::host::service::KEY_SATURATED, 42),
+        0,
+        0,
+    )
+}
+
+/// A host that refuses the mint and names no reason.
+extern "C" fn mints_refused_silently(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    answer(
+        out,
+        Outcome::Refused,
+        crate::abi::host::service::ticket_refused(crate::abi::host::service::NODE_SATURATED, 16),
+        0,
+        0,
+    )
+}
+
+#[test]
+fn a_refused_mint_hands_the_plane_the_hosts_code_retry_and_reason() {
+    use crate::abi::host::service::{TicketRefused, KEY_SATURATED, NODE_SATURATED};
+    assert_eq!(
+        TicketRefused::of(crate::abi::host::service::ticket_refused(7, u32::MAX)),
+        TicketRefused {
+            code: 7,
+            retry_after_secs: u32::MAX
+        }
+    );
+    let t = HostSlots {
+        ticket_mint: Some(mints_refused),
+        ..table(None)
+    };
+    assert_eq!(
+        service_ready(services(&t).ticket_mint(handle(), 600, b"{}")).map(|m| m.expires_at_unix),
+        Err(crate::abi::sdk::MintError::Refused {
+            code: KEY_SATURATED,
+            retry_after_secs: 42,
+            reason: MINT_REFUSAL,
+        })
+    );
+    let t = HostSlots {
+        ticket_mint: Some(mints_refused_silently),
+        ..table(None)
+    };
+    assert_eq!(
+        service_ready(services(&t).ticket_mint(handle(), 600, b"{}")).map(|m| m.expires_at_unix),
+        Err(crate::abi::sdk::MintError::Refused {
+            code: NODE_SATURATED,
+            retry_after_secs: 16,
+            reason: "the host gave no reason",
+        })
     );
 }
 
@@ -2449,9 +2524,7 @@ fn work_status_tail_is_unserved_when_old_host_size_or_slot_count_excludes_it() {
     );
 }
 
-fn service_ready<T>(
-    result: std::task::Poll<Result<T, crate::abi::sdk::ServiceError>>,
-) -> Result<T, crate::abi::sdk::ServiceError> {
+fn service_ready<T, E>(result: std::task::Poll<Result<T, E>>) -> Result<T, E> {
     match result {
         std::task::Poll::Ready(result) => result,
         std::task::Poll::Pending => panic!("the synchronous test provider unexpectedly pended"),

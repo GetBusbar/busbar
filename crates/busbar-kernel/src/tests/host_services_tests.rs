@@ -2174,7 +2174,7 @@ impl TicketPress for Press {
         ttl_secs: u64,
         record: &[u8],
         now: u64,
-    ) -> Result<(String, u64), &'static str> {
+    ) -> Result<(String, u64), crate::governance::TicketRefusal> {
         self.0.lock().unwrap().push((
             key_id.to_string(),
             prefix.to_string(),
@@ -2425,7 +2425,7 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
             _: u64,
             _: &[u8],
             _: u64,
-        ) -> Result<(String, u64), &'static str> {
+        ) -> Result<(String, u64), crate::governance::TicketRefusal> {
             panic!("the host must use unit-aware minting")
         }
         async fn mint_for_unit(
@@ -2437,7 +2437,7 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
             ttl_secs: u64,
             record: &[u8],
             now: u64,
-        ) -> Result<(String, u64), &'static str> {
+        ) -> Result<(String, u64), crate::governance::TicketRefusal> {
             assert_eq!(unit, 71);
             assert_eq!(caller.namespace().as_ref(), "minter");
             assert!(Arc::ptr_eq(principal, &self.principal));
@@ -2473,6 +2473,72 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
     let result = ticket_result(&r.s, caller("minter"), Some(71), 600, b"opaque").await;
     assert_eq!(result.outcome, Outcome::Ready);
     assert_eq!(result.bytes, b"published");
+}
+
+#[tokio::test]
+async fn a_refused_mint_carries_the_presss_code_retry_and_reason() {
+    use crate::governance::TicketRefusal;
+    struct Saturated(TicketRefusal);
+    #[async_trait::async_trait]
+    impl TicketPress for Saturated {
+        async fn mint(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+            _: &[u8],
+            _: u64,
+        ) -> Result<(String, u64), TicketRefusal> {
+            Err(self.0)
+        }
+    }
+    for (refusal, code) in [
+        (
+            TicketRefusal::KeySaturated {
+                retry_after_secs: 77,
+            },
+            svc::KEY_SATURATED,
+        ),
+        (
+            TicketRefusal::NodeSaturated {
+                retry_after_secs: 16,
+            },
+            svc::NODE_SATURATED,
+        ),
+        (TicketRefusal::NotKept, svc::TICKET_REFUSED_OTHER),
+    ] {
+        let r = rig();
+        r.s.admit(
+            "minter",
+            InstanceFacts {
+                ticket_prefix: Some("tk_".into()),
+                ..InstanceFacts::default()
+            },
+        )
+        .await
+        .unwrap();
+        r.s.units().admitted(
+            72,
+            UnitRecord {
+                principal: Some(Arc::new(VirtualKey {
+                    id: "vk_saturated".into(),
+                    ..VirtualKey::default()
+                })),
+                depth: 0,
+            },
+        );
+        assert!(r.s.attach_tickets(Arc::new(Saturated(refusal))));
+        let result = ticket_result(&r.s, caller("minter"), Some(72), 600, b"opaque").await;
+        assert_eq!(result.outcome, Outcome::Refused);
+        assert_eq!(result.error, refusal.reason());
+        assert_eq!(
+            svc::TicketRefused::of(result.value),
+            svc::TicketRefused {
+                code,
+                retry_after_secs: refusal.retry_after_secs(),
+            }
+        );
+    }
 }
 
 #[test]
