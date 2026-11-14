@@ -49,11 +49,12 @@ pub(super) fn parse(
             }
             classes.push(index);
         }
-        let serving_subject = crate::root::door_steps::plane_lane(&facts.plane, &member);
+        let serving_subject =
+            crate::root::door_steps::plane_lane(facts.plane.lane_prefix(), &member);
         let rated_subjects = policy
             .rated_subjects
             .iter()
-            .map(|lane| crate::root::door_steps::plane_lane(&facts.plane, lane))
+            .map(|lane| crate::root::door_steps::plane_lane(facts.plane.lane_prefix(), lane))
             .collect();
         policies.insert(
             member.clone(),

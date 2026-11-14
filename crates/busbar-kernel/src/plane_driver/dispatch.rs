@@ -72,14 +72,35 @@ pub fn fallback_key() -> &'static str {
         .unwrap_or("")
 }
 
-/// The plane key a door's card/lane qualifier (`DoorFacts.plane`) names. The models plane's
-/// qualifier is `""` (its lanes are unqualified), and the models plane is the fallback plane.
-#[must_use]
-pub fn plane_of_qualifier(qualifier: &str) -> &str {
-    if qualifier.is_empty() {
-        fallback_key()
-    } else {
-        qualifier
+/// A door's card/lane qualifier (`DoorFacts.plane`): the prefix of every lane the door routes,
+/// `""` for the models plane (its lanes are unqualified). It is NOT a plane key (LINT-RULES R29):
+/// it has no `Deref`, `AsRef`, `PartialEq<str>`, `From` or `Display` bridge to a string, so it can
+/// be neither compared with [`fallback_key`] nor passed where a plane key is expected. The plane
+/// key comes out only through [`LaneQualifier::plane_key`]; the lane prefix through
+/// [`LaneQualifier::lane_prefix`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaneQualifier(String);
+
+impl LaneQualifier {
+    #[must_use]
+    pub fn new(qualifier: &str) -> Self {
+        Self(qualifier.to_string())
+    }
+
+    /// The plane key this qualifier names: the models plane's `""` is the fallback plane.
+    #[must_use]
+    pub fn plane_key(&self) -> &str {
+        if self.0.is_empty() {
+            fallback_key()
+        } else {
+            &self.0
+        }
+    }
+
+    /// The prefix of every lane this door routes (`""`: the lanes are unqualified).
+    #[must_use]
+    pub fn lane_prefix(&self) -> &str {
+        &self.0
     }
 }
 
