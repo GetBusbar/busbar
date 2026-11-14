@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
@@ -330,6 +330,10 @@ impl ListenerRegistration {
     }
 
     pub(in crate::root) fn validate(&self) -> Result<(), String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the unpublished-policy refusal is built only when boot validation fails"
+        )]
         let snapshot = published()
             .load_full()
             .ok_or_else(|| "listener policy has not been published".to_owned())?;
@@ -367,12 +371,21 @@ impl ListenerRegistration {
                 Some(policy) => policy,
                 None => {
                     let mut listener = selected.as_ref()?.clone();
-                    listener.ids = listener
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: line ids are minted once per published policy generation, then cached"
+                    )]
+                    let ids = listener
                         .guests
                         .lines()
                         .iter()
                         .map(|_| auth_handle::next_ref_id(auth_handle::RefSpace::Line))
                         .collect();
+                    listener.ids = ids;
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: guest lines are built once per published policy generation, then cached"
+                    )]
                     let lines = listener
                         .specs()
                         .into_iter()
@@ -408,6 +421,7 @@ impl ListenerRegistration {
                     }
                     .encode()
                     .ok()?;
+                    // busbar:expect(bp::into_alloc, reason = "config: the policy extensions are encoded once per published generation, then cached")
                     StreamPolicy {
                         policy,
                         full: extensions::encode(&[(guest_policy::EXT_GUEST_POLICY, &bytes)])
@@ -444,12 +458,17 @@ impl ListenerRegistration {
             };
             if self.installed.load(Ordering::Acquire) < snapshot.generation {
                 let mut listener = selected?;
-                listener.ids = policy
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the kernel table is installed once per published policy generation"
+                )]
+                let ids = policy
                     .policy
                     .lines
                     .iter()
                     .map(|line| line.auth.id)
                     .collect();
+                listener.ids = ids;
                 host()
                     .install_at(self.owner, self.id, snapshot.generation, listener)
                     .ok()?;
@@ -497,6 +516,10 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
     let (guests, door_refusals) = staged().clone()?;
     let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the auth table is built once per published configuration"
+    )]
     let auths = guests
         .lines()
         .iter()
@@ -512,6 +535,10 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         |l| l.request_body_max_bytes,
     ) as u64;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: line ids are minted once per published configuration"
+    )]
     let ids = guests
         .lines()
         .iter()
