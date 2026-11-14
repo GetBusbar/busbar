@@ -969,21 +969,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             if let Some(rendered) = rendered {
                 // Queue only the bounded refusal, never an overflow execution task. The
                 // StreamEnd below follows these messages in the same stream's FIFO.
-                let (done, _) = oneshot::channel();
-                out.send(Op::Head {
-                    status: rendered.status,
-                    fields: neutral_fields(&rendered.fields),
-                    end: rendered.body.is_empty(),
-                    done,
-                });
-                if !rendered.body.is_empty() {
-                    let (done, _) = oneshot::channel();
-                    out.send(Op::Data {
-                        bytes: Bytes::from(rendered.body),
-                        end: true,
-                        done,
-                    });
-                }
+                queue_whole(&out, rendered);
                 return;
             }
             out.send(Op::Refuse {
@@ -1460,6 +1446,26 @@ fn neutral_fields(fields: &busbar_kernel::plane_driver::HeadFields) -> Vec<u8> {
         block.extend_from_slice(fields::LINE_END);
     }
     block
+}
+
+/// Queues a whole rendered answer on `out` without waiting for the writer: its head, then its
+/// body as the stream's last data.
+fn queue_whole(out: &Emitter, rendered: busbar_kernel::plane_driver::Rendered) {
+    let (done, _) = oneshot::channel();
+    out.send(Op::Head {
+        status: rendered.status,
+        fields: neutral_fields(&rendered.fields),
+        end: rendered.body.is_empty(),
+        done,
+    });
+    if !rendered.body.is_empty() {
+        let (done, _) = oneshot::channel();
+        out.send(Op::Data {
+            bytes: Bytes::from(rendered.body),
+            end: true,
+            done,
+        });
+    }
 }
 
 struct ActorCaller {
