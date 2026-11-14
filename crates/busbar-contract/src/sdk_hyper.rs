@@ -46,6 +46,30 @@ macro_rules! hyper_io {
             /// it, so a settled connection stops after one; the bound is the backstop.
             pub const MAX_ROUNDS: usize = 64;
 
+            /// The most each half of a drained pipe keeps: a large message's growth is given
+            /// back once the half drains to empty (its bytes are already wiped by then).
+            pub const PIPE_KEEP: usize = 64 * 1024;
+
+            /// Wipe bytes the pipe still owns and will reuse (not dead stores: the block is
+            /// written and read again). A block about to be freed is wiped by `zeroize` instead.
+            fn wipe(s: &mut [u8]) {
+                s.fill(0);
+                std::sync::atomic::compiler_fence(Ordering::SeqCst);
+            }
+
+            /// Drop the first `n` bytes of `tx`: the rest moves to the front, the vacated tail
+            /// is wiped, and a drained half above [`PIPE_KEEP`] gives its growth back.
+            fn take_front(tx: &mut Vec<u8>, n: usize) {
+                let len = tx.len();
+                let n = n.min(len);
+                tx.copy_within(n.., 0);
+                wipe(&mut tx[len - n..]);
+                tx.truncate(len - n);
+                if tx.is_empty() && tx.capacity() > PIPE_KEEP {
+                    tx.shrink_to(PIPE_KEEP);
+                }
+            }
+
             /// Append material while wiping the old allocation before growth releases it.
             /// The caller remains responsible for wiping the final buffer on drop.
             pub fn extend_wiped(buf: &mut Vec<u8>, bytes: &[u8]) {
@@ -73,12 +97,23 @@ macro_rules! hyper_io {
             // ── the pipe ─────────────────────────────────────────────────────────────────────────
 
             /// What the far side sent and has not been read, whether the far side has ended, and
-            /// what was written and the host has not been handed.
+            /// what was written and the host has not been handed. Every byte the pipe is done
+            /// with is wiped: on delivery, on a take of the wire, in a block growth releases,
+            /// and on drop (the far side's request head carries its `Authorization`).
             #[derive(Default)]
             struct Pipe {
                 rx: VecDeque<u8>,
                 eof: bool,
                 tx: Vec<u8>,
+            }
+
+            impl Drop for Pipe {
+                fn drop(&mut self) {
+                    let (a, b) = self.rx.as_mut_slices();
+                    ::zeroize::Zeroize::zeroize(a);
+                    ::zeroize::Zeroize::zeroize(b);
+                    ::zeroize::Zeroize::zeroize(&mut self.tx);
+                }
             }
 
             /// `hyper`'s I/O: the framing's pipe.
@@ -104,7 +139,18 @@ macro_rules! hyper_io {
                     let src = if a.is_empty() { b } else { a };
                     let n = src.len().min(buf.remaining());
                     buf.put_slice(&src[..n]);
+                    // Wipe what was handed up, in place; the front drain then only advances the
+                    // head, so the wiped bytes stay zero.
+                    let (a, b) = p.rx.as_mut_slices();
+                    wipe(if a.is_empty() {
+                        &mut b[..n]
+                    } else {
+                        &mut a[..n]
+                    });
                     p.rx.drain(..n);
+                    if p.rx.is_empty() && p.rx.capacity() > PIPE_KEEP {
+                        p.rx.shrink_to(PIPE_KEEP);
+                    }
                     Poll::Ready(Ok(()))
                 }
             }
@@ -119,7 +165,7 @@ macro_rules! hyper_io {
                     if p.tx.len() >= WRITE_HIGH_WATER {
                         return Poll::Pending;
                     }
-                    p.tx.extend_from_slice(b);
+                    extend_wiped(&mut p.tx, b);
                     Poll::Ready(Ok(b.len()))
                 }
                 fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -361,6 +407,20 @@ macro_rules! hyper_io {
                 /// The far side sent `bytes` (`end` = and then ended).
                 pub fn ingest(&self, bytes: &[u8], end: bool) {
                     let mut p = self.pipe.lock().expect("pipe");
+                    let need = p.rx.len().saturating_add(bytes.len());
+                    if need > p.rx.capacity() {
+                        // Grow by hand, never by `extend`'s realloc: the old block is wiped
+                        // before it is freed.
+                        let mut grown: VecDeque<u8> =
+                            VecDeque::with_capacity(need.max(p.rx.capacity().saturating_mul(2)));
+                        let mut old = std::mem::take(&mut p.rx);
+                        let (a, b) = old.as_mut_slices();
+                        grown.extend(&*a);
+                        grown.extend(&*b);
+                        ::zeroize::Zeroize::zeroize(a);
+                        ::zeroize::Zeroize::zeroize(b);
+                        p.rx = grown;
+                    }
                     p.rx.extend(bytes);
                     p.eof |= end;
                 }
@@ -377,7 +437,9 @@ macro_rules! hyper_io {
                 pub fn take_wire(&self, cap: usize) -> Vec<u8> {
                     let mut p = self.pipe.lock().expect("pipe");
                     let n = p.tx.len().min(cap);
-                    p.tx.drain(..n).collect()
+                    let taken = p.tx[..n].to_vec();
+                    take_front(&mut p.tx, n);
+                    taken
                 }
 
                 /// Write as many wire bytes owed to the far side as `into` has room for, straight
@@ -385,7 +447,7 @@ macro_rules! hyper_io {
                 pub fn wire_into(&self, into: &mut HostBuf<'_, u8>) {
                     let mut p = self.pipe.lock().expect("pipe");
                     let n = into.stream(&p.tx);
-                    p.tx.drain(..n);
+                    take_front(&mut p.tx, n);
                 }
 
                 /// Whether wire bytes are still owed.
