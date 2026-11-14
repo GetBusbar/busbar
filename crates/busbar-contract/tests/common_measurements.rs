@@ -31,7 +31,8 @@ fn signed_common_declarations_work_for_all_seven_kinds() {
         let read = rendering::read(&bytes).unwrap();
         assert_eq!(read.measurement_classes[1].family, "second");
         assert_eq!(read.measurement_classes[0].class, "requests");
-        assert_eq!(read.mechanism_version, 4);
+        // v1.5.5 shipped mechanism 1; ABI step 0 makes it 1 + 1.
+        assert_eq!(read.mechanism_version, 1 + 1);
         let mut altered = st;
         const OTHER: &[BillableClass] = &[BillableClass {
             class: abi_str("other"),
