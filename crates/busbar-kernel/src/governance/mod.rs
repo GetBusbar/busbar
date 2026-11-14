@@ -1629,6 +1629,10 @@ mod budget_cell_tests;
 mod unit_checkpoint_race_tests;
 
 #[cfg(test)]
+#[path = "tests/metering_recovery_live_append_tests.rs"]
+mod metering_recovery_live_append_tests;
+
+#[cfg(test)]
 #[path = "../tests/key_expires_at_tests.rs"]
 mod key_expires_at_tests;
 
