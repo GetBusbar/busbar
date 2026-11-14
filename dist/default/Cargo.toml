@@ -751,8 +751,9 @@ hex = { workspace = true }
 # feature-gated, so it is absent from every release build. Its user was tests/ws_composed_battery.rs,
 # the `ws` wire composed over `http`; composition left with ARCHITECT ruling Q128 U7 (no transport
 # names another), and the upgrade's cells return with the http detach -> ws adopt battery
-# (p2-transport-stack stage B).
-busbar-contract = { path = "../../crates/busbar-contract", features = ["test-seal"] }
+# (p2-transport-stack stage B). `stage-probe` gives the root's tests the single-path count
+# probes (SINGLE-PATH §8), also dev-only.
+busbar-contract = { path = "../../crates/busbar-contract", features = ["test-seal", "stage-probe"] }
 
 # THE PLANE DRIVER'S TEST PLANE (`tests/plane_driver.rs`): one source, compiled into the test as a
 # module (the LINKED door) and built here as a `cdylib` (the DROPPED door), so one unit runs end to end
