@@ -154,3 +154,76 @@ fn block_sized_and_one_over_keys_are_split_at_the_block_boundary() {
         assert_eq!(hex::encode(&d[..]), sha1, "sha1, {n}-byte key");
     }
 }
+
+/// WASTE-AUTH-SECRETS W7: a precomputed key answers exactly the one-shot MACs, for keys around the
+/// block boundary and every split of the message into parts (the parts are streamed, not joined).
+#[test]
+fn precomputed_keys_answer_the_one_shot_macs_over_any_split() {
+    let data: Vec<u8> = (0..=150_u8)
+        .map(|b| b.wrapping_mul(29).wrapping_add(3))
+        .collect();
+    for key_len in [0_usize, 1, 20, 63, 64, 65, 131] {
+        let key: Vec<u8> = (0..key_len).map(|i| (i as u8) ^ 0xa5).collect();
+        let k256 = HmacSha256Key::new(&key);
+        let cred = Cred::captured(Zeroizing::new(key.clone()));
+        let k1 = HmacSha1Key::new(&cred);
+        for n in [0_usize, 1, 55, 56, 63, 64, 65, 119, 120, 128, 150] {
+            let msg = &data[..n];
+            let want256 = hmac_sha256(&key, msg);
+            let want1 = hmac_sha1(&cred, &[msg]);
+            assert_eq!(k256.mac(msg)[..], want256[..], "key {key_len}, length {n}");
+            for split in [0, n / 3, n / 2, n] {
+                let parts: [&[u8]; 4] = [
+                    &msg[..split],
+                    b"",
+                    &msg[split..n / 2.max(split)],
+                    &msg[n / 2.max(split)..],
+                ];
+                assert_eq!(
+                    k256.mac_parts(&parts)[..],
+                    want256[..],
+                    "sha256 key {key_len}, length {n}, split {split}"
+                );
+                assert_eq!(
+                    k1.mac_parts(&parts)[..],
+                    want1[..],
+                    "sha1 key {key_len}, length {n}, split {split}"
+                );
+            }
+        }
+    }
+}
+
+/// WASTE-AUTH-SECRETS W7: the key schedule is paid once at construction. A short message under a
+/// precomputed key costs two compressions (inner and outer finish), not the four a one-shot MAC
+/// costs by re-deriving both pads.
+#[test]
+fn a_precomputed_key_costs_two_compressions_per_short_mac() {
+    let k256 = HmacSha256Key::new(b"whsec-key-bytes");
+    let cred = Cred::captured(Zeroizing::new(b"twilio-auth-token".to_vec()));
+    let k1 = HmacSha1Key::new(&cred);
+    let parts: [&[u8]; 5] = [b"msg_id", b".", b"1700000000", b".", b"{}"];
+    for _ in 0..3 {
+        let before = compressions();
+        let _ = k256.mac_parts(&parts);
+        assert_eq!(
+            compressions() - before,
+            2,
+            "sha256: inner + outer finish only"
+        );
+        let before = compressions();
+        let _ = k1.mac_parts(&parts);
+        assert_eq!(
+            compressions() - before,
+            2,
+            "sha1: inner + outer finish only"
+        );
+    }
+    let before = compressions();
+    let _ = hmac_sha256(b"whsec-key-bytes", b"msg_id.1700000000.{}");
+    assert_eq!(
+        compressions() - before,
+        4,
+        "the one-shot MAC derives both pads every call"
+    );
+}
