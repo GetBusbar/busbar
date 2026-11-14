@@ -630,29 +630,9 @@ pub fn write_rewrite(
 /// An owned hook settings/reply tree. Only its initialized owned strings and map keys are
 struct JsonValue(serde_json::Value);
 
-impl<'de> serde::Deserialize<'de> for JsonValue {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        <serde_json::Value as serde::Deserialize>::deserialize(de).map(Self)
-    }
-}
-
 impl Drop for JsonValue {
     fn drop(&mut self) {
-        fn wipe(value: &mut serde_json::Value) {
-            use zeroize::Zeroize;
-            match value {
-                serde_json::Value::String(text) => text.zeroize(),
-                serde_json::Value::Array(items) => items.iter_mut().for_each(wipe),
-                serde_json::Value::Object(items) => {
-                    for (mut key, mut value) in std::mem::take(items) {
-                        key.zeroize();
-                        wipe(&mut value);
-                    }
-                }
-                _ => {}
-            }
-        }
-        wipe(&mut self.0);
+        crate::json_grammar::wipe(&mut self.0);
     }
 }
 
@@ -1209,8 +1189,8 @@ hook_op!(
     |held, _i, input, out| {
         let bytes = input.field(|i| &i.settings).bytes();
         let bytes = if bytes.is_empty() { &b"{}"[..] } else { bytes };
-        let settings = match serde_json::from_slice::<JsonValue>(bytes) {
-            Ok(settings) => settings,
+        let settings = match crate::json_grammar::parse_typed_value_wiping(bytes) {
+            Ok(settings) => JsonValue(settings),
             Err(e) => return out.fail(Refusal::failed(format!("settings: not valid JSON: {e}"))),
         };
         let Some(map) = settings.0.as_object() else {

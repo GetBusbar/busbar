@@ -49,7 +49,7 @@ pub fn dealt_section(settings: &[u8], verb: &str) -> Result<Option<serde_json::V
     if settings.is_empty() {
         return Ok(None);
     }
-    let value: serde_json::Value = serde_json::from_slice(settings).map_err(|e| e.to_string())?;
+    let value = crate::json_grammar::parse_typed_value(settings).map_err(|e| e.to_string())?;
     let serde_json::Value::Object(mut verbs) = value else {
         return Err(NOT_A_MAP.to_string());
     };
