@@ -510,8 +510,8 @@ pub enum Driven {
     /// Nothing waits on the driver ticket now: READY.
     Ready,
     /// The exchange waits: PENDING, re-driven when its wake fires, and no later than `wake_at_ns`
-    /// on the host's monotonic clock (`0` = on a wake only). A ticket-less `drive` cannot pend: it
-    /// answers READY.
+    /// on the host's monotonic clock (`0` = on a wake only). A ticket-less `drive` cannot pend, and a
+    /// waiting exchange is not READY: it answers REFUSED.
     Pending {
         /// The latest re-drive, `0` = none.
         wake_at_ns: u64,
@@ -841,7 +841,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundTick<T, L> {
 }
 
 /// `drive` on an outbound door: [`OutboundPlugin::drive`] on the woken driver ticket; PENDING (with
-/// its latest re-drive) while the exchange waits, READY on a ticket-less call.
+/// its latest re-drive) while the exchange waits, REFUSED when it waits on a ticket-less call.
 #[derive(Debug)]
 pub struct OutboundDrive<T, L = Outbound<T>>(PhantomData<(T, L)>);
 impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundDrive<T, L> {
@@ -869,7 +869,9 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundDrive<T, L> {
         match driven {
             Driven::Ready => Outcome::Ready,
 
-            Driven::Pending { .. } if instance.ticket().is_none() => Outcome::Ready,
+            Driven::Pending { .. } if instance.ticket().is_none() => out.fail(Refusal::refused(
+                "drive waits on its exchange: it runs on the driver ticket, not on the spot",
+            )),
             Driven::Pending { wake_at_ns } => {
                 if wake_at_ns != 0 {
                     out.wake_at(wake_at_ns);

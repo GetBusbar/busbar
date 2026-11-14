@@ -375,15 +375,92 @@ impl<T> ReplySlot<T> {
     }
 }
 
+impl<T: 'static> ReplySlot<T> {
+    /// A crossing's answer, handed back only once everything the worker retires for it has been
+    /// retired.
+    ///
+    /// The worker finishes an op while holding its state lock and lets go of what the op held —
+    /// its binding admission, the previous short reply's lease (its `RELEASE` crossing), its
+    /// instance and framing holds — only after it releases that lock ([`drop_after_lock`]).
+    /// Publishing the answer in the same breath as [`ReplySlot::put`] would let a caller that is
+    /// already polling (or blocked in [`Reply::wait`]) take it and act on the plugin while those
+    /// retirements are still owed: a direct `Plugin::call` then meets the still-held admission,
+    /// and the caller returns before its lease's `RELEASE` crossed.
+    ///
+    /// So the slot is SETTLED here, under the lock — no deadline, drop or fault can settle it
+    /// again, and acceptance is decided now — but its value is published by a [`Publish`] that
+    /// the worker drops after every retirement it lets go in the same pass ([`PUBLISH`]),
+    /// including the op's own instance and framing holds released after this call.
+    /// Off a worker (no queue armed) it publishes at once, exactly as `put`.
+    fn put_after_retirement(self: &Arc<Self>, t: T) -> bool {
+        let mut value = Some(t);
+        let accepted = {
+            let mut g = self.lock();
+            if g.settled {
+                false
+            } else {
+                g.settled = true;
+                !g.abandoned
+            }
+        };
+        if !accepted {
+            drop(value);
+            return false;
+        }
+        publish_after_lock(Box::new(Publish {
+            slot: Arc::clone(self),
+            value: value.take(),
+        }));
+        true
+    }
+}
+
+/// One settled answer waiting for its op's retirements ([`ReplySlot::put_after_retirement`]).
+struct Publish<T> {
+    slot: Arc<ReplySlot<T>>,
+    value: Option<T>,
+}
+
+impl<T> Drop for Publish<T> {
+    fn drop(&mut self) {
+        let Some(value) = self.value.take() else {
+            return;
+        };
+        let (refused, waker) = {
+            let mut g = self.slot.lock();
+            if g.abandoned {
+                // The caller dropped its reply after the slot settled: nobody takes this answer,
+                // so its leases go back now (their own deferred drops).
+                (Some(value), None)
+            } else {
+                g.value = Some(value);
+                (None, g.waker.take())
+            }
+        };
+        drop(refused);
+        self.slot.cv.notify_all();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
 pub(crate) trait Settle: Send + Sync {
-    fn settle(&self, outcome: Outcome, detached: bool) -> bool;
+    /// Settle with a host-decided `outcome`; a REFUSED carries `why` (nothing silent).
+    fn settle(&self, outcome: Outcome, why: &str, detached: bool) -> bool;
+}
+
+/// What a host-decided answer says: a refusal always names its reason, other host outcomes
+/// copy nothing (a FAULT never carries text the plugin did not have judged).
+fn host_text(outcome: Outcome, why: &str) -> Option<Vec<u8>> {
+    super::plugin::Crossed::judged(outcome, why).error
 }
 
 impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Queued<I, O>> {
-    fn settle(&self, outcome: Outcome, detached: bool) -> bool {
+    fn settle(&self, outcome: Outcome, why: &str, detached: bool) -> bool {
         self.put(Queued::unleased(Done {
             outcome,
-            error: None,
+            error: host_text(outcome, why),
             lease: 0,
             frame: None,
             detached,
@@ -437,11 +514,11 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         }
     }
 
-    fn settled(outcome: Outcome, frame: Frame<I, O>) -> Self {
+    fn settled(outcome: Outcome, why: &str, frame: Frame<I, O>) -> Self {
         let slot = Arc::new(ReplySlot::new());
         slot.put(Queued::unleased(Done {
             outcome,
-            error: None,
+            error: host_text(outcome, why),
             lease: 0,
             frame: Some(frame),
             detached: false,
@@ -537,7 +614,7 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
 
     fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool {
         let lease = UnhandedLease::new(&self.instance, self.framing.clone(), c.lease);
-        self.reply.put(Queued {
+        self.reply.put_after_retirement(Queued {
             done: Done {
                 outcome: c.outcome,
                 error: c.error,
@@ -628,7 +705,8 @@ impl Meta {
 impl Drop for Meta {
     fn drop(&mut self) {
         self.give_back();
-        self.reply.settle(Outcome::Fault, false);
+        self.reply
+            .settle(Outcome::Fault, "its op ended without an answer", false);
         hold_past_lock(&self.instance);
         if let Some(framing) = self.framing.take() {
             drop_after_lock(Box::new(framing));
@@ -670,6 +748,25 @@ std::thread_local! {
     /// are kept here the same way: their close may cross into a transport door.
     static LET_GO: std::cell::RefCell<Option<Vec<Late>>> =
         const { std::cell::RefCell::new(None) };
+
+    /// THE ANSWERS A WORKER HANDS BACK ONCE ITS RETIREMENTS ARE DONE ([`publish_after_lock`]):
+    /// drained with [`LET_GO`], but always after every item on it, so an answer reaches its caller
+    /// only once everything its crossing held — admission, saved short lease, instance and
+    /// framing holds — has been let go (decision 43).
+    static PUBLISH: std::cell::RefCell<Vec<Late>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue `value` (a [`Publish`]) to be dropped after this worker's retirements; off a worker,
+/// drop it now.
+fn publish_after_lock(value: Late) {
+    let armed = LET_GO
+        .try_with(|list| list.borrow().is_some())
+        .unwrap_or(false);
+    let mut value = Some(value);
+    if armed {
+        let _ = PUBLISH.try_with(|list| list.borrow_mut().extend(value.take()));
+    }
+    drop(value);
 }
 
 type Late = Box<dyn std::any::Any>;
@@ -730,12 +827,15 @@ fn forget_conns(id: InstanceId, ticket: Ticket) -> usize {
 }
 
 fn let_go() -> Vec<Late> {
-    LET_GO.with(|l| {
+    let mut late = LET_GO.with(|l| {
         l.borrow_mut()
             .as_mut()
             .map(std::mem::take)
             .unwrap_or_default()
-    })
+    });
+    // A `Vec` drops front to back: the answers land after everything retired before them.
+    late.extend(PUBLISH.with(|p| std::mem::take(&mut *p.borrow_mut())));
+    late
 }
 
 struct LetGo;
@@ -751,6 +851,8 @@ impl Drop for LetGo {
     fn drop(&mut self) {
         let left = LET_GO.with(|l| l.borrow_mut().take());
         drop(left);
+        let answers = PUBLISH.with(|p| std::mem::take(&mut *p.borrow_mut()));
+        drop(answers);
     }
 }
 
@@ -1190,7 +1292,11 @@ impl Worker {
                     if retired {
                         job.finish(unit_cancel::completed(), None);
                     } else {
-                        meta.reply.settle(Outcome::Refused, false);
+                        meta.reply.settle(
+                            Outcome::Refused,
+                            "its unit no longer admits this op",
+                            false,
+                        );
                     }
                     return true;
                 }
@@ -1207,7 +1313,11 @@ impl Worker {
                     Some((_, e)) if e.client_dropped => {
                         let mut meta = meta;
                         meta.give_back();
-                        meta.reply.settle(Outcome::Refused, false);
+                        meta.reply.settle(
+                            Outcome::Refused,
+                            "its client already dropped this ticket",
+                            false,
+                        );
                         // Defer the job's drop so its Arc<Instance> and framing
                         // scope do not run destructors under the worker's mutex.
                         drop_after_lock(Box::new(job));
@@ -1258,7 +1368,11 @@ impl Worker {
                     e.queue = keep;
                     for (mut m, _) in gone {
                         m.give_back();
-                        m.reply.settle(m.instance.timeout, false);
+                        m.reply.settle(
+                            m.instance.timeout,
+                            "its deadline passed before it crossed",
+                            false,
+                        );
                     }
                     let cancel = e
                         .current
@@ -1278,7 +1392,14 @@ impl Worker {
                         e.recycle_when_idle = true;
 
                         if e.current.as_ref().is_some_and(|c| c.parked) {
-                            self.end(st, idx, Crossed::host(Outcome::Refused), env);
+                            self.end(
+                                st,
+                                idx,
+                                Crossed::refused(
+                                    "its ticket was recycled while the op waited for room",
+                                ),
+                                env,
+                            );
                         }
                     }
                 }
@@ -1425,7 +1546,11 @@ impl Worker {
                 if meta.class != DeadlineClass::WriteBehind && deadline != 0 {
                     if now >= deadline {
                         meta.give_back();
-                        meta.reply.settle(meta.instance.timeout, false);
+                        meta.reply.settle(
+                            meta.instance.timeout,
+                            "its deadline passed before it crossed",
+                            false,
+                        );
                         drop_after_lock(Box::new((meta, job)));
                         continue;
                     }
@@ -1447,7 +1572,11 @@ impl Worker {
                 if deadline != 0 && class == DeadlineClass::WriteBehind && !c.detached {
                     if now >= deadline {
                         without_wake += u64::from(owed);
-                        c.meta.reply.settle(c.meta.instance.timeout, true);
+                        c.meta.reply.settle(
+                            c.meta.instance.timeout,
+                            "its write-behind deadline passed; it runs on detached",
+                            true,
+                        );
                         c.detached = true;
                     } else {
                         next = next.min(deadline);
@@ -1672,7 +1801,10 @@ impl Worker {
                     Ok(reservation) => meta.measurement = reservation,
                     Err(_) => {
                         meta.give_back();
-                        job.finish(Crossed::host(Outcome::Refused), None);
+                        job.finish(
+                            Crossed::refused("no measurement reservation admits this op"),
+                            None,
+                        );
                         if !e.queue.is_empty() {
                             Self::schedule(&mut st, idx, Action::Start);
                         }
@@ -1982,7 +2114,12 @@ impl Worker {
                 Ok(reference) => Some(reference),
                 Err(()) => {
                     st.entries[idx as usize].current.as_mut()?.job = Some(job);
-                    self.end(&mut st, idx, Crossed::host(Outcome::Refused), env);
+                    self.end(
+                        &mut st,
+                        idx,
+                        Crossed::refused("the saved short answer could not be lent to its recall"),
+                        env,
+                    );
                     return Some(st);
                 }
             },
@@ -2783,13 +2920,17 @@ impl Dispatcher {
     ) -> Reply<I, O> {
         let inst = &plugin.inner;
         if ticket.is_none() {
-            return Reply::settled(Outcome::Fault, frame);
+            return Reply::settled(Outcome::Fault, "", frame);
         }
         if !self.adopt(inst) {
-            return Reply::settled(Outcome::Refused, frame);
+            return Reply::settled(
+                Outcome::Refused,
+                "this dispatcher does not serve the plugin's instance",
+                frame,
+            );
         }
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
-            return Reply::settled(o, frame);
+            return Reply::settled(o, super::plugin::DOES_NOT_FIT, frame);
         }
 
         let owner = super::handle::instance_id(inst.ctx()).0;
@@ -2799,11 +2940,11 @@ impl Dispatcher {
             size_of::<I>(),
             owner,
         ) {
-            return Reply::settled(o, frame);
+            return Reply::settled(o, super::plugin::KIND_REFUSED, frame);
         }
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
-            return Reply::settled(Outcome::Refused, frame);
+            return Reply::settled(Outcome::Refused, super::plugin::LIFECYCLE_BUSY, frame);
         }
 
         let Some(units) = (if admit == Admit::Cap {
@@ -2814,7 +2955,7 @@ impl Dispatcher {
             if lifecycle {
                 inst.leave_lifecycle();
             }
-            return Reply::settled(Outcome::Refused, frame);
+            return Reply::settled(Outcome::Refused, super::plugin::AT_CAP, frame);
         };
         let drainable = class != DeadlineClass::WriteBehind;
         if drainable {

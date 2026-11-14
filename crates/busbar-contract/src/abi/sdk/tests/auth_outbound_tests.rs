@@ -1246,8 +1246,16 @@ fn a_minting_plugin_runs_on_its_driver_ticket() {
         reported(&out),
         vec![(NOTED, SEVERITY_WARN, "waiting on 3/1".to_string())]
     );
-    let (o, _) = drive(t, inst, Ticket::NONE);
-    assert_eq!(o, Outcome::Ready, "a ticket-less drive cannot pend");
+    let (o, out) = drive(t, inst, Ticket::NONE);
+    assert_eq!(
+        (o, error_text(&out)),
+        (
+            Outcome::Refused,
+            "drive waits on its exchange: it runs on the driver ticket, not on the spot"
+                .to_string()
+        ),
+        "a ticket-less drive cannot pend, and a waiting exchange is not READY"
+    );
 
     assert_eq!(
         cancel(t, inst, WAITING),

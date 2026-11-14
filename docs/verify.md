@@ -168,19 +168,21 @@ Each item below is a gap, stated plainly; nothing on this site claims it.
   refuses to publish without it.
 - **Outbound TLS revocation is not checked.** busbar's TLS client (rustls) does not check OCSP.
 
-## For builders: the candidate layout
+## Every contract row, in one run
 
-Our CI writes this layout for the owner's publish run. The gate, `scripts/release/publish_gate.py`,
-documents every rule it applies:
+[`scripts/verify-artifact.py`](../scripts/verify-artifact.py) checks a downloaded release archive
+against every row of [`release/artifact-contract.json`](../release/artifact-contract.json) that
+applies to its target in [`release/release-targets.json`](../release/release-targets.json): the
+embedded plugin key, the quickstart boot, the build evidence and the rest. It reads only the bytes
+you downloaded and this repository's public files:
 
+```sh
+git clone https://github.com/GetBusbar/busbar && cd busbar && git checkout v$V
+python3 scripts/verify-artifact.py --archive busbar-x86_64-unknown-linux-gnu.tar.gz \
+  --target x86_64-unknown-linux-gnu --version $V --repo-root . \
+  --pubkey "$(sed -n 's/^BUSBAR_RELEASE_PUBKEY = "\(.*\)"/\1/p' .cargo/config.toml)"
 ```
-candidate.json   {"version","commit","repo","test_kit":{"tag","commit"},"plugins":[{"repo","version","tag","commit"}]}
-artifacts/       busbar-<target>.<archive> per published target in release/release-targets.json; busbar-openapi-v<V>.json;
-                 plugin-index.json (rendered from candidate.json's plugins and their tarballs' manifests)
-plugins/         <repo>-<version>-<target>.tar.gz, UNSIGNED, per plugins.yaml entry and plugin target
-sboms/           busbar-v<V>-<target>.cdx.json per published target and image platform
-internal/        busbar-image-linux-<arch>.oci per unpublished image row (the image packages the published linux-gnu binary)
-oci/             busbar.oci.tar (OCI layout of the multi-platform image)
-SHA256SUMS       every file in artifacts/ and sboms/
-IMAGES           busbar sha256:<image index digest>
-```
+
+It exits 0 only when every applicable row passed. There is no skip: a row whose input you did not
+supply (a plugin tarball, an image, the build evidence, the provenance inventory; `--help` lists
+them) fails rather than passing silently.
