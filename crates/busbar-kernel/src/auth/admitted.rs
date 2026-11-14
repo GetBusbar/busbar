@@ -17,7 +17,7 @@ pub struct AdmittedContext {
 
 #[derive(Debug)]
 pub enum AdmittedRefusal {
-    SenderConstraint,
+    SenderConstraint(dpop::Refusal),
     Audience(&'static str),
     Identity(IdentityRefusal),
 }
@@ -70,14 +70,15 @@ async fn complete_context(
         &request.inner.original.method,
         &request.inner.original.target,
         &headers,
-        client_token.as_deref(),
-        &mut read,
+        dpop::Surface::Plane,
     )
     .await
     {
         dpop::SenderConstraint::Unconstrained => (client_token, false),
         dpop::SenderConstraint::Proven(token) => (Some(token), true),
-        dpop::SenderConstraint::Refused => return Err(AdmittedRefusal::SenderConstraint),
+        dpop::SenderConstraint::Refused(reason) => {
+            return Err(AdmittedRefusal::SenderConstraint(reason))
+        }
     };
     let mut consumed = gate_consumed(&app, false, proven);
     consumed.caller = verified_caller_credential(
@@ -159,18 +160,28 @@ impl AdmittedRefusal {
     ) -> Option<crate::plane_driver::Rendered> {
         let admission = request.plane_admission()?;
         let (error, description) = match self {
-            Self::SenderConstraint => (challenge::ChallengeError::InvalidToken,
-                "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one did not verify."),
+            Self::SenderConstraint(reason) => (
+                challenge::ChallengeError::InvalidToken,
+                reason.description(request.app().oauth_as.is_none()),
+            ),
             Self::Audience(description) => (challenge::ChallengeError::InvalidToken, *description),
-            Self::Identity(IdentityRefusal::NoGrant) => (challenge::ChallengeError::InsufficientScope,
-                "The authenticated principal carries no grant on this resource."),
+            Self::Identity(IdentityRefusal::NoGrant) => (
+                challenge::ChallengeError::InsufficientScope,
+                "The authenticated principal carries no grant on this resource.",
+            ),
             Self::Identity(IdentityRefusal::Denied) => {
                 let headers = crate::inbound::header_map(&request.inner.original);
                 let app = request.app();
                 let present = app.auth.extract_client_token(&headers).is_some()
                     || (app.oauth_as.is_some() && dpop::dpop_credential(&headers).is_some());
-                (if present { challenge::ChallengeError::InvalidToken } else { challenge::ChallengeError::Absent },
-                 "Authentication is required for this resource.")
+                (
+                    if present {
+                        challenge::ChallengeError::InvalidToken
+                    } else {
+                        challenge::ChallengeError::Absent
+                    },
+                    "Authentication is required for this resource.",
+                )
             }
         };
         Some(challenge::render(

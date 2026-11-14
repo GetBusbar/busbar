@@ -1432,6 +1432,17 @@ summary = "An update_key request body did not parse as valid JSON, so busbar ret
 action = "None — self-heals; the client must send well-formed JSON. Persistent volume from one caller indicates a broken client worth fixing."
 
 [[diagnostic]]
+name = "AUTH_SENDER_CONSTRAINT_REFUSED"
+doc = "A DPoP-bound token or DPoP presentation was refused (RFC 9449). Emitted per refusal by `auth::dpop`, never with the token."
+code = 4032
+class = "Auth"
+slug = "auth-sender-constraint-refused"
+title = "Sender-constrained (DPoP) credential refused"
+severity = "Actionable"
+summary = "A DPoP-bound token or DPoP presentation was refused because its sender constraint was not met or cannot be verified here"
+action = "Have the client present a DPoP proof (with `oauth_as` configured) or an unbound token; if the IdP binds tokens for bearer-only clients, change the IdP client"
+
+[[diagnostic]]
 name = "PLANE_BREAKER_TRIPPED"
 code = 5038
 class = "Proxy"

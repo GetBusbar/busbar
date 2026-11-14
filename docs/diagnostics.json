@@ -852,6 +852,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-4032",
+    "number": 4032,
+    "class": "auth",
+    "slug": "auth-sender-constraint-refused",
+    "title": "Sender-constrained (DPoP) credential refused",
+    "severity": "actionable",
+    "summary": "A DPoP-bound token or DPoP presentation was refused because its sender constraint was not met or cannot be verified here",
+    "action": "Have the client present a DPoP proof (with `oauth_as` configured) or an unbound token; if the IdP binds tokens for bearer-only clients, change the IdP client",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-5001",
     "number": 5001,
     "class": "proxy",
