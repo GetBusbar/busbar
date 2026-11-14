@@ -104,6 +104,11 @@ disallowed-methods = [
   # busbar-kernel owns both items (pub(crate)); allow-invalid, no fixture here can resolve them.
   { path = "busbar_kernel::persistence::journal::StoreJournal::historical_replay", allow-invalid = true, reason = "O(journal); live paths use RuntimeJournal::live_proof / locate" },
   { path = "busbar_kernel::persistence::journal::StoreJournal::read_verified_record", allow-invalid = true, reason = "O(journal); live paths use RuntimeJournal::live_proof / locate" },
+  # core only, FIRST-START-TAKEOVER §9a (was crates/busbar/clippy.toml, which shadowed this file for
+  # the busbar crate): every exit goes through `root::exit::exit`, which hands an unpublished first
+  # start over before the process ends; every exec will go through `root::exit::exec`.
+  { path = "std::process::exit", reason = "exit through root::exit::exit so an unpublished first start is handed over (FIRST-START-TAKEOVER §2.7)" },
+  { path = "std::os::unix::process::CommandExt::exec", reason = "exec through root::exit::exec (FIRST-START-TAKEOVER §2.9 (d))", allow-invalid = true },
 ]
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "default SipHash hasher; use foldhash::HashMap (HashMapExt::new / ::default)" },
