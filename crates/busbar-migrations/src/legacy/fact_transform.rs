@@ -16,7 +16,6 @@ use busbar_contract::{
     Secret,
 };
 use busbar_kernel::persistence::import_target::records;
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,

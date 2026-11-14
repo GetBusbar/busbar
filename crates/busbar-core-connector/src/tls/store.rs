@@ -336,7 +336,6 @@ impl TrustStore {
     }
 
     fn build_for(&self, host: &str, matched: &[usize]) -> Result<rustls::ClientConfig, TrustRefusal> {
-        crate::tls::install_crypto_provider();
         let withdrawn = self.withdrawn.read().expect("withdrawn").clone();
         let entries: Vec<&Entry> = matched.iter().map(|i| &self.entries[*i]).collect();
         let listed: Vec<&Anchor> = entries.iter().flat_map(|e| e.anchors.iter()).collect();
@@ -369,22 +368,29 @@ impl TrustStore {
             return Err(TrustRefusal::NoAnchors(host.to_owned()));
         }
         let pins: Vec<[u8; 32]> = entries.iter().flat_map(|e| e.pins.iter().copied()).collect();
-        let builder = rustls::ClientConfig::builder();
-        let wants = if pins.is_empty() {
-            builder.with_root_certificates(roots)
+        let pinned = if pins.is_empty() {
+            None
         } else {
-            let verifier = crate::tls::client::PinnedKeyVerifier::try_new(roots, &pins)
-                .map_err(TrustRefusal::Build)?;
-            builder
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(verifier))
+            Some(
+                crate::tls::client::PinnedKeyVerifier::try_new(roots.clone(), &pins)
+                    .map_err(TrustRefusal::Build)?,
+            )
         };
-        match entries.iter().find_map(|e| e.identity.as_ref()) {
-            None => Ok(wants.with_no_client_auth()),
-            Some((chain, key)) => wants
-                .with_client_auth_cert(chain.clone(), key.clone_key())
-                .map_err(|e| TrustRefusal::Build(format!("client identity: {e}"))),
-        }
+        let identity = entries.iter().find_map(|e| e.identity.as_ref());
+        busbar_contract::crypto::tls::client_config(|builder| {
+            let wants = match pinned {
+                None => builder.with_root_certificates(roots),
+                Some(verifier) => builder
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(verifier)),
+            };
+            match identity {
+                None => Ok(wants.with_no_client_auth()),
+                Some((chain, key)) => wants.with_client_auth_cert(chain.clone(), key.clone_key()),
+            }
+        })
+        .map(Arc::unwrap_or_clone)
+        .map_err(|e| TrustRefusal::Build(format!("client identity: {e}")))
     }
 
     /// THE BOOT REPORT: one BUSBAR-3138 line and one `config.tls_trust_anchor` audit record per
@@ -766,10 +772,9 @@ fn load_identity(
     let (key_pem, _) = read_source(&id.key, env).map_err(|e| bad(format!("key: {e}")))?;
     let key = PrivateKeyDer::from_pem_slice(&key_pem)
         .map_err(|_| bad(format!("key ({}) holds no private key busbar can read", id.key.describe())))?;
-    crate::tls::install_crypto_provider();
-    let provider = crate::tls::installed_crypto();
-    let certified = rustls::sign::CertifiedKey::from_der(chain.clone(), key.clone_key(), &provider)
+    let signing = busbar_contract::crypto::tls::signing_key(&key)
         .map_err(|e| bad(format!("the key does not sign for the certificate: {e}")))?;
+    let certified = rustls::sign::CertifiedKey::new(chain.clone(), signing);
     certified
         .keys_match()
         .map_err(|_| bad("the key is not the certificate's key".into()))?;
@@ -987,19 +992,16 @@ fn digest_of(anchors: &[rustls::pki_types::TrustAnchor<'_>]) -> String {
         })
         .collect();
     parts.sort();
-    let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut ctx = busbar_contract::crypto::Sha256::new();
     for p in &parts {
         ctx.update(&(p.len() as u64).to_be_bytes());
         ctx.update(p);
     }
-    format!("sha256:{}", hex(ctx.finish().as_ref()))
+    format!("sha256:{}", hex(&ctx.finish()))
 }
 
 fn sha256(b: &[u8]) -> [u8; 32] {
-    let d = ring::digest::digest(&ring::digest::SHA256, b);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(d.as_ref());
-    out
+    busbar_contract::crypto::sha256(b)
 }
 
 fn hex(b: &[u8]) -> String {

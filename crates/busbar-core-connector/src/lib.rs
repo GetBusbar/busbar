@@ -3002,9 +3002,8 @@ pub(crate) fn offered_name_admitted(target: &str, offered: &str) -> bool {
 /// there is nothing the operator can move it to yet.
 fn log_operator_anchors(owner: InstanceId, need: NeedId, trust_from: &str, roots: &[Vec<u8>]) {
     for der in roots {
-        let digest = ring::digest::digest(&ring::digest::SHA256, der);
+        let digest = busbar_contract::crypto::sha256(der);
         let sha256: String = digest
-            .as_ref()
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
@@ -3387,7 +3386,7 @@ impl DeclaredConns for Connector {
                  end's certificate is NOT verified. The flag is deprecated and refused from busbar \
                  1.7.0; configure the server's CA instead of disabling verification",
             );
-            Arc::new(crate::tls::client::unverified_client_config())
+            crate::tls::client::unverified_client_config().map_err(|_| ConnError::Refused)?
         } else {
             let declared = self.declared.lock().expect("declared needs");
             let trust_from = declared

@@ -102,7 +102,7 @@ impl TicketRefusal {
 
 fn ticket_id() -> Result<String, TicketRefusal> {
     let mut raw = [0u8; 16];
-    getrandom::fill(&mut raw).map_err(|_| TicketRefusal::NoRandomness)?;
+    busbar_contract::crypto::fill(&mut raw).map_err(|_| TicketRefusal::NoRandomness)?;
     Ok(hex::encode(raw))
 }
 

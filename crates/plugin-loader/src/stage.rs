@@ -186,7 +186,8 @@ impl Drop for Staged {
 fn random_hex(n: usize) -> Result<String, String> {
     let mut buf = vec![0u8; n];
 
-    getrandom::fill(&mut buf).map_err(|e| format!("cannot gather staging randomness: {e}"))?;
+    busbar_contract::crypto::fill(&mut buf)
+        .map_err(|e| format!("cannot gather staging randomness: {e}"))?;
     Ok(hex::encode(buf))
 }
 

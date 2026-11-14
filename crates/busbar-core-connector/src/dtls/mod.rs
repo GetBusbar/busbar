@@ -81,28 +81,12 @@ impl SessionCert {
     /// Mint a fresh self-signed ECDSA P-256 certificate: the crypto backend generates the key and
     /// keeps it (`busbar_contract::crypto::dtls::dtls_self_signed`); dropping the cert forgets it.
     pub fn mint() -> Result<Self, Failure> {
-        use ::ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
         #[expect(
             clippy::disallowed_methods,
             reason = "error: the minting failure's text"
         )]
-        let failed = |e: &dyn std::fmt::Display| Failure::Certificate(e.to_string());
-        let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
-            .map_err(|e| failed(&e))?;
-        let pkcs8 = pkcs8.as_ref();
-        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8, &rng)
-            .map_err(|e| failed(&e))?;
-        let signer = rcgen::KeyPair::try_from(pkcs8).map_err(|e| failed(&e))?;
-        let cert = rcgen::CertificateParams::new(Vec::<String>::new())
-            .and_then(|p| p.self_signed(&signer))
-            .map_err(|e| failed(&e))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the session certificate's DER is kept owned, once per minted session"
-        )]
-        let der = cert.der().to_vec();
-        let handle = ring::register_key(Arc::new(pair)).map_err(|e| failed(&e))?;
+        let cert =
+            crypto::dtls::dtls_self_signed().map_err(|e| Failure::Certificate(e.to_string()))?;
         Ok(SessionCert {
             fingerprint: sha256(cert.der()),
             cert,
@@ -123,10 +107,10 @@ impl SessionCert {
 
     fn dimpl(&self) -> dimpl::DtlsCertificate {
         // busbar:expect(bp::clone_alloc, reason = "boot: dimpl takes the certificate owned, once per association handshake")
-        let certificate = self.der.clone();
+        let certificate = self.cert.der().to_vec();
         dimpl::DtlsCertificate {
             certificate,
-            private_key: self.handle.clone(),
+            private_key: self.cert.handle().to_vec(),
         }
     }
 }

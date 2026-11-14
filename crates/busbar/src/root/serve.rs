@@ -2630,7 +2630,7 @@ pub(crate) async fn compose_planes_over(
     // busbar:expect(bp::fresh_buffer, reason = "config: planes are composed once per configuration")
     let mut staged_tables = Vec::new();
     if let Some(proof) = &first_start {
-        use sha2::{Digest, Sha256};
+        use busbar_contract::crypto::Sha256;
         // busbar:expect(bp::fresh_buffer, reason = "config: planes are composed once per configuration")
         let mut plan = Vec::new();
         for (instance, plugin) in doors {

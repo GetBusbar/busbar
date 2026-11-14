@@ -5766,7 +5766,6 @@ fn bearer_of(route: &busbar_kernel::plane_driver::MemberRoute) -> String {
 
 // WASTE-AUTH-SECRETS W3 (T3a): ten models on one provider share one credential reference, so the
 // door step resolves it once, not once per model.
-#[cfg(feature = "auth-header")]
 #[test]
 fn door_step_ten_models_one_vault_ref_resolves_once() {
     let key_file = own_secret("w3-ten", "sk-ten-models");
@@ -5788,7 +5787,6 @@ fn door_step_ten_models_one_vault_ref_resolves_once() {
 }
 
 // T3b: two providers with three models each resolve two references, one per provider.
-#[cfg(feature = "auth-header")]
 #[test]
 fn door_step_two_providers_two_refs_resolve_once_each() {
     let first = own_secret("w3-two-a", "sk-first");
@@ -5819,7 +5817,6 @@ fn door_step_two_providers_two_refs_resolve_once_each() {
 
 // T3c: nothing is kept across door-step calls: each call (boot, each reload) resolves fresh, so a
 // rotated value reaches the models on the next call.
-#[cfg(feature = "auth-header")]
 #[test]
 fn door_step_each_call_resolves_fresh() {
     let key_file = own_secret("w3-fresh", "sk-before");

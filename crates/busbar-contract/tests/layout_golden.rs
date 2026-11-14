@@ -63,8 +63,8 @@ use busbar_contract::abi::auth::{
     IdentityOut as AuthIdentityOut, LoginField as AuthLoginField, NamedValue as AuthNamedValue,
     OpenOutboundIn as AuthOpenOutboundIn, OpenOutboundOut as AuthOpenOutboundOut,
     OutboundReadyIn as AuthOutboundReadyIn, OutboundReadyOut as AuthOutboundReadyOut,
-    RequestFacts as AuthRequestFacts, StripName as AuthStripName, StyleDecl as AuthStyleDecl,
-    ServeIn as AuthServeIn, TargetIn as AuthTargetIn, TargetOut as AuthTargetOut,
+    RequestFacts as AuthRequestFacts, ServeIn as AuthServeIn, StripName as AuthStripName,
+    StyleDecl as AuthStyleDecl, TargetIn as AuthTargetIn, TargetOut as AuthTargetOut,
     VerifyIn as AuthVerifyIn,
 };
 use busbar_contract::abi::host::directory as hdir;
@@ -580,7 +580,16 @@ fn compute_layout() -> String {
     record!(
         s,
         AuthServeIn,
-        [head, method, path, query, headers, headers_len, body, client]
+        [
+            head,
+            method,
+            path,
+            query,
+            headers,
+            headers_len,
+            body,
+            client
+        ]
     );
     record!(s, PlaneOps, [head, authenticated_route]);
     record!(s, TransportOps, [head]);
@@ -1547,7 +1556,11 @@ fn compute_layout() -> String {
         hdir::DirectoryResult,
         [code, index, version, state, more, count, active]
     );
-    record!(s, hdir::DirectoryGetIn, [head, kind, _reserved, id, result, into]);
+    record!(
+        s,
+        hdir::DirectoryGetIn,
+        [head, kind, _reserved, id, result, into]
+    );
     record!(
         s,
         hdir::DirectoryLookupIn,
@@ -1558,11 +1571,26 @@ fn compute_layout() -> String {
         hdir::DirectoryScanIn,
         [head, kind, limit, scope, after, result, into]
     );
-    record!(s, hdir::DirectoryCountIn, [head, kind, _reserved, scope, result]);
+    record!(
+        s,
+        hdir::DirectoryCountIn,
+        [head, kind, _reserved, scope, result]
+    );
     record!(
         s,
         hdir::DirectoryCreateIn,
-        [head, kind, state, source, _reserved, document, indexes, indexes_len, result, into]
+        [
+            head,
+            kind,
+            state,
+            source,
+            _reserved,
+            document,
+            indexes,
+            indexes_len,
+            result,
+            into
+        ]
     );
     record!(
         s,

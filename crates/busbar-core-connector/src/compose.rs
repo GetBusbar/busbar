@@ -1718,11 +1718,8 @@ impl Connection {
     pub fn peer_cert_hash(&self) -> Option<String> {
         let tls = self.tls.as_ref().filter(|t| !t.is_handshaking())?;
         let leaf = tls.peer_certificates()?.first()?;
-        let digest = ring::digest::digest(
-            crate::tls::client::end_point_digest(leaf.as_ref()),
-            leaf.as_ref(),
-        );
-        Some(hex::encode(digest.as_ref()))
+        let digest = crate::tls::client::end_point_digest(leaf.as_ref()).digest(leaf.as_ref());
+        Some(hex::encode(digest))
     }
 
     /// Why the connection failed, once it has: the stage it failed in (the socket's open,

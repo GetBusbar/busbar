@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn a_legacy_overlay_file_is_classified_by_what_it_holds() {
         let mut random = [0; 16];
-        getrandom::fill(&mut random).unwrap();
+        busbar_contract::crypto::fill(&mut random).unwrap();
         let directory =
             std::env::temp_dir().join(format!("busbar-legacy-classify-{}", hex::encode(random)));
         std::fs::create_dir(&directory).unwrap();

@@ -442,49 +442,79 @@ fn refusal_list(
     out
 }
 
-pub(crate) fn validate_config_command() -> i32 {
-    for w in crate::root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
-        eprintln!("{w}");
-    }
-    let providers_override = providers_override();
-    let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
-    let ignore_overlay = ignore_overlay_requested(std::env::args());
+/// What `--validate`'s offline judgement established about the authored (unmigrated) bytes.
+pub(crate) struct Validated {
+    pub cfg: config::RootCfg,
+    /// The loaded documents; the overlay document has already been merged into `cfg`.
+    pub loaded: busbar_kernel::LoadedConfig,
+    /// `config_validate::check`'s registry.
+    pub registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+}
 
-    let mut loaded = match load_config_from_disk(
-        &config_path,
-        providers_override.as_deref(),
-        ignore_overlay,
-        config::EnvSubst::Lenient,
-    ) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!(
+/// Which step of `--validate`'s judgement refused, with the refusal it carried.
+#[derive(Debug)]
+pub(crate) enum ValidateRefusal {
+    /// `load_config_from_disk` refused the files.
+    Load(String),
+    /// `config::resolve` refused the loaded documents.
+    Resolve(Vec<String>),
+    /// `config_validate::check` refused the resolved configuration.
+    Check(config_validate::Refusal),
+}
+
+impl ValidateRefusal {
+    /// The coded refusal `--validate` prints for this outcome.
+    pub(crate) fn render(&self) -> String {
+        match self {
+            Self::Load(e) => format!("[error] {}", diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded(e)),
+            Self::Resolve(errs) => refusal_list(
+                &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
+                "config errors",
+                errs,
+            ),
+            Self::Check(config_validate::Refusal::Config(errs)) => refusal_list(
+                &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
+                "config validation failed",
+                errs,
+            ),
+            Self::Check(config_validate::Refusal::Root(e)) => refusal_list(
+                &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
+                "config validation failed",
+                std::slice::from_ref(e),
+            ),
+            Self::Check(config_validate::Refusal::Plugins(e)) => format!(
+                "[error] {}",
+                diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.coded(e)
+            ),
+            Self::Check(config_validate::Refusal::Unresolved(e)) => format!(
                 "[error] {}",
                 diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded(e)
-            );
-            return EXIT_FAILURE;
+            ),
         }
-    };
-    let providers_path = loaded.providers_path.clone();
+    }
+}
+
+/// `--validate`'s offline judgement of the authored bytes: load, overlay, resolve, overlay merge
+/// and `config_validate::check`. Reads files only; never opens a Store or loads plugin code.
+pub(crate) fn validate_judged(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    ignore_overlay: bool,
+) -> Result<Validated, ValidateRefusal> {
+    let mut loaded = load_config_from_disk(
+        config_path,
+        providers_override,
+        ignore_overlay,
+        config::EnvSubst::Lenient,
+    )
+    .map_err(ValidateRefusal::Load)?;
     let unset_env_vars = loaded.unset_env_vars.clone();
 
     if let Some(doc) = loaded.overlay_doc.as_ref() {
         config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
     }
-    let mut cfg = match config::resolve(&loaded.deploy, &loaded.defs) {
-        Ok(c) => c,
-        Err(errs) => {
-            eprintln!(
-                "{}",
-                refusal_list(
-                    &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
-                    "config errors",
-                    &errs
-                )
-            );
-            return EXIT_FAILURE;
-        }
-    };
+    let mut cfg =
+        config::resolve(&loaded.deploy, &loaded.defs).map_err(ValidateRefusal::Resolve)?;
 
     if let Some(doc) = loaded.overlay_doc.take() {
         config::overlay::merge_into(&mut cfg, doc);
@@ -496,12 +526,12 @@ pub(crate) fn validate_config_command() -> i32 {
             .map(|_| ())
             .map_err(|errors| errors.join("\n  - "))
     };
-    let registry = match config_validate::check(
+    let registry = config_validate::check(
         &cfg,
         config_validate::Check {
             plugins: &loaded.deploy.plugins,
             unset_env_vars: &unset_env_vars,
-            root: &root_rules,
+            root: &destination_guard,
             fetch: None,
             resolve_builtins: true,
         },
@@ -515,50 +545,21 @@ pub(crate) fn validate_config_command() -> i32 {
 }
 
 pub(crate) fn validate_config_command() -> i32 {
+    for w in crate::root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
+        eprintln!("{w}");
+    }
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
-    let safe_mode = safe_mode_requested(std::env::args());
+    let ignore_overlay = ignore_overlay_requested(std::env::args());
 
     let Validated {
         cfg,
         loaded,
         registry,
-    } = match validate_judged(&config_path, providers_override.as_deref(), safe_mode) {
+    } = match validate_judged(&config_path, providers_override.as_deref(), ignore_overlay) {
         Ok(v) => v,
         Err(refusal) => {
-            eprintln!(
-                "{}",
-                refusal_list(
-                    &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
-                    "config validation failed",
-                    &errs
-                )
-            );
-            return EXIT_FAILURE;
-        }
-        Err(config_validate::Refusal::Root(e)) => {
-            eprintln!(
-                "{}",
-                refusal_list(
-                    &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
-                    "config validation failed",
-                    std::slice::from_ref(&e)
-                )
-            );
-            return EXIT_FAILURE;
-        }
-        Err(config_validate::Refusal::Plugins(e)) => {
-            eprintln!(
-                "[error] {}",
-                diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.coded(e)
-            );
-            return EXIT_FAILURE;
-        }
-        Err(config_validate::Refusal::Unresolved(e)) => {
-            eprintln!(
-                "[error] {}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded(e)
-            );
+            eprintln!("{}", refusal.render());
             return EXIT_FAILURE;
         }
     };

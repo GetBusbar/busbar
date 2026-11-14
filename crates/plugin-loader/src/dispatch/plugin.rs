@@ -2879,8 +2879,7 @@ impl<K: Kind> Plugin<K> {
         // for measurement class identity after that comparison.
         let stated = &v.rendering;
         let mut statement_digest = [0; 32];
-        statement_digest
-            .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, stated).as_ref());
+        statement_digest.copy_from_slice(&busbar_contract::crypto::sha256(stated));
         #[expect(
             clippy::disallowed_methods,
             reason = "boot: an instance is bound once, at load"
