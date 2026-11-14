@@ -490,9 +490,41 @@ pub fn parse_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
 /// What serde_json refuses for the document, in its words, and a number its typed reader cannot
 /// read (one beyond `f64`).
 pub fn parse_typed_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
+    typed_value(bytes, drop)
+}
+
+/// [`parse_typed_value`] for a document whose strings are secret: the checked copy it reads
+/// first is [`wipe`]d, as the caller wipes the value it is answered.
+///
+/// # Errors
+/// As [`parse_typed_value`].
+pub fn parse_typed_value_wiping(bytes: &[u8]) -> Result<Value, serde_json::Error> {
+    typed_value(bytes, |mut checked| wipe(&mut checked))
+}
+
+/// The typed reading of `bytes`; `discard` takes the checked copy once it is read.
+fn typed_value(bytes: &[u8], discard: impl FnOnce(Value)) -> Result<Value, serde_json::Error> {
     // serde_json's own refusal and depth bound first: the token walk recurses per container.
-    serde_json::from_slice::<Value>(bytes)?;
-    serde_json::from_slice::<Tokens<Typed>>(bytes).map(|value| value.0)
+    let checked = serde_json::from_slice::<Value>(bytes)?;
+    let typed = serde_json::from_slice::<Tokens<Typed>>(bytes).map(|value| value.0);
+    discard(checked);
+    typed
+}
+
+/// Zero `value`'s owned strings and object keys, leaving it empty of them.
+pub fn wipe(value: &mut Value) {
+    use zeroize::Zeroize;
+    match value {
+        Value::String(text) => text.zeroize(),
+        Value::Array(items) => items.iter_mut().for_each(wipe),
+        Value::Object(items) => {
+            for (mut key, mut value) in std::mem::take(items) {
+                key.zeroize();
+                wipe(&mut value);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// How a document's scalar tokens are read; its containers are walked by [`Tokens`].
