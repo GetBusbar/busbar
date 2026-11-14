@@ -1017,7 +1017,9 @@ fn bound_check(cx: &mut Op<'_>, wire: &Wire) -> Bound {
         let st = wire.state();
         (st.bound_ms, st.bound_at)
     };
-    if ms == 0 {
+    // A ticketless op has no connector to read the clock through: unbounded, as with no clock, and
+    // no `NoTicket` made that nothing hands to plugin code (R28).
+    if ms == 0 || !cx.can_pend() {
         return Bound::None;
     }
     let now = cx.connector().ok().and_then(|mut c| match c.clock_now() {
@@ -1051,6 +1053,11 @@ enum Served {
 
 /// The host's monotonic clock plus `delta`, or "only on a wake" when the host offers no clock.
 fn later(cx: &mut Op<'_>, delta: u64) -> u64 {
+    if !cx.can_pend() {
+        // No connector on a ticketless op: "only on a wake", with no `NoTicket` made that nothing
+        // hands to plugin code (R28).
+        return u64::MAX;
+    }
     let now = cx.connector().ok().and_then(|mut c| match c.clock_now() {
         Poll::Ready(Ok(r)) => Some(r.mono_ns),
         _ => None,
