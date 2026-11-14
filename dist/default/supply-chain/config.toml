@@ -353,7 +353,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.hyper-rustls]]
 version = "0.27.9"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.hyper-util]]
 version = "0.1.20"
@@ -433,7 +433,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.lru-slab]]
 version = "0.1.2"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.matchit]]
 version = "0.8.4"
@@ -662,11 +662,11 @@ criteria = "safe-to-deploy"
 
 [[exemptions.quinn]]
 version = "0.11.9"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.quinn-proto]]
 version = "0.11.19"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.r-efi]]
 version = "5.3.0"
@@ -738,7 +738,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.reqwest]]
 version = "0.12.28"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.ring]]
 version = "0.17.14"
@@ -950,10 +950,6 @@ criteria = "safe-to-deploy"
 version = "0.2.29"
 criteria = "safe-to-deploy"
 
-[[exemptions.tinyvec]]
-version = "1.13.3"
-criteria = "safe-to-deploy"
-
 [[exemptions.tokio]]
 version = "1.53.3"
 criteria = "safe-to-deploy"
@@ -968,7 +964,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.tokio-tungstenite]]
 version = "0.29.0"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.tokio-util]]
 version = "0.7.18"
@@ -980,7 +976,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.tower-http]]
 version = "0.6.11"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.tower-layer]]
 version = "0.3.3"
@@ -1056,7 +1052,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-futures]]
 version = "0.4.80"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.wasm-bindgen-macro]]
 version = "0.2.130"
@@ -1072,7 +1068,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.wasm-streams]]
 version = "0.4.2"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.web-sys]]
 version = "0.3.107"
@@ -1140,10 +1136,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.windows_x86_64_msvc]]
 version = "0.52.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.wit-bindgen]]
-version = "0.57.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.x509-parser]]
