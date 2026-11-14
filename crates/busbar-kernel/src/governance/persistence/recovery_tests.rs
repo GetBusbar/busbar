@@ -1375,6 +1375,50 @@ async fn observing_history_confirms_extended_local_head() {
     ));
 }
 
+/// WHO: a recovery write or observation beside this node's live journal owner.
+/// DOES: accepting the owner's head as an extension of an earlier proof reads
+/// the originals appended after that proof; one later forked (a validly
+/// resealed different original at the same sequence) or damaged in the Store
+/// refuses, though the selected head, owner row and admission are unchanged.
+/// WHY: a same-owner, no-later-sequence check alone would accept a rewritten
+/// journal tail as this owner's history.
+#[tokio::test]
+async fn observing_history_refuses_a_forked_or_damaged_tail_after_its_proof() {
+    for fork in [true, false] {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+        recovery.persist(&intent()).await.unwrap();
+        let mut observing = History::observing(&recovery.store, &recovery.journal);
+        observing.proof(7).await.unwrap();
+        live_append(&recovery.journal).await;
+        {
+            let mut state = backend.state.lock().unwrap();
+            let (at, mut tail) = state
+                .rows
+                .iter()
+                .filter_map(|(at, raw)| {
+                    let record = JournalRecord::decode(raw.expose(&crate::seal::lend())).ok()?;
+                    (record.node == 7).then(|| (at.clone(), record))
+                })
+                .max_by_key(|(_, record)| record.node_seq)
+                .expect("appended tail original");
+            let replaced = if fork {
+                tail.body = b"a different original at the same sequence".to_vec();
+                tail.body_hash = tail.digest_of_body();
+                tail.hash = tail.digest_of_chain();
+                tail.encode()
+            } else {
+                b"corrupt original".to_vec()
+            };
+            state.rows.insert(at, Secret::new(replaced));
+        }
+        assert!(
+            observing.finish().await.is_err(),
+            "a rewritten tail after the proof is not this owner's history (fork: {fork})"
+        );
+    }
+}
+
 /// A candidate that puts or deletes a recovery selected-head row.
 fn selects_recovery_row(prepared: &PreparedCandidate) -> bool {
     prepared
