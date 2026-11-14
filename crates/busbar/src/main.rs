@@ -1435,35 +1435,16 @@ async fn run(
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
 
-    let door_auths = root::door_steps::process_auths();
-
-    let door_live_handle: std::sync::Arc<
-        std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>,
-    > = std::sync::Arc::default();
-    let door_models = root::model_egress::ModelServing {
-        pools: door_model_pools,
-        lanes: app
-            .engine_tables_view()
-            .model_indices()
-            .into_iter()
-            .map(|(model, lane)| (model.to_string(), lane))
-            .collect(),
-        app: root::model_egress::LiveApp::new(std::sync::Arc::clone(&door_live_handle), &app),
-    };
-    let door_reach = root::door_steps::DoorReach {
-        providers: &door_providers,
-        secrets: Arc::clone(&app.secret_resolver)
-            as Arc<dyn busbar_contract::secret::SecretResolve>,
-        auths: std::sync::Arc::clone(&door_auths),
-        conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
-        stream_ceiling_secs: app.limits.as_ref().map_or(
-            busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
-            |l| l.upstream_request_timeout_secs,
-        ),
-        catalog: Some(&deploy.models),
-        models: Some(&door_models),
-        upgrades: root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
-    };
+    let door_live_handle = Arc::default();
+    let door_models = model_serving(door_model_pools, &app, &door_live_handle);
+    let door_reach = door_reach_of(
+        &app,
+        &door_providers,
+        &door_models,
+        Some(&deploy.models),
+        app.limits.as_ref(),
+        root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
+    );
     let mut served = root::serve::compose_served_checked(
         app.governance.clone(),
         root::boot::door_planes(),
@@ -1645,31 +1626,15 @@ async fn run(
                     return;
                 }
             };
-            let models = root::model_egress::ModelServing {
-                pools: cfg.model_pools.clone(),
-                lanes: next
-                    .engine_tables_view()
-                    .model_indices()
-                    .into_iter()
-                    .map(|(model, lane)| (model.to_string(), lane))
-                    .collect(),
-                app: root::model_egress::LiveApp::new(std::sync::Arc::clone(&live), next),
-            };
-            let reach = root::door_steps::DoorReach {
-                providers: &cfg.providers,
-                secrets: Arc::clone(&next.secret_resolver)
-                    as Arc<dyn busbar_contract::secret::SecretResolve>,
-                auths: std::sync::Arc::clone(&auths),
-                conns: Arc::clone(root::connector::the())
-                    as Arc<dyn busbar_contract::conn::PollConns>,
-                stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
-                    busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
-                    |l| l.upstream_request_timeout_secs,
-                ),
-                models: Some(&models),
-                catalog: None,
-                upgrades: upgrades.clone(),
-            };
+            let models = model_serving(cfg.model_pools.clone(), next, &live);
+            let reach = door_reach_of(
+                next,
+                &cfg.providers,
+                &models,
+                None,
+                busbar_kernel::config::limits::installed().as_ref(),
+                upgrades.clone(),
+            );
             door_appliers.refresh_models(
                 sections,
                 &root::serve::DoorEgress {
@@ -2016,7 +1981,7 @@ fn model_serving(
             .into_iter()
             .map(|(model, lane)| (model.to_string(), lane))
             .collect(),
-        app: root::model_egress::LiveApp::new(Arc::clone(live), Arc::clone(app)),
+        app: root::model_egress::LiveApp::new(Arc::clone(live), app),
     }
 }
 
