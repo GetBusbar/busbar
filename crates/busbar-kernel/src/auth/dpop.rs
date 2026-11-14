@@ -5,24 +5,28 @@
 //!
 //! Under `oauth_as.fapi2: true` every token the authorization server mints is DPoP-bound (its
 //! `cnf.jkt` names the client's key), and a bound token is presented as `Authorization: DPoP
-//! <token>` with a `DPoP` proof header (s7.1). The door decides three things, before the chain runs:
+//! <token>` with a `DPoP` proof header (s7.1). Busbar reads `cnf.jkt`, so it is a resource that
+//! knows DPoP, and the door decides three things before the chain runs:
 //!
-//! 1. **A DPoP presentation, with an authorization server configured:** exactly one proof, verified
-//!    by the plane through the seam (`oauth_as::seam::AsPlaneSeam::verify_dpop`: signature, `htm`,
-//!    `htu`, `iat` window, `ath`, single-use `jti`, and the proof key's thumbprint equal to the
-//!    token's `cnf.jkt`). Proven, the token goes to the chain exactly as a bearer would, so the
-//!    chain still verifies its signature, issuer and audience. Anything else is refused.
-//! 2. **A DPoP-bound token presented as a bearer** (any carrier), with an authorization server
-//!    configured, is refused: s7.1, a bound token without its proof is a stolen token. With none,
-//!    it is a bearer like any other, as 1.5.5 judged it.
+//! 1. **A DPoP presentation.** With an authorization server configured: exactly one proof,
+//!    verified by the plane through the seam (`oauth_as::seam::AsPlaneSeam::verify_dpop`:
+//!    signature, `htm`, `htu`, `iat` window, `ath`, single-use `jti`, and the proof key's
+//!    thumbprint equal to the token's `cnf.jkt`). Proven, the token goes to the chain exactly as a
+//!    bearer would, so the chain still verifies its signature, issuer and audience. Anything else
+//!    is refused. With none, the presentation cannot be verified, so it is refused: it never
+//!    falls through to another carrier.
+//! 2. **A DPoP-bound token presented as a bearer**, on any occurrence of any carrier, is refused
+//!    whether or not an authorization server is configured (s7.2). Any `cnf.jkt`, whatever its
+//!    type, makes a token bound.
 //! 3. **Everything else is untouched**, and that is most requests: a token that was never bound
-//!    takes the bearer path it always took, and with no authorization server configured an
-//!    `Authorization: DPoP` header is what it was in 1.5.5 — not a credential carrier.
+//!    takes the bearer path it always took.
 //!
+//! Every refusal is recorded as BUSBAR-4032 (never the token) and explained to the caller.
 //! Reading `cnf` off an unverified payload is sound for the reason `auth::audience` gives: here it
 //! only ever REFUSES. A proven presentation still has to pass the chain's real signature check.
 
 use super::audience::Bearer;
+use crate::diagnostics::{diag_warn, AUTH_SENDER_CONSTRAINT_REFUSED};
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, HeaderName, Method};
 
@@ -30,12 +34,88 @@ pub(crate) const DPOP_HEADER: HeaderName = HeaderName::from_static("dpop");
 
 const DPOP_SCHEME: &str = "DPoP";
 
+pub(crate) const PROOF_FAILED_DESCRIPTION: &str =
+    "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one did not verify.";
+
+pub(crate) const BOUND_BEARER_DESCRIPTION: &str =
+    "This access token is DPoP-bound (cnf.jkt) and cannot be presented as a bearer token \
+     (RFC 9449 section 7.2). Present it with the DPoP scheme and a DPoP proof.";
+
+pub(crate) const UNVERIFIABLE_DESCRIPTION: &str =
+    "This deployment does not verify DPoP proofs, so a DPoP-bound or DPoP-scheme presentation \
+     cannot be accepted (RFC 9449). Present an unbound bearer token.";
+
 pub(crate) enum SenderConstraint {
     Unconstrained,
 
     Proven(String),
 
-    Refused,
+    Refused(Refusal),
+}
+
+/// Why a sender-constrained presentation was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// A DPoP presentation whose proof is missing, duplicated or did not verify.
+    ProofFailed,
+    /// A DPoP-bound token presented as a bearer, on any carrier.
+    BoundBearer,
+    /// A DPoP presentation this deployment cannot verify (no authorization server).
+    Unverifiable,
+}
+
+impl Refusal {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProofFailed => "proof_failed",
+            Self::BoundBearer => "bound_bearer",
+            Self::Unverifiable => "unverifiable",
+        }
+    }
+
+    /// What the caller is told. With no authorization server a bound bearer cannot be fixed by
+    /// adding a proof, so it is told what it can do: present an unbound token.
+    #[must_use]
+    pub fn description(self, no_authorization_server: bool) -> &'static str {
+        match self {
+            Self::ProofFailed => PROOF_FAILED_DESCRIPTION,
+            Self::BoundBearer if !no_authorization_server => BOUND_BEARER_DESCRIPTION,
+            Self::BoundBearer | Self::Unverifiable => UNVERIFIABLE_DESCRIPTION,
+        }
+    }
+}
+
+/// The surface a sender-constraint refusal happened on, as BUSBAR-4032 names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Surface {
+    Door,
+    Plane,
+    Exchange,
+    Session,
+}
+
+impl std::fmt::Display for Surface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Door => "door",
+            Self::Plane => "plane",
+            Self::Exchange => "exchange",
+            Self::Session => "session",
+        })
+    }
+}
+
+/// The one way a sender-constraint refusal is made: recorded (never the token), then returned.
+fn refused(reason: Refusal, surface: Surface, no_authorization_server: bool) -> SenderConstraint {
+    diag_warn!(
+        AUTH_SENDER_CONSTRAINT_REFUSED,
+        surface = %surface,
+        reason = %reason.as_str(),
+        no_authorization_server,
+        "sender-constrained credential refused"
+    );
+    SenderConstraint::Refused(reason)
 }
 
 pub(crate) fn dpop_credential(headers: &HeaderMap) -> Option<String> {
@@ -50,10 +130,9 @@ pub(crate) async fn judge(
     method: &Method,
     path: &str,
     headers: &HeaderMap,
-    bearer: Option<&str>,
-    read: &mut Option<Bearer>,
+    surface: Surface,
 ) -> SenderConstraint {
-    judge_method(app, method.as_str(), path, headers, bearer, read).await
+    judge_method(app, method.as_str(), path, headers, surface).await
 }
 
 pub(crate) async fn judge_method(
@@ -61,13 +140,13 @@ pub(crate) async fn judge_method(
     method: &str,
     path: &str,
     headers: &HeaderMap,
-    bearer: Option<&str>,
-    read: &mut Option<Bearer>,
+    surface: Surface,
 ) -> SenderConstraint {
+    let no_authorization_server = app.oauth_as.is_none();
     if let Some(token) = dpop_credential(headers) {
         let (Some(plane), Some(seam)) = (app.oauth_as.as_ref(), crate::oauth_as::seam::seam())
         else {
-            return SenderConstraint::Unconstrained;
+            return refused(Refusal::Unverifiable, surface, no_authorization_server);
         };
 
         let mut proofs = headers.get_all(DPOP_HEADER).iter();
@@ -76,7 +155,7 @@ pub(crate) async fn judge_method(
             _ => None,
         };
         let Some(proof) = proof else {
-            return SenderConstraint::Refused;
+            return refused(Refusal::ProofFailed, surface, no_authorization_server);
         };
         let presented = crate::oauth_as::seam::DpopPresentation {
             method: method.to_string(),
@@ -87,28 +166,64 @@ pub(crate) async fn judge_method(
         return if (seam.verify_dpop)(plane, presented).await {
             SenderConstraint::Proven(token)
         } else {
-            SenderConstraint::Refused
+            refused(Refusal::ProofFailed, surface, no_authorization_server)
         };
     }
 
-    bearer_constraint(app.oauth_as.is_some(), bearer, read)
+    match bearer_constraint(headers, app.auth.carriers()) {
+        SenderConstraint::Refused(reason) => refused(reason, surface, no_authorization_server),
+        unconstrained => unconstrained,
+    }
 }
 
-fn bearer_constraint(
-    authorization_server_configured: bool,
-    bearer: Option<&str>,
-    read: &mut Option<Bearer>,
-) -> SenderConstraint {
-    if authorization_server_configured
-        && bearer.is_some_and(|t| read.get_or_insert_with(|| Bearer::read(t)).dpop_bound())
+/// A bound token on any occurrence of any configured carrier, or of `Authorization` as a bearer,
+/// is refused: duplicate or secondary carriers cannot hide it behind an unbound candidate.
+fn bearer_constraint(headers: &HeaderMap, carriers: &[HeaderName]) -> SenderConstraint {
+    if carries_bound(headers, carriers)
+        || (!carriers.contains(&AUTHORIZATION) && carries_bound(headers, &[AUTHORIZATION]))
     {
-        return SenderConstraint::Refused;
+        return SenderConstraint::Refused(Refusal::BoundBearer);
     }
     SenderConstraint::Unconstrained
 }
 
+/// Whether any occurrence of any of `carriers` holds a DPoP-bound token (`Authorization` read
+/// as a bearer).
+pub(crate) fn carries_bound(headers: &HeaderMap, carriers: &[HeaderName]) -> bool {
+    carriers.iter().any(|name| {
+        // Inspect every occurrence: choosing only the first lets duplicate carriers hide a bound
+        // credential while another reader takes a different occurrence.
+        headers.get_all(name).iter().any(|value| {
+            let Ok(value) = value.to_str() else {
+                return false;
+            };
+            if *name == AUTHORIZATION {
+                super::AuthMiddleware::extract_bearer_token(value)
+                    .is_some_and(|token| is_dpop_bound(&token))
+            } else {
+                is_dpop_bound(value)
+            }
+        })
+    })
+}
+
 pub fn is_dpop_bound(token: &str) -> bool {
     Bearer::read(token).dpop_bound()
+}
+
+/// A line session presents one credential for its whole life and can never carry a per-request
+/// DPoP proof, so a bound credential is always refused there (RFC 9449 s7.1). Records
+/// BUSBAR-4032 and answers `true` when it refuses.
+pub fn refuse_bound_session(token: &str, no_authorization_server: bool) -> bool {
+    if !is_dpop_bound(token) {
+        return false;
+    }
+    let _ = refused(
+        Refusal::Unverifiable,
+        Surface::Session,
+        no_authorization_server,
+    );
+    true
 }
 
 #[cfg(test)]

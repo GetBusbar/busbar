@@ -80,7 +80,7 @@ pub fn refuse(plane: &str, carrier: &str, sentence: &str) {
     eprintln!("busbar: {plane} {carrier} serve refused to start: {sentence}");
 }
 
-async fn session(
+pub(crate) async fn session(
     app: Arc<busbar_kernel::state::App>,
     plane: &str,
     carrier: &str,
@@ -129,6 +129,12 @@ async fn session(
                 );
                 return Err(refusal);
             }
+        }
+        if busbar_kernel::auth::dpop::refuse_bound_session(token, app.oauth_as.is_none()) {
+            return Err(format!(
+                "the credential in {env} is DPoP-bound (cnf.jkt), and a {carrier} session cannot \
+                 carry a DPoP proof (RFC 9449), so it is refused. Set {env} to an unbound token."
+            ));
         }
     }
 

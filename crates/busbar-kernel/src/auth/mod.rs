@@ -1288,6 +1288,49 @@ fn unauthorized_response(
     unauthorized_ingress_response(ingress_for_path(app, path))
 }
 
+/// The one rendering of a sender-constraint refusal for the door and plane admission: the RFC 9728
+/// challenge where the resource declares metadata, the plane's own refusal where it renders
+/// authentication refusals itself, and otherwise the endpoint's native error carrying the reason.
+fn sender_constraint_response(
+    app: &std::sync::Arc<crate::state::App>,
+    path: &str,
+    door: Option<&RefusalDoor>,
+    resource_metadata: Option<&str>,
+    reason: dpop::Refusal,
+) -> Response {
+    let ingress = ingress_for_path(app, path);
+    auth_completion_taps(
+        app,
+        crate::ingress::native::envelope_dialect(ingress),
+        Some(StatusCode::UNAUTHORIZED.as_u16()),
+    );
+    let description = reason.description(app.oauth_as.is_none());
+    if let Some(resource_metadata) = resource_metadata {
+        return challenge::refuse(
+            challenge::ChallengeError::InvalidToken,
+            resource_metadata,
+            description,
+            None,
+        );
+    }
+    if let Some(door) = door {
+        return refuse_door(door);
+    }
+    sender_constraint_native(ingress, description)
+}
+
+fn sender_constraint_native(
+    ingress: crate::plane_driver::dispatch::Ingress,
+    description: &str,
+) -> Response {
+    crate::ingress::native::native_error(
+        ingress,
+        StatusCode::UNAUTHORIZED,
+        busbar_contract::protocol::KIND_AUTHENTICATION,
+        description,
+    )
+}
+
 fn unauthorized_ingress_response(ingress: crate::plane_driver::dispatch::Ingress) -> Response {
     let dialect = crate::ingress::native::envelope_dialect(ingress);
     let message = vendor_auth_failure_message(dialect);
@@ -2373,17 +2416,20 @@ pub(crate) async fn auth_middleware(
                 dpop_proven = true;
                 Some(token)
             }
-            dpop::SenderConstraint::Refused => {
-                return Err(match admission.as_ref() {
-                    Some(adm) => challenge::refuse(
-                        challenge::ChallengeError::InvalidToken,
-                        &adm.resource_metadata,
-                        "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one \
-                         did not verify.",
-                        None,
-                    ),
-                    None => unauthorized_response(&app, &path, door.as_ref()),
-                });
+            dpop::SenderConstraint::Refused(reason) => {
+                if let Some(inbound) = inbound.as_ref() {
+                    inbound.refuse(
+                        busbar_contract::caps::StepName::Authenticate,
+                        busbar_contract::caps::ReasonCode::Unauthenticated,
+                    );
+                }
+                return Err(sender_constraint_response(
+                    &app,
+                    &path,
+                    door.as_ref(),
+                    admission.as_ref().map(|a| a.resource_metadata.as_str()),
+                    reason,
+                ));
             }
         }
     };

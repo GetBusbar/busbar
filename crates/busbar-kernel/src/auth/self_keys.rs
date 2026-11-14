@@ -255,6 +255,9 @@ pub(crate) enum ExchangeError {
     OverCeiling(String),
     /// The mint itself failed (no signing key, store error) → 500.
     MintFailed(String),
+    /// The presented credential's sender constraint (RFC 9449 DPoP) was not met or cannot be
+    /// verified here → 401 `sender_constrained`. No key is minted.
+    SenderConstraint(super::dpop::Refusal),
 }
 
 fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
