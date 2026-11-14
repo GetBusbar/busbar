@@ -7,8 +7,6 @@
 #![deny(missing_docs)]
 
 pub mod carrier;
-#[allow(unsafe_code)]
-pub mod child_job;
 pub mod compose;
 pub mod datagram;
 mod dialled;
