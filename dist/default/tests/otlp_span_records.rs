@@ -267,7 +267,7 @@ fn real_producer_span_records_survive_both_otlp_doors() {
         let dropped_attempts = attempts(DROPPED_PATH);
         for span in &linked {
             assert_eq!(
-                attribute(&span.attributes, "op"),
+                attribute(&span.attributes, "busbar.op"),
                 Some(
                     &opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
                         "chat".into()
@@ -323,8 +323,8 @@ fn real_producer_span_records_survive_both_otlp_doors() {
             assert!(child.start_time_unix_nano >= span.start_time_unix_nano);
             assert!(child.end_time_unix_nano <= span.end_time_unix_nano);
             assert_eq!(
-                attribute(&child.attributes, "request_id"),
-                attribute(&span.attributes, "request_id")
+                attribute(&child.attributes, "busbar.request_id"),
+                attribute(&span.attributes, "busbar.request_id")
             );
             assert_warning_events(child);
             let child_peers: Vec<_> = dropped_attempts
@@ -406,13 +406,13 @@ fn assert_record_fields(span: &opentelemetry_proto::tonic::trace::v1::Span) {
     assert_eq!(span.kind, 1);
     assert!(span.start_time_unix_nano > 0);
     assert!(span.end_time_unix_nano >= span.start_time_unix_nano);
-    for key in ["code.file.path", "code.module.name", "target", "request_id"] {
+    for key in ["code.file.path", "code.module.name", "busbar.target", "busbar.request_id"] {
         assert!(
             matches!(attribute(&span.attributes, key), Some(Value::StringValue(value)) if !value.is_empty()),
             "missing typed full-span attribute {key}: {span:?}"
         );
     }
-    for key in ["code.line.number", "thread.id", "busy_ns", "idle_ns"] {
+    for key in ["code.line.number", "thread.id", "busbar.busy_ns", "busbar.idle_ns"] {
         assert!(
             matches!(attribute(&span.attributes, key), Some(Value::IntValue(_))),
             "missing typed full-span attribute {key}: {span:?}"
@@ -428,7 +428,7 @@ fn assert_warning_events(span: &opentelemetry_proto::tonic::trace::v1::Span) {
         !span.events.is_empty(),
         "cross-dialect warning events were lost: {span:?}"
     );
-    assert!(span.events.iter().any(|event| matches!(attribute(&event.attributes, "level"), Some(Value::StringValue(level)) if level == "WARN")), "the writer's warnings did not reach the collector: {span:?}");
+    assert!(span.events.iter().any(|event| matches!(attribute(&event.attributes, "busbar.level"), Some(Value::StringValue(level)) if level == "WARN")), "the writer's warnings did not reach the collector: {span:?}");
     for control in ["seed", "frequency_penalty"] {
         assert!(
             span.events.iter().any(|event| event
@@ -442,7 +442,7 @@ fn assert_warning_events(span: &opentelemetry_proto::tonic::trace::v1::Span) {
         assert!(event.time_unix_nano >= span.start_time_unix_nano);
         assert!(event.time_unix_nano <= span.end_time_unix_nano);
         assert!(matches!(
-            attribute(&event.attributes, "target"),
+            attribute(&event.attributes, "busbar.target"),
             Some(Value::StringValue(_))
         ));
         assert!(matches!(
