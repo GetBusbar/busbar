@@ -104,28 +104,6 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> Millis;
 }
 
-/// A clock a test drives by hand.
-#[derive(Debug, Default)]
-pub(crate) struct ManualClock {
-    now: std::sync::atomic::AtomicU64,
-}
-
-impl ManualClock {
-    pub fn new() -> Self {
-        ManualClock::default()
-    }
-
-    pub fn advance(&self, by: Millis) {
-        self.now.fetch_add(by, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> Millis {
-        self.now.load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
 pub mod admin;
 
 pub mod audit;

@@ -138,10 +138,6 @@ pub fn card_applied(card: &CardFields) {
         .for_each(|h| h.card_applied(card, &origin));
 }
 
-pub(crate) fn with_origin<T>(origin: &str, f: impl FnOnce() -> T) -> T {
-    crate::config::card::origin::with(origin, f)
-}
-
 pub fn rates_applied(rates: &RawRates<'_>) {
     holder().into_iter().for_each(|h| h.rates_applied(rates));
 }

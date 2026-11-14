@@ -261,6 +261,7 @@ impl DocumentPatch {
     }
 
     /// Returns secret-bearing Store bytes under zeroizing ownership.
+    #[cfg(test)]
     pub(crate) fn to_json_bytes(&self) -> Result<Zeroizing<Vec<u8>>, PatchError> {
         let mut bytes = Zeroizing::new(Vec::new());
         serde_json::to_writer(&mut *bytes, &self.0).map_err(|_| PatchError::Encoding)?;
@@ -440,6 +441,7 @@ impl DocumentPatch {
     /// source tree and serialized bytes are guarded and wiped on success and error paths.
     /// A borrowed YAML Value reader is not equivalent: it refuses scalar-to-string coercions
     /// that the file reader accepts, and has different null/default handling.
+    #[cfg(test)]
     pub(crate) fn parse_deploy_yaml(&self, yaml: &str) -> Result<super::DeployCfg, String> {
         self.parse_deploy_yaml_checked(yaml, |_| Ok(()))
     }
