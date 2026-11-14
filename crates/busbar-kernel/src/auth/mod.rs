@@ -2551,21 +2551,22 @@ pub(crate) async fn auth_middleware(
                             unauthorized_with_completion_taps(&app, path, door.as_ref())
                         })
                     }
-                    AdmittedRefusal::SenderConstraint | AdmittedRefusal::Audience(_) => {
-                        let description = match refused {
-                            AdmittedRefusal::Audience(description) => description,
-                            _ => "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one did not verify.",
-                        };
-                        match admission {
-                            Some(admission) => challenge::refuse(
-                                challenge::ChallengeError::InvalidToken,
-                                &admission.resource_metadata,
-                                description,
-                                None,
-                            ),
-                            None => unauthorized_response(&app, path, door.as_ref()),
-                        }
-                    }
+                    AdmittedRefusal::SenderConstraint(reason) => sender_constraint_response(
+                        &app,
+                        path,
+                        door.as_ref(),
+                        admission.map(|a| a.resource_metadata.as_str()),
+                        reason,
+                    ),
+                    AdmittedRefusal::Audience(description) => match admission {
+                        Some(admission) => challenge::refuse(
+                            challenge::ChallengeError::InvalidToken,
+                            &admission.resource_metadata,
+                            description,
+                            None,
+                        ),
+                        None => unauthorized_response(&app, path, door.as_ref()),
+                    },
                 });
             }
         };
@@ -2662,8 +2663,7 @@ pub(crate) async fn auth_middleware(
             req.method(),
             path,
             inbound_headers.unwrap_or_else(|| req.headers()),
-            client_token.as_deref(),
-            &mut read,
+            dpop::Surface::Door,
         )
         .await
         {
@@ -3202,6 +3202,10 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/plugin_chain_tests.rs"]
 mod plugin_chain_tests;
+
+#[cfg(test)]
+#[path = "tests/chain_walk_tests.rs"]
+mod chain_walk_tests;
 
 #[cfg(test)]
 #[path = "tests/instances_tests.rs"]
