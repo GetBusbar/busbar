@@ -17,11 +17,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
+pub(crate) const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 /// The generation probe failing is reported once per process; every such
 /// rescan still runs the full scan and never assumes "unchanged".
 static GUARD_FALLBACK_REPORTED: AtomicBool = AtomicBool::new(false);
-pub const CARD_ALARMS_TOTAL: &str = "busbar_card_history_alarms_total";
+pub(crate) const CARD_ALARMS_TOTAL: &str = "busbar_card_history_alarms_total";
 const SKEW_MS: u64 = 5 * 60 * 1000;
 fn now_ms() -> u64 {
     crate::store::now_ms()
