@@ -98,6 +98,8 @@ pub struct ProxyChoice {
     secured: Option<Arc<ProxyHop>>,
     plain: Option<Arc<ProxyHop>>,
     exempt: Matcher,
+    /// A `*` entry: hyper-util applies `*` to domain hosts only; ours exempts IP literals too.
+    match_all: bool,
 }
 
 /// The intercept the exemption matcher answers with. It is never dialled: only whether
@@ -116,6 +118,7 @@ impl ProxyChoice {
                 .https(SENTINEL)
                 .no(exempt)
                 .build(),
+            match_all: exempt.split(',').any(|p| p.trim() == "*"),
         }
     }
 
@@ -140,8 +143,38 @@ impl ProxyChoice {
     /// does not is never exempt, so a dial errs toward the proxy, never a silent direct dial.
     #[must_use]
     pub fn exempts(&self, target_host: &str) -> bool {
-        http::Uri::try_from(format!("http://{target_host}/"))
-            .is_ok_and(|u| self.exempt.intercept(&u).is_none())
+        if self.match_all {
+            return true;
+        }
+        // A bare v6 literal is bracketed on the stack (no allocation per dial); one too long to be
+        // an address is never exempt.
+        let mut bracketed = [0_u8; 64];
+        let host = if target_host.contains(':') && !target_host.starts_with('[') {
+            let n = target_host.len();
+            if n + 2 > bracketed.len() {
+                return false;
+            }
+            bracketed[0] = b'[';
+            bracketed[1..=n].copy_from_slice(target_host.as_bytes());
+            bracketed[n + 1] = b']';
+            let Ok(host) = std::str::from_utf8(&bracketed[..n + 2]) else {
+                return false;
+            };
+            host
+        } else {
+            target_host
+        };
+        // `x@10.0.0.1` parses with host() == "10.0.0.1": the read-back refuses it, so userinfo,
+        // a path or a port smuggled into the host never turns into an exemption.
+        http::Uri::builder()
+            .scheme("http")
+            .authority(host)
+            .path_and_query("/")
+            .build()
+            .is_ok_and(|u| {
+                u.host().is_some_and(|h| h.eq_ignore_ascii_case(host))
+                    && self.exempt.intercept(&u).is_none()
+            })
     }
 }
 

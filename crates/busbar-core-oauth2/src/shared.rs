@@ -61,16 +61,14 @@ fn authority_body(value: &[u8]) -> Result<Option<&[u8]>, StorageError> {
 }
 
 fn digest(value: &str) -> String {
-    hex::encode(ring::digest::digest(&ring::digest::SHA256, value.as_bytes()).as_ref())
+    hex::encode(busbar_contract::crypto::sha256(value.as_bytes()))
 }
 
 fn nonce() -> Result<String, StorageError> {
     let mut bytes = [0u8; 16];
-    ring::rand::SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| {
-            StorageError::new("oauth_as store: the system's random source gave nothing")
-        })?;
+    busbar_contract::crypto::fill(&mut bytes).map_err(|_| {
+        StorageError::new("oauth_as store: the system's random source gave nothing")
+    })?;
     Ok(hex::encode(bytes))
 }
 

@@ -26,14 +26,14 @@ fn test_provider_auth_style_is_a_declared_word() {
         "x-double-mint",
     ] {
         let style = provider_auth_from_declared_word(
-            serde_yaml::from_str::<String>(word).expect("style is a YAML string"),
+            busbar_contract::yaml::from_str::<String>(word).expect("style is a YAML string"),
             &declared,
         )
         .unwrap_or_else(|e| panic!("declared style '{word}' must parse: {e}"));
         assert_eq!(style.as_str(), word);
     }
     let refused = provider_auth_from_declared_word(
-        serde_yaml::from_str::<String>("oauth2").expect("style is a YAML string"),
+        busbar_contract::yaml::from_str::<String>("oauth2").expect("style is a YAML string"),
         &declared,
     )
     .expect_err("'oauth2' is declared by no plugin and must fail to deserialize")

@@ -317,7 +317,8 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         "a",
         Vec::new(),
     );
-    let section: serde_yaml::Value = serde_yaml::from_str("e: {}").expect("yaml");
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("e: {}").expect("yaml");
     let pools = DoorPools::of(&section, busbar_contract::section::TOOL_CALL_SECTION_KEY)
         .expect("the pools");
     let steps = DoorSteps::new(

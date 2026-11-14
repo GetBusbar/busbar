@@ -137,7 +137,7 @@ fn limit_tables_agree() {
     }
     for key in LIMIT_KEYS {
         let yaml = format!("{{ {key}: {} }}", minimal_value(key));
-        if let Err(e) = serde_yaml::from_str::<LimitCfg>(&yaml) {
+        if let Err(e) = busbar_contract::yaml::from_str::<LimitCfg>(&yaml) {
             let e = e.to_string();
             assert!(
                 !e.contains("unknown field"),

@@ -50,6 +50,7 @@ pub mod canary;
 pub mod door;
 pub mod grammar;
 pub mod guest;
+pub(crate) mod hashing;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -420,8 +421,6 @@ mod member_tests;
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
 pub mod plugin_routes;
-
-pub mod profile;
 
 // busbar:request-path
 #[cfg_attr(
