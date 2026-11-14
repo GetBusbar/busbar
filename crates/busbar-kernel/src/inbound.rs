@@ -1348,6 +1348,10 @@ fn admits(line: &Line, h: &HandIn, u: &UnitState) -> bool {
     u.head.is_some() || !still_present(&u.strips, &h.head)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "R23: owner of the stripped original compared with the handed head"
+)]
 fn handin_state_matches(
     unit_line: u32,
     generation: u64,
@@ -2819,18 +2823,25 @@ impl Inbound {
                     Some(original) if first_request => {
                         derived.admission(&table.listener, original).is_none()
                     }
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "R23: head differs: a non-peer continuation call's own head, earlier strips applied"
+                    )]
                     _ => table.listener.admission_on(&head).is_none(),
                 };
                 let signed_reader = (unadmitted
                     && (table.doors.signed_ingress(&head.target)
                         || (table.listener.signed_ingress)(&table.listener.app, &head.target)))
-                .then(|| match original.as_ref() {
-                    Some(original) => table
-                        .listener
-                        .app
-                        .auth
-                        .signed_reader(derived.headers(original)),
-                    None => table.listener.app.auth.signed_reader(&header_map(&head)),
+                // A non-peer unit always has its original recorded (`prepare` sets it before
+                // this future runs), so the reader reads the unit's one header map.
+                .then(|| {
+                    original.as_ref().and_then(|original| {
+                        table
+                            .listener
+                            .app
+                            .auth
+                            .signed_reader(derived.headers(original))
+                    })
                 })
                 .flatten();
                 if let (Some(keys), Some((provider, calls, kinds))) = (keys, signed_reader) {
@@ -3581,6 +3592,10 @@ impl Inbound {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "R23: test input differs: tests build stripped heads directly"
+)]
 #[path = "tests/inbound_owner_policies.rs"]
 mod owner_policies;
 
@@ -3589,6 +3604,10 @@ mod owner_policies;
 mod peer_owner_policies;
 
 #[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "R23: test input differs: tests build stripped heads directly"
+)]
 #[path = "tests/inbound_handin_owner_policies.rs"]
 mod handin_owner_policies;
 
@@ -3597,6 +3616,10 @@ mod handin_owner_policies;
 mod signed_order_policies;
 
 #[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "R23: test input differs: tests build stripped heads directly"
+)]
 #[path = "tests/inbound_reader_fallback.rs"]
 mod reader_fallback;
 
