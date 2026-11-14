@@ -290,6 +290,12 @@ fn scratch_missed() {
     SCRATCH_MISSES.with(|m| m.set(m.get() + 1));
 }
 
+/// Re-entrant takes on this thread that found their slot held (tests only).
+#[cfg(test)]
+pub(crate) fn scratch_misses() -> usize {
+    SCRATCH_MISSES.with(Cell::get)
+}
+
 #[cfg(not(test))]
 const fn scratch_missed() {}
 
