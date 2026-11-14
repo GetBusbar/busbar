@@ -52,6 +52,22 @@ struct BurstDoor {
     pending_at: Option<usize>,
     calls: AtomicUsize,
     resumed: AtomicBool,
+    /// The crossing in flight is a resume (stated by `cross_on`): it re-lends per-op metadata on
+    /// purpose, so the re-call guard skips it.
+    resuming: AtomicBool,
+}
+
+/// A re-call's `*In` with the fields a re-call is ALLOWED to carry reset by `allow`, beside the
+/// blank one: a YIELD_MORE re-call CARRIES NO NEW BYTES and no per-op metadata, so the two must
+/// read the same. A field added later is caught here unless it is added to an allowlist.
+fn masked<T>(input: &T, allow: impl FnOnce(&mut T, &T)) -> (String, String)
+where
+    T: busbar_contract::abi::sdk::door::AbiIn + Copy + std::fmt::Debug,
+{
+    let blank: T = blank_in();
+    let mut masked = *input;
+    allow(&mut masked, &blank);
+    (format!("{masked:?}"), format!("{blank:?}"))
 }
 
 impl BurstDoor {
@@ -64,6 +80,7 @@ impl BurstDoor {
             pending_at,
             calls: AtomicUsize::new(0),
             resumed: AtomicBool::new(false),
+            resuming: AtomicBool::new(false),
         })
     }
 
@@ -126,6 +143,7 @@ impl FramerDoor for BurstDoor {
 
     fn cross_on(&self, _: &dyn crate::carrier::Side, resume: bool, call: Call<'_>) -> Crossed {
         self.resumed.fetch_or(resume, Ordering::SeqCst);
+        self.resuming.store(resume, Ordering::SeqCst);
         self.cross(call)
     }
 
@@ -134,36 +152,69 @@ impl FramerDoor for BurstDoor {
             outcome: Outcome::Ready,
             error: None,
         };
-        let (sink, out, input_len) = match call {
+        let resuming = self.resuming.swap(false, Ordering::SeqCst);
+        // The allowlist per re-call: exactly the fields every crossing stamps (`cross_ticketed`'s
+        // Ingest and Emit arms, `more_on`'s Refuse and Timer re-calls). Begin and Adopt are never
+        // re-called as themselves (they continue as Timer and Ingest).
+        let (sink, out, input_len, recall) = match call {
             Call::Begin(input, out) => {
                 out.framing = STREAM;
                 if !matches!(self.driven, Driven::Begin) {
                     return ready;
                 }
-                (input.sink, out, 0)
+                (input.sink, out, 0, None)
             }
             Call::Adopt(input, out) => {
                 out.framing = STREAM;
                 assert!(matches!(self.driven, Driven::Adopt));
-                (input.sink, out, input.leftover_len)
+                (input.sink, out, input.leftover_len, None)
             }
             Call::Ingest(input, out) if matches!(self.driven, Driven::Ingest | Driven::Adopt) => {
-                (input.sink, out, input.len)
+                let recall = masked(&*input, |m, b| {
+                    m.framing = b.framing;
+                    m.sink = b.sink;
+                });
+                (input.sink, out, input.len, Some(recall))
             }
             Call::Emit(input, out) if matches!(self.driven, Driven::Emit) => {
-                (input.sink, out, input.len)
+                let recall = masked(&*input, |m, b| {
+                    m.framing = b.framing;
+                    m.stream = b.stream;
+                    m.sink = b.sink;
+                });
+                (input.sink, out, input.len, Some(recall))
             }
             Call::Timer(input, out) if matches!(self.driven, Driven::Timer | Driven::Begin) => {
-                (input.sink, out, 0)
+                let recall = masked(&*input, |m, b| {
+                    m.framing = b.framing;
+                    m.sink = b.sink;
+                });
+                (input.sink, out, 0, Some(recall))
             }
             Call::Refuse(input, out) if matches!(self.driven, Driven::Refuse) => {
-                (input.sink, out, input.len)
+                let recall = masked(&*input, |m, b| {
+                    m.framing = b.framing;
+                    m.stream = b.stream;
+                    m.has_stream = b.has_stream;
+                    m.status = b.status;
+                    m.head_sent = b.head_sent;
+                    m.sink = b.sink;
+                });
+                (input.sink, out, input.len, Some(recall))
             }
             _ => return ready,
         };
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
         if index != 0 {
             assert_eq!(input_len, 0, "recalls lend no new input");
+            if !resuming {
+                let (masked, blank) = recall.expect("only a re-callable op is re-called");
+                assert_eq!(
+                    masked, blank,
+                    "{:?}: a YIELD_MORE re-call lends nothing beyond its allowlist",
+                    self.driven
+                );
+            }
         }
         if self.pending_at == Some(index) {
             return Crossed {

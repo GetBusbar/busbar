@@ -2000,7 +2000,7 @@ impl Framing {
                 let mut i: AdoptIn = blank_in();
                 i.side = *side;
                 i.facts = &facts;
-                if !extensions.is_empty() {
+                if !recall && !extensions.is_empty() {
                     i.head.extensions = Blob {
                         ptr: extensions.as_ptr(),
                         len: extensions.len(),
@@ -2039,7 +2039,7 @@ impl Framing {
                 let mut i: EmitIn = blank_in();
                 i.framing = self.token;
                 i.stream = *stream;
-                if !extensions.is_empty() {
+                if !recall && !extensions.is_empty() {
                     i.head.extensions = Blob {
                         ptr: extensions.as_ptr(),
                         len: extensions.len(),
@@ -2059,7 +2059,7 @@ impl Framing {
                     i.status = *status;
                 }
 
-                if let Some(len) = body_len.filter(|_| self.bufs.side == SIDE_DIAL) {
+                if let Some(len) = body_len.filter(|_| !recall && self.bufs.side == SIDE_DIAL) {
                     i.body_len = len;
                     i.body_len_known = 1;
                 }
