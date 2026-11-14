@@ -68,9 +68,13 @@ pub struct BinaryInfo {
 
 impl BinaryInfo {
     pub fn of(bin: &Path, sha_override: Option<&str>) -> Self {
-        let bytes = std::fs::read(bin).unwrap_or_default();
-        let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
-        let sha256 = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+        let sha256 = std::fs::read(bin).map_or_else(
+            |_| "unknown".into(),
+            |bytes| {
+                let d = ring::digest::digest(&ring::digest::SHA256, &bytes);
+                d.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+            },
+        );
         let version = crate::gateway::version_text(bin);
         let build_info = Command::new(bin)
             .arg("--build-info")
