@@ -13,11 +13,12 @@ enum Verdict {
     Conflict,
     Time(u64),
 }
+/// (writer, slot) → (seq, fingerprint, verdict): STORE-TRANSACTIONS §2.5.
+type SlotRows = BTreeMap<([u8; 16], u32), (u64, [u8; 32], Verdict)>;
 #[derive(Default)]
 struct Native {
     rows: BTreeMap<Address, Secret<Vec<u8>>>,
-    /// (writer, slot) → (seq, fingerprint, verdict): STORE-TRANSACTIONS §2.5.
-    slots: BTreeMap<([u8; 16], u32), (u64, [u8; 32], Verdict)>,
+    slots: SlotRows,
     applied: usize,
     sends: Vec<[u8; 32]>,
     lose_reply: bool,
