@@ -326,6 +326,45 @@ async fn actual_store_running_reports_coalesce_and_restart_settles_once() {
     stop(&resumed);
 }
 
+/// WASTE-CORE-LIFECYCLE W1 steps 1-2: persisting a running checkpoint (first revision and a
+/// later one over a selected head) proves the head from the runtime journal's own verified head and
+/// locates frames by sequence arithmetic, so it opens no whole-journal replay.
+#[tokio::test]
+async fn checkpoint_persist_opens_no_journal_replay() {
+    let fixture = ActualStore::new();
+    let store = fixture.open().await;
+    let host = format!(
+        "unit-checkpoint-replays-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(store.clone(), &host).await;
+    let gov = governor(store.clone(), &book).await;
+    let mut report = unit();
+    report
+        .units
+        .insert("work".into(), Count::from_micros(125_000));
+    let before = busbar_kernel::persistence::journal::replays_on_this_thread();
+    gov.stage_unit_checkpoint(report.clone());
+    gov.flush_unit_checkpoints().await.unwrap();
+    report
+        .units
+        .insert("work".into(), Count::from_micros(250_000));
+    gov.stage_unit_checkpoint(report.clone());
+    gov.flush_unit_checkpoints().await.unwrap();
+    let replays = busbar_kernel::persistence::journal::replays_on_this_thread() - before;
+    let stored = unit_checkpoint_sink(&book).replay().await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        stored[0].units, report.units,
+        "the later revision is selected"
+    );
+    assert_eq!(
+        replays, 0,
+        "two checkpoint persists must not replay the node journal ({replays} replays)"
+    );
+    stop(&book);
+}
+
 async fn assert_recovered_audit(book: &TestBook, report: &UnitCheckpoint) {
     let audit = book
         .evidence
