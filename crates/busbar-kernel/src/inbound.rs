@@ -604,8 +604,9 @@ pub(crate) struct AdmittedRequest {
     pub(crate) credential: Option<Secret<String>>,
 
     pub(crate) signed: bool,
-    pub(crate) original: Head,
-    handed: Head,
+    /// The unit's heads, shared with it rather than copied (SINGLE-PATH SP-A2).
+    pub(crate) original: Arc<Head>,
+    handed: Arc<Head>,
     /// What the unit derived from `original`, carried from its auth calls (SP-A1 / SP-AU1).
     derived: Arc<Derived>,
     pub(crate) strips: Vec<Strip>,
@@ -1012,11 +1013,11 @@ struct UnitState {
     line: u32,
     binding: RequestBinding,
     secret: [u64; 2],
-    head: Option<Head>,
+    head: Option<Arc<Head>>,
     /// What this unit derived from `head`; moves with it into the claimed request.
     derived: Arc<Derived>,
 
-    handed_head: Option<Head>,
+    handed_head: Option<Arc<Head>>,
     claimed: bool,
     deadline: Option<std::time::Instant>,
     alive: Arc<std::sync::atomic::AtomicBool>,
@@ -1285,7 +1286,7 @@ fn admits(line: &Line, h: &HandIn, u: &UnitState) -> bool {
         u.line,
         u.generation,
         u.signed_pending,
-        u.head.as_ref(),
+        u.head.as_deref(),
         &u.strips,
         h,
     ) {
@@ -2599,7 +2600,7 @@ impl Inbound {
                 }
                 u.deadline = call.deadline;
                 if u.head.is_none() {
-                    u.head = Some(call.head.clone());
+                    u.head = Some(Arc::new(call.head.clone()));
                 }
             }
             (Target::Unit(unit.id), unit)
@@ -2693,7 +2694,7 @@ impl Inbound {
                             return me.answer(target, unit, peer);
                         }
                         let req = verify_request(
-                            original.as_ref().unwrap_or(&head),
+                            original.as_deref().unwrap_or(&head),
                             AuthPoint::HeadBody,
                             conn,
                             unit.id,
@@ -2723,7 +2724,7 @@ impl Inbound {
                                 me.preflight_keys(target, keys.index)?;
                                 let judging = match answer {
                                     Some(answer) => Judging::Keys(
-                                        original.as_ref().unwrap_or(&head),
+                                        original.as_deref().unwrap_or(&head),
                                         &derived,
                                         Some(SignedAnswer {
                                             faulted,
@@ -2826,7 +2827,7 @@ impl Inbound {
                             target,
                             p.index,
                             &p.provider,
-                            Judging::Keys(original.as_ref().unwrap_or(&head), &derived, None),
+                            Judging::Keys(original.as_deref().unwrap_or(&head), &derived, None),
                             &table,
                         );
                         continue;
@@ -2849,7 +2850,7 @@ impl Inbound {
                     continue;
                 };
                 let verify_head = if verify_point != point {
-                    original.as_ref().unwrap_or(&head)
+                    original.as_deref().unwrap_or(&head)
                 } else {
                     &head
                 };
@@ -3050,14 +3051,16 @@ impl Inbound {
         } else {
             FLOW_STOP
         };
+        // One head, shared as the unit's original (when it had none) and as what it was handed.
+        let handed = Arc::new(h.head);
         if u.head.is_none() {
-            u.head = Some(h.head.clone());
+            u.head = Some(Arc::clone(&handed));
         }
         if flow == FLOW_CONTINUE {
             if u.handed_head.is_some() || u.claimed {
                 return Err(UNIT_FOREIGN);
             }
-            u.handed_head = Some(h.head);
+            u.handed_head = Some(handed);
             // Hand-in may tighten the first-auth deadline, but cannot clear or extend it.
             u.deadline = match (u.deadline, deadline) {
                 (Some(first), Some(handed)) => Some(first.min(handed)),
@@ -3153,7 +3156,10 @@ impl Inbound {
             .and_then(|u| {
                 self.units().get(&u.id).map(|s| {
                     (
-                        s.head.clone().map(|head| (head, Arc::clone(&s.derived))),
+                        s.head
+                            .as_deref()
+                            .cloned()
+                            .map(|head| (head, Arc::clone(&s.derived))),
                         s.fixed() == Some(Fixed::Overloaded),
                     )
                 })
