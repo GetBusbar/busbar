@@ -9,12 +9,8 @@ use busbar_contract::records::{
 pub mod archive;
 pub mod fact_transform;
 pub mod group;
-pub mod journal;
-pub mod journal_binding;
 pub mod overlay;
 pub mod projection;
-mod receipt_codec;
-pub mod recovery;
 pub mod transform;
 
 use std::collections::BTreeMap;
@@ -266,13 +262,6 @@ pub fn attach_metering_units(
         }
     }
     Ok(out)
-}
-
-pub fn private_schema_for_plane_kind(kind: &str) -> Option<(&'static str, &'static str)> {
-    match kind {
-        "busbar.admin-idempotency" => Some(("busbar.admin", "busbar.admin-idempotency")),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

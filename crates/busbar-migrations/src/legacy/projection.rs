@@ -132,33 +132,11 @@ pub fn materialize(
     Ok(rows)
 }
 
-fn journal_identity(marker: &Record) -> Result<Option<(u64, u64)>, Error> {
-    let parts =
-        busbar_kernel::persistence::import_target::records::keys::components(&marker.key, b'G')
-            .map_err(|_| Error::Corrupt)?;
-    if parts.first().copied() != Some(b"J".as_slice()) {
-        return Ok(None);
-    }
-    if parts.len() != 3 {
-        return Err(Error::Corrupt);
-    }
-    let node = u64::from_be_bytes(parts[1].try_into().map_err(|_| Error::Corrupt)?);
-    let sequence = u64::from_be_bytes(parts[2].try_into().map_err(|_| Error::Corrupt)?);
-    if node == 0 || sequence == 0 {
-        return Err(Error::Corrupt);
-    }
-    Ok(Some((node, sequence)))
-}
-pub fn is_journal_marker(marker: &Record) -> Result<bool, Error> {
-    Ok(journal_identity(marker)?.is_some())
-}
-
 /// Pack disjoint logical outputs. An overlapping destination is explicit;
 /// callers can end their candidate before that marker and retry it next page.
 pub fn project_rows(
     source: &dyn ProjectionSource,
     provenance: Provenance,
-    journal: Option<&dyn super::journal_binding::JournalMigration>,
     family: &crate::Family,
     markers: &[Record],
     bounds: Bounds,
@@ -178,24 +156,7 @@ pub fn project_rows(
         if marker.preserve_exact {
             return Err(Error::Verification);
         }
-        let rows = if let Some((node, sequence)) = journal_identity(marker)? {
-            if family.id != super::transform::ARCHIVAL {
-                return Err(Error::EdgeMismatch);
-            }
-            journal
-                .ok_or(Error::MissingCapability)?
-                .copy_source_group(node, sequence, bounds.bytes as usize)?
-                .into_iter()
-                .map(|(address, value)| TargetRow {
-                    address,
-                    value,
-                    preserved_source: None,
-                })
-                .collect()
-        } else {
-            convert(marker)?
-        };
-        for row in rows {
+        for row in convert(marker)? {
             if row.preserved_source.is_some() {
                 return Err(Error::Verification);
             }
