@@ -194,6 +194,16 @@ impl Lend {
         let mut capability = extensions::encode(&[(EXT_SEALED_FIELDS, SEALED_FIELDS_V1)]);
         capability.append(&mut request.extensions);
         request.extensions = capability;
+        Self::over(request, bytes, fields)
+    }
+
+    /// A grown resubmit's lend: the same request (its capability already in place) with larger
+    /// answer buffers. The first lend is still lent to the dispatcher, so the request is copied.
+    fn regrown(previous: &Lend, bytes: usize, fields: usize) -> Box<Self> {
+        Self::over(copy(&previous.request), bytes, fields)
+    }
+
+    fn over(request: FieldsRequest, bytes: usize, fields: usize) -> Box<Self> {
         let named = request
             .headers
             .iter()
@@ -313,6 +323,7 @@ fn security_requirement(blob: Blob) -> Option<bool> {
 }
 
 fn copy(r: &FieldsRequest) -> FieldsRequest {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AuthFieldsCopy);
     FieldsRequest {
         point: r.point,
         conn: r.conn,
@@ -473,7 +484,7 @@ impl OutboundAuth for OutboundInstance {
             Asked {
                 this: self.clone(),
                 handle,
-                request,
+                request: Some(request),
                 deadline_ns,
                 lend: None,
                 first: true,
@@ -501,7 +512,9 @@ impl Fielding for Failed {
 struct Asked {
     this: OutboundInstance,
     handle: u64,
-    request: FieldsRequest,
+    /// The request the call was handed, until its first submit moves it into the lend
+    /// (SINGLE-PATH SP-R3).
+    request: Option<FieldsRequest>,
     deadline_ns: u64,
 
     lend: Option<Arc<Lend>>,
@@ -509,12 +522,18 @@ struct Asked {
 }
 
 impl Asked {
+    /// Submit the call over a lend of the request: the first submit moves the request in; a
+    /// grown resubmit lends it again from the first lend. `false` when there is nothing to lend.
     fn submit(
         &mut self,
         call: &mut Ticketed<FieldsIn, FieldsOut>,
         (bytes, fields): (usize, usize),
-    ) {
-        let mut lend = Lend::new(copy(&self.request), bytes, fields);
+    ) -> bool {
+        let mut lend = match (self.request.take(), &self.lend) {
+            (Some(request), _) => Lend::new(request, bytes, fields),
+            (None, Some(previous)) => Lend::regrown(previous, bytes, fields),
+            (None, None) => return false,
+        };
         let input = lend.input(self.handle, self.this.dispatcher.seal());
         let lent = Arc::new(lend);
         call.submit(
@@ -526,6 +545,7 @@ impl Asked {
             Arc::clone(&lent) as super::Lent,
         );
         self.lend = Some(lent);
+        true
     }
 }
 
@@ -533,7 +553,9 @@ impl Answering<FieldsIn, FieldsOut> for Asked {
     type Out = Fields;
 
     fn start(&mut self, call: &mut Ticketed<FieldsIn, FieldsOut>) {
-        self.submit(call, (FIELDS_BUF_BYTES, FIELDS_MAX as usize));
+        // The call was minted with its request, so the first submit always has one to lend.
+        let submitted = self.submit(call, (FIELDS_BUF_BYTES, FIELDS_MAX as usize));
+        debug_assert!(submitted, "a fresh call holds its request");
     }
 
     fn answer(
@@ -545,8 +567,7 @@ impl Answering<FieldsIn, FieldsOut> for Asked {
         let answer = match (done.short && self.first, out, &self.lend) {
             (true, Some(out), _) => {
                 self.first = false;
-                self.submit(call, grown(&out));
-                None
+                (!self.submit(call, grown(&out))).then_some(Fields::Failed)
             }
             (_, Some(out), Some(lend)) => Some(settled(done.outcome, lend, &out)),
             _ => Some(Fields::Failed),

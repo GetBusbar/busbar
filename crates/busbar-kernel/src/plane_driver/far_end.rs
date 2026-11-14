@@ -1327,6 +1327,7 @@ impl EgressFarEnd<'_> {
         } else {
             AuthPoint::Head
         };
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AuthFieldsCopy);
         let facts = FieldsRequest {
             point,
             body: (point == AuthPoint::HeadBody).then(|| request.body.clone()),
