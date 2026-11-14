@@ -273,3 +273,54 @@ async fn an_admitted_hand_in_scans_for_stripped_credentials_once() {
         "core strips its own original once; the handed head equal to it carries nothing stripped"
     );
 }
+
+/// One keys-chain unit from its first auth call to its served head. Every head is built fresh by
+/// the test, so only the host's own copies are counted.
+async fn served_from_fresh_heads(k: &Kit) {
+    let waiting = k
+        .call_async(MESSAGES, UnitRef::NONE, POINT_HEAD, signed_head())
+        .await
+        .unwrap();
+    assert_eq!(waiting.flow, FLOW_CONTINUE);
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, waiting.unit, signed_head()).0,
+        FLOW_STOP
+    );
+    let answer = k
+        .call_async(MESSAGES, waiting.unit, POINT_HEAD_BODY, signed_head())
+        .await
+        .unwrap();
+    assert_eq!(answer.flow, FLOW_CONTINUE);
+    let handed = signed_head().stripped(&answer.strips).unwrap();
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, answer.unit, handed).0,
+        FLOW_CONTINUE
+    );
+    let claimed = signed_head().stripped(&answer.strips).unwrap();
+    let request = k.inbound.claim_request(OWNER, 1, 1, &claimed).unwrap();
+    let _ = crate::auth::admitted_context(&request).await;
+}
+
+#[tokio::test]
+async fn a_units_heads_are_shared_from_its_first_auth_call_to_its_served_head() {
+    let seen = Arc::default();
+    let reader = probe("reader", AuthPoints::HEAD_BODY, Verified::Pass, &seen);
+    let head = probe("head", AuthPoints::HEAD, Verified::Pass, &seen);
+    let body = probe(
+        "body",
+        AuthPoints::HEAD_BODY,
+        identity("body", "credential"),
+        &seen,
+    );
+    let k = mixed(reader, &[head, body]);
+
+    let scope = Scope::open();
+    served_from_fresh_heads(&k).await;
+
+    assert!(
+        scope.count(Derive::HeadCopy) <= 2,
+        "the unit keeps its original once and the served head is copied once to be stripped; \
+         every other reader shares them: {}",
+        scope.count(Derive::HeadCopy)
+    );
+}
