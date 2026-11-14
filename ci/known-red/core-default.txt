@@ -32,7 +32,6 @@ busbar-default::bin/busbar root::door_steps::registration_pin_tests::an_mtls_reg
 busbar-default::bin/busbar root::door_steps::tests::a_models_protocol_override_is_handed_to_the_plane	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::door_steps::tests::kernel_sections_preserve_numeric_scalars_in_every_projected_section	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::door_steps::tests::kernel_sections_refuse_unrepresentable_provider_numbers_before_application	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::inbound_tests::close_tests::retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_lock	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::linked::tests::the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::registry::tests::a_linked_transport_row_logs_to_its_own_plugin_log_file	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::money_tests::datagram_opening_tests::a_host_head_wait_timeout_retires_real_custody_and_a_ready_plane_response_transfers_it	CDT-KNOWN-RED	stable
