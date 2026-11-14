@@ -1,0 +1,103 @@
+name: production-mix
+group: mix
+description: "Everything the default build links, on at once: keys auth, prometheus + OTLP + request-log file exports, a ranking hook, LLM (six providers, whole and streamed), MCP, A2A, decisions, streams mint, with admin ops in the background."
+config: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  store: { module: memory }
+  export:
+    metrics: { module: prometheus, settings: { buffer_seconds: 60 } }
+    traces: { module: otlp, settings: { url: "{MOCK}/v1/traces" } }
+    req-log: { module: request-log-file, settings: { path: "{WORK}/requests.jsonl" } }
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    anthropic: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    gemini: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    bedrock: { api_key: { env: HAMMER_BEDROCK_KEY } }
+    dec: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m-openai: { provider: openai }
+    m-anthropic: { provider: anthropic }
+    m-gemini: { provider: gemini }
+    m-bedrock: { provider: bedrock }
+  rate_card:
+    m-openai: { input_utok: 100000, output_utok: 200000 }
+    m-anthropic: { input_utok: 1000, output_utok: 2000 }
+  decisions:
+    models:
+      d-jev: { provider: dec, upstream_model: systemone, protocol: jev }
+  pools:
+    p-cheapest:
+      hooks: [cheapest]
+      members:
+        - model: m-openai
+        - model: m-anthropic
+  mcp:
+    canonical_uri: "http://{LISTEN}/mcp"
+    authorization_servers: ["http://{ADMIN}"]
+    scopes_supported: ["mcp:tools:list", "mcp:tools:call"]
+  tools:
+    probe:
+      url: "{MOCK_TLS}/mcp"
+      allow_private: true
+      tls: { ca_cert_pem: {MOCK_CA_PEM_JSON} }
+      pin: { mechanism: cert_spki, key: "{MOCK_SPKI}" }
+      tools_allow:
+        ping:
+          schema_hash: "sha256:{MCP_SCHEMA_HASH}"
+          description: "Returns the label it was given."
+  agents:
+    probe:
+      url: "{MOCK}/"
+      allow_private: true
+      pin: { mechanism: jws_issuer_key, key: "{CARD_ISSUER_KEY}" }
+  streams:
+    media: { listen: "127.0.0.1:{FREE_PORT_A}" }
+    session:
+      model: m-openai
+providers: |
+  openai: { protocol: openai, base_url: "{MOCK}" }
+  anthropic: { protocol: anthropic, base_url: "{MOCK}" }
+  gemini: { protocol: gemini, base_url: "{MOCK}" }
+  bedrock: { protocol: bedrock, base_url: "{MOCK}" }
+  dec: { protocol: jev, base_url: "{MOCK}" }
+setup:
+  - mint_key: { as: KEY, group: bench }
+  - http: { listener: admin, path: /api/v1/admin/tools/probe/connect }
+  - http: { listener: admin, path: /api/v1/admin/agents/probe/connect, save: { FP: fingerprint } }
+  - http: { listener: admin, path: /api/v1/admin/agents/probe/approve, body: '{"fingerprint":"{FP}"}' }
+  - audience_token: { as: AT_MCP, from: "{KEY}", aud: "http://{LISTEN}/mcp" }
+  - audience_token: { as: AT_A2A, from: "{KEY}", aud: "http://{LISTEN}/a2a" }
+  - audience_token: { as: AT_RT, from: "{KEY}", aud: "http://{LISTEN}/v1/realtime" }
+cases:
+  - name: mix (llm 70%, mcp 10%, a2a 5%, decisions 5%, streams 3%, ranking pool 5%, scrape 2%)
+    shape: { closed: 64 }
+    requests:
+      - { path: /v1/chat/completions, weight: 30, contains: hammer-ok, headers: { authorization: "Bearer {KEY}", content-type: application/json }, body: '{"model":"m-openai","messages":[{"role":"user","content":"hello"}],"max_tokens":16}' }
+      - { path: /v1/chat/completions, weight: 10, contains: "[DONE]", headers: { authorization: "Bearer {KEY}", content-type: application/json }, body: '{"model":"m-openai","stream":true,"messages":[{"role":"user","content":"hello"}],"max_tokens":16}' }
+      - { path: /v1/messages, weight: 15, contains: hammer-ok, headers: { x-api-key: "{KEY}", anthropic-version: "2023-06-01", content-type: application/json }, body: '{"model":"m-anthropic","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}' }
+      - { path: "/v1beta/models/m-openai:generateContent", weight: 8, contains: hammer-ok, headers: { x-goog-api-key: "{KEY}", content-type: application/json }, body: '{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}' }
+      - { path: /v1/chat/completions, weight: 7, contains: hammer-ok, headers: { authorization: "Bearer {KEY}", content-type: application/json }, body: '{"model":"m-bedrock","messages":[{"role":"user","content":"hello"}],"max_tokens":16}' }
+      - { path: /v1/chat/completions, weight: 5, contains: hammer-ok, headers: { authorization: "Bearer {KEY}", content-type: application/json }, body: '{"model":"p-cheapest","messages":[{"role":"user","content":"hello"}],"max_tokens":16}' }
+      - { path: /mcp, weight: 10, contains: "ping: hammer", headers: { authorization: "Bearer {AT_MCP}", content-type: application/json, mcp-method: tools/call, mcp-protocol-version: "2026-07-28", Mcp-Name: probe_ping }, body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"probe_ping","arguments":{"label":"hammer"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' }
+      - { path: /a2a/agents/probe, weight: 5, contains: TASK_STATE_COMPLETED, headers: { authorization: "Bearer {AT_A2A}", content-type: application/json }, body: '{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","messageId":"msg-0001","parts":[{"text":"ping"}]}}}' }
+      - { path: /v1/systemone, weight: 5, contains: allow, headers: { authorization: "Bearer {KEY}", content-type: application/json }, body: '{"model":"d-jev","input":{"amount":10}}' }
+      - { path: /v1/realtime/client_secrets, weight: 3, headers: { authorization: "Bearer {AT_RT}", content-type: application/json }, body: "{}" }
+      - { method: GET, path: /metrics, weight: 2, headers: { authorization: "Bearer {KEY}" } }
+    background:
+      shape: { open: 20, connections: 4 }
+      requests:
+        - { listener: admin, method: GET, path: /api/v1/admin/keys }
