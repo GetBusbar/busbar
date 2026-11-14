@@ -90,8 +90,7 @@ pub fn classify(fact: &HistoricalFact, native_key: &[u8]) -> Result<LogicalGroup
         }
         HistoricalFact::Denial { subject, .. } => (IDENTITY, framed(&[b"D", subject.as_bytes()])?),
         HistoricalFact::Revision(_) => (IDENTITY, framed(&[b"V"])?),
-        HistoricalFact::Usage { bucket, window, .. }
-        | HistoricalFact::UsageUnit { bucket, window, .. } => (
+        HistoricalFact::Usage { bucket, window, .. } => (
             ACCOUNTING,
             framed(&[b"U", bucket.as_bytes(), &window.to_be_bytes()])?,
         ),
@@ -106,24 +105,6 @@ pub fn classify(fact: &HistoricalFact, native_key: &[u8]) -> Result<LogicalGroup
                 &row.priced_from_ms.to_be_bytes(),
             ])?,
         ),
-        HistoricalFact::MeteringUnit {
-            bucket,
-            key_id,
-            provider,
-            model,
-            priced_from_ms,
-            ..
-        } => (
-            ACCOUNTING,
-            framed(&[
-                b"M",
-                &bucket.to_be_bytes(),
-                key_id.as_bytes(),
-                provider.as_bytes(),
-                model.as_bytes(),
-                &priced_from_ms.to_be_bytes(),
-            ])?,
-        ),
         HistoricalFact::Audit(record) => (AUDIT, framed(&[b"A", &record.seq.to_be_bytes()])?),
         HistoricalFact::Record { schema, key, .. } if schema == crate::legacy::overlay::SCHEMA => (
             ARCHIVAL,
@@ -133,7 +114,9 @@ pub fn classify(fact: &HistoricalFact, native_key: &[u8]) -> Result<LogicalGroup
         HistoricalFact::Record { .. }
         | HistoricalFact::History { .. }
         | HistoricalFact::Token { .. }
-        | HistoricalFact::Receipt { .. } => return Err(Error::UnsupportedPath),
+        | HistoricalFact::Receipt { .. }
+        | HistoricalFact::UsageUnit { .. }
+        | HistoricalFact::MeteringUnit { .. } => return Err(Error::UnsupportedPath),
         HistoricalFact::EvidenceOnly => (ARCHIVAL, framed(&[b"E", native_key])?),
     };
     Ok(LogicalGroup { family, key })
