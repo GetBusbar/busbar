@@ -191,6 +191,7 @@ fn project_buffers_wipe_their_initialized_arena_on_success_error_cancel_and_drop
         "replace",
         "transfer",
         "overwrite",
+        "reuse",
     ] {
         let probe = Probe::start();
         let mut buffers = buffers();
@@ -226,6 +227,26 @@ fn project_buffers_wipe_their_initialized_arena_on_success_error_cancel_and_drop
             }
             "overwrite" => {
                 buffers.arena[..].fill(b'x');
+                drop(buffers);
+            }
+            "reuse" => {
+                let (pointer, len) = (buffers.arena.as_ptr(), buffers.arena.len());
+                buffers.arena.reset();
+                assert_eq!(
+                    probe.counts(),
+                    (1, 0, 0),
+                    "a reset reuses the arena in place"
+                );
+                assert_eq!(buffers.arena.len(), len, "a reset keeps the arena's length");
+                assert_eq!(
+                    buffers.arena.as_ptr(),
+                    pointer,
+                    "a reset keeps the allocation"
+                );
+                assert!(
+                    buffers.arena.iter().all(|byte| *byte == 0),
+                    "a reset wipes the arena"
+                );
                 drop(buffers);
             }
             _ => assert_eq!(returned(buffers, exit == "error").is_err(), exit == "error"),

@@ -73,11 +73,13 @@ pub enum Derive {
     ProjectCopy,
     /// A hook child's ancestry walked for a cycle (SP-P14).
     AncestryCheck,
+    /// A hook projection arena allocated, fresh or grown for a SHORT answer (SP-P9).
+    ProjectArena,
 }
 
 impl Derive {
     /// Every id, in counter order (declaration order).
-    pub const ALL: [Derive; 28] = [
+    pub const ALL: [Derive; 29] = [
         Derive::PlaneAdmission,
         Derive::AdmissionOnHead,
         Derive::HeaderMap,
@@ -106,6 +108,7 @@ impl Derive {
         Derive::CheckpointStage,
         Derive::ProjectCopy,
         Derive::AncestryCheck,
+        Derive::ProjectArena,
     ];
 
     #[cfg(feature = "stage-probe")]

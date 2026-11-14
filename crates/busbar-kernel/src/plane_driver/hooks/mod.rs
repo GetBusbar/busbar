@@ -1265,6 +1265,7 @@ struct ProjectArena(zeroize::Zeroizing<ProjectBytes>);
 
 impl From<Vec<u8>> for ProjectArena {
     fn from(bytes: Vec<u8>) -> Self {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ProjectArena);
         #[cfg(test)]
         let bytes: ProjectBytes = bytes.into();
         Self(zeroize::Zeroizing::new(bytes))
@@ -1293,6 +1294,12 @@ impl ProjectArena {
         let mut grown = Self::from(vec![0; needed]);
         grown[..self.len()].copy_from_slice(self);
         *self = grown;
+    }
+
+    /// Ready this arena for another projection. Today every projection takes a fresh arena.
+    #[cfg(test)]
+    fn reset(&mut self) {
+        *self = Self::from(vec![0; self.len()]);
     }
 }
 
@@ -1405,7 +1412,12 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             let at = (s.ptr as usize).wrapping_sub(base);
             bufs.arena
                 .get(at..at.saturating_add(s.len))
-                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .map(|b| {
+                    busbar_contract::stage_probe::tick(
+                        busbar_contract::stage_probe::Derive::ProjectCopy,
+                    );
+                    String::from_utf8_lossy(b).into_owned()
+                })
                 .unwrap_or_default()
         };
         let opt = |s: AbiStr| (!s.ptr.is_null()).then(|| text(s));
@@ -1414,9 +1426,12 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 return None;
             }
             let start = sp.offset as usize;
-            bufs.arena
-                .get(start..start + sp.len as usize)
-                .map(<[u8]>::to_vec)
+            bufs.arena.get(start..start + sp.len as usize).map(|b| {
+                busbar_contract::stage_probe::tick(
+                    busbar_contract::stage_probe::Derive::ProjectCopy,
+                );
+                b.to_vec()
+            })
         };
         let v = o.view;
         let turns = bufs
@@ -1437,11 +1452,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             system: opt(o.prompt.system),
             turns,
             end_user: opt(o.end_user),
-            rewritten: span(o.rewritten).inspect(|_| {
-                busbar_contract::stage_probe::tick(
-                    busbar_contract::stage_probe::Derive::ProjectCopy,
-                );
-            }),
+            rewritten: span(o.rewritten),
             projected: span(o.body),
             rewrite_not_applicable: v.flags
                 & busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
@@ -1452,7 +1463,12 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 let at = (v.session.ptr as usize).wrapping_sub(base);
                 bufs.arena
                     .get(at..at.saturating_add(v.session.len))
-                    .map(<[u8]>::to_vec)
+                    .map(|b| {
+                        busbar_contract::stage_probe::tick(
+                            busbar_contract::stage_probe::Derive::ProjectCopy,
+                        );
+                        b.to_vec()
+                    })
                     .unwrap_or_default()
             }),
         })
