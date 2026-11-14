@@ -454,7 +454,7 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
     }
 }
 
-impl busbar_kernel::teller::DoorSeats for TestUnits {
+impl busbar_kernel::teller::seats::DoorSeats for TestUnits {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         seated(token, DriverSteps::arrival(self, ctx))
     }
