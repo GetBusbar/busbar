@@ -2,11 +2,12 @@
 //! non-strict `resolve`, lexical joins, glob/rglob without following
 //! directory links, `copy2`/`copytree` timestamps, OSError and
 //! CalledProcessError text, and text-mode subprocess output.
-use crate::proc::Result;
+use crate::confined;
+use crate::proc::{self, Result};
 use crate::py;
 use std::fs;
-use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
+use std::io::{Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
 /// `str(Path(value))` normalization: no `.` components, no duplicate or
@@ -106,7 +107,11 @@ pub fn io<T>(value: std::io::Result<T>, path: &Path) -> Result<T> {
     value.map_err(|e| os_error(&e, Some(path)))
 }
 
+/// `Path.read_bytes()` of a controller-chosen path (policy, configuration, logs and
+/// lockfiles the controller itself names). Names taken from archives, listings or
+/// candidate trees are confined by the caller through `confined::Root` first.
 pub fn read(path: &Path) -> Result<Vec<u8>> {
+    let path = confined::Trusted::internal(path).as_path();
     io(fs::read(path), path)
 }
 
@@ -147,10 +152,28 @@ pub fn rmtree(path: &Path) -> Result<()> {
     io(fs::remove_dir_all(path), path)
 }
 
-/// `shutil.copyfile(source, destination, follow_symlinks=False)`.
+/// `shutil.copyfile(source, destination, follow_symlinks=False)`: neither end is
+/// followed if it is a link.
 pub fn copyfile(source: &Path, destination: &Path) -> Result<()> {
-    let data = read(source)?;
-    write(destination, data)
+    let mut data = Vec::new();
+    let mut input = io(
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(proc::O_NOFOLLOW)
+            .open(source),
+        source,
+    )?;
+    io(input.read_to_end(&mut data), source)?;
+    let mut output = io(
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(proc::O_NOFOLLOW)
+            .open(destination),
+        destination,
+    )?;
+    io(output.write_all(&data), destination)
 }
 
 fn copystat(source: &Path, destination: &Path) -> Result<()> {
@@ -159,11 +182,18 @@ fn copystat(source: &Path, destination: &Path) -> Result<()> {
         .set_accessed(io(metadata.accessed(), source)?)
         .set_modified(io(metadata.modified(), source)?);
     let mode = metadata.permissions().mode() & 0o7777;
-    io(
-        fs::set_permissions(destination, fs::Permissions::from_mode(mode)),
+    // The handle, never the path: a link at `destination` refuses (O_NOFOLLOW).
+    let file = io(
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(proc::O_NOFOLLOW)
+            .open(destination),
         destination,
     )?;
-    let file = io(fs::File::open(destination), destination)?;
+    io(
+        file.set_permissions(fs::Permissions::from_mode(mode)),
+        destination,
+    )?;
     io(file.set_times(times), destination)
 }
 
@@ -173,16 +203,20 @@ pub fn copy2(source: &Path, destination: &Path) -> Result<()> {
     copystat(source, destination)
 }
 
-/// `shutil.copytree(source, destination, symlinks=True)`.
+/// `shutil.copytree(source, destination, symlinks=True)`. Entry names come from
+/// a tree the controller does not own (a candidate build's target dir), so each
+/// lands under `destination` through [`confined::Root`]: a destination entry
+/// that already is a link refuses instead of being written through.
 pub fn copytree(source: &Path, destination: &Path) -> Result<()> {
     mkdirs(destination)?;
+    let target_root = confined::Root::new(destination)?;
     let mut entries: Vec<_> = io(fs::read_dir(source), source)?
         .filter_map(|e| e.ok())
         .collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let path = entry.path();
-        let target = destination.join(entry.file_name());
+        let target = target_root.resolve(Path::new(&entry.file_name()))?;
         let kind = io(fs::symlink_metadata(&path), &path)?.file_type();
         if kind.is_symlink() {
             let link = io(fs::read_link(&path), &path)?;
@@ -431,6 +465,26 @@ mod tests {
         assert_eq!(found, vec![root.join("a/b/y.rs"), root.join("a/x.rs")]);
         assert_eq!(glob(&root, "a/*/y.rs"), vec![root.join("a/b/y.rs")]);
         assert_eq!(glob(&root, "a/missing"), Vec::<PathBuf>::new());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `copytree` into an existing destination never writes through a link it finds there.
+    #[test]
+    fn copytree_never_writes_through_a_destination_link() {
+        let root = std::env::temp_dir().join(format!("pathx-copy-{}", uuid4()));
+        let (source, outside, destination) =
+            (root.join("source"), root.join("outside"), root.join("dest"));
+        fs::create_dir_all(source.join("sub")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("file"), "copied").unwrap();
+        fs::write(source.join("sub/inner"), "copied").unwrap();
+        fs::write(outside.join("target"), "host").unwrap();
+        std::os::unix::fs::symlink(outside.join("target"), destination.join("file")).unwrap();
+        std::os::unix::fs::symlink(&outside, destination.join("sub")).unwrap();
+        assert!(copytree(&source, &destination).is_err());
+        assert_eq!(fs::read(outside.join("target")).unwrap(), b"host");
+        assert!(!outside.join("inner").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -14,12 +14,35 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// A free loopback port (bound and released; the gateway binds it right after).
-pub fn free_port() -> Result<u16, String> {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .map_err(|e| format!("free loopback port: {e}"))
+/// Loopback ports for the gateway's listeners, held bound until it is about to bind them: all
+/// reserved at once, so they are distinct, and no other `bind(0)` on the host is handed one
+/// while they are held. Whatever takes a port after [`Ports::release`] is caught by
+/// [`Gateway::boot`], which only accepts a `/healthz` answer from a listener its child owns.
+pub struct Ports {
+    held: Vec<TcpListener>,
+    pub ports: Vec<u16>,
+}
+
+impl Ports {
+    pub fn reserve(n: usize) -> Result<Ports, String> {
+        let mut held = Vec::with_capacity(n);
+        let mut ports = Vec::with_capacity(n);
+        for _ in 0..n {
+            let l = TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| format!("reserve a loopback port: {e}"))?;
+            let a = l
+                .local_addr()
+                .map_err(|e| format!("reserve a loopback port: {e}"))?;
+            ports.push(a.port());
+            held.push(l);
+        }
+        Ok(Ports { held, ports })
+    }
+
+    /// Let the ports go, right before the gateway binds them.
+    pub fn release(self) {
+        drop(self.held);
+    }
 }
 
 /// The binary's version line, e.g. `(1, 6, 0)`.
@@ -186,7 +209,6 @@ impl Drop for Gateway {
 #[derive(Debug)]
 pub struct Resp {
     pub status: u16,
-    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -330,8 +352,24 @@ mod tests {
     }
 
     #[test]
-    fn free_port_reports_errors_and_never_yields_zero() {
-        let p: Result<u16, String> = free_port();
-        assert!(p.is_ok_and(|p| p != 0));
+    fn malformed_chunked_bodies_are_errors() {
+        let h = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        for body in [&b"zz\r\nabc\r\n0\r\n\r\n"[..], b"5\r\nab", b"3\r\nabc\r\n"] {
+            assert!(
+                parse_response(&[&h[..], body].concat()).is_err(),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_ports_report_errors_and_are_distinct_and_never_zero() {
+        let p: Result<Ports, String> = Ports::reserve(4);
+        let p = p.expect("loopback ports");
+        let mut seen = p.ports.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 4);
+        assert!(p.ports.iter().all(|&port| port != 0));
     }
 }
