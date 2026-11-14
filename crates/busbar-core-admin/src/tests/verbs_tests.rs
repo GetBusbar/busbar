@@ -799,3 +799,44 @@ async fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() 
         );
     }
 }
+
+#[tokio::test]
+async fn a_new_verb_budget_recovers_after_a_corrected_forward_clock_step() {
+    let verbs = make_verbs(FakeGovernance::new());
+    let admin = admin();
+    let trust_at = |now: u64| {
+        let verbs = &verbs;
+        let admin = &admin;
+        async move {
+            verbs
+                .execute(
+                    KernelVerb::TrustApprove,
+                    admin,
+                    "op",
+                    VerbScope::Full,
+                    now,
+                    b"{}",
+                )
+                .await
+        }
+    };
+    let t = 1_000_020;
+    let stepped = t + 86_400;
+    for i in 0..60 {
+        trust_at(stepped)
+            .await
+            .unwrap_or_else(|e| panic!("attempt {i} should be admitted, got {e:?}"));
+    }
+    assert!(trust_at(stepped).await.is_err());
+    assert!(
+        trust_at(t).await.is_err(),
+        "a clock that has only just read behind is still judged against the live window"
+    );
+    assert!(trust_at(t + 59).await.is_err());
+    for i in 0..60 {
+        trust_at(t + 60).await.unwrap_or_else(|e| {
+            panic!("attempt {i}: a corrected forward step still pins the new verbs in the future: {e:?}")
+        });
+    }
+    assert!(trust_at(t + 60).await.is_err());
+}
