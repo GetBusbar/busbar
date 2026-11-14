@@ -1611,26 +1611,51 @@ async fn fenced_no_effect_requires_unchanged_native_generation_and_prior_checkpo
     }
 }
 
-struct LiveFixtureProbe;
-#[async_trait]
-impl SourceFenceProbe for LiveFixtureProbe {
-    fn implementation_digest(&self) -> [u8; 32] {
-        [77; 32]
+/// Native owner answering every fence check with a fresh live observation.
+struct LiveFixtureFence(busbar_contract::persistence::lifecycle::SourceIdentity);
+impl busbar_contract::persistence::lifecycle::PreparedStore for LiveFixtureFence {
+    fn phase(&self) -> busbar_contract::persistence::lifecycle::Phase {
+        busbar_contract::persistence::lifecycle::Phase::Upgrading
     }
-    async fn verify(
+    fn bootstrap(
         &self,
-        request: &busbar_contract::persistence::source_fence::ProbeRequest,
-    ) -> Result<busbar_contract::persistence::source_fence::ProbeReply, Error> {
-        use busbar_contract::persistence::source_fence as wire;
-        Ok(wire::ProbeReply {
-            version: wire::VERSION,
-            request_sha256: request.digest().unwrap(),
-            native_anchor_sha256: request.native_anchor_sha256,
-            archive_sha256: request.archive_sha256,
-            writer_inventory_sha256: wire::writer_inventory_digest(&request.old_writers).unwrap(),
-            enforcement_policy_sha256: [7; 32],
-            observation_sha256: busbar_contract::abi::sdk::digest::sha256(&request.challenge),
+        request: Arc<busbar_contract::persistence::lifecycle::Request>,
+    ) -> busbar_contract::persistence::lifecycle::BootstrapCall<'_> {
+        use busbar_contract::persistence::lifecycle as native;
+        Box::pin(async move {
+            match request.as_ref() {
+                native::Request::CheckFence { upgrade } => {
+                    Ok(Arc::new(native::Response::Fence(native::Fence {
+                        upgrade: upgrade.id,
+                        source: self.0.clone(),
+                        enforcement_digest: [7; 32],
+                        observation_digest: [8; 32],
+                        snapshot: [6; 16],
+                    })))
+                }
+                _ => Err(native::Error::MissingCapability),
+            }
         })
+    }
+    fn target(
+        &self,
+        _: busbar_contract::persistence::lifecycle::UpgradeRef,
+    ) -> busbar_contract::persistence::lifecycle::TargetCall<'_> {
+        Box::pin(async { Err(busbar_contract::persistence::lifecycle::Error::MissingCapability) })
+    }
+    fn open(
+        &self,
+        _: busbar_contract::persistence::lifecycle::OpenBinding,
+    ) -> busbar_contract::persistence::lifecycle::PreparedOpenCall<'_> {
+        Box::pin(async { Err(busbar_contract::persistence::lifecycle::Error::MissingCapability) })
+    }
+    fn serving(
+        &self,
+    ) -> Result<
+        busbar_contract::persistence::axis::OpenedBackend,
+        busbar_contract::persistence::lifecycle::Error,
+    > {
+        Err(busbar_contract::persistence::lifecycle::Error::MissingCapability)
     }
 }
 struct ExactFixtureReadback(Edge);
@@ -1671,50 +1696,30 @@ impl TargetRecoveryProbe for NoFixtureRecovery {
     }
 }
 fn readback_services(plan: &Manifest, backend: Arc<Backend>) -> Services {
-    use busbar_contract::persistence::{archive, source_fence as wire};
-    let writers = vec!["fixture legacy writer".to_owned()];
-    let inventory = wire::writer_inventory_digest(&writers).unwrap();
-    let attestation = |kind, epoch| wire::Attestation {
-        version: wire::VERSION,
-        kind,
-        epoch: [epoch; 16],
-        native_anchor_sha256: [42; 32],
-        archive_sha256: plan.source.artifact_digest,
-        writer_inventory_sha256: inventory,
-        quiesced: true,
-        actor: "fixture operator".into(),
-        reason: "unit source snapshot".into(),
-    };
-    let header = archive::Header {
-        owner: plan.source.format.owner,
-        physical: plan.source.format.physical,
-        catalogue_digest: [9; 32],
-        native_anchor_digest: [42; 32],
-        capture: Some(wire::CaptureFence {
-            writer_inventory_sha256: inventory,
-            enforcement_policy_sha256: [7; 32],
-            prefence_observation_sha256: [8; 32],
-        }),
-        tables: vec![],
-    };
-    let summary = archive::Summary {
-        rows: 2,
-        bytes: 256,
-        digest: plan.source.artifact_digest,
+    use busbar_contract::persistence::lifecycle as native;
+    let original = native::SourceIdentity {
+        native_anchor: [42; 32],
+        dataset: DatasetId(plan.source.dataset),
+        format: None,
         catalogue_digest: [9; 32],
         layout_digest: plan.source.schema_digest,
-        content_digest: [4; 32],
-        post_observation_sha256: Some([5; 32]),
+    };
+    let upgrade = native::Upgrade {
+        reference: native::UpgradeRef {
+            id: plan.migration,
+            authority: Secret::new(b"fixture upgrade authority".to_vec()),
+        },
+        source: original.clone(),
+        snapshot: [6; 16],
+        target: backend.info(),
+        native_step: 1,
+        catalogue: vec![],
     };
     let fence = Arc::new(
-        NativeSourceFence::new(
+        NativeSourceFence::from_native(
             plan.source.clone(),
-            &header,
-            summary,
-            writers,
-            &attestation(wire::Quiescence::Sender, 1),
-            &attestation(wire::Quiescence::Backend, 2),
-            Arc::new(LiveFixtureProbe),
+            Arc::new(LiveFixtureFence(original)),
+            &upgrade,
         )
         .unwrap(),
     );
