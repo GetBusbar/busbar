@@ -2,10 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! LINT-RULES R9 `commit-outside-slot-facade`: a store commit crosses only through custody. Every
-//! `PersistenceBackend::commit` takes a `CommitKey` by value, and only the kernel's commit root
-//! (`busbar-kernel` `persistence::commit`) and the migration library's grant mint one, so a raw
-//! commit anywhere else does not compile. The constructor and `Clone` refusals are the
-//! `compile_fail` examples on `CommitKey` and `CommitRoot` (`src/persistence.rs`).
+//! `PersistenceBackend::commit` takes a `CommitKey` by value, and a key is minted only as a slotted
+//! key under the kernel's `SlotSeal` or as a self-fenced key from a checked `SelfFenced` proof
+//! (`src/persistence/commit_key.rs`, STORE-TRANSACTIONS), so a raw commit elsewhere does not compile.
 
 use busbar_contract::persistence::{
     Call, CommitKey, Decision, PersistenceBackend, PreparedCandidate,
