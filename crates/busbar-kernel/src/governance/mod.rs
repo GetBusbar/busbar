@@ -850,7 +850,7 @@ pub struct GovState {
 
     amendments: Arc<crate::audit::amend::NodeAmendments>,
 
-    boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
+    boot_caller_ref: busbar_contract::secure::SecureArray<32>,
 }
 
 /// The order of the key caches' writes (see `GovState::refresh_order`). Every reload takes a

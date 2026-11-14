@@ -532,7 +532,7 @@ fn a_pseudo_field_in_a_request_is_refused() {
 fn a_sealed_value_with_a_line_break_or_nul_is_refused() {
     use crate::abi::sdk::cred::Cred;
     for bad in [&b"tok\r\nx-evil: 1"[..], &b"tok\nx"[..], &b"tok\0x"[..]] {
-        let key = Cred::captured(zeroize::Zeroizing::new(bad.to_vec()));
+        let key = Cred::captured(crate::secure::SecureVec::from(bad.to_vec()));
         let refused =
             Exchange::request_sealed(post(), vec![(0, b"x-api-key".to_vec(), key.field())]);
         assert!(
@@ -958,7 +958,7 @@ fn a_failed_exchange_closes_its_stream_before_it_answers() {
 /// A buffer whose TYPE wipes it on drop: the bound is the proof, checked at compile time.
 fn wipes_on_drop<T: zeroize::ZeroizeOnDrop + ?Sized>(_: &T) {}
 
-/// A type a plugin can wipe (`zeroize::Zeroizing::new(value)`).
+/// A type a plugin can wipe (`zeroize::Zeroize::zeroize(&mut value)`).
 fn wipeable<T: Zeroize>() {}
 
 /// Every buffer an exchange holds of the request or the reply wipes on drop: the head it frames,
@@ -1154,7 +1154,7 @@ fn a_completed_exchange_reports_its_heads_status() {
 #[test]
 fn sealed_fields_go_in_at_their_place_and_never_read_back() {
     use crate::abi::sdk::cred::Cred;
-    let key = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()));
+    let key = Cred::captured(crate::secure::SecureVec::from(b"sk-CANARY".to_vec()));
     let r = Request {
         method: b"POST".to_vec(),
         target: b"/hook".to_vec(),
@@ -1190,7 +1190,7 @@ fn sealed_fields_go_in_at_their_place_and_never_read_back() {
 #[test]
 fn a_sealed_body_replaces_the_requests_own() {
     use crate::abi::sdk::cred::{Cred, FormBody};
-    let secret = Cred::captured(zeroize::Zeroizing::new(b"s3c".to_vec()));
+    let secret = Cred::captured(crate::secure::SecureVec::from(b"s3c".to_vec()));
     let body = FormBody::new()
         .public("grant_type", "authorization_code")
         .sealed("client_secret", &secret)
@@ -1229,8 +1229,8 @@ fn protected_exchange_requires_actual_security_facts_for_every_target_shape() {
         Some("https://far/hook"),
     ] {
         for (insecure, unknown) in [(false, false), (true, false), (false, true)] {
-            let required =
-                Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec())).require_secure();
+            let required = Cred::captured(crate::secure::SecureVec::from(b"sk-CANARY".to_vec()))
+                .require_secure();
             let body = FormBody::new()
                 .sealed("secret", &required)
                 .encoded()
@@ -1536,8 +1536,12 @@ fn framed_and_raw_exchange_debug_hide_sending_and_pending_reply_buffers() {
 #[test]
 fn sealed_exchange_debug_never_reveals_the_encoded_header_or_body() {
     use crate::abi::sdk::cred::{Cred, FormBody};
-    let header = Cred::captured(Zeroizing::new(b"A21-SEALED-HEADER-731f".to_vec()));
-    let body = Cred::captured(Zeroizing::new(b"A21-SEALED-BODY-a81c".to_vec()));
+    let header = Cred::captured(crate::secure::SecureVec::from(
+        b"A21-SEALED-HEADER-731f".to_vec(),
+    ));
+    let body = Cred::captured(crate::secure::SecureVec::from(
+        b"A21-SEALED-BODY-a81c".to_vec(),
+    ));
     let encoded = FormBody::new()
         .sealed("client_secret", &body)
         .encoded()
@@ -1618,7 +1622,7 @@ fn an_exchange_that_never_reads_allocates_no_read_buffer() {
 #[test]
 fn a_prepared_head_frames_what_request_sealed_frames() {
     use crate::abi::sdk::cred::Cred;
-    let key = || Cred::captured(zeroize::Zeroizing::new(b"tok-1".to_vec()));
+    let key = || Cred::captured(crate::secure::SecureVec::from(b"tok-1".to_vec()));
     for at in [0usize, 1, 2, 9] {
         let direct = Exchange::request_sealed(
             post(),
@@ -1661,7 +1665,7 @@ fn a_prepared_head_refuses_at_preparation() {
     ));
     let prepared =
         PreparedRequest::new(post(), vec![(0, b"x-api-key".to_vec())]).expect("a valid head");
-    let bad = Cred::captured(zeroize::Zeroizing::new(b"tok\r\nx".to_vec()));
+    let bad = Cred::captured(crate::secure::SecureVec::from(b"tok\r\nx".to_vec()));
     assert!(matches!(
         Exchange::prepared(&prepared, vec![bad.field()], Vec::new()),
         Err(ConnFailure::Refused(t)) if t.contains("x-api-key") && !t.contains("tok")

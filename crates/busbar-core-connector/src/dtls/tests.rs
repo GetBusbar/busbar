@@ -564,7 +564,7 @@ fn the_session_cert_shows_only_its_fingerprint_and_dimpl_never_holds_the_key() {
     );
     let k = SrtpKeying {
         profile: SrtpProfile::AeadAes128Gcm,
-        material: Zeroizing::new(vec![0xAB; 56]),
+        material: busbar_contract::secure::SecureVec::from(vec![0xAB; 56]),
     };
     let debug = format!("{k:?}");
     assert!(

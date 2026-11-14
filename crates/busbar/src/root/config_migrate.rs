@@ -535,7 +535,9 @@ impl RootHost {
         Ok(answer.map(|m| (row.manifest.name.clone(), m)))
     }
 
-    fn catalog_source(&self) -> Result<Option<(PathBuf, zeroize::Zeroizing<String>)>, String> {
+    fn catalog_source(
+        &self,
+    ) -> Result<Option<(PathBuf, busbar_contract::secure::SecureString)>, String> {
         if let Some(documents) = &self.startup {
             if let Some(source) = documents.original_provider()? {
                 return Ok(Some(source));
@@ -543,7 +545,10 @@ impl RootHost {
         }
         let (_, path) = self.catalog_path();
         match std::fs::read_to_string(&path) {
-            Ok(raw) => Ok(Some((path, zeroize::Zeroizing::new(raw)))),
+            Ok(raw) => Ok(Some((
+                path,
+                busbar_contract::secure::SecureString::from(raw),
+            ))),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(_) if self.startup.is_some() => {
                 Err("original providers source could not be read".into())
@@ -848,7 +853,7 @@ impl MigrateHost for RootHost {
                     config_path: self.config.clone(),
                     site: site.to_owned(),
                     settings_path: path.to_vec(),
-                    bytes: zeroize::Zeroizing::new(bytes.to_vec()),
+                    bytes: busbar_contract::secure::SecureVec::from(bytes),
                     path: output,
                 },
             );

@@ -20,6 +20,7 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::lifecycle::slot as lc;
 use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
+use busbar_contract::secure::SecureVec;
 
 use crate::dispatch::call::Ticketed;
 use crate::dispatch::kinds::export::{Export, ExportFacts};
@@ -118,7 +119,7 @@ pub fn validate(plugin: &Plugin<Export>, settings: &[u8]) -> Result<(), String> 
 pub fn check(
     plugin: &Plugin<Export>,
     phase: u32,
-    instances: &[(String, Vec<u8>)],
+    instances: &[(String, SecureVec)],
 ) -> Result<Vec<String>, String> {
     let bytes = check_bytes(plugin, phase, instances)?;
     if bytes.is_empty() {
@@ -136,7 +137,7 @@ pub fn check(
 fn check_bytes(
     plugin: &Plugin<Export>,
     phase: u32,
-    instances: &[(String, Vec<u8>)],
+    instances: &[(String, SecureVec)],
 ) -> Result<Vec<u8>, String> {
     #[expect(
         clippy::disallowed_methods,
@@ -198,7 +199,7 @@ fn recorder_requirements(
 
 struct Line {
     stream: u8,
-    bytes: zeroize::Zeroizing<Vec<u8>>,
+    bytes: SecureVec,
     _hold: Box<dyn Send>,
 }
 
@@ -293,12 +294,12 @@ impl Shared {
             fold_shed_lines(self.dispatcher.observing(), self.plugin.name(), lines.len());
             return;
         };
-        let mut batch = zeroize::Zeroizing::new(Vec::with_capacity(
+        let mut batch = SecureVec::from(Vec::with_capacity(
             lines.iter().map(|l| l.bytes.len() + 1).sum(),
         ));
         for l in &lines {
-            busbar_contract::secure::append(&mut batch, &l.bytes);
-            busbar_contract::secure::append(&mut batch, b"\n");
+            batch.extend_from_slice(&l.bytes);
+            batch.extend_from_slice(b"\n");
         }
         let batch = Arc::new(batch);
         let op_id = self.op_id();
@@ -632,7 +633,7 @@ impl ExportCalls for ExportInstance {
             .dispatcher
             .seal()
             .ok_or("export refresh requires the host settings seal")?;
-        let settings = Arc::new(zeroize::Zeroizing::new(encoded.expose(seal).clone()));
+        let settings = Arc::new(SecureVec::from(encoded.expose(seal).as_slice()));
         #[expect(
             clippy::disallowed_methods,
             reason = "config: an export refresh found no free ticket"
@@ -683,7 +684,7 @@ impl ExportCalls for ExportInstance {
     }
 
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered {
-        let line = zeroize::Zeroizing::new(line);
+        let line = SecureVec::from(line);
         let sh = &self.shared;
         if sh.plugin.is_faulted() || !sh.plugin.is_open() {
             return Delivered::Shed;

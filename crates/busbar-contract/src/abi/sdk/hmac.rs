@@ -9,7 +9,7 @@
 //! to the fallible facade calls (CRYPTO-SEAM §2.5, §8 steps 5-7). Core's software backend refuses
 //! nothing, so the refusal arm below is unreachable in a core build.
 
-use zeroize::Zeroizing;
+use crate::secure::{SecureArray, SecureVec};
 
 use super::cred::Cred;
 use crate::crypto;
@@ -37,15 +37,15 @@ impl HmacSha256Key {
 
     /// HMAC-SHA256 of `data` under this key, equal to [`hmac_sha256`].
     #[must_use]
-    pub fn mac(&self, data: &[u8]) -> Zeroizing<[u8; 32]> {
-        Zeroizing::new(self.0.sign(data))
+    pub fn mac(&self, data: &[u8]) -> SecureArray<32> {
+        SecureArray::from(self.0.sign(data))
     }
 
     /// HMAC-SHA256 of the concatenation of `parts` under this key, equal to [`hmac_sha256`] of the
     /// joined message.
     #[must_use]
-    pub fn mac_parts(&self, parts: &[&[u8]]) -> Zeroizing<[u8; 32]> {
-        Zeroizing::new(self.0.sign_parts(parts))
+    pub fn mac_parts(&self, parts: &[&[u8]]) -> SecureArray<32> {
+        SecureArray::from(self.0.sign_parts(parts))
     }
 }
 
@@ -57,18 +57,18 @@ impl core::fmt::Debug for HmacSha256Key {
 
 /// An HMAC-SHA1 key held for many MACs under it (see [`HmacSha256Key`]). The key copy is wiped on
 /// drop.
-pub struct HmacSha1Key(Zeroizing<Vec<u8>>);
+pub struct HmacSha1Key(SecureVec);
 
 impl HmacSha1Key {
     /// The key of the opaque credential `key` (RFC 2104).
     #[must_use]
     pub fn new(key: &Cred) -> Self {
-        Self(Zeroizing::new(key.wire().to_vec()))
+        Self(SecureVec::from(key.wire()))
     }
 
     /// HMAC-SHA1 of the concatenation of `parts` under this key, equal to [`hmac_sha1`].
     #[must_use]
-    pub fn mac_parts(&self, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
+    pub fn mac_parts(&self, parts: &[&[u8]]) -> SecureArray<20> {
         hmac_sha1_raw(&self.0, parts)
     }
 }
@@ -80,24 +80,24 @@ impl core::fmt::Debug for HmacSha1Key {
 }
 
 /// HMAC-SHA256 of `data` under `key` (RFC 2104). The returned MAC is wiped on drop.
-pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Zeroizing<[u8; 32]> {
-    Zeroizing::new(crypto::hmac_sha256(key, data).unwrap_or_else(|e| refused(e)))
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> SecureArray<32> {
+    SecureArray::from(crypto::hmac_sha256(key, data).unwrap_or_else(|e| refused(e)))
 }
 
 /// HMAC-SHA1 of the concatenation of `parts` under `key` (RFC 2104). The message copy and the
 /// returned MAC are wiped on drop.
-pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
+pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> SecureArray<20> {
     hmac_sha1_raw(key.wire(), parts)
 }
 
-fn hmac_sha1_raw(key: &[u8], parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
-    let message = Zeroizing::new(parts.concat());
-    Zeroizing::new(crypto::legacy::hmac_sha1(key, &message).unwrap_or_else(|e| refused(e)))
+fn hmac_sha1_raw(key: &[u8], parts: &[&[u8]]) -> SecureArray<20> {
+    let message = SecureVec::from(parts.concat());
+    SecureArray::from(crypto::legacy::hmac_sha1(key, &message).unwrap_or_else(|e| refused(e)))
 }
 
 /// SHA-256 of the concatenation of `parts`. The returned digest is wiped on drop.
-pub fn sha256(parts: &[&[u8]]) -> Zeroizing<[u8; 32]> {
-    Zeroizing::new(crypto::sha256_parts(parts))
+pub fn sha256(parts: &[&[u8]]) -> SecureArray<32> {
+    SecureArray::from(crypto::sha256_parts(parts))
 }
 
 #[cfg(test)]

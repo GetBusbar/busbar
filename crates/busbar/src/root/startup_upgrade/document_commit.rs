@@ -13,7 +13,6 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
 };
-use zeroize::Zeroizing;
 
 pub type CheckpointCall<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 /// The adapter uses one exact native checkpoint candidate and previous-value predicate.
@@ -46,7 +45,7 @@ pub enum Phase {
 }
 struct Document {
     publication: Publication,
-    metadata: Option<Zeroizing<Vec<u8>>>,
+    metadata: Option<SecureVec>,
     read_only: bool,
 }
 pub struct Inventory {
@@ -316,7 +315,7 @@ impl Inventory {
         }
         Ok(())
     }
-    fn material(&self) -> Result<Zeroizing<Vec<u8>>, String> {
+    fn material(&self) -> Result<SecureVec, String> {
         let mut out = SecureVec::new();
         raw(&mut out, &[platform()])?;
         count(&mut out, self.documents.len())?;
@@ -351,7 +350,7 @@ impl Inventory {
             put(&mut out, &secret.bytes)?;
             put(&mut out, &path_bytes(&secret.path))?;
         }
-        Ok(out.into_zeroizing())
+        Ok(out)
     }
     fn encoded(&self, migration: [u8; 16], phase: Phase) -> Result<Secret<Vec<u8>>, String> {
         let mut out = SecureVec::new();
@@ -369,7 +368,7 @@ impl Inventory {
         raw(&mut out, &[tag])?;
         raw(&mut out, &index.to_le_bytes())?;
         raw(&mut out, &self.material()?)?;
-        Ok(Secret::new(std::mem::take(&mut *out.into_zeroizing())))
+        Ok(Secret::new(out.into_vec()))
     }
     fn decode(protected: &Secret<Vec<u8>>, migration: [u8; 16]) -> Result<(Self, Phase), String> {
         let seal = busbar_kernel::seal::lend();
@@ -419,11 +418,11 @@ impl Inventory {
             };
             let metadata = match r.take(1)?[0] {
                 0 => None,
-                1 => Some(Zeroizing::new(r.field()?.to_vec())),
+                1 => Some(SecureVec::from(r.field()?)),
                 _ => return Err(failure()),
             };
-            let original = Zeroizing::new(r.field()?.to_vec());
-            let converted = Zeroizing::new(r.field()?.to_vec());
+            let original = SecureVec::from(r.field()?);
+            let converted = SecureVec::from(r.field()?);
             documents.push(Document {
                 publication: Publication {
                     path,
@@ -456,7 +455,7 @@ impl Inventory {
             for _ in 0..count {
                 settings_path.push(r.string()?);
             }
-            let bytes = Zeroizing::new(r.field()?.to_vec());
+            let bytes = SecureVec::from(r.field()?);
             let path = r.path()?;
             secrets.push(SecretPublication {
                 config_path,
@@ -865,7 +864,9 @@ mod tests {
         fn documents(&self) -> Arc<Documents> {
             let documents = Arc::new(Documents::default());
             for (path, kind) in &self.publications {
-                let raw = Zeroizing::new(std::fs::read_to_string(path).unwrap());
+                let raw = busbar_contract::secure::SecureString::from(
+                    std::fs::read_to_string(path).unwrap(),
+                );
                 documents.normalize(*kind, path, &raw).unwrap();
             }
             documents

@@ -3,7 +3,7 @@
 
 //! A plugin-owned complete configuration, carried by the existing configure reply extension.
 
-use zeroize::Zeroizing;
+use crate::secure::SecureVec;
 
 use crate::abi::mechanism::{check::HARD_MAX_BYTES, extensions};
 
@@ -20,13 +20,13 @@ pub struct ConfigureCheckpoint {
     /// The version of the effective settings, which can exceed a stale push's acknowledged version.
     pub settings_version: u64,
 
-    settings: Zeroizing<Vec<u8>>,
+    settings: SecureVec,
 }
 
 impl ConfigureCheckpoint {
     /// Own a complete, normalized JSON settings object. Its semantics belong to the plugin; the
     pub fn new(revision: u64, settings_version: u64, settings: Vec<u8>) -> Result<Self, String> {
-        let settings = Zeroizing::new(settings);
+        let settings = SecureVec::from(settings);
         if revision == 0
             || settings.is_empty()
             || settings.len() > MAX_BYTES.saturating_sub(extensions::entry_len(KEY, &[]) + HEADER)
@@ -48,10 +48,10 @@ impl ConfigureCheckpoint {
 
     /// Encode the one extension entry. The returned bytes must remain in wiping custody.
     #[must_use]
-    pub fn encode(&self) -> Zeroizing<Vec<u8>> {
+    pub fn encode(&self) -> SecureVec {
         let length = HEADER + self.settings.len();
         // One exact allocation (`concat`): the wiping buffer never grows (LINT-RULES LR-117).
-        Zeroizing::new(
+        SecureVec::from(
             [
                 &(KEY.len() as u16).to_le_bytes()[..],
                 KEY.as_bytes(),

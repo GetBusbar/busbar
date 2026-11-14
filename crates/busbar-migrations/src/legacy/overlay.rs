@@ -113,10 +113,8 @@ pub fn frozen_overlay_from_facts(
     if charge.checked_add(length).is_none_or(|n| n > budget) {
         return Err(Error::Bounds);
     }
-    let mut output = zeroize::Zeroizing::new(Vec::new());
-    output
-        .try_reserve_exact(length)
-        .map_err(|_| Error::Bounds)?;
+    let mut output =
+        busbar_contract::secure::SecureVec::with_capacity(length).map_err(|_| Error::Bounds)?;
     for index in 0..length.div_ceil(busbar_contract::MAX_RECORD_BYTES) {
         let mut key = b"chunk:".to_vec();
         key.extend_from_slice(&head.generation);
@@ -125,14 +123,14 @@ pub fn frozen_overlay_from_facts(
         if chunk.len() != (length - output.len()).min(busbar_contract::MAX_RECORD_BYTES) {
             return Err(Error::Verification);
         }
-        busbar_contract::secure::append(&mut output, chunk);
+        output.extend_from_slice(chunk);
     }
     if <[u8; 32]>::from(busbar_contract::crypto::sha256(&output)) != head.digest {
         return Err(Error::Verification);
     }
     Ok(Some(FrozenOverlay {
         source: identity.clone(),
-        bytes: Secret::new(std::mem::take(&mut *output)),
+        bytes: Secret::new(output.into_vec()),
         digest: head.digest,
         head_digest: busbar_contract::crypto::sha256(raw.expose(&seal)).into(),
     }))

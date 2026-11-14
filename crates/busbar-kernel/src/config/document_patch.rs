@@ -6,10 +6,11 @@
 
 use std::fmt;
 
+use busbar_contract::secure::SecureString;
 use busbar_contract::yaml::{MappingExt, Value as Yaml, ValueExt};
 use serde::Deserialize;
 use serde_json::Value;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 #[path = "document_source.rs"]
 mod source;
@@ -243,18 +244,17 @@ impl DocumentPatch {
         source::compact(self, yaml)
     }
 
-    fn remove_below(&mut self, prefix: &[String]) -> Result<(), PatchError> {
-        let paths = Zeroizing::new(
-            self.paths()
-                .filter_map(|path| {
-                    pointer(path)
-                        .ok()
-                        .filter(|parts| parts.starts_with(prefix))
-                        .map(|_| path.to_owned())
-                })
-                .collect::<Vec<_>>(),
-        );
-        for path in &*paths {
+    fn remove_below(&mut self, prefix: &[SecureString]) -> Result<(), PatchError> {
+        let paths = self
+            .paths()
+            .filter_map(|path| {
+                pointer(path)
+                    .ok()
+                    .filter(|parts| parts.starts_with(prefix))
+                    .map(|_| SecureString::from(path))
+            })
+            .collect::<Vec<_>>();
+        for path in &paths {
             self.remove_operation(path);
         }
         Ok(())
@@ -262,9 +262,9 @@ impl DocumentPatch {
 
     /// Returns secret-bearing Store bytes under zeroizing ownership.
     #[cfg(test)]
-    pub(crate) fn to_json_bytes(&self) -> Result<Zeroizing<Vec<u8>>, PatchError> {
-        let mut bytes = Zeroizing::new(Vec::new());
-        serde_json::to_writer(&mut *bytes, &self.0).map_err(|_| PatchError::Encoding)?;
+    pub(crate) fn to_json_bytes(&self) -> Result<busbar_contract::secure::SecureVec, PatchError> {
+        let mut bytes = busbar_contract::secure::SecureVec::new();
+        serde_json::to_writer(&mut bytes, &self.0).map_err(|_| PatchError::Encoding)?;
         Ok(bytes)
     }
 
@@ -370,13 +370,11 @@ impl DocumentPatch {
             return Ok(());
         };
         for index in 0..stages.len() {
-            let paths = Zeroizing::new(
-                stage_paths(&stages[index])
-                    .filter(|path| !indexed_path(path))
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>(),
-            );
-            for path in &*paths {
+            let paths = stage_paths(&stages[index])
+                .filter(|path| !indexed_path(path))
+                .map(SecureString::from)
+                .collect::<Vec<_>>();
+            for path in &paths {
                 let prefix = pointer(path)?;
                 for prior in &mut stages[..index] {
                     let mut prior_patch = Self(std::mem::take(prior));
@@ -469,7 +467,7 @@ impl DocumentPatch {
     ) -> Result<Option<String>, PatchError> {
         for path in self.paths() {
             let parts = pointer(path)?;
-            let Some(deploy) = deployments.get(&parts[0]) else {
+            let Some(deploy) = deployments.get(parts[0].as_str()) else {
                 continue;
             };
             let typed = WipedYaml(
@@ -485,7 +483,7 @@ impl DocumentPatch {
                 })
                 .chain(deploy.options.keys().map(String::as_str));
             for key in overrides {
-                if parts.len() == 1 || parts[1] == key {
+                if parts.len() == 1 || parts[1].as_str() == key {
                     return Ok(Some(path.to_owned()));
                 }
             }
@@ -569,7 +567,7 @@ impl DocumentPatch {
                     (Ok(a), Ok(b)) => b.cmp(&a),
                     (Ok(_), Err(_)) => std::cmp::Ordering::Less,
                     (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
-                    (Err(_), Err(_)) => b.cmp(a),
+                    (Err(_), Err(_)) => b.as_str().cmp(a.as_str()),
                 };
                 if !order.is_eq() {
                     return order;
@@ -636,7 +634,7 @@ fn validate_stage(value: &Value) -> Result<(), PatchError> {
         let decoded = pointer(path)?;
         if seen
             .iter()
-            .any(|prior: &Zeroizing<Vec<String>>| overlaps(prior, &decoded))
+            .any(|prior: &Vec<SecureString>| overlaps(prior, &decoded))
         {
             return Err(PatchError::Overlap);
         }
@@ -645,15 +643,15 @@ fn validate_stage(value: &Value) -> Result<(), PatchError> {
     Ok(())
 }
 
-fn pointer(path: &str) -> Result<Zeroizing<Vec<String>>, PatchError> {
+fn pointer(path: &str) -> Result<Vec<SecureString>, PatchError> {
     let tail = path.strip_prefix('/').ok_or(PatchError::Path)?;
-    let mut parts = Zeroizing::new(Vec::new());
+    let mut parts = Vec::new();
     for part in tail.split('/') {
         if parts.len() == 128 {
             return Err(PatchError::Limit);
         }
         // Decoding never lengthens a part: one exact allocation, never grown (LINT-RULES LR-117).
-        let mut decoded = Zeroizing::new(String::with_capacity(part.len()));
+        let mut decoded = SecureString::with_capacity(part.len());
         let mut chars = part.chars();
         while let Some(ch) = chars.next() {
             let ch = match ch {
@@ -664,20 +662,20 @@ fn pointer(path: &str) -> Result<Zeroizing<Vec<String>>, PatchError> {
                 },
                 ch => ch,
             };
-            busbar_contract::secure::append_str(&mut decoded, ch.encode_utf8(&mut [0; 4]));
+            decoded.push(ch);
         }
-        busbar_contract::secure::push(&mut parts, std::mem::take(&mut *decoded));
+        parts.push(decoded);
     }
     Ok(parts)
 }
 
-fn overlaps(a: &[String], b: &[String]) -> bool {
+fn overlaps(a: &[SecureString], b: &[SecureString]) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
 struct Prepared {
-    set: Vec<(Zeroizing<Vec<String>>, WipedYaml)>,
-    remove: Vec<Zeroizing<Vec<String>>>,
+    set: Vec<(Vec<SecureString>, WipedYaml)>,
+    remove: Vec<Vec<SecureString>>,
 }
 impl Prepared {
     fn apply(mut self, document: &mut Yaml) {
@@ -700,7 +698,11 @@ fn sequence_index(key: &str) -> Result<usize, PatchError> {
     key.parse().map_err(|_| PatchError::Traversal)
 }
 
-fn check_target(mut document: &Yaml, path: &mut [String], set: bool) -> Result<(), PatchError> {
+fn check_target(
+    mut document: &Yaml,
+    path: &mut [SecureString],
+    set: bool,
+) -> Result<(), PatchError> {
     let last = path.len() - 1;
     for (depth, key) in path.iter_mut().enumerate() {
         if let Some(map) = document.as_mapping() {
@@ -709,9 +711,9 @@ fn check_target(mut document: &Yaml, path: &mut [String], set: bool) -> Result<(
                 None => return Ok(()),
             }
         } else if let Some(seq) = document.as_sequence() {
-            if set && depth == last && key == "-" {
+            if set && depth == last && key.as_str() == "-" {
                 key.zeroize();
-                *key = seq.len().to_string();
+                *key = SecureString::from(seq.len().to_string());
                 return Ok(());
             }
             document = seq.get(sequence_index(key)?).ok_or(PatchError::Traversal)?;
@@ -722,7 +724,7 @@ fn check_target(mut document: &Yaml, path: &mut [String], set: bool) -> Result<(
     Ok(())
 }
 
-fn set_at(document: &mut Yaml, path: &[String], value: &mut Yaml) {
+fn set_at(document: &mut Yaml, path: &[SecureString], value: &mut Yaml) {
     if let Some(seq) = document.as_sequence_mut() {
         let index = sequence_index(&path[0]).expect("index checked");
         if path.len() == 1 {
@@ -744,13 +746,16 @@ fn set_at(document: &mut Yaml, path: &[String], value: &mut Yaml) {
             *old = std::mem::replace(value, Yaml::Null);
         } else {
             map.insert_key(
-                Yaml::Text(path[0].clone()),
+                Yaml::Text(path[0].as_str().to_owned()),
                 std::mem::replace(value, Yaml::Null),
             );
         }
     } else {
         if !map.contains_key(path[0].as_str()) {
-            map.insert_key(Yaml::Text(path[0].clone()), Yaml::Map(Vec::new()));
+            map.insert_key(
+                Yaml::Text(path[0].as_str().to_owned()),
+                Yaml::Map(Vec::new()),
+            );
         }
         set_at(
             map.get_key_mut(path[0].as_str()).expect("parent inserted"),
@@ -760,7 +765,7 @@ fn set_at(document: &mut Yaml, path: &[String], value: &mut Yaml) {
     }
 }
 
-fn remove_at(document: &mut Yaml, path: &[String]) {
+fn remove_at(document: &mut Yaml, path: &[SecureString]) {
     if let Some(seq) = document.as_sequence_mut() {
         let index = sequence_index(&path[0]).expect("index checked");
         if path.len() == 1 {
@@ -1214,7 +1219,7 @@ mod tests {
         .is_err());
     }
 
-    fn source_text(patch: &DocumentPatch, base: &str) -> Zeroizing<Vec<u8>> {
+    fn source_text(patch: &DocumentPatch, base: &str) -> busbar_contract::secure::SecureVec {
         let mut source = source::SourceDocument::parse(base).unwrap();
         source.apply(patch).unwrap();
         source.to_yaml_bytes().unwrap()

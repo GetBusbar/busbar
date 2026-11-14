@@ -461,7 +461,7 @@ fn input_route() -> (Arc<InspectionRoute>, &'static InstanceWake, InHead) {
 fn secret_input_flags_survive_pending_resume_short_replay_and_cancel() {
     use busbar_contract::abi::mechanism::{call::BLOB_SECRET, extensions};
     let (route, wake, mut input) = input_route();
-    let prior = zeroize::Zeroizing::new(extensions::encode(&[(
+    let prior = busbar_contract::secure::SecureVec::from(extensions::encode(&[(
         "unrelated",
         b"protected-extension-value",
     )]));
@@ -551,7 +551,8 @@ fn every_secret_input_copy_is_wiped_on_cancel_epoch_end_and_owner_drop() {
         // SAFETY: every registered input allocation remains on this thread until destruction.
         let probe = unsafe { InitializedPayloadProbe::start().expect("open the memory observer") };
         let (route, wake, mut input) = input_route();
-        let prior = zeroize::Zeroizing::new(extensions::encode(&[("unrelated", &secret)]));
+        let prior =
+            busbar_contract::secure::SecureVec::from(extensions::encode(&[("unrelated", &secret)]));
         // SAFETY: the owned Vec's initialized slice begins at its allocation base.
         unsafe { watch_initialized_payload(&prior) };
         let mut expected_lengths = vec![prior.len()];

@@ -3,9 +3,10 @@
 
 use busbar_contract::export_calls::{Family, Sample};
 use busbar_contract::hook_wire::reply::HookMetric;
+use busbar_contract::secure::SecureString;
 use std::collections::HashMap;
 use std::sync::RwLock;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 /// A private hook identity retained by a cache or in-flight refresh.
 #[derive(Hash, PartialEq, Eq)]
@@ -124,13 +125,13 @@ fn prune_absent<'a>(keep: impl Iterator<Item = &'a str>) {
     }
 }
 
-fn snapshot() -> Vec<(Zeroizing<String>, Metrics)> {
+fn snapshot() -> Vec<(SecureString, Metrics)> {
     let guard = CACHE.read().unwrap_or_else(|e| e.into_inner());
     guard
         .as_ref()
         .map(|m| {
             m.iter()
-                .map(|(k, v)| (Zeroizing::new(k.0.clone()), v.metrics.clone()))
+                .map(|(k, v)| (SecureString::from(k.0.as_str()), v.metrics.clone()))
                 .collect()
         })
         .unwrap_or_default()

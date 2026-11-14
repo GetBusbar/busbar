@@ -178,7 +178,7 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
         outcome: Outcome,
         out: ResolveOut,
         error: Option<String>,
-        owned: zeroize::Zeroizing<Vec<u8>>,
+        owned: crate::secure::SecureVec,
     }
     let resolve_with = |settings: &[u8]| {
         let mut secret = [0u8; 64];
@@ -223,7 +223,7 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
                 .to_owned(),
             )
         };
-        let owned = zeroize::Zeroizing::new(secret[..output.secret.len].to_vec());
+        let owned = crate::secure::SecureVec::from(&secret[..output.secret.len]);
         zeroize::Zeroize::zeroize(&mut secret);
         if output.head.lease != 0 {
             let mut release: crate::abi::mechanism::lifecycle::ReleaseIn = zeroed();

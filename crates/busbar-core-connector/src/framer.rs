@@ -1698,7 +1698,7 @@ pub fn encode_head(
     let mut y = Yielded::default();
 
     let taken = bufs.take(&o, &mut y);
-    let mut wire = zeroize::Zeroizing::new(std::mem::take(&mut y.wire));
+    let wire = busbar_contract::secure::SecureVec::from(std::mem::take(&mut y.wire));
     #[cfg(test)]
     crate::support::watch_encoded_wire(&wire);
     if !taken? {
@@ -1713,7 +1713,7 @@ pub fn encode_head(
                 .to_owned(),
         });
     }
-    Ok(std::mem::take(&mut *wire))
+    Ok(wire.into_vec())
 }
 
 /// How many `YIELD_MORE` answers in a row may write nothing before the framing FAULTs: a framer

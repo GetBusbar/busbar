@@ -54,12 +54,15 @@ impl HistoryBinding {
 }
 /// Physical adapters use this stable envelope for native PK identities. Values
 /// stay the original protected legacy_row frame; no secret is placed in Debug.
-pub fn source_key(table: &str, native_key: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>, Error> {
+pub fn source_key(
+    table: &str,
+    native_key: &[u8],
+) -> Result<busbar_contract::secure::SecureVec, Error> {
     busbar_kernel::persistence::import_target::records::keys::framed(
         b'L',
         &[table.as_bytes(), native_key],
     )
-    .map(zeroize::Zeroizing::new)
+    .map(busbar_contract::secure::SecureVec::from)
     .map_err(|_| Error::Range)
 }
 pub(super) fn source_parts(key: &[u8]) -> Result<(&str, &[u8]), Error> {

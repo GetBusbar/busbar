@@ -42,6 +42,7 @@ use busbar_contract::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
+use busbar_contract::secure::{SecureString, SecureVec};
 use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 use busbar_kernel_audit::record::{HookApplied, HookHead};
 
@@ -1435,14 +1436,22 @@ struct ProjectBufs {
     arena: ProjectArena,
 }
 
-struct ProjectArena(zeroize::Zeroizing<ProjectBytes>);
+struct ProjectArena(ProjectBytes);
+
+impl Drop for ProjectArena {
+    fn drop(&mut self) {
+        crate::host_chains::wipe(&mut self.0);
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for ProjectArena {}
 
 impl From<Vec<u8>> for ProjectArena {
     fn from(bytes: Vec<u8>) -> Self {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ProjectArena);
         #[cfg(test)]
         let bytes: ProjectBytes = bytes.into();
-        Self(zeroize::Zeroizing::new(bytes))
+        Self(bytes)
     }
 }
 
@@ -2812,8 +2821,12 @@ impl crate::host_units::UnitHookStage for SessionStage {
     ) {
         self.spawn(done, move |stage| async move {
             // The ask's text is wiped however this task ends: answered, panicked or dropped.
-            let system = zeroize::Zeroizing::new(ask.system);
-            let messages = zeroize::Zeroizing::new(ask.messages);
+            let system = ask.system.map(SecureString::from);
+            let messages: Vec<(SecureString, SecureString)> = ask
+                .messages
+                .into_iter()
+                .map(|(role, text)| (SecureString::from(role), SecureString::from(text)))
+                .collect();
             let turns = messages
                 .iter()
                 .map(|(role, text)| (Cow::Borrowed(role.as_str()), Cow::Borrowed(text.as_str())))
@@ -2831,12 +2844,12 @@ impl crate::host_units::UnitHookStage for SessionStage {
         self.spawn(done, move |stage| async move {
             // The content, and its lossy text when it is not UTF-8, are wiped however this task
             // ends: answered, panicked or dropped.
-            let content = zeroize::Zeroizing::new(content);
-            let lossy: zeroize::Zeroizing<String>;
+            let content = SecureVec::from(content);
+            let lossy: SecureString;
             let text = match std::str::from_utf8(&content) {
                 Ok(text) => text,
                 Err(_) => {
-                    lossy = zeroize::Zeroizing::new(String::from_utf8_lossy(&content).into_owned());
+                    lossy = SecureString::from(String::from_utf8_lossy(&content).into_owned());
                     lossy.as_str()
                 }
             };

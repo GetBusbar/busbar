@@ -54,7 +54,10 @@ fn registry() -> &'static Mutex<HashMap<u64, Arc<Stats>>> {
     static REGISTRY: OnceLock<Mutex<HashMap<u64, Arc<Stats>>>> = OnceLock::new();
     REGISTRY.get_or_init(Mutex::default)
 }
-type HeldReply = (zeroize::Zeroizing<Vec<u8>>, zeroize::Zeroizing<Vec<u8>>);
+type HeldReply = (
+    busbar_contract::secure::SecureVec,
+    busbar_contract::secure::SecureVec,
+);
 struct Native {
     stats: Arc<Stats>,
     replies: Mutex<HashMap<Ticket, HeldReply>>,
@@ -238,8 +241,10 @@ extern "C" fn call(instance: *mut c_void, input: *const c_void, output: *mut c_v
                         Ok(response(&request, state));
                     let encoded = native::codec::encode_response(&result, bounds()).unwrap();
                     (
-                        zeroize::Zeroizing::new(bytes.to_vec()),
-                        zeroize::Zeroizing::new(encoded.expose(&TestKernelSeal).clone()),
+                        busbar_contract::secure::SecureVec::from(bytes),
+                        busbar_contract::secure::SecureVec::from(
+                            encoded.expose(&TestKernelSeal).as_slice(),
+                        ),
                     )
                 });
                 assert_eq!(

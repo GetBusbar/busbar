@@ -24,6 +24,7 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{PlaneOpenIn, EXT_OWNED};
 use busbar_contract::conn::{InstanceId, NeedId};
+use busbar_contract::secure::SecureVec;
 
 use super::answer::Answer;
 use super::load::{Lib, LoadError, Validated};
@@ -261,7 +262,7 @@ impl Drop for RecallLease {
 pub(crate) struct RecallInput {
     head: *mut InHead,
     prior: Blob,
-    _bytes: zeroize::Zeroizing<Vec<u8>>,
+    _bytes: SecureVec,
 }
 impl RecallInput {
     /// # Safety
@@ -269,14 +270,14 @@ impl RecallInput {
     pub(crate) unsafe fn new(head: *mut InHead, lease: u64) -> Result<Self, ()> {
         use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
         let prior = unsafe { (*head).extensions };
-        let mut bytes = zeroize::Zeroizing::new(
-            busbar_contract::abi::sdk::auth_door::short_reply::encode(lease),
-        );
-        if prior.len > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize - bytes.len()
+        let reply = busbar_contract::abi::sdk::auth_door::short_reply::encode(lease);
+        if prior.len > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize - reply.len()
             || (prior.len != 0 && (prior.ptr.is_null() || prior.fmt != BLOB_OCTETS))
         {
             return Err(());
         }
+        let mut bytes = SecureVec::with_capacity(reply.len() + prior.len).map_err(|_| ())?;
+        bytes.extend_from_slice(&reply);
         bytes.extend_from_slice(unsafe { blob_bytes(prior) });
         unsafe {
             (*head).extensions = Blob {
@@ -983,7 +984,7 @@ static EXPORT_BINDINGS: [u8; busbar_contract::abi::mechanism::extensions::entry_
 struct ExportExtensions {
     input: *mut InHead,
     original: Blob,
-    _bytes: Option<zeroize::Zeroizing<Vec<u8>>>,
+    _bytes: Option<SecureVec>,
 }
 
 impl ExportExtensions {
@@ -994,9 +995,10 @@ impl ExportExtensions {
         let original = unsafe { (*input).extensions };
         let original_bytes = unsafe { blob_bytes(original) };
         let bytes = (!original_bytes.is_empty()).then(|| {
-            let mut bytes = EXPORT_BINDINGS.to_vec();
-            bytes.extend_from_slice(original_bytes);
-            zeroize::Zeroizing::new(bytes)
+            let mut bytes = SecureVec::zeroed(EXPORT_BINDINGS.len() + original_bytes.len());
+            bytes[..EXPORT_BINDINGS.len()].copy_from_slice(&EXPORT_BINDINGS);
+            bytes[EXPORT_BINDINGS.len()..].copy_from_slice(original_bytes);
+            bytes
         });
         let extended = bytes
             .as_ref()

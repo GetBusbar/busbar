@@ -6,7 +6,8 @@
 use crate::abi::mechanism::{extensions, ticket::Ticket};
 use crate::abi::sdk::secret_bytes::SecretBytes;
 use crate::host_records::{Decision, Expected};
-use zeroize::{Zeroize, Zeroizing};
+use crate::secure::SecureVec;
+use zeroize::Zeroize;
 
 /// Host capability, present only with a supporting configured store.
 pub const CAPABILITY: &str = "busbar.plane.record-transaction/1";
@@ -443,11 +444,10 @@ pub fn read_capability(bytes: &[u8]) -> Result<Option<Capability>, &'static str>
 }
 /// Encode one immutable pending candidate, bound to this crossing's capability.
 pub fn encode_request(request: &Request) -> Result<Vec<u8>, &'static str> {
-    let mut bytes = encode_request_held(request)?;
-    Ok(std::mem::take(&mut *bytes))
+    Ok(encode_request_held(request)?.into_vec())
 }
 
-pub(crate) fn encode_request_held(request: &Request) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+pub(crate) fn encode_request_held(request: &Request) -> Result<SecureVec, &'static str> {
     let mut out = SecretBytes::default();
     authority(&mut out, request.capability);
     let c = &request.candidate;
@@ -521,7 +521,7 @@ pub(crate) fn encode_request_held(request: &Request) -> Result<Zeroizing<Vec<u8>
     encoded.extend_from_slice(INTENT.as_bytes());
     encoded.extend_from_slice(&u32::try_from(out.len()).map_err(|_| INVALID)?.to_le_bytes());
     encoded.extend_from_slice(&out);
-    Ok(encoded.into_zeroizing())
+    Ok(encoded.into_secure())
 }
 
 fn request_digest(request: &Request) -> Result<[u8; 32], &'static str> {
@@ -529,8 +529,8 @@ fn request_digest(request: &Request) -> Result<[u8; 32], &'static str> {
     Ok(crate::abi::sdk::digest::sha256(&encoded))
 }
 
-fn held_bytes(bytes: Vec<u8>) -> Zeroizing<Vec<u8>> {
-    let bytes = Zeroizing::new(bytes);
+fn held_bytes(bytes: Vec<u8>) -> SecureVec {
+    let bytes = SecureVec::from(bytes);
     #[cfg(test)]
     crate::abi::sdk::secret_bytes::watch(&bytes);
     bytes
@@ -602,21 +602,21 @@ pub fn read_request(bytes: &[u8]) -> Result<Option<Request>, &'static str> {
     });
     for _ in 0..r.u32()? {
         let kind = r.u32()?;
-        let mut key = held_bytes(r.bytes()?);
+        let key = held_bytes(r.bytes()?);
         let mut expected = HeldExpected::new(r.expected()?);
 
         decoded.0.candidate.predicates.reserve(1);
         decoded.0.candidate.predicates.push(RecordPredicate {
             kind,
-            key: std::mem::take(&mut *key),
+            key: key.into_vec(),
             expected: expected.take(),
         });
     }
     for _ in 0..r.u32()? {
         let tag = r.take(1)?[0];
         let kind = r.u32()?;
-        let mut key = held_bytes(r.bytes()?);
-        let mut value = match tag {
+        let key = held_bytes(r.bytes()?);
+        let value = match tag {
             0 => held_bytes(Vec::new()),
             1 => held_bytes(r.bytes()?),
             _ => return Err(INVALID),
@@ -625,12 +625,12 @@ pub fn read_request(bytes: &[u8]) -> Result<Option<Request>, &'static str> {
         decoded.0.candidate.mutations.push(match tag {
             0 => RecordMutation::Delete {
                 kind,
-                key: std::mem::take(&mut *key),
+                key: key.into_vec(),
             },
             1 => RecordMutation::Put {
                 kind,
-                key: std::mem::take(&mut *key),
-                value: std::mem::take(&mut *value),
+                key: key.into_vec(),
+                value: value.into_vec(),
             },
             _ => unreachable!("the mutation tag was checked before handoff"),
         });
@@ -638,15 +638,15 @@ pub fn read_request(bytes: &[u8]) -> Result<Option<Request>, &'static str> {
     for _ in 0..r.u32()? {
         let tag = r.take(1)?[0];
         let kind = r.u32()?;
-        let mut scope = held_bytes(r.bytes()?);
+        let scope = held_bytes(r.bytes()?);
         let mut life = HeldExpected::new(r.expected()?);
-        let mut content = match tag {
+        let content = match tag {
             0 | 2 => held_bytes(Vec::new()),
             1 => held_bytes(r.bytes()?),
             _ => return Err(INVALID),
         };
         decoded.0.candidate.chains.reserve(1);
-        let scope = std::mem::take(&mut *scope);
+        let scope = scope.into_vec();
         let life = life.take();
         decoded.0.candidate.chains.push(match tag {
             2 => ChainMutation::Check { kind, scope, life },
@@ -655,7 +655,7 @@ pub fn read_request(bytes: &[u8]) -> Result<Option<Request>, &'static str> {
                 kind,
                 scope,
                 life,
-                content: std::mem::take(&mut *content),
+                content: content.into_vec(),
             },
             _ => unreachable!("the chain tag was checked before handoff"),
         });

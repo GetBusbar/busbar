@@ -73,6 +73,7 @@ pub fn externalize(
 #[cfg(unix)]
 pub(crate) mod unix {
     use super::*;
+    use busbar_contract::secure::SecureVec;
     use std::ffi::{CStr, CString, OsStr};
     use std::fs::File;
     use std::io::{Read, Write};
@@ -80,7 +81,6 @@ pub(crate) mod unix {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::{Component, PathBuf};
-    use zeroize::Zeroizing;
 
     const DIRECTORY: &str = ".busbar-migrated-secrets";
 
@@ -206,18 +206,21 @@ pub(crate) mod unix {
             Err(error) => return Err(failure("existing artifact (symlinks are refused)", error)),
         };
         private(&file, false)?;
-        // Pre-allocate so read_to_end does not realloc, which would leave
-        // prior buffers containing secret bytes freed without being zeroed.
-        // (The Windows path already pre-allocates for the same reason.)
-        let mut stored = Zeroizing::new(vec![0u8; bytes.len() + 1]);
-        stored.clear();
-        // Limit reads even if another process changes a file while it is being checked.
-        Read::by_ref(&mut file)
-            .take(bytes.len() as u64 + 1)
-            .read_to_end(&mut stored)
-            .map_err(|error| failure("existing artifact read", error))?;
+        // Pre-allocate so the read never reallocs, which would leave prior buffers containing
+        // secret bytes freed without being zeroed. Read at most one byte past the expected length
+        // even if another process changes the file while it is being checked.
+        let mut stored = SecureVec::zeroed(bytes.len() + 1);
+        let mut read = 0;
+        while read < stored.len() {
+            match file.read(&mut stored[read..]) {
+                Ok(0) => break,
+                Ok(n) => read += n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(failure("existing artifact read", error)),
+            }
+        }
         private(&file, false)?;
-        if !busbar_contract::redacted::constant_time_eq(stored.as_slice(), bytes) {
+        if !busbar_contract::redacted::constant_time_eq(&stored[..read], bytes) {
             return Err(failure(
                 "existing artifact",
                 "this site already has different credential bytes; no file was overwritten; provision a separate private file and use an explicit file SecretRef",
@@ -339,6 +342,7 @@ pub(crate) mod unix {
 mod windows {
     use super::*;
     use crate::durable::documents::{windows_identity, windows_parent, windows_security};
+    use busbar_contract::secure::SecureVec;
     use std::{
         ffi::c_void,
         fs::{File, OpenOptions},
@@ -371,7 +375,6 @@ mod windows {
         },
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
-    use zeroize::Zeroizing;
 
     const DIRECTORY: &str = ".busbar-migrated-secrets";
     fn failure(stage: &str, error: impl std::fmt::Display) -> String {
@@ -558,7 +561,7 @@ mod windows {
         private.verify(file, false)?;
         let length = bytes.len().checked_add(1).ok_or_else(invalid)?;
         // Allocate once before any secret bytes enter; growth cannot leave retired plaintext buffers.
-        let mut stored = Zeroizing::new(vec![0; length]);
+        let mut stored = SecureVec::zeroed(length);
         let mut read = 0;
         while read < stored.len() {
             let n = file.read(&mut stored[read..])?;

@@ -19,6 +19,7 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::sdk::hook::{configure_checkpoint, ConfigureCheckpoint};
 use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, Pending, Probed};
+use busbar_contract::secure::SecureVec;
 
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::call::Ticketed;
@@ -82,7 +83,7 @@ enum State {
     Trialing,
 }
 
-type Pushed = Arc<(String, zeroize::Zeroizing<Vec<u8>>, u64)>;
+type Pushed = Arc<(String, SecureVec, u64)>;
 
 struct Configured {
     name: String,
@@ -215,7 +216,7 @@ struct Inner {
     dispatcher: Arc<Dispatcher>,
     rebind: Rebind,
 
-    settings: zeroize::Zeroizing<Vec<u8>>,
+    settings: SecureVec,
 
     configured: Mutex<Configuration>,
     state: Mutex<State>,
@@ -809,7 +810,7 @@ impl HookInstance {
                 .map_or_else(Vec::new, |f| f.routes.clone()),
             dispatcher,
             rebind: Box::new(rebind),
-            settings: zeroize::Zeroizing::new(settings.to_vec()),
+            settings: SecureVec::from(settings),
             configured: Mutex::new(Configuration {
                 owner: Arc::downgrade(&plugin),
                 kept: None,
@@ -1090,7 +1091,7 @@ impl HookCalls for HookInstance {
                     .ok_or("hook configure requires the host settings seal")?;
                 Ok(Arc::new((
                     name.to_string(),
-                    zeroize::Zeroizing::new(encoded.expose(seal).clone()),
+                    SecureVec::from(encoded.expose(seal).as_slice()),
                     version,
                 )))
             });

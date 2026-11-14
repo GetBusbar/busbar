@@ -23,14 +23,14 @@
 //! and a `ListenerTickets` is not itself a ticketer, so it cannot be shared behind an `Arc`:
 //!
 //! ```compile_fail,E0277
-//! let t = busbar_crypto::tls::ListenerTickets::new("data").unwrap();
+//! let t = busbar_crypto::tls::ListenerTickets::new("data", || 1).unwrap();
 //! let _: std::sync::Arc<dyn rustls::server::ProducesTickets> = std::sync::Arc::new(t);
 //! ```
 
 use core::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_crypto_backend as b;
 use rustls::server::ProducesTickets;
@@ -48,13 +48,17 @@ const WARN_EVERY: Duration = Duration::from_secs(60);
 
 /// One listener's session tickets: the backend's ticketer behind this listener's own key domain,
 /// age bound and failure warning. Not `Clone`; [`install`](Self::install) consumes it.
-pub struct ListenerTickets(Sealed<Monotonic>);
+pub struct ListenerTickets(Sealed<Host>);
 
 impl ListenerTickets {
     /// Fresh ticket keys for the listener named `listener` (the label its warnings carry).
-    pub fn new(listener: &str) -> Result<Self, TlsRefused> {
+    ///
+    /// `now_ns` is the host's shared monotonic clock in nanoseconds (core's is
+    /// `busbar_core_connector::framer::now_ns`): the facade reads no OS clock of its own, and each
+    /// seal or open takes one reading of it.
+    pub fn new(listener: &str, now_ns: fn() -> u64) -> Result<Self, TlsRefused> {
         let inner = b::ticketer().map_err(refused)?;
-        Ok(Self(Sealed::new(inner, listener, Monotonic)))
+        Ok(Self(Sealed::new(inner, listener, Host(now_ns))))
     }
 
     /// Make these the tickets of `config`, and of no other config.
@@ -71,17 +75,18 @@ impl fmt::Debug for ListenerTickets {
     }
 }
 
-/// Where a listener's tickets read the time. Production reads the monotonic clock; tests move a
-/// manual one.
+/// Where a listener's tickets read the time, in monotonic nanoseconds. Production reads the
+/// host's shared clock the caller lent; tests move a manual one.
 trait Clock: Send + Sync + 'static {
-    fn now(&self) -> Instant;
+    fn now_ns(&self) -> u64;
 }
 
-struct Monotonic;
+/// The host's shared monotonic clock, as [`ListenerTickets::new`] was given it.
+struct Host(fn() -> u64);
 
-impl Clock for Monotonic {
-    fn now(&self) -> Instant {
-        Instant::now()
+impl Clock for Host {
+    fn now_ns(&self) -> u64 {
+        (self.0)()
     }
 }
 
@@ -91,8 +96,9 @@ struct Sealed<C: Clock> {
     inner: Arc<dyn ProducesTickets>,
     label: Box<str>,
     clock: C,
-    /// This listener's epoch: a ticket carries its seal time as whole seconds since `born`.
-    born: Instant,
+    /// This listener's epoch (a clock reading): a ticket carries its seal time as whole seconds
+    /// since `born`.
+    born: u64,
     failing: AtomicBool,
     /// Seconds since `born` of the last warning, plus one (0: never warned).
     warned_at: AtomicU64,
@@ -101,7 +107,7 @@ struct Sealed<C: Clock> {
 
 impl<C: Clock> Sealed<C> {
     fn new(inner: Arc<dyn ProducesTickets>, label: &str, clock: C) -> Self {
-        let born = clock.now();
+        let born = clock.now_ns();
         Self {
             inner,
             label: label.into(),
@@ -114,7 +120,7 @@ impl<C: Clock> Sealed<C> {
     }
 
     fn age(&self) -> Duration {
-        self.clock.now().saturating_duration_since(self.born)
+        Duration::from_nanos(self.clock.now_ns().saturating_sub(self.born))
     }
 
     /// The seal time a ticket carries: whole seconds since `born`, saturating.
@@ -214,24 +220,24 @@ impl<C: Clock> ProducesTickets for Sealed<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     /// A clock the test moves.
     #[derive(Clone)]
-    struct Manual(Arc<Mutex<Instant>>);
+    struct Manual(Arc<AtomicU64>);
 
     impl Manual {
         fn new() -> Self {
-            Self(Arc::new(Mutex::new(Instant::now())))
+            Self(Arc::new(AtomicU64::new(1)))
         }
         fn advance(&self, by: Duration) {
-            *self.0.lock().unwrap() += by;
+            let by = u64::try_from(by.as_nanos()).unwrap();
+            self.0.fetch_add(by, Ordering::Relaxed);
         }
     }
 
     impl Clock for Manual {
-        fn now(&self) -> Instant {
-            *self.0.lock().unwrap()
+        fn now_ns(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
         }
     }
 
@@ -253,10 +259,17 @@ mod tests {
             if self.fail.load(Ordering::Relaxed) {
                 return None;
             }
-            Some([b"K1".as_slice(), plain].concat())
+            let mut ticket = Vec::with_capacity(2 + plain.len());
+            ticket.extend_from_slice(b"K1");
+            ticket.extend_from_slice(plain);
+            Some(ticket)
         }
         fn decrypt(&self, ticket: &[u8]) -> Option<Vec<u8>> {
-            ticket.strip_prefix(b"K1").map(<[u8]>::to_vec)
+            ticket.strip_prefix(b"K1").map(|rest| {
+                let mut plain = Vec::with_capacity(rest.len());
+                plain.extend_from_slice(rest);
+                plain
+            })
         }
     }
 

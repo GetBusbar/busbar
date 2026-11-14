@@ -10,6 +10,16 @@ use crate::Error;
 
 type R<T> = Result<T, b::Error>;
 
+// The longer pinned signatures, named (a bare `fn(..)` this long trips clippy::type_complexity).
+type Verify = fn(&[u8], &[u8], &[u8]) -> R<()>;
+type Hkdf = fn(&[u8], &[u8], &[u8], &mut [u8]) -> R<()>;
+type Pbkdf2 = fn(&[u8], &[u8], u32, &mut [u8]) -> R<()>;
+type Seal<K> = fn(&K, &[u8; 12], &[u8], &mut [u8]) -> R<[u8; 16]>;
+type Open<K> = fn(&K, &[u8; 12], &[u8], &mut [u8], &[u8; 16]) -> R<()>;
+type SealRandomNonce<K> = fn(&K, &[u8], &mut [u8]) -> R<([u8; 12], [u8; 16])>;
+type RsaVerify = fn(b::rsa::Scheme, &[u8], &[u8], &[u8]) -> R<()>;
+type RsaVerifyComponents = fn(b::rsa::Scheme, &[u8], &[u8], &[u8], &[u8]) -> R<()>;
+
 const fn const_str_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
@@ -68,7 +78,7 @@ const _: () = {
     let _: fn(b::link::Hasher) -> [u8; 32] = b::link::Hasher::finish;
     let _: fn(&[u8], &[u8]) -> R<[u8; 32]> = b::hmac_sha256;
     let _: fn(&[u8], &[u8]) -> R<[u8; 64]> = b::hmac_sha512;
-    let _: fn(&[u8], &[u8], &[u8]) -> R<()> = b::hmac_sha256_verify;
+    let _: Verify = b::hmac_sha256_verify;
     let _: fn(&[u8]) -> R<b::HmacSha256Key> = b::HmacSha256Key::new;
     let _: fn(&b::HmacSha256Key, &[u8]) -> [u8; 32] = b::HmacSha256Key::sign;
     let _: fn(&b::HmacSha256Key, &[&[u8]]) -> [u8; 32] = b::HmacSha256Key::sign_parts;
@@ -76,22 +86,16 @@ const _: () = {
     let _: fn(&[u8], &[u8]) -> bool = b::ct_eq;
     let _: fn(&mut [u8]) -> R<()> = b::fill;
     let _: fn() -> R<u64> = b::u64;
-    let _: fn(&[u8], &[u8], &[u8], &mut [u8]) -> R<()> = b::hkdf_sha256;
-    let _: fn(&[u8], &[u8], u32, &mut [u8]) -> R<()> = b::pbkdf2_hmac_sha256;
+    let _: Hkdf = b::hkdf_sha256;
+    let _: Pbkdf2 = b::pbkdf2_hmac_sha256;
     let _: fn(&[u8; 32]) -> R<b::Aes256Gcm> = b::Aes256Gcm::new;
-    let _: fn(&b::Aes256Gcm, &[u8; 12], &[u8], &mut [u8]) -> R<[u8; 16]> =
-        b::Aes256Gcm::seal_in_place;
-    let _: fn(&b::Aes256Gcm, &[u8; 12], &[u8], &mut [u8], &[u8; 16]) -> R<()> =
-        b::Aes256Gcm::open_in_place;
-    let _: fn(&b::Aes256Gcm, &[u8], &mut [u8]) -> R<([u8; 12], [u8; 16])> =
-        b::Aes256Gcm::seal_random_nonce;
+    let _: Seal<b::Aes256Gcm> = b::Aes256Gcm::seal_in_place;
+    let _: Open<b::Aes256Gcm> = b::Aes256Gcm::open_in_place;
+    let _: SealRandomNonce<b::Aes256Gcm> = b::Aes256Gcm::seal_random_nonce;
     let _: fn(&[u8; 16]) -> R<b::Aes128Gcm> = b::Aes128Gcm::new;
-    let _: fn(&b::Aes128Gcm, &[u8; 12], &[u8], &mut [u8]) -> R<[u8; 16]> =
-        b::Aes128Gcm::seal_in_place;
-    let _: fn(&b::Aes128Gcm, &[u8; 12], &[u8], &mut [u8], &[u8; 16]) -> R<()> =
-        b::Aes128Gcm::open_in_place;
-    let _: fn(&b::Aes128Gcm, &[u8], &mut [u8]) -> R<([u8; 12], [u8; 16])> =
-        b::Aes128Gcm::seal_random_nonce;
+    let _: Seal<b::Aes128Gcm> = b::Aes128Gcm::seal_in_place;
+    let _: Open<b::Aes128Gcm> = b::Aes128Gcm::open_in_place;
+    let _: SealRandomNonce<b::Aes128Gcm> = b::Aes128Gcm::seal_random_nonce;
     let _: fn(&[u8; 16], &[u8; 16]) -> R<[u8; 16]> = b::aes_block_encrypt;
     let _: fn() -> R<b::ed25519::SigningKey> = b::ed25519::SigningKey::generate;
     let _: fn(&[u8; 32]) -> R<b::ed25519::SigningKey> = b::ed25519::SigningKey::from_seed;
@@ -109,12 +113,12 @@ const _: () = {
     let _: fn(&b::ecdsa_p256::KeyPair, &[u8]) -> R<[u8; 64]> = b::ecdsa_p256::KeyPair::sign_fixed;
     let _: fn(&b::ecdsa_p256::KeyPair, &[u8]) -> R<Vec<u8>> = b::ecdsa_p256::KeyPair::sign_asn1;
     let _: fn(&b::ecdsa_p256::KeyPair) -> [u8; 65] = b::ecdsa_p256::KeyPair::public_key;
-    let _: fn(&[u8], &[u8], &[u8]) -> R<()> = b::ecdsa_p256::verify_fixed;
-    let _: fn(&[u8], &[u8], &[u8]) -> R<()> = b::ecdsa_p256::verify_asn1;
-    let _: fn(b::rsa::Scheme, &[u8], &[u8], &[u8]) -> R<()> = b::rsa::verify;
-    let _: fn(b::rsa::Scheme, &[u8], &[u8], &[u8], &[u8]) -> R<()> = b::rsa::verify_components;
-    let _: fn(&[u8], &[u8], &[u8]) -> R<()> = b::rsa::verify_pkcs1_sha256;
-    let _: fn(&[u8], &[u8], &[u8]) -> R<()> = b::rsa::verify_pss_sha256;
+    let _: Verify = b::ecdsa_p256::verify_fixed;
+    let _: Verify = b::ecdsa_p256::verify_asn1;
+    let _: RsaVerify = b::rsa::verify;
+    let _: RsaVerifyComponents = b::rsa::verify_components;
+    let _: Verify = b::rsa::verify_pkcs1_sha256;
+    let _: Verify = b::rsa::verify_pss_sha256;
     let _: fn(&[u8], &[u8]) -> R<Vec<u8>> = b::rsa::sign_pkcs1_sha256;
     let _: fn(&[u8]) -> R<b::rsa::SigningKey> = b::rsa::SigningKey::from_pkcs8;
     let _: fn(&b::rsa::SigningKey) -> usize = b::rsa::SigningKey::modulus_len;

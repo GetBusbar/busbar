@@ -161,7 +161,7 @@ impl View {
         // family, group length, group, then one 8-byte sequence: exact size, written in place,
         // so the wiping buffer never grows (LINT-RULES LR-117).
         let prefix = group.len().checked_add(9).ok_or(Error::Bounds)?;
-        let mut key = zeroize::Zeroizing::new(vec![0_u8; prefix + 8]);
+        let mut key = busbar_contract::secure::SecureVec::zeroed(prefix + 8);
         key[0] = match origin.chunk.family {
             l::source::HistoricalFamily::Identity => 0,
             l::source::HistoricalFamily::Accounting => 1,
@@ -276,7 +276,8 @@ impl View {
 pub(crate) fn test_archive(
     facts: Vec<HistoricalFact>,
     budget: usize,
-) -> Arc<crate::archive_source::ArchiveSource<std::io::Cursor<zeroize::Zeroizing<Vec<u8>>>>> {
+) -> Arc<crate::archive_source::ArchiveSource<std::io::Cursor<busbar_contract::secure::SecureVec>>>
+{
     try_test_archive(facts, budget).unwrap()
 }
 
@@ -285,7 +286,7 @@ pub(crate) fn try_test_archive(
     facts: Vec<HistoricalFact>,
     budget: usize,
 ) -> Result<
-    Arc<crate::archive_source::ArchiveSource<std::io::Cursor<zeroize::Zeroizing<Vec<u8>>>>>,
+    Arc<crate::archive_source::ArchiveSource<std::io::Cursor<busbar_contract::secure::SecureVec>>>,
     Error,
 > {
     use busbar_contract::persistence::legacy_row;
@@ -348,7 +349,7 @@ pub(crate) fn try_test_archive(
             .write_row(1, &key, row.expose_own(&Fixture::here()))
             .unwrap();
     }
-    let bytes = zeroize::Zeroizing::new(writer.finish().unwrap().0);
+    let bytes = busbar_contract::secure::SecureVec::from(writer.finish().unwrap().0);
     let source = archive::read(std::io::Cursor::new(bytes), limits).unwrap();
     let view = View::new(reader, 0, 1, vec![2]).unwrap();
     crate::archive_source::ArchiveSource::open(

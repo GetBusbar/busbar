@@ -29,7 +29,7 @@ pub(crate) const LANE_GONE: &str = "the host's disk lane is not running";
 
 struct Append {
     dest: DiskDest,
-    bytes: zeroize::Zeroizing<Vec<u8>>,
+    bytes: busbar_contract::secure::SecureVec,
     later: Later,
 }
 
@@ -58,7 +58,7 @@ impl DiskLane {
     pub fn submit(&self, dest: DiskDest, bytes: Vec<u8>, later: Later) -> Result<(), DiskReport> {
         let job = Append {
             dest,
-            bytes: zeroize::Zeroizing::new(bytes),
+            bytes: busbar_contract::secure::SecureVec::from(bytes),
             later,
         };
         #[cfg(test)]

@@ -2700,9 +2700,11 @@ pub(crate) async fn compose_planes_over(
             let dialects = egress
                 .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
                 .unwrap_or_default();
-            let handed =
-                zeroize::Zeroizing::new(handed_settings(settings_path(&facts), &settings)?);
-            let owned = zeroize::Zeroizing::new(owned);
+            let handed = busbar_contract::secure::SecureVec::from(handed_settings(
+                settings_path(&facts),
+                &settings,
+            )?);
+            let owned = busbar_contract::secure::SecureVec::from(owned);
             let mut hash = Sha256::new();
             hash.update(b"busbar.initial-record-binding/1\0");
             for bytes in [

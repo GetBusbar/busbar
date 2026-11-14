@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use base64::Engine as _;
 use busbar_contract::crypto::{self, Aes256Gcm};
 use busbar_contract::records::CredentialMeta;
-use zeroize::Zeroizing;
+use busbar_contract::secure::{SecureArray, SecureString, SecureVec};
 
 pub const LABEL: &[u8] = b"busbar credential-at-rest v1";
 
@@ -60,7 +60,7 @@ fn b64() -> base64::engine::GeneralPurpose {
 impl CredentialKek {
     fn derive(material: &[u8]) -> Self {
         let expand = |label: &[u8]| {
-            let mut out = Zeroizing::new([0_u8; 32]);
+            let mut out = SecureArray::<32>::zeroed();
             crypto::hkdf_sha256(&[], material, label, &mut out[..])
                 .expect("32 bytes is within HKDF-SHA256's output bound");
             out
@@ -77,11 +77,9 @@ impl CredentialKek {
     }
 
     fn seal(&self, meta: &CredentialMeta, plain: &[u8]) -> Result<String, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: sealing copies the secret once, at mint or re-wrap"
-        )]
-        let mut buf = Zeroizing::new(plain.to_vec());
+        // One block at its final size (the secret, then the tag): it never regrows.
+        let mut buf = SecureVec::from(Vec::with_capacity(plain.len() + TAG_LEN));
+        buf.extend_from_slice(plain);
         let sealed = with_aad(meta, |aad| self.key.seal_random_nonce(aad, &mut buf[..]));
         #[expect(
             clippy::disallowed_methods,
@@ -106,14 +104,14 @@ impl CredentialKek {
         Ok(envelope)
     }
 
-    fn open_sealed(&self, meta: &CredentialMeta, rest: &str) -> Option<Zeroizing<String>> {
+    fn open_sealed(&self, meta: &CredentialMeta, rest: &str) -> Option<SecureString> {
         let mut parts = rest.splitn(3, ':');
         let (kid, nonce, ct) = (parts.next()?, parts.next()?, parts.next()?);
         if kid != self.kid {
             return None;
         }
         let nonce: [u8; NONCE_LEN] = b64().decode(nonce).ok()?.try_into().ok()?;
-        let mut buf = Zeroizing::new(b64().decode(ct).ok()?);
+        let mut buf = SecureVec::from(b64().decode(ct).ok()?);
         let split = buf.len().checked_sub(TAG_LEN)?;
         let tag: [u8; TAG_LEN] = buf[split..].try_into().ok()?;
         with_aad(meta, |aad| {
@@ -121,13 +119,12 @@ impl CredentialKek {
         })
         .ok()?;
         // The plaintext is the decoded buffer's prefix: keep that buffer as the secret's own storage
-        // rather than copying it out. The cut-off tag stays in spare capacity, which zeroizing clears.
-        let mut bytes = std::mem::take(&mut *buf);
-        bytes.truncate(split);
-        match String::from_utf8(bytes) {
-            Ok(text) => Some(Zeroizing::new(text)),
+        // rather than copying it out. The cut-off tag is wiped by the truncate.
+        buf.truncate(split);
+        match String::from_utf8(buf.into_vec()) {
+            Ok(text) => Some(SecureString::from(text)),
             Err(e) => {
-                drop(Zeroizing::new(e.into_bytes()));
+                drop(SecureVec::from(e.into_bytes()));
                 None
             }
         }
@@ -171,7 +168,7 @@ impl AtRestKeys {
         self.key.seal(meta, plain)
     }
 
-    fn open_sealed(&self, meta: &CredentialMeta, rest: &str) -> Option<(Zeroizing<String>, bool)> {
+    fn open_sealed(&self, meta: &CredentialMeta, rest: &str) -> Option<(SecureString, bool)> {
         if let Some(plain) = self.key.open_sealed(meta, rest) {
             return Some((plain, true));
         }
@@ -182,11 +179,11 @@ impl AtRestKeys {
     }
 }
 
-pub fn parse_key(path: &str, bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
+pub fn parse_key(path: &str, bytes: &[u8]) -> Result<SecureVec, String> {
     let text = std::str::from_utf8(bytes).ok().map(str::trim);
     if let Some(hex) = text.filter(|t| t.len() == 64) {
         if let Ok(raw) = hex::decode(hex) {
-            return Ok(Zeroizing::new(raw));
+            return Ok(SecureVec::from(raw));
         }
     }
     if bytes.len() == 32 {
@@ -195,7 +192,7 @@ pub fn parse_key(path: &str, bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>, String>
             reason = "config: the at-rest key is read once per boot or reload"
         )]
         let raw = bytes.to_vec();
-        return Ok(Zeroizing::new(raw));
+        return Ok(SecureVec::from(raw));
     }
     #[expect(
         clippy::disallowed_methods,
@@ -222,7 +219,7 @@ pub fn open(
     keys: Option<&AtRestKeys>,
     meta: &CredentialMeta,
     envelope: &str,
-) -> Option<Zeroizing<String>> {
+) -> Option<SecureString> {
     if let Some(plain) = envelope.strip_prefix(PLAIN) {
         if !LEGACY_WARNED.swap(true, Ordering::Relaxed) {
             crate::diagnostics::diag_warn!(
@@ -233,12 +230,7 @@ pub fn open(
                  or reload that has one configured"
             );
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a clear row exists only until a configured at-rest key re-seals it"
-        )]
-        let plain = plain.to_string();
-        return Some(Zeroizing::new(plain));
+        return Some(SecureString::from(plain));
     }
     let rest = envelope.strip_prefix(AEAD)?;
     let opened = keys.and_then(|k| k.open_sealed(meta, rest)).map(|(p, _)| p);
@@ -249,18 +241,9 @@ pub fn open(
 }
 
 #[must_use]
-pub fn stale(
-    keys: &AtRestKeys,
-    meta: &CredentialMeta,
-    envelope: &str,
-) -> Option<Zeroizing<String>> {
+pub fn stale(keys: &AtRestKeys, meta: &CredentialMeta, envelope: &str) -> Option<SecureString> {
     if let Some(plain) = envelope.strip_prefix(PLAIN) {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a stale row is read only by the boot or reload re-wrap"
-        )]
-        let plain = plain.to_string();
-        return Some(Zeroizing::new(plain));
+        return Some(SecureString::from(plain));
     }
     let rest = envelope.strip_prefix(AEAD)?;
     match keys.open_sealed(meta, rest)? {

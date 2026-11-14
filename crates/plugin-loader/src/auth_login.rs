@@ -1,4 +1,3 @@
-use zeroize::Zeroizing;
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
@@ -15,6 +14,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::auth::{BeginLogin, FieldKind, LoginForm, LoginOutcome, Principal};
 use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled};
+use busbar_contract::secure::SecureVec;
 
 use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Shared, VerifyInput};
 use crate::dispatch::call::{Answering, Pending, Ticketed};
@@ -217,7 +217,7 @@ struct CompleteHeld {
     redirect_uri: Option<String>,
     code_verifier: Option<Vec<u8>>,
     nonce: Option<String>,
-    submitted: Vec<(String, Zeroizing<Vec<u8>>)>,
+    submitted: Vec<(String, SecureVec)>,
     named: Vec<busbar_contract::abi::auth::NamedValue>,
     id: Arc<Held>,
 }
@@ -245,12 +245,7 @@ impl CompleteHeld {
             submitted: login
                 .submitted
                 .iter()
-                .filter_map(|(n, v)| {
-                    Some((
-                        n.clone(),
-                        Zeroizing::new(v.expose(seal?).as_bytes().to_vec()),
-                    ))
-                })
+                .filter_map(|(n, v)| Some((n.clone(), SecureVec::from(v.expose(seal?).as_bytes()))))
                 .collect(),
             named: Vec::new(),
             id: Held::new(VerifyInput::empty(), buf_cap, groups_cap, 0),

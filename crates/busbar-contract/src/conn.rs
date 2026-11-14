@@ -9,6 +9,7 @@ use std::task::{Context, Poll};
 
 use crate::abi::mechanism::rendering::ReadNeed;
 use crate::ids::StreamId;
+use crate::secure::SecureString;
 use crate::transport::wire::{WireFault, WireStatusClass};
 use crate::transport::ConnFacts;
 
@@ -1048,34 +1049,35 @@ impl Program {
         if !std::path::Path::new(command).is_absolute() {
             return Err(ProgramRefused::NotAbsolute);
         }
-        let mut cwd = zeroize::Zeroizing::new(match map.get("cwd") {
+        let cwd = match map.get("cwd") {
             None | Some(serde_json::Value::Null) => None,
             Some(value) => {
                 let directory = value.as_str().ok_or(ProgramRefused::Cwd)?;
                 if !std::path::Path::new(directory).is_absolute() || directory.trim() != directory {
                     return Err(ProgramRefused::Cwd);
                 }
-                Some(directory.to_owned())
+                Some(SecureString::from(directory))
             }
-        });
-        let mut args = zeroize::Zeroizing::new(Vec::new());
+        };
+        // Each element wipes itself; the vectors' own blocks hold only pointers and lengths.
+        let mut args: Vec<SecureString> = Vec::new();
         if let Some(value) = map.get("args") {
             for argument in value.as_array().ok_or(ProgramRefused::Args)? {
-                crate::secure::push(
-                    &mut args,
-                    argument.as_str().ok_or(ProgramRefused::Args)?.to_owned(),
-                );
+                args.push(SecureString::from(
+                    argument.as_str().ok_or(ProgramRefused::Args)?,
+                ));
             }
         }
 
-        let mut env = zeroize::Zeroizing::new(Vec::new());
+        let mut env: Vec<(SecureString, SecureString)> = Vec::new();
         let mut env_refs = Vec::new();
         if let Some(v) = map.get(PROGRAM_ENV_KEY) {
             for (k, v) in v.as_object().ok_or(ProgramRefused::Env)? {
                 match v {
-                    serde_json::Value::String(text) => {
-                        crate::secure::push(&mut env, (k.clone(), text.clone()))
-                    }
+                    serde_json::Value::String(text) => env.push((
+                        SecureString::from(k.as_str()),
+                        SecureString::from(text.as_str()),
+                    )),
                     serde_json::Value::Object(_) => env_refs.push((
                         k.clone(),
                         crate::secret_ref::context::deserialize(v.clone(), sources)
@@ -1100,9 +1102,13 @@ impl Program {
         }
         Ok(Self {
             command: command.to_owned(),
-            cwd: std::mem::take(&mut *cwd),
-            args: std::mem::take(&mut *args),
-            env: std::mem::take(&mut *env),
+            // Into `Program`, which wipes every string it owns on drop.
+            cwd: cwd.map(SecureString::into_string),
+            args: args.into_iter().map(SecureString::into_string).collect(),
+            env: env
+                .into_iter()
+                .map(|(k, v)| (k.into_string(), v.into_string()))
+                .collect(),
             env_refs,
         })
     }

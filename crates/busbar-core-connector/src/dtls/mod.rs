@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use busbar_contract::crypto;
+use busbar_contract::secure::SecureVec;
 pub use stun::IceCredentials;
-use zeroize::Zeroizing;
 
 /// How many distinct heard paths (and, apart, admitted candidates) one association remembers.
 const MAX_HEARD_PATHS: usize = 16;
@@ -148,7 +148,7 @@ impl SrtpProfile {
 pub struct SrtpKeying {
     /// The negotiated profile.
     pub profile: SrtpProfile,
-    material: Zeroizing<Vec<u8>>,
+    material: SecureVec,
 }
 
 impl std::fmt::Debug for SrtpKeying {
@@ -727,7 +727,7 @@ impl Association {
             clippy::disallowed_methods,
             reason = "boot: the SRTP keying is exported once per association, zeroed on drop"
         )]
-        let material = Zeroizing::new(material.to_vec());
+        let material = SecureVec::from(material);
         self.up
             .push_back(Up::Keyed(SrtpKeying { profile, material }));
     }

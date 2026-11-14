@@ -619,7 +619,7 @@ pub trait RootRules: Send + Sync {
         _kind: ConfigDocument,
         _path: &std::path::Path,
         _raw: &str,
-    ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+    ) -> Result<Option<busbar_contract::secure::SecureString>, String> {
         Ok(None)
     }
 
@@ -872,7 +872,7 @@ fn config_store_inputs(
     (
         busbar_contract::persistence::axis::StoreDoor,
         String,
-        zeroize::Zeroizing<String>,
+        busbar_contract::secure::SecureString,
     ),
     String,
 > {
@@ -892,7 +892,7 @@ fn config_store_inputs(
         .map_err(|error| format!("store '{}' settings: {error}", store.module))?
     };
     let bytes = resolved.encode().map_err(|error| error.to_string())?;
-    let settings = zeroize::Zeroizing::new(
+    let settings = busbar_contract::secure::SecureString::from(
         String::from_utf8(bytes.into_exposed(&crate::seal::lend()))
             .map_err(|_| "settings encoding was not UTF-8")?,
     );

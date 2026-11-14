@@ -76,10 +76,11 @@ impl SafeSlot for Read {
             seq: 0,
             ..CompletionHandle::ZERO
         };
-        let mut buffer = zeroize::Zeroizing::new(vec![0_u64; 8192]);
+        let mut buffer = vec![0_u64; 8192];
         let answer = match services.snapshot_read(handle, scope, &mut buffer) {
             Poll::Ready(Err(ServiceError::Short { bytes, .. })) if bytes <= 1024 * 1024 => {
-                buffer = zeroize::Zeroizing::new(vec![0; (bytes as usize).div_ceil(8)]);
+                zeroize::Zeroize::zeroize(&mut buffer);
+                buffer = vec![0; (bytes as usize).div_ceil(8)];
                 services.snapshot_read(handle, scope, &mut buffer)
             }
             answer => answer,
@@ -93,6 +94,7 @@ impl SafeSlot for Read {
         let mut body = Vec::with_capacity(12);
         body.extend(scope.to_le_bytes());
         body.extend((families.len() as u64).to_le_bytes());
+        zeroize::Zeroize::zeroize(&mut buffer);
         out.set(|o| &o.status_code, 200);
         out.lease_secret(|o| &o.body, held.leases(), body, BLOB_OCTETS);
         Outcome::Ready

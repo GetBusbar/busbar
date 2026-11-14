@@ -553,7 +553,7 @@ pub struct VerifiedTicketIdentity {
     pub(crate) expires_at: u64,
     pub(crate) store: Arc<crate::persistence::facade::CoreStore>,
     pub(crate) prefix: String,
-    pub(crate) credential: zeroize::Zeroizing<String>,
+    pub(crate) credential: busbar_contract::secure::SecureString,
 }
 
 impl VerifiedTicketIdentity {
@@ -2105,7 +2105,7 @@ impl KernelServices {
         candidate: crate::host_records::ConditionalCandidate,
         acked: crate::host_records::ConditionalAcked,
     ) -> Result<(), &'static str> {
-        let candidate = zeroize::Zeroizing::new(candidate);
+        let candidate = crate::host_chains::CandidateCustody(candidate);
         use crate::host_records::{
             ChainMutation, ConditionalOwed, ConditionalWrite, RecordMutation,
         };
@@ -2143,12 +2143,12 @@ impl KernelServices {
             }
             Ok(schema)
         };
-        let mut request = zeroize::Zeroizing::new(Request {
+        let mut request = Request {
             version: VERSION,
             op_id: crate::door::op_id(),
             predicates: Vec::new(),
             mutations: Vec::new(),
-        });
+        };
         for predicate in &candidate.predicates {
             let schema = schema_at(predicate.kind, false)?;
             request.predicates.reserve(1);
@@ -2186,8 +2186,7 @@ impl KernelServices {
                 }
             });
         }
-        let mut chains =
-            zeroize::Zeroizing::new(Vec::<crate::host_chains::ConditionalChain>::new());
+        let mut chains = Vec::<crate::host_chains::ConditionalChain>::new();
         let mut chain_scopes = foldhash::HashMap::default();
         for chain in &candidate.chains {
             use crate::host_chains::ConditionalChainAction;
@@ -2201,14 +2200,13 @@ impl KernelServices {
             let schema = schema_at(kind, true)?;
             let scope =
                 crate::host_chains::scope_of(scope).ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?;
-            let mut life = zeroize::Zeroizing::new(life.clone());
-            let mut action = zeroize::Zeroizing::new(match chain {
+            let mut action = match chain {
                 ChainMutation::Append { content, .. } => {
                     ConditionalChainAction::Append(vec![content.clone()])
                 }
                 ChainMutation::Drop { .. } => ConditionalChainAction::Drop,
                 ChainMutation::Check { .. } => ConditionalChainAction::Check,
-            });
+            };
 
             let address = (schema.as_str(), scope);
             if let Some(&index) = chain_scopes.get(&address) {
@@ -2216,7 +2214,7 @@ impl KernelServices {
                 if previous.life != *life {
                     return Err("conflicting conditional chain observations");
                 }
-                match (&mut previous.action, &mut *action) {
+                match (&mut previous.action, &mut action) {
                     (
                         ConditionalChainAction::Append(existing),
                         ConditionalChainAction::Append(additional),
@@ -2236,11 +2234,8 @@ impl KernelServices {
                 schema,
                 scope: scope.to_string(),
                 framing,
-                life: std::mem::replace(
-                    &mut *life,
-                    busbar_contract::host_records::conditional::Expected::Absent,
-                ),
-                action: std::mem::replace(&mut *action, ConditionalChainAction::Check),
+                life: life.clone(),
+                action,
             });
         }
         if chains.is_empty() {
@@ -3384,12 +3379,10 @@ impl HostServices for KernelServices {
             return Ran::Now(Stored::refused(NOT_READABLE));
         }
         let (secret, live) = credentials.read(kind, id);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a credential read answers in its own zeroizing buffer; the credential store keeps its copy"
-        )]
-        let mut bytes =
-            zeroize::Zeroizing::new(secret.expose(&crate::seal::lend()).as_bytes().to_vec());
+        // A credential read answers in its own wiping buffer; the credential store keeps its copy.
+        let bytes = busbar_contract::secure::SecureVec::from(
+            secret.expose(&crate::seal::lend()).as_bytes(),
+        );
         let span = ItemSpan {
             key: absent_span(),
             value: Span {
@@ -3398,7 +3391,7 @@ impl HostServices for KernelServices {
             },
         };
         Ran::Now(Stored {
-            bytes: std::mem::take(&mut *bytes),
+            bytes: bytes.into_vec(),
             spans: vec![span],
             ..Stored::ready(if live {
                 svc::SECRET_LIVE

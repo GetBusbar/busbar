@@ -4,11 +4,10 @@
 //! Guarded operator document publication, inside the existing native durable owner.
 use busbar_contract::secure::SecureVec;
 use std::{io, path::Path};
-use zeroize::Zeroizing;
 
 pub enum DocumentInspection {
     Original {
-        metadata: Zeroizing<Vec<u8>>,
+        metadata: SecureVec,
         read_only: bool,
     },
     Converted,
@@ -71,11 +70,22 @@ fn field<'a>(input: &mut &'a [u8]) -> io::Result<&'a [u8]> {
     let n = u32::from_le_bytes(take(input, 4)?.try_into().map_err(|_| invalid())?) as usize;
     take(input, n)
 }
-fn bounded_read(file: &mut std::fs::File, max: usize) -> io::Result<Zeroizing<Vec<u8>>> {
+fn bounded_read(file: &mut std::fs::File, max: usize) -> io::Result<SecureVec> {
     use std::io::{Read, Seek};
     file.rewind()?;
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(max as u64 + 1).read_to_end(&mut bytes)?;
+    let mut bytes = SecureVec::zeroed(max.saturating_add(1));
+    let mut filled = 0;
+    while filled < bytes.len() {
+        let read = match file.read(&mut bytes[filled..]) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            other => other?,
+        };
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    bytes.truncate(filled);
     Ok(bytes)
 }
 
@@ -110,7 +120,7 @@ mod platform {
         Ok(saved.get(..8) == Some(&m.dev().to_le_bytes()[..])
             && saved.get(8..16) == Some(&m.ino().to_le_bytes()[..]))
     }
-    fn security(file: &File) -> io::Result<Zeroizing<Vec<u8>>> {
+    fn security(file: &File) -> io::Result<SecureVec> {
         let m = file.metadata()?;
         let mut out = SecureVec::new();
         put(&mut out, &m.uid().to_le_bytes())?;
@@ -128,16 +138,16 @@ mod platform {
             append(&mut out, &key)?;
             append(&mut out, &value)?;
         }
-        Ok(out.into_zeroizing())
+        Ok(out)
     }
-    fn metadata(dir: &File, file: &File) -> io::Result<Zeroizing<Vec<u8>>> {
+    fn metadata(dir: &File, file: &File) -> io::Result<SecureVec> {
         let m = dir.metadata()?;
         let mut out = SecureVec::new();
         put(&mut out, &[1])?;
         put(&mut out, &m.dev().to_le_bytes())?;
         put(&mut out, &m.ino().to_le_bytes())?;
         put(&mut out, &security(file)?)?;
-        Ok(out.into_zeroizing())
+        Ok(out)
     }
     fn restore(file: &File, bytes: &[u8]) -> io::Result<()> {
         let mut bytes = bytes;
@@ -637,7 +647,7 @@ mod platform {
         bytes.truncate(needed as usize);
         Ok(bytes)
     }
-    fn metadata(parent: &File, file: &File) -> io::Result<Zeroizing<Vec<u8>>> {
+    fn metadata(parent: &File, file: &File) -> io::Result<SecureVec> {
         let mut bytes = SecureVec::new();
         put(&mut bytes, &[2])?;
         put(&mut bytes, &identity(parent)?)?;
@@ -646,7 +656,7 @@ mod platform {
             &file.metadata()?.file_attributes().to_le_bytes(),
         )?;
         append(&mut bytes, &security(file)?)?;
-        Ok(bytes.into_zeroizing())
+        Ok(bytes)
     }
     // Validate every relative native descriptor span before passing protected stored bytes to Win32.
     fn valid_descriptor(bytes: &[u8]) -> bool {
@@ -1053,7 +1063,7 @@ mod tests {
         fn path(&self) -> std::path::PathBuf {
             self.0.join("config.yaml")
         }
-        fn capture(&self) -> Zeroizing<Vec<u8>> {
+        fn capture(&self) -> SecureVec {
             match inspect_document(&self.path(), b"original", b"converted").unwrap() {
                 DocumentInspection::Original {
                     metadata,
@@ -1211,7 +1221,7 @@ mod windows_tests {
         fn path(&self) -> PathBuf {
             self.0.join("config.yaml")
         }
-        fn capture(&self) -> Zeroizing<Vec<u8>> {
+        fn capture(&self) -> SecureVec {
             match inspect_document(&self.path(), b"original", b"converted").unwrap() {
                 DocumentInspection::Original { metadata, .. } => metadata,
                 _ => panic!("expected original Windows document"),
