@@ -501,81 +501,22 @@ pub fn targets_signed(doc: &TargetsDoc) -> Value {
     })
 }
 
+/// The release-document time grammar, `YYYY-MM-DDTHH:MM:SSZ` (DEPENDENCY-LADDER C10, on `time`).
+const RELEASE_TIME: time::format_description::StaticFormatDescription =
+    time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
+
 pub fn parse_time(s: &str) -> Result<u64, String> {
     let bad = || format!("time '{s}' is not YYYY-MM-DDTHH:MM:SSZ");
-    let b = s.as_bytes();
-    if !s.is_ascii()
-        || b.len() != 20
-        || b[4] != b'-'
-        || b[7] != b'-'
-        || b[10] != b'T'
-        || b[13] != b':'
-        || b[16] != b':'
-        || b[19] != b'Z'
-    {
+    // `[year]` also takes a leading sign; the grammar is exactly twenty bytes, which refuses it.
+    if s.len() != 20 {
         return Err(bad());
     }
-    let num = |r: std::ops::Range<usize>| -> Result<u64, String> {
-        let part = &s[r];
-        if !part.bytes().all(|c| c.is_ascii_digit()) {
-            return Err(bad());
-        }
-        part.parse::<u64>().map_err(|_| bad())
-    };
-    let (y, mo, d, h, mi, se) = (
-        num(0..4)?,
-        num(5..7)?,
-        num(8..10)?,
-        num(11..13)?,
-        num(14..16)?,
-        num(17..19)?,
-    );
-    if y < 1970
-        || !(1..=12).contains(&mo)
-        || d < 1
-        || d > days_in_month(y, mo)
-        || h > 23
-        || mi > 59
-        || se > 59
-    {
-        return Err(bad());
-    }
-    Ok(days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + se)
+    let at = time::PrimitiveDateTime::parse(s, RELEASE_TIME).map_err(|_| bad())?;
+    u64::try_from(at.assume_utc().unix_timestamp()).map_err(|_| bad())
 }
 
 pub fn format_time(t: u64) -> String {
-    let (days, rem) = (t / 86_400, t % 86_400);
-    let (y, m, d) = busbar_contract::civil::civil_from_days(days as i64);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60
-    )
-}
-
-fn leap(y: u64) -> bool {
-    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
-}
-
-fn days_in_month(y: u64, m: u64) -> u64 {
-    match m {
-        2 if leap(y) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
-fn days_from_civil(y: u64, m: u64, d: u64) -> u64 {
-    let mut days = 0;
-    for yy in 1970..y {
-        days += if leap(yy) { 366 } else { 365 };
-    }
-    for mm in 1..m {
-        days += days_in_month(y, mm);
-    }
-    days + d - 1
+    busbar_contract::civil::rfc3339_from_secs(t)
 }
 
 pub const SEAL_PREFIX: &str = "seal:";

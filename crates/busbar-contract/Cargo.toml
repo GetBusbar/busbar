@@ -37,6 +37,7 @@ bytes = { workspace = true }
 http = { workspace = true }
 idna = { workspace = true }
 memchr = { workspace = true }
+time = { workspace = true, features = ["formatting"] }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-log = { workspace = true }

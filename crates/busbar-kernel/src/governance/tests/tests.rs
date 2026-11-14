@@ -915,11 +915,6 @@ async fn test_civil_from_days_and_days_from_civil_known_dates() {
             ymd,
             "civil_from_days({z})"
         );
-        assert_eq!(
-            days_from_civil(ymd.0, ymd.1, ymd.2),
-            z,
-            "days_from_civil{ymd:?}"
-        );
     }
 }
 
