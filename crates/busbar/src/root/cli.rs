@@ -302,6 +302,10 @@ fn ordinary_cli_flags() -> Option<i32> {
 }
 
 pub(crate) fn validate_config_command() -> i32 {
+    busbar_kernel::observability::with_warnings_on_stderr(validate_config_report)
+}
+
+fn validate_config_report() -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
