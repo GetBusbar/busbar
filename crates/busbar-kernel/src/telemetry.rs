@@ -646,6 +646,16 @@ const HIST_CHUNKS: usize = 32;
 
 pub const HIST_DRAIN_THRESHOLD: usize = 65_536;
 
+/// Process-wide bytes of full histogram buffers held for the maintenance thread.
+const HIST_PARK_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+
+/// Full buffers the park budget holds (16 at the default threshold).
+const HIST_PARK_MAX_BUFFERS: usize =
+    HIST_PARK_BUDGET_BYTES / (HIST_DRAIN_THRESHOLD * std::mem::size_of::<f64>());
+
+/// Full buffers one slot may have parked at once; a further one replays on the request thread.
+const HIST_PARK_PER_SLOT: usize = 2;
+
 const KEY_SEP: char = '\u{1f}';
 
 pub const OUTCOMES: [&str; 4] = ["ok", "exhausted", "client_error", "error"];
@@ -744,7 +754,7 @@ impl HistogramSlot {
             if buf.len() >= HIST_DRAIN_THRESHOLD {
                 let samples = std::mem::take(&mut *buf);
                 drop(buf);
-                drain_hist_overflow(self.0, samples);
+                park_or_replay(self.0, samples);
             }
         });
     }
@@ -977,6 +987,30 @@ fn mint_histogram(desc: &SlotDesc<metrics::Histogram>) -> metrics::Histogram {
     metrics::with_recorder(|r| r.register_histogram(&key_of(desc), &METADATA))
 }
 
+/// Full histogram buffers waiting for the maintenance thread's next flush, as `(slot, samples)`.
+/// Bounded by [`HIST_PARK_MAX_BUFFERS`] overall and [`HIST_PARK_PER_SLOT`] per slot.
+static HIST_PARKED: Mutex<Vec<(u32, Vec<f64>)>> = Mutex::new(Vec::new());
+
+/// A full buffer leaves the request thread without touching the recorder: it is parked for the
+/// maintenance thread's flush. Only when the slot already has its share parked, or the process-wide
+/// park budget is spent, is it replayed inline, and that replay is counted.
+fn park_or_replay(slot: u32, samples: Vec<f64>) {
+    if !crate::snapshot::recorder_installed() {
+        return;
+    }
+    let samples = {
+        let mut parked = HIST_PARKED.lock().unwrap_or_else(|p| p.into_inner());
+        let mine = parked.iter().filter(|(s, _)| *s == slot).count();
+        if parked.len() < HIST_PARK_MAX_BUFFERS && mine < HIST_PARK_PER_SLOT {
+            parked.push((slot, samples));
+            return;
+        }
+        samples
+    };
+    metrics::counter!(crate::snapshot::TELEMETRY_OVERFLOW_REPLAYS_TOTAL).increment(1);
+    drain_hist_overflow(slot, samples);
+}
+
 fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
     if !crate::snapshot::recorder_installed() {
         return;
@@ -993,6 +1027,8 @@ fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
         }
     };
     let handle = desc.handle.get_or_init(|| mint_histogram(&desc));
+    #[cfg(test)]
+    bank_internals::REQUEST_THREAD_RECORDS.with(|n| n.set(n.get() + samples.len() as u64));
     for s in samples {
         handle.record(s);
     }
@@ -1074,6 +1110,16 @@ pub fn flush_to_recorder() {
     drop(counter_descs);
 
     let hist_descs = reg.hists.descs.read().unwrap_or_else(|p| p.into_inner());
+    let parked = std::mem::take(&mut *HIST_PARKED.lock().unwrap_or_else(|p| p.into_inner()));
+    for (slot, samples) in parked {
+        let Some(desc) = hist_descs.get(slot as usize) else {
+            continue;
+        };
+        let handle = desc.handle.get_or_init(|| mint_histogram(desc));
+        for s in samples {
+            handle.record(s);
+        }
+    }
     for (i, desc) in hist_descs.iter().enumerate() {
         let (chunk_i, off) = (i / HIST_CHUNK, i % HIST_CHUNK);
         for bank in threads.iter().chain(&exited) {
