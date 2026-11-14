@@ -8,7 +8,7 @@
 //! 1 KiB / 8 KiB / 100 KiB by default, `--body-sizes`) and three pool members, built by the
 //! contract's [`DecideView::build`] into the [`DecideIn`] and answer buffers a [`DecideFrame`]
 //! lends. Every thread builds its frame once; each measured op is ONE `decide` crossing
-//! ([`Plugin::call`]) over that frame, with a fresh `request_id`.
+//! ([`Plugin::answer`]) over that frame, with a fresh `request_id`.
 //!
 //! The instance opens as `HookInstance::open` opens it (the `open` lifecycle call with the hook's
 //! settings; a hook has no `ready`). Before any measured call, one probe per request shape goes
@@ -59,7 +59,7 @@ struct Opened {
 }
 
 // SAFETY: one opened hook instance is shared by the bench threads as core shares it between the
-// requests it decides; every measured op is a `Plugin::call` on it.
+// requests it decides; every measured op is a `Plugin::answer` on it.
 unsafe impl Sync for Opened {}
 unsafe impl Send for Opened {}
 
@@ -93,7 +93,7 @@ fn open_inline(target: &Target, settings: &[u8]) -> Result<Arc<Opened>, String> 
     let plugin = crate::load::<Hook>(target, crate::bind(&d, "bench-hook", ConnTable::NoNeeds))?;
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
     (f.input.generation, f.input.settings) = (1, json_blob(settings));
-    let called = plugin.call(life::OPEN, &mut f);
+    let called = plugin.answer(life::OPEN, &mut f);
     if called.outcome != Outcome::Ready {
         return Err(format!(
             "hook open answered {:?}: {}",
@@ -344,7 +344,7 @@ impl Scenario for Decide {
         self.next_request += 1;
         let mut f: Frame<DecideIn, DecideOut> = Frame::new(i, output());
         let plugin = &self.opened.plugin;
-        let called = rec.time(0, || plugin.call(slot::DECIDE, &mut f));
+        let called = rec.time(0, || plugin.answer(slot::DECIDE, &mut f));
         // Inline, the child call has no grant, so the classifying hook abstains; any other answer
         // (a fault, a pend, an order without its classifier) is not the path being measured.
         if called.outcome != Outcome::Ready || f.out.verbs != VERB_ABSTAIN {

@@ -144,7 +144,7 @@ pub fn table(outcomes: &[Outcome], counting: bool, target: &Target) {
         }
     }
     println!(
-        "\nminbatch = lowest mean over a batch of 1000 calls (stable on a loaded host). cpu/call = thread CPU per call, sampled 1 in 64. ns are wall time per inline crossing (host-mediated Plugin::call, the plugin's work included). \
+        "\nminbatch = lowest mean over a batch of 1000 calls (stable on a loaded host). cpu/call = thread CPU per call, sampled 1 in 64. ns are wall time per inline crossing (host-mediated Plugin::answer, the plugin's work and the RELEASE of its answer's lease included). \
          allocs/bytes are per call on the calling thread{}. rss in MiB after that many calls (process-wide; \
          start-of-run RSS is in the JSON). offcpu = share of thread wall time not on a CPU (lock waits, \
          preemption): the lock-wait stand-in. Report only: nothing here passes or fails."

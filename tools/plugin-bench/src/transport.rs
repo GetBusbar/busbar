@@ -12,9 +12,9 @@
 //! socket read/write itself.
 //!
 //! Each crossing is the connector's: `begin`/`ingest`/`emit` on the framing's INLINE ticket
-//! (`Plugin::call_inline`, as `doors.rs::cross_on` does), every one under the connection's host
+//! (`Plugin::answer_inline`, as `doors.rs::cross_on` does), every one under the connection's host
 //! framing context (`framing_context::with_context`, as `cross_scoped` does), `finish` as a plain
-//! `Plugin::call`. The listener's guest list is one `none` line (`POST /v1/chat/completions`), its
+//! `Plugin::answer`. The listener's guest list is one `none` line (`POST /v1/chat/completions`), its
 //! auth handle lent by the loader (`auth_handle::lend_none_line`), so the request's hand-in
 //! (`unit.hand_in`) is served by the loader's own none-line path: no kernel, no auth plugin.
 //!
@@ -29,17 +29,16 @@
 //! preface and SETTINGS once per connection, then per request a connection WINDOW_UPDATE, HEADERS
 //! and 16 KiB DATA frames on the next odd stream id).
 //!
-//! Every READY framer answer hands the host a lease (the SDK's retained-input report); the bench
-//! releases it after the timed crossing. Core's connector (`doors.rs::go`/`go_inline`) drops
-//! `Called::lease` and never releases it; `BUSBAR_BENCH_TRANSPORT_KEEP_LEASES=1` does the same,
-//! to show the growth that costs.
+//! Every READY framer answer leases its retained-input report (the SDK's `framer.retained_input`).
+//! The bench crosses through the loader's public `answer`/`answer_inline`, as core's connector
+//! does, which release that lease inside the crossing: each timed op includes its RELEASE.
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use busbar_contract::abi::host::service::{AuthRef, SCHEME_PLAIN};
-use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
+use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::transport::route::{RouteMatch, METHOD_POST, PATH_EXACT};
 use busbar_contract::abi::transport::{
     slot, BeginIn, ConnFacts, EmitIn, FinishIn, FramePiece, FramerOut, FramerSink, HeadSlots,
@@ -72,7 +71,7 @@ struct Opened {
 }
 
 // SAFETY: one opened framer instance is shared by the bench threads as core's connector shares it
-// between its connections; every measured op is a `Plugin::call`/`call_inline` on it.
+// between its connections; every measured op is a `Plugin::answer`/`answer_inline` on it.
 unsafe impl Sync for Opened {}
 unsafe impl Send for Opened {}
 
@@ -87,7 +86,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
     let settings = cfg.settings.clone().unwrap_or_else(|| b"{}".to_vec());
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
     f.input.settings = json_blob(&settings);
-    let called = plugin.call(life::OPEN, &mut f);
+    let called = plugin.answer(life::OPEN, &mut f);
     if called.outcome != Outcome::Ready {
         return Err(format!(
             "transport open answered {:?}: {}",
@@ -379,10 +378,6 @@ struct Conn {
     // Per unit.
     wired: u64,
     first_wire: bool,
-    // `Called::lease`s handed back on READY answers (released, untimed).
-    leases: u64,
-    /// `BUSBAR_BENCH_TRANSPORT_KEEP_LEASES=1`: never release them, as the connector`s `go_inline` does.
-    keep_leases: bool,
 }
 
 impl Conn {
@@ -479,8 +474,6 @@ impl Conn {
             next_stream: 1,
             wired: 0,
             first_wire: true,
-            leases: 0,
-            keep_leases: std::env::var_os("BUSBAR_BENCH_TRANSPORT_KEEP_LEASES").is_some(),
         };
         if shape != Shape::Conn {
             c.begin(None)?;
@@ -530,9 +523,9 @@ impl Conn {
         let go = || {
             with_context(context, || {
                 if ticketed {
-                    plugin.call_inline(ticket, false, s, f)
+                    plugin.answer_inline(ticket, false, s, f)
                 } else {
-                    plugin.call(s, f)
+                    plugin.answer(s, f)
                 }
             })
         };
@@ -540,12 +533,6 @@ impl Conn {
             Some(rec) => rec.time(op, go),
             None => go(),
         };
-        if called.lease != 0 {
-            self.leases += 1;
-            if !self.keep_leases {
-                self.release(called.lease);
-            }
-        }
         if called.outcome != Outcome::Ready {
             return Err(format!(
                 "{what} answered {:?}: {}",
@@ -554,16 +541,6 @@ impl Conn {
             ));
         }
         Ok(())
-    }
-
-    /// Hand a READY answer's lease back (`release`), as the host's answer lease does.
-    fn release(&self, lease: u64) {
-        let mut f: Frame<ReleaseIn, OutHead> = Frame::new(input(), output());
-        f.input.lease = lease;
-        let r = self.opened.plugin.call(life::RELEASE, &mut f);
-        if r.outcome != Outcome::Ready && crate::report::verbose() {
-            eprintln!("[transport] release {lease}: {:?}", r.outcome);
-        }
     }
 
     fn yielded(&mut self, out: &FramerOut, what: &str) -> Result<(), String> {
@@ -790,12 +767,6 @@ impl Drop for Conn {
                     eprintln!("[transport] finish: {e}");
                 }
             }
-        }
-        if crate::report::verbose() && self.leases != 0 {
-            eprintln!(
-                "[transport] {} READY answers handed a lease back",
-                self.leases
-            );
         }
     }
 }

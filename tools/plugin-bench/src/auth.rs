@@ -11,8 +11,8 @@
 //! The measured op is what the plane driver's far end makes per attempt (`fields_now`): ONE inline
 //! `fields` crossing at the head point, with the request facts of an OpenAI chat completion
 //! (`POST api.openai.com /v1/chat/completions`), the host's sealed-fields capability extension,
-//! and the host's lent field buffer (16 KiB) and span array (16), then a `release` of the answer's
-//! lease when the plugin hands one back. Scenarios:
+//! and the host's lent field buffer (16 KiB) and span array (16), through the loader's `answer`,
+//! which releases the answer's lease (if any) inside the crossing. Scenarios:
 //!
 //! - `own`: the operator's own credential (`authorization: Bearer <key>`), the common case.
 //! - `passthrough`: the caller's verified credential, lent per request, presented by reference.
@@ -36,9 +36,7 @@ use busbar_contract::abi::auth::{
 use busbar_contract::abi::mechanism::call::OutHead;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_OCTETS, BLOB_SECRET};
 use busbar_contract::abi::mechanism::extensions;
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ValidateIn};
 use busbar_contract::abi::sdk::auth_outbound::{EXT_SEALED_FIELDS, SEALED_FIELDS_V1};
 use busbar_plugin_loader::dispatch::kinds::auth::{Auth, AuthFacts};
 use busbar_plugin_loader::dispatch::{ConnTable, Dispatcher, Frame, Plugin};
@@ -69,7 +67,7 @@ struct Opened {
 }
 
 // SAFETY: one opened auth instance is shared by the bench threads as core shares it between its
-// request tasks; every measured op is a `Plugin::call` on it.
+// request tasks; every measured op is a `Plugin::answer` on it.
 unsafe impl Sync for Opened {}
 unsafe impl Send for Opened {}
 
@@ -92,17 +90,6 @@ fn secret(b: &[u8]) -> Blob {
         fmt: BLOB_OCTETS,
         flags: BLOB_SECRET,
     }
-}
-
-/// Hand an answer's lease back, as the host does once it has read the answer.
-fn release(plugin: &Plugin<Auth>, lease: u64) -> Outcome {
-    if lease == 0 {
-        return Outcome::Ready;
-    }
-    let mut i: ReleaseIn = input();
-    i.lease = lease;
-    let mut f: Frame<ReleaseIn, OutHead> = Frame::new(i, output());
-    plugin.call(life::RELEASE, &mut f).outcome
 }
 
 /// Open the instance (`validate`, `open`) and bind the style (`open_outbound`), as core does.
@@ -138,8 +125,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
 
     let mut v: Frame<ValidateIn, OutHead> = Frame::new(input(), output());
     v.input.settings = json_blob(&instance);
-    let called = plugin.call(life::VALIDATE, &mut v);
-    release(&plugin, called.lease);
+    let called = plugin.answer(life::VALIDATE, &mut v);
     if called.outcome != Outcome::Ready {
         return Err(format!(
             "auth validate answered {:?}: {}",
@@ -149,8 +135,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
     }
     let mut o: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
     (o.input.generation, o.input.settings) = (1, json_blob(&instance));
-    let called = plugin.call(life::OPEN, &mut o);
-    release(&plugin, called.lease);
+    let called = plugin.answer(life::OPEN, &mut o);
     if called.outcome != Outcome::Ready {
         return Err(format!(
             "auth open answered {:?}: {}",
@@ -163,9 +148,8 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
     b.input.style = abi(style.as_bytes());
     b.input.credential = secret(OWN_KEY);
     b.input.settings = json_blob(&binding);
-    let called = plugin.call(slot::OPEN_OUTBOUND, &mut b);
+    let called = plugin.answer(slot::OPEN_OUTBOUND, &mut b);
     let handle = b.out.handle;
-    release(&plugin, called.lease);
     if called.outcome != Outcome::Ready {
         return Err(format!(
             "auth open_outbound({style}) answered {:?}: {}",
@@ -330,23 +314,14 @@ impl Scenario for Fields {
     fn unit(&mut self, rec: &mut Recorder) -> Result<(), String> {
         let mut f = self.frame();
         let plugin = &self.opened.plugin;
-        // The answer's lease (if any) goes back inside the timed op: the host releases it once
-        // it has copied the fields out, so it is part of the per-request crossing cost.
-        let (called, released) = rec.time(0, || {
-            let called = plugin.call(slot::FIELDS, &mut f);
-            let released = if called.outcome == Outcome::Ready {
-                release(plugin, called.lease)
-            } else {
-                Outcome::Ready
-            };
-            (called, released)
-        });
+        // The answer's lease (if any) is released inside the timed crossing (`answer`), so it is
+        // part of the per-request crossing cost.
+        let called = rec.time(0, || plugin.answer(slot::FIELDS, &mut f));
         if crate::report::verbose() {
             eprintln!(
-                "[fields {}] outcome={:?} lease={} fields_len={} needed=({}, {}) ext_len={}",
+                "[fields {}] outcome={:?} fields_len={} needed=({}, {}) ext_len={}",
                 self.case.name(),
                 called.outcome,
-                called.lease,
                 f.out.fields_len,
                 f.out.needed_fields,
                 f.out.needed_bytes,
@@ -354,17 +329,12 @@ impl Scenario for Fields {
             );
         }
         if called.outcome != Outcome::Ready {
-            let lease = called.lease;
             let why = text(called.error);
-            release(plugin, lease);
             return Err(format!(
                 "fields ({}) answered {:?}: {why}",
                 self.case.name(),
                 called.outcome
             ));
-        }
-        if released != Outcome::Ready {
-            return Err(format!("release answered {released:?}"));
         }
         // The fields are read after the release, as nothing the plugin answers here lives in its
         // own memory: the spans index the host's lent buffer.
