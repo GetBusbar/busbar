@@ -1817,6 +1817,10 @@ impl GovState {
                 {
                     for mut map in self.budget.write_all() {
                         for (id, cell) in map.iter_mut() {
+                            #[cfg(test)]
+                            self.budget
+                                .flush_cells_visited
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if cell.dirty {
                                 let _ = self.capture_budget_flushes(id, cell, &foreign_settled);
                             }
@@ -1833,6 +1837,10 @@ impl GovState {
                 {
                     for mut map in self.budget.write_all() {
                         for (id, cell) in map.iter_mut() {
+                            #[cfg(test)]
+                            self.budget
+                                .flush_cells_visited
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if !cell.dirty || self.budget_bucket_deleting(id) {
                                 continue;
                             }

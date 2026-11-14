@@ -660,6 +660,10 @@ impl<V> Default for MapShard<V> {
 
 struct Sharded<V> {
     shards: Box<[MapShard<V>]>,
+    #[cfg(test)]
+    flush_shard_locks: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    flush_cells_visited: std::sync::atomic::AtomicU64,
 }
 
 impl<V> Sharded<V> {
@@ -668,6 +672,10 @@ impl<V> Sharded<V> {
         shards.resize_with(GOV_SHARDS, MapShard::default);
         Self {
             shards: shards.into_boxed_slice(),
+            #[cfg(test)]
+            flush_shard_locks: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            flush_cells_visited: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -705,9 +713,11 @@ impl<V> Sharded<V> {
     fn write_all(
         &self,
     ) -> impl Iterator<Item = std::sync::RwLockWriteGuard<'_, HashMap<String, V>>> {
-        self.shards
-            .iter()
-            .map(|s| s.map.write().unwrap_or_else(|p| p.into_inner()))
+        self.shards.iter().map(|s| {
+            #[cfg(test)]
+            self.flush_shard_locks.fetch_add(1, Ordering::Relaxed);
+            s.map.write().unwrap_or_else(|p| p.into_inner())
+        })
     }
 
     #[cfg(test)]
@@ -1623,6 +1633,10 @@ mod limits_tests;
 #[cfg(test)]
 #[path = "tests/budget_cell_tests.rs"]
 mod budget_cell_tests;
+
+#[cfg(test)]
+#[path = "tests/budget_shard_flush_tests.rs"]
+mod budget_shard_flush_tests;
 
 #[cfg(test)]
 #[path = "../tests/key_expires_at_tests.rs"]
