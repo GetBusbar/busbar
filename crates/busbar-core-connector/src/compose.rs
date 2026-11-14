@@ -2439,7 +2439,7 @@ impl Connection {
                     .read_into(plaintext, Tail::Trusted, |dst| tls.reader().read(dst))
                     .map_err(|_| Failure::Refused("tls read buffer".into()))?
                 {
-                    Ok(k) if k == plaintext => {}
+                    Ok(_) => {}
                     _ => return Err(Failure::Refused("tls: plaintext count mismatch".into())),
                 }
             }
