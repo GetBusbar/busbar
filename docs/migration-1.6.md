@@ -390,6 +390,36 @@ prices only what happens after the edit; it cannot repair a window that is alrea
 
 ---
 
+## 8. Telemetry attribute names changed in 1.6
+
+The OTLP trace exporter (`busbar-export-otlp`) now writes Busbar's own span and span-event
+attributes under the `busbar.` namespace. A key that already carries a namespace (it contains a
+`.`) is written unchanged: the resource's `service.name`, `code.file.path`, `code.module.name`,
+`code.line.number`, `thread.id`, `thread.name` and any standard OpenTelemetry key such as
+`http.request.method`. Span names (`forward`, `request_attempts`, `named`, `adhoc`,
+`gemini_ingress`, `bedrock_converse`, …), attribute values and value types are unchanged, and
+`/metrics` is not affected.
+
+| 1.5.5 key | 1.6 key | Where it appears |
+|---|---|---|
+| `pool` | `busbar.pool` | projected spans; the `named` span |
+| `ingress` | `busbar.ingress` | projected spans; `forward` |
+| `op` | `busbar.op` | projected spans; `forward` |
+| `lane` | `busbar.lane` | projected spans |
+| `provider` | `busbar.provider` | projected spans; the `adhoc` span |
+| `model` | `busbar.model` | projected spans; the `adhoc` span |
+| `target` | `busbar.target` | every full span and every span event |
+| `busy_ns` | `busbar.busy_ns` | every full span |
+| `idle_ns` | `busbar.idle_ns` | every full span |
+| `request_id` | `busbar.request_id` | `forward` and `request_attempts` |
+| `level` | `busbar.level` | every span event |
+| any other bare field `<name>` | `busbar.<name>` | any span or event field recorded without a namespace |
+| a bare `<name>` on a record that also carries `busbar.<name>` | `busbar.original.<hex>` | `<hex>` is the UTF-8 bytes of `<name>` in lower-case hex; a further `.original` suffix is added while the name is taken, so neither value overwrites the other |
+
+Before upgrading, update every dashboard, alert, saved query, sampling or filtering rule, and
+collector processor (for example an `attributes` or `transform` processor) that matches one of
+the 1.5.5 keys above to the 1.6 key.
+
 ## Quick checklist
 
 - [ ] Run `busbar --migrate-config config.yaml > config-1.6.yaml` and read what it printed: every

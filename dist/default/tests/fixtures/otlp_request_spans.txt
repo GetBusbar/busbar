@@ -14,5 +14,5 @@ bedrock_converse_stream	-	-	-	/model/test-model/converse-stream	{"messages":[{"r
 -	-	anthropic	-	/v1/messages	{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}
 gemini_ingress	-	-	x-goog-api-key: k	/v1/chat/completions	{"model":"test-model","messages":[{"role":"user","content":"hi"}]}
 -	-	-	anthropic-version: 2023-06-01	/v1beta/models/test-model:generateContent	{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}
-named	pool=span-pool	-	-	/span-pool/v1/messages	{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}
-adhoc	provider=mock;model=test-model	-	-	/mock/test-model/v1/messages	{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}
+named	busbar.pool=span-pool	-	-	/span-pool/v1/messages	{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}
+adhoc	busbar.provider=mock;busbar.model=test-model	-	-	/mock/test-model/v1/messages	{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}
