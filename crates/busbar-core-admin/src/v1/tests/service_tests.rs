@@ -411,6 +411,31 @@ fn catalog_fingerprint_tracks_archive_bytes_and_ignores_unrelated_writes() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// WASTE-CORE-LIFECYCLE W7: deciding whether the catalog cache still holds must not read and hash
+/// every archive. Settled archives are keyed by their stat, so an unchanged directory costs no
+/// archive bytes.
+#[test]
+fn catalog_hit_reads_no_archive_bytes() {
+    let dir = tmp_plugins_dir("fingerprint-no-reads");
+    for index in 0..5 {
+        std::fs::write(dir.join(format!("plugin-{index}.tar.gz")), b"archive").unwrap();
+    }
+    // Past the window in which a just-written file is still hashed by content.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let reads = || super::operations::ARCHIVE_READS.with(std::cell::Cell::get);
+    let fingerprint =
+        || plugins_dir_fingerprint(&dir, &|name| name.ends_with(".tar.gz"), 1024).unwrap();
+    let first = fingerprint();
+    let before = reads();
+    assert_eq!(fingerprint(), first);
+    assert_eq!(
+        reads() - before,
+        0,
+        "an unchanged plugins dir is fingerprinted without reading archive bytes"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn validate_plugin_filename_rejects_each_escape_form_independently() {
     assert!(
