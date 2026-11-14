@@ -44,7 +44,9 @@ pub fn install_store(s: Arc<TrustStore>) {
 
 /// Whether the limiter lets a line for `(host, why)` through now.
 fn due(host: &str, why: &str) -> bool {
-    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut last = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = last.get_or_insert_with(HashMap::new);
     let now = Instant::now();
     let key = (host.to_owned(), why.to_owned());
@@ -99,7 +101,8 @@ pub fn dial_refused(target: &str, class: Option<u32>, why: &str, owner: Option<(
     if !due(&host, why) {
         return;
     }
-    let owner_text = owner.map_or_else(|| "-".to_owned(), |(i, n)| format!("instance {i} need {n}"));
+    let owner_text =
+        owner.map_or_else(|| "-".to_owned(), |(i, n)| format!("instance {i} need {n}"));
     tracing::warn!(
         diag = %diag::EGRESS_DIAL_REFUSED.banner(),
         host = %host,
@@ -170,9 +173,18 @@ mod tests {
 
     #[test]
     fn a_refusal_names_the_host_never_its_userinfo_and_is_rate_limited() {
-        assert_eq!(shown("https://user:pw@db.internal:5432/x"), "db.internal:5432");
+        assert_eq!(
+            shown("https://user:pw@db.internal:5432/x"),
+            "db.internal:5432"
+        );
         assert!(due("rate.test", "internal"));
-        assert!(!due("rate.test", "internal"), "a second line within a minute is held");
-        assert!(due("rate.test", "plaintext"), "another reason is its own line");
+        assert!(
+            !due("rate.test", "internal"),
+            "a second line within a minute is held"
+        );
+        assert!(
+            due("rate.test", "plaintext"),
+            "another reason is its own line"
+        );
     }
 }

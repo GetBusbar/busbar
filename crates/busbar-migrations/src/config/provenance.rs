@@ -3,7 +3,7 @@
 
 //! Config grammar evidence is independent of native Store format or product version.
 use busbar_contract::crypto::Sha256;
-use serde_yaml::Value;
+use busbar_contract::yaml::{self, prelude::*};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistoricalShape {

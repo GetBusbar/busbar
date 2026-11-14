@@ -8,6 +8,7 @@ use std::time::Duration;
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
+use busbar_contract::crypto::testing::rcgen;
 use busbar_contract::crypto::testing::rcgen::PublicKeyData as _;
 use busbar_contract::transport::trust::{key_pin, Anchors, EgressTrust};
 use busbar_contract::transport::TransportSettings;
@@ -318,14 +319,14 @@ fn rooted(
     url: &str,
     pin: (&str, &str),
     root: &str,
-) -> serde_yaml::Value {
-    use serde_yaml::{Mapping, Value};
+) -> busbar_contract::yaml::Value {
+    use busbar_contract::yaml::{MappingExt, Pairs, Value, ValueExt};
     let mut r = registration(served, need, url, pin, None);
-    let mut tls = Mapping::new();
-    tls.insert("ca_cert_pem".into(), root.into());
+    let mut tls = Pairs::new();
+    tls.insert_key("ca_cert_pem", root.into());
     r.as_mapping_mut()
         .expect("a mapping")
-        .insert("tls".into(), Value::Mapping(tls));
+        .insert_key("tls", Value::Map(tls));
     r
 }
 

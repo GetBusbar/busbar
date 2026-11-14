@@ -17,13 +17,11 @@ name = "sdk_door_baseline"
 path = "tests/fixtures/sdk_door_baseline.rs"
 crate-type = ["cdylib"]
 
-[[bench]]
-name = "sse_frames"
-harness = false
-
 [dependencies]
 # The crypto facade, re-exported whole as `busbar_contract::crypto`.
 busbar-crypto = { path = "../busbar-crypto" }
+# Calendar dates and RFC 3339 (`civil`).
+time = { workspace = true, features = ["formatting"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 serde-saphyr = { workspace = true }
@@ -48,17 +46,12 @@ tracing-log = { workspace = true }
 
 [dev-dependencies]
 libc = { workspace = true }
-criterion = { workspace = true }
 serde_json = { workspace = true }
 jsonschema = { workspace = true }
 hyper = { workspace = true }
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
-
-[[bench]]
-name = "json_numbers"
-harness = false
 
 [features]
 # Test-only; named only in [dev-dependencies], absent from release builds.

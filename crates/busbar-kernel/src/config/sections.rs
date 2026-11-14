@@ -392,18 +392,16 @@ impl RateEntryCfg {
 /// one predicate both the startup/migration unfold and the reload refusal use, so they cover the
 /// same keys: root entries only (plane `rate_card:` blocks are not 1.5.5 shapes), and only a
 /// number (a non-number is refused downstream as written).
-pub fn zero_cache_write_models(root: &serde_yaml::Mapping) -> Vec<String> {
-    let Some(card) = root
-        .get("rate_card")
-        .and_then(serde_yaml::Value::as_mapping)
-    else {
+pub fn zero_cache_write_models(root: &busbar_contract::yaml::Pairs) -> Vec<String> {
+    use busbar_contract::yaml::{MappingExt as _, Value, ValueExt as _};
+    let Some(card) = root.get_key("rate_card").and_then(Value::as_mapping) else {
         return Vec::new();
     };
     card.iter()
         .filter(|(_, entry)| {
             entry
                 .get("cache_write_utok")
-                .and_then(serde_yaml::Value::as_f64)
+                .and_then(Value::as_f64)
                 .is_some_and(|rate| rate == 0.0)
         })
         .filter_map(|(model, _)| model.as_str())

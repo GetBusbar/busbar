@@ -5,7 +5,7 @@
 
 /// The lowercase hexadecimal digest the chain is built on.
 pub fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(ring::digest::digest(&ring::digest::SHA256, data))
+    hex::encode(busbar_contract::crypto::sha256(data))
 }
 
 /// HOW A RECORD'S FIELDS ARE FRAMED INTO THE DIGEST INPUT.

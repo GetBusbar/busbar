@@ -897,6 +897,10 @@ impl AuthMiddleware {
                         )
                     };
                     let name = entry.name.as_str();
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: auth.chain modules resolve once, at config load"
+                    )]
                     let calls = instances.instance(
                         name,
                         other,
@@ -916,7 +920,7 @@ impl AuthMiddleware {
                                 None => {
                                     #[expect(
                                         clippy::disallowed_methods,
-                                        reason = "config: a config-load refusal naming the auth module"
+                                        reason = "config: a config-load refusal naming the auth.chain module"
                                     )]
                                     let opened = open_axis().ok_or_else(|| {
                                         refused(format!(
@@ -1206,6 +1210,7 @@ impl AuthMiddleware {
         &'a self,
         provider: Option<&'a str>,
     ) -> impl Iterator<Item = &'a std::sync::Arc<dyn AuthCalls>> + 'a {
+        // busbar:expect(bp::state_scan, reason = "config: an operator's admin flush walks the configured chain once")
         self.chain
             .iter()
             .filter(move |e| provider.is_none_or(|m| m == e.provider))
@@ -3194,6 +3199,8 @@ pub mod login;
 
 pub mod instances;
 pub mod login_limits;
+
+pub mod instances;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

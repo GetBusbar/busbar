@@ -52,11 +52,11 @@ pub const CHECKPOINT_PREIMAGE_BYTES: usize = CHECKPOINT_SIGNATURE_DOMAIN.len() +
 #[must_use]
 pub fn checkpoint_preimage(body: &[u8]) -> [u8; CHECKPOINT_PREIMAGE_BYTES] {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = ring::digest::digest(&ring::digest::SHA256, body);
+    let digest = busbar_contract::crypto::sha256(body);
     let mut preimage = [0u8; CHECKPOINT_PREIMAGE_BYTES];
     let domain = CHECKPOINT_SIGNATURE_DOMAIN.len();
     preimage[..domain].copy_from_slice(CHECKPOINT_SIGNATURE_DOMAIN.as_bytes());
-    for (i, byte) in digest.as_ref().iter().enumerate() {
+    for (i, byte) in digest.iter().enumerate() {
         preimage[domain + 1 + 2 * i] = HEX[usize::from(byte >> 4)];
         preimage[domain + 2 + 2 * i] = HEX[usize::from(byte & 0x0f)];
     }
@@ -133,7 +133,7 @@ fn from_hex_exact<const N: usize>(text: &str) -> Result<[u8; N], KeyError> {
 /// The identifier for one public key: the first [`KEY_ID_BYTES`] bytes of its SHA-256, in lowercase
 #[must_use]
 pub fn key_id_of(public_key: &VerifyingKey) -> String {
-    let mut digest = crate::digest::sha256_hex(public_key.as_bytes());
+    let mut digest = crate::digest::sha256_hex(&public_key.to_bytes());
 
     digest.truncate(KEY_ID_BYTES * 2);
     digest
@@ -159,7 +159,10 @@ impl AuditSigningKey {
     /// Build one from a 32-byte ed25519 seed.
     #[must_use]
     pub fn from_seed(seed: &[u8; 32]) -> Self {
-        let inner = SigningKey::from_bytes(seed);
+        // PANIC: any 32-byte seed is a valid RFC 8032 seed; only a backend refusing Ed25519 outright
+        // can fail here, and a node without its audit signature cannot run.
+        let inner = SigningKey::from_seed(seed)
+            .unwrap_or_else(|e| panic!("crypto backend refused an Ed25519 seed: {e}"));
         // busbar:expect(bp::into_alloc, reason = "config: the signing key is loaded once, when the node is configured")
         let key_id = std::sync::Arc::from(key_id_of(&inner.verifying_key()));
         AuditSigningKey { inner, key_id }
@@ -205,13 +208,15 @@ impl AuditSigningKey {
     /// The public half as 64 lowercase hex characters.
     #[must_use]
     pub fn public_key_hex(&self) -> String {
-        hex::encode(self.inner.verifying_key().as_bytes())
+        hex::encode(self.inner.verifying_key().to_bytes())
     }
 
     /// Sign one record's digest. The answer is 128 lowercase hex characters.
     #[must_use]
     pub fn sign_digest(&self, digest_hex: &str) -> String {
-        to_hex(&with_signing_preimage(digest_hex, |preimage| self.inner.sign(preimage)).to_bytes())
+        hex::encode(with_signing_preimage(digest_hex, |preimage| {
+            self.inner.sign(preimage)
+        }))
     }
 }
 
@@ -254,16 +259,15 @@ impl AuditVerifyingKey {
     /// The key as 64 lowercase hex characters.
     #[must_use]
     pub fn public_key_hex(&self) -> String {
-        hex::encode(self.inner.as_bytes())
+        hex::encode(self.inner.to_bytes())
     }
 
     /// Check one signature over one digest.
     pub fn verify_digest(&self, digest_hex: &str, signature_hex: &str) -> Result<(), KeyError> {
         let raw =
             from_hex_exact::<64>(signature_hex.trim()).map_err(|_| KeyError::MalformedSignature)?;
-        let signature = ed25519_dalek::Signature::from_bytes(&raw);
         with_signing_preimage(digest_hex, |preimage| {
-            self.inner.verify_strict(preimage, &signature)
+            self.inner.verify_strict(preimage, &raw)
         })
         .map_err(|_| KeyError::BadSignature)
     }

@@ -279,15 +279,15 @@ impl DoorSection {
         lanes
     }
 
-    fn hooks_of(v: &serde_yaml::Value) -> Vec<String> {
+    fn hooks_of(v: &busbar_contract::yaml::Value) -> Vec<String> {
         #[expect(
             clippy::disallowed_methods,
             reason = "config: a container's `hooks:` list is read once per generation"
         )]
         let hooks = v
             .as_mapping()
-            .and_then(|m| m.get(busbar_contract::plugin::Kind::Hook.root()))
-            .and_then(serde_yaml::Value::as_sequence)
+            .and_then(|m| m.get_key(busbar_contract::plugin::Kind::Hook.root()))
+            .and_then(busbar_contract::yaml::Value::as_sequence)
             .map(|s| {
                 s.iter()
                     .filter_map(|h| h.as_str().map(str::to_string))
@@ -343,7 +343,7 @@ impl PlaneCfg for DoorSection {
             clippy::disallowed_methods,
             reason = "error: an unrepresentable definition is refused once, at the admin write"
         )]
-        let entry: serde_yaml::Value = serde_yaml::to_value(def)
+        let entry: busbar_contract::yaml::Value = busbar_contract::yaml::to_value(def)
             .map_err(|e| format!("invalid `{}.{name}` definition: {e}", self.section))?;
         if !self.value.is_mapping() {
             self.value = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Pairs::new());
@@ -353,7 +353,7 @@ impl PlaneCfg for DoorSection {
                 clippy::disallowed_methods,
                 reason = "config: the admin write stores the definition under its own name"
             )]
-            m.insert(serde_yaml::Value::String(name.to_string()), entry);
+            m.insert_key(busbar_contract::yaml::Value::Text(name.to_string()), entry);
         }
 
         *self = Self::new(
@@ -454,7 +454,7 @@ impl PlaneCfg for DoorSection {
 }
 
 fn collect_refs(
-    value: &serde_yaml::Value,
+    value: &busbar_contract::yaml::Value,
     path: Option<&str>,
     at: &mut String,
     out: &mut Vec<(String, busbar_contract::secret_ref::SecretRef)>,
@@ -465,8 +465,10 @@ fn collect_refs(
             if let Ok(r) = busbar_contract::secret_ref::context::deserialize::<
                 busbar_contract::secret_ref::SecretRef,
                 _,
-            >(value, &crate::config::secret::sugars())
-            {
+            >(
+                busbar_contract::yaml::deserializer(value.clone()),
+                &crate::config::secret::sugars(),
+            ) {
                 // busbar:expect(bp::clone_alloc, reason = "config: each found secret reference keeps the path it was read at")
                 out.push((at.clone(), r));
             }
@@ -500,7 +502,7 @@ fn collect_refs(
             }
         }
         at.truncate(base);
-    } else if let Some(v) = map.get(head) {
+    } else if let Some(v) = map.get_key(head) {
         at.push('.');
         at.push_str(head);
         collect_refs(v, rest, at, out);
@@ -628,7 +630,7 @@ fn view_of(
     let ttl = keys.iter().find(|k| k.role == TrustRole::ReverifyTtl);
     let pin_obj = pin
         .and_then(|k| field(k.key))
-        .and_then(serde_yaml::Value::as_mapping);
+        .and_then(busbar_contract::yaml::Value::as_mapping);
     #[expect(
         clippy::disallowed_methods,
         reason = "config: a named definition is projected for the admin read"
@@ -1327,10 +1329,10 @@ fn door_hooks(named: bool, owns: bool, admin: bool) -> PlaneHooks {
     }
 }
 
-fn yaml_present(value: &serde_yaml::Value) -> bool {
+fn yaml_present(value: &busbar_contract::yaml::Value) -> bool {
     match value {
-        serde_yaml::Value::Null => false,
-        serde_yaml::Value::Mapping(m) => !m.is_empty(),
+        busbar_contract::yaml::Value::Null => false,
+        busbar_contract::yaml::Value::Map(m) => !m.is_empty(),
         _ => true,
     }
 }

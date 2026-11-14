@@ -173,11 +173,7 @@ impl serde::Serialize for SigningKid {
 
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a virtual key id is drawn only when a key is minted"
-    )]
-    let drawn = getrandom::fill(&mut raw);
+    let drawn = busbar_contract::crypto::fill(&mut raw);
     #[expect(
         clippy::disallowed_methods,
         reason = "error: the refusal is built only when the OS CSPRNG fails"
@@ -232,11 +228,7 @@ impl GovState {
         denylist: Arc<revocation::RevocationSync>,
     ) -> RecordStoreResult<Self> {
         let mut boot_caller_ref = zeroize::Zeroizing::new([0u8; 32]);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the per-boot caller-reference key is drawn once when governance starts"
-        )]
-        getrandom::fill(boot_caller_ref.as_mut_slice())
+        busbar_contract::crypto::fill(boot_caller_ref.as_mut_slice())
             .expect("OS randomness for the per-boot caller-reference key");
         Ok(Self {
             observation_view: RwLock::default(),
