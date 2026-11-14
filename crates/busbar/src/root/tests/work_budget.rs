@@ -3,10 +3,12 @@
 
 //! THE PER-REQUEST WORK-BUDGET GATE (REQUEST-PATH-BUDGET, decision 206).
 //!
-//! One openai -> openai request, buffered and streamed, through the real node path: the linked
-//! LLM plane, the native store plugin behind the loader, and a fake upstream. Counts the work it
-//! does, not how long it takes, and fails when any count is above `perf/work-budget.toml`. An item
-//! with no entry there is measured and printed (`WORK-COUNT section=<s> <item>=<n>`), not enforced.
+//! One request in the linked LLM plane's own dialect (its door word `dialect`), buffered and
+//! streamed, through the real door path: the linked plane door serving the `pools` map, bound
+//! through the loader, composed by the root, its money on the node's book in the native store
+//! plugin, and a far end on loopback. Counts the work it does, not how long it takes, and fails
+//! when any count is above `perf/work-budget.toml`. An item with no entry there is measured and
+//! printed (`WORK-COUNT section=<s> <item>=<n>`), not enforced.
 //!
 //! Counted: heap allocations (the test build's counting global allocator), plugin crossings (at
 //! the loader boundary, `busbar_contract::work_count::Work::Crossing`, so the gate keeps working
@@ -16,7 +18,7 @@
 
 use busbar_contract::work_count::Tally;
 
-use super::*;
+use super::node_rig::{far_end, node_rig, reply, NodeRig, NodeRigOpts, LANE, POOL};
 
 const BUDGET: &str = include_str!("../../../../../perf/work-budget.toml");
 
@@ -27,6 +29,72 @@ const RUNS: usize = 3;
 
 /// The counted items, in the order they are reported, with their names in the budget file.
 const ITEMS: [&str; 3] = ["allocations", "plugin_crossings", "store_round_trips"];
+
+const INPUT: u64 = 11;
+const OUTPUT: u64 = 7;
+
+/// The two served ends the gate counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fixture {
+    /// The whole loop, delivered, buffered.
+    BufferedOk,
+    /// The same loop with the accrual landing at stream end rather than at the buffered tap.
+    StreamedOk,
+}
+
+impl Fixture {
+    fn body(self) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "model": POOL,
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        if self == Fixture::StreamedOk {
+            v["stream"] = serde_json::Value::Bool(true);
+        }
+        v
+    }
+
+    /// The far end's whole HTTP/1.1 reply.
+    fn reply(self) -> String {
+        let (content_type, body) = match self {
+            Fixture::BufferedOk => (
+                "application/json",
+                serde_json::json!({
+                    "id": "chatcmpl-root", "object": "chat.completion", "created": 0,
+                    "model": LANE,
+                    "choices": [{"index": 0, "finish_reason": "stop",
+                                 "message": {"role": "assistant", "content": "hello"}}],
+                    "usage": {"prompt_tokens": INPUT, "completion_tokens": OUTPUT,
+                              "total_tokens": INPUT + OUTPUT}
+                })
+                .to_string(),
+            ),
+            Fixture::StreamedOk => (
+                "text/event-stream",
+                [
+                    serde_json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
+                                       "created": 0, "model": LANE,
+                                       "choices": [{"index": 0, "delta": {"role": "assistant",
+                                                                          "content": "hello"}}]})
+                    .to_string(),
+                    serde_json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
+                                       "created": 0, "model": LANE,
+                                       "choices": [{"index": 0, "delta": {},
+                                                    "finish_reason": "stop"}],
+                                       "usage": {"prompt_tokens": INPUT,
+                                                 "completion_tokens": OUTPUT,
+                                                 "total_tokens": INPUT + OUTPUT}})
+                    .to_string(),
+                    "[DONE]".to_string(),
+                ]
+                .iter()
+                .map(|event| format!("data: {event}\n\n"))
+                .collect(),
+            ),
+        };
+        reply(content_type, &body)
+    }
+}
 
 fn item(work: Tally, name: &str) -> u64 {
     match name {
@@ -75,21 +143,23 @@ fn budget(section: &str) -> [Option<u64>; 3] {
     out
 }
 
-/// One request through the node, counted from hand-off until its last body byte is read.
-async fn counted(rig: &Rig, node: &Node, fixture: Fixture) -> Tally {
-    let arrival = plane::WalkArrival {
-        host: rig.host(),
-        gov: rig.gov(),
-        proto: PROTO,
-        operation: busbar_contract::operation::OpVerb::CHAT,
-        caller_token: None,
-        headers: json_headers(),
-        query: None,
-        body: fixture.body(),
-        path: None,
-    };
+/// One request through the door, counted from hand-off until its last body byte is read.
+async fn counted(rig: &NodeRig, fixture: Fixture) -> Tally {
+    use tower::ServiceExt as _;
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("authorization", format!("Bearer {}", rig.token))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(fixture.body().to_string()))
+        .expect("a request");
     let before = Tally::now();
-    let resp = node.answer(plane::handed(arrival, None)).await;
+    let resp = rig
+        .router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers");
     let status = resp.status().as_u16();
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
     let work = Tally::now().since(before);
@@ -104,11 +174,18 @@ async fn counted(rig: &Rig, node: &Node, fixture: Fixture) -> Tally {
 }
 
 /// Lowest count of each kind over [`RUNS`] requests, after [`WARM`] warm-up requests.
-async fn measure(fixture: Fixture) -> Tally {
-    let rig = rig(fixture).await;
-    let node = Node::new();
+async fn measure(instance: &'static str, fixture: Fixture) -> Tally {
+    let rig = node_rig(
+        instance,
+        far_end(fixture.reply()).await,
+        NodeRigOpts {
+            fee_cents: 1,
+            ..Default::default()
+        },
+    )
+    .await;
     for _ in 0..WARM {
-        let _ = counted(&rig, &node, fixture).await;
+        let _ = counted(&rig, fixture).await;
     }
     let mut low = Tally {
         allocations: u64::MAX,
@@ -116,12 +193,11 @@ async fn measure(fixture: Fixture) -> Tally {
         store_round_trips: u64::MAX,
     };
     for _ in 0..RUNS {
-        let work = counted(&rig, &node, fixture).await;
+        let work = counted(&rig, fixture).await;
         low.allocations = low.allocations.min(work.allocations);
         low.crossings = low.crossings.min(work.crossings);
         low.store_round_trips = low.store_round_trips.min(work.store_round_trips);
     }
-    rig.server.shutdown().await;
     low
 }
 
@@ -154,12 +230,12 @@ fn gate(section: &str, fixture: Fixture, measured: Tally) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_buffered_openai_request_stays_within_its_work_budget() {
-    let measured = measure(Fixture::BufferedOk).await;
+    let measured = measure("work-budget-buffered", Fixture::BufferedOk).await;
     gate("buffered", Fixture::BufferedOk, measured);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_streamed_openai_request_stays_within_its_work_budget() {
-    let measured = measure(Fixture::StreamedOk).await;
+    let measured = measure("work-budget-streamed", Fixture::StreamedOk).await;
     gate("streamed", Fixture::StreamedOk, measured);
 }

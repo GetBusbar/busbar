@@ -106,6 +106,16 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> Millis;
 }
 
+/// The wall clock, in milliseconds since the Unix epoch.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WallClock;
+
+impl Clock for WallClock {
+    fn now(&self) -> Millis {
+        store::now_ms()
+    }
+}
+
 /// A clock a test drives by hand.
 #[derive(Debug, Default)]
 pub struct ManualClock {
