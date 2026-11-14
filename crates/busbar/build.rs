@@ -166,8 +166,6 @@ fn main() {
         println!("cargo::rustc-check-cfg=cfg({cfg})");
     }
 
-    println!("cargo::rustc-check-cfg=cfg(linked_axis_body_ingress)");
-
     println!(
         "cargo:rustc-env=BUSBAR_LINKED_AXES={}",
         linked_axis_cfgs(&manifest, &enabled).0.join(" ")

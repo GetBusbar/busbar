@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 #![cfg(unix)]
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_section_pools)]
 
 mod common;
 
