@@ -27,7 +27,6 @@ pub mod cfg;
 pub mod classify;
 pub mod port;
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -143,52 +142,33 @@ pub trait Breaker: sealed::Sealed {
 }
 
 /// One destination's breaker state: its lifetime budget, where one is declared, and its cells —
-/// the default cell (direct/ad-hoc routes) under pool `""`, exactly as 1.5.5's
-/// `LaneState`-embedded default cell did, and one per named pool that has touched it.
+/// the default cell (direct/ad-hoc routes, pool `""`), exactly as 1.5.5's `LaneState`-embedded
+/// default cell did, and one per named pool that has touched it, keyed by the pool name.
 ///
-/// The cells are a short list scanned by `&str`, not a map: a destination sits in a handful of
-/// pools, so a scan of borrowed names beats hashing the pool name on every admission and
-/// observation, and nothing on the hot path owns a copy of it. Only creating a cell spells the pool
-/// name into a `Box<str>`. Being one list, a cell is reachable exactly when it is registered for
-/// the destination's hard-down fan-out ([`BreakerUnit::hard_down_all`]).
+/// A lookup is one `foldhash` of the borrowed pool name (none for the default cell), never a scan,
+/// and nothing on the hot path owns a copy of the name: only creating a cell spells it into a
+/// `Box<str>`. Every cell lives here, so a cell is reachable exactly when it is registered for the
+/// destination's hard-down fan-out ([`BreakerUnit::hard_down_all`]).
 #[derive(Default)]
 struct Destination {
     budget: Option<Arc<LifetimeBudget>>,
-    cells: Vec<(Box<str>, Arc<BreakerCell>)>,
+    default: Option<Arc<BreakerCell>>,
+    pools: foldhash::HashMap<Box<str>, Arc<BreakerCell>>,
 }
 
 impl Destination {
     fn cell(&self, pool: &str) -> Option<&Arc<BreakerCell>> {
-        self.cells
-            .iter()
-            .find(|(p, _)| &**p == pool)
-            .map(|(_, c)| c)
-    }
-}
-
-/// The destination map's hasher: a destination is a small integer, so one multiply spreads it
-/// over the table, where the default SipHash would spend a keyed hash per admission.
-#[derive(Default, Clone, Copy)]
-struct DestinationHash(u64);
-
-impl std::hash::Hasher for DestinationHash {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        if pool.is_empty() {
+            self.default.as_ref()
+        } else {
+            self.pools.get(pool)
         }
     }
-
-    fn write_u64(&mut self, n: u64) {
-        self.0 = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
 }
 
-type Destinations =
-    HashMap<DestinationId, Destination, std::hash::BuildHasherDefault<DestinationHash>>;
+/// The destination map: a destination is a small integer, so `foldhash` spreads it over the table
+/// with one folded multiply where the default SipHash would spend a keyed hash per admission.
+type Destinations = foldhash::HashMap<DestinationId, Destination>;
 
 /// The breaker unit: every `(pool, destination)` breaker cell plus every destination's lifetime
 pub struct BreakerUnit {
@@ -358,7 +338,13 @@ impl BreakerUnit {
                 .map(|c| &**c),
         );
         let cell = Arc::new(cell);
-        dest.cells.push((Box::from(pool), Arc::clone(&cell)));
+        if pool.is_empty() {
+            dest.default = Some(Arc::clone(&cell));
+        } else {
+            // busbar:expect(bp::into_alloc, reason = "config: a cell is created once per configured (pool, destination); its pool name is spelled into the map key once, never per request")
+            let key = Box::from(pool);
+            dest.pools.insert(key, Arc::clone(&cell));
+        }
         cell
     }
 
@@ -370,35 +356,32 @@ impl BreakerUnit {
 
     /// Trip EVERY existing pool cell for `destination` hard-down at once (the default `""`
     pub fn hard_down_all(&self, destination: DestinationId, now: u64) -> bool {
-        let default_cell = self.cell("", destination);
-        let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs());
-
-        for (_, cell) in self.named_cells(destination) {
-            let _ = cell.hard_down(now, self.hard_down_cooldown_secs());
-        }
-        default_was_fresh
+        let cooldown = self.hard_down_cooldown_secs();
+        self.fan_out(destination, |_, cell| cell.hard_down(now, cooldown))
     }
 
-    /// The named pools' cells (never the default `""`) for `destination`, with their pools.
-    fn named_cells(&self, destination: DestinationId) -> Vec<(Box<str>, Arc<BreakerCell>)> {
-        self.read()
-            .get(&destination)
-            .map(|d| {
-                d.cells
-                    .iter()
-                    .filter(|(p, _)| !p.is_empty())
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+    /// Run `f` on `destination`'s default cell (created as [`Self::cell`] creates it), then on every
+    /// named pool's cell with its pool, in place under the map's read lock: no copy of the cell list
+    /// or of a pool name. `f` touches only the cell it is given (and, for a probe, the caller's
+    /// policy lookup), never this unit, so it runs under the read lock without re-entering it.
+    /// Returns `f`'s answer for the default cell.
+    fn fan_out<R>(&self, destination: DestinationId, f: impl Fn(&str, &BreakerCell) -> R) -> R {
+        let default = f("", &self.cell("", destination));
+        if let Some(d) = self.read().get(&destination) {
+            for (pool, cell) in &d.pools {
+                let _ = f(pool, cell);
+            }
+        }
+        default
     }
 
     /// THE HEALTH PROBER'S TRIGGER (1.5.5 `lane_needs_probe`): whether the breaker suppresses
     pub fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
         self.read().get(&destination).is_some_and(|d| {
-            d.cells
+            d.default
                 .iter()
-                .any(|(_, cell)| suppressed(cell, now).is_some())
+                .chain(d.pools.values())
+                .any(|cell| suppressed(cell, now).is_some())
         })
     }
 
@@ -411,34 +394,24 @@ impl BreakerUnit {
         now: u64,
         _token: &Pass<Route>,
     ) {
-        let cells = || {
-            std::iter::once((Box::from(""), self.cell("", destination)))
-                .chain(self.named_cells(destination))
-        };
         match outcome {
             Outcome::RecordNothing => {}
             Outcome::HardDown => {
                 let _ = self.hard_down_all(destination, now);
             }
-            Outcome::Success => {
-                for (_, cell) in cells() {
-                    if let Some(observed) = suppressed(&cell, now) {
-                        let _ = cell.close_if_recoverable(now, observed);
-                    }
-                    let _ = cell.record_success(now);
+            Outcome::Success => self.fan_out(destination, |_, cell| {
+                if let Some(observed) = suppressed(cell, now) {
+                    let _ = cell.close_if_recoverable(now, observed);
                 }
-            }
+                let _ = cell.record_success(now);
+            }),
             Outcome::Transient { retry_after } | Outcome::RateLimit { retry_after } => {
-                for (pool, cell) in cells() {
-                    if let Some(cfg) = cfg_of(&pool) {
-                        let _ = cell.record_failure(
-                            now,
-                            &cfg,
-                            retry_after,
-                            self.max_honored_retry_after_secs(),
-                        );
+                let max_honored = self.max_honored_retry_after_secs();
+                self.fan_out(destination, |pool, cell| {
+                    if let Some(cfg) = cfg_of(pool) {
+                        let _ = cell.record_failure(now, &cfg, retry_after, max_honored);
                     }
-                }
+                });
             }
         }
     }

@@ -10,8 +10,14 @@ pub fn nano_rate(micro_per_unit: f64) -> u64 {
     if !micro_per_unit.is_finite() || micro_per_unit <= 0.0 {
         return 0;
     }
-    let text = micro_per_unit.to_string();
-    let (whole, frac) = text.split_once('.').unwrap_or((text.as_str(), ""));
+    // The double's shortest decimal text, spelled on the stack. Past 32 bytes it has more than 20
+    // whole digits or more than 3 decimals, which is no representable rate either way.
+    let mut spelled = crate::cost::spelled::Spelled::<32>::new();
+    if std::fmt::Write::write_fmt(&mut spelled, format_args!("{micro_per_unit}")).is_err() {
+        return 0;
+    }
+    let text = spelled.as_str();
+    let (whole, frac) = text.split_once('.').unwrap_or((text, ""));
     if frac.len() > 3 {
         return 0;
     }
@@ -278,10 +284,22 @@ pub fn compose_plane_cards<E: Clone + Default>(
     let sep = crate::cost::PLANE_LANE_SEP;
     let mut out = flat.cloned().unwrap_or_default();
     if flat.is_some() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+        )]
         out.insert(sep.to_string(), E::default());
     }
     for (plane, card) in planes {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+        )]
         out.insert(format!("{plane}{sep}"), E::default());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+        )]
         out.extend(
             card.iter()
                 .map(|(lane, e)| (format!("{plane}{sep}{lane}"), e.clone())),
@@ -388,10 +406,15 @@ impl RateCard {
         } else {
             RateCard::absent(per_request_fee)
         };
-        card.planes = by_plane
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+        )]
+        let planes = by_plane
             .into_iter()
             .map(|(plane, cells)| (plane.to_string(), RateCard::from_cells(cells, 0)))
             .collect();
+        card.planes = planes;
         card
     }
 
@@ -411,6 +434,10 @@ impl RateCard {
                 },
             };
             if card.present && !lane.is_empty() {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+                )]
                 card.prices
                     .entry(lane.to_string())
                     .or_default()
@@ -428,6 +455,10 @@ impl RateCard {
         fees: impl IntoIterator<Item = (&'p str, PlaneFees)>,
     ) -> Self {
         for (plane, f) in fees {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+            )]
             let card = self
                 .planes
                 .entry(plane.to_string())
@@ -450,6 +481,10 @@ impl RateCard {
         }
         for (cell, nanos) in cells {
             if let Some((kind, namespace)) = split_measurement_lane(&cell.lane) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+                )]
                 card.measurements
                     .entry(kind.to_string())
                     .or_insert_with(|| RateCard::from_cells([], 0))
@@ -468,9 +503,17 @@ impl RateCard {
                 return None;
             }
 
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+            )]
             target
                 .refused
                 .retain(|r| !(r.lane == lane && r.class == cell.class));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+            )]
             target
                 .prices
                 .entry(lane.to_string())
@@ -485,6 +528,10 @@ impl RateCard {
     /// **THE CARD'S DIGEST**: `sha256` over every figure the card prices with, in one fixed order.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+        )]
         let mut bytes = b"busbar/rate-card-digest/v1\0".to_vec();
         self.digest_into(&mut bytes);
         busbar_contract::abi::sdk::digest::sha256(&bytes)
@@ -559,6 +606,10 @@ impl RateCard {
     /// The one placement of a configured rate into a cell, used by the constructor alone. A card is
     fn place_rate(&mut self, cell: LaneClass, nanos_per_unit: Option<u64>) {
         if let Some((kind, namespace)) = split_measurement_lane(&cell.lane) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+            )]
             self.measurements
                 .entry(kind.to_string())
                 .or_insert_with(|| RateCard::from_cells([], 0))
@@ -575,10 +626,15 @@ impl RateCard {
         match nanos_per_unit {
             Some(nanos) => {
                 slot.set(nanos);
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the rate card is built from configuration once, at boot or on a reload, never per request"
+                )]
                 self.refused.retain(|r| r != &cell);
             }
             None => {
                 *slot = CellPrices::default();
+                // busbar:expect(bp::state_scan, reason = "config: a refused cell is listed once, when the rate card is built from configuration")
                 if !self.refused.contains(&cell) {
                     self.refused.push(cell);
                 }

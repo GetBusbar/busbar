@@ -17,17 +17,18 @@ pub const FEE_CLASS: &str = "fee";
 /// One quantity against one declared class. No money in it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Quantity {
-    /// The declared meter class the quantity belongs to.
-    pub class: String,
+    /// The declared meter class the quantity belongs to: a declared class is an interned id, so the
+    /// posting names it rather than copying it.
+    pub class: &'static str,
     /// How much of it was reported.
     pub amount: busbar_contract::Count,
 }
 
 impl Quantity {
     /// Name one measured quantity.
-    pub fn new(class: impl Into<String>, amount: u64) -> Self {
+    pub fn new(class: &'static str, amount: u64) -> Self {
         Quantity {
-            class: class.into(),
+            class,
             amount: amount.into(),
         }
     }
@@ -72,7 +73,7 @@ impl Posting {
                 .lines()
                 .iter()
                 .map(|l| Quantity {
-                    class: l.class.as_str().into(),
+                    class: l.class.as_str(),
                     amount: l.quantity,
                 })
                 .collect(),
@@ -94,7 +95,7 @@ impl Posting {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PricedLine {
     /// The meter class this quantity belongs to.
-    pub class: String,
+    pub class: &'static str,
     /// How much of it was reported.
     pub quantity: busbar_contract::Count,
     /// The card's rate for this class on the priced lane, in nano-units per unit of quantity.
@@ -137,7 +138,7 @@ impl Priced {
         self.lines
             .iter()
             .filter(|l| l.unpriced)
-            .map(|l| l.class.as_str())
+            .map(|l| l.class)
             .collect()
     }
 }
@@ -217,7 +218,7 @@ pub fn price_at_card(
     let mut lines: Vec<PricedLine> = Vec::with_capacity(posting.quantities.len() + 1);
 
     for quantity in &posting.quantities {
-        let class = quantity.class.as_str();
+        let class = quantity.class;
 
         let (unit_price_nanos, priced) = match pricing.class_price(class) {
             ClassPrice::FeeMinor(fee_minor) => (
@@ -235,7 +236,7 @@ pub fn price_at_card(
             .ok_or(Unpriceable::Overflow)?
             / 1_000_000;
         lines.push(PricedLine {
-            class: class.to_string(),
+            class,
             quantity: quantity.amount,
             unit_price_nanos,
             amount_nanos,
@@ -245,7 +246,7 @@ pub fn price_at_card(
 
     let fee_unit_price_nanos = pricing.card.fee_unit_price_nanos();
     lines.push(PricedLine {
-        class: FEE_CLASS.to_string(),
+        class: FEE_CLASS,
         quantity: posting.fee_count.into(),
         unit_price_nanos: fee_unit_price_nanos,
         amount_nanos: u128::from(posting.fee_count).saturating_mul(fee_unit_price_nanos),
@@ -262,7 +263,7 @@ pub fn price_at_card(
                 .iter()
                 .take(posting.quantities.len())
                 .filter(|l| !l.unpriced)
-                .map(|l| (l.class.as_str(), l.quantity)),
+                .map(|l| (l.class, l.quantity)),
             crate::cost::whole(posting.fee_count),
         )
     } else {
@@ -303,10 +304,14 @@ pub fn price_fail_closed(view: &HistoryView<'_>, posting: &Posting) -> Result<Pr
     }
 
     if let Some(line) = priced.lines.iter().find(|l| l.unpriced) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refusal owns the class it names; a priced posting never reaches it"
+        )]
         return Err(Unpriceable::ClassUnpriced {
             card_seq: priced.card_seq,
             lane: posting.lane.clone(),
-            class: line.class.clone(),
+            class: line.class.to_owned(),
         });
     }
     Ok(priced)

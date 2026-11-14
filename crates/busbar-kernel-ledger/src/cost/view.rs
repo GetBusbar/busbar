@@ -123,18 +123,10 @@ impl Money {
         self.0 == 0
     }
 
-    /// The exact decimal spelling, always with [`MONEY_SCALE`] places: `34_510` reads `0.034510`.
+    /// A test's spelling of [`Money`]'s `Display`, which writes the same text without a buffer.
+    #[cfg(test)]
     pub fn to_decimal_string(self) -> String {
-        let negative = self.0 < 0;
-
-        let magnitude = self.0.unsigned_abs();
-        let whole = magnitude / (MONEY_SCALE_FACTOR as u128);
-        let fraction = magnitude % (MONEY_SCALE_FACTOR as u128);
-        let sign = if negative { "-" } else { "" };
-        format!(
-            "{sign}{whole}.{fraction:0width$}",
-            width = MONEY_SCALE as usize
-        )
+        self.to_string()
     }
 
     /// Two amounts added, CHECKED. Nothing here wraps and nothing saturates.
@@ -147,8 +139,19 @@ impl Money {
 }
 
 impl std::fmt::Display for Money {
+    /// The exact decimal spelling, always with [`MONEY_SCALE`] places: `34_510` reads `0.034510`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.to_decimal_string())
+        let negative = self.0 < 0;
+
+        let magnitude = self.0.unsigned_abs();
+        let whole = magnitude / (MONEY_SCALE_FACTOR as u128);
+        let fraction = magnitude % (MONEY_SCALE_FACTOR as u128);
+        let sign = if negative { "-" } else { "" };
+        write!(
+            f,
+            "{sign}{whole}.{fraction:0width$}",
+            width = MONEY_SCALE as usize
+        )
     }
 }
 
@@ -260,7 +263,7 @@ impl std::fmt::Display for MoneyError {
             MoneyError::LaneUnpriced { card_seq, lane } => write!(
                 f,
                 "rate-card entry {} names no price for lane `{lane}`",
-                card_seq.map_or_else(|| "unbound".to_owned(), |key| key.to_string())
+                EntryName(*card_seq)
             ),
             MoneyError::ClassUnpriced {
                 card_seq,
@@ -269,7 +272,7 @@ impl std::fmt::Display for MoneyError {
             } => write!(
                 f,
                 "rate-card entry {} names no price for class `{class}` on lane `{lane}`",
-                card_seq.map_or_else(|| "unbound".to_owned(), |key| key.to_string())
+                EntryName(*card_seq)
             ),
             MoneyError::Overflow => {
                 f.write_str("the money arithmetic left the representable range")
@@ -279,6 +282,18 @@ impl std::fmt::Display for MoneyError {
 }
 
 impl std::error::Error for MoneyError {}
+
+/// A refusal's entry as its text names it: the key's hex, or `unbound` when no entry was bound.
+struct EntryName(Option<EntryKey>);
+
+impl std::fmt::Display for EntryName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(key) => std::fmt::Display::fmt(key, f),
+            None => f.write_str("unbound"),
+        }
+    }
+}
 
 /// **THE ONE FUNCTION.** `money = f(ledger_slice, card_history)`.
 pub fn price(ledger: &[LedgerEntry], history: &History) -> Result<Money, MoneyError> {
@@ -386,7 +401,43 @@ enum Source<'a> {
 pub struct Tally<'a> {
     source: Source<'a>,
     /// Pre-tier amount per tier, at the exact scale. One element for every slice this tree
-    pre_tier: Vec<(u32, i128)>,
+    pre_tier: TierSums,
+}
+
+/// Pre-tier amounts per tier, at the exact scale. A slice is almost always one tier, held inline with
+/// no allocation; any further tier is kept in tier order and found by binary search, never a walk.
+#[derive(Default)]
+struct TierSums {
+    first: Option<(u32, i128)>,
+    more: Vec<(u32, i128)>,
+}
+
+impl TierSums {
+    /// Add one pre-tier amount into its tier's sum, CHECKED.
+    fn add(&mut self, tier_bp: u32, amount: i128) -> Result<(), MoneyError> {
+        let Some((first_bp, first)) = &mut self.first else {
+            self.first = Some((tier_bp, amount));
+            return Ok(());
+        };
+        let slot = if *first_bp == tier_bp {
+            first
+        } else {
+            match self.more.binary_search_by_key(&tier_bp, |(bp, _)| *bp) {
+                Ok(at) => &mut self.more[at].1,
+                Err(at) => {
+                    self.more.insert(at, (tier_bp, amount));
+                    return Ok(());
+                }
+            }
+        };
+        *slot = slot.checked_add(amount).ok_or(MoneyError::Overflow)?;
+        Ok(())
+    }
+
+    /// Every tier's sum: the first tier seen, then the others in tier order.
+    fn iter(&self) -> impl Iterator<Item = &(u32, i128)> {
+        self.first.iter().chain(&self.more)
+    }
 }
 
 impl<'a> Tally<'a> {
@@ -394,7 +445,7 @@ impl<'a> Tally<'a> {
     pub fn in_view(view: HistoryView<'a>) -> Tally<'a> {
         Tally {
             source: Source::View(view),
-            pre_tier: Vec::new(),
+            pre_tier: TierSums::default(),
         }
     }
 
@@ -402,7 +453,7 @@ impl<'a> Tally<'a> {
     pub fn at_card(card: &'a crate::cost::rate::RateCard) -> Tally<'a> {
         Tally {
             source: Source::Card(None, card),
-            pre_tier: Vec::new(),
+            pre_tier: TierSums::default(),
         }
     }
 
@@ -410,7 +461,7 @@ impl<'a> Tally<'a> {
     pub fn at_card_seq(card_seq: EntryKey, card: &'a crate::cost::rate::RateCard) -> Tally<'a> {
         Tally {
             source: Source::Card(Some(card_seq), card),
-            pre_tier: Vec::new(),
+            pre_tier: TierSums::default(),
         }
     }
 
@@ -443,6 +494,10 @@ impl<'a> Tally<'a> {
         let card = pricing.card;
 
         if !pricing.lane_named() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a refusal owns the lane it names; the priced path never reaches it"
+            )]
             return Err(MoneyError::LaneUnpriced {
                 card_seq,
                 lane: lane.to_string(),
@@ -455,11 +510,15 @@ impl<'a> Tally<'a> {
                 ClassPrice::Nanos(nanos) => i128::from(nanos),
 
                 ClassPrice::Unpriced => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: a refusal owns the lane and class it names; the priced path never reaches it"
+                    )]
                     return Err(MoneyError::ClassUnpriced {
                         card_seq,
                         lane: lane.to_string(),
                         class: class.to_string(),
-                    })
+                    });
                 }
             };
             let line = count
@@ -501,11 +560,7 @@ impl<'a> Tally<'a> {
 
     /// Add one pre-tier amount into its tier's bucket, CHECKED.
     fn add(&mut self, tier_bp: u32, amount: i128) -> Result<(), MoneyError> {
-        match self.pre_tier.iter_mut().find(|(bp, _)| *bp == tier_bp) {
-            Some((_, slot)) => *slot = slot.checked_add(amount).ok_or(MoneyError::Overflow)?,
-            None => self.pre_tier.push((tier_bp, amount)),
-        }
-        Ok(())
+        self.pre_tier.add(tier_bp, amount)
     }
 
     /// The summed PRE-TIER amount at [`EXACT_SCALE`], across every tier, CHECKED.
@@ -518,7 +573,7 @@ impl<'a> Tally<'a> {
     /// **THE FIGURE**, at [`EXACT_SCALE`]: each tier's pre-tier sum through the tier once, summed,
     pub fn exact(&self) -> Result<i128, MoneyError> {
         let mut total: i128 = 0;
-        for (tier_bp, amount) in &self.pre_tier {
+        for (tier_bp, amount) in self.pre_tier.iter() {
             let tiered_magnitude =
                 checked_apply_tier(amount.unsigned_abs(), *tier_bp).ok_or(MoneyError::Overflow)?;
             let narrowed = i128::try_from(tiered_magnitude).map_err(|_| MoneyError::Overflow)?;

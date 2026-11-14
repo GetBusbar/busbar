@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use crate::cost::rate::RateCard;
 use crate::cost::{
-    plane_fee_lane, price_exact, price_in_view, split_plane_lane, whole, EntryKey, HistoryView,
-    LedgerEntry, Money, MoneyError, Tally, PER_REQUEST, STANDARD_TIER_BP,
+    split_plane_lane, whole, EntryKey, HistoryView, Money, MoneyError, Tally, PER_REQUEST,
+    PLANE_LANE_SEP, STANDARD_TIER_BP,
 };
 
 /// ONE METERING ROW, AS ITS READER HOLDS IT: the lane it was metered on, its counts by class, its
@@ -20,8 +20,14 @@ pub struct MeteredRow<'r> {
     classes: BTreeMap<String, Count>,
 }
 
+/// One lane of a row as the one function prices it: its name, its counts by class, and the row's
+/// fee count when the lane carries it.
+type LaneVisit<'v> = dyn FnMut(&str, &mut dyn Iterator<Item = (&str, Count)>, Option<u64>) -> Result<(), MoneyError>
+    + 'v;
+
 impl<'r> MeteredRow<'r> {
     /// `lane` is the row's configured lane name after alias resolution, or a plane's
+    #[cfg(test)]
     pub fn new(
         lane: &'r str,
         counts: BTreeMap<String, u64>,
@@ -54,34 +60,48 @@ impl<'r> MeteredRow<'r> {
         }
     }
 
-    /// The row as the lanes the one function prices, with no arithmetic: each lane with its counts
-    #[allow(clippy::type_complexity)]
-    fn lanes(&self) -> Result<(Vec<(String, BTreeMap<String, Count>)>, Option<u64>), MoneyError> {
-        let mut counts = self.counts.clone();
+    /// Walk the row as the lanes the one function prices, with no arithmetic and nothing copied:
+    /// each lane with its counts by class — the row's counts with its ledgered classes folded in
+    /// additively (never overwriting a token tier), key by key — and the row's fee count on the one
+    /// lane that carries it. A fold that overflows refuses before any lane is visited.
+    fn each_lane(&self, visit: &mut LaneVisit<'_>) -> Result<(), MoneyError> {
         if crate::cost::split_measurement_lane(self.lane).is_some() {
             // Common measurement facts live exclusively in open classes. Legacy token fields
             // are placeholders, including when a declared common class is named `input`.
-            return Ok((vec![(self.lane.to_string(), self.classes.clone())], None));
+            return visit(self.lane, &mut counted(&self.classes), None);
         }
         let (plane, subject) = split_plane_lane(self.lane);
         if plane.is_empty() {
-            add_classes(&mut counts, &self.classes)?;
-            return Ok((vec![(self.lane.to_string(), counts)], Some(self.requests)));
+            folded(counted(&self.counts), Some(&self.classes)).try_for_each(|n| n.map(drop))?;
+            return visit(
+                self.lane,
+                &mut folded(counted(&self.counts), Some(&self.classes)).map_while(Result::ok),
+                Some(self.requests),
+            );
         }
-        let mut fees = BTreeMap::from([(PER_REQUEST.to_string(), whole(self.requests))]);
-        add_classes(
-            if subject.is_empty() {
-                &mut fees
-            } else {
-                &mut counts
-            },
-            &self.classes,
+        let per_request = [(PER_REQUEST, whole(self.requests))];
+        let (fee_classes, lane_classes) = if subject.is_empty() {
+            (Some(&self.classes), None)
+        } else {
+            (None, Some(&self.classes))
+        };
+        folded(per_request.into_iter(), fee_classes).try_for_each(|n| n.map(drop))?;
+        folded(counted(&self.counts), lane_classes).try_for_each(|n| n.map(drop))?;
+        // The plane's fee lane, `"<plane>\u{1f}"`, is this row's own lane up to its separator.
+        let fee_lane = &self.lane[..plane.len() + PLANE_LANE_SEP.len_utf8()];
+        visit(
+            fee_lane,
+            &mut folded(per_request.into_iter(), fee_classes).map_while(Result::ok),
+            None,
         )?;
-        let mut lanes = vec![(plane_fee_lane(plane), fees)];
-        if !counts.is_empty() {
-            lanes.push((self.lane.to_string(), counts));
+        if folded(counted(&self.counts), lane_classes).next().is_some() {
+            visit(
+                self.lane,
+                &mut folded(counted(&self.counts), lane_classes).map_while(Result::ok),
+                None,
+            )?;
         }
-        Ok((lanes, None))
+        Ok(())
     }
 
     /// What the row cost, in micro-units, against the card in force at `arrived_ms` (#79): the row
@@ -90,7 +110,7 @@ impl<'r> MeteredRow<'r> {
         arrived_ms: u64,
         view: &HistoryView<'_>,
     ) -> Result<i64, MoneyError> {
-        price_in_view(&self.entries(arrived_ms)?, view)?.micros_i64()
+        Money::of_exact(self.exact_in_view(arrived_ms, view)?).micros_i64()
     }
 
     /// [`MeteredRow::spend_micros_in_view`] with the final projection WITHHELD: the exact figure
@@ -99,25 +119,17 @@ impl<'r> MeteredRow<'r> {
         arrived_ms: u64,
         view: &HistoryView<'_>,
     ) -> Result<i128, MoneyError> {
-        price_exact(&self.entries(arrived_ms)?, view)
-    }
-
-    /// The row as the ledger slice the one function prices, at `arrived_ms`.
-    fn entries(&self, arrived_ms: u64) -> Result<Vec<LedgerEntry>, MoneyError> {
-        let (lanes, fee_count) = self.lanes()?;
-        Ok(lanes
-            .iter()
-            .map(|(lane, counts)| {
-                let entry = counts.iter().fold(
-                    LedgerEntry::new(lane.as_str(), arrived_ms),
-                    |e, (class, quantity)| e.with_count(class, *quantity),
-                );
-                match fee_count {
-                    Some(n) => entry.with_fee_count(n),
-                    None => entry,
-                }
-            })
-            .collect())
+        let mut t = Tally::in_view(*view);
+        self.each_lane(&mut |lane, counts, fee| {
+            t.row(
+                lane,
+                arrived_ms,
+                STANDARD_TIER_BP,
+                counts,
+                fee.map_or(Count::from_micros(0), whole),
+            )
+        })?;
+        t.exact()
     }
 
     /// What the row cost, in micro-units, at one `card`: the reading when no dated history is
@@ -145,33 +157,55 @@ impl<'r> MeteredRow<'r> {
     }
 
     fn exact_with_tally(&self, mut t: Tally<'_>) -> Result<i128, MoneyError> {
-        let (lanes, fee_count) = self.lanes()?;
-        for (lane, counts) in &lanes {
-            t.row(
-                lane,
-                0,
-                STANDARD_TIER_BP,
-                counts.iter().map(|(class, n)| (class.as_str(), *n)),
-                whole(0),
-            )?;
-        }
-        if let Some(n) = fee_count {
-            t.fee(0, STANDARD_TIER_BP, whole(n))?;
-        }
+        self.each_lane(&mut |lane, counts, fee| {
+            t.row(lane, 0, STANDARD_TIER_BP, counts, whole(0))?;
+            match fee {
+                Some(n) => t.fee(0, STANDARD_TIER_BP, whole(n)),
+                None => Ok(()),
+            }
+        })?;
         t.exact()
     }
 }
 
-/// Fold a row's ledgered classes into a lane's counts, additively (never overwriting a token tier).
-fn add_classes(
-    into: &mut BTreeMap<String, Count>,
-    classes: &BTreeMap<String, Count>,
-) -> Result<(), MoneyError> {
-    for (class, n) in classes.iter().filter(|(_, n)| !n.is_zero()) {
-        let cur = into.entry(class.clone()).or_default();
-        *cur = cur.checked_add(*n).map_err(|_| MoneyError::Overflow)?;
-    }
-    Ok(())
+/// A class map's counts, borrowed, in key order.
+fn counted(map: &BTreeMap<String, Count>) -> impl Iterator<Item = (&str, Count)> + Clone {
+    map.iter().map(|(class, n)| (class.as_str(), *n))
+}
+
+/// `base` (in key order) with `extra`'s non-zero counts folded in additively, key by key, in key
+/// order: the map a fold of `extra` into `base` would build, walked rather than built. A class in
+/// both answers its CHECKED sum, so an overflow surfaces as an `Err` item.
+fn folded<'m>(
+    base: impl Iterator<Item = (&'m str, Count)>,
+    extra: Option<&'m BTreeMap<String, Count>>,
+) -> impl Iterator<Item = Result<(&'m str, Count), MoneyError>> {
+    let mut base = base.peekable();
+    let mut extra = extra
+        .into_iter()
+        .flatten()
+        .filter(|(_, n)| !n.is_zero())
+        .map(|(class, n)| (class.as_str(), *n))
+        .peekable();
+    std::iter::from_fn(move || {
+        let pick = match (base.peek(), extra.peek()) {
+            (None, None) => return None,
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (Some((b, _)), Some((e, _))) => b.cmp(e),
+        };
+        Some(match pick {
+            std::cmp::Ordering::Less => Ok(base.next()?),
+            std::cmp::Ordering::Greater => Ok(extra.next()?),
+            std::cmp::Ordering::Equal => {
+                let (class, have) = base.next()?;
+                let (_, add) = extra.next()?;
+                have.checked_add(add)
+                    .map(|sum| (class, sum))
+                    .map_err(|_| MoneyError::Overflow)
+            }
+        })
+    })
 }
 
 #[cfg(test)]

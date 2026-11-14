@@ -75,6 +75,7 @@ mod posting;
 mod project;
 mod rate;
 mod rollup;
+mod spelled;
 mod unit_rate;
 mod view;
 

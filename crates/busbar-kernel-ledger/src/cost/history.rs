@@ -83,13 +83,14 @@ impl EntryKey {
 
     /// The key from its 40-character hex spelling.
     pub fn parse_hex(text: &str) -> Option<Self> {
-        unhex(text).and_then(|b| Self::from_slice(&b))
+        unhex(text).map(EntryKey)
     }
 }
 
 impl std::fmt::Display for EntryKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.hex())
+        let mut spelled = [0u8; 2 * ENTRY_KEY_LEN];
+        f.write_str(hex_into(&self.0, &mut spelled))
     }
 }
 
@@ -172,17 +173,7 @@ impl EntryId {
 
     /// The id from its 24-character hex spelling.
     pub fn parse_hex(text: &str) -> Option<Self> {
-        let bytes = unhex(text)?;
-        <[u8; ENTRY_ID_LEN]>::try_from(bytes.as_slice())
-            .ok()
-            .map(EntryId)
-    }
-
-    /// The pseudo-model prefix `"<24hex>\u{1f}"`: alone it keys the entry's fee count, followed by
-    pub fn pseudo_prefix(&self) -> String {
-        let mut prefix = self.hex();
-        prefix.push(Self::SEPARATOR);
-        prefix
+        unhex(text).map(EntryId)
     }
 
     /// Split a pseudo-model key into its entry id and the model name after the separator (empty
@@ -197,27 +188,49 @@ impl EntryId {
 
 impl std::fmt::Display for EntryId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.hex())
+        let mut spelled = [0u8; 2 * ENTRY_ID_LEN];
+        f.write_str(hex_into(&self.0, &mut spelled))
     }
 }
 
+/// `bytes` as lowercase hex, spelled into `out` (exactly twice their length) and borrowed back.
+fn hex_into<'o>(bytes: &[u8], out: &'o mut [u8]) -> &'o str {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    for (pair, b) in out.as_chunks_mut::<2>().0.iter_mut().zip(bytes) {
+        pair[0] = DIGITS[usize::from(b >> 4)];
+        pair[1] = DIGITS[usize::from(b & 0x0f)];
+    }
+    std::str::from_utf8(out).unwrap_or_default()
+}
+
+/// The owned hex spelling the admin card-history verbs and the card store's records carry.
 fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
+    let mut spelled = [0u8; 2 * ENTRY_KEY_LEN];
+    let spelled = hex_into(bytes, &mut spelled[..2 * bytes.len()]);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an entry's hex spelling is owned only by the admin card-history verbs and the card store's records, never by a priced request"
+    )]
+    let owned = spelled.to_owned();
+    owned
 }
 
-fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+/// The `N` bytes spelled by exactly `2 * N` hex digits, or `None`.
+fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
+    fn nibble(d: u8) -> Option<u8> {
+        char::from(d)
+            .to_digit(16)
+            .and_then(|n| u8::try_from(n).ok())
+    }
+    let text = text.as_bytes();
+    if text.len() != 2 * N {
         return None;
     }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
-        .collect()
+    let mut out = [0u8; N];
+    for (b, pair) in out.iter_mut().zip(text.as_chunks::<2>().0) {
+        *b = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+    }
+    Some(out)
 }
 
 /// Why an entry exists. The distinction is the whole audit trail: an operator reading the history
@@ -332,9 +345,51 @@ pub struct CardEntryDraft {
 /// Sorting by date would be the natural-looking thing and it would destroy the design: two entries
 /// covering the same instant are precisely how a correction is expressed, and the one that wins is
 /// the one that was written LAST, not the one that starts latest.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct History {
     entries: Vec<CardEntry>,
+    index: Index,
+}
+
+impl std::fmt::Debug for History {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("History")
+            .field("entries", &self.entries)
+            .finish()
+    }
+}
+
+/// The history's lookups by an entry's id and by its `effective_from`, kept up to date by the two
+/// mutators, so a lookup is one hash rather than a walk of the entries (and a SHA-256 of each
+/// entry's key along the way). Entries themselves are found by key with a binary search: they are
+/// held in key order.
+#[derive(Clone, Default)]
+struct Index {
+    /// Every entry's id, to the lowest key carrying it.
+    ids: foldhash::HashMap<EntryId, EntryKey>,
+    /// Every entry's key by its `effective_from`, in key order.
+    eras: foldhash::HashMap<u64, Vec<EntryKey>>,
+}
+
+impl Index {
+    fn add(&mut self, key: EntryKey, effective_from: u64) {
+        self.ids
+            .entry(key.id())
+            .and_modify(|lowest| *lowest = (*lowest).min(key))
+            .or_insert(key);
+        let keys = self.eras.entry(effective_from).or_default();
+        if let Err(at) = keys.binary_search(&key) {
+            keys.insert(at, key);
+        }
+    }
+}
+
+/// The entry keyed `key` in `entries` (held in key order), voided or not.
+fn by_key<'e>(entries: &'e [CardEntry], key: &EntryKey) -> Option<&'e CardEntry> {
+    entries
+        .binary_search_by(|e| e.key.cmp(key))
+        .ok()
+        .map(|at| &entries[at])
 }
 
 impl History {
@@ -342,6 +397,7 @@ impl History {
     pub fn new() -> Self {
         History {
             entries: Vec::new(),
+            index: Index::default(),
         }
     }
 
@@ -389,6 +445,7 @@ impl History {
         HistoryView {
             entries: &self.entries[..count],
             at: Some(at),
+            index: &self.index,
         }
     }
 
@@ -397,6 +454,7 @@ impl History {
         HistoryView {
             entries: &self.entries,
             at: self.head_key(),
+            index: &self.index,
         }
     }
 
@@ -408,6 +466,7 @@ impl History {
             draft.appended_at.max(head.key.t_ms().saturating_add(1))
         });
         let key = EntryKey::new(t_ms, [0; 8], seq.0 as u32);
+        self.index.add(key, draft.effective_from);
         self.entries.push(CardEntry {
             seq,
             key,
@@ -428,6 +487,7 @@ impl History {
         match self.entries.binary_search_by(|e| e.key.cmp(&key)) {
             Ok(at) => HistorySeq(at as u64),
             Err(at) => {
+                self.index.add(key, draft.effective_from);
                 self.entries.insert(
                     at,
                     CardEntry {
@@ -451,18 +511,18 @@ impl History {
 
     /// Mark the entry `key` VOID. Answers whether this history holds it.
     pub fn void(&mut self, key: &EntryKey) -> bool {
-        match self.entries.iter_mut().find(|e| e.key == *key) {
-            Some(entry) => {
-                entry.voided = true;
+        match self.entries.binary_search_by(|e| e.key.cmp(key)) {
+            Ok(at) => {
+                self.entries[at].voided = true;
                 true
             }
-            None => false,
+            Err(_) => false,
         }
     }
 
     /// The entry whose key is `key`, voided or not.
     pub fn entry(&self, key: &EntryKey) -> Option<&CardEntry> {
-        self.entries.iter().find(|e| e.key == *key)
+        by_key(&self.entries, key)
     }
 
     /// The highest commit time among the LIVE entries (`head_t_ms`): a voided entry never counts.
@@ -490,10 +550,8 @@ impl History {
 
     /// The card of the entry whose id is `id`, voided or not: a count posted under an entry keeps
     pub fn card_of(&self, id: &EntryId) -> Option<&RateCard> {
-        self.entries
-            .iter()
-            .find(|entry| entry.id() == *id)
-            .map(|entry| &entry.card)
+        let key = self.index.ids.get(id)?;
+        self.entry(key).map(|entry| &entry.card)
     }
 }
 
@@ -502,16 +560,31 @@ impl History {
 /// A view is a borrowed slice and a number. It reads no clock and owns nothing, so a lookup through
 /// it allocates nothing and an auditor holding the postings and the history re-derives every invoice
 /// by hand.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct HistoryView<'a> {
     entries: &'a [CardEntry],
     at: Option<EntryKey>,
+    index: &'a Index,
+}
+
+impl std::fmt::Debug for HistoryView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoryView")
+            .field("entries", &self.entries)
+            .field("at", &self.at)
+            .finish()
+    }
 }
 
 impl HistoryView<'_> {
+    /// The entry this view can see whose id is `id`, voided or not: one hash and one binary search.
+    fn by_id(&self, id: &EntryId) -> Option<&CardEntry> {
+        by_key(self.entries, self.index.ids.get(id)?)
+    }
+
     /// Resolve counts served by one exact entry, then apply deliberate later amendments at their
     pub fn card_for_entry_era(&self, id: EntryId, wall_at: u64) -> Option<(EntryKey, &RateCard)> {
-        let original = self.entries.iter().find(|entry| entry.id() == id)?;
+        let original = self.by_id(&id)?;
         Some(self.card_after_amendments(original, wall_at))
     }
 
@@ -521,9 +594,11 @@ impl HistoryView<'_> {
             return self.card_at(wall_at);
         }
         let mut matching = self
-            .entries
+            .index
+            .eras
+            .get(&era)?
             .iter()
-            .filter(|entry| entry.effective_from == era);
+            .map_while(|key| by_key(self.entries, key));
         let original = matching.next()?;
         if matching.next().is_some() {
             return None;
@@ -535,7 +610,7 @@ impl HistoryView<'_> {
     pub fn card_for_raw_era(&self, era: RawRateEra, wall_at: u64) -> Option<(EntryKey, &RateCard)> {
         match era.entry_id {
             Some(id) => {
-                let original = self.entries.iter().find(|entry| entry.id() == id)?;
+                let original = self.by_id(&id)?;
                 if original.effective_from != era.effective_from {
                     return None;
                 }
@@ -586,7 +661,14 @@ impl HistoryView<'_> {
             (Some(ends), Some(until)) => until <= ends,
         };
 
-        let outranked = self.entries.iter().any(|e| {
+        // Only an entry written after the base can outrank it: those are the entries above it in key
+        // order, typically none at all.
+        let above = self
+            .entries
+            .binary_search_by(|e| e.key.cmp(&base.key))
+            .map_or(self.entries.len(), |at| at + 1);
+        let later = &self.entries[above..];
+        let outranked = later.iter().any(|e| {
             !e.voided
                 && e.seq > base.seq
                 && e.effective_until.is_none_or(|ends| from < ends)
