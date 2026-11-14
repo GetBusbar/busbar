@@ -725,7 +725,8 @@ async fn shared_runtime_reserves_one_original_chain_and_unknown_keeps_exact_pref
         let state = backend.state.lock().unwrap();
         assert_eq!(state.sent[0].candidate().id, state.sent[1].candidate().id);
         assert_eq!(state.sent[0].fingerprint(), state.sent[1].fingerprint());
-        assert_eq!(state.sent.len(), 3);
+        // Both pending runs went out as one group; its exact replay applied both.
+        assert_eq!(state.sent.len(), 2);
     }
     let other = RuntimeJournal::open(
         store,
