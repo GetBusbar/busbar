@@ -482,6 +482,28 @@ mod tests {
                 );
             }
         }
+        // The suites.yaml header must not hide prerequisites of `default`.
+        let header: String = std::fs::read_to_string(dir.join("suites.yaml"))
+            .unwrap()
+            .lines()
+            .take_while(|l| l.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let suites = load_suites(&dir).unwrap();
+        let d = suites.get("default").unwrap();
+        let needs = |f: fn(&Scenario) -> bool| d.iter().any(|n| f(&load(&dir, n).unwrap()));
+        if needs(|s| !s.plugins.is_empty()) {
+            assert!(
+                header.contains("--plugins-dir") && header.contains("SKIPPED"),
+                "header must say default needs --plugins-dir"
+            );
+        }
+        if needs(|s| !s.docker.is_empty()) {
+            assert!(
+                header.contains("`docker:`"),
+                "header must say default needs docker"
+            );
+        }
     }
 
     #[test]
