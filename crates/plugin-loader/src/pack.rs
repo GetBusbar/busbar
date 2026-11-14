@@ -707,7 +707,7 @@ fn read_and_validate_settings_schema(path: &str) -> Result<String, String> {
              2020-12, an older/missing draft can silently misrender"
         ));
     }
-    busbar_plugin_loader::settings_profile::validator(&value).map_err(|e| {
+    busbar_plugin_loader::integer_token::validator(&value).map_err(|e| {
         format!("--settings-schema-file '{path}' is not a valid JSON Schema document: {e}")
     })?;
     validate_secret_fields(&value).map_err(|e| format!("--settings-schema-file '{path}': {e}"))?;
@@ -734,7 +734,7 @@ fn read_rendering(
     {
         let value =
             serde_json::from_str(&schema).map_err(|e| format!("Statement settings schema: {e}"))?;
-        busbar_plugin_loader::settings_profile::validator(&value)
+        busbar_plugin_loader::integer_token::validator(&value)
             .map_err(|e| format!("Statement settings schema: {e}"))?;
     }
     Ok(stated)

@@ -82,5 +82,5 @@ pub fn validator(schema: &Value) -> Result<Validator, ValidationError<'_>> {
 }
 
 #[cfg(test)]
-#[path = "integer_token_tests.rs"]
+#[path = "tests/integer_token_tests.rs"]
 mod tests;
