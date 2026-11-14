@@ -25,19 +25,6 @@ impl<K: Ord + Clone> ClaimSet<K> {
         held.insert(key.clone(), std::thread::current().id());
         Claim { set: self, key }
     }
-
-    pub fn claim_checked(&self, key: K) -> Option<Claim<'_, K>> {
-        let owner = std::thread::current().id();
-        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
-        while held.contains_key(&key) {
-            if held.values().any(|current| *current == owner) {
-                return None;
-            }
-            held = self.freed.wait(held).unwrap_or_else(|e| e.into_inner());
-        }
-        held.insert(key.clone(), owner);
-        Some(Claim { set: self, key })
-    }
 }
 
 impl<K: Ord + Clone> Default for ClaimSet<K> {

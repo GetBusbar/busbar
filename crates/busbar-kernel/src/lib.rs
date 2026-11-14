@@ -244,7 +244,7 @@ pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk,
     load_config_from_disk_judged, load_config_from_disk_with_store, open_relay_banner,
     resolve_model_context_max, CommittedLimits, ConfirmedLimits, GovCredentialRotation,
-    InstalledLimits, LoadedConfig, PreparedLimits, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
+    InstalledLimits, LoadedConfig, PreparedLimits, DEFAULT_CONFIG_PATH, ENV_CONFIG,
 };
 pub use preflight::plugins_preflight;
 pub use router::{
