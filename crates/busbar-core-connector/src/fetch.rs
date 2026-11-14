@@ -46,7 +46,7 @@ pub fn download(
     let secured = busbar_kernel::preflight::plugin_fetch_admits(url, blocked)?;
     std::thread::scope(|s| {
         s.spawn(|| -> Result<Vec<u8>, String> {
-            let rt = tokio::runtime::Builder::new_current_thread()
+            let rt = busbar_kernel::rt::current_thread()
                 .enable_all()
                 .build()
                 .map_err(|e| format!("fetch runtime: {e}"))?;
