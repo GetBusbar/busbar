@@ -274,8 +274,9 @@ fn request_head_is_refused(
 }
 
 /// What the connector holds for one declared need: the entry serving its transport, resolved once
-/// at declare (a need no entry serves is refused there, never at its open).
-#[derive(Clone)]
+/// at declare (a need no entry serves is refused there, never at its open). Held once per
+/// declaration and shared by every open as an `Arc`: it is never cloned (its trust carries anchor
+/// DER and a client identity's private key).
 struct DeclaredNeed {
     door: Arc<dyn FramerDoor>,
     /// The protocols the serving entry offers in the TLS handshake.
@@ -889,7 +890,7 @@ type TlsPolicy = (
 pub struct Connector {
     slab: ConnSlab<Held>,
     /// The transport each declared need names, the egress class its dials are judged under, and
-    over: Mutex<HashMap<(InstanceId, NeedId), DeclaredNeed>>,
+    over: Mutex<HashMap<(InstanceId, NeedId), Arc<DeclaredNeed>>>,
     /// Every need an instance declared through [`DeclaredConns::declare`], whole, and the answer
     declared: Mutex<HashMap<(InstanceId, NeedId), Declared>>,
     transports: RwLock<Transports>,
@@ -1402,7 +1403,7 @@ impl Connector {
         let before = {
             let mut over = self.over.lock().expect("needs");
             match record {
-                Some(r) => over.insert((owner, need), r),
+                Some(r) => over.insert((owner, need), Arc::new(r)),
                 None => over.remove(&(owner, need)),
             }
         };
@@ -2435,7 +2436,7 @@ impl DeclaredConns for Connector {
             .lock()
             .expect("needs")
             .get(&(caller, need))
-            .cloned()
+            .map(Arc::clone)
             .ok_or(ConnError::Refused)?;
         if desc
             .fields
@@ -2450,8 +2451,8 @@ impl DeclaredConns for Connector {
                 &declared.door,
                 Dial {
                     target,
-                    tls: declared.tls.or_else(|| self.tls.clone()),
-                    alpn: declared.alpn,
+                    tls: declared.tls.clone().or_else(|| self.tls.clone()),
+                    alpn: declared.alpn.clone(),
                     open_timeout: held.open_timeout,
                     anchors: None,
                     opening: Some((
@@ -2880,6 +2881,7 @@ impl Connector {
             Option<Arc<rustls::ClientConfig>>,
         ),
         require_secure: bool,
+        declared: &DeclaredNeed,
     ) -> Result<Held, ConnError> {
         if desc.unit == 0 {
             return Err(ConnError::Refused);
@@ -2936,6 +2938,7 @@ impl Connector {
             false,
             require_secure,
             false,
+            declared,
         )?;
         let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began)?;
         Ok(held.dialling(dialled))
@@ -2959,6 +2962,7 @@ impl Connector {
         poolable: bool,
         require_secure: bool,
         prepare: bool,
+        declared: &DeclaredNeed,
     ) -> Result<Held, ConnError> {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
@@ -3018,10 +3022,10 @@ impl Connector {
 
         let anchors = if let Some(sealed) = anchors.as_ref().filter(|s| !s.extra_anchors.is_empty())
         {
-            let needs = self.over.lock().expect("needs");
-            let current = match needs.get(&(caller, need)) {
-                Some(d) if d.tls.is_some() => d.tls_policy.as_ref(),
-                _ => self.tls_policy.as_ref(),
+            let current = if declared.tls.is_some() {
+                declared.tls_policy.as_ref()
+            } else {
+                self.tls_policy.as_ref()
             };
             if sealed.policy.as_ref() != current {
                 Some(tls::client::rebase(sealed, current).map_err(|_| ConnError::Refused)?)
@@ -3169,6 +3173,13 @@ impl Connector {
             return Err(ConnError::Refused);
         }
 
+        let declared = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(caller, need))
+            .map(Arc::clone)
+            .ok_or(ConnError::Refused)?;
         let DeclaredNeed {
             door,
             alpn,
@@ -3179,13 +3190,8 @@ impl Connector {
             program,
             members,
             member_spec: _,
-        } = self
-            .over
-            .lock()
-            .expect("needs")
-            .get(&(caller, need))
-            .cloned()
-            .ok_or(ConnError::Refused)?;
+        } = &*declared;
+        let egress_class = *egress_class;
         if members.is_none()
             && desc
                 .fields
@@ -3209,7 +3215,7 @@ impl Connector {
                 .map(|declaration| declaration.member())
                 .ok_or(ConnError::Refused)?;
 
-            drop(members);
+            drop(declared);
             let lease = member.lease(&desc.body, expected)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);
             held.lease = Some((member, lease));
@@ -3228,7 +3234,7 @@ impl Connector {
                 anchors: None,
                 target: program.command.clone(),
                 tls: None,
-                alpn,
+                alpn: alpn.clone(),
                 open_timeout,
                 opening: Some((
                     desc.fields
@@ -3240,11 +3246,11 @@ impl Connector {
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
             let via = Via {
-                door,
+                door: Arc::clone(door),
                 io: Arc::clone(&self.io),
             };
 
-            let conn = Connection::spawn(&via, &program, &env, dial, 0).map_err(|f| map(&f))?;
+            let conn = Connection::spawn(&via, program, env, dial, 0).map_err(|f| map(&f))?;
 
             let line = Line::new(conn);
             return self.slab.insert(
@@ -3268,11 +3274,12 @@ impl Connector {
                 caller,
                 need,
                 desc,
-                &door,
+                door,
                 target,
                 open_timeout,
-                (egress_class, declared_target, tls),
+                (egress_class, declared_target.clone(), tls.clone()),
                 require_secure,
+                &declared,
             )?;
             return self.slab.insert(caller, need, held);
         }
@@ -3293,7 +3300,7 @@ impl Connector {
                 anchors: None,
                 target: target.to_owned(),
                 tls: None,
-                alpn,
+                alpn: alpn.clone(),
                 open_timeout,
                 opening: Some((
                     desc.fields
@@ -3304,7 +3311,7 @@ impl Connector {
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
-            let (framer, via) = self.ride_on(&door).ok_or(ConnError::Refused)?;
+            let (framer, via) = self.ride_on(door).ok_or(ConnError::Refused)?;
             let conn = Connection::dial_unix(framer, &via, dial, path).map_err(|f| map(&f))?;
 
             let line = Line::new(conn);
@@ -3320,13 +3327,14 @@ impl Connector {
             caller,
             need,
             desc,
-            (door, alpn),
+            (Arc::clone(door), alpn.clone()),
             target,
             open_timeout,
-            (egress_class, declared_target, tls),
+            (egress_class, declared_target.clone(), tls.clone()),
             !prepare,
             require_secure,
             prepare,
+            &declared,
         )?;
         if prepare {
             *held.prepared.lock().expect("prepared") =
@@ -3591,7 +3599,7 @@ impl PollConns for Connector {
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .cloned();
+            .map(Arc::clone);
         let door = declared.as_ref().map(|d| Arc::clone(&d.door));
         let base = declared
             .as_ref()
