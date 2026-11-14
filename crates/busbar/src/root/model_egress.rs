@@ -207,9 +207,9 @@ impl LatencyReservoir {
             }
         }
         let p95 = (n > 0).then(|| {
-            let held = &mut held[..n];
-            held.sort();
-            held[(n * 95).div_ceil(100) - 1].div_ceil(1000)
+            // The p95 is one order statistic: select it (O(n)), no request-path sort.
+            let (_, p95, _) = held[..n].select_nth_unstable((n * 95).div_ceil(100) - 1);
+            p95.div_ceil(1000)
         });
         self.p95.store(
             (u64::from(generation) << 32) | u64::from(p95.map_or(0, |v| v + 1)),
