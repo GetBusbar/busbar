@@ -51,3 +51,17 @@ fn a_body_the_connector_cannot_frame_is_refused() {
         Err(ConnError::Refused)
     );
 }
+
+#[test]
+fn a_boundary_inside_another_quoted_parameter_is_not_the_boundary() {
+    let lead = b"--b0und\r\nContent-Disposition: form-data; name=\"one\"\r\n\r\n{}\r\n\
+--b0und\r\nContent-Disposition: form-data; name=\"two\"\r\n\r\n";
+    let mut want = lead.to_vec();
+    want.extend_from_slice(b"v=0\r\n\r\n--b0und--\r\n");
+
+    let decoy: &[u8] = b"multipart/form-data; note=\"x; boundary=evil\"; boundary=b0und";
+    assert_eq!(
+        composed_body(&[("content-type", decoy)], lead, b"v=0\r\n"),
+        Ok(want)
+    );
+}

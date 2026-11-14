@@ -1166,7 +1166,7 @@ fn form_boundary(content_type: &str) -> Option<&str> {
         && boundary
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"'()+_,-./:=? ".contains(&b));
-    fits.then_some(boundary)
+    fits.then(|| boundary.to_owned())
 }
 
 #[cfg(test)]
