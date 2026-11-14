@@ -281,7 +281,7 @@ include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 fn register_protocols() {
-    root::linked::register_protocols(&LINKED, ROOT_UNITS);
+    root::linked::register_protocols(&LINKED);
 }
 
 fn register_planes() {

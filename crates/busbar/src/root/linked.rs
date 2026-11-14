@@ -48,40 +48,16 @@ pub struct Linked {
     pub transports: &'static [LinkedTransport],
 
     pub claims: &'static [LinkedClaims],
-
-    pub node: &'static [fn(node::Drive)],
 }
 
 pub mod node {
-    use std::future::Future;
-    use std::pin::Pin;
     use std::sync::Arc;
 
-    use busbar_contract::caps::{OpClassId, PrincipalId};
-    use busbar_kernel::plane_driver::PlaneAnswer;
-    use busbar_kernel::teller::RouteAwait;
-
     pub type Resolve = Arc<dyn Fn(&str) -> Option<busbar_contract::LaneId> + Send + Sync>;
-
-    pub type Lent = (Resolve, u64);
 
     pub type Reported = (busbar_contract::billing::ExactUsage, u32, String);
 
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
-
-    pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
-
-    pub type Built = (
-        Arc<dyn busbar_kernel::teller::SeatedUnits + Send + Sync>,
-        Arc<dyn RouteAwait + Send + Sync>,
-        Finish,
-    );
-
-    pub type Build = Box<dyn FnOnce(Lent) -> Built + Send>;
-
-    pub type Handed = (PrincipalId, OpClassId, &'static str, Build);
-
-    pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 }
 
 /// One linked wire, as its door's Statement states it: the registry key, the layers it declares it
@@ -255,8 +231,6 @@ pub fn linked_exports(
 pub struct RootUnit {
     pub seal: Option<fn() -> Result<(), String>>,
 
-    pub drive: Option<node::Drive>,
-
     pub on_config: Option<fn(&busbar_kernel::config::limits::LimitsResolved)>,
 
     pub opens_book: bool,
@@ -272,14 +246,9 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
+pub fn register_protocols(linked: &Linked) {
     for install in linked.protocol_seams {
         install();
-    }
-    for drive in units.iter().filter_map(|u| u.drive) {
-        for install in linked.node {
-            install(drive);
-        }
     }
 }
 
