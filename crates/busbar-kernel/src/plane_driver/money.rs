@@ -346,6 +346,10 @@ struct Open {
     fee: FeeParticipation,
     money: Arc<UnitMoney>,
     last: Vec<UnitCount>,
+    /// Bumped whenever a checkpoint replaces [`Self::last`].
+    rev: u32,
+    /// The fold of [`Self::last`] at the revision it was taken (SP-M1).
+    fold: Option<(u32, Arc<UsageFold>)>,
     ledgered: bool,
     abandoned: bool,
 
@@ -378,6 +382,8 @@ impl Open {
             fee,
             money,
             last: Vec::new(),
+            rev: 0,
+            fold: None,
             ledgered: false,
             abandoned: false,
             finished: false,
@@ -385,6 +391,52 @@ impl Open {
             provider: None,
             laned: false,
         }
+    }
+
+    /// The unit's usage folded at its current revision: the cached fold while no checkpoint has
+    /// replaced the counts since, else a fresh fold that replaces the cache.
+    fn usage_fold(&mut self) -> Arc<UsageFold> {
+        if let Some((rev, fold)) = &self.fold {
+            if *rev == self.rev {
+                return Arc::clone(fold);
+            }
+        }
+        let fold = Arc::new(UsageFold::of(&self.last));
+        self.fold = Some((self.rev, Arc::clone(&fold)));
+        fold
+    }
+}
+
+/// ONE UNIT'S LAST REPORTED USAGE, FOLDED ONCE (SP-M1). The meter gate folds it; the late
+/// accrual's report and the settlement carry it while the unit's counts have not moved since.
+pub struct UsageFold {
+    /// The billing counts, in report order: what the settlement ledgers.
+    counts: Vec<(u32, Count)>,
+    /// Each billing class's checked sum; `None` when the sum does not fit a `Count`.
+    by_class: BTreeMap<u32, Option<Count>>,
+}
+
+impl UsageFold {
+    fn of(last: &[UnitCount]) -> Self {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UsageFold);
+        let counts = reported(last);
+        let mut by_class = BTreeMap::<u32, Option<Count>>::new();
+        for (class, count) in &counts {
+            let sum = by_class.entry(*class).or_insert(Some(Count::ZERO));
+            *sum = (*sum).and_then(|n| n.checked_add(*count).ok());
+        }
+        Self { counts, by_class }
+    }
+
+    /// The billing counts, in report order.
+    #[must_use]
+    pub fn counts(&self) -> &[(u32, Count)] {
+        &self.counts
+    }
+
+    /// Each billing class with its checked sum, in class order; `None` when the sum overflowed.
+    pub fn by_class(&self) -> impl Iterator<Item = (u32, Option<Count>)> + '_ {
+        self.by_class.iter().map(|(class, sum)| (*class, *sum))
     }
 }
 
@@ -906,37 +958,59 @@ impl PlaneMoney {
             ..
         } = end;
         let removed = {
+            busbar_contract::stage_probe::tick(
+                busbar_contract::stage_probe::Derive::MoneyShardLock,
+            );
             let mut all = self.shard(key);
             all.remove(&key)
         };
         let Some(mut open) = removed else {
             return;
         };
-        let m = &open.money;
         // A REFUSED, UNSPENT UNIT IS NOT COUNTED: no units reported (nor a cancel bill ledgered).
         if refused_unspent && !open.ledgered && open.last.iter().all(|u| u.amount == 0) {
-            self.gov.release_request(&m.charge);
+            self.gov.release_request(&open.money.charge);
         }
         if !open.ledgered {
             let delivered = (200..=299).contains(&caller_status);
-            let counts = reported(&open.last);
-            if !self.finish_checkpoint(key, &open, &counts, delivered) {
-                self.bill(m, open.provider.as_deref(), &counts, |_| delivered);
+            let fold = open.usage_fold();
+            let counts = fold.counts();
+            if !self.finish_checkpoint(key, &open, counts, delivered) {
+                self.bill(&open.money, open.provider.as_deref(), counts, |_| delivered);
             }
         }
-        open.fee.refundable = m.fee.refunds(caller_status, &open.last);
+        open.fee.refundable = open.money.fee.refunds(caller_status, &open.last);
     }
 
     #[must_use]
     pub fn last_counts(&self, key: UnitKey) -> Vec<UnitCount> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
         self.shard(key)
             .get(&key)
             .map(|o| o.last.clone())
             .unwrap_or_default()
     }
 
+    /// The unit's last reported usage, folded once per revision (SP-M1): the meter gate's input.
+    #[must_use]
+    pub fn usage_fold(&self, key: UnitKey) -> Option<Arc<UsageFold>> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
+        self.shard(key).get_mut(&key).map(Open::usage_fold)
+    }
+
+    /// The unit's serving lane with its usage fold, under one shard lock: the late accrual's
+    /// report.
+    #[must_use]
+    pub fn usage(&self, key: UnitKey) -> Option<(String, Arc<UsageFold>)> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
+        self.shard(key)
+            .get_mut(&key)
+            .map(|open| (open.money.lane.clone(), open.usage_fold()))
+    }
+
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
         self.shard(key).get(&key).map(|o| o.money.lane.clone())
     }
 
@@ -1170,6 +1244,7 @@ impl MoneySeam for PlaneMoney {
         }
         open.last.clear();
         open.last.extend_from_slice(units);
+        open.rev = open.rev.wrapping_add(1);
         if let Some(audit) = self.post.checkpoint_facts(ctx.key) {
             open.checkpoint_audit = Some(audit);
         }

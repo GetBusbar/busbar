@@ -7153,16 +7153,15 @@ pub(crate) fn report_of(
     unit: busbar_contract::UnitKey,
     facts: &DoorFacts,
 ) -> Option<crate::root::linked::node::Reported> {
-    let lane = money.serving(unit)?;
+    // The meter gate's fold, carried (SP-M1): re-folded only when the counts moved since.
+    let (lane, fold) = money.usage(unit)?;
     let mut usage_units: BTreeMap<String, busbar_contract::Count> = BTreeMap::new();
     let mut fee = 0u32;
-    for u in money
-        .last_counts(unit)
-        .iter()
-        .filter(|u| busbar_contract::abi::plane::units_bill(u.source))
-    {
-        if facts.fee_units.contains(&u.class) {
-            fee = fee.max(u32::from(u.amount > 0));
+    for (class, sum) in fold.by_class() {
+        if facts.fee_units.contains(&class) {
+            // Counts are never negative: a class summed above zero (or past a `Count`) was
+            // incurred.
+            fee = fee.max(u32::from(!matches!(sum, Some(n) if n.is_zero())));
             continue;
         }
         if let Some(name) = facts.classes.get(u.class as usize) {

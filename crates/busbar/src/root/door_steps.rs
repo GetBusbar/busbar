@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::plane::{
-    units_bill, UnitCount, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL,
+    UnitCount, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL,
     ROUTE_SCOPE_SEPARATOR,
 };
 use busbar_contract::caps::{
@@ -1645,37 +1645,28 @@ impl DriverSteps for DoorSteps<'_> {
         _provisional: &Outcome,
         _destinations: &[VerifiedDestination],
     ) -> Result<busbar_contract::caps::Usage, Refusal> {
-        let last = self
-            .money
-            .map(|m| m.last_counts(ctx.key))
-            .unwrap_or_default();
-        let mut by_class: BTreeMap<u32, busbar_contract::Count> = BTreeMap::new();
-        for u in last.iter().filter(|u| units_bill(u.source)) {
-            if self.facts.fee_units.contains(&u.class) {
+        // The unit's one usage fold (SP-M1): the gate refuses on it here, and the late accrual's
+        // report and the settlement carry it while the counts have not moved since.
+        let fold = self.money.and_then(|m| m.usage_fold(ctx.key));
+        let mut lines: Vec<UsageLine> = Vec::new();
+        for (class, sum) in fold.iter().flat_map(|fold| fold.by_class()) {
+            if self.facts.fee_units.contains(&class) {
                 continue;
             }
-            let n = by_class
-                .entry(u.class)
-                .or_insert(busbar_contract::Count::ZERO);
-            match n.checked_add(u.count().map_err(|_| Refusal::new(ReasonCode::Unpriced))?) {
-                Ok(sum) => *n = sum,
-                Err(_) => return Err(Refusal::new(ReasonCode::Unpriced)),
+            let quantity = sum.ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
+            if quantity.is_zero() {
+                continue;
             }
-        }
-        let lines: Vec<UsageLine> = by_class
-            .into_iter()
-            .filter(|(_, quantity)| !quantity.is_zero())
-            .filter_map(|(class, quantity)| {
-                let class = *self.facts.meter_classes.get(class as usize)?;
-                Some(UsageLine {
-                    class,
+            if let Some(class) = self.facts.meter_classes.get(class as usize) {
+                lines.push(UsageLine {
+                    class: *class,
                     quantity,
 
                     source: QuantitySource::Count,
                     estimated: false,
-                })
-            })
-            .collect();
+                });
+            }
+        }
         busbar_contract::caps::Usage::report(usage, lines)
             .map_err(|_| Refusal::new(ReasonCode::Unpriced))
     }
@@ -5413,6 +5404,10 @@ fn peer_key_pin_refusal(at: &str, keys: &[busbar_contract::plane::TrustKeyDecl])
 #[cfg(test)]
 #[path = "tests/door_steps.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "tests/usage_fold.rs"]
+mod usage_fold_tests;
 
 #[cfg(all(test, linked_axis_transport_door, linked_section_agents))]
 #[path = "tests/registration_pin.rs"]
