@@ -1623,7 +1623,6 @@ async fn run(
         }
     }
 
-    #[cfg(feature = "root-admin")]
     let admin_router = match &book {
         Some(book) => root::units_admin::mount_node(
             admin_router,

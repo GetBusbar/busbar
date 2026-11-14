@@ -182,10 +182,10 @@ busbar-transport-webrtc = { workspace = true, optional = true }
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
 arc-swap = { workspace = true }
-# Behind `root-admin` only. The root-driven admin surface wraps the router the operations are already
+# The root-driven admin surface wraps the router the operations are already
 # mounted on and calls it as the tower service it is, so the inner surface answers exactly as it did
 # and no status, header or byte is re-derived on the way out.
-tower = { workspace = true, optional = true }
+tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { workspace = true }
 # The body trait itself, named because the composition root implements it: the llm plane's answer goes
@@ -228,9 +228,8 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
-# SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
-# than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "hooks-complexity", "plane-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp", "auth-webhook-signature"]
+# SAME default set the monolithic crate had.
+default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "hooks-complexity", "plane-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "transport-tcp", "auth-webhook-signature"]
 # THE LLM PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
 # LLM. Dropping the feature is the deletion test's level-1 build. There is no per-DIALECT feature and
 # there must not be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini`
@@ -314,18 +313,6 @@ export-prometheus = ["dep:busbar-export-prometheus"]
 # crate on the export axis. Off, the module resolves only when a signed tarball of the sink is dropped
 # into `plugins/`.
 export-otlp = ["dep:busbar-export-otlp"]
-# THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON. The switch is
-# what makes an admin request travel through the kernel's loop instead of reaching its handler
-# directly. The byte-neutrality this default was turned on for is NOT established: the 2x2 over
-# `root-admin` x `root-llm` found it moves the two `ledger|amend` cells 404 -> 403 (TODO l.2147-2163,
-# item 155), and nothing repeats the comparison: a comment here that claims otherwise names the
-# registered gate that reproduces it (TODO l.2165). The leg stays switchable — turning it off drops
-# one unbuilt module and nothing else, because `main.rs` names the mount inside a `cfg` and the
-# router it wraps is untouched.
-#
-# `tower` is the feature's own edge: wrapping a mounted router means calling it as the service it
-# already is, which is the one thing that guarantees the inner surface answers exactly as it did.
-root-admin = ["dep:tower"]
 # THE TEST HARNESS'S FIRST-PARTY KEY SEAM (`root::boot::HARNESS_FIRST_PARTY_KEY_ENV`), off by default
 # and never in `default`: a child `busbar` built with it takes its first-party key from that variable,
 # so an end-to-end test admits a plugin it signed first-party. No release build enables it.
@@ -728,9 +715,8 @@ busbar-auth-oidc-plugin = { workspace = true }
 # over a certificate-verified loopback endpoint the module trusts through `ca_cert_pem`, genuinely
 # signed tokens); the composition root's connector fetches it for the module.
 busbar-auth-oidc = { workspace = true }
-# That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
-# normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
-# single-plane build) would not compile the test; the test's edge is its own, unconditional here.
+# That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`), which
+# needs tower's `util` feature; the normal-edge `tower` above does not enable it.
 tower = { workspace = true, features = ["util"] }
 # The `traces` stream's both-doors proof (`tests/traces_stream_both_doors.rs`, K9a S7 + K9e-2): the
 # OTLP sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-otlp` edge above
