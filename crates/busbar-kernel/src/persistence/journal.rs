@@ -548,6 +548,11 @@ impl Ahead {
     }
 }
 impl Replay<'_, '_> {
+    /// Ordinal of the last original this cursor has verified: zero for a whole
+    /// replay, the continued proof's count for one that resumes after it.
+    pub(crate) fn position(&self) -> u64 {
+        self.observed.count
+    }
     pub(crate) async fn next(&mut self) -> Result<Option<Record>> {
         if self.failed {
             return Err(Error::IncompleteReplay);

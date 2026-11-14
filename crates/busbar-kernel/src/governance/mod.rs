@@ -1914,6 +1914,10 @@ mod budget_cell_tests;
 mod budget_shard_flush_tests;
 
 #[cfg(test)]
+#[path = "tests/metering_recovery_live_append_tests.rs"]
+mod metering_recovery_live_append_tests;
+
+#[cfg(test)]
 #[path = "../tests/key_expires_at_tests.rs"]
 mod key_expires_at_tests;
 
