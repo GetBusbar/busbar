@@ -56,6 +56,7 @@ pub mod kinds;
 
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod media;
+pub mod mono_instant;
 
 pub mod net;
 #[allow(missing_docs)]
