@@ -142,6 +142,11 @@ pub const POOL_MEMBERS_KEY: &str = "members";
 /// A member written as an object inside a pool's [`POOL_MEMBERS_KEY`] list: the entry it names.
 pub const POOL_MEMBER_NAME_KEY: &str = "name";
 
+/// The member-name key of the llm section: `kernel_sections` writes each llm pool member as
+/// `{model: <entry>, reasoning?, context_max?}`, so a mapped member with no
+/// [`POOL_MEMBER_NAME_KEY`] names its entry here.
+pub const POOL_MEMBER_MODEL_KEY: &str = "model";
+
 /// A member's TIER inside a pool's [`POOL_MEMBERS_KEY`] list (`{name, tier}`), the core-owned
 pub const POOL_MEMBER_TIER_KEY: &str = "tier";
 

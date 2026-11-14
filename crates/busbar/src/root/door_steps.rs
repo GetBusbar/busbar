@@ -14,9 +14,9 @@ use busbar_contract::caps::{
 };
 use busbar_contract::records::VirtualKey;
 use busbar_contract::section::{
-    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY,
-    POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
-    RESERVED_WORK_KEY,
+    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, POOL_MEMBER_MODEL_KEY,
+    POOL_MEMBER_NAME_KEY, POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY,
+    RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
 };
 use busbar_contract::MeterClassId;
 use busbar_kernel::config::groups::ExhaustionMode;
@@ -311,16 +311,22 @@ fn members(pool: &serde_yaml::Value) -> Result<Vec<(String, u32)>, String> {
         return Ok(Vec::new());
     };
     let mut out = Vec::with_capacity(list.len());
-    for m in list {
+    for (i, m) in list.iter().enumerate() {
         if let Some(name) = m.as_str() {
             out.push((name.to_owned(), 0));
             continue;
         }
+        // A declared plane's member is `{name, tier}`; an llm pool member is `{model, ..}`
+        // (`kernel_sections`). A member naming neither refuses the load: skipping it would load a
+        // pool whose walk reaches no member.
         let Some(name) = m
             .get(POOL_MEMBER_NAME_KEY)
+            .or_else(|| m.get(POOL_MEMBER_MODEL_KEY))
             .and_then(serde_yaml::Value::as_str)
         else {
-            continue;
+            return Err(format!(
+                "member {i} names no entry (expected `{POOL_MEMBER_NAME_KEY}` or `{POOL_MEMBER_MODEL_KEY}`)"
+            ));
         };
         let Some(written) = m.get(POOL_MEMBER_TIER_KEY) else {
             out.push((name.to_owned(), 0));
@@ -343,6 +349,19 @@ pub fn plane_lane(plane: &str, entry: &str) -> String {
         return entry.to_string();
     }
     format!("{plane}{PLANE_LANE_SEP}{entry}")
+}
+
+/// The lane a unit's money opens under: the first member's lane on its plane. A routed unit with
+/// no member is refused, never laned `""` (no rate card prices `""`, so every read of a row under it
+/// refuses). An unrouted unit keeps the empty lane.
+fn opened_lane(plane: &str, routed: Option<&Routed>) -> Result<String, Refusal> {
+    match routed {
+        None => Ok(String::new()),
+        Some((_, members)) => members
+            .first()
+            .map(|m| plane_lane(plane, m))
+            .ok_or_else(|| Refusal::new(ReasonCode::Unpriced)),
+    }
 }
 
 #[must_use]
@@ -888,7 +907,10 @@ impl<'s> DoorSteps<'s> {
 
         let mut routed = routed;
         let mut visited: Vec<String> = Vec::new();
-        let (grant, pool, lanes) = loop {
+        let (grant, pool, lane) = loop {
+            // Before governance admits: a refusal here has charged no request and no fee, on the
+            // first pool and on every downgrade target.
+            let lane = opened_lane(&self.facts.plane, routed.as_ref())?;
             let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
             let pool = self.charged_pool(label);
             let lanes = lanes_of(&routed);
@@ -916,7 +938,7 @@ impl<'s> DoorSteps<'s> {
                 &models,
                 &units,
             ) {
-                Ok(grant) => break (grant, pool, lanes),
+                Ok(grant) => break (grant, pool, lane),
                 Err(LimitBlocked::Limit {
                     downgrade_to: Some(to),
                     ..
@@ -948,7 +970,7 @@ impl<'s> DoorSteps<'s> {
                 cost: Arc::clone(&self.app.cost),
                 pool,
 
-                lane: lanes.first().cloned().unwrap_or_default(),
+                lane,
                 classes: Arc::clone(&self.facts.classes),
                 arrived: self.arrived,
                 mode: exhaustion_of(&self.app, key),
@@ -1312,13 +1334,7 @@ impl DriverSteps for DoorSteps<'_> {
                 .ticket_instance
                 .as_ref()
                 .ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
-            let lane = self
-                .lock()
-                .routed
-                .as_ref()
-                .and_then(|(_, members)| members.first())
-                .map(|member| plane_lane(&self.facts.plane, member))
-                .unwrap_or_default();
+            let lane = opened_lane(&self.facts.plane, self.lock().routed.as_ref())?;
             match spent.adopt(
                 money,
                 ctx,
@@ -1369,13 +1385,7 @@ impl DriverSteps for DoorSteps<'_> {
                 .money
                 .validate_parent(&parent.token, key)
                 .map_err(Refusal::new)?;
-            let lane = self
-                .lock()
-                .routed
-                .as_ref()
-                .and_then(|(_, members)| members.first())
-                .map(|member| plane_lane(&self.facts.plane, member))
-                .unwrap_or_default();
+            let lane = opened_lane(&self.facts.plane, self.lock().routed.as_ref())?;
             let prepared = parent.cell.accrue_child_after(principal, admit, || {
                 parent.money.open_child(
                     &parent.token,
@@ -2276,7 +2286,10 @@ pub fn kernel_sections(
             .iter()
             .map(|member| {
                 let mut m = Mapping::new();
-                m.insert(Value::from("model"), Value::from(member.model.clone()));
+                m.insert(
+                    Value::from(POOL_MEMBER_MODEL_KEY),
+                    Value::from(member.model.clone()),
+                );
                 opt(&mut m, "reasoning", member.reasoning.map(Value::from));
                 opt(&mut m, "context_max", member.context_max.map(Value::from));
                 Value::Mapping(m)
