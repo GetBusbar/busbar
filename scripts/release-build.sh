@@ -105,7 +105,7 @@ clean_failed_build() {
   if [ "$BUILD_FINISHED" != true ]; then
     rm -f "$EVIDENCE_DIR/"*.build-closure.json
     rm -rf "$EVIDENCE_DIR/cargo-core" "$EVIDENCE_DIR/cargo-audit"
-    rm -f "$OUT_DIR/$ARCHIVE" "$OUT_DIR/$VERIFIER_ARCHIVE"       "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/audit-verifier.sha256"       "$EVIDENCE_DIR/busbar.pgo-verified"
+    rm -f "$OUT_DIR/$ARCHIVE" "$OUT_DIR/$VERIFIER_ARCHIVE"       "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/audit-verifier.sha256"       "$EVIDENCE_DIR/busbar.pgo-verified" "$EVIDENCE_DIR/busbar.bolt-applied" "$EVIDENCE_DIR/busbar.symbols"
   fi
 }
 trap clean_failed_build EXIT
@@ -162,7 +162,7 @@ if [ -n "$SPEC_GLIBC_MAX" ]; then
 fi
 
 mkdir -p "$EVIDENCE_DIR" "$OUT_DIR"
-rm -f "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/busbar.pgo-verified"
+rm -f "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/busbar.pgo-verified" "$EVIDENCE_DIR/busbar.bolt-applied" "$EVIDENCE_DIR/busbar.symbols"
 
 # ── THE BUILD ───────────────────────────────────────────────────────────────────────────────────
 # `pgo` is a PARAMETER to this one step, not a second code path: both arms produce the same binary
@@ -236,12 +236,28 @@ else
   case "$SPEC_TRIPLE" in
     *-windows-msvc) CRT_FLAG="-Ctarget-feature=+crt-static" ;;
   esac
+  # Path remapping, the same two flags pgo-build.sh passes (see REMAP_FLAGS there).
+  REMAP_HOME="${CARGO_HOME:-$HOME/.cargo}"
+  case "$(pwd)$REMAP_HOME" in *[[:space:]]*) echo "[release-build] the checkout or CARGO_HOME path contains whitespace; --remap-path-prefix cannot be passed through RUSTFLAGS" >&2; exit 1 ;; esac
+  REMAP_FLAGS="--remap-path-prefix=$(pwd)=/busbar --remap-path-prefix=$REMAP_HOME=/cargo"
   BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
-  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" "$PY" scripts/release/cargo_capture.py --directory "$EVIDENCE_DIR/cargo-core" -- build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE"
+  RUSTFLAGS="${REMAP_FLAGS}${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" "$PY" scripts/release/cargo_capture.py --directory "$EVIDENCE_DIR/cargo-core" -- build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE"
   BIN="target/${SPEC_TRIPLE}/release/${SPEC_EXE}"
   scripts/build-provenance-gate.sh "$BIN" release false
 fi
 [ -f "$BIN" ] || { echo "[release-build] the build produced no binary at $BIN" >&2; exit 1; }
+
+# ── BOLT, FROM THE COMMITTED LAYOUT PROFILE ─────────────────────────────────────────────────────
+# A target with release/bolt/<target>.yaml committed ships the BOLTed, fully stripped rewrite of the
+# binary above; a target without one ships the binary above unchanged (the historical recipe, byte
+# for byte). The rewrite, its llvm-bolt version pin (release/bolt/<target>.manifest), the stripped
+# publication and the busbar.symbols / busbar.bolt-applied evidence are ONE step,
+# `scripts/bolt-pass.sh --ship`, so every builder of the shipped bytes (this script, the oracle's
+# candidate build, the benchmark build) runs the same rewrite instead of a copy of it.
+if [ -f "release/bolt/${TARGET}.yaml" ]; then
+  scripts/bolt-pass.sh --ship "$TARGET" --binary "$BIN" --out "${BIN}.bolt" --evidence-dir "$EVIDENCE_DIR"
+  BIN="${BIN}.bolt"
+fi
 
 VERIFIER_BIN=""
 VERIFIER_EXE=""
