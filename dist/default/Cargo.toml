@@ -24,8 +24,7 @@ path = "../../crates/busbar/src/main.rs"
 async-trait = { workspace = true }
 # The engine (busbar-core absorbed INTO busbar-kernel, W4.a #19/#37) is the merged `busbar-kernel`
 # dep declared below with the loop crate; `default-features = false` there so the binary's OWN
-# feature list stays the single decision point (each busbar feature forwards to the kernel feature
-# of the same name below).
+# feature list stays the single decision point.
 # THE OAUTH 2.1 AUTHORIZATION-SERVER PLANE (`oauth_as:`), a NORMAL (non-optional) dependency — it
 # carries no feature flag, unlike the protocol crates below, because `oauth-as` (the underlying
 # crate) was always a normal dependency of the engine and 1.6.0's extraction did not change that:
@@ -90,14 +89,13 @@ busbar-kernel-audit = { path = "../../crates/busbar-kernel-audit" }
 # `claims` axis), so the root names none of them. The streaming plane's edge is the crate the
 # `plane-streaming` switch's `plane-door` row names: its memory-ABI door, served through the loader's
 # one load like every dropped-in plane door (FLIP-STREAMING).
-busbar-plane-streaming = { workspace = true, optional = true }
+busbar-plane-streaming = { workspace = true }
 # THE DECISIONS PLANE (jev), #48's fifth: the edge the `plane-decisions` switch's `plane-door` row
 # names. The plane is served through its memory-ABI door (`busbar_plane_decisions::door`),
 # loaded through the loader's one load like every dropped-in plane door (FLIP-DECISIONS), so its
 # registry row is the door's own Statement folded by the kernel and the composition root writes no
-# declaration of its own. Optional, so `--no-default-features` installs no plane at all, which is the
-# property the strong-form deletion test is written about.
-busbar-plane-decisions = { workspace = true, optional = true }
+# declaration of its own. Always linked.
+busbar-plane-decisions = { workspace = true }
 # THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
 busbar-store-memory = { workspace = true }
@@ -112,52 +110,52 @@ busbar-secret-env = { workspace = true }
 busbar-secret-file = { workspace = true }
 # THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
-busbar-hook-ranking = { workspace = true, optional = true }
-busbar-hook-complexity = { workspace = true, optional = true }
+busbar-hook-ranking = { workspace = true }
+busbar-hook-complexity = { workspace = true }
 # THE OPERATOR CREDENTIAL (`auth.admin_auth: [admin-tokens]`, the single operator admin token), a
 # first-party AUTH plugin linked through the `auths` axis under `auth-admin-tokens` — the same row a
 # signed tarball of it registers when dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
 # AUTH-ROW). It lives in its own repo (GetBusbar/busbar-auth-admin-tokens) and is pulled at a PINNED rev; the
 # workspace `[patch]` points the busbar crates it names at this tree. The kernel names no auth module.
-busbar-auth-admin-tokens-plugin = { workspace = true, optional = true }
+busbar-auth-admin-tokens-plugin = { workspace = true }
 # THE OUTBOUND HEADER STYLES (bearer, api-key, x-goog-api-key): the auth plugin a plane's outbound need
 # is bound under when its member's style is one of them (THE DESIGN §6 step 3: the auth plugin that
 # serves the style opens the binding), linked through the `auths` axis under `auth-header`
 # (ARCHITECT Q-L1-AUTH (A), 2026-10-03). It lives in its own repo (GetBusbar/busbar-auth-header), pulled
 # at a pinned rev; its only busbar edge is `busbar-contract`.
-busbar-auth-header = { workspace = true, optional = true }
+busbar-auth-header = { workspace = true }
 # THE SIGV4 STYLE (outbound signing, inbound verify of busbar's own SigV4 keys) and THE OAUTH MINTING
 # STYLES (jwt-bearer, oauth-client-credentials): the auth plugins a provider's credential is bound
 # under when its style is one of theirs, linked through the `auths` axis (P2 D1, the auth split: the
 # kernel holds no auth style). Each lives in its own repo, pulled at a pinned rev.
-busbar-auth-sigv4 = { workspace = true, optional = true }
-busbar-auth-oauth = { workspace = true, optional = true }
+busbar-auth-sigv4 = { workspace = true }
+busbar-auth-oauth = { workspace = true }
 # THE WEBHOOK-SIGNATURE STYLE: the inbound auth plugin that verifies a webhook sender's HMAC (Twilio,
-# Standard Webhooks), linked through the `auths` axis under its own feature (default-on).
-busbar-auth-webhook-signature = { workspace = true, optional = true }
+# Standard Webhooks), linked through the `auths` axis under its own row (always on).
+busbar-auth-webhook-signature = { workspace = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
 # in its own repo (GetBusbar/busbar-export-file) and is pulled at a PINNED rev; the workspace `[patch]`
 # points the busbar crates it names back at this tree.
-busbar-export-file = { workspace = true, optional = true }
+busbar-export-file = { workspace = true }
 # THE REQUEST-LOG WEBHOOK SINK (`module: request-log-webhook`), a first-party EXPORT plugin linked
 # through the `exports` axis (K9c) — the same row a signed tarball of it registers when dropped in. It
 # lives in its own repo (GetBusbar/busbar-export-webhook) and is pulled at a PINNED rev; the workspace
 # `[patch]` points the busbar crates it names back at this tree.
-busbar-export-webhook = { workspace = true, optional = true }
+busbar-export-webhook = { workspace = true }
 # THE PROMETHEUS EXPORT SINK (`module: prometheus`), a first-party EXPORT plugin linked through the
 # `exports` axis (K9d) — the same row a signed tarball of it registers when dropped in. The host
 # keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot. It lives in its
 # own repo (GetBusbar/busbar-export-prometheus) and is pulled at a PINNED rev; the workspace `[patch]` points
 # the busbar crates it names back at this tree.
-busbar-export-prometheus = { workspace = true, optional = true }
+busbar-export-prometheus = { workspace = true }
 # THE OTLP TRACE SINK (`module: otlp`), a first-party EXPORT plugin linked through the `export-doors` axis
 # (K9e-2; owner answer Q75: OTLP export never delivered in 1.5.5, and 1.6.0 fixes it) — the same row a
 # signed tarball of it registers when dropped in. It encodes each `traces` record as an OTLP/HTTP
 # protobuf request the host posts under the collector egress policy it declares. It lives in its own
 # repo (GetBusbar/busbar-export-otlp) and is pulled at a PINNED rev; the workspace `[patch]` points the busbar
 # crate it names back at this tree.
-busbar-export-otlp = { workspace = true, optional = true }
+busbar-export-otlp = { workspace = true }
 # The transports. Composition is an edge that does not exist as a Cargo dependency — a transport may
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
@@ -166,16 +164,12 @@ busbar-transport-http = { workspace = true }
 # gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport"), linked on the
 # transport-door axis. Its row reads its crate root's `door` and everything else off its Statement.
 busbar-transport-grpc = { workspace = true }
-# WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
-# reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
-# pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
-# exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
-busbar-transport-ws = { workspace = true, optional = true }
+# WebSocket: the streaming plane's edge, always linked.
+busbar-transport-ws = { workspace = true }
 busbar-transport-stdio = { workspace = true }
 # WebRTC: the datagram framer door (ICE, SRTP, SCTP) over the connector's datagram port and secure
-# layer. Optional and off by default: its linked row is the wire's one registration, and a build
-# that does not turn `transport-webrtc` on carries neither the crate nor its media stack.
-busbar-transport-webrtc = { workspace = true, optional = true }
+# layer. Always linked: its row is the wire's one registration.
+busbar-transport-webrtc = { workspace = true }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
@@ -317,27 +311,32 @@ export-otlp = ["dep:busbar-export-otlp"]
 # and never in `default`: a child `busbar` built with it takes its first-party key from that variable,
 # so an end-to-end test admits a plugin it signed first-party. No release build enables it.
 test-harness = []
-# THE OPERATOR CREDENTIAL'S LINKED ROW, DEFAULT ON: the auth plugin on the `auths` axis. Off, the
-# operator credential resolves only when a signed tarball of the module is dropped into `plugins/`,
-# and a configured admin token with no row answering it is a boot refusal naming this feature.
-auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
-# THE OUTBOUND HEADER STYLES' LINKED ROW, DEFAULT ON (ARCHITECT Q-L1-AUTH (A), 2026-10-03): the auth
-# plugin serving a plane need's header style, on the `auths` axis. Off, a member whose style it serves
-# binds only when a signed tarball of the module is dropped into `plugins/`.
-auth-header = ["dep:busbar-auth-header"]
-# THE SIGV4 AND OAUTH STYLES' LINKED ROWS, DEFAULT ON (P2 D1): off, a provider whose style one of them
-# serves binds only when a signed tarball of the module is dropped into `plugins/`.
-auth-sigv4 = ["dep:busbar-auth-sigv4"]
-auth-oauth = ["dep:busbar-auth-oauth"]
-# THE WEBHOOK-SIGNATURE ROW, default-on (ARCHITECT 2026-10-14): Twilio Media Streams, Standard Webhooks
-# and the OpenAI Responses webhook are verified by it (BUSBAR-1.6.0.md l.847-852, l.4835). It declares an
-# inbound capability, so `GET /api/v1/admin/info` `build.auth_modules` lists it after 1.5.5's
-# `["keys","admin-tokens"]` (accepted difference `#64-class build.auth_modules lists the webhook-signature module`).
-auth-webhook-signature = ["dep:busbar-auth-webhook-signature"]
-hooks-ranking = ["dep:busbar-hook-ranking"]
-hooks-complexity = ["dep:busbar-hook-complexity"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
+
+# THE ALWAYS-LINKED ROWS: every key of `[package.metadata.busbar.linked]` whose crate is a plain
+# dependency above and which no cargo feature gates. `build.rs` treats each as enabled in every build
+# (`BUSBAR_ENABLED_FEATURES` lists them, as it listed the features that used to carry them).
+[package.metadata.busbar.always-on]
+plane-llm-door = "busbar-plane-llm"
+plane-mcp-door = "busbar-plane-mcp"
+plane-a2a-door = "busbar-plane-a2a"
+plane-streaming = "busbar-plane-streaming"
+plane-decisions = "busbar-plane-decisions"
+transport-tcp = "busbar-transport-tcp"
+transport-ws = "busbar-transport-ws"
+transport-webrtc = "busbar-transport-webrtc"
+hooks-ranking = "busbar-hook-ranking"
+hooks-complexity = "busbar-hook-complexity"
+auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
+auth-header = "busbar-auth-header"
+auth-sigv4 = "busbar-auth-sigv4"
+auth-oauth = "busbar-auth-oauth"
+auth-webhook-signature = "busbar-auth-webhook-signature"
+export-file = "busbar-export-file"
+export-webhook = "busbar-export-webhook"
+export-prometheus = "busbar-export-prometheus"
+export-otlp = "busbar-export-otlp"
 
 # Core's source, which this distribution compiles: build.rs, src/main.rs and the root modules.
 [package.metadata.busbar.core]
@@ -346,7 +345,7 @@ dir = "../../crates/busbar"
 # ── THE LINKED PLUGINS (K1, #2 rule (1)) ─────────────────────────────────────────────────────────────
 # The composition root's source names no plugin: WHICH plugins a build links is this data. build.rs
 # (src/linked_gen.rs) reads the three tables below and writes `$OUT_DIR/linked.rs`, which main.rs
-# includes: `extern crate <crate> as _;` for every row whose cargo feature is ENABLED, `LINKED` — one
+# includes: `extern crate <crate> as _;` for every row that is enabled (a cargo feature, or an `always-on` row), `LINKED` — one
 # table per registration axis over each linked crate's `linked` entry module (the contract
 # PLANE_DECLARATION joined kernel-side to its kernel-typed PLANE_HOOKS, protocol declarations,
 # arrivals, diagnostics, installers …) — a `linked_*` cfg per root-bound seam an enabled entry drives,
@@ -363,14 +362,14 @@ export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
 export-otlp = "busbar-export-otlp"
-# THE AUTH AXIS: the operator credential's module, under its packaging feature.
+# THE AUTH AXIS: the operator credential's module, under its `always-on` row.
 auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
 auth-webhook-signature = "busbar-auth-webhook-signature"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
-# it) and the ranking hooks (under their feature).
+# it) and the ranking hooks (always-on rows).
 store-memory = "busbar-store-memory"
 hooks-ranking = "busbar-hook-ranking"
 # THE SECRET AXIS: the env and file sources, required dependencies (every build links them; the key
@@ -598,7 +597,7 @@ migration_table_hook = "busbar-hook-webrequest"
 [package.metadata.busbar.test-linked]
 planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 # The operator credential's auth plugin the admin tests (`tests/admin_cross_plane/`) authenticate
-# through: the one the root links for it (`auth-admin-tokens`), so that test requires the feature.
+# through: the one the root links for it (`auth-admin-tokens`).
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [build-dependencies]
@@ -742,36 +741,29 @@ name = "plane_driver_test_plane"
 path = "tests/fixtures/plane_driver_test_plane.rs"
 crate-type = ["cdylib"]
 
-# The linked door this binary proves is the export axis's optional edge; without the feature there is
-# no linked row to prove, so the target is not built.
+# The canary drives the linked sinks and auth rows through their doors.
 [[test]]
 name = "canary"
 path = "tests/canary/main.rs"
-required-features = ["auth-admin-tokens", "auth-header", "auth-webhook-signature", "export-file", "export-webhook"]
 
 [[test]]
 name = "traces_stream_both_doors"
 path = "tests/traces_stream_both_doors.rs"
-required-features = ["export-otlp"]
 
 # Reads the linked otlp and request-log-webhook sinks' Statements and boots both from a 1.5.5 config.
 [[test]]
 name = "upgrade_1_5_5_env_secret_fields"
 path = "tests/upgrade_1_5_5_env_secret_fields.rs"
-required-features = ["export-otlp", "export-webhook"]
 
-# These three boot the real binary on a config that names an admin token (the 1.5.5 shape). Without
-# the operator credential's linked row that config is a boot refusal (BUSBAR-9007), so the targets
-# are built only with the feature that answers it.
+# These three boot the real binary on a config that names an admin token (the 1.5.5 shape), answered
+# by the operator credential's always-linked row.
 [[test]]
 name = "boot_lines_neutrality"
 path = "tests/boot_lines_neutrality.rs"
-required-features = ["auth-admin-tokens"]
 
 [[test]]
 name = "no_data_dir_neutrality"
 path = "tests/no_data_dir_neutrality.rs"
-required-features = ["auth-admin-tokens"]
 
 # Boots the real binary on durable-Store configs that name an admin token (UPG-A30b).
 [[test]]
@@ -782,52 +774,43 @@ required-features = ["auth-admin-tokens"]
 [[test]]
 name = "law7_direct_model_route"
 path = "tests/law7_direct_model_route.rs"
-required-features = ["auth-admin-tokens"]
 
 # Boots the real binary on a config that names an admin token and one decisions model: it needs the
 # operator credential's linked row and the decisions plane's door.
 [[test]]
 name = "decisions_served"
 path = "tests/decisions_served.rs"
-required-features = ["auth-admin-tokens", "plane-decisions"]
 
 [[test]]
 name = "law7_unloaded_plane_apply"
 path = "tests/law7_unloaded_plane_apply.rs"
-required-features = ["auth-admin-tokens"]
 
 [[test]]
 name = "root_listeners_are_the_connectors"
 path = "tests/root_listeners_are_the_connectors.rs"
-required-features = ["auth-admin-tokens"]
 
 # Boots the real binary with the webhook sink at a target the host refuses, and reads the audit
 # chain through the admin API: it needs the operator credential's row and the webhook sink linked.
 [[test]]
 name = "bind_refusal_audited"
 path = "tests/bind_refusal_audited.rs"
-required-features = ["auth-admin-tokens", "export-webhook"]
 
 [[test]]
 name = "admin_bound_before_healthz"
 path = "tests/admin_bound_before_healthz.rs"
-required-features = ["auth-admin-tokens"]
 
 [[test]]
 name = "admin_mtls_refuses_certless_client"
 path = "tests/admin_mtls_refuses_certless_client.rs"
-required-features = ["auth-admin-tokens"]
 
 [[test]]
 name = "metrics_routes_across_export_reload"
 path = "tests/metrics_routes_across_export_reload.rs"
-required-features = ["auth-admin-tokens"]
 
 # Boots the real binary with an admin token and a Prometheus scrape, and reads both.
 [[test]]
 name = "provider_key_never_surfaces"
 path = "tests/provider_key_never_surfaces.rs"
-required-features = ["auth-admin-tokens", "export-prometheus"]
 
 # Boots the real binary, then reloads onto another provider and pool (DIET-BUSBAR MR3).
 [[test]]
@@ -839,12 +822,10 @@ required-features = ["auth-admin-tokens"]
 [[test]]
 name = "default_config_no_outbound"
 path = "tests/default_config_no_outbound.rs"
-required-features = ["auth-admin-tokens"]
 
 [[test]]
 name = "startup_upgrade_sqlite"
 path = "tests/startup_upgrade_sqlite.rs"
-required-features = ["auth-admin-tokens", "plane-llm"]
 
 [package.metadata.busbar.migration]
 # THE ROOT MIGRATION TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`migration:` and each
@@ -956,7 +937,7 @@ busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-expo
 busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "df4852895f92f0282b895fdcaf889943dcfd9785" }
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "df4852895f92f0282b895fdcaf889943dcfd9785" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
-# (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
+# (row `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
 busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "b6a93ed6f011fffde4c21e6942ac88028e81954a" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
@@ -972,19 +953,19 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # advanced.allow_destinations names it, as BUSBAR-3025 says.
 busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "4cc1880d17e8c256298b9ad4d77d238a8d38b1b7" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
-# `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
+# `auths` axis (row `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
 # private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
 # On that pin, the signer logs the region warning 1.5.5 logged on every signature scoped to a
 # region defaulted at seal (`region_unread`), with the host (busbar-auth-sigv4 pin-1809-region-warn, merged onto the dev pin).
 busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "08e3a7b89882b39296d8a0339b6537f9e0b0e727" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
-# Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
+# Twilio and Standard Webhooks), linked on the root's `auths` axis (row `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so
 # `GET /api/v1/admin/info` `build.auth_modules` lists it, an `additive` accepted difference). One pin.
 busbar-auth-webhook-signature = { git = "https://github.com/GetBusbar/busbar-auth-webhook-signature", rev = "860c6c9399e517c628e0ec63dd92750d024dccf1" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
-# axis (feature `hooks-ranking`). The root alone takes it: kernel tests link the external testkit's
+# axis (row `hooks-ranking`). The root alone takes it: kernel tests link the external testkit's
 # R-FIX3 double (`busbar_kernel_testkit::test_support::ranking_double`) instead, and the root's
 # `linked_hook_ranking` tests prove the double states what this door states.
 busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "37645f4ed7e0d4430e4b918155f59d60616c5f1a" }

@@ -129,9 +129,13 @@ fn main() {
         "cargo:rerun-if-changed={}",
         core.join("src/linked_gen.rs").display()
     );
+    let always_on: Vec<String> = metadata_map(&manifest, "package.metadata.busbar.always-on")
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
     let enabled = |feature: &str| {
         let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
-        env::var_os(var).is_some()
+        always_on.iter().any(|k| k == feature) || env::var_os(var).is_some()
     };
     let (source, cfgs) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
@@ -198,8 +202,10 @@ fn main() {
         sections.join(" ")
     );
 
-    let on: Vec<String> = declared_features(&manifest)
-        .into_iter()
+    let on: Vec<String> = always_on
+        .iter()
+        .cloned()
+        .chain(declared_features(&manifest))
         .filter(|f| enabled(f))
         .collect();
     println!("cargo:rustc-env=BUSBAR_ENABLED_FEATURES={}", on.join(" "));
