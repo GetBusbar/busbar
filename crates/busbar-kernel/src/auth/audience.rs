@@ -78,9 +78,12 @@ impl Bearer {
         }
     }
 
+    /// Whether the token is DPoP-bound: any `cnf.jkt`, whatever its type. A malformed jkt must not
+    /// turn a sender-constrained credential into an ordinary bearer; it can only ever be refused,
+    /// since proving it needs a string thumbprint.
     #[must_use]
     pub fn dpop_bound(&self) -> bool {
-        matches!(self, Bearer::Jwt(claims) if claims["cnf"]["jkt"].is_string())
+        matches!(self, Bearer::Jwt(claims) if claims["cnf"].get("jkt").is_some())
     }
 }
 

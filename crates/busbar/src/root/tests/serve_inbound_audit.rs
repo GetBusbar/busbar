@@ -96,6 +96,21 @@ impl Ingress {
         stream: u64,
         token: &str,
     ) -> (busbar_kernel::inbound::Answer, Head) {
+        self.authenticate_fields(
+            stream,
+            vec![(
+                "authorization".into(),
+                format!("Bearer {token}").into_bytes(),
+            )],
+        )
+        .await
+    }
+
+    async fn authenticate_fields(
+        &self,
+        stream: u64,
+        fields: Vec<(String, Vec<u8>)>,
+    ) -> (busbar_kernel::inbound::Answer, Head) {
         self.host
             .grant_stream(OWNER, FRAMING, stream, GENERATION)
             .unwrap();
@@ -104,10 +119,7 @@ impl Ingress {
             target: "/call/local-counted".into(),
             authority: String::new(),
             query: None,
-            fields: vec![(
-                "authorization".into(),
-                format!("Bearer {token}").into_bytes(),
-            )],
+            fields,
         };
         let (done, reply) = tokio::sync::oneshot::channel();
         let immediate = self.host.auth_call(
@@ -396,6 +408,92 @@ impl busbar_contract::auth_calls::AuthCalls for ReplayIdentity {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_an_authorization_server_a_dpop_presentation_never_falls_through_to_another_carrier(
+) {
+    let _one = PUBLISHING.lock().await;
+    let node_id = busbar_kernel::door::op_id().counter();
+    let fixture = NativeFixture::new(node_id).await;
+    let mut durability = fixture.book().await;
+    durability.record = busbar_kernel_audit::AuditChain::new()
+        .sealing_as(node_id)
+        .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[0x73; 32]));
+    let book = Arc::new(Mutex::new(durability));
+    let node = Arc::new(Node::new());
+    node.bind_book(Arc::clone(&book));
+    let mut g = governed_full(
+        "postauth-dpop-no-as",
+        false,
+        None,
+        Screen::Nothing,
+        Some((Arc::clone(&node), Arc::clone(&book), fixture.core.clone())),
+        None,
+        false,
+    )
+    .await;
+    let mut app = (*g.app).clone();
+    app.oauth_as = None;
+    app.role_bindings
+        .entry("audit-reader".into())
+        .or_default()
+        .entry("reader".into())
+        .or_default();
+    g.app = Arc::new(app);
+    let routes = crate::root::serve::door_mounts(
+        g.served.clone(),
+        || None,
+        &[("audit-reader".into(), AuthPoints::HEAD)],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap()
+    .data;
+    let mut ingress = Ingress::new(&g, &routes);
+    ingress.listener.auths.insert(
+        "audit-reader".into(),
+        Arc::new(ReplayIdentity(Default::default())),
+    );
+    ingress
+        .host
+        .install_at(OWNER, LISTENER, GENERATION, ingress.listener.clone())
+        .unwrap();
+
+    use base64::Engine as _;
+    let payload =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"cnf":{"jkt":"bound"}}"#);
+    let bound = format!("e30.{payload}.c2ln");
+    for (stream, second) in [(1, bound.as_str()), (2, "unbound-key")] {
+        let refused_before = ingress.observed.lock().unwrap().len();
+        let (answer, head) = ingress
+            .authenticate_fields(
+                stream,
+                vec![
+                    ("authorization".into(), b"DPoP anything".to_vec()),
+                    ("x-api-key".into(), second.as_bytes().to_vec()),
+                ],
+            )
+            .await;
+        let admission = ingress.claim(stream, &answer, head);
+        assert!(
+            matches!(
+                busbar_kernel::auth::admitted_context(&admission).await,
+                Err(busbar_kernel::auth::AdmittedRefusal::SenderConstraint(
+                    busbar_kernel::auth::dpop::Refusal::Unverifiable
+                ))
+            ),
+            "a DPoP presentation this deployment cannot verify is refused (x-api-key {second})"
+        );
+        ingress.host.stream_ended(OWNER, FRAMING, stream);
+        drop(admission);
+        assert_eq!(
+            ingress.observed.lock().unwrap().len(),
+            refused_before + 1,
+            "the refusal is journaled"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_delay() {
     let _one = PUBLISHING.lock().await;
     let node_id = busbar_kernel::door::op_id().counter();
@@ -458,7 +556,9 @@ async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_
     let admission = ingress.claim(1, &dpop, head);
     assert!(matches!(
         busbar_kernel::auth::admitted_context(&admission).await,
-        Err(busbar_kernel::auth::AdmittedRefusal::SenderConstraint)
+        Err(busbar_kernel::auth::AdmittedRefusal::SenderConstraint(
+            busbar_kernel::auth::dpop::Refusal::BoundBearer
+        ))
     ));
     ingress.host.stream_ended(OWNER, FRAMING, 1);
     drop(admission);

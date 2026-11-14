@@ -102,14 +102,27 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
 }
 
 #[tokio::test]
-async fn dpop_refusal_keeps_the_exchange_unauthenticated_words() {
-    let response = refusal(ExchangeError::Unauthorized);
+async fn dpop_refusal_names_the_sender_constraint() {
+    let response = refusal(ExchangeError::SenderConstraint(
+        crate::auth::dpop::Refusal::Unverifiable,
+    ));
     let status = response.status().as_u16();
     let bytes = axum::body::to_bytes(response.into_body(), 1024)
         .await
         .unwrap();
-    let body = std::str::from_utf8(&bytes).unwrap();
-    assert_eq!((status, body), (401, r#"{"error":"not authenticated"}"#));
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        (status, body),
+        (
+            401,
+            serde_json::json!({
+                "error": "sender_constrained",
+                "error_description": "This deployment does not verify DPoP proofs, so a \
+                    DPoP-bound or DPoP-scheme presentation cannot be accepted (RFC 9449). \
+                    Present an unbound bearer token.",
+            })
+        )
+    );
 }
 
 #[tokio::test]

@@ -17,7 +17,7 @@ pub struct AdmittedContext {
 
 #[derive(Debug)]
 pub enum AdmittedRefusal {
-    SenderConstraint,
+    SenderConstraint(dpop::Refusal),
     Audience(&'static str),
     Identity(IdentityRefusal),
 }
@@ -161,11 +161,15 @@ impl AdmittedRefusal {
     ) -> Option<crate::plane_driver::Rendered> {
         let admission = request.plane_admission()?;
         let (error, description) = match self {
-            Self::SenderConstraint => (challenge::ChallengeError::InvalidToken,
-                "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one did not verify."),
+            Self::SenderConstraint(reason) => (
+                challenge::ChallengeError::InvalidToken,
+                reason.description(request.app().oauth_as.is_none()),
+            ),
             Self::Audience(description) => (challenge::ChallengeError::InvalidToken, *description),
-            Self::Identity(IdentityRefusal::NoGrant) => (challenge::ChallengeError::InsufficientScope,
-                "The authenticated principal carries no grant on this resource."),
+            Self::Identity(IdentityRefusal::NoGrant) => (
+                challenge::ChallengeError::InsufficientScope,
+                "The authenticated principal carries no grant on this resource.",
+            ),
             Self::Identity(IdentityRefusal::Denied) => {
                 let app = request.app();
                 let present = request.client_token().is_some()
