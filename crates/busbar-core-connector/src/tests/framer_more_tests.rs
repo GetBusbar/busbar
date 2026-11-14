@@ -343,3 +343,92 @@ fn a_finite_burst_of_empty_stream_flow_records_remains_progress() {
     assert!(output.pieces.is_empty());
     assert!(output.wire.is_empty());
 }
+
+/// What one `emit` crossing lent the framer: its byte count, its end mark, its extensions blob
+/// length and whether it stated the opening body's length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EmitLent {
+    len: usize,
+    end: u32,
+    extensions: usize,
+    body_len_known: u32,
+}
+
+/// A dial framer whose first `emit` fills the host's whole wire loan and owes more: the shape of an
+/// opening larger than [`WIRE_CAP`].
+struct OverflowingEmitDoor {
+    inner: TestDoor,
+    lent: std::sync::Mutex<Vec<EmitLent>>,
+}
+
+#[allow(unsafe_code)]
+impl FramerDoor for OverflowingEmitDoor {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        let ready = Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        };
+        match call {
+            Call::Begin(_, out) => out.framing = STREAM,
+            Call::Emit(input, out) => {
+                let mut lent = self.lent.lock().unwrap();
+                lent.push(EmitLent {
+                    len: input.len,
+                    end: input.end_of_frame,
+                    extensions: input.head.extensions.len,
+                    body_len_known: input.body_len_known,
+                });
+                if lent.len() == 1 {
+                    let sink = input.sink;
+                    // SAFETY: the host loans this entire wire buffer for this crossing.
+                    unsafe { std::ptr::write_bytes(sink.wire, b'w', sink.wire_cap) };
+                    out.yielded.wire_len = sink.wire_cap as u64;
+                    out.yielded.flags = YIELD_MORE;
+                }
+            }
+            _ => {}
+        }
+        ready
+    }
+}
+
+#[test]
+fn an_opening_larger_than_the_wire_loan_recalls_without_its_opening_metadata() {
+    let door = Arc::new(OverflowingEmitDoor {
+        inner: TestDoor::identity("t"),
+        lent: std::sync::Mutex::new(Vec::new()),
+    });
+    let (mut framing, _) =
+        Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
+    let sensitive = SensitiveFields::new(vec!["authorization".into()]).unwrap();
+    let opening = vec![b'o'; WIRE_CAP + 1];
+    let body_len = (WIRE_CAP + 1) as u64 - 64;
+    framing
+        .emit_opening_sensitive(STREAM, &opening, true, false, Some(body_len), &sensitive)
+        .unwrap();
+    let lent = door.lent.lock().unwrap().clone();
+    assert_eq!(lent.len(), 2, "one fresh emit, one YIELD_MORE re-call");
+    assert_eq!(lent[0].len, opening.len());
+    assert_ne!(
+        lent[0].extensions, 0,
+        "the fresh call carries the classification"
+    );
+    assert_eq!(
+        lent[0].body_len_known, 1,
+        "the fresh call states the body length"
+    );
+    assert_eq!(
+        lent[1],
+        EmitLent {
+            len: 0,
+            end: 0,
+            extensions: 0,
+            body_len_known: 0,
+        },
+        "a re-call carries nothing the first call already lent (transport ABI: recalls lend no new input)"
+    );
+}

@@ -3483,6 +3483,13 @@ impl busbar_contract::conn::Conns for Sealing {
 }
 
 impl busbar_contract::conn::PollConns for Sealing {
+    fn failure_cause(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Option<busbar_contract::conn::ConnCause> {
+        None
+    }
     fn poll_read(
         &self,
         _: busbar_contract::conn::InstanceId,
