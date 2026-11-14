@@ -229,7 +229,7 @@ fn the_pre_parse_judgement_leaves_a_malformed_shape_to_the_plane() {
 }
 
 #[test]
-fn a_registrations_private_reach_is_its_declared_boolean() {
+fn a_registration_writing_the_retired_private_reach_is_refused_whatever_its_value() {
     use super::private_reach;
     const REACHING: &[TrustKeyDecl] = &[TrustKeyDecl {
         key: "inside",
@@ -238,19 +238,31 @@ fn a_registrations_private_reach_is_its_declared_boolean() {
         default: None,
         mechanisms: &[],
     }];
-    assert!(private_reach(&entry("inside: true"), REACHING));
-    assert!(!private_reach(&entry("inside: false"), REACHING));
-    assert!(!private_reach(&entry("url: x"), REACHING));
+    for written in [
+        "inside: true",
+        "inside: false",
+        "inside: yes please",
+        "inside: 3",
+    ] {
+        for refusal in [
+            parse_entry("`bays.dock`", &entry(written), REACHING).unwrap_err(),
+            judge_entry("`bays.dock`", &entry(written), REACHING).unwrap_err(),
+        ] {
+            assert!(
+                refusal.starts_with("`bays.dock`: `inside:` is retired (BUSBAR-3027)"),
+                "{written}: {refusal}"
+            );
+            assert!(refusal.contains("advanced.allow_destinations"), "{refusal}");
+            assert!(refusal.contains("busbar --migrate-config"), "{refusal}");
+        }
+        assert!(!private_reach(&entry(written), REACHING), "{written}");
+    }
+    assert!(parse_entry("`bays.dock`", &entry("url: x"), REACHING).is_ok());
+    assert!(parse_entry("`bays.dock`", &entry("inside: null"), REACHING).is_ok());
     assert!(
-        !private_reach(&entry("inside: true"), KEYS),
-        "a plane declaring no reach key reads none"
+        parse_entry("`bays.dock`", &entry("inside: true"), KEYS).is_ok(),
+        "a plane declaring no reach key leaves the field to its own grammar"
     );
-    assert_eq!(
-        parse_entry("`bays.dock`", &entry("inside: yes please"), REACHING).unwrap_err(),
-        "`bays.dock`: `inside:` must be true or false"
-    );
-    assert!(judge_entry("`bays.dock`", &entry("inside: 3"), REACHING).is_ok());
-    assert!(parse_entry("`bays.dock`", &entry("inside: true"), REACHING).is_ok());
 }
 
 #[test]

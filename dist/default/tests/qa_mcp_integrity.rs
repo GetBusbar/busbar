@@ -343,6 +343,7 @@ async fn boot(tag: &str, upstream: &Upstream, approved_digest: &str) -> Node {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+advanced: {{ allow_destinations: ["127.0.0.1"] }}
 store: {{module: memory}}
 providers: {{}}
 models: {{}}
@@ -357,7 +358,6 @@ auth:
 {section}tools:
   probe:
     url: "{upstream}"
-    allow_private: true
     verify_ttl: "0s"
     pin:
       mechanism: cert_spki

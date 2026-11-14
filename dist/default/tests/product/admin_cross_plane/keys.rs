@@ -4682,7 +4682,6 @@ async fn drive_agent_door_verb_errors() {
     let section = serde_json::json!({
         "base-agent": {
             "url": "http://127.0.0.1:1/closed",
-            "allow_private": true,
             "pin": {"mechanism": "jws_issuer_key", "key": issuer_key_info(&issuer)}
         }
     });
