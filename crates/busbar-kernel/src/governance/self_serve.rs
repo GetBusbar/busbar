@@ -13,7 +13,7 @@ pub(crate) enum SelfEpoch {
     Free { id: String, epoch: u64 },
     /// An undeleted row already holds this derived id. It is the subject's own (the id is derived
     /// for it), so the caller judges it like any other matched row; it is never written over.
-    Occupied(VirtualKey),
+    Occupied(Box<VirtualKey>),
 }
 
 /// What [`GovState::write_self_binding`] did.
@@ -259,7 +259,7 @@ impl GovState {
             match self.core_store()?.identity().get_key(&id).await? {
                 None => return Ok(SelfEpoch::Free { id, epoch }),
                 Some(key) if key.deleted_at.is_some() || cleared.contains(&id) => {}
-                Some(key) => return Ok(SelfEpoch::Occupied(key)),
+                Some(key) => return Ok(SelfEpoch::Occupied(Box::new(key))),
             }
             stride = if stride == 0 {
                 1
@@ -292,7 +292,7 @@ impl GovState {
             .await?
         {
             SelfEpoch::Free { id, epoch } => (id, epoch),
-            SelfEpoch::Occupied(row) => return Ok(SelfWrite::Occupied(row)),
+            SelfEpoch::Occupied(row) => return Ok(SelfWrite::Occupied(*row)),
         };
         let generation = epoch.to_string();
         // A rotation stays in the group the admin chose for the previous binding.

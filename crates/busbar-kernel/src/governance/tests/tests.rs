@@ -4927,7 +4927,7 @@ async fn the_self_epoch_probe_never_steps_over_an_undeleted_derived_row() {
         gov.first_free_self_epoch(&seed, sub, 0, &none)
             .await
             .unwrap(),
-        crate::governance::SelfEpoch::Occupied(revoked.clone()),
+        crate::governance::SelfEpoch::Occupied(Box::new(revoked.clone())),
         "(i) the revoked row at epoch 0 is returned, not reused and not skipped"
     );
     let cleared = std::collections::BTreeSet::from([revoked.id.clone()]);
@@ -4949,7 +4949,7 @@ async fn the_self_epoch_probe_never_steps_over_an_undeleted_derived_row() {
         gov.first_free_self_epoch(&seed, sub, 0, &none)
             .await
             .unwrap(),
-        crate::governance::SelfEpoch::Occupied(revoked.clone()),
+        crate::governance::SelfEpoch::Occupied(Box::new(revoked.clone())),
         "(i) the tombstone at 0 is skipped, the revoked row at 1 is not"
     );
 
