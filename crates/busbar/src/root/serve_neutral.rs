@@ -242,7 +242,7 @@ impl DataRoutes {
         } else {
             caller.head_whole(rendered.status, rendered.fields, rendered.body.len());
         }
-        if !rendered.body.is_empty() && !caller.write(&rendered.body).await {
+        if !rendered.body.is_empty() && !caller.write_owned(Bytes::from(rendered.body)).await {
             admission.refuse(
                 busbar_contract::caps::StepName::Encode,
                 ReasonCode::ClientGone,
@@ -523,7 +523,7 @@ pub(crate) async fn render<C: Output>(caller: &C, rendered: Rendered) {
         caller.complete_head(rendered.status, rendered.fields);
     } else {
         caller.head_whole(rendered.status, rendered.fields, rendered.body.len());
-        let _ = caller.write(&rendered.body).await;
+        let _ = caller.write_owned(Bytes::from(rendered.body)).await;
     }
 }
 
