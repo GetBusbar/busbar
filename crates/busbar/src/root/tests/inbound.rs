@@ -894,6 +894,5 @@ fn the_roots_line_ids_and_the_kernels_rule_are_one_space() {
 #[path = "inbound_close.rs"]
 mod close_tests;
 
-#[cfg(feature = "root-admin")]
 #[path = "operator_admission_identity.rs"]
 mod operator_admission_identity;

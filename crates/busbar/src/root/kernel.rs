@@ -1312,7 +1312,6 @@ pub(crate) fn journalled_cards_at(
         .collect()
 }
 
-#[cfg(feature = "root-admin")]
 fn journalled_amendment(body: &[u8]) -> Option<JournalledCard> {
     let amendment = crate::root::units_admin::amendment_from_body(body)?;
     let author = busbar_kernel_ledger::cost::Author::Amend {
@@ -1352,11 +1351,6 @@ fn journalled_amendment(body: &[u8]) -> Option<JournalledCard> {
             author,
         },
     ))
-}
-
-#[cfg(not(feature = "root-admin"))]
-fn journalled_amendment(_body: &[u8]) -> Option<JournalledCard> {
-    None
 }
 
 impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
@@ -1430,7 +1424,6 @@ pub struct ProductionUnits {
 
     pub durability: Arc<Mutex<crate::root::durability::Durability>>,
 
-    #[cfg(feature = "root-admin")]
     pub admin: crate::root::units_admin::AdminBinding,
 
     pub store: VerbStoreHandle,
@@ -1444,16 +1437,10 @@ impl ProductionUnits {
     pub fn new(
         kernel: &busbar_kernel::teller::Kernel,
         durability: crate::root::durability::Durability,
-        #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
+        admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
-        ProductionUnits::new_sharing(
-            kernel,
-            Arc::new(Mutex::new(durability)),
-            #[cfg(feature = "root-admin")]
-            admin,
-            store,
-        )
+        ProductionUnits::new_sharing(kernel, Arc::new(Mutex::new(durability)), admin, store)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1461,14 +1448,13 @@ impl ProductionUnits {
     pub fn new_sharing(
         kernel: &busbar_kernel::teller::Kernel,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
-        #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
+        admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
         ProductionUnits {
             auth_bindings: auth_bindings::AuthBindings::without_directory(),
             arrival_door: AdmissionDoor,
             durability,
-            #[cfg(feature = "root-admin")]
             admin,
             store,
 
@@ -1476,7 +1462,7 @@ impl ProductionUnits {
         }
     }
 
-    #[cfg(all(test, feature = "root-admin"))]
+    #[cfg(test)]
     pub async fn admin_only(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
         door: crate::root::units_admin::AdminDoorFn,
@@ -1496,7 +1482,6 @@ impl ProductionUnits {
         ProductionUnits::admin_only_sharing(dispatch, door, book.durability, None)
     }
 
-    #[cfg(feature = "root-admin")]
     #[must_use]
     pub fn admin_over_book(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
@@ -1511,7 +1496,6 @@ impl ProductionUnits {
         )
     }
 
-    #[cfg(feature = "root-admin")]
     #[must_use]
     pub fn admin_only_sharing(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,

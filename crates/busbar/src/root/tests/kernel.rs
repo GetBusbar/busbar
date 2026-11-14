@@ -311,7 +311,6 @@ async fn the_units_assemble_from_values_configuration_decided() {
     let units = ProductionUnits::new(
         &kernel,
         durability,
-        #[cfg(feature = "root-admin")]
         crate::root::units_admin::AdminBinding::new(
             std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
             crate::root::units_admin::open_door(),
@@ -325,11 +324,9 @@ async fn the_units_assemble_from_values_configuration_decided() {
 
 /// A store that writes down every primitive it is asked for, so a test can say WHICH store a call
 /// landed on rather than inferring it from an `Ok`.
-#[cfg(feature = "root-admin")]
 #[derive(Default)]
 struct ReachedStore(Mutex<Vec<String>>);
 
-#[cfg(feature = "root-admin")]
 impl ReachedStore {
     fn note(&self, line: String) {
         self.0.lock().expect("the log lock").push(line);
@@ -340,7 +337,6 @@ impl ReachedStore {
     }
 }
 
-#[cfg(feature = "root-admin")]
 impl busbar_kernel::persistence::recovery_api::Store for ReachedStore {
     fn chain_break<'a>(
         &'a self,
@@ -364,7 +360,6 @@ impl busbar_kernel::persistence::recovery_api::Store for ReachedStore {
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() {
     let configured = Arc::new(ReachedStore::default());
@@ -1171,7 +1166,6 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 async fn correct_opening(holder: &RootHistory) {
     holder
         .amend(
@@ -1193,12 +1187,10 @@ async fn correct_opening(holder: &RootHistory) {
         .await
         .unwrap();
 }
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_back_dated_correction_survives_a_restart() {
     native_correction_restart().await;
 }
-#[cfg(feature = "root-admin")]
 async fn native_correction_restart() {
     let core = crate::root::real_store::core().await;
     seed_price(&core, fields_at(3.0), BOOT_A).await;
@@ -1221,7 +1213,6 @@ async fn native_correction_restart() {
         live.current().entry_at(EARNED_A).unwrap().card().digest()
     );
 }
-#[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
     let (history, correction, _) = keyed_correction_fixture();
@@ -1236,7 +1227,6 @@ fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
         Err(super::BaseMismatch::MissingBase)
     ));
 }
-#[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_whose_base_digest_differs_refuses_the_correction() {
     let (history, correction, key) = keyed_correction_fixture();
@@ -1251,7 +1241,6 @@ fn a_restore_whose_base_digest_differs_refuses_the_correction() {
         Err(super::BaseMismatch::BaseDigest)
     ));
 }
-#[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_over_the_sealed_base_rebuilds_the_identical_card() {
     let (history, correction, key) = keyed_correction_fixture();
@@ -1297,7 +1286,6 @@ fn applying_rates_registers_the_classes_a_unit_may_report() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_back_dated_correction_survives_a_restart_over_the_store() {
     native_correction_restart().await;
@@ -1355,7 +1343,6 @@ async fn store_card_history_ignores_absent_and_unusable_data_directories_without
     }
     std::fs::remove_dir_all(scratch).unwrap();
 }
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_store_amendment_keeps_its_pinned_base_and_calls_the_store_outside_the_global_money_lock()
 {
