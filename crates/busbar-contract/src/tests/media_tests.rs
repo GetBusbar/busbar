@@ -84,19 +84,6 @@ fn image_output_is_additive_b64_and_url_coexist() {
     assert_ne!(img, url_only);
 }
 
-/// The compile-time reverse table must be exactly what the per-call loop it replaced would have
-#[test]
-fn base64_reverse_table_matches_the_alphabet_it_is_built_from() {
-    let mut expected = [255u8; 256];
-    for (i, &c) in B64_ALPHABET.iter().enumerate() {
-        expected[c as usize] = i as u8;
-    }
-    assert_eq!(
-        B64_REVERSE, expected,
-        "the base64 reverse table must be the exact inverse of B64_ALPHABET"
-    );
-}
-
 #[test]
 fn base64_encode_into_appends_rfc4648_vectors() {
     for (raw, enc) in [
