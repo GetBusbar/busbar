@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use busbar_contract::section::{usage_observation_policies, USAGE_OBSERVATIONS_KEY};
+use busbar_contract::yaml::ValueExt as _;
 use busbar_kernel::plane_driver::ObservationPolicy;
 
 use crate::root::door_steps::{DoorFacts, DoorPools};
