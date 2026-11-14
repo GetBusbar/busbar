@@ -259,6 +259,10 @@ pub struct Snapshot {
     pub activations: BTreeMap<EntryKey, Activation>,
     pub voids: Vec<VoidRecord>,
     pub head: Option<EntryKey>,
+    /// The PRICES scan generation this snapshot was proven against. `None`
+    /// when the holder changed it locally or filtered it, so it no longer
+    /// equals the canonical rows at that generation.
+    pub generation: Option<u64>,
 }
 
 impl Snapshot {
@@ -795,6 +799,7 @@ impl Prices<'_> {
         let head = head_value(rows.remove(&at(b'H', None)).as_ref())?;
         let mut snapshot = Snapshot {
             head,
+            generation: Some(found.generation),
             ..Snapshot::default()
         };
         #[expect(
@@ -846,6 +851,16 @@ impl Prices<'_> {
             return Err(Error::Conflict);
         }
         Ok(snapshot)
+    }
+
+    /// One generation predicate read: true iff no write to PRICES by any
+    /// writer has landed since `generation` was observed. Voids do not move
+    /// the head row, so the namespace generation is the invalidation.
+    pub async fn unchanged_since(&self, generation: u64) -> Result<bool> {
+        Ok(self
+            .store
+            .guards_hold(&[scan_guard(PRICES, generation)])
+            .await?)
     }
 }
 fn void_address(key: EntryKey, voider: u64) -> Address {
