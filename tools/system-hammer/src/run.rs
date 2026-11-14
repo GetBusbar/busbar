@@ -273,10 +273,11 @@ fn stage_plugins(s: &Scenario, env: &Env, work: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn admin_token() -> String {
+fn admin_token() -> Result<String, String> {
     let mut b = [0u8; 16];
-    let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b);
-    format!("hammer-admin-{}", hex(&b))
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b)
+        .map_err(|_| "admin token: system RNG fill failed".to_string())?;
+    Ok(format!("hammer-admin-{}", hex(&b)))
 }
 
 fn hex(b: &[u8]) -> String {
@@ -602,7 +603,10 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
         Err(e) => return vec![failed(s, "-", e)],
     };
     let _ = std::fs::write(work.join("signing.key"), &signing);
-    let token = admin_token();
+    let token = match admin_token() {
+        Ok(t) => t,
+        Err(e) => return vec![failed(s, "-", e)],
+    };
     vars.insert("LISTEN".into(), listen.to_string());
     vars.insert("ADMIN".into(), admin.to_string());
     vars.insert("MOCK".into(), mock.base());
