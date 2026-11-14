@@ -1574,6 +1574,21 @@ fn a_present_card_refuses_every_configured_lane_it_does_not_name() {
 }
 
 #[test]
+fn a_named_lane_without_token_rates_is_accepted_as_in_1_5_5() {
+    let model = || serde_json::from_value(serde_json::json!({"provider": "standin"})).unwrap();
+    let mut cfg = make_root_cfg(
+        HashMap::new(),
+        [("a".into(), model()), ("b".into(), model())].into(),
+        HashMap::new(),
+    );
+    // 1.5.5 accepted this card (rc=0): token fields default to 0; only an UNNAMED model refuses.
+    cfg.rate_card = Some(card_yaml(
+        "a: { output_utok: 1 }\nb: { input_utok: 1, output_utok: 1 }",
+    ));
+    assert!(validate_cost_metadata(&cfg, &[&FLAT_PLANE]).is_ok());
+}
+
+#[test]
 fn missing_model_entries_refuse_while_unknown_models_and_invalid_rates_still_fail() {
     let mut cfg = make_root_cfg(
         HashMap::new(),
