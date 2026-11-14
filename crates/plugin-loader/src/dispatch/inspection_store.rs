@@ -34,14 +34,9 @@ impl ServiceStore {
         }
         let answer = {
             let mut map = self.lock(ticket);
-            let held = map.entry(ticket).or_insert_with(|| Held {
-                epoch: self.epochs.fetch_add(1, Ordering::Relaxed) + 1,
-                entries: HashMap::new(),
-                inspections: HashMap::new(),
-                conditionals: HashMap::new(),
-                conditional_units: HashMap::new(),
-                retirement: HashMap::new(),
-            });
+            let held = map
+                .entry(ticket)
+                .or_insert_with(|| Held::fresh(self.epochs.fetch_add(1, Ordering::Relaxed) + 1));
             let receipt = match held.inspections.get_mut(&caller) {
                 Some(kept) if !kept.cancelled => {
                     if kept.unit != unit {

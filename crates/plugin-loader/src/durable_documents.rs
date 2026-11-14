@@ -103,12 +103,9 @@ mod platform {
     }
     fn same_parent(dir: &File, saved: &[u8]) -> io::Result<bool> {
         let m = dir.metadata()?;
-        Ok(saved.get(..16)
-            == Some(
-                [m.dev().to_le_bytes(), m.ino().to_le_bytes()]
-                    .concat()
-                    .as_slice(),
-            ))
+        // The saved parent is its device then its inode, each 8 little-endian bytes.
+        Ok(saved.get(..8) == Some(&m.dev().to_le_bytes()[..])
+            && saved.get(8..16) == Some(&m.ino().to_le_bytes()[..]))
     }
     fn security(file: &File) -> io::Result<Zeroizing<Vec<u8>>> {
         let m = file.metadata()?;
@@ -251,8 +248,16 @@ mod platform {
             Err(e) => return Err(e),
         };
         let mut random = [0; 16];
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a startup document commit names its temporary file"
+        )]
         getrandom::fill(&mut random)
             .map_err(|_| io::Error::other("document temporary entropy failed"))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a startup document commit names its temporary file"
+        )]
         let temporary = Temporary {
             dir: &dir,
             name: CString::new(format!(".busbar-document-{}.tmp", hex::encode(random)))
@@ -374,8 +379,13 @@ mod platform {
             if text.0.is_null() {
                 return Err(io::Error::last_os_error());
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a startup document commit keeps the file's ACL text"
+            )]
             // SAFETY: acl_to_text returns a valid NUL-terminated allocated text until Owned drops.
-            Ok(unsafe { CStr::from_ptr(text.0.cast()) }.to_bytes().to_vec())
+            let acl = unsafe { CStr::from_ptr(text.0.cast()) }.to_bytes().to_vec();
+            Ok(acl)
         }
         pub(super) fn set(file: &File, bytes: &[u8]) -> io::Result<()> {
             let text = CString::new(bytes).map_err(|_| invalid())?;
@@ -417,6 +427,7 @@ mod platform {
                     return Err(io::Error::last_os_error());
                 }
                 names.truncate(n as usize);
+                // busbar:expect(bp::fresh_buffer, reason = "boot: a startup document commit keeps the file's security attributes")
                 let mut out = Vec::new();
                 for key in names.split(|b| *b == 0).filter(|key| {
                     key.starts_with(b"security.") || key.starts_with(b"system.posix_acl_")
@@ -532,6 +543,7 @@ mod platform {
             return Err(invalid());
         }
         let mut current = PathBuf::new();
+        // busbar:expect(bp::fresh_buffer, reason = "boot: a startup document commit holds its parent directories open")
         let mut held = Vec::new();
         for component in absolute.parent().ok_or_else(invalid)?.components() {
             current.push(component.as_os_str());

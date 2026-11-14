@@ -57,7 +57,12 @@ impl PlaneInstance {
     }
 
     pub fn refusal_statuses(&self) -> Vec<RefusalStatus> {
-        self.plugin.refusal_statuses().to_vec()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the plane driver's config takes its own copy of the refusal table once"
+        )]
+        let statuses = self.plugin.refusal_statuses().to_vec();
+        statuses
     }
 
     fn pure<I: InFrame, O: OutFrame>(
@@ -364,6 +369,7 @@ impl PieceInFlight for InFlight<OnPieceIn, OnPieceOut> {
     }
 
     fn cancel_writes(&self) -> Vec<CancelWrite> {
+        // busbar:expect(bp::clone_alloc, reason = "error: read only after a piece was cancelled, for the writes its cancel owes")
         self.done
             .as_ref()
             .map(|d| d.cancel_writes.clone())

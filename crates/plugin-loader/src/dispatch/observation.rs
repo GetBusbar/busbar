@@ -56,8 +56,9 @@ impl AnswerError {
     }
 }
 
-/// Compose host-owned input without letting a previous extension impersonate its scope.
-fn compose(prior: &[u8], supplied: &[u8]) -> Result<Vec<u8>, ()> {
+/// Check that host-owned input composes without letting a previous extension impersonate its
+/// scope; the composed length.
+fn composable(prior: &[u8], supplied: &[u8]) -> Result<usize, ()> {
     if supplied.len() > wire::MAX_BYTES {
         return Err(());
     }
@@ -84,12 +85,17 @@ fn compose(prior: &[u8], supplied: &[u8]) -> Result<Vec<u8>, ()> {
     {
         return Err(());
     }
-    let length = prior
+    prior
         .len()
         .checked_add(supplied.len())
         .filter(|n| *n <= HARD_MAX_BYTES as usize)
-        .ok_or(())?;
-    let mut bytes = Vec::with_capacity(length);
+        .ok_or(())
+}
+
+/// Compose host-owned input without letting a previous extension impersonate its scope.
+#[cfg(test)]
+fn compose(prior: &[u8], supplied: &[u8]) -> Result<Vec<u8>, ()> {
+    let mut bytes = Vec::with_capacity(composable(prior, supplied)?);
     bytes.extend_from_slice(prior);
     bytes.extend_from_slice(supplied);
     Ok(bytes)
@@ -139,7 +145,16 @@ pub(crate) unsafe fn prepare(
     }
     // SAFETY: the host-owned original loan is bounded before forming this slice.
     let prior = unsafe { super::validate::lent(original.ptr, original.len) }.ok_or(())?;
-    let bytes = zeroize::Zeroizing::new(compose(prior, &supplied)?);
+    let length = composable(prior, &supplied)?;
+    // With no prior extension the supplied bytes are the input as they are: no copy.
+    let bytes = if prior.is_empty() {
+        supplied
+    } else {
+        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(length));
+        bytes.extend_from_slice(prior);
+        bytes.extend_from_slice(&supplied);
+        bytes
+    };
     head.extensions = Blob {
         ptr: bytes.as_ptr(),
         len: bytes.len(),

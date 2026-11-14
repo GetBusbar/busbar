@@ -75,17 +75,38 @@ pub(crate) fn copy_blob(b: Blob) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
 }
 
+/// A plugin's error bytes as text: the plugin's own buffer when it is UTF-8 (no copy), a lossy
+/// rendering only when it is not.
+pub(crate) fn lossy(error: Vec<u8>) -> String {
+    match String::from_utf8(error) {
+        Ok(text) => text,
+        Err(e) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a plugin's error text was not UTF-8"
+            )]
+            let text = String::from_utf8_lossy(e.as_bytes()).into_owned();
+            text
+        }
+    }
+}
+
 pub(crate) fn why(outcome: Outcome, error: Option<Vec<u8>>) -> String {
-    error.map_or_else(
-        || format!("{outcome:?}"),
-        |e| String::from_utf8_lossy(&e).into_owned(),
-    )
+    match error {
+        Some(e) => lossy(e),
+        None => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: names the outcome of a failed plugin call"
+            )]
+            let named = format!("{outcome:?}");
+            named
+        }
+    }
 }
 
 pub(crate) fn text(error: Option<Vec<u8>>) -> Option<String> {
-    error
-        .map(|e| String::from_utf8_lossy(&e).into_owned())
-        .filter(|t| !t.is_empty())
+    error.map(lossy).filter(|t| !t.is_empty())
 }
 
 pub(crate) fn open_in(settings: Blob) -> OpenIn {
@@ -134,7 +155,7 @@ pub(crate) fn validate_json<K: Kind>(plugin: &Plugin<K>, settings: &[u8]) -> Res
     let _lease = AnswerLease::new(plugin, c.lease);
     match c.outcome {
         Outcome::Ready => Ok(()),
-        o => Err(text(c.error).unwrap_or_else(|| format!("{o:?}"))),
+        o => Err(text(c.error).unwrap_or_else(|| why(o, None))),
     }
 }
 

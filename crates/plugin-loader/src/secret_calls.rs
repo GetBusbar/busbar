@@ -27,8 +27,8 @@ use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::lifecycle::{self, blob, open_frame, AnswerLease};
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
-    EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
+    in_head, instant_at, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable,
+    Dispatcher, EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
 };
 
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -56,7 +56,7 @@ impl QueuedDiskResolve {
         let Some(job) = self.take() else {
             return;
         };
-        if Instant::now() < self.deadline {
+        if instant_at(now_ns()) < self.deadline {
             job();
         }
     }
@@ -108,8 +108,13 @@ impl Lending {
     fn new(settings: &[u8], cap: usize) -> (Arc<Self>, ResolveIn) {
         let mut held = SecretValue::zeroed(cap);
         let (buf, cap) = held.lend_mut();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a secret reference resolves when config is loaded; the lent settings outlive a timed-out wait"
+        )]
+        let settings = zeroize::Zeroizing::new(settings.to_vec());
         let lending = Arc::new(Self {
-            settings: zeroize::Zeroizing::new(settings.to_vec()),
+            settings,
             held: Mutex::new(held),
         });
         let input = resolve_in(blob(&lending.settings, BLOB_JSON, 0), buf, cap);
@@ -165,7 +170,11 @@ pub fn check(plugin: &Plugin<Secret>, settings: &[u8]) -> Result<(), Vec<String>
     let c = plugin.call(slot::CHECK, &mut f);
     let _lease = AnswerLease::new(plugin, c.lease);
     let name = plugin.name();
-    match c.outcome {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: lists why the secret module refused a reference at config time"
+    )]
+    let checked = match c.outcome {
         Outcome::Ready | Outcome::Refused => Ok(()),
         Outcome::Failed => {
             let text = c.error.as_deref().unwrap_or_default();
@@ -182,17 +191,28 @@ pub fn check(plugin: &Plugin<Secret>, settings: &[u8]) -> Result<(), Vec<String>
         o => Err(vec![format!(
             "secret module '{name}' answered {o:?} to check the reference"
         )]),
-    }
+    };
+    checked
 }
 
 fn refused(error_kind: u32, text: String) -> SecretRefused {
     SecretRefused { error_kind, text }
 }
 
+/// A refusal whose text is formatted here, on the refusal path only.
+fn refused_fmt(error_kind: u32, text: std::fmt::Arguments<'_>) -> SecretRefused {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: names the secret module whose resolve was refused"
+    )]
+    let text = format!("{text}");
+    refused(error_kind, text)
+}
+
 fn changed_size(name: &str) -> SecretRefused {
-    refused(
+    refused_fmt(
         ERROR_KIND_UNAVAILABLE,
-        format!(
+        format_args!(
             "secret module '{name}' could not resolve: the secret's value changed size between \
              the host's two reads; resolve it again"
         ),
@@ -203,11 +223,17 @@ fn short_again(outcome: Outcome, out: &ResolveOut, lent: usize) -> bool {
     outcome == Outcome::Fault && out.needed > lent as u64
 }
 
-fn answer_text(error: Option<&[u8]>, fallback: String) -> String {
-    error
-        .map(|e| String::from_utf8_lossy(e).into_owned())
-        .filter(|t| !t.is_empty())
-        .unwrap_or(fallback)
+/// The plugin's own refusal text, or the fallback, formatted only when it is the answer.
+fn answer_text(error: Option<&[u8]>, fallback: std::fmt::Arguments<'_>) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the text of a refused secret resolve"
+    )]
+    let text = match error.filter(|e| !e.is_empty()) {
+        Some(e) => String::from_utf8_lossy(e).into_owned(),
+        None => format!("{fallback}"),
+    };
+    text
 }
 
 impl LoadedSecret {
@@ -217,6 +243,10 @@ impl LoadedSecret {
         settings: &[u8],
         secrets: &[SecretValue<Vec<u8>>],
     ) -> Result<Self, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: opening a secret module lends its secret material once"
+        )]
         let lent: Vec<Blob> = match (secrets.is_empty(), dispatcher.seal()) {
             (true, _) => Vec::new(),
             (false, Some(seal)) => secrets
@@ -263,10 +293,13 @@ impl LoadedSecret {
         lane: DiskRun,
         settings: &[u8],
     ) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
-        let name = self.name().to_string();
-        let deadline = Instant::now() + WAIT;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a disk-lane resolve runs at config time only, off this thread"
+        )]
+        let (name, owned) = (self.name().to_string(), settings.to_vec());
+        let deadline = instant_at(now_ns()) + WAIT;
         let opened = Arc::clone(&self.opened);
-        let owned = settings.to_vec();
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let work: DiskJob = Box::new(move || {
             let _ = tx.send(opened.resolve_here(&owned));
@@ -278,18 +311,20 @@ impl LoadedSecret {
         };
         let queued = QueuedDiskResolve { pending, deadline };
         lane(Box::new(move || queued.run())).map_err(|e| {
-            refused(
+            refused_fmt(
                 ERROR_KIND_UNAVAILABLE,
-                format!("secret module '{name}' could not reach the host's disk lane: {e}"),
+                format_args!("secret module '{name}' could not reach the host's disk lane: {e}"),
             )
         })?;
-        let answer = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        // busbar:expect(bp::clock_repeat, reason = "config: a config-time disk-lane resolve waits out the rest of its budget")
+        let left = deadline.saturating_duration_since(instant_at(now_ns()));
+        let answer = rx.recv_timeout(left);
 
         drop(waiting);
         answer.unwrap_or_else(|_| {
-            Err(refused(
+            Err(refused_fmt(
                 ERROR_KIND_INTERNAL,
-                format!("secret module '{name}' did not answer its resolve on the disk lane"),
+                format_args!("secret module '{name}' did not answer its resolve on the disk lane"),
             ))
         })
     }
@@ -327,14 +362,14 @@ impl Opened {
                 f.out.error_kind,
                 answer_text(
                     c.error.as_deref(),
-                    format!("secret module '{name}' failed to resolve"),
+                    format_args!("secret module '{name}' failed to resolve"),
                 ),
             )),
             o => Err(refused(
                 ERROR_KIND_INTERNAL,
                 answer_text(
                     c.error.as_deref(),
-                    format!("secret module '{name}' answered {o:?} to resolve"),
+                    format_args!("secret module '{name}' answered {o:?} to resolve"),
                 ),
             )),
         }
@@ -351,18 +386,18 @@ impl SecretCalls for LoadedSecret {
     fn resolve(&self, settings: &[u8]) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
         let name = self.name();
         if !matches!(self.disk, Disk::No) {
-            return Err(refused(
+            return Err(refused_fmt(
                 ERROR_KIND_DENIED,
-                format!("secret module '{name}': {RESOLVE_OFF_CONFIG_TIME}"),
+                format_args!("secret module '{name}': {RESOLVE_OFF_CONFIG_TIME}"),
             ));
         }
         let plugin = &self.opened.plugin;
         let workers = self.dispatcher.workers().max(1);
         let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
         let Some(ticket) = self.dispatcher.mint(worker) else {
-            return Err(refused(
+            return Err(refused_fmt(
                 ERROR_KIND_INTERNAL,
-                format!("secret module '{name}' could not be called: no ticket"),
+                format_args!("secret module '{name}' could not be called: no ticket"),
             ));
         };
 
@@ -393,9 +428,9 @@ impl SecretCalls for LoadedSecret {
         };
         self.dispatcher.recycle(ticket);
         let Some(done) = done else {
-            return Err(refused(
+            return Err(refused_fmt(
                 ERROR_KIND_INTERNAL,
-                format!("secret module '{name}' did not answer its resolve"),
+                format_args!("secret module '{name}' did not answer its resolve"),
             ));
         };
         if !first
@@ -412,14 +447,14 @@ impl SecretCalls for LoadedSecret {
                 f.map_or(ERROR_KIND_INTERNAL, |f| f.out.error_kind),
                 answer_text(
                     done.error.as_deref(),
-                    format!("secret module '{name}' failed to resolve"),
+                    format_args!("secret module '{name}' failed to resolve"),
                 ),
             )),
             (o, _) => Err(refused(
                 ERROR_KIND_INTERNAL,
                 answer_text(
                     done.error.as_deref(),
-                    format!("secret module '{name}' answered {o:?} to resolve"),
+                    format_args!("secret module '{name}' answered {o:?} to resolve"),
                 ),
             )),
         }
@@ -433,9 +468,9 @@ impl SecretCalls for LoadedSecret {
         match self.disk {
             Disk::No => self.resolve(settings),
             Disk::Lane(lane) => self.resolve_on_lane(lane, settings),
-            Disk::Unwired => Err(refused(
+            Disk::Unwired => Err(refused_fmt(
                 ERROR_KIND_UNAVAILABLE,
-                format!(
+                format_args!(
                     "secret module '{}' reads the disk and the host wired no disk lane",
                     self.name()
                 ),
@@ -463,7 +498,7 @@ pub struct SecretRows {
 #[derive(Default)]
 struct Checkers {
     generation: Arc<()>,
-    plugins: std::collections::HashMap<CheckerKey, Arc<Plugin<Secret>>>,
+    plugins: foldhash::HashMap<CheckerKey, Arc<Plugin<Secret>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -472,14 +507,24 @@ enum CheckerKey {
     Dropped(usize),
 }
 
+/// The candidates' names, listed as a `Debug` list without collecting them.
+struct CandidateNames<'a>(&'a [Candidate]);
+
+impl std::fmt::Debug for CandidateNames<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|c| &c.name))
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for SecretRows {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let names = |c: &[Candidate]| c.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
         f.debug_struct("SecretRows")
-            .field("linked", &names(&self.linked))
+            .field("linked", &CandidateNames(&self.linked))
             .field(
                 "dropped",
-                &names(&self.dropped.read().unwrap_or_else(PoisonError::into_inner)),
+                &CandidateNames(&self.dropped.read().unwrap_or_else(PoisonError::into_inner)),
             )
             .finish_non_exhaustive()
     }
@@ -510,8 +555,17 @@ impl SecretRows {
 
     pub fn declare_linked(&mut self, door: DoorFn, json: &str) -> Result<&mut Self, String> {
         let name = Candidate::linked(door)?.name;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a linked secret's declares section did not read"
+        )]
         let declares = crate::sign::Declares::from_declares_json(json.as_bytes())
             .map_err(|e| format!("linked secret '{name}': its declares section: {e}"))?;
+        // busbar:expect(bp::state_scan, reason = "boot: a linked secret's declares are matched to its row once, at link time")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a linked secret declares, but no linked row is it"
+        )]
         let row = self
             .linked
             .iter_mut()
@@ -536,16 +590,23 @@ impl SecretRows {
     }
 
     fn label(module: &str) -> String {
-        format!("secrets.{module}")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a secret module's instance label, named when config opens or checks it"
+        )]
+        let label = format!("secrets.{module}");
+        label
     }
 
     pub fn link(&mut self, door: DoorFn) -> Result<&mut Self, String> {
         let c = Candidate::linked(door)?;
         if c.kind != KindCode::Secret {
-            return Err(format!(
-                "`{}` is a {:?} door, not a secret one",
-                c.name, c.kind
-            ));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a linked door of another kind was offered as a secret"
+            )]
+            let refused = format!("`{}` is a {:?} door, not a secret one", c.name, c.kind);
+            return Err(refused);
         }
         self.linked.push(c);
 
@@ -572,6 +633,10 @@ impl SecretRows {
         candidates: impl IntoIterator<Item = Candidate>,
     ) -> Result<(), String> {
         let secrets = self.judge_dropped(candidates)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: admitting dropped secrets checks them with the linked ones once"
+        )]
         let all: Vec<Candidate> = self
             .linked
             .iter()
@@ -589,22 +654,33 @@ impl SecretRows {
         &self,
         candidates: impl IntoIterator<Item = Candidate>,
     ) -> Result<Vec<Candidate>, String> {
-        let secrets: Vec<Candidate> = candidates
-            .into_iter()
-            .filter(|c| c.kind == KindCode::Secret)
-            .collect();
-        let all: Vec<Candidate> = self
-            .linked
-            .iter()
-            .cloned()
-            .chain(secrets.iter().cloned())
-            .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: judging dropped secrets checks them with the linked ones once"
+        )]
+        let (secrets, all) = {
+            let secrets: Vec<Candidate> = candidates
+                .into_iter()
+                .filter(|c| c.kind == KindCode::Secret)
+                .collect();
+            let all: Vec<Candidate> = self
+                .linked
+                .iter()
+                .cloned()
+                .chain(secrets.iter().cloned())
+                .collect();
+            (secrets, all)
+        };
         crate::boot::one_owner(&all)?;
         crate::boot::sugars_of(&all)?;
         Ok(secrets)
     }
 
     pub fn set_dropped(&self, candidates: impl IntoIterator<Item = Candidate>) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the admitted dropped secrets are set once per registry load"
+        )]
         let secrets = candidates
             .into_iter()
             .filter(|c| c.kind == KindCode::Secret)
@@ -646,7 +722,12 @@ impl SecretRows {
             (key, candidate.clone(), Arc::clone(&checkers.generation))
         };
 
-        let loaded = Arc::new(self.load(&candidate, &format!("{}.check", Self::label(module)))?);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a secret module's checker is loaded once per registry generation"
+        )]
+        let label = format!("{}.check", Self::label(module));
+        let loaded = Arc::new(self.load(&candidate, &label)?);
         let plugin = {
             let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
             if Arc::ptr_eq(&generation, &checkers.generation) {
@@ -664,21 +745,20 @@ impl SecretRows {
     }
 
     fn find(&self, module: &str) -> Option<Candidate> {
-        self.linked
-            .iter()
-            .find(|c| c.answers(module))
-            .cloned()
-            .or_else(|| {
-                self.dropped
-                    .read()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .iter()
-                    .find(|c| c.answers(module))
-                    .cloned()
-            })
+        // busbar:expect(bp::state_scan, reason = "config: a configured secret module is matched to its candidate when config is read")
+        if let Some(c) = self.linked.iter().find(|c| c.answers(module)) {
+            return Some(c.clone());
+        }
+        let dropped = self.dropped.read().unwrap_or_else(PoisonError::into_inner);
+        // busbar:expect(bp::state_scan, reason = "config: a configured secret module is matched to its candidate when config is read")
+        dropped.iter().find(|c| c.answers(module)).cloned()
     }
 
     fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the secret module that could not be loaded"
+        )]
         let sink: Arc<dyn EnvelopeSink> = match self.logs {
             Some(logs) => Arc::new(
                 logs()
@@ -687,6 +767,7 @@ impl SecretRows {
             ),
             None => Arc::new(NoSink),
         };
+        // busbar:expect(bp::into_alloc, reason = "boot: a loaded secret instance keeps its label")
         let bind = Bind {
             instance: Arc::from(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
@@ -695,29 +776,43 @@ impl SecretRows {
 
             conns: ConnTable::serving((self.conns)()),
         };
-        match &c.origin {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the secret module that could not be loaded"
+        )]
+        let loaded = match &c.origin {
             Origin::Linked(row) => load_linked::<Secret>(row, bind),
             Origin::Dropped { file, bytes } => {
                 load_dropped_bytes::<Secret>(bytes, file, &c.stated, bind)
             }
         }
-        .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))
+        .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name));
+        loaded
     }
 
     fn secret_refs(c: &Candidate) -> Result<Vec<String>, String> {
-        busbar_contract::abi::mechanism::rendering::read(&c.stated)
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a secret module's Statement did not read back"
+        )]
+        let refs = busbar_contract::abi::mechanism::rendering::read(&c.stated)
             .map(|r| r.secret_refs)
             .map_err(|e| {
                 format!(
                     "secret module '{}': its Statement does not read back (byte {}: {})",
                     c.name, e.at, e.what
                 )
-            })
+            });
+        refs
     }
 }
 
 impl SecretAxis for SecretRows {
     fn sugars(&self) -> busbar_contract::secret_ref::Sugars {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the secret sugars are gathered when config is read"
+        )]
         let all: Vec<Candidate> = self
             .linked
             .iter()
@@ -746,10 +841,18 @@ impl SecretAxis for SecretRows {
         let Some(plugin) = self.checker(module).map_err(|e| vec![e])? else {
             return Ok(());
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a secret reference's settings did not render for checking"
+        )]
         let held = settings
             .encode()
             .map_err(|_| vec!["cannot encode source settings".to_owned()])?;
         let dispatcher = (self.dispatcher)();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: checking a secret reference needs the host settings seal"
+        )]
         let seal = dispatcher
             .seal()
             .ok_or_else(|| vec!["source validation requires the host settings seal".to_owned()])?;
@@ -757,10 +860,16 @@ impl SecretAxis for SecretRows {
     }
 
     fn linked(&self, module: &str) -> bool {
+        // busbar:expect(bp::state_scan, reason = "config: whether config names a linked secret module")
         self.linked.iter().any(|c| c.answers(module))
     }
 
     fn shared(&self, module: &str) -> Result<Arc<dyn SecretCalls>, String> {
+        // busbar:expect(bp::state_scan, reason = "config: a shared secret module is matched when config opens it")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: names a configured secret module no linked plugin answers to"
+        )]
         let c = self
             .linked
             .iter()
@@ -781,10 +890,18 @@ impl SecretAxis for SecretRows {
         settings: Option<&busbar_contract::plugin_settings::Settings>,
         resolve: &dyn Fn(&SecretRef) -> Result<SecretValue<Vec<u8>>, String>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: names a configured secret module no plugin answers to"
+        )]
         let c = self
             .find(module)
             .ok_or_else(|| format!("no secret module answers to '{module}'"))?;
         let keys = Self::secret_refs(&c)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: opening a secret module renders its settings once"
+        )]
         let (bytes, secrets) = match settings {
             Some(settings) => {
                 let (remaining, secrets) =

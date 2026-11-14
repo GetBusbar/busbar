@@ -97,7 +97,15 @@ impl<'r> ExportRows<'r> {
         opening: Option<u32>,
     ) -> Result<Plugin<Export>, String> {
         let name = &row.manifest.name;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the export plugin that did not load"
+        )]
         let refused = |e: crate::dispatch::LoadError| format!("export plugin '{name}': {e}");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the export plugin that has no door"
+        )]
         let image = match row.door() {
             Some(door) => Image::Linked(LinkedRow::of_raw(door).map_err(refused)?),
             None => match row.manifest.stated_rendering()? {
@@ -117,6 +125,7 @@ impl<'r> ExportRows<'r> {
             }
         };
         let max_inflight_cap = opening.unwrap_or(DEFAULT_INFLIGHT);
+        // busbar:expect(bp::into_alloc, reason = "boot: a loaded export instance keeps its label")
         let bind = Bind {
             instance: Arc::from(label),
             max_inflight_cap,
@@ -149,6 +158,10 @@ impl<'r> ExportRows<'r> {
         match self.load(row, &label(instance), None) {
             Ok(p) => {
                 let streams = p.context::<ExportFacts>().map(|f| f.streams.clone());
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: an export probe's settings did not render"
+                )]
                 let text = match settings.encode() {
                     Ok(text) => text,
                     Err(error) => return Some((streams, vec![error.to_string()], None)),
@@ -182,12 +195,19 @@ impl<'r> ExportRows<'r> {
 
     #[must_use]
     pub fn linked_modules(&self) -> Vec<String> {
-        self.registry
+        // busbar:expect(bp::clone_alloc, reason = "config: lists the linked export modules config may name")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: lists the linked export modules config may name"
+        )]
+        let modules = self
+            .registry
             .linked()
             .iter()
             .filter(|p| p.manifest.kind == SECTION)
             .map(|p| p.manifest.alias.clone())
-            .collect()
+            .collect();
+        modules
     }
 
     #[must_use]
@@ -204,6 +224,7 @@ impl<'r> ExportRows<'r> {
         let Some(row) = self.row(module) else {
             return Vec::new();
         };
+        // busbar:expect(bp::clone_alloc, reason = "config: an export module's routes, read when config names it")
         self.load(row, &label(module), None)
             .ok()
             .and_then(|p| p.context::<ExportFacts>().map(|f| f.routes.clone()))
@@ -215,6 +236,7 @@ impl<'r> ExportRows<'r> {
         let Some(row) = self.row(module) else {
             return Vec::new();
         };
+        // busbar:expect(bp::clone_alloc, reason = "config: an export module's public routes, read when config names it")
         self.load(row, &label(module), None)
             .ok()
             .and_then(|p| p.context::<ExportFacts>().map(|f| f.public_routes.clone()))
@@ -229,6 +251,7 @@ impl<'r> ExportRows<'r> {
         self.load(row, &label(module), None)
             .ok()
             .and_then(|p| {
+                // busbar:expect(bp::clone_alloc, reason = "config: an export module's persistent routes, read when config names it")
                 p.context::<ExportFacts>()
                     .map(|f| f.persistent_routes.clone())
             })
@@ -250,18 +273,30 @@ impl<'r> ExportRows<'r> {
         let mut listed: zeroize::Zeroizing<Vec<(String, Vec<u8>)>> =
             zeroize::Zeroizing::new(Vec::with_capacity(instances.len()));
         for (name, settings) in instances {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export check's instance settings did not render"
+            )]
             let bytes = match settings.encode() {
                 Ok(bytes) => bytes,
                 Err(error) => return Some(vec![error.to_string()]),
             };
             listed.push((name.clone(), bytes.expose(seal).clone()));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an export check with no instances checks the empty settings"
+        )]
         let none = [(module.to_string(), b"{}".to_vec())];
         let candidates = if listed.is_empty() {
             &none[..]
         } else {
             &listed[..]
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: names the export module a check could not run"
+        )]
         let unchecked = |why: String| Some(vec![format!("export `module: {module}`: {why}")]);
         let mut unopened = None;
         for (named, settings) in candidates {
@@ -272,6 +307,10 @@ impl<'r> ExportRows<'r> {
             if export_door::validate(&p, settings).is_err() {
                 continue;
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: names the export module whose check failed"
+            )]
             match ExportInstance::open(p, self.dispatcher.clone(), settings) {
                 Ok(opened) => {
                     return Some(
@@ -291,6 +330,10 @@ impl<'r> ExportRows<'r> {
         label: &str,
         settings: &PreparedExport,
     ) -> Result<Arc<dyn ExportCalls>, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names a configured export module that did not load"
+        )]
         let row =
             self.row(module)
                 .ok_or_else(|| match self.registry.unresolved_reason(module) {
@@ -348,7 +391,12 @@ impl<'r> ExportRows<'r> {
 }
 
 fn label(instance: &str) -> String {
-    format!("{SECTION}.{instance}")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an export instance's label, named when config loads it"
+    )]
+    let label = format!("{SECTION}.{instance}");
+    label
 }
 
 #[cfg(test)]

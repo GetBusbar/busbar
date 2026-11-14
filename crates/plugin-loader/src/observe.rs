@@ -68,8 +68,8 @@ pub const fn conn_reason(e: busbar_contract::conn::ConnError) -> &'static str {
 pub const INTAKE_BOUND: usize = 4096;
 
 struct Observation {
-    plugin: String,
-    kind: String,
+    plugin: std::sync::Arc<str>,
+    kind: &'static str,
     metrics: Vec<serde_json::Value>,
     diagnostics: Vec<serde_json::Value>,
 
@@ -87,7 +87,6 @@ struct Intake {
 #[derive(Default)]
 struct IntakeCounts {
     sent: std::sync::atomic::AtomicU64,
-    #[cfg_attr(not(test), allow(dead_code))]
     done: std::sync::atomic::AtomicU64,
     dropped: std::sync::atomic::AtomicU64,
 }
@@ -162,7 +161,7 @@ impl Observing {
                             if let Ok(o) = &received {
                                 #[cfg(test)]
                                 testing::OBSERVING.store(o.scope, Ordering::SeqCst);
-                                observer.observe(&o.plugin, &o.kind, &o.metrics, &o.diagnostics);
+                                observer.observe(&o.plugin, o.kind, &o.metrics, &o.diagnostics);
                             }
 
                             let lost = c.dropped.swap(0, Ordering::AcqRel);
@@ -194,22 +193,23 @@ impl Observing {
             .as_ref()
     }
 
+    /// Hand one observation to the intake: its plugin name shared, its entries moved, never copied.
     fn enqueue(
         &self,
-        plugin: &str,
-        kind: &str,
-        metrics: &[serde_json::Value],
-        diagnostics: &[serde_json::Value],
+        plugin: &std::sync::Arc<str>,
+        kind: &'static str,
+        metrics: Vec<serde_json::Value>,
+        diagnostics: Vec<serde_json::Value>,
     ) {
         use std::sync::atomic::Ordering;
         let Some(intake) = self.intake() else {
             return;
         };
         let observation = Observation {
-            plugin: plugin.to_string(),
-            kind: kind.to_string(),
-            metrics: metrics.to_vec(),
-            diagnostics: diagnostics.to_vec(),
+            plugin: std::sync::Arc::clone(plugin),
+            kind,
+            metrics,
+            diagnostics,
             #[cfg(test)]
             scope: testing::scope(),
         };
@@ -221,19 +221,24 @@ impl Observing {
         }
     }
 
-    pub(crate) fn fold<R>(&self, plugin: &str, kind: &str, envelope: &Envelope<R>) {
+    pub(crate) fn fold<R>(
+        &self,
+        plugin: &std::sync::Arc<str>,
+        kind: &'static str,
+        envelope: Envelope<R>,
+    ) {
         if envelope.is_bare() {
             return;
         }
-        self.enqueue(plugin, kind, &envelope.metrics, &envelope.diagnostics);
+        self.enqueue(plugin, kind, envelope.metrics, envelope.diagnostics);
     }
 
     pub(crate) fn fold_entries(
         &self,
-        plugin: &str,
-        kind: &str,
-        metrics: &[serde_json::Value],
-        diagnostics: &[serde_json::Value],
+        plugin: &std::sync::Arc<str>,
+        kind: &'static str,
+        metrics: Vec<serde_json::Value>,
+        diagnostics: Vec<serde_json::Value>,
     ) {
         if metrics.is_empty() && diagnostics.is_empty() {
             return;
@@ -263,7 +268,7 @@ pub(crate) fn settle() {
 
 pub struct EnvelopeObserver {
     observing: std::sync::Arc<Observing>,
-    plugin: String,
+    plugin: std::sync::Arc<str>,
     kind: &'static str,
     families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
 
@@ -300,9 +305,10 @@ impl EnvelopeObserver {
         kind: &'static str,
         families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
     ) -> Self {
+        // busbar:expect(bp::into_alloc, reason = "boot: an instance's envelope observer keeps its plugin name, shared by every observation")
         Self {
             observing,
-            plugin: plugin.to_string(),
+            plugin: std::sync::Arc::from(plugin),
             kind,
             families,
             then: None,
@@ -350,7 +356,7 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
             return;
         };
         self.observing
-            .fold_entries(&self.plugin, self.kind, &[entry], &[]);
+            .fold_entries(&self.plugin, self.kind, vec![entry], Vec::new());
     }
 
     fn diag(&self, d: crate::dispatch::Diagnostic<'_>) {
@@ -376,7 +382,7 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
             return;
         };
         self.observing
-            .fold_entries(&self.plugin, self.kind, &[], &[entry]);
+            .fold_entries(&self.plugin, self.kind, Vec::new(), vec![entry]);
     }
 
     fn refused(&self, instance: &str, refusal: BindRefusal<'_>) {
@@ -403,7 +409,7 @@ struct Granted {
     series: Vec<busbar_contract::abi::mechanism::observe::SeriesDecl>,
 }
 
-static GRANTS: std::sync::RwLock<Option<std::collections::HashMap<String, Granted>>> =
+static GRANTS: std::sync::RwLock<Option<foldhash::HashMap<String, Granted>>> =
     std::sync::RwLock::new(None);
 
 /// One first-party instance's hold on its plugin's grant ([`grant_series`]): dropped with the
@@ -447,27 +453,42 @@ pub fn grant_series(
     let grants = guard.get_or_insert_with(Default::default);
     for d in declared {
         if observing.is_host_series(&d.name) {
-            return Err(format!(
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a plugin declares a series the host itself emits"
+            )]
+            let refused = format!(
                 "plugin '{plugin}' declares the series '{}', which the host itself emits",
                 d.name
-            ));
+            );
+            return Err(refused);
         }
         let owner = grants
             .iter()
             .find(|(p, g)| *p != plugin && g.series.iter().any(|held| held.name == d.name));
         if let Some((owner, _)) = owner {
-            return Err(format!(
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a plugin declares a series already granted to another"
+            )]
+            let refused = format!(
                 "plugin '{plugin}' declares the series '{}', already granted to plugin '{owner}'",
                 d.name
-            ));
+            );
+            return Err(refused);
         }
     }
-    let granted = grants.entry(plugin.to_string()).or_default();
-    granted.holders += 1;
-    granted.series = declared.to_vec();
-    Ok(SeriesGrant {
-        plugin: Some(plugin.to_string()),
-    })
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a first-party instance takes its grant once, when it loads"
+    )]
+    let held = {
+        let granted = grants.entry(plugin.to_string()).or_default();
+        granted.holders += 1;
+        granted.series = declared.to_vec();
+        plugin.to_string()
+    };
+    Ok(SeriesGrant { plugin: Some(held) })
 }
 
 pub fn first_party(plugin: &str) -> bool {
@@ -489,7 +510,12 @@ pub fn shed_series(plugin: &str) -> Vec<String> {
         .into_iter()
         .flat_map(|g| g.series.iter());
     let shed = granted.filter(|d| d.shed && d.kind == "counter");
-    shed.map(|d| d.name.clone()).collect()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: an export that shed lines names the series it reports them under"
+    )]
+    let names = shed.map(|d| d.name.clone()).collect();
+    names
 }
 
 #[cfg(test)]

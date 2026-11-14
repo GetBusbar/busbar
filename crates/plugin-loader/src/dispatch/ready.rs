@@ -22,10 +22,16 @@ impl<K: Kind> Plugin<K> {
         if !self.has_ready() {
             return Ok(());
         }
-        let failed = |reason: String| format!("plugin '{}' ready failed: {reason}", self.name());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names a plugin that did not become ready at load"
+        )]
+        let failed = |reason: &dyn std::fmt::Display| {
+            format!("plugin '{}' ready failed: {reason}", self.name())
+        };
         let ticket = dispatcher
             .mint(0)
-            .ok_or_else(|| failed("no ticket is free".into()))?;
+            .ok_or_else(|| failed(&"no ticket is free"))?;
         let frame = Frame::new(
             ReadyIn {
                 head: in_head(),
@@ -40,15 +46,13 @@ impl<K: Kind> Plugin<K> {
         drop(reply);
         dispatcher.recycle(ticket);
         let Some(done) = done else {
-            return Err(failed(format!("no answer within {deadline:?}")));
+            return Err(failed(&format_args!("no answer within {deadline:?}")));
         };
         let _lease = AnswerLease::new(self, done.lease);
         match (done.outcome, done.error) {
             (Outcome::Ready, _) => Ok(()),
-            (_, Some(text)) if !text.is_empty() => {
-                Err(failed(String::from_utf8_lossy(&text).into_owned()))
-            }
-            (o, _) => Err(failed(format!("{o:?}"))),
+            (_, Some(text)) if !text.is_empty() => Err(failed(&String::from_utf8_lossy(&text))),
+            (o, _) => Err(failed(&format_args!("{o:?}"))),
         }
     }
 }
