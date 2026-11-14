@@ -1046,7 +1046,7 @@ impl AuthMiddleware {
                     now,
                     expected_aud,
                     Reach::Inline,
-                    &mut Vec::new(),
+                    &mut None,
                     &mut claim,
                 )
                 .await
@@ -1071,7 +1071,7 @@ impl AuthMiddleware {
         now: u64,
         expected_aud: Option<&str>,
         reach: Reach,
-        strips: &mut Vec<Strip>,
+        strips: &mut Option<Vec<Strip>>,
         claim: &mut Option<ReplayClaim>,
     ) -> Result<ChainVerdict, VerifierUnavailable> {
         if self.chain.is_empty() && !self.keys_in_chain {
@@ -1079,7 +1079,12 @@ impl AuthMiddleware {
         }
         for entry in &self.chain {
             let judged = judge(entry, head.request(candidate, now), reach).await?;
-            strips.extend(judged.strips);
+            // The first stripping position's lines move in whole; only a later one appends.
+            match strips {
+                Some(held) => held.extend(judged.strips),
+                None if judged.strips.is_empty() => {}
+                None => *strips = Some(judged.strips),
+            }
             if let Some(verdict) = chain_position_verdict(&entry.provider, judged.verdict) {
                 if matches!(verdict, ChainVerdict::Identified { .. }) {
                     *claim = ReplayClaim::of(&entry.provider, judged.replay, now);
@@ -1156,7 +1161,7 @@ impl AuthMiddleware {
         Option<PendingClaim>,
     ) {
         let now = busbar_kernel::store::now();
-        let mut strips = Vec::new();
+        let mut strips = None;
         let mut claim = None;
         let verdict = auth
             .walk(
@@ -1170,7 +1175,11 @@ impl AuthMiddleware {
                 &mut claim,
             )
             .await;
-        (verdict, strips, PendingClaim::of(claim, gov))
+        (
+            verdict,
+            strips.unwrap_or_default(),
+            PendingClaim::of(claim, gov),
+        )
     }
 
     pub fn constant_time_eq(a: &str, b: &str) -> bool {
