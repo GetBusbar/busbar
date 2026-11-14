@@ -340,6 +340,21 @@ pub trait AuthCalls: Send + Sync {
     /// `refresh` with a NEW generation and unchanged settings: the admin cache flush. The plugin
     fn refresh(&self) -> Result<u64, String>;
 
+    /// Whether this instance answers `verify` itself right now: not quarantined, revoked or
+    /// closed, and its metadata valid. Default `false`: an implementor that cannot tell is never
+    /// trusted to be answering.
+    fn answering(&self) -> bool {
+        false
+    }
+
+    /// Whether core may carry this instance into the next config build unchanged (its inputs are
+    /// unchanged and it is healthy: answering, and its refresh schedule did not fail). Default
+    /// `false`: an implementor that cannot tell is opened again on every build, as before
+    /// (WASTE-AUTH-SECRETS W2).
+    fn reusable(&self) -> bool {
+        false
+    }
+
     /// Validated presentation from the current successful lifecycle generation.
     /// Absence uses the configured instance name and the host's generic icon.
     fn login_presentation(&self) -> Option<LoginPresentation> {
