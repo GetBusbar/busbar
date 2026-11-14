@@ -38,7 +38,7 @@ fn every_kind_s_verb_is_the_design_s_and_round_trips() {
 fn no_two_kinds_share_a_root_key() {
     let keys: Vec<&str> = Kind::ALL.iter().filter_map(|k| k.root_key()).collect();
     let mut unique = keys.clone();
-    unique.sort_unstable();
+    unique.sort();
     unique.dedup();
     assert_eq!(unique.len(), keys.len(), "{keys:?}");
 }

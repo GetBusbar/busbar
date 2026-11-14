@@ -227,7 +227,7 @@ fn assert_interpolation_preserves_structure(
         Ok(v) => v,
         Err(error) => {
             let mut vars: Vec<&str> = occurrences.iter().map(|o| o.var_name.as_str()).collect();
-            vars.sort_unstable();
+            vars.sort();
             vars.dedup();
             let position = error.location().map_or_else(String::new, |at| {
                 format!(" at line {} column {}", at.line(), at.column())

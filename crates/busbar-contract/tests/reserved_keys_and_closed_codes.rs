@@ -38,7 +38,7 @@ fn every_reserved_key_is_spelled_the_way_the_planes_guessed_it() {
 fn the_reserved_list_is_exactly_the_six_keys_and_names_none_of_them_twice() {
     assert_eq!(facts::RESERVED, &SPELLINGS.map(|(_, wire)| wire)[..]);
     let mut seen = facts::RESERVED.to_vec();
-    seen.sort_unstable();
+    seen.sort();
     let before = seen.len();
     seen.dedup();
     assert_eq!(seen.len(), before, "a key is named twice in RESERVED");

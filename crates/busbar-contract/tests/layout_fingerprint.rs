@@ -72,7 +72,7 @@ fn the_host_accepts_each_kind_at_its_own_fingerprint() {
         assert_eq!(kind.layout_fingerprint(), stated, "{kind:?}");
     }
     let mut all: Vec<u64> = KINDS.iter().map(|(_, f, _)| *f).collect();
-    all.sort_unstable();
+    all.sort();
     all.dedup();
     assert_eq!(all.len(), KINDS.len(), "no two kinds share a fingerprint");
     assert_eq!(KindCode::ALL.len(), KINDS.len(), "every kind is held here");

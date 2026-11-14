@@ -249,7 +249,7 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
                 ordinal,
             });
         }
-        members.sort_unstable_by(|a, b| {
+        members.sort_by(|a, b| {
             a.family
                 .cmp(&b.family)
                 .then_with(|| a.group.expose(&seal).cmp(b.group.expose(&seal)))

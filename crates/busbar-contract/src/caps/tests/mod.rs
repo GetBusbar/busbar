@@ -314,7 +314,7 @@ fn every_abort_names_a_reason_of_its_own() {
     );
 
     let mut distinct = reasons.clone();
-    distinct.sort_unstable_by_key(|r| r.as_str());
+    distinct.sort_by_key(|r| r.as_str());
     distinct.dedup();
     assert_eq!(distinct.len(), reasons.len(), "two aborts share one reason");
 
@@ -388,7 +388,7 @@ fn a_reason_code_reads_the_same_in_the_journal_and_the_refusal() {
     assert_eq!(StepName::Encode.to_string(), "encode");
 
     let mut words: Vec<_> = ReasonCode::ALL.iter().map(|r| r.as_str()).collect();
-    words.sort_unstable();
+    words.sort();
     let distinct = words.len();
     words.dedup();
     assert_eq!(words.len(), distinct, "two reasons render the same word");

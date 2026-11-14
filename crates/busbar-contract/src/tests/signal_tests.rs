@@ -19,7 +19,7 @@ fn signal_names_match_serde() {
     }
 
     let mut bits: Vec<u32> = Signal::ALL.iter().map(|s| s.bit()).collect();
-    bits.sort_unstable();
+    bits.sort();
     bits.dedup();
     assert_eq!(bits.len(), Signal::ALL.len());
     assert_eq!(bits, (0..Signal::ALL.len() as u32).collect::<Vec<_>>());

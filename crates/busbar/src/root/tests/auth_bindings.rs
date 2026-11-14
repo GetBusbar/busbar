@@ -216,7 +216,7 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
 
     let mut space: Vec<&str> = busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
     space.push(op);
-    space.sort_unstable();
+    space.sort();
     let want: Vec<String> = operator_1_5_5()["hook_word_space"]
         .as_array()
         .expect("the 1.5.5 hook-name word space")

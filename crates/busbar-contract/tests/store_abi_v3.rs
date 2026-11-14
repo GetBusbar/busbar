@@ -33,7 +33,7 @@ fn every_kind_slot_is_lifecycle_slots_plus_k_contiguous() {
         size_of::<OpsHead>() + 8 * KIND_SLOTS as usize
     );
     let mut names = NAMES.to_vec();
-    names.sort_unstable();
+    names.sort();
     names.dedup();
     assert_eq!(names.len(), OPS.len(), "slot names are unique");
 }

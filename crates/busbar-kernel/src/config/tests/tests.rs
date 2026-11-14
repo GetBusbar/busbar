@@ -2484,7 +2484,7 @@ advanced:
 fn reserved_hook_names_are_frozen() {
     install_normal_root_metadata();
     let mut frozen: Vec<&str> = crate::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
-    frozen.sort_unstable();
+    frozen.sort();
 
     assert_eq!(
         frozen,
@@ -2511,7 +2511,7 @@ fn reserved_hook_names_are_frozen() {
             "'{word}' is declared frozen but is neither reserved nor a strategy keyword"
         );
     }
-    runtime.sort_unstable();
+    runtime.sort();
     runtime.dedup();
     assert_eq!(
         runtime, frozen,

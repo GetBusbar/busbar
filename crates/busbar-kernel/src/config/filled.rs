@@ -63,7 +63,7 @@ fn placeholders_in(s: &str, placeholder_of: &dyn Fn(usize) -> String, count: usi
     let mut found: Vec<(usize, usize)> = (0..count)
         .filter_map(|i| s.find(&placeholder_of(i)).map(|at| (at, i)))
         .collect();
-    found.sort_unstable();
+    found.sort();
     found.into_iter().map(|(_, i)| i).collect()
 }
 

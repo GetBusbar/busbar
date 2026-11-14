@@ -838,7 +838,7 @@ pub fn read<R: Read + Seek + Send>(
                 .try_reserve_exact(index.len())
                 .map_err(|_| Error::Allocation)?;
             lookup.extend(0..index.len());
-            lookup.sort_unstable_by_key(|ordinal| {
+            lookup.sort_by_key(|ordinal| {
                 let entry = &index[*ordinal];
                 (entry.table, entry.key_hash)
             });

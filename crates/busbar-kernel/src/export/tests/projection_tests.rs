@@ -296,7 +296,7 @@ fn projected_record_cannot_carry_an_ungranted_field() {
 
     let obj = payload.as_object().expect("an object");
     let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
-    keys.sort_unstable();
+    keys.sort();
     assert_eq!(keys, vec!["kind", "prev_hash", "seq", "ts"]);
 
     let bytes = serde_json::to_string(&payload).unwrap();
@@ -430,12 +430,12 @@ fn produced_logs_fields_match_the_request_log_producer() {
         .keys()
         .map(String::as_str)
         .collect();
-    written.sort_unstable();
+    written.sort();
     let mut claimed: Vec<&str> = produced_fields(ExportStream::Logs)
         .iter()
         .map(|f| f.as_token())
         .collect();
-    claimed.sort_unstable();
+    claimed.sort();
     assert_eq!(
         written, claimed,
         "produced_fields(logs) does not match what build_request_log emits"

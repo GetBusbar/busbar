@@ -1018,7 +1018,7 @@ async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
         .keys()
         .map(String::as_str)
         .collect();
-    fields.sort_unstable();
+    fields.sort();
     let shape = serde_json::to_value(InstallShape::default()).expect("the shape serializes");
     let mut want: Vec<&str> = shape
         .as_object()
@@ -1026,7 +1026,7 @@ async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
         .keys()
         .map(String::as_str)
         .collect();
-    want.sort_unstable();
+    want.sort();
     assert_eq!(fields, want, "the install view's shape: {v}");
     let typed: InstallShape = serde_json::from_value(v.clone())
         .unwrap_or_else(|e| panic!("the install view's field types: {e}: {v}"));

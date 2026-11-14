@@ -424,7 +424,7 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
 
     let rows = rows();
     let mut entries: Vec<&str> = rows.iter().filter_map(|r| r.entry).collect();
-    entries.sort_unstable();
+    entries.sort();
     entries.dedup();
     assert!(!entries.is_empty(), "the fixture names an entry span");
     let named = |name: &str| rows.iter().filter(|r| r.entry == Some(name)).count();

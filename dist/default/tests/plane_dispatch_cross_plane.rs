@@ -62,7 +62,7 @@ fn all_is_complete_and_has_no_duplicates() {
     );
     let mut keys = all.clone();
     let before = keys.len();
-    keys.sort_unstable();
+    keys.sort();
     keys.dedup();
     assert_eq!(keys.len(), before, "two planes share a key");
 }
@@ -71,7 +71,7 @@ fn all_is_complete_and_has_no_duplicates() {
 fn plane_identity_strings_never_collide_across_planes() {
     register_planes();
     let mut sections: Vec<&str> = plane_keys().map(|k| plane_decl(k).config_section).collect();
-    sections.sort_unstable();
+    sections.sort();
     let before = sections.len();
     sections.dedup();
     assert_eq!(
@@ -84,13 +84,13 @@ fn plane_identity_strings_never_collide_across_planes() {
         .flat_map(|k| plane_decl(k).scope_kinds)
         .copied()
         .collect();
-    kinds.sort_unstable();
+    kinds.sort();
     let before = kinds.len();
     kinds.dedup();
     assert_eq!(kinds.len(), before, "two planes claim one scope kind");
 
     let mut audit: Vec<&str> = plane_keys().map(|k| plane_decl(k).audit_kind).collect();
-    audit.sort_unstable();
+    audit.sort();
     let before = audit.len();
     audit.dedup();
     assert_eq!(
@@ -100,7 +100,7 @@ fn plane_identity_strings_never_collide_across_planes() {
     );
 
     let mut nouns: Vec<&str> = plane_keys().map(|k| plane_decl(k).subject_noun).collect();
-    nouns.sort_unstable();
+    nouns.sort();
     let before = nouns.len();
     nouns.dedup();
     assert_eq!(nouns.len(), before, "two planes claim one subject noun");

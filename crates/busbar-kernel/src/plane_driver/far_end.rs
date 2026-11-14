@@ -699,7 +699,7 @@ impl EgressFarEnd<'_> {
                         .enumerate()
                         .map(|(i, m)| (!preferred.contains(&i), m.tier))
                         .collect();
-                    tiers.sort_unstable();
+                    tiers.sort();
                     tiers.dedup();
                     tiers
                 });
