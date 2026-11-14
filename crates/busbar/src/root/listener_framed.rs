@@ -476,7 +476,7 @@ pub(super) async fn serve<I>(
         established,
         timeout,
         peer,
-        out: VecDeque::new(),
+        out: SecureVec::new(),
         read_done: false,
         ended: false,
         heads: HashMap::default(),
@@ -711,7 +711,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
 
     /// Absorb a batch; a `stripped` staged batch contributes no heads and no field pieces.
     fn absorb_from(&mut self, mut y: Yielded, stripped: bool) {
-        self.out.extend(y.wire.iter().copied());
+        absorb_wire(&mut self.out, &mut self.failed, &y.wire);
         if !stripped {
             for head in std::mem::take(&mut y.heads) {
                 self.heads.insert(head.stream, head);
@@ -1100,22 +1100,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             if let Some(rendered) = rendered {
                 // Queue only the bounded refusal, never an overflow execution task. The
                 // StreamEnd below follows these messages in the same stream's FIFO.
-                let (done, _) = oneshot::channel();
-                out.send(Op::FieldHead {
-                    status: rendered.status,
-                    fields: rendered.fields,
-                    timing: None,
-                    end: rendered.body.is_empty(),
-                    done,
-                });
-                if !rendered.body.is_empty() {
-                    let (done, _) = oneshot::channel();
-                    out.send(Op::Data {
-                        bytes: Bytes::from(rendered.body),
-                        end: true,
-                        done,
-                    });
-                }
+                queue_whole(&out, rendered);
                 return;
             }
             out.send(Op::Refuse {
@@ -1639,6 +1624,47 @@ fn decoded_head(head: &Head, block: &[u8]) -> Option<busbar_kernel::inbound::Hea
     })
 }
 
+/// A WHOLE answer of `len` body bytes on the HTTP door states its length, as the operator
+/// adapter's `head_block` does, unless its fields already state framing or a trailer, or its
+/// status carries no body.
+fn state_whole_length(
+    status: u32,
+    fields: &mut busbar_kernel::plane_driver::HeadFields,
+    len: usize,
+) {
+    if len == 0 {
+        return;
+    }
+    let named = |n: &[u8]| fields.iter().any(|(f, _)| f.eq_ignore_ascii_case(n));
+    let stated = named(b"content-length") || named(b"transfer-encoding");
+    if operator::length_due(status, stated, named(b"trailer")) {
+        fields.push((b"content-length".to_vec(), len.to_string().into_bytes()));
+    }
+}
+
+/// Queues a whole rendered answer on `out` without waiting for the writer: its head, stating its
+/// length, then its body as the stream's last data.
+fn queue_whole(out: &Emitter, rendered: busbar_kernel::plane_driver::Rendered) {
+    let mut fields = rendered.fields;
+    state_whole_length(rendered.status, &mut fields, rendered.body.len());
+    let (done, _) = oneshot::channel();
+    out.send(Op::FieldHead {
+        status: rendered.status,
+        fields,
+        timing: None,
+        end: rendered.body.is_empty(),
+        done,
+    });
+    if !rendered.body.is_empty() {
+        let (done, _) = oneshot::channel();
+        out.send(Op::Data {
+            bytes: Bytes::from(rendered.body),
+            end: true,
+            done,
+        });
+    }
+}
+
 struct ActorCaller {
     out: Emitter,
     stated: std::sync::Mutex<Option<u32>>,
@@ -1690,13 +1716,7 @@ impl busbar_kernel::plane_driver::CallerEnd for ActorCaller {
         mut fields: busbar_kernel::plane_driver::HeadFields,
         len: usize,
     ) {
-        if len != 0 {
-            let named = |n: &[u8]| fields.iter().any(|(f, _)| f.eq_ignore_ascii_case(n));
-            let stated = named(b"content-length") || named(b"transfer-encoding");
-            if operator::length_due(status, stated, named(b"trailer")) {
-                fields.push((b"content-length".to_vec(), len.to_string().into_bytes()));
-            }
-        }
+        state_whole_length(status, &mut fields, len);
         self.response_head(status, fields, false);
     }
     async fn write(&self, bytes: &[u8]) -> bool {
