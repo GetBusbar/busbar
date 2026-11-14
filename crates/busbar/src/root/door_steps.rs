@@ -198,6 +198,22 @@ impl DoorPools {
     }
 
     #[must_use]
+    /// The `pool` label a finished model request is counted under: the downgrade target, else
+    /// the pool the arrival named, where either is configured here; else `unresolved`.
+    #[must_use]
+    pub fn metric_label<'a>(
+        &self,
+        downgraded: Option<&'a str>,
+        named: Option<&'a [u8]>,
+    ) -> std::borrow::Cow<'a, str> {
+        downgraded
+            .map(str::to_string)
+            .or_else(|| named.map(|p| String::from_utf8_lossy(p).into_owned()))
+            .filter(|name| self.pools.contains_key(name) || self.entries.iter().any(|e| e == name))
+            .unwrap_or_else(|| "unresolved".to_string())
+            .into()
+    }
+
     pub fn entries(&self) -> &[String] {
         &self.entries
     }
