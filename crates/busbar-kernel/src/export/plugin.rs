@@ -624,7 +624,7 @@ pub(super) fn deliver_to(
 struct Handed {
     amendments: Option<Arc<crate::audit::amend::NodeAmendments>>,
     runtime: Option<tokio::runtime::Handle>,
-    reads: Vec<(String, Arc<Value>)>,
+    reads: Vec<(Arc<str>, crate::export::projection::Members)>,
     sinks: Vec<Arc<dyn ExportCalls>>,
     permits: Vec<Arc<tokio::sync::OwnedSemaphorePermit>>,
 }
@@ -666,8 +666,8 @@ impl Handed {
 fn deliver_one(
     s: &PluginSink,
     stream: ExportStream,
-    op: &str,
     f: &mut impl FnMut(Projection, bool) -> Rendered,
+    handed: &mut Handed,
 ) {
     let Some(admission) = s.admission.get() else {
         s.sink.shed();
@@ -705,20 +705,11 @@ fn deliver_one(
             let (Some(amendments), Some(runtime)) = (amendments, runtime) else {
                 return;
             };
-            let op = op.to_owned();
-            let module = Arc::clone(&s.module);
-            let sink = s.sink.clone();
-            runtime.spawn(async move {
-                let _permit = permit;
-                if crate::audit::amend::export_read(&amendments, &module, &op, members)
-                    .await
-                    .is_err()
-                {
-                    // The original access fact remains in the shared native
-                    // owner's queue; do not report a durable audit success.
-                    sink.shed();
-                }
-            });
+            handed.amendments.get_or_insert(amendments);
+            handed.runtime.get_or_insert(runtime);
+            handed.reads.push((Arc::clone(&s.module), members));
+            handed.sinks.push(s.sink.clone());
+            handed.permits.push(permit);
         }
         Delivered::Shed => s.sink.shed(),
     }
