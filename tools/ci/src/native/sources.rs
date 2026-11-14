@@ -180,7 +180,14 @@ fn plugin_job(repository: &str, policy: &Value) -> bool {
 /// seeded subject closures; core and release keep the full historical set.
 fn required_sources(q: &mut Q, host: &Path, vector: &Value) -> R<Sources> {
     let sdk = q.sdk()?;
-    if plugin_job(&q.repository, &q.policy) {
+    // Core jobs read the same subject closures (dependency seed, Cargo's Git
+    // mappings, the OIDF suite's shipped OIDC pin in the distribution lock)
+    // plus every vector product commit. Neither reads the SDK checkout's own
+    // distribution lock or core's HEAD from canonical-inputs: a lock cannot
+    // name its own commit, and core's host is its checkout. The release job
+    // keeps the full historical set below.
+    let core_job = q.repository == CORE;
+    if core_job || plugin_job(&q.repository, &q.policy) {
         let mut sources = Sources::new();
         for (_, root, relative) in subject_locks(&q.root, host, &sdk) {
             let lock = root.join(relative);
@@ -192,6 +199,14 @@ fn required_sources(q: &mut Q, host: &Path, vector: &Value) -> R<Sources> {
             .entry(CORE.to_owned())
             .or_default()
             .insert(sp::at_str(vector, "sdk")?.to_owned());
+        if core_job {
+            for product in at(vector, "products")?.as_array().unwrap_or(&[]) {
+                sources
+                    .entry(format!("GetBusbar/{}", sp::at_str(product, "repo")?))
+                    .or_default()
+                    .insert(sp::at_str(product, "commit")?.to_owned());
+            }
+        }
         return Ok(sources);
     }
     let mut sources = inputs(host, &q.root, &q.policy)?;
