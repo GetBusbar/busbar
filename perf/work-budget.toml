@@ -1,0 +1,26 @@
+# Per-request work budget: the CI gate of REQUEST-PATH-BUDGET (decision 206).
+#
+# Deterministic work counts, not timings, for one openai -> openai request through the real node
+# path (the linked LLM plane, the native store plugin, a fake upstream), read by
+# crates/busbar/src/root/tests/work_budget.rs. The gate fails when any count goes UP.
+#
+# Budgets only ratchet DOWN: a change that removes work lowers its number in the same merge.
+# Never raise a number to make the gate pass; remove the work instead.
+#
+# allocations       heap allocations (alloc, alloc_zeroed, realloc), process-wide
+# plugin_crossings  calls from the loader into a plugin (counted at the loader boundary)
+# store_round_trips requests submitted to the store plugin
+#
+# An item with no line below has no budget yet: the test measures it, prints
+#   WORK-COUNT section=<section> <item>=<n>
+# and passes. An item with a line is enforced strictly. The first budget is written from those
+# printed counts.
+#
+# Not counted yet (each needs instrumentation at many sites, not one boundary): mutex
+# acquisitions on unit state, JSON parses of the request body, clock reads.
+
+[buffered]
+# allocations, plugin_crossings, store_round_trips: measured on the first run, then written here.
+
+[streamed]
+# allocations, plugin_crossings, store_round_trips: measured on the first run, then written here.
