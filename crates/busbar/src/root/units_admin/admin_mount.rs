@@ -1,12 +1,10 @@
 use super::*;
 
-#[cfg(feature = "root-admin")]
 pub struct AdminNode {
     pub(super) kernel: busbar_kernel::teller::Kernel,
     pub(super) units: crate::root::kernel::ProductionUnits,
 }
 
-#[cfg(feature = "root-admin")]
 impl AdminNode {
     #[must_use]
     pub fn new(
@@ -151,19 +149,16 @@ impl AdminNode {
     }
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) struct ExitPath {
     pub(super) unit: u64,
 }
 
-#[cfg(feature = "root-admin")]
 impl Drop for ExitPath {
     fn drop(&mut self) {
         busbar_core_admin::restart::UnitDrain::of_unit(self.unit).release();
     }
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn refused_answer(ended: Outcome, request: &AdminRequest) -> AdminAnswer {
     if is_credential_refusal(ended) {
         return door_answer();
@@ -180,7 +175,6 @@ pub(crate) fn refused_answer(ended: Outcome, request: &AdminRequest) -> AdminAns
     answer_for(ended)
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn is_credential_refusal(outcome: Outcome) -> bool {
     matches!(
         outcome,
@@ -189,7 +183,6 @@ pub(crate) fn is_credential_refusal(outcome: Outcome) -> bool {
     )
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn is_scope_refusal(outcome: Outcome) -> bool {
     matches!(
         outcome,
@@ -197,7 +190,6 @@ pub(crate) fn is_scope_refusal(outcome: Outcome) -> bool {
     )
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn is_rate_refusal(outcome: Outcome) -> bool {
     matches!(
         outcome,
@@ -205,7 +197,6 @@ pub(crate) fn is_rate_refusal(outcome: Outcome) -> bool {
     )
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn rate_limited_answer() -> AdminAnswer {
     let refused = busbar_kernel::admin::gate::ApiError::RateLimited;
     AdminAnswer {
@@ -225,7 +216,6 @@ pub(crate) fn rate_limited_answer() -> AdminAnswer {
     }
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
     let needed = busbar_kernel::admin::scope::admin_required_scope(&request.method, &request.path);
     error_answer_with_message(
@@ -238,17 +228,13 @@ pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
     )
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) const DOOR_STATUS: u16 = 401;
 
-#[cfg(feature = "root-admin")]
 pub(crate) const DOOR_CODE: &str = "unauthorized";
 
-#[cfg(feature = "root-admin")]
 pub(crate) const DOOR_MESSAGE: &str =
     "missing or invalid admin credential (Bearer or x-admin-token)";
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn door_answer() -> AdminAnswer {
     let mut answer = error_answer_with_message(DOOR_STATUS, DOOR_CODE, DOOR_MESSAGE);
     answer
@@ -270,7 +256,6 @@ pub(crate) fn authentication_unavailable_answer() -> AdminAnswer {
     answer
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn answer_for(outcome: Outcome) -> AdminAnswer {
     use busbar_contract::abi::plane::{class_of, RefusalClass};
     let (status, code) = match outcome {
@@ -301,7 +286,6 @@ pub(crate) fn answer_for(outcome: Outcome) -> AdminAnswer {
     error_answer(status, code)
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn error_answer(status: u16, code: &str) -> AdminAnswer {
     error_answer_with_message(status, code, code)
 }
@@ -314,13 +298,10 @@ pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) 
     }
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) const AMEND_RATE_HISTORY_PATH: &str = "/api/v1/admin/ledger/amend-rate-history";
 
-#[cfg(feature = "root-admin")]
 pub(crate) const AMEND_RATE_HISTORY_SHAPE: &str = "amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape";
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Option<AdminAnswer> {
     use busbar_contract::abi::plane::{class_of, RefusalClass};
     let unreadable = matches!(
@@ -333,27 +314,22 @@ pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Opti
         .then(|| error_answer_with_message(400, "invalid_request", AMEND_RATE_HISTORY_SHAPE))
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn unavailable_answer() -> AdminAnswer {
     error_answer(503, "unavailable")
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) type Errand = (
     AdminRequest,
     Option<busbar_kernel::inbound::RequestAdmission>,
     tokio::sync::oneshot::Sender<AdminAnswer>,
 );
 
-#[cfg(feature = "root-admin")]
 pub struct RouterDispatch {
     errands: tokio::sync::mpsc::UnboundedSender<Errand>,
 }
 
-#[cfg(feature = "root-admin")]
 use busbar_core_admin::keys::KeyReplayCache;
 
-#[cfg(feature = "root-admin")]
 impl RouterDispatch {
     #[must_use]
     pub fn new(
@@ -380,7 +356,6 @@ impl RouterDispatch {
     }
 }
 
-#[cfg(feature = "root-admin")]
 async fn call(
     inner: axum::Router,
     request: &AdminRequest,
@@ -416,7 +391,6 @@ async fn call(
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[async_trait::async_trait]
 impl AdminDispatch for RouterDispatch {
     async fn execute(&self, _verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
@@ -433,7 +407,6 @@ impl AdminDispatch for RouterDispatch {
     }
 }
 
-#[cfg(feature = "root-admin")]
 impl RouterDispatch {
     async fn dispatch(
         &self,
@@ -452,10 +425,8 @@ impl RouterDispatch {
     }
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn presented_credential(headers: &axum::http::HeaderMap) -> Option<String> {
     let authorization = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -480,7 +451,6 @@ pub(crate) fn presented_credential(headers: &axum::http::HeaderMap) -> Option<St
     })
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
@@ -493,7 +463,6 @@ pub(crate) fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, Stri
         .collect()
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn http_response(answer: AdminAnswer) -> axum::http::Response<axum::body::Body> {
     let mut response = axum::http::Response::builder().status(answer.status);
     for (name, value) in &answer.headers {
@@ -515,7 +484,7 @@ pub(crate) fn http_response(answer: AdminAnswer) -> axum::http::Response<axum::b
     response
 }
 
-#[cfg(all(test, feature = "root-admin"))]
+#[cfg(test)]
 #[tokio::test]
 async fn root_admin_answers_are_never_stored() {
     for (status, effect) in [
@@ -556,7 +525,6 @@ async fn root_admin_answers_are_never_stored() {
     }
 }
 
-#[cfg(feature = "root-admin")]
 pub fn mount(
     inner: axum::Router,
     kernel: busbar_kernel::teller::Kernel,
@@ -651,7 +619,6 @@ pub fn mount(
     ))
 }
 
-#[cfg(feature = "root-admin")]
 #[allow(clippy::too_many_arguments)]
 pub fn mount_node(
     admin_router: axum::Router,
@@ -717,7 +684,6 @@ pub fn mount_node(
     ))
 }
 
-#[cfg(feature = "root-admin")]
 pub(crate) fn served_here(resolved: &ResolvedVerb) -> bool {
     kernel_verb(resolved).is_none_or(busbar_core_admin::verb::effect_bound)
 }

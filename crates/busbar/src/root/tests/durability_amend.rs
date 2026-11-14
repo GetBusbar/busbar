@@ -223,7 +223,6 @@ async fn restart_phase(phase: &str, dir: &str) {
             return;
         }
 
-        #[cfg(feature = "root-admin")]
         "tamper" => {
             access(&app, HOOK).await;
             let findings = |answer: crate::root::units_admin::AdminAnswer| -> String {
@@ -373,7 +372,6 @@ fn run_phase(test: &str, phase: &str, dir: &std::path::Path) {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn verify_reports_an_edit_to_the_held_amendment_run() {
     if child_phase().await {

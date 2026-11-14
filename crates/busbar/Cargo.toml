@@ -67,8 +67,6 @@ foldhash = { workspace = true }
 tikv-jemallocator = { workspace = true }
 
 [features]
-default = ["root-admin"]
-root-admin = ["dep:tower"]
 test-harness = []
 
 [build-dependencies]
