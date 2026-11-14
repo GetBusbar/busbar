@@ -514,16 +514,19 @@ plane-streaming = "streams"
 auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
-auth-oauth = "busbar-auth-oauth"
+auth-oauth = "oauth"
 hooks-ranking = "ranking"
 auth-webhook-signature = "busbar-auth-webhook-signature"
 hooks-complexity = "complexity"
 
 # The CANONICAL name of an `auths` row whose key is not its manifest name: the name its signed
 # tarball's manifest states (plugins.yaml `manifest_name`, the repo). Config may name the row by
-# either; the key stays what every surface prints (ARCHITECT C').
+# either; the key stays what every surface prints (ARCHITECT C'). A row keyed by its plugins.yaml
+# alias answers every word its dropped tarball answers (manifest name and alias), so a linked owner
+# is found by the word configuration or a plugin's migration request names it by, never re-fetched.
 [package.metadata.busbar.linked-canonical]
 auth-admin-tokens = "busbar-auth-admin-tokens"
+auth-oauth = "busbar-auth-oauth"
 
 # THE OPERATOR CREDENTIAL'S ROW: the `auths` row whose registry key (its `linked-name`) is the
 # operator credential's provider word — the `auth.admin_auth:` default, the one `module:` whose
