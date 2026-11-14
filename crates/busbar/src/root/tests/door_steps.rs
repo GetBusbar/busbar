@@ -43,6 +43,9 @@ pub(crate) fn isolated_fixture_done(test: &str, case: &str) {
     println!("DOOR-STEPS-CASE-DONE {test} {case}");
 }
 
+#[path = "door_steps_entry_once.rs"]
+mod entry_once;
+
 pub(crate) async fn boot_fixture_prices(app: &busbar_kernel::state::App) {
     let store = app
         .governance
@@ -644,6 +647,7 @@ fn a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to() {
             Some(k),
             (ROUTE_POOL, Some(b"twins".as_slice())),
             counterparty.map(str::as_bytes),
+            None,
         )
     };
     assert!(
@@ -671,7 +675,8 @@ fn a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to() {
             None,
             Some(&key(&[])),
             (ROUTE_POOL, Some(b"twins".as_slice())),
-            Some(b"a")
+            Some(b"a"),
+            None,
         ),
         "a plane with no scope kind scopes nothing"
     );
