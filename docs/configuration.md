@@ -2029,7 +2029,7 @@ unless `allow_destinations` names it: a provider on `localhost` or an internal n
 Operator infrastructure a plugin's config names (a database, a secret service, a directory) may be
 private or loopback without an entry. A cloud-metadata address is refused for every destination,
 configured ones included (a configured name that later resolves to one is refused). The check runs after name resolution, and the connection is
-made to the address that was checked; an IP address written in a URL is checked as that address. Through an HTTP(S)/ALL_PROXY CONNECT proxy, the target is checked before the proxy is asked: its name always, and its addresses when the name resolves locally; a name that does not resolve locally is passed to the proxy, and what it reaches behind the proxy is the proxy's boundary. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
+made to the address that was checked; an IP address written in a URL is checked as that address. Through an HTTP(S)/ALL_PROXY CONNECT proxy, the target is still checked by address: with `advanced.proxy_resolution: local` (the default) busbar resolves the target, judges every address it answers, and the CONNECT names the judged address, so the proxy dials exactly what was checked (a name that does not resolve locally is refused). `proxy_resolution: proxy` restores name CONNECTs for split-horizon DNS: a name that resolves locally is still judged by address, and one that does not is the proxy's to check. BUSBAR-3149 states the posture at boot (proxy endpoints without credentials, `NO_PROXY`, the mode) and writes a `config.egress_proxy` audit record. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
 wildcard (`*.corp.example.com` matches names under it, not the apex), an IP (`127.0.0.1`), or a CIDR
 (`10.20.0.0/16`). Cloud metadata (the built-in metadata names and addresses, IPv4 and IPv6 link-local,
 and `security.blocked_metadata_hosts`) is refused in every egress class and no entry admits it: an
@@ -2079,6 +2079,81 @@ tools:
 
 List the narrowest entry that works: an exact host before a `*.domain` wildcard, an address before
 a network. A cloud-metadata address stays refused whatever is listed.
+
+### `advanced.tls`
+
+The **outbound TLS trust store**: one place that decides which certificate authorities, key pins
+and client identity every outbound TLS connection busbar makes uses (providers, token endpoints,
+export sinks, plugin needs, plane members, stores that upgrade to TLS). Plugins no longer carry
+their own CA settings. There is no setting that disables certificate or host-name verification,
+and none is reserved for one.
+
+```yaml
+advanced:
+  tls:
+    roots: bundled                  # bundled (default, 1.5.5's Mozilla set) | system | none
+    trust_anchors:                  # CAs trusted for every destination, on top of roots
+      - { file: /etc/busbar/ca/corp-root.pem }
+    destinations:
+      - match: ldap.corp.internal   # exact host, *.domain, IP or CIDR
+        trust_anchors: [ { env: LDAP_CA_PEM } ]
+        include_roots: false        # default: these anchors REPLACE roots + trust_anchors for this host
+      - match: ccp.corp.example.com
+        pin_spki_sha256: sha256/4Bm1...=        # held on top of verification, never instead of it
+        client_identity: { cert: { file: /etc/busbar/ccp.crt }, key: { file: /etc/busbar/ccp.key } }
+      - { match: 10.0.0.9, plaintext: true }    # the only way to reach a non-loopback host in clear
+```
+
+* **`roots`**: `bundled` is the Mozilla root set busbar ships (1.5.5 parity). `system` reads the
+  operating system's CA bundle once at boot (`SSL_CERT_FILE` / `SSL_CERT_DIR` when set, else the
+  distribution's bundle file); expired, non-CA and unreadable entries are dropped with one
+  BUSBAR-3147 warning carrying the count, and an empty bundle refuses the boot (BUSBAR-3140).
+  `none` trusts only what `trust_anchors` and matching `destinations` list; a TLS dial no anchor
+  applies to is refused (BUSBAR-3140), a pinned one included (never a panic).
+* **Selection** is by the host the destination guard judged for the dial: never by a name a
+  plugin offers for SNI, never by a proxy hop. Name entries match name dials; IP and CIDR entries
+  match only IP-literal dials. A dial matching several entries trusts the union of their anchors.
+  A matching entry that lists anchors **replaces** `roots` and `trust_anchors` for that dial unless
+  `include_roots: true`. An entry that lists only a pin or a client identity keeps the base set.
+* **Sources** are `{ file: <path> }`, `{ env: <NAME> }` or inline PEM. A secret-store reference is
+  refused: the store is built before any secret plugin is reachable, and a CA is public. Client
+  identity keys are read by core and never handed to a plugin.
+* **Validation at boot** (every operator anchor): the PEM parses and holds only certificates; each
+  is an X.509 v3 CA (`basicConstraints CA:TRUE`, and `keyCertSign` when `keyUsage` is present);
+  `notBefore` (five minutes' tolerance) `<= now < notAfter`; rustls accepts it. A failure refuses
+  the boot with BUSBAR-3137 naming the key, the index, the source and the destination it scopes.
+  A self-signed server certificate (`CA:FALSE`) is not an anchor: list the CA that issued it.
+  Malformed entries are BUSBAR-3148; a wildcard over a single label (`*.internal`) is BUSBAR-3145;
+  `plaintext: true` on a wildcard or CIDR is BUSBAR-3144.
+* **Fingerprints and audit**: every accepted anchor logs one BUSBAR-3138 line (SHA-256 of the DER,
+  subject, issuer, notAfter, scope) and writes one `config.tls_trust_anchor` audit record; the base
+  set logs its count and a SHA-256 over the sorted set.
+* **Runtime**: the store is boot-time (restart to apply). An hourly sweep withdraws an anchor past
+  its notAfter from new connections (BUSBAR-5048, audited; a dial whose matching entry has no anchor
+  left is refused), repeats the 30-day expiry warning daily (BUSBAR-3139), and warns once per change
+  when an anchor file's contents differ from what was loaded (BUSBAR-5049, audited).
+* **Revocation**: no CRL or OCSP checking in 1.6.x.
+
+**Rotation runbook.** List the new CA beside the old one (two `trust_anchors` items, or two
+anchors on the entry), validate (`busbar --validate`), restart, confirm the new BUSBAR-3138
+fingerprint, move the servers to certificates from the new CA, then remove the old anchor and
+restart again.
+
+**The plaintext rule** (every transport, carriers that upgrade later included: postgres,
+valkey/redis, mysql, ldap, vault over `http://`): a connection without TLS is admitted only to a
+loopback destination or to a host named exactly by a `plaintext: true` entry (BUSBAR-3141). A
+carrier that negotiates TLS in-protocol (a postgres SSLRequest, LDAP StartTLS, a MySQL SSLRequest)
+may make one cleartext write of at most 64 bytes before its upgrade; anything else in clear to a
+non-admitted host is refused. Credentials are never sent in clear to a host that is not loopback,
+whatever an entry says (BUSBAR-3146). Postgres `sslmode=prefer`, `sslmode=allow` and a missing
+sslmode are refused (BUSBAR-3142, owner sign-off 2026-11-13: encryption required); valkey
+`#insecure` is refused (BUSBAR-3143). `busbar --migrate-config` rewrites them (BUSBAR-3412,
+BUSBAR-3413) and moves every plugin `ca_cert_pem` to an exact-host entry here (BUSBAR-3415).
+
+Every refused dial writes one rate-limited BUSBAR-5046 line and one `egress.dial_refused` audit
+record; every TLS verification failure writes one BUSBAR-5047 line and one
+`egress.tls_verification_failed` record naming the host, the matching entries and the anchor
+fingerprints in force (never certificate bodies).
 
 ### `providers_file`
 

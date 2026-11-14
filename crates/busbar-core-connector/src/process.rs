@@ -43,25 +43,90 @@ pub fn build_with_secrets(
     ))
 }
 
+/// THE PROXY POSTURE, said once at boot (BUSBAR-3149) and audited: the proxy endpoints (never their
+/// credentials), `NO_PROXY`, and whether the guard judges a proxied target by address
+/// (`advanced.proxy_resolution: local`) or delegates the address check of a name that does not
+/// resolve here to the proxy (`proxy`). Nothing when no proxy is configured.
+pub fn note_proxy_posture(by_address: bool) {
+    let Ok(env) = crate::proxy::ProxyEnvValues::from_process_env() else {
+        return;
+    };
+    let hops: Vec<String> = [env.https.as_deref(), env.http.as_deref(), env.all.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(|v| crate::proxy::parse_proxy(v).ok())
+        .map(|h| h.endpoint())
+        .collect();
+    if hops.is_empty() {
+        return;
+    }
+    let no_proxy = env.no.unwrap_or_default();
+    let mode = if by_address { "local" } else { "proxy" };
+    tracing::info!(
+        diag = %busbar_kernel::diagnostics::CONFIG_PROXY_DELEGATES_ADDRESS_CHECK.banner(),
+        proxies = %hops.join(","),
+        no_proxy = %no_proxy,
+        proxy_resolution = mode,
+        "outbound connections go through a proxy: {}",
+        if by_address {
+            "every target is resolved here, each address it answers is judged, and the CONNECT \
+             names the judged address"
+        } else {
+            "each target's name is judged; its addresses are judged when it resolves here, and \
+             the address check of a name that does not is delegated to the proxy"
+        }
+    );
+    busbar_kernel::audit_ring::AUDIT.record_by(
+        "config.egress_proxy",
+        &format!("proxy:{}:no_proxy={no_proxy}:resolution={mode}", hops.join(",")),
+        busbar_kernel::audit_ring::OUTCOME_APPLIED,
+        "system",
+    );
+}
+
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.
 pub fn dest_judge(d: &Destinations) -> Result<Arc<GuardJudge>, String> {
-    Ok(Arc::new(GuardJudge::new(
-        Guard::from_config(d)?,
-        Arc::new(SystemResolver),
-    )))
+    dest_judge_with(d, None)
+}
+
+/// The deployment's one destination judge, admitting plaintext to the exact hosts `store`'s
+/// `plaintext: true` entries name (and loopback).
+pub fn dest_judge_with(
+    d: &Destinations,
+    store: Option<Arc<crate::tls::store::TrustStore>>,
+) -> Result<Arc<GuardJudge>, String> {
+    let judge = GuardJudge::new(Guard::from_config(d)?, Arc::new(SystemResolver));
+    Ok(Arc::new(match store {
+        Some(s) => judge.admitting_plaintext(s),
+        None => judge,
+    }))
 }
 
 /// THE DESTINATION JUDGE (`busbar_kernel::host_services::DestJudge`) over the one [`Guard`]: a
 pub struct GuardJudge {
     guard: Guard,
     resolver: Arc<dyn Resolve>,
+    /// The exact hosts an `advanced.tls.destinations` entry admits plaintext to.
+    plaintext: Option<Arc<crate::tls::store::TrustStore>>,
 }
 
 impl GuardJudge {
     /// The judge over `guard`, resolving names through `resolver`.
     #[must_use]
     pub fn new(guard: Guard, resolver: Arc<dyn Resolve>) -> Self {
-        GuardJudge { guard, resolver }
+        GuardJudge {
+            guard,
+            resolver,
+            plaintext: None,
+        }
+    }
+
+    /// The same judge, admitting plaintext (`dest.judge` with `DEST_PLAINTEXT_INTENT`) to the
+    /// exact hosts `store`'s `plaintext: true` entries name, besides loopback.
+    #[must_use]
+    pub fn admitting_plaintext(mut self, store: Arc<crate::tls::store::TrustStore>) -> Self {
+        self.plaintext = Some(store);
+        self
     }
 
     /// The guard it judges by.
@@ -214,6 +279,17 @@ impl DestJudge for GuardJudge {
 
     fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64> {
         self.named(dest, class, refuse_private, false).map(|_| ())
+    }
+
+    fn plaintext_admitted(&self, dest: &str) -> bool {
+        let host = busbar_contract::net::url_host(dest).unwrap_or_else(|| dest.to_owned());
+        let bare = crate::tls::store::host_only(&host);
+        names_loopback(&bare)
+            || bare.parse::<IpAddr>().is_ok_and(|ip| is_loopback(ip))
+            || self
+                .plaintext
+                .as_ref()
+                .is_some_and(|s| s.plaintext_admitted(&host))
     }
 
     fn judge(

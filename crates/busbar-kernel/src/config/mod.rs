@@ -2088,6 +2088,7 @@ pub mod plane_sections;
 pub mod pools;
 pub mod providers;
 pub mod sections;
+pub mod tls;
 
 /// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety
 /// stance: a broken/slow policy is indistinguishable from no policy and NEVER blocks or fails a

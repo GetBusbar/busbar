@@ -758,8 +758,10 @@ fn warn_unverified(ctx: HostCtx) {
         .get()
         .map_or_else(|| "<unbound>".to_owned(), |c| c.namespace().to_string());
     tracing::warn!(
+        diag = "BUSBAR-6016",
         instance = %instance,
-        "plugin instance '{instance}' secures a connection WITHOUT verifying the far end's certificate (operator opt-in, e.g. `#insecure`); its traffic can be intercepted"
+        value = "UPGRADE_VERIFY_OFF",
+        "plugin instance '{instance}' secures a connection WITHOUT verifying the far end's certificate (UPGRADE_VERIFY_OFF, e.g. valkey `#insecure` or postgres `sslmode=prefer`); its traffic can be intercepted. The value is retired: core refuses it before 1.6.0 GA. Upgrade the plugin and list the server's CA under advanced.tls.destinations"
     );
 }
 
