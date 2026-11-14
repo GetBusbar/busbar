@@ -109,7 +109,59 @@ impl<T: AsFd> Registered<T> {
             }
         }
     }
+
+    /// One non-blocking attempt of a sized `op` in `dir` (`want` = the bytes asked for).
+    /// `WouldBlock` clears readiness and waits for a fresh edge (as [`Registered::poll_io`]). On
+    /// edge-triggered selectors only ([`SHORT_CLEARS`], tokio `PollEvented`'s gate), a SHORT
+    /// transfer (`0 < n < want`) also clears it, so the next attempt waits for a fresh edge
+    /// instead of making a syscall that answers `EAGAIN`. `READ_CLOSED` / `WRITE_CLOSED` stay set
+    /// (tokio masks them out of a clear), so a FIN is never lost.
+    pub fn poll_io_sized(
+        &self,
+        dir: Direction,
+        want: usize,
+        cx: &mut Context<'_>,
+        mut op: impl FnMut(&T) -> io::Result<usize>,
+    ) -> Poll<io::Result<usize>> {
+        loop {
+            let ready = std::task::ready!(self.poll_ready(dir, cx))?;
+            match op(self.get_ref()) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => ready.clear_ready(),
+                Ok(n) if SHORT_CLEARS && n > 0 && n < want => {
+                    ready.clear_ready();
+                    return Poll::Ready(Ok(n));
+                }
+                other => return Poll::Ready(other),
+            }
+        }
+    }
 }
+
+/// Whether a SHORT transfer (`0 < n < want`) proves the socket drained, so readiness may be
+/// cleared without a `WouldBlock` attempt: true only on edge-triggered selectors (epoll, kqueue),
+/// exactly tokio 1.53.3's gate (`io/poll_evented.rs`, issue 5866; keep in sync with it). mio's
+/// poll(2) backend (`mio_unsupported_force_poll_poll`, and targets such as AIX, Solaris, Haiku)
+/// is level-triggered and keeps today's behaviour.
+pub const SHORT_CLEARS: bool = cfg!(all(
+    not(mio_unsupported_force_poll_poll),
+    any(
+        // epoll
+        target_os = "android",
+        target_os = "illumos",
+        target_os = "linux",
+        target_os = "redox",
+        // kqueue
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "tvos",
+        target_os = "visionos",
+        target_os = "watchos",
+    ),
+));
 
 impl Registered<std::net::TcpListener> {
     /// Accept the next socket on the registered listener.
