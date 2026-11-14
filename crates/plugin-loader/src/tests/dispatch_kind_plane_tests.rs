@@ -177,7 +177,12 @@ fn plane_context_refuses_the_retired_private_reach_role() {
     })
     .err()
     .expect("a retired trust role refuses the plane");
-    for part in ["BUSBAR-6013", "`allow_private`", "TRUST_PRIVATE_REACH (4)", "retired"] {
+    for part in [
+        "BUSBAR-6013",
+        "`allow_private`",
+        "TRUST_PRIVATE_REACH (4)",
+        "retired",
+    ] {
         assert!(refused.contains(part), "{part}: {refused}");
     }
 }

@@ -2710,15 +2710,13 @@ pub fn demotion_key(instance: &str, counterparty: &str) -> String {
 
 #[must_use]
 pub fn claim_token(instance: &str, kind: &str, key: &[u8]) -> String {
-    use sha2::Digest as _;
-    let digest: [u8; 32] = sha2::Sha256::new()
-        .chain_update(instance.as_bytes())
-        .chain_update([0])
-        .chain_update(kind.as_bytes())
-        .chain_update([0])
-        .chain_update(key)
-        .finalize()
-        .into();
+    let digest = busbar_contract::crypto::sha256_parts(&[
+        instance.as_bytes(),
+        &[0],
+        kind.as_bytes(),
+        &[0],
+        key,
+    ]);
     let minted = IdempotencyKey::mint(&crate::seal::acquire(), digest);
     hex::encode(minted.bytes())
 }
@@ -3577,12 +3575,7 @@ impl HostServices for KernelServices {
             return Stored::refused(FILL_OUT_OF_RANGE);
         }
         let mut bytes = vec![0; len as usize];
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the plugin random service answers from OS entropy; a seeded userspace CSPRNG is a security design call (reported)"
-        )]
-        let filled = getrandom::fill(&mut bytes);
-        if filled.is_err() {
+        if busbar_contract::crypto::fill(&mut bytes).is_err() {
             return failed(NO_RANDOMNESS);
         }
         Stored {
@@ -3909,12 +3902,7 @@ impl HostServices for KernelServices {
                         }
                     }
                     let mut reference = [0; 16];
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "config: a work reference is drawn from OS entropy; a seeded userspace CSPRNG is a security design call (reported)"
-                    )]
-                    let filled = getrandom::fill(&mut reference);
-                    if filled.is_err() {
+                    if busbar_contract::crypto::fill(&mut reference).is_err() {
                         owed.answer(failed(NO_RANDOMNESS));
                         return;
                     }
@@ -3995,12 +3983,7 @@ impl HostServices for KernelServices {
                 }
             }
             let mut reference = [0u8; 16];
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a work reference is drawn from OS entropy; a seeded userspace CSPRNG is a security design call (reported)"
-            )]
-            let filled = getrandom::fill(&mut reference);
-            if filled.is_err() {
+            if busbar_contract::crypto::fill(&mut reference).is_err() {
                 return failed(NO_RANDOMNESS);
             }
             let work = Work {

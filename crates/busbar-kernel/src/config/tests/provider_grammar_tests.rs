@@ -27,8 +27,8 @@ fn rule() -> Shape {
         ],
     })))
 }
-fn read(key: &Key, text: &str) -> Result<Value, serde_yaml::Error> {
-    ValueSeed::field(key).deserialize(serde_yaml::Deserializer::from_str(text))
+fn read(key: &Key, text: &str) -> Result<Value, busbar_contract::yaml::Error> {
+    busbar_contract::yaml::with_deserializer(text, |d| ValueSeed::field(key).deserialize(d))
 }
 
 #[test]

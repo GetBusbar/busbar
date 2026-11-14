@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::config::overlay::{OverlayDoc, OverlayStore};
-use sha2::{Digest, Sha256};
+use crate::hashing::Sha256;
 
 #[tokio::test]
 async fn old_overlay_import_survives_reopen_and_never_replays_over_admin_changes() {
     let calls = crate::real_store::core().await;
-    let source = Sha256::digest(b"old deployment and overlay").into();
+    let source = Sha256::digest(b"old deployment and overlay");
     let doc = OverlayDoc {
         deleted: vec!["removed-security-hook".into()],
         deleted_groups: vec!["removed-grant".into()],

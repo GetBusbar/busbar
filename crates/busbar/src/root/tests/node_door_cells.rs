@@ -56,7 +56,7 @@ fn answer() -> String {
 }
 
 fn card_of(entry: &str) -> BTreeMap<String, busbar_kernel::config::RateEntryCfg> {
-    serde_yaml::from_str(&format!("{LANE}: {entry}\n")).expect("the card parses")
+    busbar_contract::yaml::from_str(&format!("{LANE}: {entry}\n")).expect("the card parses")
 }
 
 async fn drained(response: axum::response::Response) -> (StatusCode, Vec<u8>) {

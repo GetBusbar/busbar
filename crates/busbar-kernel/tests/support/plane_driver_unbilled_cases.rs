@@ -632,7 +632,7 @@ fn fixture(plane: Scripted, till: Till) -> Fixture {
         },
         till.clone(),
         services(),
-        ("unbilled", &serde_yaml::Value::Null),
+        ("unbilled", &busbar_contract::yaml::Value::Null),
     )
     .now_or_never()
     .expect("non-persistent fixture admission completes immediately")
