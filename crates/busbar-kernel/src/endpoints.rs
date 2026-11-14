@@ -123,7 +123,6 @@ pub fn catalog_names(app: &App, gov: &GovCtx, plane: &str) -> Vec<String> {
             gov.key.as_deref(),
             plane,
         )
-        .into_iter()
         .map(str::to_string)
         .collect();
     }

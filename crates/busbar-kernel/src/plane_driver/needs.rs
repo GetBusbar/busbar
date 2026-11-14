@@ -46,31 +46,39 @@ impl std::fmt::Display for NeedRefusal {
                 member,
                 auth,
                 declared,
-            } => write!(
-                f,
-                "member '{member}' names auth '{auth}', which no outbound need of its plane \
-                 declares (declared: {})",
-                declared
-                    .iter()
-                    .map(|a| format!("'{a}'"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            } => {
+                write!(
+                    f,
+                    "member '{member}' names auth '{auth}', which no outbound need of its plane \
+                     declares (declared: "
+                )?;
+                for (i, a) in declared.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "'{a}'")?;
+                }
+                f.write_str(")")
+            }
             NeedRefusal::Ambiguous {
                 member,
                 auth,
                 needs,
-            } => write!(
-                f,
-                "member '{member}' names auth '{auth}', which {} outbound needs of its plane \
-                 declare over one transport (needs {}); one binding per (transport, auth)",
-                needs.len(),
-                needs
-                    .iter()
-                    .map(|n| n.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            } => {
+                write!(
+                    f,
+                    "member '{member}' names auth '{auth}', which {} outbound needs of its plane \
+                     declare over one transport (needs ",
+                    needs.len(),
+                )?;
+                for (i, n) in needs.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", n.0)?;
+                }
+                f.write_str("); one binding per (transport, auth)")
+            }
         }
     }
 }
@@ -81,44 +89,50 @@ pub fn resolve_member_needs(
     needs: &[ReadNeed],
     members: &[MemberAuth<'_>],
 ) -> Result<BTreeMap<String, Vec<NeedId>>, NeedRefusal> {
-    let outbound: Vec<(NeedId, &str, &str)> = needs
-        .iter()
-        .zip(0u32..)
-        .filter(|(n, _)| n.direction == DIRECTION_OUTBOUND)
-        .map(|(n, i)| (NeedId(i), n.auth.as_str(), n.transport.as_str()))
-        .collect();
+    let outbound = || {
+        needs
+            .iter()
+            .zip(0u32..)
+            .filter(|(n, _)| n.direction == DIRECTION_OUTBOUND)
+            .map(|(n, i)| (NeedId(i), n.auth.as_str(), n.transport.as_str()))
+    };
     let mut resolved = BTreeMap::new();
     for m in members {
-        let matched: Vec<(NeedId, &str)> = outbound
-            .iter()
-            .filter(|(_, auth, _)| *auth == m.auth)
-            .map(|(id, _, transport)| (*id, *transport))
-            .collect();
-        if matched.is_empty() {
+        let matched = || {
+            outbound()
+                .filter(|(_, auth, _)| *auth == m.auth)
+                .map(|(id, _, transport)| (id, transport))
+        };
+        if matched().next().is_none() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a member whose auth no need declares refuses the load, once"
+            )]
             return Err(NeedRefusal::NoMatch {
                 member: m.member.to_string(),
                 auth: m.auth.to_string(),
-                declared: outbound.iter().map(|(_, a, _)| (*a).to_string()).collect(),
+                declared: outbound().map(|(_, a, _)| a.to_string()).collect(),
             });
         }
-        for (_, transport) in &matched {
-            let twice: Vec<NeedId> = matched
-                .iter()
-                .filter(|(_, t)| t == transport)
-                .map(|(id, _)| *id)
-                .collect();
-            if twice.len() > 1 {
+        for (_, transport) in matched() {
+            let over = || matched().filter(move |(_, t)| *t == transport);
+            if over().nth(1).is_some() {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a member whose auth two needs declare over one transport refuses the load, once"
+                )]
                 return Err(NeedRefusal::Ambiguous {
                     member: m.member.to_string(),
                     auth: m.auth.to_string(),
-                    needs: twice,
+                    needs: over().map(|(id, _)| id).collect(),
                 });
             }
         }
-        resolved.insert(
-            m.member.to_string(),
-            matched.into_iter().map(|(id, _)| id).collect(),
-        );
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: each member's resolved needs are kept for the load"
+        )]
+        resolved.insert(m.member.to_string(), matched().map(|(id, _)| id).collect());
     }
     Ok(resolved)
 }

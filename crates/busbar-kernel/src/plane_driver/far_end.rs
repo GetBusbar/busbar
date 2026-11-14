@@ -177,10 +177,12 @@ pub struct ResponseKeep {
 impl ResponseKeep {
     #[must_use]
     pub fn keeps<'a>(&self, name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
-        let kept: Vec<&str> = self.kept.iter().map(String::as_str).collect();
-        let denied: Vec<&str> = self.denied.iter().map(String::as_str).collect();
-        busbar_contract::abi::host::conn::connector::keeps_response_field(
-            self.mode, &kept, &denied, name, nominated,
+        busbar_contract::abi::host::conn::connector::keeps_response_field_of(
+            self.mode,
+            &self.kept,
+            &self.denied,
+            name,
+            nominated,
         )
     }
 }
@@ -1052,7 +1054,10 @@ impl EgressFarEnd<'_> {
         self.claim_member(pool, member, Some(permit), probe, degraded, attempt, call)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct fact the call needs; a one-use bundle type would add nothing"
+    )]
     fn claim_member(
         &self,
         pool: String,
@@ -2055,7 +2060,10 @@ impl EgressFarEnd<'_> {
                 return fail_over();
             }
             let head_us = e.clock.now_micros().saturating_sub(anchor_us);
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a latency in microseconds is far below f64's exact-integer range"
+            )]
             e.telemetry
                 .upstream_latency(target.1, head_us as f64 / 1000.0);
             if !self.owns_attempt(target.0, target.1) {

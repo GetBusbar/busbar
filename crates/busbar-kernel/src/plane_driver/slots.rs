@@ -34,14 +34,19 @@ where
 }
 
 pub fn runtime_slot_key(plane_key: &str) -> &'static str {
-    static INTERNED: std::sync::Mutex<std::collections::BTreeMap<String, &'static str>> =
+    // Keyed by the plane key itself: the leaked `<plane_key>:runtime` string's own prefix, so a hit
+    // composes nothing.
+    static INTERNED: std::sync::Mutex<std::collections::BTreeMap<&'static str, &'static str>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
-    let composed = format!("{plane_key}:runtime");
     let mut interned = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(k) = interned.get(&composed) {
+    if let Some(k) = interned.get(plane_key) {
         return k;
     }
-    let leaked: &'static str = Box::leak(composed.clone().into_boxed_str());
-    interned.insert(composed, leaked);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a plane's runtime slot key is composed and leaked once per plane key, then interned"
+    )]
+    let leaked: &'static str = format!("{plane_key}:runtime").leak();
+    interned.insert(&leaked[..plane_key.len()], leaked);
     leaked
 }

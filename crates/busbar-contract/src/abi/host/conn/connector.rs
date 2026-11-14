@@ -142,12 +142,24 @@ pub fn keeps_response_field<'a>(
     name: &str,
     nominated: impl IntoIterator<Item = &'a [u8]>,
 ) -> bool {
+    keeps_response_field_of(mode, kept, denied, name, nominated)
+}
+
+/// [`keeps_response_field`] over the lists as the caller holds them (`String`s or `&str`s).
+#[must_use]
+pub fn keeps_response_field_of<'a>(
+    mode: u32,
+    kept: &[impl AsRef<str>],
+    denied: &[impl AsRef<str>],
+    name: &str,
+    nominated: impl IntoIterator<Item = &'a [u8]>,
+) -> bool {
     match mode {
-        KEEP_NAMED => kept.contains(&name) && !NEVER_KEPT.contains(&name),
+        KEEP_NAMED => kept.iter().any(|k| k.as_ref() == name) && !NEVER_KEPT.contains(&name),
         KEEP_ALL_EXCEPT_DENIED => {
             !(crate::abi::transport::fields::hop_by_hop(name, nominated)
                 || ALWAYS_DENIED.contains(&name)
-                || denied.contains(&name))
+                || denied.iter().any(|d| d.as_ref() == name))
         }
         _ => false,
     }

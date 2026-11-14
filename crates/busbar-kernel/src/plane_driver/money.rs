@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::host_services::VerifiedTicketIdentity;
@@ -195,7 +195,10 @@ impl SpentTicketReservation {
         Ok(Self(reservation))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct fact the call needs; a one-use bundle type would add nothing"
+    )]
     pub fn adopt(
         self,
         money: &PlaneMoney,
@@ -389,11 +392,11 @@ const SHARDS: usize = 16;
 
 #[derive(Default)]
 struct Shard {
-    units: HashMap<UnitKey, Open>,
-    measurement_requests: HashMap<UnitKey, Arc<()>>,
+    units: foldhash::HashMap<UnitKey, Open>,
+    measurement_requests: foldhash::HashMap<UnitKey, Arc<()>>,
 }
 impl std::ops::Deref for Shard {
-    type Target = HashMap<UnitKey, Open>;
+    type Target = foldhash::HashMap<UnitKey, Open>;
     fn deref(&self) -> &Self::Target {
         &self.units
     }
@@ -675,7 +678,6 @@ impl PlaneMoney {
     }
 
     /// Must run inside the source cell's `with_admitted_call` transaction and once latch.
-    #[allow(clippy::too_many_arguments)]
     pub fn reserve_ticket_admission(
         &self,
         parent: UnitKey,
@@ -1323,7 +1325,9 @@ impl MoneySeam for PlaneMoney {
     fn served(&self, ctx: &UnitCtx, member: &str, provider: &str) {
         if let Some(open) = self.shard(ctx.key).get_mut(&ctx.key) {
             if !open.laned {
-                Arc::make_mut(&mut open.money).lane = member.to_string();
+                let lane = &mut Arc::make_mut(&mut open.money).lane;
+                lane.clear();
+                lane.push_str(member);
             }
             open.provider = Some(provider.to_string());
         }
@@ -1334,13 +1338,18 @@ impl MoneySeam for PlaneMoney {
             return;
         }
         if let Some(open) = self.shard(ctx.key).get_mut(&ctx.key) {
-            let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(&open.money.lane);
-            let qualified = if plane.is_empty() {
-                lane.to_string()
+            let money = Arc::make_mut(&mut open.money);
+            // `<plane><SEP><lane>`, keeping the plane prefix already there, in the lane's own buffer.
+            let plane = busbar_kernel_ledger::cost::split_plane_lane(&money.lane)
+                .0
+                .len();
+            if plane == 0 {
+                money.lane.clear();
             } else {
-                format!("{plane}{}{lane}", crate::governance::PLANE_LANE_SEP)
-            };
-            Arc::make_mut(&mut open.money).lane = qualified;
+                money.lane.truncate(plane);
+                money.lane.push(crate::governance::PLANE_LANE_SEP);
+            }
+            money.lane.push_str(lane);
             open.laned = true;
         }
     }

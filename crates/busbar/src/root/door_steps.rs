@@ -2581,7 +2581,7 @@ impl std::ops::Deref for RouteFacts<'_> {
 
 #[must_use]
 pub fn provider_routes(
-    providers: &HashMap<String, busbar_kernel::config::ResolvedProvider>,
+    providers: &busbar_kernel::config::ResolvedProviders,
     security: &busbar_kernel::config_validate::MetadataPosture,
 ) -> BTreeMap<String, ProviderRoute> {
     providers
