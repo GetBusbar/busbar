@@ -5,6 +5,7 @@
 
 mod config;
 mod credential_typecheck;
+mod lane_qualifier;
 mod secrets;
 mod walk;
 mod workflows;
