@@ -64,7 +64,7 @@ impl NativeFixture {
     pub(crate) async fn book(&self) -> Durability {
         self.build(&DurabilityConfig::default()).await.unwrap()
     }
-    pub(crate) async fn build(&self, cfg: &DurabilityConfig) -> Result<Durability, OpenError> {
+    pub(crate) async fn build(&self, cfg: &DurabilityConfig) -> Result<Durability, std::io::Error> {
         build_on_store(cfg, self.journal.node(), self.journal.clone(), None, BUDGET).await
     }
     pub(crate) async fn reopen(&self) -> Durability {

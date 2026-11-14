@@ -522,9 +522,7 @@ dependencies = [
 name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
- "busbar-contract",
  "ring",
- "sha2 0.10.9",
 ]
 
 [[package]]

@@ -4,10 +4,11 @@
 //! The journal codec the store journal borrows: the fixed record, the chain over it, the body
 //! fields, and the quarantine note an already written journal can carry.
 
+use crate::journal::{JOURNAL_MAGIC, JOURNAL_VERSION};
 use crate::{
     body_digest, decode_run, verify_journal as verify, BodyReader, BodyWriter, Entry, JournalBreak,
     JournalBreakKind, JournalRecord, QuarantineNote, Record, RecordClass, JOURNAL_HEADER_BYTES,
-    JOURNAL_MAGIC, JOURNAL_VERSION, QUARANTINE_BODY_TAG,
+    QUARANTINE_BODY_TAG,
 };
 
 /// Chain `entry` onto `prev` as record `node_seq` of `node`, the way the store journal seals.
@@ -54,9 +55,26 @@ fn entries(class: RecordClass, n: usize, tag: u8) -> Vec<Entry> {
 /// Fourteen classes, each pinned to its byte. The set is the contract's.
 #[test]
 fn every_class_is_pinned_to_its_byte() {
-    assert_eq!(RecordClass::all().len(), 14);
-    for class in RecordClass::all() {
-        assert_eq!(RecordClass::from_code(class.code()), Some(*class));
+    use RecordClass::*;
+    let all = [
+        Transaction,
+        Access,
+        Slice,
+        Lease,
+        Policy,
+        Checkpoint,
+        Reconciliation,
+        Migration,
+        Bootstrap,
+        Purge,
+        Load,
+        ChainBreak,
+        StoreRestore,
+        FleetOutage,
+    ];
+    for (code, class) in (1u8..).zip(all) {
+        assert_eq!(class.code(), code);
+        assert_eq!(RecordClass::from_code(code), Some(class));
     }
     assert_eq!(RecordClass::Transaction.code(), 1);
     assert_eq!(RecordClass::Checkpoint.code(), 6);
@@ -374,39 +392,4 @@ fn a_written_quarantine_body_reads_back_byte_for_byte() {
         QuarantineNote::read(&other).is_none(),
         "another tag is not a quarantine note"
     );
-}
-
-/// The golden bytes and the local encoder are the old engine's own output, checked against it
-/// while it still exists.
-#[test]
-fn the_golden_body_is_what_the_engine_encoder_wrote() {
-    let quarantine = crate::Quarantine {
-        segment: 3,
-        segment_file: None,
-        offset: 1024,
-        damage_at: 1536,
-        bytes: 512,
-        why: None,
-        identities: vec![(7, 5), (7, 6)],
-        unverified: Vec::new(),
-        damaged: Vec::new(),
-        at_unix_ms: 1_700_000_000_000,
-        kept: crate::QuarantineKept::Memory,
-        before: Some((7, 4)),
-        after: Some((7, 6)),
-    };
-    assert_eq!(quarantine.body(), unhex(GOLDEN_QUARANTINE_BODY));
-
-    let fixture = crate::Quarantine {
-        segment: 0,
-        offset: 0,
-        damage_at: 0,
-        bytes: 1,
-        identities: vec![(3, 2)],
-        at_unix_ms: 0,
-        before: Some((3, 1)),
-        after: Some((3, 3)),
-        ..quarantine
-    };
-    assert_eq!(fixture.body(), quarantine_body(Some((3, 1)), Some((3, 3))));
 }
