@@ -299,21 +299,14 @@ impl LoginMethods {
         }
     }
 
-    pub(crate) fn build(
-        cfg: &AuthCfg,
-        registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-        secret_resolver: &crate::config::secret::SecretResolver,
-    ) -> Result<Self, String> {
-        Self::build_on(cfg, registry.as_ref(), secret_resolver, || {
-            crate::preflight::auth_axis(registry.clone())
-        })
-    }
-
-    fn build_on(
+    /// The hosted login methods over the build's shared `instances`: a provider the chain or
+    /// admin_auth already opened is handed over, not opened again (WASTE-AUTH-SECRETS W1).
+    pub(crate) fn build_on(
         cfg: &AuthCfg,
         registry: &dyn busbar_contract::plugin_rows::PluginRows,
         secret_resolver: &crate::config::secret::SecretResolver,
-        open_axis: impl Fn() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
+        instances: &mut super::instances::AuthInstances,
+        open_axis: &dyn Fn() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
     ) -> Result<Self, String> {
         let mut methods = IndexMap::new();
 
@@ -450,7 +443,7 @@ impl LoginMethods {
 
 const CLIENT_SECRET_SLOT: &str = "client_secret";
 
-fn lend_browser_login_secret(
+pub(super) fn lend_browser_login_secret(
     name: &str,
     module: &str,
     browser: Option<&crate::config::BrowserLoginCfg>,

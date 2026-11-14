@@ -793,18 +793,11 @@ impl App {
     }
 
     pub fn flush_verified_credentials(&self, module: Option<&str>) -> Result<u64, String> {
-        credential_flush_results(
-            self.admin_modules
-                .modules
-                .iter()
-                .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
-                .map(|(_, instance)| instance.calls.refresh())
-                .chain(std::iter::once_with(|| self.auth.flush_verified(module))),
-        )
+        crate::auth::instances::flush_distinct(&self.admin_modules, &self.auth, module)
     }
 }
 
-fn credential_flush_results(
+pub(crate) fn credential_flush_results(
     results: impl IntoIterator<Item = Result<u64, String>>,
 ) -> Result<u64, String> {
     let mut flushed = 0;
