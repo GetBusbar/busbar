@@ -522,12 +522,20 @@ pub fn wants_tools(body: &[u8]) -> bool {
 }
 
 pub fn memfind(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+    needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memfind_matches_driver_semantics() {
+        assert!(memfind(b"abc", b"")); // red today: windows(0) panics
+        assert!(memfind(b"", b""));
+        assert!(memfind(b"xx\"tools\"", b"\"tools\""));
+        assert!(!memfind(b"ab", b"abc"));
+    }
 
     #[test]
     fn every_dialect_is_parseable_json_and_carries_the_marker() {
