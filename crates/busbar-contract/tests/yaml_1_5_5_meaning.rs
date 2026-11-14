@@ -30,7 +30,9 @@
 //!
 //! Also ported, as ordinary tests below, the meaning cases of serde_yaml_ng's own suite that
 //! busbar-yaml carried (`test_de.rs`, `test_value.rs`, `test_error.rs`, `test_serde.rs`): what
-//! an input reads as, untyped and into typed targets, and what it refuses. Not ported: emitter
+//! an input reads as, untyped and into typed targets, and what it refuses; and, for typed enums,
+//! units and `Mapping` fields, what a typed value is written as and that it reads back as itself
+//! (1.5.5 wrote an enum variant with content as `!Variant`). Not ported: other emitter
 //! output, error wording and positions, `Value`/`Number`/`Mapping` API internals, `Debug`
 //! output, seeds, `apply_merge`, the multi-document iterator and bytes (APIs this module does not
 //! offer), and the typed `0644` case, which is the owner-accepted difference pinned by
@@ -1274,4 +1276,211 @@ fn duplicate_keys_of_every_kind_are_refused() {
             "{doc:?}: {error}"
         );
     }
+}
+
+/// test_error `test_deserialize_nested_enum`: into `Outer::Inner(Inner)`, 1.5.5 refused `!Inner []`
+/// (the inner enum has no variant), `!Variant []` (not a variant of `Outer`) and
+/// `!Inner !Variant []` (two tags on one node).
+#[test]
+fn nested_enums_1_5_5_refused_are_refused() {
+    #[derive(Debug, Deserialize)]
+    enum Outer {
+        Inner(#[allow(dead_code)] Inner),
+    }
+    #[derive(Debug, Deserialize)]
+    enum Inner {
+        Variant(#[allow(dead_code)] Vec<usize>),
+    }
+    for doc in [
+        "---\n!Inner []\n",
+        "---\n!Variant []\n",
+        "---\n!Inner !Variant []\n",
+    ] {
+        assert!(
+            yaml::from_str::<Outer>(doc).is_err(),
+            "{doc:?} must be refused, as 1.5.5 refused it"
+        );
+    }
+    for doc in ["---\n!Inner []\n", "---\n!Variant []\n"] {
+        assert!(
+            yaml::from_value::<Outer>(tree(doc)).is_err(),
+            "{doc:?} read from a tree must be refused, as 1.5.5 refused it"
+        );
+    }
+}
+
+/// test_serde `test_nested_enum`: `Outer::Inner(Inner::Unit)` is written `!Inner Unit`, and
+/// `!Inner Unit` reads back as it, from the text and from a tree.
+#[test]
+fn nested_enum_with_a_unit_inner_variant_round_trips() {
+    #[derive(Debug, Deserialize, serde::Serialize, PartialEq)]
+    enum Outer {
+        Inner(Inner),
+    }
+    #[derive(Debug, Deserialize, serde::Serialize, PartialEq)]
+    enum Inner {
+        Unit,
+    }
+    let thing = Outer::Inner(Inner::Unit);
+    assert_eq!(yaml::to_string(&thing).unwrap(), "!Inner Unit\n");
+    assert_eq!(yaml::from_str::<Outer>("!Inner Unit\n").unwrap(), thing);
+    assert_eq!(
+        yaml::from_value::<Outer>(tree("!Inner Unit\n")).unwrap(),
+        thing
+    );
+    let value = yaml::to_value(&thing).unwrap();
+    assert_eq!(value, yaml::tagged("!Inner", text("Unit")));
+    assert_eq!(yaml::to_string(&value).unwrap(), "!Inner Unit\n");
+    assert_eq!(yaml::from_value::<Outer>(value).unwrap(), thing);
+}
+
+/// test_serde `test_unit`, `test_unit_struct`: every null spelling reads as `()` and as a unit
+/// struct (plain `null`, `Null`, `NULL`, `~`, and an empty node), from the text and from a tree;
+/// both are written `null`.
+#[test]
+fn null_reads_as_unit_and_as_a_unit_struct() {
+    #[derive(Debug, Deserialize, serde::Serialize, PartialEq)]
+    struct Foo;
+    let nulls = "- null\n- Null\n- NULL\n- ~\n-\n";
+    assert_eq!(yaml::from_str::<Vec<()>>(nulls).unwrap(), vec![(); 5]);
+    assert_eq!(
+        yaml::from_value::<Vec<()>>(tree(nulls)).unwrap(),
+        vec![(); 5]
+    );
+    assert_eq!(
+        yaml::from_str::<Vec<Foo>>(nulls).unwrap(),
+        vec![Foo, Foo, Foo, Foo, Foo]
+    );
+    assert_eq!(
+        yaml::from_value::<Vec<Foo>>(tree(nulls)).unwrap(),
+        vec![Foo, Foo, Foo, Foo, Foo]
+    );
+    assert_eq!(yaml::from_str::<Foo>("null\n").unwrap(), Foo);
+    assert_eq!(yaml::from_value::<Foo>(tree("null\n")).unwrap(), Foo);
+    yaml::from_str::<()>("null\n").unwrap();
+
+    let units = vec![(), ()];
+    assert_eq!(yaml::to_string(&units).unwrap(), "- null\n- null\n");
+    assert_eq!(
+        yaml::from_str::<Vec<()>>("- null\n- null\n").unwrap(),
+        units
+    );
+    assert_eq!(yaml::to_string(&Foo).unwrap(), "null\n");
+}
+
+/// test_serde `test_unit_variant`, `test_newtype_variant`, `test_tuple_variant`,
+/// `test_struct_variant`, `test_tagged_map_value`: a typed enum is written as 1.5.5 wrote it (a
+/// unit variant as its plain name, any other as `!Variant` over its content), and what is written
+/// reads back as the value, from the text, from a tree, and through `to_value`.
+#[test]
+fn typed_enums_are_written_as_1_5_5_wrote_them_and_read_back() {
+    #[derive(Debug, Deserialize, serde::Serialize, PartialEq)]
+    enum Variant {
+        First,
+        Second,
+        Size(usize),
+        Rgb(u8, u8, u8),
+        Color { r: u8, g: u8, b: u8 },
+    }
+    for (thing, written) in [
+        (Variant::First, "First\n"),
+        (Variant::Second, "Second\n"),
+        (Variant::Size(127), "!Size 127\n"),
+        (Variant::Rgb(32, 64, 96), "!Rgb\n- 32\n- 64\n- 96\n"),
+        (
+            Variant::Color {
+                r: 32,
+                g: 64,
+                b: 96,
+            },
+            "!Color\nr: 32\ng: 64\nb: 96\n",
+        ),
+    ] {
+        assert_eq!(yaml::to_string(&thing).unwrap(), written, "{thing:?}");
+        let mut through_writer = Vec::new();
+        yaml::to_writer(&mut through_writer, &thing).unwrap();
+        assert_eq!(String::from_utf8(through_writer).unwrap(), written);
+        assert_eq!(yaml::from_str::<Variant>(written).unwrap(), thing);
+        assert_eq!(yaml::from_value::<Variant>(tree(written)).unwrap(), thing);
+        let value = yaml::to_value(&thing).unwrap();
+        assert_eq!(value, tree(written), "{thing:?}");
+        assert_eq!(yaml::to_string(&value).unwrap(), written, "{thing:?}");
+        assert_eq!(yaml::from_value::<Variant>(value).unwrap(), thing);
+    }
+
+    #[derive(Debug, Deserialize, serde::Serialize, PartialEq)]
+    struct Bindings {
+        profile: Profile,
+    }
+    #[derive(Debug, Deserialize, serde::Serialize, PartialEq)]
+    enum Profile {
+        ClassValidator { class_name: String },
+    }
+    let thing = Bindings {
+        profile: Profile::ClassValidator {
+            class_name: "ApplicationConfig".to_owned(),
+        },
+    };
+    let written = "profile: !ClassValidator\n  class_name: ApplicationConfig\n";
+    assert_eq!(yaml::to_string(&thing).unwrap(), written);
+    assert_eq!(yaml::from_str::<Bindings>(written).unwrap(), thing);
+    assert_eq!(yaml::from_value::<Bindings>(tree(written)).unwrap(), thing);
+
+    // Inside an `Option` and a sequence, each variant still writes its tag and reads back.
+    #[derive(Debug, Deserialize, serde::Serialize, PartialEq)]
+    struct Nested {
+        maybe: Option<Variant>,
+        list: Vec<Variant>,
+    }
+    let thing = Nested {
+        maybe: Some(Variant::Size(1)),
+        list: vec![
+            Variant::First,
+            Variant::Size(2),
+            Variant::Rgb(1, 2, 3),
+            Variant::Color { r: 4, g: 5, b: 6 },
+        ],
+    };
+    let written = yaml::to_string(&thing).unwrap();
+    for tag in ["!Size", "!Rgb", "!Color"] {
+        assert!(written.contains(tag), "{tag} in {written}");
+    }
+    assert!(!written.contains("Size:"), "{written}");
+    assert_eq!(
+        yaml::from_str::<Nested>(&written).unwrap(),
+        thing,
+        "{written}"
+    );
+    assert_eq!(
+        yaml::from_value::<Nested>(tree(&written)).unwrap(),
+        thing,
+        "{written}"
+    );
+}
+
+/// test_de `test_de_mapping`, test_serde `test_mapping`: a `Mapping` field of a typed struct reads
+/// its pairs in order, from the text and from a tree, and is written back as a block mapping.
+#[test]
+fn a_mapping_field_reads_its_pairs() {
+    #[derive(Debug, Deserialize, serde::Serialize, PartialEq)]
+    struct Data {
+        substructure: Mapping,
+    }
+    let doc = "substructure:\n  a: 'foo'\n  b: 'bar'\n";
+    let expected = Data {
+        substructure: Mapping::from(vec![(text("a"), text("foo")), (text("b"), text("bar"))]),
+    };
+    let read: Data = yaml::from_str(doc).unwrap();
+    assert_eq!(read, expected);
+    let keys: Vec<_> = read
+        .substructure
+        .keys()
+        .filter_map(ValueExt::as_str)
+        .collect();
+    assert_eq!(keys, ["a", "b"]);
+    assert_eq!(yaml::from_value::<Data>(tree(doc)).unwrap(), expected);
+    assert_eq!(
+        yaml::to_string(&expected).unwrap(),
+        "substructure:\n  a: foo\n  b: bar\n"
+    );
 }
