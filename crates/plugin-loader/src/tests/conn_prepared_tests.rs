@@ -304,6 +304,7 @@ fn prepared_observation_preserves_failure_cause_before_close_and_on_replay() {
                     ConnCause {
                         stage,
                         text: "original connection failure".into(),
+                        outbound: false,
                     },
                 )),
                 ..Scripted::default()

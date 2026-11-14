@@ -1360,7 +1360,11 @@ impl Connection {
             Failure::Pending | Failure::Timeout | Failure::Closed => String::new(),
         };
         if !matches!(self.phase, Phase::Failed(_)) {
-            self.cause = Some(ConnCause { stage, text });
+            self.cause = Some(ConnCause {
+                stage,
+                text,
+                outbound: false,
+            });
         }
         self.phase = Phase::Failed(f);
     }

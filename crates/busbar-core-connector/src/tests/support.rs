@@ -280,6 +280,10 @@ pub struct Knobs {
     pub head_lines: Option<&'static [u8]>,
     /// `locate` states the body's length is the host's to state (`LocateOut::states_length`).
     pub states_length: bool,
+    /// Every `emit` FAILS with this error: the framer could not render what the host sends.
+    pub fail_emit: Option<&'static str>,
+    /// Every `ingest` of the far end's bytes FAILS with this error: the framer rejects them.
+    pub fail_ingest: Option<&'static str>,
 }
 
 #[derive(Default)]
@@ -778,6 +782,9 @@ impl FramerDoor for TestDoor {
             }
             Call::Ingest(i, o) => match framings.get_mut(&i.framing) {
                 None => ("ingest", failed("no such framing")),
+                Some(_) if i.len != 0 && self.knobs.fail_ingest.is_some() => {
+                    ("ingest", failed(self.knobs.fail_ingest.unwrap_or_default()))
+                }
                 Some(st) => {
                     let bytes = raw(i.bytes, i.len);
                     st.heard |= !bytes.is_empty();
@@ -792,6 +799,9 @@ impl FramerDoor for TestDoor {
             },
             Call::Emit(i, o) => match framings.get_mut(&i.framing) {
                 None => ("emit", failed("no such framing")),
+                Some(_) if self.knobs.fail_emit.is_some() => {
+                    ("emit", failed(self.knobs.fail_emit.unwrap_or_default()))
+                }
                 Some(st) => {
                     if self.knobs.messages_follow_emit && st.messages.is_some() {
                         st.messages = Some(i.stream);

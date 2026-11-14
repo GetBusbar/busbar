@@ -424,6 +424,13 @@ impl DeclaredConns for Recorder {
 }
 
 impl PollConns for Recorder {
+    fn failure_cause(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Option<busbar_contract::conn::ConnCause> {
+        None
+    }
     fn poll_read(
         &self,
         _: InstanceId,

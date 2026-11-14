@@ -286,6 +286,11 @@ pub struct ConnCause {
     pub stage: u64,
     /// The underlying error's own text (empty for a deadline).
     pub text: String,
+    /// HOST-ONLY, never lowered to the ABI: raised only with `CAUSE_FRAMER`, and only when the
+    /// framer crossing that failed was the host's OUTBOUND emit (an opening or a write it
+    /// rendered for the far end), never an ingest of the far end's bytes, a resume or a socket
+    /// read. Such a fault is the host's own: no member can cure it and none is to blame for it.
+    pub outbound: bool,
 }
 
 /// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
@@ -869,6 +874,12 @@ pub trait PollConns: Conns {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<Piece, ConnError>>;
+
+    /// Why `caller`'s connection `conn` failed, once it has ([`DeclaredConns::cause`]), for the
+    /// host-side reader that must tell the host's own outbound framer fault
+    /// ([`ConnCause::outbound`]) from a far end that failed. REQUIRED, never defaulted: a
+    /// wrapping table that forgot to forward it would silently read every fault as the far end's.
+    fn failure_cause(&self, caller: InstanceId, conn: ConnId) -> Option<ConnCause>;
 
     /// SEAL THE TRUST ANCHORS of one destination `owner`'s declared `need` reaches at `target` (a
     fn anchor(

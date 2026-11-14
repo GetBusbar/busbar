@@ -527,7 +527,8 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
             c.cause(),
             Some(&ConnCause {
                 stage: CAUSE_CONNECT,
-                text: here
+                text: here,
+                outbound: false,
             })
         );
 
@@ -570,7 +571,8 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
             c.cause(),
             Some(&ConnCause {
                 stage: CAUSE_SECURITY,
-                text: unknown.to_string()
+                text: unknown.to_string(),
+                outbound: false,
             })
         );
 
@@ -582,7 +584,8 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
             c.cause(),
             Some(&ConnCause {
                 stage: CAUSE_DEADLINE,
-                text: String::new()
+                text: String::new(),
+                outbound: false,
             })
         );
     });
@@ -1340,6 +1343,80 @@ fn query_credentials_reach_the_secure_target_without_crossing_the_framer_as_plai
             c.target(),
             far,
             "dial identity stays free of query credentials"
+        );
+    });
+}
+
+/// A dialled connection over a framer of `knobs`, sending `body` as its opening to a far end that
+/// writes one line: the failure the framer gives it, and the cause it then names.
+async fn framer_failed(knobs: Knobs, body: &'static [u8]) -> (Failure, Option<ConnCause>) {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let far = l.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let (mut s, _) = l.accept().await.unwrap();
+        let _ = s.write_all(b"hello").await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+    let door = Arc::new(TestDoor::new("bytes", &["bytes"], &[], knobs));
+    let mut d = dial(&far);
+    d.opening = Some((Vec::new(), body.to_vec().into()));
+    let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
+    let failed = tokio::time::timeout(Duration::from_secs(5), next(&mut c))
+        .await
+        .expect("the framer fails the connection")
+        .expect_err("a failure, not a piece");
+    (failed, c.cause().cloned())
+}
+
+/// THE HOST'S OWN OUTBOUND FRAMER FAULT, at the seam that renders it (`put_opening_marked`): the
+/// framer FAILS the opening emit, and the connection names `CAUSE_FRAMER`, the framer's own words
+/// (not the host's wrapping of them) and `outbound`.
+#[test]
+fn a_failed_opening_emit_names_an_outbound_framer_cause_in_the_framers_own_words() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_FRAMER;
+    worker().block_on(async {
+        let (failed, cause) = framer_failed(
+            Knobs {
+                fail_emit: Some("stream 1 already carries a request"),
+                ..Knobs::default()
+            },
+            b"first",
+        )
+        .await;
+        assert!(matches!(failed, Failure::Failed(_)), "{failed:?}");
+        assert_eq!(
+            cause,
+            Some(ConnCause {
+                stage: CAUSE_FRAMER,
+                text: "stream 1 already carries a request".into(),
+                outbound: true,
+            })
+        );
+    });
+}
+
+/// THE DIRECTION SPLIT at the same seam: a framer that rejects the far end's bytes (ingest) names
+/// `CAUSE_FRAMER` with its own words but never `outbound`; only the outbound emit raises it.
+#[test]
+fn a_framer_rejecting_the_far_ends_bytes_never_names_an_outbound_cause() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_FRAMER;
+    worker().block_on(async {
+        let (failed, cause) = framer_failed(
+            Knobs {
+                fail_ingest: Some("a malformed reply"),
+                ..Knobs::default()
+            },
+            b"first",
+        )
+        .await;
+        assert!(matches!(failed, Failure::Failed(_)), "{failed:?}");
+        assert_eq!(
+            cause,
+            Some(ConnCause {
+                stage: CAUSE_FRAMER,
+                text: "a malformed reply".into(),
+                outbound: false,
+            })
         );
     });
 }

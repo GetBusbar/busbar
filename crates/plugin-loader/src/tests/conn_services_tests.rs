@@ -1744,6 +1744,7 @@ fn a_failed_reply_names_the_stage_and_the_underlying_error() {
             ConnCause {
                 stage: CAUSE_CONNECT,
                 text: "Connection refused (os error 111)".into(),
+                outbound: false,
             },
         )),
         ..Scripted::default()
@@ -3244,6 +3245,7 @@ fn a_request_refused_for_an_unavailable_credential_names_that_cause() {
             ConnCause {
                 stage: 0,
                 text: "".into(),
+                outbound: false,
             },
         )),
         ..Scripted::default()
