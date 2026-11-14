@@ -45,10 +45,10 @@ pub struct Scenario {
     pub providers_1_5: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Setup steps (see [`Step`]); kept as JSON values because YAML externally tagged enums
-    /// need `!tags`, and `- mint_key: {...}` reads better.
+    /// Setup steps (see [`Step`]); kept as YAML values and read as single-key maps, because
+    /// YAML externally tagged enums otherwise need `!tags`, and `- mint_key: {...}` reads better.
     #[serde(default)]
-    pub setup: Vec<serde_json::Value>,
+    pub setup: Vec<serde_yaml::Value>,
     #[serde(default)]
     pub cases: Vec<CaseSpec>,
     /// Generated LLM cases (ingress x egress x stream x pad x tools), one list per block.
@@ -264,7 +264,10 @@ impl Scenario {
     pub fn steps(&self) -> Result<Vec<Step>, String> {
         self.setup
             .iter()
-            .map(|v| serde_json::from_value(v.clone()).map_err(|e| format!("setup step {v}: {e}")))
+            .map(|v| {
+                serde_yaml::with::singleton_map_recursive::deserialize::<Step, _>(v.clone())
+                    .map_err(|e| format!("setup step {v:?}: {e}"))
+            })
             .collect()
     }
 }
