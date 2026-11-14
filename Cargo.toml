@@ -103,6 +103,8 @@ sha2 = "0.10"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
 sonic-rs = "0.5"
+# Constant-time byte equality (`redacted::constant_time_eq`); already linked through rustls.
+subtle = { version = "2.6", default-features = false }
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory.
 tar = { version = "0.4", default-features = false }
