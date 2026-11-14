@@ -313,12 +313,11 @@ impl GovState {
         shards.sort_unstable();
         shards.dedup();
         let mut guards: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
-        guards.extend(shards.iter().map(|index| {
-            self.budget.shards[*index]
-                .map
-                .write()
-                .unwrap_or_else(|p| p.into_inner())
-        }));
+        guards.extend(
+            shards
+                .iter()
+                .map(|index| self.budget.shard_at(*index).write()),
+        );
         let mut changes: smallvec::SmallVec<[(usize, &str, BudgetCell); 4]> =
             smallvec::SmallVec::new();
         for target in targets {

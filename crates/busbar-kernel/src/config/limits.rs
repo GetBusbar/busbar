@@ -48,6 +48,18 @@ pub const DEFAULT_RATE_SWEEP_INTERVAL: u32 = 256;
 
 pub const DEFAULT_USAGE_FLUSH_INTERVAL_MS: u64 = 100;
 
+/// How often the budget flush walks every shard whatever its "may be dirty" flag, as a backstop
+/// (seconds, within [10 s, 10 min]).
+pub const DEFAULT_BUDGET_FLUSH_BACKSTOP_SECS: u64 = 60;
+
+/// Ticket custody sweep: a held ticket is read once it is within this many seconds of its expiry
+/// by the local clock (a scheduling hint; the store's clock decides expiry). Within [0, 60].
+pub const DEFAULT_TICKET_SKEW_SECS: u64 = 2;
+
+/// Ticket custody sweep backstop: every held ticket is re-read at least this often (seconds), so a
+/// ticket spent or deleted by another node leaves custody.
+pub const DEFAULT_TICKET_BACKSTOP_SECS: u64 = 30;
+
 /// Longest rest of a claim retention scope after a complete sweep pass. It
 /// bounds how long a lapsed claim's row may linger; redeem refuses a lapsed
 /// claim by its own TimeGuard whatever the sweep timing.
