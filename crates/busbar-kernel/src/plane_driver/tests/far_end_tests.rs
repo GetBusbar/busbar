@@ -51,6 +51,8 @@ enum Script {
     /// read answers `ConnError::Fault` and the table names `CAUSE_FRAMER` with this text, raised
     /// `outbound` (the host's own emit failed) or not (the framer rejected the far end's bytes).
     FramerFault(&'static str, bool),
+    /// The open succeeds; the first read answers this error, before any answer.
+    ReadFails(ConnError),
 }
 
 type Opened = (String, Vec<(String, Vec<u8>)>, Vec<u8>, u64);
@@ -90,6 +92,8 @@ struct Table {
     failing: Mutex<Vec<u64>>,
     /// Why each failed connection failed, as `PollConns::failure_cause` names it.
     causes: Mutex<HashMap<u64, busbar_contract::conn::ConnCause>>,
+    /// The connections whose first read answers an error ([`Script::ReadFails`]).
+    read_fails: Mutex<HashMap<u64, ConnError>>,
     /// The head lines the framer states for every target (`PollConns::head_defaults`).
     defaults: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
     budget_defaults: std::sync::atomic::AtomicBool,
@@ -4106,4 +4110,146 @@ async fn a_far_end_framer_fault_before_the_answer_still_fails_over_and_charges_t
     let p = far.next(&t).await.expect("a piece");
     assert!(!p.fail_over, "{p:?}");
     assert_eq!(p.status.map(|(code, _)| code), Some(200));
+}
+
+// ---- A walk's last answer when its last member's credential could not be presented ----
+
+/// One attempt of `far` on its next member: picked, sent, and (when it went out) read to its
+/// first piece, which ends it. Answers whether the request went out.
+async fn attempt(far: &EgressFarEnd<'_>, t: &Pass<Route>, attempt_no: u32) -> bool {
+    assert!(
+        matches!(far.member(t, attempt_no).await, Pick::Member { .. }),
+        "attempt {attempt_no} picks a member"
+    );
+    let sent = far.send(t, request()).await;
+    if sent {
+        let _first = far.next(t).await;
+    }
+    sent
+}
+
+#[tokio::test]
+async fn a_member_whose_auth_fields_answer_nothing_refused_its_credential() {
+    let r = one_member();
+    r.auth.refuse.store(true, Ordering::SeqCst);
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(!attempt(&far, &t, 1).await);
+    assert!(far.credential_refused(&t));
+    assert_eq!(far.unsent(&t), Some(RefusalCode::UnsentAuthFailed));
+}
+
+#[tokio::test]
+async fn a_member_whose_open_fails_on_its_credential_refused_its_credential() {
+    for err in [ConnError::AuthRefused, ConnError::AuthFailed] {
+        let r = rig(
+            &[("a.test", Script::OpenFails(err))],
+            OnExhausted::Status503,
+            None,
+        );
+        let t = token();
+        let far = r.egress.unit(route());
+        assert!(!attempt(&far, &t, 1).await, "{err:?}");
+        assert!(far.credential_refused(&t), "{err:?}");
+        assert_eq!(
+            far.unsent(&t),
+            Some(RefusalCode::UnsentAuthFailed),
+            "{err:?}: the refused piece names the credential"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_member_whose_first_read_fails_on_its_credential_refused_its_credential() {
+    let r = rig(
+        &[("a.test", Script::ReadFails(ConnError::AuthFailed))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(attempt(&far, &t, 1).await);
+    assert!(far.credential_refused(&t));
+}
+
+#[tokio::test]
+async fn a_credential_refusal_followed_by_a_shed_is_not_the_walks_answer() {
+    for first in [
+        Script::OpenFails(ConnError::AuthRefused),
+        Script::ReadFails(ConnError::AuthFailed),
+    ] {
+        for then in [
+            Script::Answer(503, None, vec![b"x"]),
+            Script::Refused,
+            Script::ReadFails(ConnError::Timeout),
+        ] {
+            let r = rig(
+                &[("a.test", first.clone()), ("b.test", then)],
+                OnExhausted::Status503,
+                None,
+            );
+            let t = token();
+            let far = r.egress.unit(route());
+            let _ = attempt(&far, &t, 1).await;
+            assert!(far.credential_refused(&t), "the first member refused");
+            let _ = attempt(&far, &t, 2).await;
+            assert!(
+                !far.credential_refused(&t),
+                "the last attempted member failed on something else: its retryable answer stands"
+            );
+            assert_ne!(far.unsent(&t), Some(RefusalCode::UnsentAuthFailed));
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_auth_fields_refusal_is_forgotten_when_the_next_member_is_installed() {
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"ok"])),
+            ("b.test", Script::Answer(503, None, vec![b"x"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    r.auth.refuse.store(true, Ordering::SeqCst);
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(!attempt(&far, &t, 1).await);
+    assert_eq!(far.unsent(&t), Some(RefusalCode::UnsentAuthFailed));
+    assert!(far.credential_refused(&t));
+    r.auth.refuse.store(false, Ordering::SeqCst);
+    assert!(matches!(far.member(&t, 2).await, Pick::Member { .. }));
+    assert_eq!(
+        far.unsent(&t),
+        None,
+        "the next attempt starts with nothing to say"
+    );
+    assert!(!far.credential_refused(&t));
+}
+
+#[tokio::test]
+async fn a_shed_followed_by_a_credential_refusal_is_the_walks_answer() {
+    for then in [
+        Script::OpenFails(ConnError::AuthRefused),
+        Script::ReadFails(ConnError::AuthFailed),
+    ] {
+        let r = rig(
+            &[
+                ("a.test", Script::Answer(503, None, vec![b"x"])),
+                ("b.test", then),
+            ],
+            OnExhausted::Status503,
+            None,
+        );
+        let t = token();
+        let far = r.egress.unit(route());
+        assert!(attempt(&far, &t, 1).await);
+        assert!(!far.credential_refused(&t));
+        let _ = attempt(&far, &t, 2).await;
+        assert!(
+            far.credential_refused(&t),
+            "the last attempted member refused"
+        );
+    }
 }
