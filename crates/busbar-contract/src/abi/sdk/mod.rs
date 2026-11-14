@@ -84,6 +84,8 @@ pub mod trust;
 
 pub mod life;
 
+pub mod expiry;
+
 pub mod migrate;
 
 pub mod plane_life;
