@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
-# dist/default is its own workspace; the root crate depends on no plugin.
-exclude = ["dist/default"]
+# dist/default is its own workspace; the root crate depends on no plugin. The crypto backend is its
+# own lock root: as a member, a private `[patch]` of the same name would collide in the lockfile.
+exclude = ["dist/default", "crates/busbar-crypto-backend"]
 members = [
     "crates/busbar",
     "crates/busbar-core-connector",
