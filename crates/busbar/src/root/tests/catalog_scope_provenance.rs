@@ -17,7 +17,14 @@ fn an_unrelated_same_name_entry_keeps_its_primary_grant_boundary() {
     assert!(provenance.is_none());
     assert_eq!(table["models"]["shared"]["provider"], "unrelated_provider");
     let pools = DoorPools::of(&table, busbar_contract::section::RESERVED_POOLS_KEY).unwrap();
-    let mut facts = door_facts("neutral", &["primary", "catalog"], &[], &[], "op", vec![]);
+    let mut facts = door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("neutral").unwrap(),
+        &["primary", "catalog"],
+        &[],
+        &[],
+        "op",
+        vec![],
+    );
 
     facts
         .secondary_scopes

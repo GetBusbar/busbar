@@ -81,10 +81,30 @@ pub fn fallback_key() -> &'static str {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaneQualifier(String);
 
+/// Text that cannot be a door's lane qualifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidLaneQualifier;
+
+impl std::fmt::Display for InvalidLaneQualifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a lane qualifier is empty or plain text: no control character (the plane/lane \
+             separator is one) and no surrounding whitespace",
+        )
+    }
+}
+
+impl std::error::Error for InvalidLaneQualifier {}
+
 impl LaneQualifier {
-    #[must_use]
-    pub fn new(qualifier: &str) -> Self {
-        Self(qualifier.to_string())
+    /// The one way to make a qualifier: `""` (the models plane) or plain text with no control
+    /// character (the plane/lane separator `U+001F` is one, so a qualifier can never split a lane
+    /// name) and no surrounding whitespace.
+    pub fn parse(qualifier: &str) -> Result<Self, InvalidLaneQualifier> {
+        if qualifier.chars().any(char::is_control) || qualifier.trim() != qualifier {
+            return Err(InvalidLaneQualifier);
+        }
+        Ok(Self(qualifier.to_string()))
     }
 
     /// The plane key this qualifier names: the models plane's `""` is the fallback plane.

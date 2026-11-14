@@ -2672,7 +2672,12 @@ fn seal_live(
     units: &Arc<busbar_kernel::host_units::UnitRecords>,
 ) -> Result<DoorLive, String> {
     let models_plane = served_facts.section == busbar_contract::section::RESERVED_POOLS_KEY;
-    let card_plane = if models_plane { "" } else { plugin.name() };
+    let card_plane = busbar_kernel::plane_driver::dispatch::LaneQualifier::parse(if models_plane {
+        ""
+    } else {
+        plugin.name()
+    })
+    .map_err(|e| format!("plane {}: {e}", plugin.name()))?;
     let mut facts = door_facts(
         card_plane,
         scope_kinds,
