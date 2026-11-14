@@ -48,7 +48,6 @@ busbar-default::bin/busbar root::serve::plane_llm_door::serve_tests::pools_door_
 busbar-default::bin/busbar root::serve::plane_mcp_door::door_boundary::connect_after_an_apply_presents_the_binding_the_apply_gave_the_member	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::door_boundary::connect_after_an_apply_that_keeps_the_member_presents_its_binding	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::door_boundary::connect_fetches_with_the_members_binding_and_never_for_a_passthrough_member	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::serve::plane_mcp_door::secret_source::tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_its_source	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::spent_ledger::a_node_refuses_its_own_replay_with_no_durable_store_configured	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::spent_ledger::two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_posture	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::serve_datagram::raw_udp_ingress_tests::raw_output_credit_readiness_drops_before_acceptance_and_resumes_without_replay	CDT-KNOWN-RED	flaky

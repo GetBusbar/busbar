@@ -1392,8 +1392,7 @@ impl DoorApply {
             &pools,
             catalog_entry.as_deref(),
         );
-        let mut fetches = None;
-        let egress = match &self.reach {
+        let routes = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
                     providers: &r.providers,
@@ -1405,13 +1404,41 @@ impl DoorApply {
                     upgrades: r.upgrades.clone(),
                     models: None,
                 };
-                let routes = crate::root::door_steps::member_routes(
+                Some(crate::root::door_steps::member_routes(
                     &table,
                     &pools,
                     &self.served_facts,
                     &reach,
                     scope,
-                )?;
+                )?)
+            }
+            None => None,
+        };
+        let observations = observations::parse(
+            self.plugin
+                .service_caller()
+                .ok_or_else(|| "unbound plane caller".to_owned())?
+                .namespace(),
+            section,
+            &facts,
+            &pools,
+        )?;
+        if !observations.is_empty() && !self.observations_supported {
+            return Err("usage observations require an atomic durable store"
+                .to_owned()
+                .into());
+        }
+        crate::root::loader::dispatch::kinds::plane::refresh_door_on(
+            &self.plugin,
+            &self.dispatcher,
+            &settings,
+            &owned,
+            generation,
+        )?;
+        let binding = self.plugin.connection_binding();
+        let mut fetches = None;
+        let egress = match (&self.reach, routes) {
+            (Some(r), Some(routes)) => {
                 let egress = crate::root::door_steps::compose_egress(
                     &facts,
                     &pools,
@@ -1426,7 +1453,7 @@ impl DoorApply {
                 fetches = Some(routes);
                 Some(Arc::new(egress))
             }
-            None => None,
+            _ => None,
         };
         admission
             .commit_typed()
