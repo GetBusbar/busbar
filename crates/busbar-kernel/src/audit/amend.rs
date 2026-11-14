@@ -3,7 +3,7 @@
 
 use busbar_contract::caps::{Audit, Pass};
 pub use busbar_kernel_audit::{
-    amend::{AmendBody, AmendSink, Amendment, NodeAmendments, Reader},
+    amend::{AmendBody, AmendSink, Amendment, NodeAmendments, ReadFact, Reader},
     Access, Subject,
 };
 
@@ -26,27 +26,58 @@ pub(crate) async fn hook_read(
     op: &str,
     identity: bool,
 ) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
-    let mut fields = vec!["content".to_string()];
-    fields.extend(identity.then(|| "identity".to_string()));
-    let now = busbar_kernel::store::now();
-    amendments
-        .record_read(&pass(), Reader::Hook, name, principal, op, fields, now)
-        .await
-        .map(|_| ())
+    hook_reads(amendments, &[name], principal, op, identity).await
 }
 
-pub(crate) async fn export_read(
+/// Record that every hook in `names` is handed the unit's content: one amendment per hook, staged
+/// and confirmed together (one durable commit for the whole set).
+pub(crate) async fn hook_reads(
     amendments: &NodeAmendments,
-    module: &str,
+    names: &[&str],
+    principal: Option<&str>,
     op: &str,
-    payload: &serde_json::Value,
+    identity: bool,
 ) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
-    let fields = payload.as_object().map(|o| o.keys().cloned().collect());
-    let (fields, now) = (fields.unwrap_or_default(), busbar_kernel::store::now());
-    amendments
-        .record_read(&pass(), Reader::Export, module, None, op, fields, now)
-        .await
-        .map(|_| ())
+    let mut fields = vec!["content".to_string()];
+    fields.extend(identity.then(|| "identity".to_string()));
+    let wall = busbar_kernel::store::now();
+    let facts: Vec<ReadFact<'_>> = names
+        .iter()
+        .map(|&name| ReadFact {
+            reader: Reader::Hook,
+            name,
+            principal,
+            op_class: op,
+            fields: fields.clone(),
+            wall,
+        })
+        .collect();
+    amendments.record_reads(&pass(), &facts).await.map(|_| ())
+}
+
+/// Record that each `(module, payload)` export sink was handed its payload's fields under `op`:
+/// one amendment per sink, staged and confirmed together (one durable commit per event).
+pub(crate) async fn export_reads(
+    amendments: &NodeAmendments,
+    op: &str,
+    handed: &[(String, std::sync::Arc<serde_json::Value>)],
+) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
+    let wall = busbar_kernel::store::now();
+    let facts: Vec<ReadFact<'_>> = handed
+        .iter()
+        .map(|(module, payload)| ReadFact {
+            reader: Reader::Export,
+            name: module.as_str(),
+            principal: None,
+            op_class: op,
+            fields: payload
+                .as_object()
+                .map(|o| o.keys().cloned().collect())
+                .unwrap_or_default(),
+            wall,
+        })
+        .collect();
+    amendments.record_reads(&pass(), &facts).await.map(|_| ())
 }
 
 #[cfg(test)]

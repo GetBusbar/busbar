@@ -81,14 +81,23 @@ fn tap_inflight() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
     })
 }
 
-pub fn spawn_bounded_tap<F>(fut: F)
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
+/// One in-flight slot for a tap notification, or `None` when every slot is taken (the dropped
+/// notification is counted).
+pub(crate) fn tap_slot() -> Option<tokio::sync::OwnedSemaphorePermit> {
     let Ok(permit) = tap_inflight().clone().try_acquire_owned() else {
         metrics::counter!(TAP_NOTIFICATIONS_DROPPED_TOTAL).increment(1);
         metrics::counter!(crate::snapshot::ADMISSION_DENIED_TOTAL, "gate" => TAP_GATE_NAME)
             .increment(1);
+        return None;
+    };
+    Some(permit)
+}
+
+pub fn spawn_bounded_tap<F>(fut: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let Some(permit) = tap_slot() else {
         return;
     };
     crate::detached::spawn_detached(async move {

@@ -465,6 +465,40 @@ pub trait AmendSink: Send + Sync {
     /// Stage the exact original synchronously, preserving amendment order, then
     /// return an owned confirmation future. Only Ok means native Applied.
     fn sealed(&self, amendment: &Amendment) -> Result<AmendCommit, AmendPersistError>;
+
+    /// Stage several consecutive originals as one unit, in order, and return one confirmation
+    /// for all of them. A sink that can commit them together (one durable run) overrides this; the
+    /// default stages each one and confirms them in order.
+    fn sealed_many(&self, amendments: &[Amendment]) -> Result<AmendCommit, AmendPersistError> {
+        let mut confirmations = Vec::with_capacity(amendments.len());
+        for amendment in amendments {
+            confirmations.push(self.sealed(amendment)?);
+        }
+        Ok(Box::pin(async move {
+            for confirmation in confirmations {
+                confirmation.await?;
+            }
+            Ok(())
+        }))
+    }
+}
+
+/// One content access to record: `reader` `name` was handed `fields` of a unit's content for
+/// `principal` (`None`: the arrival) under `op_class` at `wall` (unix seconds).
+#[derive(Debug, Clone)]
+pub struct ReadFact<'a> {
+    /// What kind of thing reached for the content.
+    pub reader: Reader,
+    /// The hook or export module's name.
+    pub name: &'a str,
+    /// The principal the content belongs to; `None` is the arrival.
+    pub principal: Option<&'a str>,
+    /// The operation class the content was handed over under.
+    pub op_class: &'a str,
+    /// The content fields handed over.
+    pub fields: Vec<String>,
+    /// When, in unix seconds.
+    pub wall: u64,
 }
 
 /// What the journal's one lock guards: the journal, and the sink its amendments go to.
@@ -565,7 +599,7 @@ impl NodeAmendments {
     #[allow(clippy::too_many_arguments)]
     pub async fn record_read(
         &self,
-        _token: &Pass<Audit>,
+        token: &Pass<Audit>,
         reader: Reader,
         name: &str,
         principal: Option<&str>,
@@ -573,44 +607,74 @@ impl NodeAmendments {
         fields: Vec<String>,
         wall: u64,
     ) -> Result<Amendment, AmendPersistError> {
-        let body = content_access(
+        let fact = ReadFact {
             reader,
             name,
-            subject_of(principal),
-            OpClassId::new(op_class),
+            principal,
+            op_class,
             fields,
             wall,
-        );
-        let (amendment, confirmation) = {
+        };
+        let mut recorded = self
+            .record_reads(token, std::slice::from_ref(&fact))
+            .await?;
+        recorded.pop().ok_or(AmendPersistError)
+    }
+
+    /// Record several content accesses at once: each fact is its own amendment (own seq and hash,
+    /// chained in order), but all of them are staged as one unit and confirmed by one await, so
+    /// the accesses of one request stage cost one durable commit instead of one each. Nothing is
+    /// committed to the chain unless the sink retained every original.
+    pub async fn record_reads(
+        &self,
+        _token: &Pass<Audit>,
+        facts: &[ReadFact<'_>],
+    ) -> Result<Vec<Amendment>, AmendPersistError> {
+        if facts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (amendments, confirmation) = {
             let mut held = self.held();
-            let next = held
-                .journal
-                .chain
-                .next_seq
-                .checked_add(1)
-                .ok_or(AmendPersistError)?;
-            let mut amendment = Amendment {
-                seq: held.journal.chain.next_seq,
-                body,
-                prev_hash: held.journal.chain.tail_hash.clone(),
-                hash: String::new(),
-            };
-            amendment.hash = AmendChain::digest_of(&amendment);
+            let mut seq = held.journal.chain.next_seq;
+            let mut tail = held.journal.chain.tail_hash.clone();
+            let mut amendments = Vec::with_capacity(facts.len());
+            for fact in facts {
+                let next = seq.checked_add(1).ok_or(AmendPersistError)?;
+                let mut amendment = Amendment {
+                    seq,
+                    body: content_access(
+                        fact.reader,
+                        fact.name,
+                        subject_of(fact.principal),
+                        OpClassId::new(fact.op_class),
+                        fact.fields.clone(),
+                        fact.wall,
+                    ),
+                    prev_hash: tail,
+                    hash: String::new(),
+                };
+                amendment.hash = AmendChain::digest_of(&amendment);
+                tail = amendment.hash.clone();
+                seq = next;
+                amendments.push(amendment);
+            }
             let sink = held.sink.as_ref().ok_or(AmendPersistError)?;
-            let confirmation = sink.sealed(&amendment)?;
+            let confirmation = sink.sealed_many(&amendments)?;
             // Commit only after exact original custody is retained; refused
             // memory admission must not create an amendment-chain hole.
-            held.journal.chain.tail_hash = amendment.hash.clone();
-            held.journal.chain.next_seq = next;
-            if held.journal.recent.len() == AMENDMENTS_RETAINED {
-                held.journal.recent.pop_front();
-                held.journal.released = held.journal.released.saturating_add(1);
+            held.journal.chain.tail_hash = tail;
+            held.journal.chain.next_seq = seq;
+            for amendment in &amendments {
+                if held.journal.recent.len() == AMENDMENTS_RETAINED {
+                    held.journal.recent.pop_front();
+                    held.journal.released = held.journal.released.saturating_add(1);
+                }
+                held.journal.recent.push_back(amendment.clone());
             }
-            held.journal.recent.push_back(amendment.clone());
-            (amendment, confirmation)
+            (amendments, confirmation)
         };
         confirmation.await?;
-        Ok(amendment)
+        Ok(amendments)
     }
 
     /// The amendments the journal holds, oldest first.

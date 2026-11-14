@@ -115,9 +115,9 @@ impl HookBinder for HostGatedHooks {
             key: principal.and_then(|p| (self.keys)(p)),
             scan,
             reads: Arc::new(
-                move |hook: &str, principal: Option<&str>, op: &str, identity: bool| {
+                move |hooks: &[&str], principal: Option<&str>, op: &str, identity: bool| {
                     let host = host.clone();
-                    Box::pin(async move { host.hook_read(hook, principal, op, identity).await })
+                    Box::pin(async move { host.hook_reads(hooks, principal, op, identity).await })
                 },
             ),
         })
@@ -214,7 +214,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 &crate::hooks::RequestedSignals::default(),
             );
             if req.prompt.is_some() {
-                (hooks.reads)(hook.name(), principal.as_deref(), &view.dialect, false)
+                (hooks.reads)(&[hook.name()], principal.as_deref(), &view.dialect, false)
                     .await
                     .map_err(|_| super::fault_veto())?;
             }

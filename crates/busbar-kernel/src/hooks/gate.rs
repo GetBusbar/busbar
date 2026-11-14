@@ -38,7 +38,12 @@ pub(crate) struct GateSubject<'a> {
     pub(crate) reads: &'a HookReads<'a>,
 }
 
-pub(crate) type HookReads<'a> = dyn for<'r> Fn(&'r str, Option<&'r str>, &'r str, bool) -> crate::audit::amend::ReadConfirmation<'r>
+pub(crate) type HookReads<'a> = dyn for<'r> Fn(
+        &'r [&'r str],
+        Option<&'r str>,
+        &'r str,
+        bool,
+    ) -> crate::audit::amend::ReadConfirmation<'r>
     + Send
     + Sync
     + 'a;
@@ -212,7 +217,7 @@ pub(crate) async fn decide_over(
         let (req, content_delivered) = project(subject, content, *send_prompt, *send_user);
         if *send_prompt
             && (subject.reads)(
-                policy.name(),
+                &[policy.name()],
                 subject.key.map(|k| k.id.as_str()),
                 subject.ingress_protocol,
                 *send_user,
@@ -364,7 +369,7 @@ impl Fallback<'_, '_> {
             let (req, _) = project(subject, self.content, send_prompt, send_user);
             if send_prompt
                 && (subject.reads)(
-                    fb.policy.name(),
+                    &[fb.policy.name()],
                     subject.key.map(|k| k.id.as_str()),
                     subject.ingress_protocol,
                     send_user,
