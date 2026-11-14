@@ -21,7 +21,7 @@ fn native_journal(
     )
     .expect("native journal opens")
 }
-fn native_fixture() -> Result<crate::root::durability::Durability, busbar_kernel_wal::OpenError> {
+fn native_fixture() -> Result<crate::root::durability::Durability, std::io::Error> {
     let journal = native_journal(
         busbar_kernel::door::op_id().counter(),
         native_budget().records,

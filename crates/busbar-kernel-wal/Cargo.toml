@@ -4,7 +4,7 @@ version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The write-ahead log unit: fixed-size records with overflow continuation, group commit, torn-tail truncation at recovery, poison-on-sync-error, and a memory-buffered mode that touches no disk."
+description = "The journal codec: the fixed journal record, its hash chain, body fields and the quarantine note the store journal verifies."
 license = "Apache-2.0"
 
 [lib]
@@ -12,8 +12,4 @@ name = "busbar_kernel_wal"
 path = "src/lib.rs"
 
 [dependencies]
-busbar-contract = { path = "../busbar-contract" }
 ring = { workspace = true }
-
-[dev-dependencies]
-sha2 = { workspace = true }

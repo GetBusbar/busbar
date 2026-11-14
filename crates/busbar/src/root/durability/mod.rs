@@ -8,7 +8,7 @@ use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditKeySet, AuditRecord,
     AuditVerifyingKey, KeyError,
 };
-use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, OpenError, RecordClass};
+use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, RecordClass};
 
 use busbar_kernel::persistence::journal::runtime::{BufferBudget, RuntimeJournal, StagedRun};
 use std::sync::Arc;
@@ -88,8 +88,6 @@ pub struct Durability {
     pub restart_findings: Vec<String>,
 
     pub voided_claims: Vec<String>,
-
-    pub quarantined: Vec<busbar_kernel_wal::Quarantine>,
 
     amendments_through: Option<u64>,
 
@@ -228,7 +226,7 @@ impl Durability {
             .map_err(|_| DurabilityLost::observed(token, at))?;
         Ok(run)
     }
-    async fn void_claims(&mut self, unheld: Vec<ClaimTaken>) -> Result<(), OpenError> {
+    async fn void_claims(&mut self, unheld: Vec<ClaimTaken>) -> Result<(), std::io::Error> {
         for taken in unheld {
             let record = ClaimRecord {
                 taken,
@@ -430,8 +428,8 @@ impl NodeBook {
     }
 }
 
-fn native_open_error(error: impl std::fmt::Debug) -> OpenError {
-    OpenError::Io(std::io::Error::other(format!("native journal: {error:?}")))
+fn native_open_error(error: impl std::fmt::Debug) -> std::io::Error {
+    std::io::Error::other(format!("native journal: {error:?}"))
 }
 
 /// The root opens one native owner and shares this exact Arc with every
@@ -439,7 +437,7 @@ fn native_open_error(error: impl std::fmt::Debug) -> OpenError {
 pub async fn node_book(
     journal: Arc<RuntimeJournal>,
     history_budget: BufferBudget,
-) -> Result<NodeBook, OpenError> {
+) -> Result<NodeBook, std::io::Error> {
     let durability = build_on_store(
         &DurabilityConfig::default(),
         journal.node(),
@@ -462,7 +460,7 @@ pub async fn build_on_store(
     journal: Arc<RuntimeJournal>,
     cards: Option<&'static crate::root::kernel::RootHistory>,
     history_budget: BufferBudget,
-) -> Result<Durability, OpenError> {
+) -> Result<Durability, std::io::Error> {
     if journal.node() != node {
         return Err(native_open_error("journal node identity differs"));
     }
@@ -479,7 +477,6 @@ pub async fn build_on_store(
         incarnation: 0,
         restart_findings: Vec::new(),
         voided_claims: Vec::new(),
-        quarantined: Vec::new(),
         amendments_through: None,
         history_budget,
         resumed: true,
