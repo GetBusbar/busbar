@@ -21,6 +21,8 @@ fn frame(bytes: Vec<u8>) -> SessionInput {
 }
 
 /// Poll the session on this thread (where the scope is current) until `far` has `n` writes.
+/// Each round yields to the runtime: polled back to back inside one task poll, the session would
+/// spend that poll's whole cooperative budget and then stay pending on every channel it reads.
 async fn written(running: &mut Pin<Box<impl Future>>, far: &cases::Far, n: usize) {
     for _ in 0..(n * 64 + 64) {
         std::future::poll_fn(|cx| {
@@ -31,6 +33,7 @@ async fn written(running: &mut Pin<Box<impl Future>>, far: &cases::Far, n: usize
         if far.written().len() >= n {
             return;
         }
+        tokio::task::yield_now().await;
     }
     panic!("the session wrote {} of {n} frames", far.written().len());
 }

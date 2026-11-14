@@ -2088,13 +2088,28 @@ pub fn requirements(
     Ok(requirements)
 }
 
+/// The image this process is running, opened for hashing.
+///
+/// On Linux `/proc/self/exe` names the mapped inode itself, so a file renamed over the
+/// executable's path after start cannot stand in for the running product. Elsewhere the
+/// platform reports only a path, which is opened as-is.
+fn running_executable() -> std::io::Result<std::fs::File> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        std::fs::File::open("/proc/self/exe")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        std::fs::File::open(std::env::current_exe()?)
+    }
+}
+
 fn executable_sha256() -> Result<String, String> {
     static DIGEST: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
     DIGEST
         .get_or_init(|| {
             use std::io::Read;
-            let path = std::env::current_exe().map_err(|e| e.to_string())?;
-            let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let mut file = running_executable().map_err(|e| e.to_string())?;
             let mut digest = Sha256::new();
             let mut bytes = [0u8; 65536];
             loop {
