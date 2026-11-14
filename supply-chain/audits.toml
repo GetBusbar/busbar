@@ -60,6 +60,11 @@ criteria = "safe-to-deploy"
 version = "0.3.34"
 notes = "Actual source review, not human approval or executed tests. Exact crate archive SHA256 f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548 matches the target dist lock and every archive file matches reviewed cached source. All implementation code, manifests, README, inline tests and external Rust test reviewed. No unsafe code, code generation, network client, installer or hidden subprocess is present. pkg-config/pkgconf is invoked directly through Command with separate arguments, and output is parsed into library/include/link metadata. Native library source/selection remains an explicit trusted build input, not a route from runtime untrusted requests. No unsafe code. Trusted tool, .pc files, package names and build environment are required. The helper intentionally permits linker arguments and paths from pkg-config output; it is not a validator for malicious system-library metadata. Malformed or non-UTF-8 tool output can panic through UTF-8/first-line parsing or byte-prefix slicing. This is a build failure, with no unsafe memory operation or production parser exposure in intended usage. Command Display output is diagnostic text and not robust shell quoting for hostile names; actual execution does not use that display string."
 
+[[audits.sseer]]
+criteria = "safe-to-deploy"
+version = "0.3.1"
+notes = "Source review, not human approval or executed tests. Archive SHA256 9b88369a34eb39073aea8c04fb615e91b79cdc9cbfc16469a2dbd8ae7c2ee4a8 matches the crates.io index and the root lock. Built with no default features: the reqwest client, JSON and serde layers are off. No build script, procedural macros, FFI, filesystem, network, process or environment capability in that build. parser.rs (the only API busbar calls, parse_line) was read in full: safe Rust over a borrowed slice, memchr for CR/LF and the colon, no allocation, a final CR held back for a possible LF. The four unsafe blocks (event_stream.rs, utf8_stream.rs) wrap bytes already checked as UTF-8 by str::from_utf8 or built from valid Str pieces. busbar uses it only in busbar-contract protocol.rs (the SSE framer), behind a bench and zero-allocation witness gate."
+
 [[audits.stringprep]]
 criteria = "safe-to-deploy"
 version = "0.1.5@git:da1e3cea3ca61b8b3882a71ee96496cd231601f2"
