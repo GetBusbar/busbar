@@ -225,7 +225,7 @@ pub fn service_metadata(archive: &Path, row: &ServiceRow) -> Result<Value> {
     let manifests = index
         .at("manifests")
         .as_array()
-        .cloned()
+        .map(<[_]>::to_vec)
         .unwrap_or_default();
     let selected: Vec<_> = manifests
         .iter()
@@ -261,7 +261,7 @@ pub fn service_metadata(archive: &Path, row: &ServiceRow) -> Result<Value> {
             attestation
                 .at("layers")
                 .as_array()
-                .cloned()
+                .map(<[_]>::to_vec)
                 .unwrap_or_default(),
         );
         for content in contents {

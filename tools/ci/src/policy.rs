@@ -402,7 +402,7 @@ mod tests {
                 .unwrap()
                 .at("services")
                 .as_array()
-                .cloned()
+                .map(<[_]>::to_vec)
                 .unwrap_or_default()
                 .iter()
                 .map(|v| v.as_str().unwrap().to_owned())

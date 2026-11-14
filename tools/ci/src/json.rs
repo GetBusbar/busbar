@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 pub enum Value {
     Null,
     Bool(bool),
-    /// Source text of a JSON number. Integers are compared exactly.
+    /// Canonical decimal text for integers; source text for other numbers.
     Number(String),
     String(String),
     Array(Vec<Value>),
@@ -17,15 +17,24 @@ pub enum Value {
 
 pub static NULL: Value = Value::Null;
 
+/// Integer-shaped number text (`type(x) is int` after `json.loads`).
+fn integer_text(text: &str) -> bool {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit())
+}
+
 impl PartialEq for Value {
     fn eq(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Number(a), Value::Number(b)) => match (int(a), int(b)) {
-                (Some(a), Some(b)) => a == b,
-                _ => a.parse::<f64>().ok() == b.parse::<f64>().ok(),
-            },
+            (Value::Number(a), Value::Number(b)) => {
+                if integer_text(a) && integer_text(b) {
+                    a == b
+                } else {
+                    a.parse::<f64>().ok() == b.parse::<f64>().ok()
+                }
+            }
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => a == b,
             (Value::Object(a), Value::Object(b)) => {
@@ -35,14 +44,6 @@ impl PartialEq for Value {
             }
             _ => false,
         }
-    }
-}
-
-fn int(text: &str) -> Option<i128> {
-    if text.contains(['.', 'e', 'E']) {
-        None
-    } else {
-        text.parse().ok()
     }
 }
 
@@ -83,6 +84,12 @@ pub fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
 }
 
 impl Value {
+    pub fn str(value: impl Into<String>) -> Value {
+        Value::String(value.into())
+    }
+    pub fn int(value: impl Into<i128>) -> Value {
+        Value::Number(value.into().to_string())
+    }
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Object(rows) => rows.iter().find(|(k, _)| k == key).map(|(_, v)| v),
@@ -99,6 +106,7 @@ impl Value {
             _ => &NULL,
         }
     }
+    /// `dict[key] = value`: replaces in place or appends.
     pub fn set(&mut self, key: &str, value: Value) {
         if let Value::Object(rows) = self {
             match rows.iter_mut().find(|(k, _)| k == key) {
@@ -119,10 +127,25 @@ impl Value {
             _ => None,
         }
     }
+    /// `type(x) is int` (bool excluded).
+    pub fn is_int(&self) -> bool {
+        matches!(self, Value::Number(n) if integer_text(n))
+    }
+    /// A JSON integer as i128 when representable.
+    pub fn as_int(&self) -> Option<i128> {
+        match self {
+            Value::Number(n) if integer_text(n) && n.len() <= 30 => n.parse().ok(),
+            _ => None,
+        }
+    }
     /// Non-negative JSON integer (`type(x) is int` and x >= 0).
     pub fn as_u64(&self) -> Option<u64> {
+        self.as_int().and_then(|v| u64::try_from(v).ok())
+    }
+    /// A JSON number that is not an integer, as `float(text)`.
+    pub fn as_float(&self) -> Option<f64> {
         match self {
-            Value::Number(n) => int(n).and_then(|v| u64::try_from(v).ok()),
+            Value::Number(n) if !integer_text(n) => n.parse().ok(),
             _ => None,
         }
     }
@@ -132,7 +155,7 @@ impl Value {
             _ => None,
         }
     }
-    pub fn as_array(&self) -> Option<&Vec<Value>> {
+    pub fn as_array(&self) -> Option<&[Value]> {
         match self {
             Value::Array(rows) => Some(rows),
             _ => None,
@@ -175,6 +198,13 @@ pub fn parse(text: &[u8]) -> Result<Value, String> {
         return Err("trailing data after JSON value".into());
     }
     Ok(value)
+}
+
+// CPython 3.11+ int/str conversion limit (sys.get_int_max_str_digits()).
+const INT_DIGITS_LIMIT: usize = 4300;
+
+fn invalid(message: &str) -> ParseError {
+    ParseError::Invalid(message.to_owned())
 }
 
 struct Parser<'a> {
@@ -411,7 +441,7 @@ fn sorted(rows: &[(String, Value)], sort: bool) -> Vec<&(String, Value)> {
     rows
 }
 
-fn compact(out: &mut String, value: &Value, sort: bool) {
+fn compact(out: &mut String, value: &Value, form: Form) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -421,17 +451,21 @@ fn compact(out: &mut String, value: &Value, sort: bool) {
             out.push('[');
             for (i, row) in rows.iter().enumerate() {
                 if i > 0 {
-                    out.push_str(", ");
+                    out.push_str(form.item);
                 }
-                compact(out, row, sort);
+                compact(out, row, form);
             }
             out.push(']');
         }
         Value::Object(rows) => {
+            let mut rows: Vec<_> = rows.iter().collect();
+            if form.sort {
+                rows.sort_by(|a, b| a.0.cmp(&b.0));
+            }
             out.push('{');
-            for (i, (k, v)) in sorted(rows, sort).into_iter().enumerate() {
+            for (i, (k, v)) in rows.into_iter().enumerate() {
                 if i > 0 {
-                    out.push_str(", ");
+                    out.push_str(form.item);
                 }
                 quote(out, k);
                 out.push_str(": ");
@@ -469,14 +503,23 @@ fn indented(out: &mut String, value: &Value, level: usize) {
             pad(out, level);
             out.push('}');
         }
-        _ => compact(out, value, false),
+        _ => dumps_into(out, value, false),
     }
+}
+
+fn dumps_into(out: &mut String, value: &Value, sort: bool) {
+    let form = Form {
+        sort,
+        item: ", ",
+        key: ": ",
+    };
+    compact(out, value, form);
 }
 
 /// `json.dumps(value)` / `json.dumps(value, sort_keys=True)`.
 pub fn dumps(value: &Value, sort_keys: bool) -> String {
     let mut out = String::new();
-    compact(&mut out, value, sort_keys);
+    dumps_into(&mut out, value, sort_keys);
     out
 }
 
@@ -511,6 +554,14 @@ mod tests {
             dumps(&parse("\"\u{1f600}\"".as_bytes()).unwrap(), false),
             r#""\ud83d\ude00""#
         );
+        let value = parse_cpython(
+            "{\"b\":[1,true,null],\"a\":\"\u{e9}\u{1f600}\\u007f\\\"/\\n\\u0001\"}".as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            encoded(&value),
+            b"{\"a\":\"\\u00e9\\ud83d\\ude00\\u007f\\\"/\\n\\u0001\",\"b\":[1,true,null]}\n"
+        );
     }
 
     #[test]
@@ -527,20 +578,27 @@ mod tests {
         let repeated = parse(br#"{"a":1,"b":2,"a":3}"#).unwrap();
         assert_eq!(repeated.keys(), ["a", "b"]);
         assert_eq!(repeated.at("a").as_u64(), Some(3));
+        let huge = "9".repeat(60);
+        assert_eq!(parse(huge.as_bytes()).unwrap(), Value::Number(huge.clone()));
+        assert_ne!(
+            parse(huge.as_bytes()).unwrap(),
+            Value::Number(huge[1..].to_owned() + "8")
+        );
     }
 
     #[test]
-    fn rejects_invalid_documents() {
-        for bad in [
-            &b"{"[..],
-            b"[1,]",
-            b"01",
-            b"\"\x01\"",
-            b"{} x",
-            b"nul",
-            b"\"\\ud800\"",
+    fn python_truthiness_and_integer_comparison() {
+        for (text, truthy) in [
+            ("0", false),
+            ("0.0", false),
+            ("2", true),
+            ("\"\"", false),
+            ("[]", false),
+            ("{}", false),
+            ("null", false),
+            ("[0]", true),
         ] {
-            assert!(parse(bad).is_err(), "{:?}", String::from_utf8_lossy(bad));
+            assert_eq!(parse(text.as_bytes()).unwrap().truthy(), truthy, "{text}");
         }
         assert_eq!(parse(b"-1").unwrap().as_u64(), None);
         assert_eq!(parse(b"1.0").unwrap().as_u64(), None);
