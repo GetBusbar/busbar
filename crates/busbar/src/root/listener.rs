@@ -105,36 +105,29 @@ use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 ///
 /// So the second kind backs off, exponentially and capped. The cap is deliberately well under a
 /// second: it bounds both the CPU burn and how long a shutdown request can sit behind a sleep.
+/// The delays are the connector's shared [`busbar_core_connector::listen::AcceptBackoff`] (backon).
 struct AcceptBackoff {
-    delay: Option<std::time::Duration>,
+    delays: busbar_core_connector::listen::AcceptBackoff,
 }
 
 impl AcceptBackoff {
-    const FIRST: std::time::Duration = std::time::Duration::from_millis(5);
-    const CAP: std::time::Duration = std::time::Duration::from_millis(250);
+    #[cfg(test)]
+    const FIRST: std::time::Duration = busbar_core_connector::listen::AcceptBackoff::FIRST;
+    #[cfg(test)]
+    const CAP: std::time::Duration = busbar_core_connector::listen::AcceptBackoff::CAP;
 
     fn new() -> Self {
-        Self { delay: None }
+        Self {
+            delays: busbar_core_connector::listen::AcceptBackoff::default(),
+        }
     }
 
     fn reset(&mut self) {
-        self.delay = None;
+        self.delays.reset();
     }
 
     fn next_delay(&mut self, e: &io::Error) -> Option<std::time::Duration> {
-        if matches!(
-            e.kind(),
-            io::ErrorKind::ConnectionAborted | io::ErrorKind::Interrupted
-        ) {
-            self.delay = None;
-            return None;
-        }
-        let d = match self.delay {
-            None => Self::FIRST,
-            Some(prev) => (prev * 2).min(Self::CAP),
-        };
-        self.delay = Some(d);
-        Some(d)
+        self.delays.next_delay(e)
     }
 
     async fn absorb(&mut self, scheme: &'static str, e: &io::Error) {
@@ -144,7 +137,7 @@ impl AcceptBackoff {
                 diag_warn!(
                     TLS_ACCEPT_PERSISTENT_FAILURE,
                     error = %e,
-                    backoff_ms = d.as_millis() as u64,
+                    backoff_ms = d.as_nanos().div_ceil(1_000_000) as u64,
                     "{scheme}: accept is failing persistently (fd exhaustion?); backing off",
                 );
                 tokio::time::sleep(d).await;
