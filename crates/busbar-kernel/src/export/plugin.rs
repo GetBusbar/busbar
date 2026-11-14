@@ -738,7 +738,27 @@ fn start_one(s: &PluginSink) {
     let _ = s.admission.set(Admission::of(&s.module, stated));
 }
 
-pub(crate) fn status() {
+/// How often a scrape crosses into every export sink's STATUS. A scrape arrives every few
+/// seconds per scraper and its answer is not read here, so crossing on every scrape is waste.
+pub(crate) const STATUS_REFRESH: std::time::Duration = std::time::Duration::from_secs(15);
+
+static STATUS_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Whether a STATUS round is due at `now` given the last one in `at`; marks `now` when it is.
+fn status_due(at: &std::sync::Mutex<Option<std::time::Instant>>, now: std::time::Instant) -> bool {
+    let mut at = at.lock().unwrap_or_else(|p| p.into_inner());
+    if at.is_some_and(|last| now.saturating_duration_since(last) < STATUS_REFRESH) {
+        return false;
+    }
+    *at = Some(now);
+    true
+}
+
+/// Cross every export sink's STATUS, at most once per [`STATUS_REFRESH`].
+pub(crate) fn status_if_stale() {
+    if !status_due(&STATUS_AT, std::time::Instant::now()) {
+        return;
+    }
     sinks().for_each(|s| {
         let _ = s.sink.status();
     });
