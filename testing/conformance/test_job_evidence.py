@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts/conformance'))
@@ -14,14 +15,15 @@ JUDGE = (ROOT / 'testing/conformance/run.sh').read_text().split("<<'PY'\n", 1)[1
 HEAD = 'a' * 40
 CORE = 'b' * 40
 REPO = 'GetBusbar/busbar'
-URL = 'https://github.com/GetBusbar/busbar/-/jobs/2371'
+SERVER = 'ci.example.invalid'
+URL = f'https://{SERVER}/GetBusbar/busbar/-/jobs/2371'
 
 
 class NativeJobEvidence(unittest.TestCase):
     def judge(self, **overrides):
         env = dict(CONF_REPO=REPO, CONF_HEAD=HEAD, BUSBAR_PIN=CORE,
                    CONF_MCI_URL='https://eu-central.modernci.dev',
-                   CI_SERVER_HOST='github.com', CI_JOB_ID='2371',
+                   CI_SERVER_HOST=SERVER, CI_JOB_ID='2371',
                    CI_PIPELINE_ID='1420', CI_JOB_URL=URL)
         env.update(overrides)
         with tempfile.TemporaryDirectory() as directory:
@@ -36,7 +38,8 @@ class NativeJobEvidence(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(verdict['run_id'], f'gitlab:{REPO}@{HEAD}:pipeline:1420:job:2371')
         self.assertEqual(verdict['evidence'], URL)
-        self.assertIsNone(stamp_problem(verdict, REPO, HEAD, CORE))
+        with mock.patch.dict('os.environ', {'CI_SERVER_HOST': SERVER}):
+            self.assertIsNone(stamp_problem(verdict, REPO, HEAD, CORE))
 
     def test_missing_or_inconsistent_job_metadata_cannot_be_modernci_evidence(self):
         for change in ({'CI_JOB_ID': ''}, {'CI_PIPELINE_ID': ''}, {'CI_JOB_URL': ''},
@@ -50,11 +53,19 @@ class NativeJobEvidence(unittest.TestCase):
     def test_manifest_refuses_another_job_source_or_server(self):
         _, verdict = self.judge()
         for change in ({'evidence': URL.replace('2371', '2372')},
-                       {'evidence': URL.replace('github.com', 'other.invalid')},
+                       {'evidence': URL.replace(SERVER, 'other.invalid')},
                        {'run_id': verdict['run_id'].replace(HEAD, 'c' * 40)},
                        {'run_id': verdict['run_id'].replace('pipeline:1420', 'pipeline:0')}):
-            with self.subTest(change=change):
+            with self.subTest(change=change), mock.patch.dict('os.environ', {'CI_SERVER_HOST': SERVER}):
                 self.assertIsNotNone(stamp_problem({**verdict, **change}, REPO, HEAD, CORE))
+
+    def test_manifest_refuses_native_evidence_when_no_ci_server_is_named(self):
+        _, verdict = self.judge()
+        for server in ('', 'other.invalid', 'bad/host'):
+            with self.subTest(server=server), mock.patch.dict('os.environ', {'CI_SERVER_HOST': server}):
+                self.assertIsNotNone(stamp_problem(verdict, REPO, HEAD, CORE))
+        with mock.patch.dict('os.environ', clear=True):
+            self.assertIsNotNone(stamp_problem(verdict, REPO, HEAD, CORE))
 
     def test_modernci_execution_retains_its_own_evidence(self):
         result, verdict = self.judge(CI_SERVER_HOST='')
