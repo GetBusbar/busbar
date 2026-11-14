@@ -37,6 +37,15 @@ pub trait ObservationSink {
         canonical: bool,
     );
     fn cardinality(&self, series: &str, max_series: usize, max_label_sets: usize);
+    /// `count` values of `field` this plugin sent were over `cap` and were cut; the longest was
+    /// `max_sanitised` chars after sanitising. Required: a sink cannot drop the fact silently.
+    fn text_cut(
+        &self,
+        field: busbar_contract::hook_wire::reply::TextField,
+        cap: usize,
+        count: u32,
+        max_sanitised: usize,
+    );
 }
 
 const RESERVED_PREFIX: &str = "busbar_";
@@ -201,7 +210,9 @@ fn fold_metrics(grants: &dyn Grants, sink: &dyn ObservationSink, raw: &[serde_js
         return;
     }
 
-    for mut m in busbar_contract::hook_wire::reply::parse_status_metrics(raw) {
+    let (parsed, cuts) = busbar_contract::hook_wire::reply::parse_status_metrics_counted(raw);
+    text_cuts(sink, &cuts);
+    for mut m in parsed {
         let granted = grants.first_party_series(&m.name, &m.kind);
         if !granted && !admits_metric_name(&m.name) {
             continue;
@@ -250,9 +261,11 @@ fn fold_diagnostics(
     catalogue: crate::diagnostics::Catalogue,
     raw: &[serde_json::Value],
 ) {
+    use busbar_contract::hook_wire::reply::{TextCuts, TextField};
     if raw.is_empty() {
         return;
     }
+    let mut cuts = TextCuts::default();
     for entry in raw.iter().take(MAX_PLUGIN_DIAGNOSTICS) {
         let Ok(d) = serde_json::from_value::<
             busbar_contract::abi::mechanism::observe::PluginDiagnostic,
@@ -274,29 +287,51 @@ fn fold_diagnostics(
             sink.diagnostic(diag, tracing_level(level), &d.message, &fields, true);
             continue;
         }
-        let message =
-            busbar_contract::hook_wire::reply::sanitize_cap(&d.message, MAX_DIAG_MESSAGE_CHARS);
+        let (message, cut) = busbar_contract::hook_wire::reply::sanitize_cap_counted(
+            &d.message,
+            MAX_DIAG_MESSAGE_CHARS,
+        );
+        if let Some(sanitised_chars) = cut {
+            cuts.record(TextField::DiagMessage, sanitised_chars);
+        }
         let fields = d
             .fields
             .iter()
             .take(MAX_DIAG_FIELDS)
             .filter(|(k, _)| busbar_contract::hook_wire::reply::valid_metric_name(k))
             .map(|(k, v)| {
-                (
-                    k.clone(),
-                    busbar_contract::hook_wire::reply::sanitize_cap(v, MAX_DIAG_FIELD_CHARS),
-                )
+                let (value, cut) = busbar_contract::hook_wire::reply::sanitize_cap_counted(
+                    v,
+                    MAX_DIAG_FIELD_CHARS,
+                );
+                if let Some(sanitised_chars) = cut {
+                    cuts.record(TextField::DiagField, sanitised_chars);
+                }
+                (k.clone(), value)
             })
             .collect::<Vec<_>>();
         sink.diagnostic(diag, tracing_level(level), &message, &fields, false);
+    }
+    text_cuts(sink, &cuts);
+}
+
+/// One `text_cut` per field the reply's parse cut, summed over the reply.
+fn text_cuts(sink: &dyn ObservationSink, cuts: &busbar_contract::hook_wire::reply::TextCuts) {
+    for (field, count, max_sanitised) in cuts.iter() {
+        sink.text_cut(
+            field,
+            crate::hooks::text_cut::cap_of(field),
+            count,
+            max_sanitised,
+        );
     }
 }
 
 const MAX_PLUGIN_DIAGNOSTICS: usize = 16;
 
-const MAX_DIAG_MESSAGE_CHARS: usize = 300;
+pub(crate) const MAX_DIAG_MESSAGE_CHARS: usize = 300;
 
-const MAX_DIAG_FIELD_CHARS: usize = 64;
+pub(crate) const MAX_DIAG_FIELD_CHARS: usize = 64;
 
 const MAX_DIAG_FIELDS: usize = 8;
 

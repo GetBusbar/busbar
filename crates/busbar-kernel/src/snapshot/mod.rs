@@ -249,6 +249,8 @@ pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total";
 
 pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_dropped_total";
 
+pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
+
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
 
 use busbar_contract::export_calls::Family;
