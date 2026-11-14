@@ -185,25 +185,22 @@ fn run(command: &Command, input: &Path, action: &str, directory: &Path) -> serde
     serde_json::from_slice(&output.stdout).expect("actual principal CLI report is JSON")
 }
 
-/// Initialize only the namespace this fixture just created, then prove the actual durable head.
-/// No provider identity, grants or baseline bytes are fabricated by the fixture.
-pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Value, String> {
+/// A writer admitted in this process on the fixture's actual durable Store: the Store opened
+/// through its native door with the exact settings boot uses, and `Startup` advanced to
+/// `Admitted`. On a new namespace it owns the unpublished first start. Dropping it without
+/// [`busbar_kernel::persistence::first_start::FirstStart::abandon`] is a crash for that owner:
+/// nothing retires its writer row.
+pub struct Owner {
+    pub axis: busbar_plugin_loader::store_v4::DoorPersistenceAxis,
+    pub startup: busbar_kernel::persistence::startup::Startup,
+    pub store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+}
+
+/// Open the namespace `stage` created, through the same signed actual Store image, and admit a
+/// writer on it in this process (FIRST-START-TAKEOVER §2.4). Every Store call opens and ends its
+/// own transaction inside the call, so once this returns the owner holds no Store lock.
+pub async fn admit_in_process(directory: &Path) -> Owner {
     use busbar_contract::persistence::axis::{PersistenceAxis as _, StoreDoor};
-    let before = run(command, Path::new("-"), "inspect", directory);
-    if !before["principal_receipt_head_sha256"].is_null() {
-        return Err("a retained namespace cannot be presented as freshly created".into());
-    }
-    assert_eq!(
-        before["store_ephemeral"], false,
-        "the actual Store must retain a cold baseline"
-    );
-    let required = before["requirements"]
-        .as_array()
-        .expect("actual principal inventory is an array");
-    assert!(
-        !required.is_empty(),
-        "the actual auth providers declare their principal formats"
-    );
     let creation = std::fs::read(directory.join(CREATION_FILE)).expect("creation provenance reads");
     let provenance: serde_json::Value = serde_json::from_slice(&creation).unwrap();
     let library = PathBuf::from(
@@ -238,54 +235,81 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
             decode_bytes: 32 * 1024 * 1024,
         },
     };
+    let backend = axis
+        .open(
+            StoreDoor::Dropped {
+                file: library.display().to_string(),
+                bytes: Arc::new(image),
+                stated: statement,
+            },
+            "fixture-in-process-writer",
+            &serde_json::to_vec(&super::plugins::application_store_settings(directory)).unwrap(),
+        )
+        .await
+        .expect("the actual durable Store opens through its native door");
+    assert_ne!(
+        backend.info().durability,
+        busbar_contract::persistence::Durability::Ephemeral
+    );
+    let mut startup = busbar_kernel::persistence::startup::Startup::new(
+        backend,
+        busbar_kernel::persistence::facade::Limits {
+            pending_operations: 1024,
+            conflict_retries: 8,
+            scan_items: 128,
+            scan_bytes: 1024 * 1024,
+        },
+        true,
+    )
+    .expect("native in-process storage authority");
+    loop {
+        use busbar_kernel::persistence::startup::Progress;
+        match startup
+            .advance()
+            .await
+            .expect("admit the in-process writer")
+        {
+            Progress::Advanced => {}
+            Progress::Admitted => break,
+            other => panic!("in-process writer not admitted: {other:?}"),
+        }
+    }
+    let store = startup.store().expect("admitted in-process Store");
+    Owner {
+        axis,
+        startup,
+        store,
+    }
+}
+
+/// Initialize only the namespace this fixture just created, then prove the actual durable head.
+/// No provider identity, grants or baseline bytes are fabricated by the fixture.
+pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Value, String> {
+    let before = run(command, Path::new("-"), "inspect", directory);
+    if !before["principal_receipt_head_sha256"].is_null() {
+        return Err("a retained namespace cannot be presented as freshly created".into());
+    }
+    assert_eq!(
+        before["store_ephemeral"], false,
+        "the actual Store must retain a cold baseline"
+    );
+    let required = before["requirements"]
+        .as_array()
+        .expect("actual principal inventory is an array");
+    assert!(
+        !required.is_empty(),
+        "the actual auth providers declare their principal formats"
+    );
+    let creation = std::fs::read(directory.join(CREATION_FILE)).expect("creation provenance reads");
     let witness = super::plugins::sha256(&creation).into_bytes();
-    tokio::runtime::Builder::new_current_thread()
+    let axis = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("the isolated witness writer runtime")
         .block_on(async {
-            let backend = axis
-                .open(
-                    StoreDoor::Dropped {
-                        file: library.display().to_string(),
-                        bytes: Arc::new(image),
-                        stated: statement,
-                    },
-                    "stdio-fixture-creation-witness",
-                    &serde_json::to_vec(&super::plugins::application_store_settings(directory))
-                        .unwrap(),
-                )
-                .await
-                .expect("the actual durable Store opens through its native door");
-            assert_ne!(
-                backend.info().durability,
-                busbar_contract::persistence::Durability::Ephemeral
-            );
-            let mut startup = busbar_kernel::persistence::startup::Startup::new(
-                backend,
-                busbar_kernel::persistence::facade::Limits {
-                    pending_operations: 1024,
-                    conflict_retries: 8,
-                    scan_items: 128,
-                    scan_bytes: 1024 * 1024,
-                },
-                true,
-            )
-            .expect("native witness storage authority");
-            loop {
-                use busbar_kernel::persistence::startup::Progress;
-                match startup
-                    .advance()
-                    .await
-                    .expect("admit native witness writer")
-                {
-                    Progress::Advanced => {}
-                    Progress::Admitted => break,
-                    other => panic!("witness writer not admitted: {other:?}"),
-                }
-            }
+            let writer = admit_in_process(directory).await;
             let owner = busbar_kernel::persistence::scoped::ScopedStore::host_private(
-                startup.store().expect("admitted witness Store"),
+                writer.store.clone(),
                 "busbar.fixture.principal-creation",
                 [SCHEMA.into()],
             )
@@ -304,17 +328,16 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
             // The witness writer owns the unpublished first start: hand it over before it drops,
             // as the binary does on exit, so the next process takes over at once instead of
             // waiting out the stall window (FIRST-START-TAKEOVER §2.4, §2.7).
-            if let Some(first_start) = startup
-                .store()
-                .expect("admitted witness Store")
-                .first_start()
-            {
+            if let Some(first_start) = writer.store.first_start() {
                 assert_eq!(
                     first_start.abandon().await,
                     Ok(busbar_kernel::persistence::first_start::Abandoned::Retired),
                     "the witness writer hands its first start over"
                 );
             }
+            // The Store and its writer close inside the runtime; the door axis outlives it.
+            let Owner { axis, .. } = writer;
+            axis
         });
     drop(axis);
     let receipt = serde_json::json!({
