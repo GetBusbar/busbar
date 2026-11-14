@@ -3167,31 +3167,6 @@ pub type DataMounts = (
     Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 );
 
-pub fn data_mounts(
-    served: Served,
-    data_chain: &[ChainAuth],
-    core: &[(
-        String,
-        busbar_contract::abi::mechanism::route::RouteMethod,
-        busbar_contract::abi::mechanism::route::RouteAuth,
-    )],
-    upgrades: &[&str],
-    offers: &[TransportOffer],
-) -> Result<DataMounts, String> {
-    door_mounts(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        data_chain,
-        core,
-        upgrades,
-        offers,
-    )
-    .and_then(|m| {
-        busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
-        Ok((m.routes, m.sessions, m.refusals, m.refuse_by_path))
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn data_mounts_with_listeners(
     served: Served,
@@ -3429,13 +3404,6 @@ impl ListenerPlan {
             return Err("listen: its declared claim requires an accepting stream framer".into());
         }
         Ok(claim)
-    }
-
-    pub fn hold_refusals(&self, at: &str, refusals: Vec<PlaneRefusalSpec>) {
-        self.refusals
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(at.to_string(), refusals);
     }
 
     pub fn share_claim_doors(&self, served: &mut Served) -> Result<(), String> {
