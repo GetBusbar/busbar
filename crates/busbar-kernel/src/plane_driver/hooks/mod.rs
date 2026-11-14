@@ -1620,12 +1620,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
                     match self.project(Some(&bytes), true) {
-                        Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => {
-                            if let Some(body) = &next.rewritten {
-                                busbar_contract::stage_probe::tick(
-                                    busbar_contract::stage_probe::Derive::ProjectCopy,
-                                );
-                                self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
+                        Ok(mut next) if next.rewritten.is_some() || rw.messages.is_empty() => {
+                            if let Some(body) = next.rewritten.take() {
+                                self.lock().body = Some(bytes::Bytes::from(body));
                             }
                             view = next;
                         }
