@@ -171,8 +171,6 @@ impl Drop for Gateway {
 #[derive(Debug)]
 pub struct Resp {
     pub status: u16,
-    #[allow(dead_code)] // kept for setup steps that save a header
-    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -233,11 +231,7 @@ fn parse_response(raw: &[u8]) -> Result<Resp, String> {
     } else {
         rest.to_vec()
     };
-    Ok(Resp {
-        status,
-        headers,
-        body,
-    })
+    Ok(Resp { status, body })
 }
 
 fn dechunk(mut b: &[u8]) -> Vec<u8> {
