@@ -483,6 +483,31 @@ mod tests {
                     to_req(r, &BTreeMap::new()).unwrap();
                 }
             }
+            // The mix scenario's description claims coverage of every LLM
+            // model it configures, so each one must be reached by a request
+            // or by a pool/stream session that names it.
+            if s.group == "mix" {
+                let traffic: String = s
+                    .cases
+                    .iter()
+                    .flat_map(|c| &c.requests)
+                    .map(|r| format!("{} {}\n", r.path, r.body))
+                    .collect();
+                for line in s
+                    .config
+                    .lines()
+                    .skip_while(|l| l.trim_end() != "models:")
+                    .skip(1)
+                    .take_while(|l| l.starts_with("  "))
+                    .filter(|l| !l.starts_with("   "))
+                {
+                    let m = line.trim().split(':').next().unwrap();
+                    assert!(
+                        traffic.contains(m) || s.config.matches(m).count() > 1,
+                        "{n}: model {m} is configured but no case or pool/session reaches it"
+                    );
+                }
+            }
         }
         for (suite, list) in load_suites(&dir).unwrap() {
             for n in list {
