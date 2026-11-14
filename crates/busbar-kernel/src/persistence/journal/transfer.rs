@@ -83,7 +83,7 @@ impl StoreJournal<'_> {
                 namespace: self.namespace.0,
                 operation,
             },
-            digest.finalize().into(),
+            digest.finish(),
         )? {
             LogicalClaim::Prepare(permit) => permit,
             LogicalClaim::Retained(id) => {
