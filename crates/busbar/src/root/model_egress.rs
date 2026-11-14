@@ -42,11 +42,11 @@ impl LiveApp {
     #[must_use]
     pub fn new(
         handle: Arc<std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>>,
-        fallback: Arc<busbar_kernel::state::App>,
+        fallback: &Arc<busbar_kernel::state::App>,
     ) -> Self {
         LiveApp {
             handle,
-            fallback: AppFallback::Borrowed(Arc::downgrade(&fallback)),
+            fallback: AppFallback::Borrowed(Arc::downgrade(fallback)),
         }
     }
 

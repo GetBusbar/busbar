@@ -3386,7 +3386,7 @@ pub struct DataRoutes {
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
 
     guests: busbar_kernel::guest::GuestList,
-    of_line: foldhash::HashMap<(String, u32), DoorClaim>,
+    of_line: std::collections::HashMap<(String, u32), DoorClaim>,
 
     frames: Mutex<foldhash::HashMap<u64, Arc<busbar_kernel::state::App>>>,
 }
@@ -5752,7 +5752,11 @@ pub(crate) fn line_routes(
     use busbar_kernel::guest::GuestList;
     // busbar:expect(bp::fresh_buffer, reason = "config: line routes are planned once per configuration")
     let mut lines_of = Vec::new();
-    let mut of_line = foldhash::HashMap::default();
+    #[expect(
+        clippy::disallowed_types,
+        reason = "config: line routes are planned once per configuration, in the map the owner tests build"
+    )]
+    let mut of_line = std::collections::HashMap::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
@@ -6310,7 +6314,19 @@ impl DataRoutes {
         }).await;
     }
 
+    /// The datagram opening as the owner tests drive it: a named carrier.
+    #[cfg(test)]
     async fn open_datagram(
+        self: Arc<Self>,
+        (framer, carrier): (Arc<dyn busbar_core_connector::framer::FramerDoor>, String),
+        door: SessionDoor,
+        arrival: Arrival,
+    ) -> Response {
+        let whole = self.open_datagram_on(framer, &carrier, door, arrival).await;
+        stated((whole.status, whole.fields), Body::from(whole.body))
+    }
+
+    async fn open_datagram_framed(
         self: Arc<Self>,
         framer: Arc<dyn busbar_core_connector::framer::FramerDoor>,
         door: SessionDoor,
@@ -6581,7 +6597,7 @@ impl DataRoutes {
             .filter(|(d, _)| d.facts().datagram)
             .map(|(d, _)| Arc::clone(d));
         if let Some(framer) = datagram_framer {
-            return self.open_datagram(framer, door, arrival).await;
+            return self.open_datagram_framed(framer, door, arrival).await;
         }
         let SessionDoor {
             app,
@@ -7031,13 +7047,18 @@ pub(crate) fn report_of(
             continue;
         }
         if let Some(name) = facts.classes.get(u.class as usize) {
+            let count = u.count().ok()?;
+            // Counts are nonnegative, so a class totals zero only when every count is zero: a zero
+            // count never opens an entry (no zero row to sweep out afterwards).
+            if count.is_zero() {
+                continue;
+            }
             let n = usage_units
                 .entry(name.clone())
                 .or_insert(busbar_contract::Count::ZERO);
-            *n = n.checked_add(u.count().ok()?).ok()?;
+            *n = n.checked_add(count).ok()?;
         }
     }
-    usage_units.retain(|_, n| !n.is_zero());
     Some((
         busbar_contract::billing::ExactUsage { usage_units },
         fee,
@@ -7608,7 +7629,8 @@ impl SessionCaller for IngressCaller {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(body) = first {
-            return Some(body.to_vec());
+            // A uniquely held body hands over its allocation; a shared one is copied once.
+            return Some(Vec::from(body));
         }
         self.body.closed().await;
         None
@@ -7923,7 +7945,8 @@ impl NestedBody {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.whole.into_bytes().to_vec()
+        // The joined pieces, or a lone uniquely held piece, hand over their allocation (no copy).
+        Vec::from(self.whole.into_bytes())
     }
 }
 

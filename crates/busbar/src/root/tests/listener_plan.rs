@@ -153,7 +153,7 @@ fn plan(mut topology: ListenerNeeds) -> Arc<ListenerPlan> {
         plane_sections: std::sync::OnceLock::new(),
         plane_keys: std::sync::OnceLock::new(),
         offers: vec![("http", AuthPoints::HEAD)],
-        framers: [("http".into(), (1, false))].into(),
+        framers: [("http".into(), (1, false))].into_iter().collect(),
         refusals: std::sync::Mutex::default(),
         nests: Arc::default(),
         plugin_mounts: std::sync::OnceLock::new(),
@@ -465,7 +465,8 @@ async fn identical_plane_paths_on_distinct_listeners_are_sealed_independently() 
                 ("left".into(), ("left-resource", false)),
                 ("right".into(), ("right-resource", false)),
             ]
-            .into(),
+            .into_iter()
+            .collect(),
         )
         .unwrap();
     plan.plane_keys
@@ -474,7 +475,8 @@ async fn identical_plane_paths_on_distinct_listeners_are_sealed_independently() 
                 ("left".into(), "left-module".into()),
                 ("right".into(), "right-module".into()),
             ]
-            .into(),
+            .into_iter()
+            .collect(),
         )
         .unwrap();
     let mut candidate = projection_boundary_app(topology, Vec::new(), 1).await;
