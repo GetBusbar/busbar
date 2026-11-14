@@ -9,9 +9,10 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span}
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, RefusalCode, UnitCount,
-    AUDIT_REJECTED, CLAIM_PROBE, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT, VERDICT_COUNT_REFUSED, VERDICT_RETRY,
+    AUDIT_REJECTED, CANCEL_FAILED, CLAIM_PROBE, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL,
+    PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT,
+    VERDICT_COUNT_REFUSED, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -19,7 +20,7 @@ use busbar_contract::kinds::RecordBytes;
 use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
-use super::cancel::{Buried, CancelBill, Checkpoint};
+use super::cancel::{Buried, CancelBill, Checkpoint, Facts, MoneySeam};
 use super::close::Close;
 use super::{blob, BufferCaps, HeadFields, PlaneDriver, UnitState, NO_FIELD, NO_SPAN, ZERO_UNIT};
 use crate::host_records::Acked;
@@ -630,7 +631,202 @@ enum Toward<'r> {
     Nowhere,
 }
 
-type Keep = Arc<Mutex<Option<Box<PieceBufs>>>>;
+pub(crate) type Keep = Arc<Mutex<Option<Box<PieceBufs>>>>;
+
+/// The leg a piece was pushed toward, as the walk's checks read it: the facts of [`Toward`] the
+/// pre-fold refusals and the caller-bound test need, kept where no `Toward` is (a cancelled
+/// flight, a buried unit), so every path judges a settled piece the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Leg {
+    Caller,
+    Session,
+    Response {
+        /// The follow-up request has no verb yet.
+        verb_empty: bool,
+    },
+    FarEnd {
+        /// The attempt has no member (a local answer).
+        member_empty: bool,
+    },
+    #[default]
+    Nowhere,
+}
+
+impl Leg {
+    fn of(toward: &Toward<'_>) -> Self {
+        match toward {
+            Toward::Caller => Leg::Caller,
+            Toward::Session(_) => Leg::Session,
+            Toward::Response(request) => Leg::Response {
+                verb_empty: request.verb.is_empty(),
+            },
+            Toward::FarEnd(request) => Leg::FarEnd {
+                member_empty: request.member.is_empty(),
+            },
+            Toward::Nowhere => Leg::Nowhere,
+        }
+    }
+}
+
+/// Why the walk refuses a READY piece before it takes anything from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreFold {
+    /// A plane contract breach: the walk ends `PlanePanic`.
+    Panic,
+    /// `VERDICT_COUNT_REFUSED`: its usage is never accepted. `done`: the piece closes the unit.
+    CountRefused { done: bool },
+}
+
+/// The driver's facts a piece's attribution reads.
+#[derive(Debug, Clone, Copy)]
+struct Seen {
+    headed: bool,
+    streamed: bool,
+    relayed: bool,
+}
+
+impl Seen {
+    fn of(facts: &Facts) -> Self {
+        Seen {
+            headed: facts.headed,
+            streamed: facts.streamed,
+            relayed: facts.relayed,
+        }
+    }
+}
+
+/// THE PRE-FOLD REFUSALS, shared by the walk and every cancel site that settles a done piece: the
+/// caller-only leg's far-bound bytes, the response leg's checks, and the count refusal.
+fn pre_fold(out: &Answer, leg: Leg, piece_flags: u32, seen: Seen, done: bool) -> Option<PreFold> {
+    // A caller-only leg cannot dispatch another request. Never reinterpret bytes explicitly
+    // addressed upstream as caller output.
+    if out.flags & EMIT_TO_FAR_END != 0 && leg == Leg::Caller {
+        return Some(PreFold::Panic);
+    }
+    if out.flags & EMIT_TO_FAR_END != 0 {
+        if let Leg::Response { verb_empty } = leg {
+            if seen.headed
+                || seen.streamed
+                || out.flags & EMIT_DONE != 0
+                || piece_flags & PIECE_CUT != 0
+                || (verb_empty && (piece_flags & PIECE_LAST == 0 || out.verb.len == 0))
+            {
+                return Some(PreFold::Panic);
+            }
+        }
+    }
+    if let Leg::Response { verb_empty: false } = leg {
+        if out.flags & EMIT_TO_FAR_END == 0 {
+            return Some(PreFold::Panic);
+        }
+    }
+    if out.verdict == VERDICT_COUNT_REFUSED {
+        return Some(PreFold::CountRefused { done });
+    }
+    None
+}
+
+/// The piece's answer is bound for the caller (whether or not it was delivered).
+fn caller_bound(leg: Leg, out: &Answer, emitted: bool) -> bool {
+    match leg {
+        Leg::Caller => true,
+        Leg::Session | Leg::Response { .. } => out.flags & EMIT_TO_FAR_END == 0,
+        Leg::FarEnd { member_empty } => {
+            out.flags & EMIT_TO_FAR_END == 0
+                && (out.flags & EMIT_DONE != 0
+                    || (member_empty && (out.reply_status != 0 || emitted)))
+        }
+        Leg::Nowhere => false,
+    }
+}
+
+fn emitted_of<'b>(bufs: &'b PieceBufs, out: &Answer) -> &'b [u8] {
+    &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())]
+}
+
+/// THE ATTRIBUTION OF A PIECE, before anything bills it: the lane it names, then the member and
+/// provider that served it, when it commits the caller's head. `strict`: an invalid lane is a
+/// plane fault (the walk); otherwise (a unit already closed, its cause set) it is logged and
+/// skipped.
+#[allow(clippy::too_many_arguments)]
+fn attribute(
+    money: &dyn MoneySeam,
+    ctx: &UnitCtx,
+    out: &Answer,
+    bufs: &PieceBufs,
+    leg: Leg,
+    seen: Seen,
+    billed: bool,
+    strict: bool,
+) -> Result<(), ()> {
+    let lane = bufs.arena(out.lane);
+    if !lane.is_empty() && billed {
+        match std::str::from_utf8(lane) {
+            Ok(lane) => money.laned(ctx, lane),
+            Err(_) if strict => return Err(()),
+            Err(_) => tracing::warn!("a settled piece named a lane that is not UTF-8; skipped"),
+        }
+    }
+    let emitted = !emitted_of(bufs, out).is_empty();
+    let commits = caller_bound(leg, out, emitted)
+        && !seen.headed
+        && !seen.streamed
+        && (out.reply_status != 0 || emitted)
+        && !(out.verdict == VERDICT_RETRY && fails_over(seen.streamed, seen.relayed));
+    if commits && !bufs.member.is_empty() && billed {
+        let member = String::from_utf8_lossy(&bufs.member);
+        money.served(ctx, &member, &bufs.provider);
+    }
+    Ok(())
+}
+
+/// A DONE PIECE WHOSE COUNT THE PLANE REFUSED (`VERDICT_COUNT_REFUSED`), the same everywhere:
+/// nothing from it is accepted (its units, lane or bytes), the unit's accepted units are final,
+/// and the line is the attempt's own member and provider.
+fn refuse_done_count(
+    money: &dyn MoneySeam,
+    ctx: &UnitCtx,
+    leg: Leg,
+    out: &Answer,
+    bufs: &PieceBufs,
+    facts: &mut Facts,
+    billed: bool,
+) {
+    facts.plane_done = true;
+    facts.unread = Some(ReasonCode::Unpriced);
+    let emitted = !emitted_of(bufs, out).is_empty();
+    if caller_bound(leg, out, emitted) && !facts.headed && !bufs.member.is_empty() && billed {
+        let member = String::from_utf8_lossy(&bufs.member);
+        money.served(ctx, &member, &bufs.provider);
+    }
+}
+
+/// A DONE PIECE SETTLED AROUND A BURY (the unit future was dropped): its units were never folded,
+/// so the unit bills what it holds and records that the final report went unread; it is attributed
+/// first, unless the walk would have refused it.
+pub(crate) fn bury_done(
+    money: &dyn MoneySeam,
+    ctx: &UnitCtx,
+    out: &OnPieceOut,
+    bufs: &PieceBufs,
+    leg: Leg,
+    piece_flags: u32,
+    facts: &mut Facts,
+) {
+    let out = Answer::of(out);
+    let billed = takes_lease(ctx.origin, ctx.kernel_verb_only);
+    match pre_fold(&out, leg, piece_flags, Seen::of(facts), true) {
+        Some(PreFold::Panic) => facts.unread = Some(ReasonCode::PlanePanic),
+        Some(PreFold::CountRefused { .. }) => {
+            refuse_done_count(money, ctx, leg, &out, bufs, facts, billed);
+        }
+        None => {
+            let _ = attribute(money, ctx, &out, bufs, leg, Seen::of(facts), billed, false);
+            facts.plane_done = true;
+            facts.unread = Some(ReasonCode::ClientGone);
+        }
+    }
+}
 
 pub(crate) struct Pumping<'u> {
     driver: &'u PlaneDriver,
@@ -654,6 +850,9 @@ pub(crate) struct Pumping<'u> {
     piece_flags: u32,
 
     final_answer: bool,
+
+    /// The leg the piece in flight was pushed toward.
+    leg: Leg,
 }
 
 impl<'u> Pumping<'u> {
@@ -694,6 +893,7 @@ impl<'u> Pumping<'u> {
             wait_member: None,
             piece_flags: 0,
             final_answer: false,
+            leg: Leg::Nowhere,
         }
     }
 
@@ -763,7 +963,8 @@ impl<'u> Pumping<'u> {
         let cancelled_result = self.lock().close != Close::Closed;
         let cancelled = match done.map(|d| (d.disposition, d.outcome)) {
             Some((Some(d), _)) => Some((d, std::mem::take(&mut self.cancel_writes))),
-            Some((None, AbiOutcome::Fault)) => None,
+            // A plane fault is explicit: never a plane-done bill.
+            Some((None, AbiOutcome::Fault)) => Some((CANCEL_FAILED, Vec::new())),
             Some((
                 None,
                 AbiOutcome::Ready | AbiOutcome::Pending | AbiOutcome::Failed | AbiOutcome::Refused,
@@ -797,6 +998,9 @@ impl<'u> Pumping<'u> {
         };
         if bill_once {
             self.driver.money.cancelled(self.ctx, &bill);
+            let principal = self.lock().principal.clone();
+            self.driver
+                .usage_unread(self.ctx, &bill, principal.as_ref());
         }
         bill
     }
@@ -889,8 +1093,44 @@ impl<'u> Pumping<'u> {
     }
 }
 
+impl Pumping<'_> {
+    /// A done piece that settled before the unit future was dropped: attributed (or refused) as
+    /// the walk would have, before its buffers move and the unit is buried.
+    fn bury_settled_done(&mut self) -> bool {
+        let Some(flight) = self.flight.as_mut() else {
+            return false;
+        };
+        let Some(settled) = flight.settled() else {
+            return false;
+        };
+        if flight.retirement().is_some()
+            || !answered_done(&settled, &**flight, self.piece_flags, self.final_answer)
+        {
+            return false;
+        }
+        let Some(out) = flight.out() else {
+            return false;
+        };
+        let mut facts = self.lock().facts.clone();
+        bury_done(
+            &*self.driver.money,
+            self.ctx,
+            &out,
+            &self.bufs,
+            self.leg,
+            self.piece_flags,
+            &mut facts,
+        );
+        let mut st = self.lock();
+        st.facts.plane_done = facts.plane_done;
+        st.facts.unread = facts.unread;
+        true
+    }
+}
+
 impl Drop for Pumping<'_> {
     fn drop(&mut self) {
+        let done_settled = !self.ended && self.bury_settled_done();
         let bufs = std::mem::replace(
             &mut self.bufs,
             Box::new(PieceBufs::new(&BufferCaps::EMPTY, bytes::Bytes::new())),
@@ -950,6 +1190,9 @@ impl Drop for Pumping<'_> {
             closed,
             piece_flags: self.piece_flags,
             final_answer: self.final_answer,
+            leg: self.leg,
+            keep: Arc::clone(&self.keep),
+            done_settled,
         });
     }
 }
@@ -1458,10 +1701,75 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         }
     }
 
+    /// Fold a piece's units: the checkpoint, then (unless it is unpriced) the driver's held units.
+    fn fold_done_units(&self, run: &Pumping<'_>, out: &Answer) -> Checkpoint {
+        let bufs = &run.bufs;
+        let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
+        if units.is_empty() || !run.billed() {
+            return Checkpoint::Continue;
+        }
+        let checkpoint = self.driver.money.checkpoint(run.ctx, units);
+        if checkpoint != Checkpoint::Unpriced {
+            let mut st = run.lock();
+            st.facts.units.clear();
+            st.facts.units.extend_from_slice(units);
+        }
+        checkpoint
+    }
+
+    /// The normal path's refused done piece (`VERDICT_COUNT_REFUSED`, `EMIT_DONE`).
+    fn refused_done(&self, run: &Pumping<'_>, out: &Answer) {
+        let mut facts = run.lock().facts.clone();
+        refuse_done_count(
+            &*self.driver.money,
+            run.ctx,
+            run.leg,
+            out,
+            &run.bufs,
+            &mut facts,
+            run.billed(),
+        );
+        let mut st = run.lock();
+        st.facts.plane_done = facts.plane_done;
+        st.facts.unread = facts.unread;
+    }
+
+    /// A done piece whose flight a deadline or a plane-generation stop overtook (the kernel
+    /// awaited it, and it answered Ready + done): the same pre-fold refusals, attribution and
+    /// fold as the walk, so its stated units bill under the cancel's cause.
+    fn cancelled_done(&self, run: &Pumping<'_>, piece: &Piece, out: &Answer) {
+        let seen = Seen::of(&run.lock().facts);
+        match pre_fold(out, run.leg, piece.flags, seen, true) {
+            Some(PreFold::Panic) => {
+                run.lock().facts.unread = Some(ReasonCode::PlanePanic);
+            }
+            Some(PreFold::CountRefused { .. }) => self.refused_done(run, out),
+            None => {
+                let _ = attribute(
+                    &*self.driver.money,
+                    run.ctx,
+                    out,
+                    &run.bufs,
+                    run.leg,
+                    seen,
+                    run.billed(),
+                    false,
+                );
+                let checkpoint = self.fold_done_units(run, out);
+                let mut st = run.lock();
+                st.facts.plane_done = true;
+                if checkpoint == Checkpoint::Unpriced {
+                    st.facts.unread = Some(ReasonCode::Unpriced);
+                }
+            }
+        }
+    }
+
     async fn push(&self, run: &mut Pumping<'_>, mut piece: Piece, toward: &mut Toward<'_>) -> Step {
         let framing = piece.from == FROM_FAR_END
             && (piece.src != Src::Input || run.bufs.input.bytes.is_empty());
         loop {
+            run.leg = Leg::of(toward);
             let (done, out, cause, retired) = run.cross(&piece).await;
             if retired {
                 if let Some(cause) = cause {
@@ -1472,41 +1780,40 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 return Step::End(End::RetiredByCompletion);
             }
             if let Some(cause) = cause {
+                // The flight answered done while the cancel was being taken (the kernel awaited
+                // it): settle it as the walk would have, so its stated units bill.
+                if let (AbiOutcome::Ready, Some(out)) = (done.outcome, out.as_ref()) {
+                    if out.says_done(&piece, run.final_answer) {
+                        self.cancelled_done(run, &piece, out);
+                    }
+                }
                 return Step::End(End::Cancel(cause, Some(done)));
             }
             let out = match (done.outcome, out) {
                 (AbiOutcome::Ready, Some(out)) => {
-                    // A caller-only leg cannot dispatch another request. Never reinterpret
-                    // bytes explicitly addressed upstream as caller output.
-                    if out.flags & EMIT_TO_FAR_END != 0 && matches!(toward, Toward::Caller) {
-                        return Step::End(End::Failed(ReasonCode::PlanePanic));
-                    }
-                    if out.flags & EMIT_TO_FAR_END != 0 {
-                        if let Toward::Response(request) = toward {
-                            let facts = run.lock();
-                            if facts.facts.headed
-                                || facts.facts.streamed
-                                || out.flags & EMIT_DONE != 0
-                                || piece.flags & PIECE_CUT != 0
-                                || (request.verb.is_empty()
-                                    && (piece.flags & PIECE_LAST == 0 || out.verb.len == 0))
-                            {
-                                return Step::End(End::Failed(ReasonCode::PlanePanic));
-                            }
-                        }
-                    }
-                    if let Toward::Response(request) = toward {
-                        if !request.verb.is_empty() && out.flags & EMIT_TO_FAR_END == 0 {
+                    let seen = Seen::of(&run.lock().facts);
+                    let says_done = out.says_done(&piece, run.final_answer);
+                    match pre_fold(&out, run.leg, piece.flags, seen, says_done) {
+                        Some(PreFold::Panic) => {
                             return Step::End(End::Failed(ReasonCode::PlanePanic));
                         }
+                        Some(PreFold::CountRefused { done: closes }) => {
+                            let detail = String::from_utf8_lossy(run.bufs.arena(out.fault_reason));
+                            tracing::warn!(%detail, "provider usage count refused");
+                            if closes {
+                                // The plane closed the unit: its accepted units are final and
+                                // bill, with no plane cancel.
+                                self.refused_done(run, &out);
+                                run.lock().close.closed();
+                            }
+                            return Step::End(End::Cancel(ReasonCode::Unpriced, Some(done)));
+                        }
+                        None => {}
                     }
-                    if out.verdict == VERDICT_COUNT_REFUSED {
-                        let detail = String::from_utf8_lossy(run.bufs.arena(out.fault_reason));
-                        tracing::warn!(%detail, "provider usage count refused");
-                        return Step::End(End::Cancel(ReasonCode::Unpriced, Some(done)));
-                    }
-                    if out.says_done(&piece, run.final_answer) {
-                        run.lock().close.closed();
+                    if says_done {
+                        let mut st = run.lock();
+                        st.close.closed();
+                        st.facts.plane_done = true;
                     }
                     out
                 }
@@ -1561,53 +1868,31 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 }
             }
 
-            let lane = run.bufs.arena(out.lane);
-            if !lane.is_empty() && run.billed() {
-                match std::str::from_utf8(lane) {
-                    Ok(lane) => self.driver.money.laned(run.ctx, lane),
-                    Err(_) => return Step::End(End::Failed(ReasonCode::PlanePanic)),
-                }
+            let seen = Seen::of(&run.lock().facts);
+            if attribute(
+                &*self.driver.money,
+                run.ctx,
+                &out,
+                &run.bufs,
+                run.leg,
+                seen,
+                run.billed(),
+                true,
+            )
+            .is_err()
+            {
+                return Step::End(End::Failed(ReasonCode::PlanePanic));
             }
-            let bufs = &run.bufs;
-            let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
-            let caller_bound = match &*toward {
-                Toward::Caller => true,
-                Toward::Session(_) | Toward::Response(_) => out.flags & EMIT_TO_FAR_END == 0,
-                Toward::FarEnd(request) => {
-                    out.flags & EMIT_TO_FAR_END == 0
-                        && (out.flags & EMIT_DONE != 0
-                            || (request.member.is_empty()
-                                && (out.reply_status != 0 || !emitted.is_empty())))
-                }
-                Toward::Nowhere => false,
-            };
-            let commits = {
-                let st = run.lock();
-                caller_bound
-                    && !st.facts.headed
-                    && !st.facts.streamed
-                    && (out.reply_status != 0 || !emitted.is_empty())
-                    && !(out.verdict == VERDICT_RETRY
-                        && fails_over(st.facts.streamed, st.facts.relayed))
-            };
-            if commits && !bufs.member.is_empty() && run.billed() {
-                let member = String::from_utf8_lossy(&bufs.member);
-                self.driver.money.served(run.ctx, &member, &bufs.provider);
-            }
-            let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
-            let checkpoint = if units.is_empty() || !run.billed() {
-                Checkpoint::Continue
-            } else {
-                let checkpoint = self.driver.money.checkpoint(run.ctx, units);
-                if checkpoint == Checkpoint::Unpriced {
-                    return Step::End(End::Cancel(ReasonCode::Unpriced, Some(done)));
-                }
+            let checkpoint = self.fold_done_units(run, &out);
+            if checkpoint == Checkpoint::Unpriced {
                 let mut st = run.lock();
-                st.facts.units.clear();
-                st.facts.units.extend_from_slice(units);
+                if st.facts.plane_done {
+                    // The plane's final report could not be priced: the last accepted one bills.
+                    st.facts.unread = Some(ReasonCode::Unpriced);
+                }
                 drop(st);
-                checkpoint
-            };
+                return Step::End(End::Cancel(ReasonCode::Unpriced, Some(done)));
+            }
 
             if let Some(reason) = out.usage_tap_fault() {
                 self.steps

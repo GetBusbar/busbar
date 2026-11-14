@@ -332,6 +332,7 @@ impl MeasurementRuntime {
                 slot,
                 reported_revision: 0,
             }),
+            unread: None,
         };
         let operation = Arc::new(MeasurementOperation {
             gov: self.gov.clone(),

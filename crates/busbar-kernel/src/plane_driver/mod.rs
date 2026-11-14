@@ -475,6 +475,35 @@ impl PlaneDriver {
         audit_row_to(&*self.audit, outcome, key, value, principal)
     }
 
+    /// A settled unit whose provider's final stated usage went unbilled (`CancelBill::unread`):
+    /// one audit row and one `BUSBAR-5046` line, beside the ledger record's `unread` field.
+    pub(crate) fn usage_unread(
+        &self,
+        ctx: &crate::teller::UnitCtx,
+        bill: &CancelBill,
+        principal: Option<&PrincipalId>,
+    ) {
+        let Some(reason) = bill.unread else {
+            return;
+        };
+        let resource = format!("unit:{} reason:{}", ctx.key.get(), reason.as_str());
+        let anonymous = PrincipalId::anonymous();
+        self.audit.record(
+            crate::diagnostics::PLANE_USAGE_UNREAD.slug,
+            &resource,
+            busbar_contract::vocab::OUTCOME_DEGRADED,
+            principal.unwrap_or(&anonymous).as_str(),
+        );
+        crate::diag_warn!(
+            crate::diagnostics::PLANE_USAGE_UNREAD,
+            unit = ctx.key.get(),
+            reason = reason.as_str(),
+            cause = bill.cause.as_str(),
+            plane = %self.label,
+            "provider usage not read: the unit settled without billing its final stated usage"
+        );
+    }
+
     pub(crate) fn fold_writes(
         &self,
         writes: &[busbar_contract::plane_calls::CancelWrite],

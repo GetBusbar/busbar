@@ -1290,6 +1290,17 @@ The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's cl
 
 **What to do:** Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list).
 
+<a id="plane-usage-unread"></a>
+### BUSBAR-5046 — Provider usage not read (a unit settled without billing its final stated usage)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-usage-unread`
+
+A unit the provider answered settled without billing its final stated usage; `reason` names the ReasonCode that ended it (deadline, drain/reload, unpriced, over-budget, far cut, body cap, plane fault, destination unreachable, client gone before fold). The unit's ledger line bills the last usage report busbar accepted, and its terminal checkpoint record carries the same `unread` reason. Emitted once per affected unit, with an audit row under the same slug.
+
+**What to do:** Reconcile the line against the provider's usage report: the provider may have charged more than the line bills.
+
 ## 6xxx — Plugins
 
 <a id="plugins-fetch-reload-miss"></a>

@@ -1000,6 +1000,7 @@ impl PlaneMoney {
             ended: false,
             terminal: None,
             measurement: None,
+            unread: None,
             audit: self
                 .post
                 .checkpoint_facts(key)
@@ -1014,10 +1015,22 @@ impl PlaneMoney {
         counts: &[(u32, busbar_contract::Count)],
         metered: bool,
     ) -> bool {
+        self.finish_checkpoint_unread(key, open, counts, metered, None)
+    }
+
+    fn finish_checkpoint_unread(
+        &self,
+        key: UnitKey,
+        open: &Open,
+        counts: &[(u32, busbar_contract::Count)],
+        metered: bool,
+        unread: Option<ReasonCode>,
+    ) -> bool {
         if !self.gov.unit_checkpoints_enabled() {
             return false;
         }
-        if let Some(snapshot) = self.checkpoint_snapshot(key, open, counts, metered) {
+        if let Some(mut snapshot) = self.checkpoint_snapshot(key, open, counts, metered) {
+            snapshot.unread = unread.map(|reason| reason.as_str().to_string());
             self.gov.finish_unit_checkpoint(snapshot);
         } else {
             tracing::error!(unit = key.get(), checkpoint = %hex::encode(open.checkpoint_id),
@@ -1212,11 +1225,12 @@ impl MoneySeam for PlaneMoney {
                 return;
             }
             open.ledgered = true;
-            let durable = self.finish_checkpoint(
+            let durable = self.finish_checkpoint_unread(
                 ctx.key,
                 open,
                 &bill.billed,
                 bills(&usage_only(&open.money, &bill.billed)),
+                bill.unread,
             );
             let money = open.money.clone();
             let provider = open.provider.clone();
