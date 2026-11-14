@@ -182,6 +182,11 @@ impl VerifyInput {
         .named()
     }
 
+    /// No request at all: a login's identity buffers lend no verify input.
+    fn empty() -> Arc<Self> {
+        Self::taken(VerifyRequest::default(), None, &Headers::None)
+    }
+
     fn named(mut self) -> Arc<Self> {
         self.named = self
             .lines
