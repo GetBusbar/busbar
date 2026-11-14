@@ -6,7 +6,6 @@ use serde::Deserialize;
 const CANARY: &str = "CANARY-cred-5f3a9c";
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct Settings {
     dsn: Cred,
     key: Cred,
@@ -372,15 +371,14 @@ fn header_field_values_allow_space_at_the_visible_byte_boundary() {
 fn a_settings_enum_object_with_more_than_one_key_is_refused() {
     #[derive(serde::Deserialize, Debug)]
     #[serde(rename_all = "lowercase")]
-    #[allow(dead_code)]
     enum Mode {
         Tls {},
         Plain {},
     }
     #[derive(serde::Deserialize, Debug)]
-    #[allow(dead_code)]
     struct S {
-        mode: Mode,
+        #[serde(rename = "mode")]
+        _mode: Mode,
     }
     assert!(settings::<S>(br#"{"mode":{"tls":{},"plain":{}}}"#).is_err());
     assert!(settings::<S>(br#"{"mode":{"plain":{}}}"#).is_ok());

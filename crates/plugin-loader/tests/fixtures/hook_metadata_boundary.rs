@@ -6,7 +6,7 @@ use crate::hook_door_conformance_tests::hook_door_plugin;
 
 #[cfg(not(test))]
 #[path = "hook_door_plugin.rs"]
-mod hook_door_plugin;
+pub mod hook_door_plugin;
 
 // The same SDK lifecycle and route declaration are compiled independently in
 // the linked test and dropped image. No product supplies this loader witness.

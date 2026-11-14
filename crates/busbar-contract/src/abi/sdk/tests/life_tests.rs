@@ -683,7 +683,7 @@ fn leases_are_instance_state() {
 fn a_kept_answer_is_dropped_at_its_release_and_only_then() {
     use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
-    struct Storage(Arc<AtomicUsize>, #[allow(dead_code)] Vec<Box<[u8]>>);
+    struct Storage(Arc<AtomicUsize>);
     impl Drop for Storage {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
@@ -692,10 +692,7 @@ fn a_kept_answer_is_dropped_at_its_release_and_only_then() {
     let drops = Arc::new(AtomicUsize::new(0));
     let leases = Leases::default();
     let mut head = out_head::<OutHead>();
-    let lease = leases.keep(
-        &mut head,
-        Storage(drops.clone(), vec![b"a".to_vec().into()]),
-    );
+    let lease = leases.keep(&mut head, Storage(drops.clone()));
     assert_eq!(head.lease, lease);
     assert_eq!(drops.load(Ordering::SeqCst), 0, "held until release");
     assert_eq!(leases.release(lease), Outcome::Ready);
@@ -1122,8 +1119,8 @@ fn codeaudit_a_failed_opening_closes_the_instance_it_built() {
 fn codeaudit_settings_as_does_not_echo_a_mistyped_value() {
     #[derive(Debug, serde::Deserialize)]
     struct Typed {
-        #[allow(dead_code)]
-        n: u64,
+        #[serde(rename = "n")]
+        _n: u64,
     }
     let refusal = settings_as::<Typed>(br#"{"n":"s3cr3t-value"}"#).unwrap_err();
     let reason = refusal.text().unwrap();
@@ -1137,8 +1134,8 @@ fn codeaudit_settings_as_does_not_echo_a_mistyped_value() {
     }
     #[derive(Debug, serde::Deserialize)]
     struct Moded {
-        #[allow(dead_code)]
-        mode: Mode,
+        #[serde(rename = "mode")]
+        _mode: Mode,
     }
     let refusal = settings_as::<Moded>(br#"{"mode":"s3cr3t-variant"}"#).unwrap_err();
     let reason = refusal.text().unwrap();

@@ -5,7 +5,6 @@ use serde::Serialize;
 
 pub use busbar_contract::surface::ADMIN_PREFIX;
 
-#[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
 pub fn ap(rel: &str) -> String {
     format!("{ADMIN_PREFIX}{rel}")
 }

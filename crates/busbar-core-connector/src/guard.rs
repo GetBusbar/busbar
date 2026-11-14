@@ -64,7 +64,7 @@ pub fn judged_class(class: u32, configured: bool) -> u32 {
 }
 
 /// The config key an allowlist refusal at boot names.
-pub const ALLOW_KEY: &str = "advanced.allow_destinations";
+pub(crate) const ALLOW_KEY: &str = "advanced.allow_destinations";
 
 /// Why the guard refused a destination: the `DEST_*` verdict, the target name, and the address
 /// when an answered (or literal) address decided it.

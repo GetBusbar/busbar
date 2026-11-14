@@ -171,7 +171,6 @@ impl Drop for Gateway {
 #[derive(Debug)]
 pub struct Resp {
     pub status: u16,
-    #[allow(dead_code)] // kept for setup steps that save a header
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }

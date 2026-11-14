@@ -87,7 +87,7 @@ impl std::fmt::Display for KeysetError {
 }
 
 #[must_use]
-pub fn bootstrap_body(fingerprint: &[u8; 32], key_id: &str) -> Vec<u8> {
+pub(crate) fn bootstrap_body(fingerprint: &[u8; 32], key_id: &str) -> Vec<u8> {
     let mut body = BodyWriter::new();
     body.bytes(fingerprint).text(key_id);
     body.finish()

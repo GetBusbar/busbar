@@ -202,7 +202,7 @@ pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
 }
 
 #[must_use]
-pub fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretFn {
+pub(crate) fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretFn {
     |secret, scope| {
         super::measurements::configuration_refresh(|| {
             busbar_core_connector::spawn_env::linked_spawn_secret(secret, scope)

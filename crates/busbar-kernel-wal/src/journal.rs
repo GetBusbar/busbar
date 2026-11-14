@@ -34,23 +34,23 @@ mod at {
     /// Which node wrote it.
     pub const NODE: usize = 8;
     /// That node's own sequence number.
-    pub const NODE_SEQ: usize = 16;
+    pub(crate) const NODE_SEQ: usize = 16;
     /// Which lease generation was in force.
-    pub const LEASE_EPOCH: usize = 24;
+    pub(crate) const LEASE_EPOCH: usize = 24;
     /// Which policy generation was in force.
-    pub const POLICY_EPOCH: usize = 32;
+    pub(crate) const POLICY_EPOCH: usize = 32;
     /// The wall clock, in whole seconds.
     pub const WALL: usize = 40;
     /// The node's monotonic clock.
     pub const MONO: usize = 48;
     /// How many body bytes follow the header.
-    pub const BODY_LEN: usize = 56;
+    pub(crate) const BODY_LEN: usize = 56;
     /// Reserved, always zero.
-    pub const RESERVED2: usize = 60;
+    pub(crate) const RESERVED2: usize = 60;
     /// The digest of the body.
-    pub const BODY_HASH: usize = 64;
+    pub(crate) const BODY_HASH: usize = 64;
     /// The preceding record's chain hash.
-    pub const PREV_HASH: usize = 96;
+    pub(crate) const PREV_HASH: usize = 96;
     /// This record's own chain hash. Everything before it is what the chain hash covers.
     pub const HASH: usize = 128;
 }
@@ -708,21 +708,6 @@ impl Journal {
         clock: Clock,
     ) -> Result<Self, OpenError> {
         Ok(Journal::over(Wal::in_directory(dir, shipper, clock)?, node))
-    }
-
-    /// [`Journal::in_directory`], writing as the node the directory's chain ALREADY names: the
-    pub fn in_directory_adopting(
-        fallback: u64,
-        dir: impl AsRef<std::path::Path>,
-        shipper: Box<dyn Shipper<Record>>,
-        clock: Clock,
-    ) -> Result<Self, OpenError> {
-        let log = Wal::in_directory(dir, shipper, clock)?;
-        let node = decode_run(log.recovered())
-            .ok()
-            .and_then(|records| records.last().map(|r| r.node))
-            .unwrap_or(fallback);
-        Ok(Journal::over(log, node))
     }
 
     /// A journal over an already-open log, resuming from the tail the log recovered.

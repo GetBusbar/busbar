@@ -26,7 +26,7 @@ pub struct CardFields {
 /// One plane's card and fees, as the stored form spells them.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlaneCardFields {
+pub(crate) struct PlaneCardFields {
     /// The plane's card, replaced whole when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_card: Option<BTreeMap<String, RateEntryCfg>>,
@@ -350,13 +350,6 @@ pub(crate) mod origin {
 
     thread_local! {
         static ORIGIN: RefCell<Option<String>> = const { RefCell::new(None) };
-    }
-
-    pub(crate) fn with<T>(origin: &str, f: impl FnOnce() -> T) -> T {
-        let previous = ORIGIN.with(|o| o.replace(Some(origin.to_string())));
-        let out = f();
-        ORIGIN.with(|o| *o.borrow_mut() = previous);
-        out
     }
 
     pub(crate) fn current() -> String {

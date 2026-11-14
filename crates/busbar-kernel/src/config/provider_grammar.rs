@@ -230,19 +230,19 @@ mod actual_plane_legacy_grammar {
     }
     #[derive(Debug, Deserialize)]
     #[serde(deny_unknown_fields)]
-    #[allow(dead_code)]
     struct ModelCapabilities {
-        models: Vec<String>,
-        #[serde(default)]
-        max_output_key: Option<MaxOutputKeyCfg>,
-        #[serde(default)]
-        anthropic_adaptive_thinking: Option<bool>,
-        #[serde(default)]
-        native_structured_output: Option<bool>,
-        #[serde(default)]
-        reasoning_none: Option<bool>,
-        #[serde(default)]
-        thinking_always_on: Option<bool>,
+        #[serde(rename = "models")]
+        _models: Vec<String>,
+        #[serde(default, rename = "max_output_key")]
+        _max_output_key: Option<MaxOutputKeyCfg>,
+        #[serde(default, rename = "anthropic_adaptive_thinking")]
+        _anthropic_adaptive_thinking: Option<bool>,
+        #[serde(default, rename = "native_structured_output")]
+        _native_structured_output: Option<bool>,
+        #[serde(default, rename = "reasoning_none")]
+        _reasoning_none: Option<bool>,
+        #[serde(default, rename = "thinking_always_on")]
+        _thinking_always_on: Option<bool>,
     }
 
     #[test]

@@ -161,7 +161,7 @@ pub mod durable {
 
     use super::{BindingMismatch, IDEMPOTENCY_TTL_SECS};
 
-    pub const REPLAY_KIND: &str = "busbar.admin-idempotency";
+    pub(crate) const REPLAY_KIND: &str = "busbar.admin-idempotency";
 
     /// Bind the host-owned admin replay records and token claims to one instance.
     pub fn scoped_store(

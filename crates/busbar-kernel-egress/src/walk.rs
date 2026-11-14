@@ -565,7 +565,7 @@ fn pool_shed(ports: &WalkPorts<'_>, pool: &str, members: &[Member], token: &Pass
 }
 
 /// Exclude every member of `members` (the pool's ADMISSIBLE members) whose window is at or below
-pub fn exclude_smaller_windows(members: &[Member], failed: &Member, ctx: &mut RequestCtx) {
+pub(crate) fn exclude_smaller_windows(members: &[Member], failed: &Member, ctx: &mut RequestCtx) {
     let Some(failed_limit) = failed.context_max else {
         return;
     };

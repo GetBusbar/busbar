@@ -268,7 +268,7 @@ impl PendingClaim {
     }
 
     #[must_use]
-    pub fn win_now(&self) -> bool {
+    pub(crate) fn win_now(&self) -> bool {
         futures::executor::block_on(self.win())
     }
 }
@@ -1230,7 +1230,7 @@ impl AuthMiddleware {
         )
     }
 
-    pub async fn judge_chain_on_request_path(
+    pub(crate) async fn judge_chain_on_request_path(
         auth: &std::sync::Arc<AuthMiddleware>,
         candidate: Option<String>,
         head: ChainHead,
@@ -3112,7 +3112,7 @@ fn resolve_identity_from_bindings(
     }
 }
 
-pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = true;
+pub(crate) const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = true;
 
 fn admits_ungoverned(
     module: &str,

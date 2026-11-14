@@ -1310,57 +1310,43 @@ mod ticketed {
         served: AtomicU64,
     }
 
-    #[allow(unused_variables)]
     impl HostServices for SlowSecrets {
         fn now(&self) -> Reading {
             panic!("unexpected host service in the records-secret scheduling boundary: now")
         }
-        fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
+        fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: dest_judge")
         }
-        fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
+        fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: records_get")
         }
-        fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
+        fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: records_list"
             )
         }
-        fn records_claim(
-            &self,
-            caller: &Caller,
-            kind: &str,
-            key: &[u8],
-            ttl_ms: u64,
-            later: Later,
-        ) -> Ran {
+        fn records_claim(&self, _: &Caller, _: &str, _: &[u8], _: u64, _: Later) -> Ran {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: records_claim"
             )
         }
-        fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
+        fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
             panic!("unexpected host service in the records-secret scheduling boundary: sign")
         }
-        fn trust_sight(
-            &self,
-            caller: &Caller,
-            counterparty: &str,
-            hash: &str,
-            later: Later,
-        ) -> Ran {
+        fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: trust_sight")
         }
-        fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        fn trust_unreached(&self, _: &Caller, _: &str) -> Stored {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: trust_unreached"
             )
         }
         fn trust_sight_item(
             &self,
-            caller: &Caller,
-            counterparty: &str,
-            item: &str,
-            digest: &str,
+            _: &Caller,
+            _: &str,
+            _: &str,
+            _: &str,
             _later: busbar_contract::services::Later,
         ) -> busbar_contract::services::Ran {
             panic!(
@@ -1369,143 +1355,99 @@ mod ticketed {
         }
         fn trust_decide(
             &self,
-            caller: &Caller,
+            _: &Caller,
             _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
-            key: TrustKeyRef<'_>,
-            expected: Option<&str>,
-            approve: bool,
+            _: TrustKeyRef<'_>,
+            _: Option<&str>,
+            _: bool,
             _later: busbar_contract::services::Later,
         ) -> busbar_contract::services::Ran {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: trust_decide"
             )
         }
-        fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        fn trust_state(&self, _: &Caller, _: &str) -> Stored {
             panic!("unexpected host service in the records-secret scheduling boundary: trust_state")
         }
-        fn trust_serves(
-            &self,
-            caller: &Caller,
-            counterparty: &str,
-            item: Option<&str>,
-            digest: Option<&str>,
-        ) -> Stored {
+        fn trust_serves(&self, _: &Caller, _: &str, _: Option<&str>, _: Option<&str>) -> Stored {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: trust_serves"
             )
         }
-        fn trust_due(&self, caller: &Caller) -> Stored {
+        fn trust_due(&self, _: &Caller) -> Stored {
             panic!("unexpected host service in the records-secret scheduling boundary: trust_due")
         }
-        fn trust_verify(
-            &self,
-            caller: &Caller,
-            counterparty: &str,
-            payload: &[u8],
-            signatures: &[u8],
-        ) -> Stored {
+        fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: trust_verify"
             )
         }
-        fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
+        fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: entitlement_check"
             )
         }
-        fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: session_emit"
             )
         }
         fn ticket_mint(
             &self,
-            caller: &Caller,
-            unit: Option<u64>,
-            ttl_secs: u64,
-            record: &[u8],
+            _: &Caller,
+            _: Option<u64>,
+            _: u64,
+            _: &[u8],
             _later: busbar_contract::services::Later,
         ) -> busbar_contract::services::Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: ticket_mint")
         }
-        fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
+        fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
             panic!("unexpected host service in the records-secret scheduling boundary: ticket_take")
         }
-        fn random_fill(&self, len: u64) -> Stored {
+        fn random_fill(&self, _: u64) -> Stored {
             panic!("unexpected host service in the records-secret scheduling boundary: random_fill")
         }
-        fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
+        fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: unit_nest")
         }
-        fn work_open(
-            &self,
-            caller: &Caller,
-            unit: Option<u64>,
-            kind: &str,
-            record: &[u8],
-            later: Later,
-        ) -> Ran {
+        fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: work_open")
         }
-        fn work_find(
-            &self,
-            caller: &Caller,
-            unit: Option<u64>,
-            reference: &[u8],
-            later: Later,
-        ) -> Ran {
+        fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: work_find")
         }
-        fn work_settle(
-            &self,
-            caller: &Caller,
-            unit: Option<u64>,
-            handle: u64,
-            record: &[u8],
-            later: Later,
-        ) -> Ran {
+        fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: work_settle")
         }
-        fn work_resume(
-            &self,
-            caller: &Caller,
-            unit: Option<u64>,
-            handle: u64,
-            later: Later,
-        ) -> Ran {
+        fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: work_resume")
         }
-        fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: disk_append")
         }
-        fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: verify_lookup"
             )
         }
-        fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: verify_store"
             )
         }
-        fn content_scan(
-            &self,
-            caller: &Caller,
-            unit: Option<u64>,
-            content: &[u8],
-            later: Later,
-        ) -> Ran {
+        fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: content_scan"
             )
         }
-        fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        fn hook_call(&self, _: &Caller, _: Option<u64>, _: HookAsk, _: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: hook_call")
         }
         fn snapshot_read(
             &self,
-            caller: &Caller,
-            scope: u32,
+            _: &Caller,
+            _: u32,
             _later: busbar_contract::services::Later,
         ) -> busbar_contract::services::Ran {
             panic!(

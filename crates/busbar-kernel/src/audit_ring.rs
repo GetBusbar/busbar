@@ -54,7 +54,6 @@ pub struct AuditEntry {
     /// seam round-trip witness read it back), so its read is `cfg(test)`; the field is retained as the
     /// seam↔ring provenance marker those witnesses assert on.
     #[serde(skip)]
-    #[cfg_attr(not(test), allow(dead_code))]
     pub recorded_here: bool,
 }
 

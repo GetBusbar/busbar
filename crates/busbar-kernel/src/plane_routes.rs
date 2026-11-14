@@ -135,7 +135,7 @@ pub struct PlaneRouteSpec {
 
 impl PlaneRouteSpec {
     #[must_use]
-    pub fn route_id(&self) -> DoorRouteId {
+    pub(crate) fn route_id(&self) -> DoorRouteId {
         DoorRouteId {
             path: self.path.clone(),
             method: self.method,
@@ -323,7 +323,7 @@ pub struct PlaneSessionSpec {
 
 impl PlaneSessionSpec {
     #[must_use]
-    pub fn route_id(&self) -> DoorRouteId {
+    pub(crate) fn route_id(&self) -> DoorRouteId {
         DoorRouteId {
             path: self.path.clone(),
             method: RouteMethod::Get,

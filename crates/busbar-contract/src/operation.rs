@@ -130,7 +130,6 @@ pub enum OpShape {
 
 impl OpShape {
     /// Every shape, so a site that must cover all of them cannot silently cover some. The same role
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [OpShape] = &[
         OpShape::Invoke,
         OpShape::Catalogue,
@@ -195,18 +194,13 @@ impl OpVerb {
     pub const RERANK: OpVerb = OpVerb::named_invoke("rerank");
 
     pub const INVOKE: OpVerb = OpVerb::of(OpShape::Invoke);
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const CATALOGUE: OpVerb = OpVerb::of(OpShape::Catalogue);
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const FETCH: OpVerb = OpVerb::of(OpShape::Fetch);
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const TASK: OpVerb = OpVerb::of(OpShape::Task);
     pub const SUBSCRIBE: OpVerb = OpVerb::of(OpShape::Subscribe);
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const CONTROL: OpVerb = OpVerb::of(OpShape::Control);
 
     /// EVERY OPERATION THE CORE ITSELF OWNS — the six protocol-surface verbs, one per shape. This
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [OpVerb] = &[
         OpVerb::INVOKE,
         OpVerb::CATALOGUE,

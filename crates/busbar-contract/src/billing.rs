@@ -69,7 +69,6 @@ pub enum Billing {
     /// count is derived from the request input instead).
     /// Modelled by the IR but not yet constructed outside tests or priced; the shipped 1.5.0
     /// pricing path only prices `Billing::Tokens`.
-    #[cfg_attr(not(test), allow(dead_code))]
     Characters { count: u64 },
     /// Per-item count, tiered by size/quality (an image-generation-style operation with no usage
     /// object in the body).

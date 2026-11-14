@@ -259,7 +259,7 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 
 pub const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_total";
 
-pub fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -> bool {
+pub(crate) fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -> bool {
     metrics::counter!(
         BILLING_TAP_DECODE_FAIL_TOTAL,
         "protocol" => protocol.to_string(),

@@ -232,7 +232,7 @@ impl LedgerView for CountsLedger {
     }
 }
 
-pub async fn priced_keys(
+pub(crate) async fn priced_keys(
     gov: &busbar_kernel::governance::GovState,
     cost: &busbar_kernel::cost::CostModel,
     now: u64,
@@ -549,7 +549,7 @@ impl CoreGovernance {
     }
 
     #[must_use]
-    pub fn noting(
+    pub(crate) fn noting(
         mut self,
         journal: Option<Arc<busbar_kernel_audit::amend::NodeAmendments>>,
     ) -> Self {
@@ -558,7 +558,7 @@ impl CoreGovernance {
     }
 
     #[must_use]
-    pub fn planed(mut self, planes: PlaneLookup, records: Option<PlaneRecordSink>) -> Self {
+    pub(crate) fn planed(mut self, planes: PlaneLookup, records: Option<PlaneRecordSink>) -> Self {
         self.planes = planes;
         self.records = records;
         self
@@ -571,7 +571,7 @@ impl CoreGovernance {
     }
 
     #[must_use]
-    pub fn adjusting(mut self, adjuster: adjust::UsageAdjuster) -> Self {
+    pub(crate) fn adjusting(mut self, adjuster: adjust::UsageAdjuster) -> Self {
         self.adjuster = adjuster;
         self
     }
@@ -1042,7 +1042,7 @@ pub struct AmendAttribution {
     pub principal: String,
 }
 
-pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v4";
+pub(crate) const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v4";
 
 #[cfg(test)]
 const AMENDMENT_RECORD_TAG_V3: &str = "busbar/rate-amendment/v3";

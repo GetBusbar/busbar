@@ -522,15 +522,6 @@ impl History {
         by_key(&self.entries, key)
     }
 
-    /// The highest commit time among the LIVE entries (`head_t_ms`): a voided entry never counts.
-    pub fn head_t_ms(&self) -> Option<u64> {
-        self.entries
-            .iter()
-            .rev()
-            .find(|e| !e.voided)
-            .map(|e| e.key.t_ms())
-    }
-
     /// **THE ANSWER AT `instant`** (seam for the poster): the id and card of the highest-keyed live
     pub fn entry_at(&self, instant: u64) -> Option<(EntryId, &RateCard)> {
         self.entries

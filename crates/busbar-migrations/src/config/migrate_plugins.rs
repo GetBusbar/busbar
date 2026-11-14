@@ -17,7 +17,7 @@ const LOCALHOST_SUFFIX: &str = ".localhost";
 /// Frozen plugin-settings migration vocabulary understood by the released Migrate ABI.
 /// Source-aware startup selects this only after native profile admission; it does
 /// not assert that the physical schema uniquely identifies a product binary release.
-pub const FROM_DEFAULT: &str = "1.5.5";
+pub(crate) const FROM_DEFAULT: &str = "1.5.5";
 
 /// Why converted settings could not be checked by their current plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]

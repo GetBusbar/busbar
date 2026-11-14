@@ -122,7 +122,7 @@ impl KernelServices {
             .store(ready, std::sync::atomic::Ordering::Release);
     }
 
-    pub fn supports_work_recovery(&self) -> bool {
+    pub(crate) fn supports_work_recovery(&self) -> bool {
         self.persistence.get().is_some()
             && self
                 .recovery

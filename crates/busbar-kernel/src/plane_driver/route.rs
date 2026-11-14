@@ -1103,7 +1103,7 @@ async fn until(left: Option<Duration>) {
     }
 }
 
-pub trait AttemptSteps {
+pub(crate) trait AttemptSteps {
     fn attempting(&self, _ctx: &UnitCtx, _dialect: u32, _provider: &str) {}
 
     fn usage_tap_fault(&self, _ctx: &UnitCtx, _dialect: u32, _reason: &'static str) {}

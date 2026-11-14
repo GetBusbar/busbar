@@ -38,7 +38,10 @@ fn lent_read_keeps_source_after_caller_ownership_is_dropped() {
         time: None,
     });
     let weak = Arc::downgrade(&source);
-    let retained = Arc::new(Retained(UnsafeCell::new(read_request(source)), None));
+    let retained = Arc::new(Retained {
+        cell: UnsafeCell::new(read_request(source)),
+        _session: None,
+    });
     let frame = retained.frame();
     let lent = retained.clone() as Lent;
     drop(retained);

@@ -20,9 +20,9 @@ use super::HOTPATH_LEVEL;
 
 const TARGET: &str = "busbar::ingress";
 
-pub const MAX_ARRIVAL_SPANS: usize = 64;
+pub(crate) const MAX_ARRIVAL_SPANS: usize = 64;
 
-pub const MAX_ARRIVAL_FIELDS: usize = 3;
+pub(crate) const MAX_ARRIVAL_FIELDS: usize = 3;
 
 const NEVER: u8 = 0;
 const SOMETIMES: u8 = 1;

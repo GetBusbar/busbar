@@ -140,7 +140,7 @@ impl FactTransform {
     pub fn registry(&self) -> Result<Registry, super::super::Error> {
         Registry::new(vec![self.edge.clone()])
     }
-    pub fn matches_source(&self, source: &super::super::Identity) -> bool {
+    pub(crate) fn matches_source(&self, source: &super::super::Identity) -> bool {
         source.dataset == self.provenance.dataset
             && source.schema_digest == self.provenance.catalogue
             && source.format == self.edge.source

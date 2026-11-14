@@ -116,6 +116,7 @@ impl<'a> StoreJournal<'a> {
         self.selected_predicates(proof)
     }
 
+    #[cfg(test)]
     /// Recheck a read-only complete prefix proof without granting append or
     /// replay ownership. A later append changes H and requires a fresh proof.
     pub(crate) async fn confirm_selected(&self, proof: &VerifiedHead) -> Result<()> {
@@ -406,6 +407,7 @@ impl<'a> StoreJournal<'a> {
         Ok(())
     }
 
+    #[cfg(test)]
     /// Use the unchanged WAL framing and digest recipe for a new host entry.
     /// The caller retains this exact original before awaiting append; sealing
     /// alone conveys no durability or permission to select a recovery verdict.
@@ -427,6 +429,7 @@ impl<'a> StoreJournal<'a> {
         seal_record(self.node, proof.head, entry)
     }
 
+    #[cfg(test)]
     /// Seal and retain an entire adoption run before the caller first awaits.
     /// Its second record follows the first original frame, without advancing
     /// the selected journal head or claiming either frame has been persisted.

@@ -3,7 +3,6 @@
 
 use std::path::Path;
 
-#[allow(dead_code)]
 mod generator {
     include!("../../../crates/busbar/src/linked_gen.rs");
 }

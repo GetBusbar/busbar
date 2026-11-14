@@ -12,14 +12,12 @@ use super::{settings_lent, Cred, SettingsError, SECRET_MARKER};
 const CANARY: &str = "CANARY-lent-8c1e07";
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct Server {
     command: String,
     env: BTreeMap<String, Cred>,
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct Settings {
     key: Cred,
     servers: BTreeMap<String, Server>,

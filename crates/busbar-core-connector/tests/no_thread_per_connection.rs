@@ -11,7 +11,6 @@ use busbar_core_connector::{carrier, compose, framer, hostio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-#[allow(dead_code)]
 #[path = "../src/tests/support.rs"]
 mod support;
 

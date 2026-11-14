@@ -138,12 +138,10 @@ fn red_a_refusal_names_its_position() {
 
     #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
-    #[allow(dead_code)]
     struct Entry {
         url: String,
     }
     #[derive(Debug, serde::Deserialize)]
-    #[allow(dead_code)]
     struct Root {
         tools: std::collections::BTreeMap<String, Entry>,
     }

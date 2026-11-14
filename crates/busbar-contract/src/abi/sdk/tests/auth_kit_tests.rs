@@ -13,10 +13,11 @@ use crate::abi::sdk::{Safe, SafeSlot};
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct Settings {
-    url: String,
-    password: String,
+    #[serde(rename = "url")]
+    _url: String,
+    #[serde(rename = "password")]
+    _password: String,
 }
 
 fn refused(json: &str) -> String {

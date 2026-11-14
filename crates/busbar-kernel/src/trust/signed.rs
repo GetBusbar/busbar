@@ -11,7 +11,7 @@ const KEY_INFO_HEAD: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-pub const MAX_SIGNATURES: usize = 8;
+pub(crate) const MAX_SIGNATURES: usize = 8;
 
 const ALGORITHM: &str = "EdDSA";
 

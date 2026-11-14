@@ -36,7 +36,7 @@ pub const WINDOW_HOUR: &str = "hour";
 
 const VK_ID_PREFIX: &str = "vk_";
 
-pub const BINDING_MARKER_PREFIX: &str = "binding:";
+pub(crate) const BINDING_MARKER_PREFIX: &str = "binding:";
 
 pub const SELF_KEY_GROUP_PREFIX: &str = "user:";
 
@@ -863,7 +863,7 @@ struct GovCaches {
     by_credential: CredentialIndex,
 }
 
-pub type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, CredentialSecret)>;
+pub(crate) type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, CredentialSecret)>;
 
 pub struct GovState {
     observation_view: RwLock<HashMap<(String, u64), crate::persistence::observations::BudgetTotal>>,
@@ -1510,7 +1510,7 @@ impl MeterCounts {
             usage_units: Default::default(),
         }
     }
-    pub fn try_merge(&mut self, other: &Self) -> Result<(), CountError> {
+    pub(crate) fn try_merge(&mut self, other: &Self) -> Result<(), CountError> {
         other.validate()?;
         // Every sum is checked before any field changes, so a refused merge leaves `self` exactly
         // as it was without copying it first.
@@ -1583,9 +1583,9 @@ pub const MAX_PENDING_METERING: usize = 262_144;
 
 pub const MAX_PENDING_METERING_PER_SHARD: usize = MAX_PENDING_METERING / GOV_SHARDS;
 
-pub const METERING_OVERFLOW_KEY_ID: &str = "__busbar_pending_overflow__";
+pub(crate) const METERING_OVERFLOW_KEY_ID: &str = "__busbar_pending_overflow__";
 
-pub const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
+pub(crate) const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
 
 fn accrue_pending_checked(
     pending: &mut HashMap<MeterKey, MeterCounts>,
@@ -1641,9 +1641,9 @@ fn accrue_pending_checked(
 /// The once-per-window throttle on the overflow-coalescing warning: counts coalesced cells and
 /// releases the count at most once per [`COALESCE_WARN_WINDOW`].
 #[derive(Default)]
-pub struct CoalesceWarn(std::sync::Mutex<(Option<std::time::Instant>, u64)>);
+pub(crate) struct CoalesceWarn(std::sync::Mutex<(Option<std::time::Instant>, u64)>);
 
-pub const COALESCE_WARN_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+pub(crate) const COALESCE_WARN_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl CoalesceWarn {
     fn note(&self, now: std::time::Instant) -> Option<u64> {
@@ -1885,11 +1885,11 @@ async fn resume_current_correction_verdicts(
     }
 }
 
-pub const USAGE_WINDOW_HORIZON_SECS: u64 = 31 * SECS_PER_DAY;
+pub(crate) const USAGE_WINDOW_HORIZON_SECS: u64 = 31 * SECS_PER_DAY;
 
-pub const USAGE_PURGE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+pub(crate) const USAGE_PURGE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
-pub async fn purge_usage_windows(gov: &GovState) {
+pub(crate) async fn purge_usage_windows(gov: &GovState) {
     let Ok(core) = gov.core_store() else {
         return;
     };

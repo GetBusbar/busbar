@@ -182,7 +182,7 @@ pub const NEST_NO_UNIT: &str = "the crossing serves no unit in flight";
 
 pub const NEST_TOO_DEEP: &str = "the nested unit would be deeper than the nesting cap";
 
-pub const NEST_FULL: &str = "the node runs as many nested units as it holds";
+pub(crate) const NEST_FULL: &str = "the node runs as many nested units as it holds";
 
 pub const NO_NEST_ROUTE: &str = "no nested dispatch is installed";
 
@@ -207,7 +207,7 @@ impl From<u64> for Refused {
     }
 }
 
-pub const NO_DEST_JUDGE: &str = "no destination judge is installed";
+pub(crate) const NO_DEST_JUDGE: &str = "no destination judge is installed";
 
 /// BUSBAR-6014: `dest.judge` refuses the operator-infrastructure egress class from a plugin. That
 /// class is a property of a config-declared target, never a plugin's choice; a host named inside
@@ -652,7 +652,7 @@ pub const TICKET_NO_PRESS: &str = "this host mints no tickets";
 
 pub const TICKET_NOT_HELD: &str = "no ticket record is held for this unit";
 
-pub const RESERVED_RECORD_KINDS: &[&str] = &[
+pub(crate) const RESERVED_RECORD_KINDS: &[&str] = &[
     recovery_runtime::CALLERS,
     crate::governance::TICKET_RECORD_KIND,
     crate::host_work::WORK_SCHEMA.as_str(),
@@ -1028,9 +1028,9 @@ struct CarrierSession {
 
 pub type CarrierSink = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
 
-pub const SESSION_EMIT_ACTION: &str = "session.emit";
+pub(crate) const SESSION_EMIT_ACTION: &str = "session.emit";
 
-pub const SESSION_NOT_OPEN: &str = "no such carrier session is open for this instance";
+pub(crate) const SESSION_NOT_OPEN: &str = "no such carrier session is open for this instance";
 
 struct TrustDecision {
     permit: crate::trust::book::DecisionPermit,
@@ -1406,7 +1406,7 @@ impl KernelServices {
         self
     }
 
-    pub fn attach_records(&self, reads: Arc<dyn RecordRows>) -> bool {
+    pub(crate) fn attach_records(&self, reads: Arc<dyn RecordRows>) -> bool {
         self.records.set(Records { reads }).is_ok()
     }
 
@@ -2437,7 +2437,7 @@ impl KernelServices {
 
     /// Advance one registered claim scope through the existing bounded async
     /// host lane. The attachment retains its cursor if this task is cancelled.
-    pub fn sweep_claims_tick(&self) {
+    pub(crate) fn sweep_claims_tick(&self) {
         let (Some(store), Some(pool)) = (self.persistence.get(), self.pool()) else {
             return;
         };
@@ -2623,7 +2623,7 @@ pub const NO_POOL: &str = "no pool is bound";
 
 pub const POOL_REFUSED: &str = "the pool refused the store call";
 
-pub const STORE_FAILED: &str = "the store did not answer";
+pub(crate) const STORE_FAILED: &str = "the store did not answer";
 
 pub const DECISION_UNKEPT: &str = "the trust decision could not be kept";
 
@@ -2639,7 +2639,7 @@ pub const NOT_READABLE: &str = "the credential read is not installed yet";
 
 pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes";
 
-pub const NO_RANDOMNESS: &str = "the OS randomness source failed";
+pub(crate) const NO_RANDOMNESS: &str = "the OS randomness source failed";
 
 fn failed(why: &'static str) -> Stored {
     Stored {
@@ -4343,7 +4343,7 @@ pub const STAGE_NOT_BOUND: &str = "the unit's hook stage is not bound yet";
 
 pub const STAGE_NOT_YOURS: &str = "the unit runs on another instance";
 
-pub const STAGE_ANSWERED_AMISS: &str = "the hook stage answered outside the service's shape";
+pub(crate) const STAGE_ANSWERED_AMISS: &str = "the hook stage answered outside the service's shape";
 
 impl KernelServices {
     fn stage_of(
@@ -4469,7 +4469,7 @@ mod trust_rule_tests;
 mod host_nest_tests;
 
 #[must_use]
-pub fn decided_code(state: KeyState) -> u64 {
+pub(crate) fn decided_code(state: KeyState) -> u64 {
     match state {
         KeyState::Same | KeyState::Approved => svc::TRUST_DECIDED_SERVING,
         KeyState::New => svc::TRUST_DECIDED_PENDING,
@@ -4478,7 +4478,7 @@ pub fn decided_code(state: KeyState) -> u64 {
 }
 
 #[must_use]
-pub fn key_code(state: KeyState) -> u64 {
+pub(crate) fn key_code(state: KeyState) -> u64 {
     match state {
         KeyState::New => svc::KEY_NEW,
         KeyState::Same => svc::KEY_SAME,
@@ -4489,7 +4489,7 @@ pub fn key_code(state: KeyState) -> u64 {
 }
 
 #[must_use]
-pub fn sight_code(sight: Sight) -> u64 {
+pub(crate) fn sight_code(sight: Sight) -> u64 {
     match sight {
         Sight::New => svc::TRUST_NEW,
         Sight::Same => svc::TRUST_SAME,
