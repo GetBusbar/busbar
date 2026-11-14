@@ -342,49 +342,6 @@ impl<'a> StoreJournal<'a> {
         ))
     }
 
-    /// [`Self::select_verified`] for records whose ordinals the runtime journal located: no
-    /// record is re-read, since each one's `R/ordinal == Exact(body)` predicate binds the exact
-    /// frame in the same commit (W1 step 2).
-    pub(crate) async fn select_verified_at(
-        &self,
-        proof: &VerifiedHead,
-        records: &[Record],
-        ordinals: &[u64],
-        selection: Selection,
-    ) -> Result<WriteResult> {
-        if ordinals.len() != records.len() {
-            return Err(Error::Invalid);
-        }
-        self.change_selection_at(proof, records, Some(ordinals), selection, false, &[])
-            .await
-    }
-
-    /// [`Self::delete_verified`] for a runtime-located record; see [`Self::select_verified_at`].
-    pub(crate) async fn delete_verified_at(
-        &self,
-        proof: &VerifiedHead,
-        record: &Record,
-        ordinal: u64,
-        operation_id: [u8; 16],
-        address: Address,
-        expected: ExpectedValue,
-    ) -> Result<WriteResult> {
-        self.change_selection_at(
-            proof,
-            std::slice::from_ref(record),
-            Some(std::slice::from_ref(&ordinal)),
-            Selection {
-                operation_id,
-                address,
-                expected,
-                value: Secret::default(),
-            },
-            true,
-            &[],
-        )
-        .await
-    }
-
     /// Recheck the exact original at an ordinal retained by a completed replay.
     /// This only confirms unchanged bytes; it grants no prefix membership or
     /// selection authority. The caller still holds its complete prefix proof.
@@ -495,9 +452,8 @@ impl<'a> StoreJournal<'a> {
             .await
     }
 
-    /// (Production removes through [`Self::delete_verified_at`]; this replaying form stays for the
-    /// journal tests.)
-    #[cfg(test)]
+    /// (Production removes through `RuntimeJournal::change_live`; this replaying form stays for
+    /// the journal tests.)
     /// Preserve a domain's exact selected-row deletion after audit confirmation;
     /// it has the same original-frame/custody guards and retained exact attempt
     /// as selection. This does not introduce a replacement tombstone schema.
@@ -540,7 +496,10 @@ impl<'a> StoreJournal<'a> {
             .await
     }
 
-    async fn change_selection_at(
+    /// `located` carries runtime-located ordinals (`RuntimeJournal::change_live`); each record must
+    /// be this node's, inside the proof, and decode to its own identity. `None` locates each by
+    /// replay (journal tests only).
+    pub(in crate::persistence::journal) async fn change_selection_at(
         &self,
         proof: &VerifiedHead,
         records: &[Record],
@@ -597,7 +556,7 @@ impl<'a> StoreJournal<'a> {
                 }
             }
         }
-        for (_, record) in records {
+        for record in records {
             digest.update(record.node.to_be_bytes());
             digest.update(record.node_seq.to_be_bytes());
             digest.update((record.body.len() as u64).to_be_bytes());
@@ -633,6 +592,12 @@ impl<'a> StoreJournal<'a> {
                     let ordinal = *ordinals.get(index).ok_or(Error::Invalid)?;
                     if ordinal == 0 || ordinal > proof.head.count {
                         return Err(Error::Invalid);
+                    }
+                    if record.node != self.node
+                        || record.node_seq > proof.head.sequence
+                        || decode_record(self.node, &record.body)?.identity() != record.identity()
+                    {
+                        return Err(Error::Corrupt);
                     }
                     ordinal
                 }
