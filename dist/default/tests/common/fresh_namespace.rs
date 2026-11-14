@@ -282,6 +282,24 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
     }
 }
 
+/// The witness writer's dispatcher, with the same widened watch budgets as the product's
+/// test-harness dispatcher (`root::dispatch::harness_budgets`): a durable SQLite commit in an
+/// unoptimized fixture can outlive the shipped 1 s call budget while sibling fixtures contend.
+fn harness_dispatch() -> busbar_plugin_loader::dispatch::DispatchConfig {
+    const CROSSING: Duration = Duration::from_secs(30);
+    let shipped = busbar_plugin_loader::dispatch::Budgets::default();
+    busbar_plugin_loader::dispatch::DispatchConfig {
+        budgets: busbar_plugin_loader::dispatch::Budgets {
+            call: CROSSING.max(shipped.call),
+            stream: CROSSING.max(shipped.stream),
+            connection: CROSSING.max(shipped.connection),
+            write_behind: CROSSING.max(shipped.write_behind),
+            lifecycle: shipped.lifecycle,
+        },
+        ..busbar_plugin_loader::dispatch::DispatchConfig::default()
+    }
+}
+
 /// Initialize only the namespace this fixture just created, then prove the actual durable head.
 /// No provider identity, grants or baseline bytes are fabricated by the fixture.
 pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Value, String> {
