@@ -886,8 +886,9 @@ pub(crate) struct UnitState {
     open_hooks_ran: bool,
     /// The body a request-stage rewrite left, kept for every attempt; `None` = the caller's own.
     body: Option<bytes::Bytes>,
-    /// The unit's hooks and the plane's view of its effective request, once the request stage ran.
-    hooked: Option<(UnitHooks, hooks::Projection)>,
+    /// The unit's hooks and the shape of its effective request (no prompt text), once the request
+    /// stage ran.
+    hooked: Option<(UnitHooks, hooks::ShapeFacts)>,
     /// The `response` stage tap has fired.
     responded: bool,
     /// The pool the unit's hooks were bound over (the walk's, else the plane's).

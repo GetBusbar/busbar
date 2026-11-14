@@ -192,6 +192,8 @@ pub const ROUTE_POLICY_REJECTIONS_TOTAL: &str = "busbar_route_policy_rejections_
 
 pub const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_total";
 
+pub const HOOK_PROJECT_OVER_CAP_TOTAL: &str = "busbar_hook_project_over_cap_total";
+
 pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total";
 
 pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_dropped_total";
