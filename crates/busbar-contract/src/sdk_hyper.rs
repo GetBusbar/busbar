@@ -394,6 +394,19 @@ macro_rules! hyper_io {
                     !self.pipe.lock().expect("pipe").tx.is_empty()
                 }
 
+                /// Test support (`cfg(test)` in the expanding crate): run `f` over the pipe's
+                /// read half (`rx`) and write half (`tx`), so a test can see their capacity and
+                /// the blocks they hold. It changes nothing itself.
+                #[cfg(test)]
+                pub fn pipe_for_test<R>(
+                    &self,
+                    f: impl FnOnce(&mut VecDeque<u8>, &mut Vec<u8>) -> R,
+                ) -> R {
+                    let mut p = self.pipe.lock().expect("pipe");
+                    let p = &mut *p;
+                    f(&mut p.rx, &mut p.tx)
+                }
+
                 /// Set the host's time (monotonic nanoseconds) and wake every sleep it passed.
                 pub fn set_time(&self, now_ns: u64) {
                     self.timer.set(now_ns);
