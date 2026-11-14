@@ -81,17 +81,7 @@ ENV_FILE="${ORACLE_STORE_ENV_FILE:-oracle-store-services.env}"
 # exported back as ORACLE_{PG,MY,VK}_PORT (when sourced) and is what the URLs below carry.
 CELLS_JSON="${ORACLE_CELLS_JSON:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/cells.json}"
 _pinned_ports() {
-  python3 - "$CELLS_JSON" <<'PY' 2>/dev/null
-import json, sys
-try:
-    cells = json.load(open(sys.argv[1]))["cells"]
-except (OSError, ValueError, KeyError):
-    sys.exit(0)
-for c in cells:
-    p = ((c.get("capture") or {}).get("mock") or {}).get("port")
-    if isinstance(p, int):
-        print(p)
-PY
+  jq -r '.cells[] | (.capture.mock.port? // empty) | select(type == "number")' "$CELLS_JSON" 2>/dev/null
 }
 PINNED_PORTS=" $(_pinned_ports | tr '\n' ' ') "
 _is_pinned() { case "$PINNED_PORTS" in *" $1 "*) return 0 ;; esac; return 1; }

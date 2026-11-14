@@ -92,8 +92,8 @@ snap "$before_dir"
 #    issued just after a wall-clock second boundary so the breaker's whole-second `floor(trip)` is
 #    the second we are about to measure both later waits against (see the header's arithmetic).
 oracle_write_control "$CONTROL" "$MOCK_PORT" "down" || fail "mock control write (down) never landed"
-python3 -c 'import time; t = time.time(); time.sleep((-t) % 1.0 + 0.02)'
-trip_at="$(python3 -c 'import time; print(repr(time.time()))')"
+"$ORACLE_BIN" util sleep-to-next-second
+trip_at="$("$ORACLE_BIN" util now)"
 curl -sS -m 20 -o "$RAW/trip.body" -w '%{http_code}' -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" -H 'Content-Type: application/json' -d "$BODY" >"$RAW/trip.status" 2>"$RAW/trip.err" || true
 
@@ -109,7 +109,7 @@ cooling="$(curl -sS -m 20 -o "$RAW/cooling.body" -w '%{http_code}' -X POST "http
 
 # 3. wait past the LONGEST cooldown the jitter can draw (`floor(trip) + 3`) and serve again: the
 #    breaker's own half-open probe on the next attempt succeeds -> 200.
-python3 -c 'import sys, time; time.sleep(max(0.0, float(sys.argv[1]) + 4.5 - time.time()))' "$trip_at"
+"$ORACLE_BIN" util sleep-until "$trip_at" 4.5
 status="$(curl -sS -m 20 -N -o "$RAW/body" -D "$RAW/headers" -w '%{http_code}' -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" -H 'Content-Type: application/json' -d "$BODY" 2>"$RAW/serve.err")"
 

@@ -29,13 +29,9 @@ for p in "$LP"; do
   assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }
 done
 
-python3 - "${repo}/docker/config.yaml" "$W/config.yaml" "$LP" <<'PY'
-import sys, re
-src, dst, port = sys.argv[1], sys.argv[2], sys.argv[3]
-s = open(src).read()
-s = re.sub(r'^listen: .*$', f'listen: "127.0.0.1:{port}"', s, flags=re.M)
-open(dst, "w").write(s)
-PY
+ORACLE_BIN="${BUSBAR_ORACLE_BIN:?the Rust oracle engine must be published as BUSBAR_ORACLE_BIN}"
+"$ORACLE_BIN" util rewrite-listen "${repo}/docker/config.yaml" "$W/config.yaml" "$LP" || {
+  echo '{"status":-1,"headers":{},"body":"","effects":{"error":"could not point the docker config at the cell listen port"}}' >"$RAW/captured.json"; exit 0; }
 cat >"$W/providers.yaml" <<YAML
 anthropic:
   protocol: anthropic
