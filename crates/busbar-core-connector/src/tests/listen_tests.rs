@@ -806,3 +806,23 @@ fn a_dropped_listener_stops_accepting_at_once() {
         }
     });
 }
+
+/// The whole accept-backoff sequence, at the resolution tokio's timer sleeps (whole milliseconds,
+/// rounded up): 5 ms doubling to the 250 ms cap, no jitter, no retry limit.
+#[test]
+fn the_accept_backoff_sequence_is_5ms_doubling_to_a_250ms_cap() {
+    worker().block_on(async {
+        let mut l = plain(
+            Arc::new(TestDoor::identity("bytes")),
+            AcceptLimits::default(),
+        );
+        let emfile = std::io::Error::from_raw_os_error(libc::EMFILE);
+        let tick_ms = |d: Duration| d.as_nanos().div_ceil(1_000_000);
+        let delays: Vec<_> = (0..64)
+            .map(|_| tick_ms(l.next_delay(&emfile).unwrap()))
+            .collect();
+        let mut want = vec![5, 10, 20, 40, 80, 160];
+        want.resize(64, 250);
+        assert_eq!(delays, want);
+    });
+}
