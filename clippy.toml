@@ -81,6 +81,10 @@ disallowed-methods = [
   { path = "getrandom::getrandom", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
   { path = "getrandom::u32", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
   { path = "getrandom::u64", reason = "a getrandom syscall per call; draw from a per-thread userspace CSPRNG seeded once", allow-invalid = true },
+  # UPG-A26c: a stream-terminal frame must not mint an identity the stream already stated. The paths
+  # resolve only inside busbar-plane-llm (allow-invalid: inert in core and every other crate).
+  { path = "busbar_plane_llm::codec::anthropic::ids::synth_request_id", allow-invalid = true, reason = "UPG-A26c: a stream's error frame names the request id its head stated; mint only through AnthropicWriter::carried_request_id or a stream-less envelope (anthropic/auth.rs)" },
+  { path = "busbar_plane_llm::codec::openai_responses::synthesize_response_id", allow-invalid = true, reason = "UPG-A26c: a stream's terminal frame continues the response id it opened with; mint only at MessageStart, in carried_or_mint_response_id, or in the whole-body writer" },
 ]
 disallowed-types = [
   # SipHash by default, in every spelling (new, default, from, collect, with_capacity): naming the std
