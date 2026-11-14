@@ -270,6 +270,17 @@ pub struct Connection {
     /// SSLRequest, an LDAP StartTLS request, a MySQL SSLRequest); `None` = no window (secured from
     /// the first byte, a framed dial, or a destination plaintext is admitted to).
     clear_window: Option<u8>,
+    /// STICKY: [`Connection::poll_prepared`] answered `Ready(Ok)`, or [`Connection::latch_prepared`]
+    /// found the same condition at home ([`Connection::prepared_now`]). What a line answers a
+    /// prepared exchange from while another holder has the connection out.
+    prepared_landed: bool,
+    /// STICKY: the connection failed while its carrier could still deliver bytes it already held
+    /// (queued and unflushed, owed by TLS, or a parked emit's): `close()` may still send them, so no
+    /// exchange queued on it is ever redialled ([`Connection::fail`]).
+    wire_kept: bool,
+    /// The carrier can no longer take or give bytes: a write or flush failed, it took nothing, or
+    /// the far end ended the stream.
+    carrier_lost: bool,
 }
 
 /// The largest cleartext write a carrier that must upgrade may make before it does
@@ -1221,6 +1232,9 @@ impl Connection {
             early: EarlyWrites::default(),
             flushed: 0,
             read_end: false,
+            prepared_landed: false,
+            wire_kept: false,
+            carrier_lost: false,
             open_deadline: framer::now().checked_add(dial.open_timeout),
             framer_deadline: None,
             sleep: None,
@@ -1335,6 +1349,9 @@ impl Connection {
             early: EarlyWrites::default(),
             flushed: 0,
             read_end: false,
+            prepared_landed: false,
+            wire_kept: false,
+            carrier_lost: false,
             open_deadline: framer::now().checked_add(accept.handshake_timeout),
             framer_deadline: None,
             sleep: None,
@@ -1611,7 +1628,13 @@ impl Connection {
                     return Err(f);
                 }
             };
-            return self.absorb(y);
+            // Once the framer took the emit, its wire (other streams' frames too) is the
+            // session's: losing it fails the connection, so it is never lent again.
+            if let Err(f) = self.absorb(y) {
+                self.fail(f.clone());
+                return Err(f);
+            }
+            return Ok(());
         }
         if self.door.is_some() {
             return Err(Failure::Closed);
@@ -1777,6 +1800,13 @@ impl Connection {
     /// them ([`Connection::wire_kept`]): `close()` may still send them, so no exchange on it is ever
     /// sent again elsewhere.
     fn fail(&mut self, f: Failure) {
+        if !self.carrier_lost
+            && (self.queued > self.flushed
+                || self.tls.as_ref().is_some_and(|t| t.wants_write())
+                || self.parked())
+        {
+            self.wire_kept = true;
+        }
         let emitted = self
             .emit_fault
             .take()
@@ -1799,7 +1829,11 @@ impl Connection {
             Failure::Pending | Failure::Timeout | Failure::Closed => String::new(),
         };
         if !matches!(self.phase, Phase::Failed(_)) {
-            self.cause = Some(ConnCause { stage, text });
+            self.cause = Some(ConnCause {
+                stage,
+                text,
+                outbound: outbound && stage == CAUSE_FRAMER,
+            });
             self.failed_at_proxy = self.tunnel.is_some();
         }
         self.phase = Phase::Failed(f);
