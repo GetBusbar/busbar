@@ -79,6 +79,7 @@ use busbar_contract::abi::host::service::DEST_METADATA;
 const IMDS: &str = "169.254.169.254";
 
 fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
+    crate::root::linked::register_stores(&crate::LINKED);
     let mut defs = std::collections::HashMap::new();
     let mut yaml = String::from("store: {module: memory}\nmodels: {}\nproviders:");
     yaml.push_str(if providers.is_empty() { " {}\n" } else { "\n" });

@@ -810,8 +810,11 @@ pub struct PlaneFeesCfg {
 }
 
 /// Deployment configuration - operator-owned config.yaml structure.
+///
+/// The derived reader is the inherent `DeployCfg::deserialize` (the document body); every reader
+/// through the `Deserialize` trait reads it under the admitted source declarations (`prepass`).
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct DeployCfg {
     /// Set by the document reader when the operator supplies a listen address.
     #[serde(skip)]

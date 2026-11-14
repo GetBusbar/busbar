@@ -2430,6 +2430,7 @@ fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
 }
 
 fn numeric_projection_config() -> busbar_kernel::config::RootCfg {
+    crate::root::linked::register_stores(&crate::LINKED);
     let def: busbar_kernel::config::ProviderDef =
         serde_yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
             .expect("provider");
@@ -4102,6 +4103,7 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
 
 #[test]
 fn a_models_protocol_override_is_handed_to_the_plane() {
+    crate::root::linked::register_stores(&crate::LINKED);
     let def: busbar_kernel::config::ProviderDef =
         serde_yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n").expect("a def");
     let defs = std::collections::HashMap::from([("p".to_string(), def)]);

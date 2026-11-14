@@ -600,7 +600,19 @@ macro_rules! provider_entry {
                         Ok(entry)
                     }
                 }
-                de.deserialize_map(EntryVisitor)
+                struct Written($ty);
+                impl<'de> Deserialize<'de> for Written {
+                    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+                        de.deserialize_map(EntryVisitor).map(Written)
+                    }
+                }
+                // An entry read on its own reads the admitted source shorthand; read inside a
+                // document, the document's own source context governs.
+                busbar_contract::secret_ref::context::deserialize::<Written, _>(
+                    de,
+                    &super::secret::sugars(),
+                )
+                .map(|written| written.0)
             }
         }
     };
