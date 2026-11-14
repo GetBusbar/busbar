@@ -269,24 +269,14 @@ fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field
     };
 
     let err = read(NO_CATALOG).expect_err("providers required");
-    assert!(
-        err.to_string().starts_with("missing field `providers`"),
-        "{err}"
-    );
+    assert_eq!(err.to_string(), "missing field `providers`");
     let err = read("listen: \"127.0.0.1:0\"\nproviders: {}\n").expect_err("models required");
-    assert!(
-        err.to_string().starts_with("missing field `models`"),
-        "{err}"
-    );
+    assert_eq!(err.to_string(), "missing field `models`");
 
     let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(NO_CATALOG).unwrap();
-    let text = busbar_contract::yaml::to_string(&value).unwrap();
-    let err = busbar_contract::yaml::with_deserializer(&text, |d| read_with(d, table, required))
+    let err = read_with(busbar_contract::yaml::deserializer(value), table, required)
         .expect_err("providers required");
-    assert!(
-        err.to_string().starts_with("missing field `providers`"),
-        "{err}"
-    );
+    assert_eq!(err.to_string(), "missing field `providers`");
 }
 
 #[test]
@@ -298,10 +288,7 @@ fn a_plane_requiring_one_section_leaves_the_other_omissible() {
     };
 
     let err = read(NO_CATALOG).expect_err("providers required");
-    assert!(
-        err.to_string().starts_with("missing field `providers`"),
-        "{err}"
-    );
+    assert_eq!(err.to_string(), "missing field `providers`");
     let deploy = read("providers: {}\n").expect("models is required by no registered plane");
     assert!(deploy.models.is_empty() && deploy.providers.is_empty());
 }
@@ -318,8 +305,7 @@ fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
     assert!(deploy.providers.is_empty(), "{:?}", deploy.providers.keys());
     assert!(deploy.models.is_empty(), "{:?}", deploy.models.keys());
     let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(NO_CATALOG).unwrap();
-    let text = busbar_contract::yaml::to_string(&value).unwrap();
-    busbar_contract::yaml::with_deserializer(&text, |d| read_with(d, table, required))
+    read_with(busbar_contract::yaml::deserializer(value), table, required)
         .expect("the in-memory path agrees");
 
     let carried = read("models:\n  m1: { provider: p1 }\nlisten: \"127.0.0.1:0\"\n")
@@ -349,10 +335,7 @@ fn any_section_a_registered_plane_requires_is_refused_when_absent() {
 
     let err =
         read("listen: \"127.0.0.1:0\"\n").expect_err("pools is required by a registered plane");
-    assert!(
-        err.to_string().starts_with("missing field `pools`"),
-        "{err}"
-    );
+    assert_eq!(err.to_string(), "missing field `pools`");
     read("pools: {}\n").expect("carried, so accepted");
 }
 

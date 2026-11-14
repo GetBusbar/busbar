@@ -346,8 +346,7 @@ pub fn deploy_with_sources<'de, D: Deserializer<'de>>(
 pub fn deploy_from_yaml_value(
     value: busbar_contract::yaml::Value,
 ) -> Result<DeployCfg, busbar_contract::yaml::Error> {
-    let text = busbar_contract::yaml::to_string(&value)?;
-    busbar_contract::yaml::with_deserializer(&text, |d| deploy_from_deserializer(d))
+    deploy_from_deserializer(busbar_contract::yaml::deserializer(value))
 }
 
 #[cfg(test)]

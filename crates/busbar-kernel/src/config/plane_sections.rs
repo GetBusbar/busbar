@@ -110,10 +110,14 @@ fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
     }
 }
 
-fn plane_section_from_value(
+fn deserialize_plane_section<'de, D>(
     config_section: &str,
-    value: Value,
-) -> Result<Box<dyn PlaneCfg>, String> {
+    deserializer: D,
+) -> Result<Box<dyn PlaneCfg>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
     let decl = crate::plane_driver::registry::plane_decl_for_config_section(config_section);
     match decl.and_then(|d| d.parse_section.map(|parse| (d, parse))) {
         Some((d, parse)) => {
@@ -123,8 +127,9 @@ fn plane_section_from_value(
                 d.trust_keys,
                 d.caller_credential_refusal,
                 &config_sections(),
-            )?;
-            parse(d, &value)
+            )
+            .map_err(serde::de::Error::custom)?;
+            parse(d, &value).map_err(serde::de::Error::custom)
         }
         None => {
             let raw = if value.is_null() { None } else { Some(value) };
@@ -192,8 +197,7 @@ impl DeclaredSections {
         section: &'static str,
         value: Value,
     ) -> Result<Self, busbar_contract::yaml::Error> {
-        let cfg = plane_section_from_value(section, value)
-            .map_err(<busbar_contract::yaml::Error as serde::de::Error>::custom)?;
+        let cfg = deserialize_plane_section(section, busbar_contract::yaml::deserializer(value))?;
         Ok(DeclaredSections([(section, cfg)].into_iter().collect()))
     }
 }

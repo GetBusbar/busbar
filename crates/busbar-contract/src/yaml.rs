@@ -127,7 +127,9 @@ impl From<serde_saphyr::Error> for Error {
             let suffix = format!(" at line {}, column {}", at.line(), at.column());
             if let Some(bare) = message.strip_suffix(&suffix) {
                 message = bare.to_owned();
-                placed_suffix = true;
+                // serde_yaml printed no position on a struct's missing field (the error is raised
+                // after the mapping ends); every other placed error kept its position.
+                placed_suffix = !message.starts_with("missing field ");
             }
         }
         Self {
@@ -323,12 +325,582 @@ pub fn to_writer<W: std::io::Write, T: Serialize + ?Sized>(
     Ok(serde_saphyr::to_io_writer(&mut writer, &value)?)
 }
 
-/// Read a [`Value`] tree into `T` exactly as if `T` had been read from the text: the tree is
-/// written out and read back through the same pinned parser, so integer-into-float fields, `null`,
-/// human-readable forms and every pin behave as they do for a direct read. Config-time only.
+/// Read a [`Value`] tree into `T`, in memory, as serde_yaml's `from_value` did: through
+/// [`ValueDeserializer`], with its semantics and its error texts (which carry no position).
 pub fn from_value<T: DeserializeOwned>(value: Value) -> Result<T, Error> {
-    let text = to_string(&value)?;
-    from_str(&text).map_err(|e| Error::unplaced(e.message))
+    T::deserialize(deserializer(value))
+}
+
+/// A [`Value`] tree as serde input, read in memory: what serde_yaml offered by making its `Value`
+/// itself a `Deserializer`. Pass it wherever a generic `D: Deserializer` reader or a
+/// `DeserializeSeed` wants the tree, instead of writing the tree out and parsing it again.
+///
+/// The rules are serde_yaml 0.9's `Value` deserializer's, rule by rule, on ciborium's variants:
+/// - any: an integer is visited as `u64` when non-negative and `i64` otherwise (wider ones as
+///   `u128`/`i128`), a float as `f64`, null as unit, a string, a bool, a sequence, a mapping
+///   (keys read as values in turn), bytes as bytes;
+/// - every number type takes any number, so an integer reads into an `f32`/`f64` field;
+/// - null reads as `None`, as unit, as an empty sequence and as an empty mapping;
+/// - an enum is a string (a unit variant) or, as written YAML spells it, a single-key mapping
+///   (the variant and its content);
+/// - a tag (`Value::Tag`) is transparent: its value is read in its place;
+/// - human-readable, as YAML is; type errors are serde's `invalid type: ..., expected ...` texts.
+#[derive(Debug, Clone)]
+pub struct ValueDeserializer {
+    value: Value,
+}
+
+/// A [`ValueDeserializer`] over `value`.
+#[must_use]
+pub fn deserializer(value: Value) -> ValueDeserializer {
+    ValueDeserializer { value }
+}
+
+impl<'de> serde::de::IntoDeserializer<'de, Error> for ValueDeserializer {
+    type Deserializer = Self;
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+
+impl<'de> serde::de::IntoDeserializer<'de, Error> for Value {
+    type Deserializer = ValueDeserializer;
+    fn into_deserializer(self) -> ValueDeserializer {
+        deserializer(self)
+    }
+}
+
+/// The value under any tags: ciborium's `Tag` wraps a value the reader sees through.
+fn untag(mut value: Value) -> Value {
+    loop {
+        match value {
+            Value::Tag(_, inner) => value = *inner,
+            other => return other,
+        }
+    }
+}
+
+/// How serde names `value` in an `invalid type` error, as serde_yaml named its `Value`'s variants.
+fn unexpected(value: &Value) -> serde::de::Unexpected<'_> {
+    use serde::de::Unexpected;
+    match value {
+        Value::Null => Unexpected::Unit,
+        Value::Bool(b) => Unexpected::Bool(*b),
+        Value::Integer(i) => {
+            let i = i128::from(*i);
+            match (u64::try_from(i), i64::try_from(i)) {
+                (Ok(u), _) => Unexpected::Unsigned(u),
+                (_, Ok(s)) => Unexpected::Signed(s),
+                _ => Unexpected::Other("integer"),
+            }
+        }
+        Value::Float(f) => Unexpected::Float(*f),
+        Value::Text(s) => Unexpected::Str(s),
+        Value::Bytes(b) => Unexpected::Bytes(b),
+        Value::Array(_) => Unexpected::Seq,
+        Value::Map(_) => Unexpected::Map,
+        Value::Tag(_, inner) => unexpected(inner),
+        _ => Unexpected::Other("YAML value"),
+    }
+}
+
+#[cold]
+fn invalid_type(value: &Value, expected: &dyn serde::de::Expected) -> Error {
+    serde::de::Error::invalid_type(unexpected(value), expected)
+}
+
+fn visit_integer<'de, V: serde::de::Visitor<'de>>(
+    integer: ciborium::value::Integer,
+    visitor: V,
+) -> Result<V::Value, Error> {
+    let i = i128::from(integer);
+    if let Ok(u) = u64::try_from(i) {
+        visitor.visit_u64(u)
+    } else if let Ok(s) = i64::try_from(i) {
+        visitor.visit_i64(s)
+    } else if let Ok(u) = u128::try_from(i) {
+        visitor.visit_u128(u)
+    } else {
+        visitor.visit_i128(i)
+    }
+}
+
+fn visit_sequence<'de, V: serde::de::Visitor<'de>>(
+    sequence: Vec<Value>,
+    visitor: V,
+) -> Result<V::Value, Error> {
+    let len = sequence.len();
+    let mut access = ValueSeq {
+        iter: sequence.into_iter(),
+    };
+    let seq = visitor.visit_seq(&mut access)?;
+    if access.iter.len() == 0 {
+        Ok(seq)
+    } else {
+        Err(serde::de::Error::invalid_length(
+            len,
+            &"fewer elements in sequence",
+        ))
+    }
+}
+
+fn visit_mapping<'de, V: serde::de::Visitor<'de>>(
+    mapping: Mapping,
+    visitor: V,
+) -> Result<V::Value, Error> {
+    let len = mapping.len();
+    let mut access = ValueMap {
+        iter: mapping.into_iter(),
+        value: None,
+    };
+    let map = visitor.visit_map(&mut access)?;
+    if access.iter.len() == 0 {
+        Ok(map)
+    } else {
+        Err(serde::de::Error::invalid_length(
+            len,
+            &"fewer elements in map",
+        ))
+    }
+}
+
+impl ValueDeserializer {
+    fn deserialize_number<'de, V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        match untag(self.value) {
+            Value::Integer(i) => visit_integer(i, visitor),
+            Value::Float(f) => visitor.visit_f64(f),
+            other => Err(invalid_type(&other, &visitor)),
+        }
+    }
+}
+
+impl<'de> serde::Deserializer<'de> for ValueDeserializer {
+    type Error = Error;
+
+    fn deserialize_any<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        match untag(self.value) {
+            Value::Null => visitor.visit_unit(),
+            Value::Bool(b) => visitor.visit_bool(b),
+            Value::Integer(i) => visit_integer(i, visitor),
+            Value::Float(f) => visitor.visit_f64(f),
+            Value::Text(s) => visitor.visit_string(s),
+            Value::Bytes(b) => visitor.visit_byte_buf(b),
+            Value::Array(s) => visit_sequence(s, visitor),
+            Value::Map(m) => visit_mapping(m, visitor),
+            other => Err(invalid_type(&other, &visitor)),
+        }
+    }
+
+    fn deserialize_bool<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        match untag(self.value) {
+            Value::Bool(b) => visitor.visit_bool(b),
+            other => Err(invalid_type(&other, &visitor)),
+        }
+    }
+
+    fn deserialize_i8<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_i16<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_i32<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_i64<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_i128<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_u8<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_u16<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_u32<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_u64<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_u128<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_f32<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_f64<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_number(visitor)
+    }
+
+    fn deserialize_char<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_string(visitor)
+    }
+
+    fn deserialize_str<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_string(visitor)
+    }
+
+    fn deserialize_string<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        match untag(self.value) {
+            Value::Text(s) => visitor.visit_string(s),
+            other => Err(invalid_type(&other, &visitor)),
+        }
+    }
+
+    fn deserialize_bytes<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_byte_buf(visitor)
+    }
+
+    fn deserialize_byte_buf<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        match untag(self.value) {
+            Value::Text(s) => visitor.visit_string(s),
+            Value::Bytes(b) => visitor.visit_byte_buf(b),
+            Value::Array(s) => visit_sequence(s, visitor),
+            other => Err(invalid_type(&other, &visitor)),
+        }
+    }
+
+    fn deserialize_option<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        match untag(self.value) {
+            Value::Null => visitor.visit_none(),
+            other => visitor.visit_some(deserializer(other)),
+        }
+    }
+
+    fn deserialize_unit<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        match untag(self.value) {
+            Value::Null => visitor.visit_unit(),
+            other => Err(invalid_type(&other, &visitor)),
+        }
+    }
+
+    fn deserialize_unit_struct<V: serde::de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        self.deserialize_unit(visitor)
+    }
+
+    fn deserialize_newtype_struct<V: serde::de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_seq<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        match untag(self.value) {
+            Value::Array(s) => visit_sequence(s, visitor),
+            Value::Null => visit_sequence(Vec::new(), visitor),
+            other => Err(invalid_type(&other, &visitor)),
+        }
+    }
+
+    fn deserialize_tuple<V: serde::de::Visitor<'de>>(
+        self,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_tuple_struct<V: serde::de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_map<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        match untag(self.value) {
+            Value::Map(m) => visit_mapping(m, visitor),
+            Value::Null => visit_mapping(Mapping::new(), visitor),
+            other => Err(invalid_type(&other, &visitor)),
+        }
+    }
+
+    fn deserialize_struct<V: serde::de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        self.deserialize_map(visitor)
+    }
+
+    fn deserialize_enum<V: serde::de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        let (variant, content) = match untag(self.value) {
+            variant @ Value::Text(_) => (variant, None),
+            Value::Map(mut m) if m.len() == 1 => {
+                let (variant, content) = m.swap_remove(0);
+                (variant, Some(content))
+            }
+            other => return Err(invalid_type(&other, &"a Value::Tagged enum")),
+        };
+        visitor.visit_enum(ValueEnum { variant, content })
+    }
+
+    fn deserialize_identifier<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        self.deserialize_string(visitor)
+    }
+
+    fn deserialize_ignored_any<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        visitor.visit_unit()
+    }
+}
+
+/// A sequence's elements, each read as a [`ValueDeserializer`].
+struct ValueSeq {
+    iter: std::vec::IntoIter<Value>,
+}
+
+impl<'de> serde::de::SeqAccess<'de> for ValueSeq {
+    type Error = Error;
+
+    fn next_element_seed<T: serde::de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>, Error> {
+        match self.iter.next() {
+            Some(value) => seed.deserialize(deserializer(value)).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        match self.iter.size_hint() {
+            (lower, Some(upper)) if lower == upper => Some(upper),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> serde::Deserializer<'de> for ValueSeq {
+    type Error = Error;
+
+    /// serde_yaml's tuple-variant content: an empty sequence reads as unit.
+    fn deserialize_any<V: serde::de::Visitor<'de>>(
+        mut self,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        let len = self.iter.len();
+        if len == 0 {
+            return visitor.visit_unit();
+        }
+        let ret = visitor.visit_seq(&mut self)?;
+        if self.iter.len() == 0 {
+            Ok(ret)
+        } else {
+            Err(serde::de::Error::invalid_length(
+                len,
+                &"fewer elements in sequence",
+            ))
+        }
+    }
+
+    fn deserialize_ignored_any<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        visitor.visit_unit()
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes
+        byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct
+        map struct enum identifier
+    }
+}
+
+/// A mapping's pairs, keys and values each read as a [`ValueDeserializer`].
+struct ValueMap {
+    iter: std::vec::IntoIter<(Value, Value)>,
+    value: Option<Value>,
+}
+
+impl<'de> serde::de::MapAccess<'de> for ValueMap {
+    type Error = Error;
+
+    fn next_key_seed<K: serde::de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, Error> {
+        match self.iter.next() {
+            Some((key, value)) => {
+                self.value = Some(value);
+                seed.deserialize(deserializer(key)).map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn next_value_seed<T: serde::de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<T::Value, Error> {
+        match self.value.take() {
+            Some(value) => seed.deserialize(deserializer(value)),
+            None => Err(serde::de::Error::custom("value is missing")),
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        match self.iter.size_hint() {
+            (lower, Some(upper)) if lower == upper => Some(upper),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> serde::Deserializer<'de> for ValueMap {
+    type Error = Error;
+
+    /// serde_yaml's struct-variant content.
+    fn deserialize_any<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        visitor.visit_map(self)
+    }
+
+    fn deserialize_ignored_any<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        visitor.visit_unit()
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes
+        byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct
+        map struct enum identifier
+    }
+}
+
+/// An enum read from a [`Value`]: the variant name, and its content when it has one.
+struct ValueEnum {
+    variant: Value,
+    content: Option<Value>,
+}
+
+impl<'de> serde::de::EnumAccess<'de> for ValueEnum {
+    type Error = Error;
+    type Variant = ValueVariant;
+
+    fn variant_seed<V: serde::de::DeserializeSeed<'de>>(
+        self,
+        seed: V,
+    ) -> Result<(V::Value, ValueVariant), Error> {
+        let variant = seed.deserialize(deserializer(self.variant))?;
+        Ok((
+            variant,
+            ValueVariant {
+                content: self.content,
+            },
+        ))
+    }
+}
+
+/// An enum variant's content, read as serde_yaml read a `Value::Tagged`'s value.
+struct ValueVariant {
+    content: Option<Value>,
+}
+
+impl<'de> serde::de::VariantAccess<'de> for ValueVariant {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Error> {
+        match self.content {
+            Some(content) => serde::Deserialize::deserialize(deserializer(content)),
+            None => Ok(()),
+        }
+    }
+
+    fn newtype_variant_seed<T: serde::de::DeserializeSeed<'de>>(
+        self,
+        seed: T,
+    ) -> Result<T::Value, Error> {
+        match self.content {
+            Some(content) => seed.deserialize(deserializer(content)),
+            None => Err(serde::de::Error::invalid_type(
+                serde::de::Unexpected::UnitVariant,
+                &"newtype variant",
+            )),
+        }
+    }
+
+    fn tuple_variant<V: serde::de::Visitor<'de>>(
+        self,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        match self.content.map(untag) {
+            Some(Value::Array(s)) => serde::Deserializer::deserialize_any(
+                ValueSeq {
+                    iter: s.into_iter(),
+                },
+                visitor,
+            ),
+            Some(other) => Err(invalid_type(&other, &"tuple variant")),
+            None => Err(serde::de::Error::invalid_type(
+                serde::de::Unexpected::UnitVariant,
+                &"tuple variant",
+            )),
+        }
+    }
+
+    fn struct_variant<V: serde::de::Visitor<'de>>(
+        self,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        match self.content.map(untag) {
+            Some(Value::Map(m)) => serde::Deserializer::deserialize_any(
+                ValueMap {
+                    iter: m.into_iter(),
+                    value: None,
+                },
+                visitor,
+            ),
+            Some(other) => Err(invalid_type(&other, &"struct variant")),
+            None => Err(serde::de::Error::invalid_type(
+                serde::de::Unexpected::UnitVariant,
+                &"struct variant",
+            )),
+        }
+    }
 }
 
 /// Write `value` into a [`Value`] tree, as reading back its YAML text would give it.

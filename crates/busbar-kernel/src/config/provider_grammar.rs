@@ -267,7 +267,10 @@ mod tests {
         let error = read(&key, "[{globs: [], enabled: perhaps}]")
             .unwrap_err()
             .to_string();
-        assert!(error.contains("boolean"), "{error}");
+        assert_eq!(
+            error,
+            "[0].enabled: invalid boolean (strict mode expects true/false) at line 1 column 23"
+        );
         let error = read(&key, "[{globs: [], spelling: typo}]")
             .unwrap_err()
             .to_string();
@@ -283,7 +286,7 @@ mod tests {
         assert_eq!(read(&key, "null").unwrap(), Value::Null);
         key.nullable = Some(false);
         let error = read(&key, "null").unwrap_err().to_string();
-        assert!(error.contains("sequence"), "{error}");
+        assert_eq!(error, "expected sequence start at line 1 column 1");
         assert_eq!(read(&key, "[]").unwrap(), json!([]));
     }
 
@@ -295,13 +298,17 @@ mod tests {
             json!([{"globs":[]}])
         );
         let error = read(&key, "[{globs: null}]").unwrap_err().to_string();
-        assert!(error.contains("sequence"), "{error}");
+        assert_eq!(
+            error,
+            "[0].globs: expected sequence start at line 1 column 10"
+        );
         let error = read(&key, "[{globs: [], enabled: true, enabled: false}]")
             .unwrap_err()
             .to_string();
-        assert!(
-            error.contains("duplicate") && error.contains("enabled"),
-            "{error}"
+        assert_eq!(
+            error,
+            "[0].?: duplicate mapping key: enabled, set DuplicateKeyPolicy in Options if \
+             acceptable at line 1 column 29"
         );
     }
     #[test]

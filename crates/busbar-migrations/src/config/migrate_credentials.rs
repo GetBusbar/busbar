@@ -34,10 +34,10 @@ pub(super) fn migrate(
     let site = path.join(".");
     let result = (|| {
         let sources = host.source_declarations()?;
-        let authored = yaml::to_string(&*slot).map_err(|_| "invalid reference")?;
-        let reference = yaml::with_deserializer(&authored, |d| {
-            busbar_contract::secret_ref::context::deserialize::<SecretRef, _>(d, &sources)
-        })
+        let reference = busbar_contract::secret_ref::context::deserialize::<SecretRef, _>(
+            yaml::deserializer(slot.clone()),
+            &sources,
+        )
         .map_err(|_| "invalid reference")?;
         let Some(reference) = host.migrate_credential(module, &reference, host.migrating_from())?
         else {

@@ -247,13 +247,11 @@ fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
     crate::root::migration_table::install();
     let e = yaml::from_str::<busbar_kernel::config::PoolsCfg>("upstream_credentials: borrowed\n")
         .expect_err("an unknown all-pools credential mode must be rejected");
-    let shown = e.to_string();
-    assert!(
-        shown.starts_with(
-            "the reserved `pools.upstream_credentials:` all-pools default must be `own` or \
-             `passthrough`: "
-        ) && shown.contains("unknown variant `borrowed`"),
-        "{shown}"
+    assert_eq!(
+        e.to_string(),
+        "the reserved `pools.upstream_credentials:` all-pools default must be `own` or \
+         `passthrough`: unknown variant `borrowed`, expected one of `own`, `passthrough`, \
+         `connection`"
     );
 }
 

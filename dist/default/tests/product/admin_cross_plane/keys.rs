@@ -3727,11 +3727,8 @@ async fn named_map_app_opts(
 
     let mut live = disk;
     *live.at_mut("auth") = yaml::from_str("chain: []\nadmin_auth: [admin-tokens]\n").unwrap();
-    let live = yaml::to_string(&live).expect("the admin deployment renders");
-    let deploy = yaml::with_deserializer(&live, |d| {
-        busbar_kernel::config::deploy_from_deserializer(d)
-    })
-    .expect("the admin deployment parses");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(yaml::deserializer(live))
+        .expect("the admin deployment parses");
     let defs = busbar_kernel::config::providers::catalog_from_str(
         &std::fs::read_to_string(&providers_path).unwrap(),
     )

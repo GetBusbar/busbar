@@ -2682,10 +2682,13 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
     ] {
         let error = refusal(auth);
         let message = error.to_string();
-        assert!(message.contains("unknown field `bogus_key`"), "{message}");
-        assert!(
-            message.contains("policy"),
-            "current policy field must be advertised: {message}"
+        // The current schema, `policy` included, is advertised in the YAML reader's spelling.
+        assert_eq!(
+            message,
+            format!(
+                "auth.bogus_key: unknown field `bogus_key`, expected one of signing_key, chain, \
+                 admin_auth, role_bindings, key_ttl, policy at line {line} column 3"
+            )
         );
         assert_eq!(error.location().unwrap().line(), line);
     }
@@ -2694,12 +2697,12 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
         .to_string()
         .contains("auth.policy: unknown field `slef_mint`"));
     assert_eq!(typo.location().unwrap().line(), 5);
-    // The repeated-key refusal is worded by the YAML reader; pin its kind and key.
     assert!(refusal("auth: 5\n").to_string().contains("invalid type"));
-    let repeated = refusal("auth:\n  policy: {}\n  policy: {}\n").to_string();
-    assert!(
-        repeated.contains("duplicate") && repeated.contains("policy"),
-        "{repeated}"
+    // The repeated-key refusal is worded by the YAML reader: its exact text, key and position.
+    assert_eq!(
+        refusal("auth:\n  policy: {}\n  policy: {}\n").to_string(),
+        "auth.?: duplicate mapping key: policy, set DuplicateKeyPolicy in Options if acceptable \
+         at line 5 column 3"
     );
     let empty = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\nauth:\n")
         .expect("an empty auth block parses");
@@ -2712,14 +2715,25 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
         crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{tail}"))
     };
     let error = parse("bogus_key: true\n").expect_err("unknown field");
-    let message = error.to_string();
+    // `oauth_as` and `credentials` are named among the document's fields, in the YAML reader's
+    // spelling (no backticks around the expected names).
+    assert_eq!(
+        error.to_string(),
+        "bogus_key: unknown field `bogus_key`, expected one of listen, public_url, tls, \
+         admin_listen, config, providers_file, oauth_as, credentials, admin_tls, \
+         admin_require_mtls, auth, identity-providers, providers, models, pools, hooks, groups, \
+         rate_card, plugin_rate_cards, per_request_fee, store, secrets, advanced, export, plugins, \
+         security, limits, health, routing at line 3 column 1"
+    );
     for field in ["oauth_as", "credentials"] {
-        assert!(message.contains(field), "{message}");
         let duplicate =
             parse(&format!("{field}: {{}}\n{field}: {{}}\n")).expect_err("duplicate core section");
-        assert!(
-            duplicate.to_string().contains("duplicate") && duplicate.to_string().contains(field),
-            "{duplicate}"
+        assert_eq!(
+            duplicate.to_string(),
+            format!(
+                "?: duplicate mapping key: {field}, set DuplicateKeyPolicy in Options if \
+                 acceptable at line 4 column 1"
+            )
         );
     }
     let empty = parse("oauth_as: null\ncredentials: null\n").expect("null optional sections");
@@ -2872,8 +2886,7 @@ fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
     let e = crate::config::providers::catalog_from_str("p:\n  protocol: [1]\n  base_url: x\n")
         .expect_err("a typed key of the wrong type")
         .to_string();
-    assert!(e.starts_with("p.protocol: "), "{e}");
-    assert!(e.contains("invalid type"), "{e}");
+    assert_eq!(e, "p.protocol: expected string scalar at line 2 column 13");
 }
 
 #[test]
@@ -2910,8 +2923,10 @@ fn an_unused_catalog_still_requires_valid_core_fields() {
     )
     .expect_err("the core field is typed even for an unused catalog")
     .to_string();
-    assert!(error.starts_with("p.base_url: "), "{error}");
-    assert!(error.contains("invalid type"), "{error}");
+    assert_eq!(
+        error,
+        "p.base_url: expected string scalar at line 3 column 13"
+    );
 }
 
 #[test]

@@ -381,16 +381,13 @@ fn collect_refs(
 ) {
     let Some((head, rest)) = segments.split_first() else {
         if value.is_mapping() {
-            let sugars = crate::config::secret::sugars();
-            let read = busbar_contract::yaml::to_string(value).and_then(|text| {
-                busbar_contract::yaml::with_deserializer(&text, |d| {
-                    busbar_contract::secret_ref::context::deserialize::<
-                        busbar_contract::secret_ref::SecretRef,
-                        _,
-                    >(d, &sugars)
-                })
-            });
-            if let Ok(r) = read {
+            if let Ok(r) = busbar_contract::secret_ref::context::deserialize::<
+                busbar_contract::secret_ref::SecretRef,
+                _,
+            >(
+                busbar_contract::yaml::deserializer(value.clone()),
+                &crate::config::secret::sugars(),
+            ) {
                 out.push((at, r));
             }
         }
