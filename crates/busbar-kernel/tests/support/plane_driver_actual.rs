@@ -90,6 +90,10 @@ impl Rig {
         self.plane.projects.lock().unwrap().clone()
     }
 
+    pub(crate) fn project_flags(&self) -> Vec<u32> {
+        self.plane.project_flags.lock().unwrap().clone()
+    }
+
     pub(crate) fn regrown(&self) -> Vec<(usize, usize, usize)> {
         self.plane.regrown.lock().unwrap().clone()
     }
@@ -240,6 +244,8 @@ struct Double {
     stats: [AtomicU64; stat::COUNT],
     /// `project` crossings, and the bodies each was handed (with the rewrite, when one came).
     projects: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    /// The `ProjectIn::flags` each `project` crossing carried, in crossing order.
+    project_flags: Mutex<Vec<u32>>,
     /// The `(arena, messages, signals)` capacities each `project` re-call after a SHORT answer
     /// was handed.
     regrown: Mutex<Vec<(usize, usize, usize)>>,
@@ -2795,7 +2801,6 @@ impl busbar_kernel::plane_driver::HookBinder for GateFirst {
                     send_prompt: false,
                     send_user: false,
                     on_empty: busbar_kernel::config::PolicyOnError::Reject,
-                    content_blind: false,
                 },
             )],
             rewrites: Vec::new(),
