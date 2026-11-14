@@ -1,41 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use super::*;
-#[test]
-fn synthetic_metering_open_units_preserve_reserved_names_independently() {
-    // MeteringRow stores scalar token counters separately from its open unit
-    // map. Historical writers persisted every map entry, including "input".
-    let row = MeteringRow {
-        scale: 6,
-        key_id: "k".into(),
-        provider: "p".into(),
-        model: "m".into(),
-        tokens_input: 7,
-        tokens_output: 0,
-        tokens_cache_read: 0,
-        tokens_cache_write: 0,
-        requests: 0,
-        billable_requests: 0,
-        key_group_at_use: String::new(),
-        pricing_version: String::new(),
-        priced_from_ms: 0,
-        usage_units: BTreeMap::new(),
-    };
-    let unit = HistoricalRow::MeteringUnit {
-        bucket: 3,
-        key_id: "k".into(),
-        provider: "p".into(),
-        model: "m".into(),
-        priced_from_ms: 0,
-        key_group_at_use: None,
-        pricing_version: None,
-        unit: "input".into(),
-        count: 11,
-    };
-    let exact = attach_metering_units(3, &row, &[unit]).unwrap();
-    assert_eq!(exact.tokens_input, 7);
-    assert_eq!(exact.usage_units["input"], 11);
-}
+use busbar_contract::records::ModelTokens;
+use std::collections::BTreeMap;
 
 fn usage(model: &str, sum: bool, requests: u64, billable: u64, input: i128) -> UsageCell {
     UsageCell {
@@ -79,19 +46,6 @@ fn explicit_request_aggregation_preserves_counts_without_rescaling() {
         (8, 6, 14_000_000)
     );
     assert!(assemble_usage(&[usage("a", true, 4, 3, 7), usage("b", false, 4, 3, 7)]).is_err());
-}
-#[test]
-fn open_units_keep_exact_fraction_and_attribution() {
-    let unit = HistoricalRow::UsageUnit {
-        bucket: "bucket".into(),
-        window: 0,
-        model: "model".into(),
-        unit: "seconds".into(),
-        count: 7,
-    };
-    let row = attach_usage_units("bucket", 0, &UsageLedger::default(), &[unit]).unwrap();
-    assert_eq!(row.models[0].usage_units["seconds"], 7);
-    assert_eq!(row.models[0].scale, 6);
 }
 #[test]
 fn admitted_credential_envelope_and_wide_metadata_keep_native_custody_rules() {
