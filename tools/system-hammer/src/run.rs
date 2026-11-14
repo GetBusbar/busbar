@@ -315,8 +315,8 @@ fn audience_token(signing_key_hex: &str, plain: &str, aud: &str) -> Result<Strin
         out.insert("g".into(), g.clone());
     }
     let body = serde_json::to_vec(&Value::Object(out)).map_err(|x| x.to_string())?;
-    let kp = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[0u8; 32])
-        .map_err(|x| x.to_string())?;
+    let kp =
+        ring::signature::Ed25519KeyPair::from_seed_unchecked(&seed).map_err(|x| x.to_string())?;
     Ok(format!(
         "bbk_{}.{}",
         e.encode(&body),
