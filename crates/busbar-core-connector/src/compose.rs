@@ -23,7 +23,7 @@ use crate::carrier::{Carried, Dest, DialFailure};
 use crate::endpoint;
 use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
 use crate::hostio::HostIo;
-use crate::secure_vec::SecureVec;
+use crate::secure_vec::{Scratch, SecureVec, Tail, READ_SCRATCH};
 
 /// How much one socket read takes.
 const READ_CHUNK: usize = 16 * 1024;
@@ -1708,24 +1708,44 @@ impl Connection {
         if self.read_end {
             return Ok(false);
         }
-        let mut buf = [0_u8; READ_CHUNK];
-        match self.carried.poll_read(cx, &mut buf) {
-            Poll::Ready(Ok((0, false))) => {
+        // T11-dev: the carrier (a plugin door on dev) reads into this thread's wiping scratch,
+        // never a stack buffer left holding the response. `Tail::Wipe`: core trusts no plugin to
+        // have written nothing past the count it reports. The guard wipes and returns the slot.
+        let mut scratch = Scratch::take(&READ_SCRATCH);
+        let (mut pending, mut end_of_frame) = (false, false);
+        let carried = &mut self.carried;
+        let got = scratch
+            .read_into(READ_CHUNK, Tail::Wipe, |dst| {
+                match carried.poll_read(cx, dst) {
+                    Poll::Ready(Ok((n, eof))) => {
+                        end_of_frame = eof;
+                        Ok(n)
+                    }
+                    Poll::Ready(Err(e)) => Err(e),
+                    Poll::Pending => {
+                        pending = true;
+                        Ok(0)
+                    }
+                }
+            })
+            .map_err(|_| Failure::Refused("read buffer".into()))?;
+        match got {
+            _ if pending => Ok(false),
+            Ok(0) if !end_of_frame => {
                 self.read_end = true;
                 self.feed(&[], true, false)?;
                 Ok(true)
             }
-            Poll::Ready(Ok((n, end_of_frame))) => {
-                self.feed(&buf[..n], false, end_of_frame)?;
+            Ok(_) => {
+                self.feed(scratch.as_slice(), false, end_of_frame)?;
                 Ok(true)
             }
-            Poll::Ready(Err(e)) => {
+            Err(e) => {
                 if self.door.is_none() && self.tls.is_none() {
                     self.framer_error = Some(e.to_string());
                 }
                 Err(failed(e))
             }
-            Poll::Pending => Ok(false),
         }
     }
 
@@ -2186,3 +2206,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/compose_out_tests.rs"]
 mod out_tests;
+
+#[cfg(test)]
+#[path = "tests/compose_read_tests.rs"]
+mod read_tests;

@@ -176,3 +176,120 @@ fn out_backpressure_moves_at_most_2x() {
         "moved {moved} bytes for {TOTAL} queued: at most 2x"
     );
 }
+
+// ---- T11-dev: the lent region and the scratch slot ----
+
+fn misses() -> usize {
+    SCRATCH_MISSES.with(Cell::get)
+}
+
+#[test]
+fn secure_vec_read_into_wipes_untrusted_tail() {
+    let mut s = SecureVec::new();
+    let got = s
+        .read_into(4096, Tail::Wipe, |dst| {
+            assert!(dst.iter().all(|b| *b == 0), "the lent region is zero");
+            dst.fill(0xAA);
+            Ok(10)
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, 10);
+    assert_eq!(s.as_slice(), &[0xAA_u8; 10][..]);
+    assert!(
+        outside_live_is_zero(&s),
+        "bytes the reader wrote past its count are wiped"
+    );
+}
+
+#[test]
+fn secure_vec_read_into_rejects_overlong_count() {
+    let mut s = SecureVec::new();
+    let r = s
+        .read_into(64, Tail::Wipe, |dst| {
+            dst.fill(0xBB);
+            Ok(65)
+        })
+        .unwrap();
+    assert_eq!(r.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    assert!(s.is_empty(), "nothing of a broken count is kept");
+    assert!(
+        s.allocation().iter().all(|b| *b == 0),
+        "the lent region is wiped"
+    );
+}
+
+/// A fake carrier writing past its count: the next lend of the same slot sees only zeros.
+#[test]
+fn carrier_untrusted_reader_tail_is_wiped() {
+    {
+        let mut scratch = Scratch::take(&READ_SCRATCH);
+        let n = scratch
+            .read_into(16 * 1024, Tail::Wipe, |dst| {
+                dst.fill(0xCC);
+                Ok(100)
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 100);
+    }
+    let mut scratch = Scratch::take(&READ_SCRATCH);
+    assert!(scratch.is_empty());
+    scratch
+        .read_into(16 * 1024, Tail::Wipe, |dst| {
+            assert!(
+                dst.iter().all(|b| *b == 0),
+                "the next lend sees zeros, never the last reader's bytes"
+            );
+            Ok(0)
+        })
+        .unwrap()
+        .unwrap();
+}
+
+/// A `?` between take and put: the guard wipes what it held and puts it back.
+#[test]
+fn read_scratch_returned_wiped_on_error() {
+    fn feed_fails() -> Result<(), ()> {
+        Err(())
+    }
+    fn failing() -> Result<(), ()> {
+        let mut scratch = Scratch::take(&READ_SCRATCH);
+        scratch.extend(SENTINEL).map_err(|_| ())?;
+        feed_fails()?;
+        Ok(())
+    }
+    assert!(failing().is_err());
+    READ_SCRATCH.with(|slot| {
+        let held = slot.take().expect("the slot came back");
+        assert!(held.is_empty());
+        assert!(held.allocation().iter().all(|b| *b == 0), "returned wiped");
+        slot.set(Some(held));
+    });
+}
+
+/// A re-entrant take on one thread gets its own buffer, never an alias; the slot keeps the larger.
+#[test]
+fn read_scratch_reentrant_never_aliases() {
+    let before = misses();
+    let mut outer = Scratch::take(&READ_SCRATCH);
+    outer.extend(&[1_u8; 2048]).unwrap();
+    {
+        let mut inner = Scratch::take(&READ_SCRATCH);
+        assert_eq!(misses(), before + 1, "the inner taker found the slot held");
+        inner.extend(&[2_u8; 64 * 1024]).unwrap();
+        assert_ne!(inner.as_slice().as_ptr(), outer.as_slice().as_ptr());
+        assert_eq!(
+            outer.as_slice(),
+            &[1_u8; 2048][..],
+            "the outer bytes are untouched"
+        );
+    }
+    drop(outer);
+    READ_SCRATCH.with(|slot| {
+        let kept = slot.take().expect("the slot holds a buffer");
+        assert!(kept.capacity() >= 64 * 1024, "the larger buffer is kept");
+        assert!(kept.allocation().iter().all(|b| *b == 0));
+        slot.set(Some(kept));
+    });
+}

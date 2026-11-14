@@ -16,7 +16,10 @@
 
 #![forbid(unsafe_code)]
 
+use std::cell::Cell;
 use std::fmt;
+use std::io;
+use std::thread::LocalKey;
 
 use zeroize::Zeroizing;
 
@@ -123,6 +126,34 @@ impl SecureVec {
         self.consume(n);
     }
 
+    /// Lend `[end, end + max)` (already zero) to `read` and keep the `k` bytes it reports. With
+    /// [`Tail::Wipe`], whatever `read` wrote past `k` is wiped. A reader reporting `k > max` broke
+    /// its contract: nothing is kept, the lent region is wiped and the answer is `InvalidData`.
+    pub(crate) fn read_into(
+        &mut self,
+        max: usize,
+        tail: Tail,
+        read: impl FnOnce(&mut [u8]) -> io::Result<usize>,
+    ) -> Result<io::Result<usize>, Overflow> {
+        self.room(max)?;
+        let lent = self.end..self.end + max;
+        let r = read(&mut self.v[lent.clone()]);
+        let overlong = matches!(r, Ok(k) if k > max);
+        let k = match r {
+            Ok(k) if k <= max => k,
+            _ => 0,
+        };
+        if tail == Tail::Wipe || overlong {
+            wipe(&mut self.v[self.end + k..lent.end]);
+        }
+        self.end += k;
+        Ok(if overlong {
+            Err(io::ErrorKind::InvalidData.into())
+        } else {
+            r
+        })
+    }
+
     /// Make room for `add` more bytes after `end`: compact when at least half the used span is
     /// consumed, else grow geometrically into a fresh zeroed block.
     fn room(&mut self, add: usize) -> Result<(), Overflow> {
@@ -172,6 +203,92 @@ impl fmt::Debug for SecureVec {
             .finish()
     }
 }
+
+/// Whether a reader lent a region by [`SecureVec::read_into`] is trusted to have written nothing
+/// past the count it reports. Every carrier read on dev is [`Tail::Wipe`]: the carrier is a plugin
+/// door, and core never names a plugin as trusted (TRANSPORT-TLS §2.0 rule 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tail {
+    /// Wipe `[k, max)` after the read.
+    Wipe,
+}
+
+/// One per-thread scratch slot: `Some` while no taker holds it.
+pub(crate) type Slot = Cell<Option<SecureVec>>;
+
+thread_local! {
+    /// The carrier read's scratch (T11-dev): taken only in `Connection::read`, held until `feed`
+    /// returns.
+    pub(crate) static READ_SCRATCH: Slot = Cell::new(Some(SecureVec::new()));
+}
+
+/// A slot's buffer, taken for one read. Drop wipes what it holds and puts it back, so the slot is
+/// all zero between reads. A slot found empty is a re-entrant take on this thread: the guard uses a
+/// fresh buffer (never an alias) and, on Drop, the slot keeps the larger of the two.
+pub(crate) struct Scratch {
+    key: &'static LocalKey<Slot>,
+    buf: Option<SecureVec>,
+}
+
+impl Scratch {
+    /// Take `key`'s buffer.
+    pub(crate) fn take(key: &'static LocalKey<Slot>) -> Self {
+        let buf = key.with(Cell::take).unwrap_or_else(|| {
+            scratch_missed();
+            SecureVec::new()
+        });
+        Self {
+            key,
+            buf: Some(buf),
+        }
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = SecureVec;
+    fn deref(&self) -> &SecureVec {
+        self.buf.as_ref().expect("held until drop")
+    }
+}
+
+impl std::ops::DerefMut for Scratch {
+    fn deref_mut(&mut self) -> &mut SecureVec {
+        self.buf.as_mut().expect("held until drop")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let Some(mut buf) = self.buf.take() else {
+            return;
+        };
+        // RED STUB (TRANSPORT-TLS §8 item 4): forget the bytes without wiping them, as today's
+        // stack buffer keeps the response after `read` returns.
+        buf.head = 0;
+        buf.end = 0;
+        let _ = self.key.try_with(move |slot| {
+            let keep = match slot.take() {
+                Some(other) if other.capacity() >= buf.capacity() => other,
+                _ => buf,
+            };
+            slot.set(Some(keep));
+        });
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Re-entrant takes that found their slot empty, on this thread.
+    static SCRATCH_MISSES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn scratch_missed() {
+    SCRATCH_MISSES.with(|m| m.set(m.get() + 1));
+}
+
+#[cfg(not(test))]
+const fn scratch_missed() {}
 
 /// Wipe bytes the buffer still owns and will reuse. These are not dead stores: the allocation is
 /// read again through `as_slice`/`copy_within`, and the final wipe before the free is
