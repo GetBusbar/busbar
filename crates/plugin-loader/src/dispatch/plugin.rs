@@ -1710,8 +1710,15 @@ impl Instance {
         if crossed.unread != 0 && s != slot::RELEASE {
             self.release_unread(crossed.unread);
         }
+        // A transport op answer's lease is consumed inside this crossing (its extensions decoded,
+        // its error copied); the caller has no use for it, so it is retired here, not handed out.
+        let transport_op = self.kind == KindCode::Transport && s >= transport_slot::LISTEN;
+        if transport_op && crossed.lease != 0 {
+            self.release_unread(crossed.lease);
+        }
         Crossed {
             unread: 0,
+            lease: if transport_op { 0 } else { crossed.lease },
             ..crossed
         }
     }
@@ -3613,6 +3620,10 @@ impl From<Crossed> for Called {
 #[cfg(test)]
 #[path = "../tests/open_reason_tests.rs"]
 mod open_reason_tests;
+
+#[cfg(test)]
+#[path = "../tests/transport_answer_lease_tests.rs"]
+mod transport_answer_lease_tests;
 
 #[cfg(test)]
 #[path = "../tests/lifecycle_worker_tests.rs"]
