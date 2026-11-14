@@ -3,8 +3,6 @@
 
 //! What happened, and what it costs.
 
-use busbar_contract::caps::Usage;
-
 use crate::cost::history::{EntryKey, HistoryView};
 use crate::cost::rate::{ClassPrice, RateCard};
 

@@ -6,8 +6,8 @@
 use std::collections::BTreeMap;
 
 use crate::cost::{
-    nanos_of_exact, whole, Author, EntryKey, History, HistoryView, Money, MoneyError, RateCard,
-    RawRateEra, Tally, STANDARD_TIER_BP,
+    nanos_of_exact, whole, EntryKey, History, HistoryView, Money, MoneyError, RateCard, RawRateEra,
+    Tally, STANDARD_TIER_BP,
 };
 
 /// One bucket's billable-request count (the flat fee's base), SPLIT BY THE ERA each request was
@@ -78,27 +78,19 @@ impl<E: Copy + Eq + Into<RawRateEra> + From<u64>> FeeEras<E> {
     }
 }
 
-/// The dated history a budget read resolves each era through, and the instant the read is taken at.
-///
-/// The instant matters for ONE thing: which entry is IN FORCE NOW. A segment whose era resolves to
-/// that entry is priced at the caller's live card — the configuration the gate is enforcing this
-/// instant, built by the same constructor from the same figures as the entry, and the only card that
-/// also carries the open classes a deployment configured. Amendments always retain their
-/// own card. Every other segment is priced at its recorded entry, including a voided original.
+/// The dated history a budget read resolves each era through. Every segment is priced at the
+/// entry its era resolves to, including a voided original; amendments retain their own card.
 #[derive(Clone, Copy)]
 pub struct DatedHistory<'h> {
     /// The pinned snapshot the whole read resolves through.
     pub view: HistoryView<'h>,
-    /// The read's own wall-clock instant, in milliseconds — the history's scale.
-    pub now_ms: u64,
 }
 
 impl<'h> DatedHistory<'h> {
-    /// The history's current snapshot, read at `now_ms`.
-    pub fn of(history: &'h History, now_ms: u64) -> Self {
+    /// The history's current snapshot.
+    pub fn of(history: &'h History) -> Self {
         DatedHistory {
             view: history.current(),
-            now_ms,
         }
     }
 }
@@ -149,7 +141,7 @@ pub fn price_dated_counts_raw<'r>(
     live: &RateCard,
     dated: Option<DatedHistory<'_>>,
 ) -> Result<Money, MoneyError> {
-    price_dated_at(rows, fees, window_start_ms, live, dated, false)
+    price_dated_at(rows, fees, window_start_ms, live, dated)
 }
 
 fn price_dated_at<'r, C: Copy + Into<crate::cost::Count> + 'r>(
@@ -158,15 +150,8 @@ fn price_dated_at<'r, C: Copy + Into<crate::cost::Count> + 'r>(
     window_start_ms: u64,
     live: &RateCard,
     dated: Option<DatedHistory<'_>>,
-    legacy_live_card: bool,
 ) -> Result<Money, MoneyError> {
     let view = dated.map(|d| d.view);
-    let in_force = dated.and_then(|d| {
-        d.view
-            .entry_at(d.now_ms)
-            .filter(|entry| !matches!(entry.author(), Author::Amend { .. }))
-            .map(|entry| entry.key())
-    });
     let resolve = |era: RawRateEra| -> Result<(Option<EntryKey>, &RateCard), MoneyError> {
         let Some(view) = view.as_ref() else {
             return Ok((None, live));
@@ -175,14 +160,7 @@ fn price_dated_at<'r, C: Copy + Into<crate::cost::Count> + 'r>(
         let (seq, card) = view
             .card_for_raw_era(era, at)
             .ok_or(MoneyError::NoCardInForce { at })?;
-        Ok((
-            Some(seq),
-            if legacy_live_card && Some(seq) == in_force {
-                live
-            } else {
-                card
-            },
-        ))
+        Ok((Some(seq), card))
     };
     let (rows, fees) = (rows.into_iter(), fees.into_iter());
     // Every era resolves before anything prices, rows then fees, so a hole in the history refuses
