@@ -1,0 +1,3 @@
+if site.validate(host, &h).is_err() {
+    ledger.failures.push("refused".into());
+}

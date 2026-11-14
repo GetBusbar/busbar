@@ -280,7 +280,7 @@ fn current_settings_validation_does_not_read_a_selected_planes_historical_catalo
             kind: &str,
             module: &str,
             settings: &serde_json::Value,
-        ) -> Result<(), String> {
+        ) -> Result<(), busbar_migrations::config::migrate_plugins::Unvalidated> {
             if kind == "auth" {
                 assert_eq!(module, "oidc");
                 assert_eq!(
@@ -454,6 +454,37 @@ fn an_unreachable_plugin_asset_is_shown_without_downloader_text() {
         "{line}"
     );
     assert!(!line.contains("error sending request"), "{line}");
+}
+
+#[test]
+fn a_hostile_index_cannot_forge_a_line() {
+    crate::dist_root_install::install();
+    let abi = crate::root::loader::registry::supported_abi("store")[0];
+    for (repo, tag, release_abi) in [
+        // No release for this ABI: the index-supplied repo is shown.
+        (
+            "x/y\n[busbar] store.settings: migrated OK\u{1b}[0m",
+            "v1.6.0",
+            u32::MAX,
+        ),
+        // A release for this ABI whose tag reaches the asset URL.
+        ("GetBusbar/store-sqlite", "v1\r\n[busbar] ok\u{1b}[2J", abi),
+    ] {
+        let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+        let mut host =
+            super::RootHost::for_document(GOVERNANCE_14, &directory.0.join("config.yaml"));
+        host.index_source = sqlite_index(&directory.0, repo, tag, release_abi);
+        host.download = echo_fail;
+        let line = migrate_config_with(GOVERNANCE_14, &host)
+            .expect_err("a Store whose plugin cannot be obtained is not emitted");
+        assert!(line.contains("<unprintable source>"), "{line:?}");
+        for forged in ["\n", "\r", "\u{1b}", "migrated OK", "[busbar] ok"] {
+            assert!(
+                !line.contains(forged),
+                "{forged:?} reached the line: {line:?}"
+            );
+        }
+    }
 }
 
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
