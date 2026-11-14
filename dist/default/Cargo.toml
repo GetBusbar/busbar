@@ -1187,10 +1187,9 @@ serde_json = "1"
 # Form-encoding for the engine-built RFC 8693 token exchange — the exact crate reqwest's `.form()`
 # delegated to, so the encoded bytes are identical by construction. Already in the lock via reqwest.
 serde_urlencoded = "0.7"
-# YAML is core's busbar-yaml (serde_yaml_ng 0.10's API on a memory-safe port of libyaml; no
-# unsafe-libyaml). The `package` rename keeps every `serde_yaml::from_str` call site unchanged and
-# states the substitution once for the whole workspace.
-serde_yaml = { package = "busbar-yaml", path = "../../crates/busbar-yaml" }
+# YAML is yaml_serde, as in core's workspace. The `package` rename keeps every `serde_yaml::from_str`
+# call site unchanged and states the substitution once for the whole workspace.
+serde_yaml = { package = "yaml_serde", version = "0.10" }
 # 0.10, the line every dependency that carries RustCrypto ships (oauth-as, sha1 via axum/tungstenite).
 # busbar's own digests and MACs are on ring (the one crypto backend); sha2 stays only where ring
 # would be a new backend in a plugin's closure (busbar-contract) and as the independent witness the
