@@ -65,6 +65,8 @@ libc = "0.2"
 libloading = "0.9"
 loom = "0.7"
 memchr = "2"
+# Already in both lockfiles (hyper, axum): the content-type parameter grammar, quoted values included.
+mime = "0.3.17"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 # No crypto of its own (decision 228): default features off, so no backend; busbar-core-oauth2 passes
