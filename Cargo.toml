@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 # dist/default is its own workspace; the root crate depends on no plugin.
-exclude = ["dist/default"]
+exclude = ["dist/default", "tools/system-hammer"]
 members = [
     "crates/busbar",
     "crates/busbar-core-connector",
