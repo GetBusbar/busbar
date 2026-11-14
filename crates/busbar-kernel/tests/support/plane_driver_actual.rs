@@ -87,6 +87,10 @@ impl Rig {
         self.plane.projects.lock().unwrap().clone()
     }
 
+    pub(crate) fn project_flags(&self) -> Vec<u32> {
+        self.plane.project_flags.lock().unwrap().clone()
+    }
+
     pub(crate) fn stats(&self) -> [u64; stat::COUNT] {
         let mut out = [0; stat::COUNT];
         for (k, v) in out.iter_mut().enumerate() {
@@ -233,6 +237,8 @@ struct Double {
     stats: [AtomicU64; stat::COUNT],
     /// `project` crossings, and the bodies each was handed (with the rewrite, when one came).
     projects: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    /// The `ProjectIn::flags` each `project` crossing carried, in crossing order.
+    project_flags: Mutex<Vec<u32>>,
     /// The driver tickets minted, and every ticket recycled.
     drivers: Mutex<Vec<Ticket>>,
     recycled: Mutex<Vec<Ticket>>,
@@ -1179,6 +1185,7 @@ impl PlaneCalls for Double {
             .lock()
             .unwrap()
             .push((body.clone(), rewrite.clone()));
+        self.project_flags.lock().unwrap().push(input.flags);
         if (target == b"/faults-rewrite" && !rewrite.is_empty()) || target == b"/unparseable" {
             out.head.outcome = RawOutcome::of(Outcome::Fault);
             out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
