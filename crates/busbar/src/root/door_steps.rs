@@ -576,7 +576,7 @@ fn exhaustion_of(app: &App, key: &VirtualKey) -> ExhaustionMode {
 #[derive(Debug, Clone)]
 pub struct DoorFacts {
     /// The plane's key: the card its lanes are priced on, and the qualifier of every lane it routes.
-    pub plane: String,
+    pub plane: busbar_kernel::plane_driver::dispatch::LaneQualifier,
     /// The grant kind that admits its traffic (its tail's first scope kind); `None` = it states none.
     pub scope_kind: Option<String>,
     /// Host-sealed catalog entries and their declared secondary grant kind.
@@ -940,8 +940,8 @@ impl<'s> DoorSteps<'s> {
     }
 
     #[must_use]
-    pub fn plane(&self) -> &str {
-        &self.facts.plane
+    pub fn lane_prefix(&self) -> &str {
+        self.facts.plane.lane_prefix()
     }
 
     pub fn route_cost(&self, lane: &str) -> busbar_contract::SignalBag {
@@ -1015,7 +1015,7 @@ impl<'s> DoorSteps<'s> {
     }
 
     fn charged_pool(&self, label: &str) -> String {
-        plane_lane(&self.facts.plane, label)
+        plane_lane(self.facts.plane.lane_prefix(), label)
     }
 
     fn expected_units(
@@ -1062,7 +1062,7 @@ impl<'s> DoorSteps<'s> {
             routed
                 .iter()
                 .flat_map(|(_, members)| members)
-                .map(|m| plane_lane(&self.facts.plane, m))
+                .map(|m| plane_lane(self.facts.plane.lane_prefix(), m))
                 .collect()
         };
 
@@ -1084,10 +1084,11 @@ impl<'s> DoorSteps<'s> {
                 }
             };
             if let Some(c) = &self.child_constraints {
-                let lane = plane_lane(&self.facts.plane, &c.grant.target_binding);
-                let fee = u128::try_from(self.app.cost.request_fee_on(&self.facts.plane))
-                    .ok()
-                    .and_then(|n| n.checked_mul(busbar_kernel_ledger::cost::NANOS_PER_CENT));
+                let lane = plane_lane(self.facts.plane.lane_prefix(), &c.grant.target_binding);
+                let fee =
+                    u128::try_from(self.app.cost.request_fee_on(self.facts.plane.lane_prefix()))
+                        .ok()
+                        .and_then(|n| n.checked_mul(busbar_kernel_ledger::cost::NANOS_PER_CENT));
                 let estimate = self
                     .app
                     .cost
@@ -1117,7 +1118,7 @@ impl<'s> DoorSteps<'s> {
                     visited.push(to);
                 }
                 Err(blocked) => {
-                    if self.facts.plane.is_empty() {
+                    if self.facts.plane.lane_prefix().is_empty() {
                         self.lock().refused.1 =
                             Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
                     }
@@ -1298,7 +1299,7 @@ impl DriverSteps for DoorSteps<'_> {
             (u.named.clone(), local_entry)
         };
 
-        if self.facts.plane.is_empty() {
+        if self.facts.plane.lane_prefix().is_empty() {
             if let Some(name) = named
                 .as_ref()
                 .and_then(|(_, n)| n.as_deref())
@@ -1336,7 +1337,7 @@ impl DriverSteps for DoorSteps<'_> {
             .iter()
             .flat_map(|(_, members)| members)
             .chain(local_entry.iter())
-            .filter_map(|member| (self.lanes)(&plane_lane(&self.facts.plane, member)))
+            .filter_map(|member| (self.lanes)(&plane_lane(self.facts.plane.lane_prefix(), member)))
             .map(|lane| VerifiedDestination::seal(trust, lane))
             .collect();
         let mut u = self.lock();
@@ -1433,7 +1434,7 @@ impl DriverSteps for DoorSteps<'_> {
         let lanes: Vec<_> = routed
             .iter()
             .flat_map(|(_, members)| members)
-            .map(|m| plane_lane(&self.facts.plane, m))
+            .map(|m| plane_lane(self.facts.plane.lane_prefix(), m))
             .collect();
         let estimate = {
             let models: Vec<_> = lanes.iter().map(String::as_str).collect();
@@ -1531,7 +1532,7 @@ impl DriverSteps for DoorSteps<'_> {
                 .routed
                 .as_ref()
                 .and_then(|(_, members)| members.first())
-                .map(|member| plane_lane(&self.facts.plane, member))
+                .map(|member| plane_lane(self.facts.plane.lane_prefix(), member))
                 .unwrap_or_default();
             match spent.adopt(
                 money,
@@ -1589,7 +1590,7 @@ impl DriverSteps for DoorSteps<'_> {
                 .routed
                 .as_ref()
                 .and_then(|(_, members)| members.first())
-                .map(|member| plane_lane(&self.facts.plane, member))
+                .map(|member| plane_lane(self.facts.plane.lane_prefix(), member))
                 .unwrap_or_default();
             let prepared = parent.cell.accrue_child_after(principal, admit, || {
                 parent.money.open_child(
@@ -1872,7 +1873,7 @@ impl DriverSteps for DoorSteps<'_> {
 
 #[must_use]
 pub fn door_facts(
-    plane: &str,
+    plane: busbar_kernel::plane_driver::dispatch::LaneQualifier,
     scope_kinds: &[&str],
     classes: &[&'static str],
     fee_units: &[&str],
@@ -2017,7 +2018,7 @@ pub fn compose_egress(
                 })?;
         }
         let destination = busbar_contract::dest::DestinationId::new(id);
-        let name = plane_lane(&facts.plane, entry);
+        let name = plane_lane(facts.plane.lane_prefix(), entry);
 
         let mut member = Member::new(destination, name.clone(), 1);
         member.attempt_timeout_ms = pools.timeout_ms(entry);
@@ -2097,7 +2098,7 @@ pub fn compose_egress(
         journal,
         telemetry: Arc::new(
             crate::root::egress_ports::WalkTelemetry::new(names).bounded(label_bound(
-                &facts.plane,
+                facts.plane.lane_prefix(),
                 pools,
                 &facts.metric_lanes,
             )),

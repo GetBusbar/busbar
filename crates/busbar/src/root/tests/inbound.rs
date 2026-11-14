@@ -902,6 +902,7 @@ mod operator_admission_identity;
 /// plane's catalogue (the fallback plane), not an empty set, and still honour the key's scope.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn models_plane_qualifier_lists_the_fallback_catalog() {
+    use busbar_kernel::plane_driver::dispatch::LaneQualifier;
     let (app, _config, _book) = app(true).await;
     let fallback = busbar_kernel::plane_driver::dispatch::fallback_key();
     assert!(
@@ -909,14 +910,19 @@ async fn models_plane_qualifier_lists_the_fallback_catalog() {
         "the linked model plane is the registered fallback plane"
     );
     let open = busbar_kernel::governance::GovCtx::default();
-    let listed = busbar_kernel::endpoints::catalog_names(&app, &open, "");
+    let listed =
+        busbar_kernel::endpoints::catalog_names(&app, &open, &LaneQualifier::parse("").unwrap());
     assert!(
         listed.iter().any(|name| name == "priced-context"),
         "the models plane qualifier lists the configured model: {listed:?}"
     );
     assert_eq!(
         listed,
-        busbar_kernel::endpoints::catalog_names(&app, &open, fallback),
+        busbar_kernel::endpoints::catalog_names(
+            &app,
+            &open,
+            &LaneQualifier::parse(fallback).unwrap()
+        ),
         "the models plane qualifier names the fallback plane's catalogue"
     );
     let scoped_to_nothing = busbar_kernel::governance::GovCtx {
@@ -926,16 +932,21 @@ async fn models_plane_qualifier_lists_the_fallback_catalog() {
         })),
     };
     assert!(
-        busbar_kernel::endpoints::catalog_names(&app, &scoped_to_nothing, "").is_empty(),
+        busbar_kernel::endpoints::catalog_names(
+            &app,
+            &scoped_to_nothing,
+            &LaneQualifier::parse("").unwrap()
+        )
+        .is_empty(),
         "an explicit empty scope still lists nothing"
     );
     assert_eq!(
-        busbar_kernel::plane_driver::dispatch::plane_of_qualifier(""),
+        LaneQualifier::parse("").unwrap().plane_key(),
         fallback,
         "the models plane qualifier names the fallback plane"
     );
     assert_eq!(
-        busbar_kernel::plane_driver::dispatch::plane_of_qualifier("x"),
+        LaneQualifier::parse("x").unwrap().plane_key(),
         "x",
         "a real qualifier names its own plane"
     );

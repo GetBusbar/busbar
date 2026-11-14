@@ -45,11 +45,15 @@ fn a_lane_qualifier_is_never_a_plane_key() {
             let Some((_, tr, _)) = &i.trait_ else {
                 continue;
             };
-            let names_qualifier =
-                |t: &syn::Type| t.to_token_stream().to_string().contains("LaneQualifier");
+            // The type itself, by whole identifier (its error type `InvalidLaneQualifier` may Display).
+            let is_qualifier = |s: &str| {
+                s.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| w == "LaneQualifier")
+            };
+            let names_qualifier = |t: &syn::Type| is_qualifier(&t.to_token_stream().to_string());
             let generic_args = tr.to_token_stream().to_string();
             let on_qualifier = names_qualifier(&i.self_ty);
-            let to_qualifier = generic_args.contains("LaneQualifier");
+            let to_qualifier = is_qualifier(&generic_args);
             let Some(last) = tr.segments.last() else {
                 continue;
             };

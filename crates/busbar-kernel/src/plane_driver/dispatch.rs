@@ -72,14 +72,55 @@ pub fn fallback_key() -> &'static str {
         .unwrap_or("")
 }
 
-/// The plane key a door's card/lane qualifier (`DoorFacts.plane`) names. The models plane's
-/// qualifier is `""` (its lanes are unqualified), and the models plane is the fallback plane.
-#[must_use]
-pub fn plane_of_qualifier(qualifier: &str) -> &str {
-    if qualifier.is_empty() {
-        fallback_key()
-    } else {
-        qualifier
+/// A door's card/lane qualifier (`DoorFacts.plane`): the prefix of every lane the door routes,
+/// `""` for the models plane (its lanes are unqualified). It is NOT a plane key (LINT-RULES R29):
+/// it has no `Deref`, `AsRef`, `PartialEq<str>`, `From` or `Display` bridge to a string, so it can
+/// be neither compared with [`fallback_key`] nor passed where a plane key is expected. The plane
+/// key comes out only through [`LaneQualifier::plane_key`]; the lane prefix through
+/// [`LaneQualifier::lane_prefix`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaneQualifier(String);
+
+/// Text that cannot be a door's lane qualifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidLaneQualifier;
+
+impl std::fmt::Display for InvalidLaneQualifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a lane qualifier is empty or plain text: no control character (the plane/lane \
+             separator is one) and no surrounding whitespace",
+        )
+    }
+}
+
+impl std::error::Error for InvalidLaneQualifier {}
+
+impl LaneQualifier {
+    /// The one way to make a qualifier: `""` (the models plane) or plain text with no control
+    /// character (the plane/lane separator `U+001F` is one, so a qualifier can never split a lane
+    /// name) and no surrounding whitespace.
+    pub fn parse(qualifier: &str) -> Result<Self, InvalidLaneQualifier> {
+        if qualifier.chars().any(char::is_control) || qualifier.trim() != qualifier {
+            return Err(InvalidLaneQualifier);
+        }
+        Ok(Self(qualifier.to_string()))
+    }
+
+    /// The plane key this qualifier names: the models plane's `""` is the fallback plane.
+    #[must_use]
+    pub fn plane_key(&self) -> &str {
+        if self.0.is_empty() {
+            fallback_key()
+        } else {
+            &self.0
+        }
+    }
+
+    /// The prefix of every lane this door routes (`""`: the lanes are unqualified).
+    #[must_use]
+    pub fn lane_prefix(&self) -> &str {
+        &self.0
     }
 }
 

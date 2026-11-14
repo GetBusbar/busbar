@@ -309,7 +309,14 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let facts = door_facts("p", &[], &[], &[], "a", Vec::new());
+    let facts = door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &[],
+        &[],
+        &[],
+        "a",
+        Vec::new(),
+    );
     let section: serde_yaml::Value = serde_yaml::from_str("e: {}").expect("yaml");
     let pools = DoorPools::of(&section, busbar_contract::section::TOOL_CALL_SECTION_KEY)
         .expect("the pools");
