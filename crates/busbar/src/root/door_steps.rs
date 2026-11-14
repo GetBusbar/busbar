@@ -2418,6 +2418,20 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 }
 
+/// The composition root's rules that read only the resolved config: no I/O, no loaded plugin
+/// state. Boot/apply (`Rules::check`) and `--validate` both run exactly this, so they agree.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the single shared root rule; boot/apply and --validate reach validate_public_url only through here"
+)]
+pub fn offline_root_rules(cfg: &busbar_kernel::config::RootCfg) -> Result<(), Vec<String>> {
+    kernel_sections(cfg).map_err(|e| vec![e])?;
+    if let Some(url) = cfg.public_url.as_deref() {
+        busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)?;
+    }
+    Ok(())
+}
+
 /// Project the kernel-owned configuration without passing JSON's arbitrary-precision
 /// serialization markers to YAML. A provider number outside YAML's scalar domain is refused.
 pub fn kernel_sections(
