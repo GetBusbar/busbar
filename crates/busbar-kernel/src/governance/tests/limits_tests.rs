@@ -1805,6 +1805,9 @@ mod ledger_correction_cases;
 #[path = "large_flush_cases.rs"]
 mod large_flush_cases;
 
+#[path = "unit_checkpoint_laneless.rs"]
+mod unit_checkpoint_laneless;
+
 fn minute_fee_model() -> CostModel {
     model_with_card(
         &[(
