@@ -118,18 +118,6 @@ pub trait SourceReader: Send + Sync {
     ) -> Result<SourcePage, Error>;
 }
 
-/// Native enforcement is a live capability, separate from operator attestations
-/// and archive validation. Implementations are pinned trusted helpers; arbitrary
-/// report-selected executables or saved successful replies cannot implement it.
-#[async_trait]
-pub trait SourceFenceProbe: Send + Sync {
-    fn implementation_digest(&self) -> Digest32;
-    async fn verify(
-        &self,
-        request: &busbar_contract::persistence::source_fence::ProbeRequest,
-    ) -> Result<busbar_contract::persistence::source_fence::ProbeReply, Error>;
-}
-
 /// Trusted, statically registered transform, never code selected by report paths.
 /// Overflow, unknown scales or unknown semantics MUST be returned as errors.
 /// Output is restricted to the selected family's namespace by the coordinator.
