@@ -18,6 +18,16 @@ macro_rules! c_entry {
     };
 }
 
+/// THE LEASE-HANDING TEST SURFACE: `item` is `pub` to the loader's own tests and under `test-support`
+/// (never a shipped feature), and `pub(crate)` in every production build, where the public crossing
+/// is [`Plugin::answer`], which releases its answer's lease inside the crossing.
+macro_rules! test_support_pub {
+    ($(#[$m:meta])* $kw:ident $($rest:tt)*) => {
+        $(#[$m])* #[cfg(any(test, feature = "test-support"))] pub $kw $($rest)*
+        $(#[$m])* #[cfg(not(any(test, feature = "test-support")))] pub(crate) $kw $($rest)*
+    };
+}
+
 pub(crate) mod access;
 pub mod answer;
 pub mod auth_handle;
@@ -77,15 +87,23 @@ pub use load::{
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{
-    Bind, Called, ConnTable, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall,
+    Answered, Bind, ConnTable, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin,
     MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use plugin::{Called, Recall};
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) use plugin::{Called, Recall};
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use validate::Violation;
 pub use worker::{
-    Adopter, Budgets, CounterFamily, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply,
+    Adopter, Budgets, CounterFamily, DispatchConfig, DispatchStats, Dispatcher, Lent,
     DEADLINE_WITHOUT_WAKE_TOTAL, DEFAULT_QUARANTINE_AFTER, QUARANTINED_TOTAL,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use worker::{Done, Reply};
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) use worker::{Done, Reply};
 
 pub(crate) mod kind_seal {
     pub trait Validated {}

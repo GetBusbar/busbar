@@ -3730,5 +3730,9 @@ mod support;
 mod refresh_binding_tests;
 
 #[cfg(test)]
+#[path = "tests/lease_release_tests.rs"]
+mod lease_release_tests;
+
+#[cfg(test)]
 #[path = "tests/completed_head_tests.rs"]
 mod completed_head_tests;

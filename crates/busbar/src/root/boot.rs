@@ -477,7 +477,7 @@ fn validate_door(door: &DoorPlane, settings: &[u8]) -> Result<(), String> {
     i.err_buf = err.as_mut_ptr();
     i.err_cap = err.len();
     let mut f = super::loader::dispatch::Frame::new(i, blank_out::<OutHead>());
-    let called = door.call(life::VALIDATE, &mut f);
+    let called = door.answer(life::VALIDATE, &mut f);
     if called.outcome == Outcome::Ready {
         return Ok(());
     }

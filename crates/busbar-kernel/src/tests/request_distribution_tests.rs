@@ -174,6 +174,41 @@ fn concurrent_recording_and_snapshots_keep_count_sum_and_bins_together() {
     assert_eq!(value(&source.snapshot(), REQUEST_COUNT), 2000);
 }
 
+/// A drain that runs while recorders push must account for every sample: each one is either in
+/// this drain or left for the next. With scrapes back to back and several recorders on one
+/// series, any window in which a push lands where no drain will read it shows up as a short
+/// final count.
+#[test]
+fn drains_racing_recorders_never_lose_a_recorded_sample() {
+    const WRITERS: u64 = 8;
+    const PER_WRITER: u64 = 25_000;
+    let source = make_source();
+    let histogram = source.register_histogram(
+        &outcome_key("ok"),
+        &metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!())),
+    );
+    let writers: Vec<_> = (0..WRITERS)
+        .map(|_| {
+            let histogram = histogram.clone();
+            std::thread::spawn(move || {
+                for _ in 0..PER_WRITER {
+                    histogram.record(0.001);
+                }
+            })
+        })
+        .collect();
+    while !writers.iter().all(std::thread::JoinHandle::is_finished) {
+        source.drain();
+    }
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    let snapshot = source.snapshot();
+    assert_eq!(value(&snapshot, REQUEST_COUNT), WRITERS * PER_WRITER);
+    assert_eq!(value(&snapshot, REQUEST_BIN), WRITERS * PER_WRITER);
+    assert_eq!(value(&snapshot, REQUEST_SUM), WRITERS * PER_WRITER * 1000);
+}
+
 #[test]
 fn missing_nonce_capacity_and_invalid_samples_have_bounded_drop_reasons() {
     let mut state = RequestDistributions::default();

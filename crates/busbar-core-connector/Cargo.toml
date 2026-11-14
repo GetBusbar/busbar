@@ -52,3 +52,4 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 rcgen = { workspace = true, features = ["pem"] }
+busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
