@@ -190,7 +190,7 @@ pub struct ReqSpec {
     pub pad: usize,
     #[serde(default = "ok200")]
     pub expect: u16,
-    /// Every sampled answer must contain this.
+    /// EVERY answered body must contain this; any miss is a `body_miss` and fails the case.
     #[serde(default)]
     pub contains: Option<String>,
     #[serde(default = "w1")]
