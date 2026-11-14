@@ -66,6 +66,44 @@ impl SecureVec {
         }
     }
 
+    /// An empty buffer with `cap` zeroed bytes of room, allocated once: while what it is given
+    /// fits, it never grows. The exact-size form for an encoder that knows its output size.
+    ///
+    /// # Errors
+    /// [`Overflow`] when the memory cannot be allocated.
+    pub fn with_capacity(cap: usize) -> Result<Self, Overflow> {
+        let mut v: Vec<u8> = Vec::new();
+        v.try_reserve_exact(cap).map_err(|_| Overflow)?;
+        v.resize(cap, 0);
+        Ok(Self {
+            v: Zeroizing::new(v),
+            head: 0,
+            end: 0,
+        })
+    }
+
+    /// Append one byte.
+    ///
+    /// # Errors
+    /// [`Overflow`] when the memory for it cannot be allocated.
+    pub fn push(&mut self, b: u8) -> Result<(), Overflow> {
+        self.extend(&[b])
+    }
+
+    /// The live bytes as a wiping `Vec`, without a copy when nothing was consumed. The zeroed
+    /// room past them is truncated (no reallocation).
+    #[must_use]
+    pub fn into_zeroizing(mut self) -> Zeroizing<Vec<u8>> {
+        if self.head != 0 {
+            let live = self.len();
+            self.v.copy_within(self.head..self.end, 0);
+            wipe(&mut self.v[live..self.end]);
+            self.end = live;
+        }
+        self.v.truncate(self.end);
+        self.v
+    }
+
     /// The live bytes held.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -199,6 +237,19 @@ impl SecureVec {
     #[must_use]
     pub fn allocation(&self) -> &[u8] {
         &self.v
+    }
+}
+
+/// Encoders (`serde_json::to_writer`, `write!`) append through [`SecureVec::extend`].
+impl io::Write for SecureVec {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.extend(buf)
+            .map(|()| buf.len())
+            .map_err(|_| io::ErrorKind::OutOfMemory.into())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
