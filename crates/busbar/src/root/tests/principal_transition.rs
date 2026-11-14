@@ -4,7 +4,7 @@
 use super::*;
 
 fn parse(args: &[&str]) -> Result<Option<Command>, &'static str> {
-    command(args.iter().map(|arg| (*arg).to_owned()))
+    command(&super::super::cli::Argv::parse(args))
 }
 
 #[test]
@@ -191,10 +191,7 @@ fn fresh_receipt_cannot_omit_namespace_creation_assertion() {
 fn config_location_scanner_skips_transition_input_values() {
     // A filename equal to a flag must never retarget the real configuration scanner.
     let args = [INPUT_FLAG, "--config", ACTION_FLAG, "check"];
-    assert_eq!(
-        super::super::cli::value_flag(args.into_iter().map(str::to_owned), "--config", Some("-c")),
-        None
-    );
+    assert_eq!(super::super::cli::Argv::parse(args).config, None);
 }
 
 #[test]
