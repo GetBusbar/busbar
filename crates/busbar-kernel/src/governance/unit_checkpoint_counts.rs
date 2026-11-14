@@ -206,7 +206,7 @@ impl GovState {
                 .ledger()
                 .get_usage_pair(&target.bucket, &era_bucket(&target.bucket), target.window)
                 .await?;
-            let mut cell = super::state::durable_cell(plain, dated, target.window)?;
+            let mut cell = super::state::durable_cell(&target.bucket, plain, dated, target.window)?;
             cell.last_touch = touched;
             if let Some(previous) = previous {
                 cell.group_owners.clone_from(&previous.group_owners);
@@ -296,6 +296,12 @@ impl GovState {
         durable: bool,
         before_commit: impl FnOnce() -> Result<(), CountError>,
     ) -> Result<(), CountError> {
+        // A count-free unit (e.g. a pool 503 before any member bound its lane) changes no cell.
+        // This matches `record_counts_served_in_era`, so the served and checkpoint bills agree
+        // (UPG-H2).
+        if units.values().all(|n| n.is_zero()) {
+            return before_commit();
+        }
         // A request charges a handful of buckets: the shard list, its guards and the staged cells
         // stay inline on the stack.
         let mut shards: smallvec::SmallVec<[usize; 4]> = smallvec::SmallVec::new();
@@ -366,18 +372,23 @@ impl GovState {
                         .models
                         .iter_mut()
                         .find(|m| m.model.as_ref() == lane && m.era == era)
-                        .expect("just accrued model");
-                    for (unit, n) in units {
-                        for flushed in [&mut model.flushed, &mut model.flushed_era] {
-                            match flushed.get_mut(unit) {
-                                Some(raw) => *raw = raw.checked_add(*n)?,
-                                None => {
-                                    // First sight of this unit in the baseline: its one key.
-                                    let first = Count::default().checked_add(*n)?;
-                                    flushed.insert(unit.as_str().into(), first);
+                    {
+                        Some(model) => {
+                            for (unit, n) in units {
+                                for flushed in [&mut model.flushed, &mut model.flushed_era] {
+                                    match flushed.get_mut(unit) {
+                                        Some(raw) => *raw = raw.checked_add(*n)?,
+                                        None => {
+                                            // First sight of this unit in the baseline: its one key.
+                                            let first = Count::default().checked_add(*n)?;
+                                            flushed.insert(unit.as_str().into(), first);
+                                        }
+                                    }
                                 }
                             }
                         }
+                        // A zero-only report creates no row, so there is no baseline to move.
+                        None => assert!(!has_units(units), "just accrued model"),
                     }
                 } else {
                     cell.dirty = true;
