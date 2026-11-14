@@ -107,11 +107,14 @@ fn param(segment: &str) -> bool {
 }
 
 fn overlap(a: &str, b: &str) -> bool {
-    let (a, b): (Vec<&str>, Vec<&str>) = (a.split('/').collect(), b.split('/').collect());
-    a.len() == b.len()
-        && a.iter()
-            .zip(&b)
-            .all(|(x, y)| x == y || param(x) || param(y))
+    let (mut a, mut b) = (a.split('/'), b.split('/'));
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) if x == y || param(x) || param(y) => {}
+            _ => return false,
+        }
+    }
 }
 
 fn fill<'p>(target: &str, path: &'p str) -> Option<&'p str> {
@@ -157,6 +160,11 @@ impl ServeTables {
             .unwrap_or_else(PoisonError::into_inner);
         let tables = self.0.now.load();
         validate_tables(&tables, &batch, reserved)?;
+        // busbar:expect(bp::state_scan, reason = "boot: a generation's serve tables are published once per composition")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a generation's serve tables are published once per composition"
+        )]
         let mut next: Vec<Arc<ServeTable>> = tables
             .iter()
             .filter(|t| !batch.iter().any(|new| new.instance == t.instance))
@@ -174,6 +182,11 @@ impl ServeTables {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let tables = self.0.now.load();
+        // busbar:expect(bp::state_scan, reason = "config: a withdrawn plane instance's serve table is dropped once")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a withdrawn plane instance's serve table is dropped once"
+        )]
         let next: Vec<Arc<ServeTable>> = tables
             .iter()
             .filter(|t| t.instance != instance)
@@ -188,6 +201,10 @@ fn validate_tables(
     batch: &[ServeTable],
     reserved: &[(&str, &str)],
 ) -> Result<(), Collision> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a composition's serve routes are checked for collisions once, before it publishes"
+    )]
     let mut seen: Vec<(&str, &str, &str)> =
         reserved.iter().map(|(v, t)| (*v, *t, "kernel")).collect();
     for table in tables
@@ -203,6 +220,10 @@ fn validate_tables(
             if let Some((_, _, with)) = seen.iter().find(|(verb, target, _)| {
                 verb.eq_ignore_ascii_case(&route.verb) && overlap(target, &route.target)
             }) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a colliding serve route refuses the composition once"
+                )]
                 return Err(Collision {
                     route: (route.verb.clone(), route.target.clone()),
                     with: (*with).to_string(),
@@ -249,7 +270,10 @@ impl ServeTables {
     pub async fn answer(&self, req: Request) -> Option<Response> {
         use crate::admin::gate::{ApiError, ADMIN_PREFIX};
         let uri = req.uri().clone();
-        let path = uri.path().strip_prefix(ADMIN_PREFIX).unwrap_or(uri.path());
+        let path = uri
+            .path()
+            .strip_prefix(ADMIN_PREFIX)
+            .unwrap_or_else(|| uri.path());
         let (table, index, name) = {
             let tables = self.0.now.load();
             let mut named = false;

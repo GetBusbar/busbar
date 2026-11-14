@@ -77,26 +77,33 @@ impl EngineTablesView for EmptyEngineTablesView {
 #[derive(Debug, Default)]
 pub struct ConfigTables {
     lanes: Vec<(String, String, String)>,
-    by_model: std::collections::HashMap<String, usize>,
-    pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
-    fallbacks: std::collections::HashMap<String, String>,
+    by_model: foldhash::HashMap<String, usize>,
+    pools: foldhash::HashMap<String, Vec<(usize, u32)>>,
+    fallbacks: foldhash::HashMap<String, String>,
     upstream_credentials: busbar_contract::config::UpstreamCreds,
 }
 
 impl ConfigTables {
     #[must_use]
-    pub fn of(
+    pub fn of<'m>(
         lanes: &[crate::plane_driver::route_input::LaneInput],
         pools: &[crate::plane_driver::route_input::PoolInput],
-        by_model: &std::collections::HashMap<String, usize>,
+        by_model: impl IntoIterator<Item = (&'m String, &'m usize)>,
         upstream_credentials: busbar_contract::config::UpstreamCreds,
     ) -> Self {
-        ConfigTables {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the kernel's tables view is built once per generation"
+        )]
+        let tables = ConfigTables {
             lanes: lanes
                 .iter()
                 .map(|l| (l.model.clone(), l.provider.clone(), l.base_url.clone()))
                 .collect(),
-            by_model: by_model.clone(),
+            by_model: by_model
+                .into_iter()
+                .map(|(model, &idx)| (model.clone(), idx))
+                .collect(),
             pools: pools
                 .iter()
                 .map(|p| {
@@ -116,29 +123,39 @@ impl ConfigTables {
                 })
                 .collect(),
             upstream_credentials,
-        }
+        };
+        tables
     }
 }
 
-static QUEUED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+/// The live `on_exhausted: queue` depth per pool. A pool's slot, once created, stays (at depth 0 when
+/// drained), so a pool name is copied in once for the process, never per queued request.
+static QUEUED: std::sync::LazyLock<std::sync::Mutex<foldhash::HashMap<String, u64>>> =
     std::sync::LazyLock::new(Default::default);
 
-pub fn set_pool_queued_depth(pool: &str, depth: u64) {
-    QUEUED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(pool.to_string(), depth);
-}
-
-pub fn change_pool_queued_depth(pool: &str, delta: i64) {
+fn with_queued_depth(pool: &str, change: impl FnOnce(&mut u64)) {
     let mut queued = QUEUED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let depth = queued.entry(pool.to_string()).or_default();
-    *depth = depth.saturating_add_signed(delta);
-    if *depth == 0 {
-        queued.remove(pool);
+    if let Some(depth) = queued.get_mut(pool) {
+        change(depth);
+        return;
     }
+    let mut depth = 0;
+    change(&mut depth);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a configured pool's queue-depth slot is created once, at its first queued request"
+    )]
+    queued.insert(pool.to_string(), depth);
+}
+
+pub fn set_pool_queued_depth(pool: &str, depth: u64) {
+    with_queued_depth(pool, |d| *d = depth);
+}
+
+pub fn change_pool_queued_depth(pool: &str, delta: i64) {
+    with_queued_depth(pool, |d| *d = d.saturating_add_signed(delta));
 }
 
 impl EngineTablesView for ConfigTables {
