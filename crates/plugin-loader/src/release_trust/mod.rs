@@ -425,22 +425,6 @@ pub fn check_fresh_with_crypto(
     Ok(())
 }
 
-pub fn verify_release_with_crypto(
-    roots: &[crate::sign::RawFirstPartyKey],
-    seal: Seal<'_>,
-    subject: Subject<'_>,
-    checks: Checks,
-    crypto: &dyn ReleaseCrypto,
-) -> Result<Verified, WithCryptoError<SealRefusal>> {
-    crate::sign::validate_roots_with_crypto(roots, crypto).map_err(|e| {
-        e.map_rejection(|why| SealRefusal::Malformed {
-            doc: "root key",
-            why,
-        })
-    })?;
-    verify_release_inner(roots, seal, subject, checks, crypto)
-}
-
 pub(crate) fn verify_release_inner(
     roots: &[crate::sign::RawFirstPartyKey],
     seal: Seal<'_>,
