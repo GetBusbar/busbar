@@ -354,39 +354,30 @@ impl LoginMethods {
                 &mut resolved,
             )?;
 
-            let reresolve = super::relender(
-                &mc.settings,
-                registry,
-                &mc.module,
-                secret_resolver,
-            )
-            .map(|base| -> super::relend::Reresolve {
-                let (name, module, browser) =
-                    (name.clone(), mc.module.clone(), mc.browser_login.clone());
-                let (slots, resolver) = (registry.secret_slots(&mc.module), secret_resolver.clone());
-                Box::new(move || {
-                    let mut resolved = base()?;
-                    if let Some(cid) = browser.as_ref().and_then(|bl| bl.client_id.clone()) {
-                        resolved.default_text("client_id", cid);
-                    }
-                    lend_browser_login_secret(
-                        &name,
-                        &module,
-                        browser.as_ref(),
-                        &slots,
-                        &resolver,
-                        &mut resolved,
-                    )?;
-                    Ok(resolved)
-                })
-            });
-            let opened = super::relend::open(
-                &axis,
-                &mc.module,
-                &login_label(name),
-                &resolved,
-                reresolve,
-            );
+            let reresolve = super::relender(&mc.settings, registry, &mc.module, secret_resolver)
+                .map(|base| -> super::relend::Reresolve {
+                    let (name, module, browser) =
+                        (name.clone(), mc.module.clone(), mc.browser_login.clone());
+                    let (slots, resolver) =
+                        (registry.secret_slots(&mc.module), secret_resolver.clone());
+                    Box::new(move || {
+                        let mut resolved = base()?;
+                        if let Some(cid) = browser.as_ref().and_then(|bl| bl.client_id.clone()) {
+                            resolved.default_text("client_id", cid);
+                        }
+                        lend_browser_login_secret(
+                            &name,
+                            &module,
+                            browser.as_ref(),
+                            &slots,
+                            &resolver,
+                            &mut resolved,
+                        )?;
+                        Ok(resolved)
+                    })
+                });
+            let opened =
+                super::relend::open(&axis, &mc.module, &login_label(name), &resolved, reresolve);
 
             drop(resolved);
             let calls = opened.map_err(&refused)?;
@@ -625,7 +616,7 @@ pub enum SelfKeyIssue {
     NoGrant,
     /// No governance to issue from.
     NoGovernance,
-    /// The identity's role grants no group to charge a self-serve key through.
+    /// The subject's key is disabled, or another identity provider minted it.
     Unbound,
     /// The subject's self-serve key is on hold, and why.
     Held(crate::governance::SelfMintRefusal),
@@ -669,15 +660,7 @@ pub async fn issue_self_key(
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let unattributed = crate::auth::self_keys::unattributed_binding(app, module);
-    let keys = DeterministicEd25519Keys::new(
-        gov,
-        module.to_string(),
-        unattributed,
-        team,
-        pools,
-        provisioner,
-    );
+    let keys = DeterministicEd25519Keys::new(gov, module.to_string(), team, pools, provisioner);
     match issue_key(&keys, principal, ttl, refresh).await {
         Ok(k) => SelfKeyIssue::Issued {
             subject: principal.id.clone(),
