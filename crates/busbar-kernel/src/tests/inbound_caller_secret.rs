@@ -42,7 +42,7 @@ async fn admitted(secret: &str) -> (Kit, UnitRef, crate::auth::AdmittedContext) 
         answer.flow, FLOW_CONTINUE,
         "the body provider admits the caller"
     );
-    let head = signed_head().stripped(&answer.strips).unwrap();
+    let head = signed_head().stripped_for_test(&answer.strips).unwrap();
     assert_eq!(
         k.hand_in(MESSAGES, MESSAGES, answer.unit, head.clone()).0,
         FLOW_CONTINUE

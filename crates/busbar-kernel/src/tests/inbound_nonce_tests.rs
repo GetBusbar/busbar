@@ -331,7 +331,7 @@ async fn same_owner_adoption_refuses_old_ref() {
         .unwrap();
     assert_eq!(admitted.flow, FLOW_CONTINUE);
     let old = admitted.unit;
-    let head = signed_head().stripped(&admitted.strips).unwrap();
+    let head = signed_head().stripped_for_test(&admitted.strips).unwrap();
     assert_eq!(hand_in(old, head.clone()), Ok((FLOW_CONTINUE, old)));
     inbound.claim_request(OWNER, 1, 1, &head).unwrap();
 
