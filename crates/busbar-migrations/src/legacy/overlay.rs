@@ -125,7 +125,7 @@ pub fn frozen_overlay_from_facts(
         if chunk.len() != (length - output.len()).min(busbar_contract::MAX_RECORD_BYTES) {
             return Err(Error::Verification);
         }
-        output.extend_from_slice(chunk);
+        busbar_contract::secure::append(&mut output, chunk);
     }
     if <[u8; 32]>::from(Sha256::digest(&output)) != head.digest {
         return Err(Error::Verification);

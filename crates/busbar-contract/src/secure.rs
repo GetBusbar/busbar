@@ -240,6 +240,69 @@ impl SecureVec {
     }
 }
 
+/// Append `bytes` to a wiping `Vec`, never reallocating its live bytes in place: when it is
+/// full, they move into a fresh block of at least twice the capacity and the old block is
+/// volatile-wiped as its `Zeroizing` drops. The one growth path for a `Zeroizing<Vec<u8>>`
+/// outside [`SecureVec`] (LINT-RULES LR-117); a buffer reserved to its final size never moves.
+///
+/// # Panics
+/// When the length overflows `usize` (as `Vec` growth does).
+pub fn append(v: &mut Zeroizing<Vec<u8>>, bytes: &[u8]) {
+    let len = v
+        .len()
+        .checked_add(bytes.len())
+        .expect("wiping buffer length");
+    if len > v.capacity() {
+        let mut next = Vec::with_capacity(len.max(v.capacity().saturating_mul(2)));
+        next.extend_from_slice(&v[..]);
+        *v = Zeroizing::new(next);
+    }
+    v.extend_from_slice(bytes);
+}
+
+/// [`append`] that reports an allocation failure instead of aborting; on [`Overflow`] nothing
+/// is appended and the held bytes are unchanged.
+///
+/// # Errors
+/// [`Overflow`] when the length overflows or the larger block cannot be allocated.
+pub fn try_append(v: &mut Zeroizing<Vec<u8>>, bytes: &[u8]) -> Result<(), Overflow> {
+    let len = v.len().checked_add(bytes.len()).ok_or(Overflow)?;
+    if len > v.capacity() {
+        let mut next = Vec::new();
+        next.try_reserve_exact(len.max(v.capacity().saturating_mul(2)))
+            .map_err(|_| Overflow)?;
+        next.extend_from_slice(&v[..]);
+        *v = Zeroizing::new(next);
+    }
+    v.extend_from_slice(bytes);
+    Ok(())
+}
+
+/// [`append`] for a wiping `String`.
+///
+/// # Panics
+/// When the length overflows `usize`.
+pub fn append_str(s: &mut Zeroizing<String>, text: &str) {
+    let len = s.len().checked_add(text.len()).expect("wiping text length");
+    if len > s.capacity() {
+        let mut next = String::with_capacity(len.max(s.capacity().saturating_mul(2)));
+        next.push_str(s.as_str());
+        *s = Zeroizing::new(next);
+    }
+    s.push_str(text);
+}
+
+/// [`append`] for a wiping list: one item, moved into a fresh block when full; the old block's
+/// spare capacity, where the moved items lay, is wiped as its `Zeroizing` drops.
+pub fn push<T: zeroize::Zeroize>(v: &mut Zeroizing<Vec<T>>, item: T) {
+    if v.len() == v.capacity() {
+        let mut next = Vec::with_capacity(v.capacity().saturating_mul(2).max(4));
+        next.extend(v.drain(..));
+        *v = Zeroizing::new(next);
+    }
+    v.push(item);
+}
+
 /// Encoders (`serde_json::to_writer`, `write!`) append through [`SecureVec::extend`].
 impl io::Write for SecureVec {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {

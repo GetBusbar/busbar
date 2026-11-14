@@ -2124,17 +2124,19 @@ impl KernelServices {
             }
             chain_scopes.insert(address, chains.len());
             let framing = chain_at(kind).ok_or(NOT_A_KIND)?;
-            chains.reserve(1);
-            chains.push(crate::host_chains::ConditionalChain {
-                schema,
-                scope: scope.to_string(),
-                framing,
-                life: std::mem::replace(
-                    &mut *life,
-                    busbar_contract::host_records::conditional::Expected::Absent,
-                ),
-                action: std::mem::replace(&mut *action, ConditionalChainAction::Check),
-            });
+            busbar_contract::secure::push(
+                &mut chains,
+                crate::host_chains::ConditionalChain {
+                    schema,
+                    scope: scope.to_string(),
+                    framing,
+                    life: std::mem::replace(
+                        &mut *life,
+                        busbar_contract::host_records::conditional::Expected::Absent,
+                    ),
+                    action: std::mem::replace(&mut *action, ConditionalChainAction::Check),
+                },
+            );
         }
         if chains.is_empty() {
             request

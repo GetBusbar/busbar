@@ -709,11 +709,13 @@ impl<R: Read + Seek> VerifiedArchive<R> {
         self.source
             .seek(SeekFrom::Start(entry.offset))
             .map_err(io)?;
-        let mut bytes = Zeroizing::new(Vec::new());
+        // Zeroed to its exact length before it is wiping, so it never grows (LR-117).
+        let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(entry.length)
             .map_err(|_| Error::Allocation)?;
         bytes.resize(entry.length, 0);
+        let mut bytes = Zeroizing::new(bytes);
         self.source.read_exact(&mut bytes).map_err(io)?;
         if digest(&bytes) != entry.hash {
             return Err(Error::Integrity);
@@ -723,7 +725,7 @@ impl<R: Read + Seek> VerifiedArchive<R> {
             let mut out = Zeroizing::new(Vec::new());
             out.try_reserve_exact(src.len())
                 .map_err(|_| Error::Allocation)?;
-            out.extend_from_slice(src);
+            crate::secure::append(&mut out, src);
             Ok(out)
         };
         Ok(RowBuffers {
@@ -748,11 +750,13 @@ fn get<R: Read>(
     if next > limits.total_bytes || length > limits.frame_bytes.max(41) {
         return Err(Error::Budget);
     }
-    let mut bytes = Zeroizing::new(Vec::new());
+    // Zeroed to its exact length before it is wiping, so it never grows (LR-117).
+    let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)
         .map_err(|_| Error::Allocation)?;
     bytes.resize(length, 0);
+    let mut bytes = Zeroizing::new(bytes);
     source.read_exact(&mut bytes).map_err(io)?;
     hash.update(&bytes);
     *count = next;

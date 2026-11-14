@@ -223,14 +223,7 @@ mod erased {
 
     impl std::io::Write for Wiping {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if self.0.capacity() - self.0.len() < buf.len() {
-                let mut grown = Zeroizing::new(Vec::with_capacity(
-                    (self.0.len() + buf.len()).max(self.0.capacity() * 2),
-                ));
-                grown.extend_from_slice(&self.0);
-                self.0 = grown;
-            }
-            self.0.extend_from_slice(buf);
+            crate::secure::append(&mut self.0, buf);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
