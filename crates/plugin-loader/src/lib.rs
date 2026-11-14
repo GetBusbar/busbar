@@ -206,7 +206,6 @@ pub mod migration_secrets;
 pub mod observe;
 pub mod open_once;
 pub mod registry;
-pub mod release_crypto;
 pub mod release_trust;
 
 // busbar:request-path
