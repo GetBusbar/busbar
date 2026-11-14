@@ -893,13 +893,7 @@ impl Custody {
         order.dedup();
         let guards: Vec<_> = order
             .iter()
-            .map(|shard| {
-                gov.budget
-                    .shard_at(*shard)
-                    .map
-                    .read()
-                    .unwrap_or_else(|p| p.into_inner())
-            })
+            .map(|shard| gov.budget.shard_at(*shard).read())
             .collect();
         let targets = pending
             .targets

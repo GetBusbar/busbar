@@ -96,3 +96,46 @@ async fn flush_visits_only_written_shards() {
         after.0 - before.0
     );
 }
+
+#[tokio::test]
+async fn a_cell_left_dirty_is_reflagged_and_walked_next_tick() {
+    let gov = gov().await;
+    let id = "vk_left_dirty".to_string();
+    accrue(&gov, &id);
+    // A bucket being deleted keeps its dirty cell through pass 2.
+    gov.deleting_budget_buckets
+        .lock()
+        .unwrap()
+        .insert(id.clone());
+    gov.flush_budgets().await;
+    assert!(gov.budget.read(&id)[&id].dirty);
+    assert!(
+        gov.budget.flagged(&id),
+        "a shard the flush leaves dirty is flagged for the very next tick"
+    );
+    let before = counts(&gov);
+    gov.flush_budgets().await;
+    assert!(
+        counts(&gov).0 > before.0,
+        "the next tick walks the shard again, not only the backstop"
+    );
+    gov.deleting_budget_buckets.lock().unwrap().remove(&id);
+    gov.flush_budgets().await;
+    assert!(gov.budget.flagged(&id) || !gov.budget.read(&id)[&id].dirty);
+}
+
+#[tokio::test]
+async fn a_written_shard_is_flagged_and_a_walk_does_not_flag() {
+    let gov = gov().await;
+    let id = "vk_flag_owner".to_string();
+    assert!(!gov.budget.flagged(&id));
+    gov.budget
+        .write(&id)
+        .insert(id.clone(), BudgetCell::fresh(0));
+    assert!(gov.budget.flagged(&id), "a mutable access flags its shard");
+    gov.flush_budgets().await;
+    assert!(
+        !gov.budget.flagged(&id),
+        "a clean shard ends the flush unflagged; the walk itself never sets it"
+    );
+}
