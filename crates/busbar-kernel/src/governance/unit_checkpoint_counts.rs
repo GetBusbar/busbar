@@ -339,16 +339,21 @@ impl GovState {
                     })?;
                 }
                 if durable {
-                    let model = cell
+                    match cell
                         .models
                         .iter_mut()
                         .find(|m| m.model.as_ref() == lane && m.era == era)
-                        .expect("just accrued model");
-                    for (unit, n) in units {
-                        let raw = model.flushed.entry(unit.clone()).or_default();
-                        *raw = raw.checked_add(*n)?;
-                        let raw = model.flushed_era.entry(unit.clone()).or_default();
-                        *raw = raw.checked_add(*n)?;
+                    {
+                        Some(model) => {
+                            for (unit, n) in units {
+                                let raw = model.flushed.entry(unit.clone()).or_default();
+                                *raw = raw.checked_add(*n)?;
+                                let raw = model.flushed_era.entry(unit.clone()).or_default();
+                                *raw = raw.checked_add(*n)?;
+                            }
+                        }
+                        // A zero-only report creates no row, so there is no baseline to move.
+                        None => assert!(!has_units(units), "just accrued model"),
                     }
                 } else {
                     cell.dirty = true;

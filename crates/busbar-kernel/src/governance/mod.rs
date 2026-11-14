@@ -265,7 +265,8 @@ impl BudgetCell {
             }
             if let Some(i) = at {
                 cell.models[i].cur = next;
-            } else {
+            } else if has_units(&next) {
+                // No counts, no row: a row in the cell is a hit on its lane (#42).
                 cell.models.push(ModelCell {
                     model: model.into(),
                     era,
