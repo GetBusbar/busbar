@@ -34,6 +34,8 @@ pub(crate) struct MemoryBackend {
     pub(crate) fail_client_read: AtomicBool,
     lose_reply: AtomicBool,
     pub(crate) hang: AtomicBool,
+    /// Refuse every commit before any mutation, as a store that is down for writes does.
+    pub(crate) refuse_commits: AtomicBool,
 }
 impl PersistenceBackend for MemoryBackend {
     fn info(&self) -> BackendInfo {
@@ -127,6 +129,9 @@ impl PersistenceBackend for MemoryBackend {
     fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
         self.state.lock().unwrap().sent.push(prepared.clone());
         Box::pin(async move {
+            if self.refuse_commits.load(Ordering::SeqCst) {
+                return Err(Failure::Refused);
+            }
             if self.hang.load(Ordering::SeqCst) {
                 std::future::pending::<()>().await;
             }
