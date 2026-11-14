@@ -136,11 +136,15 @@ impl PersistenceBackend for MeterBackend {
     fn clock(&self, d: DatasetId) -> Call<'_, ClockObservation> {
         self.inner.clock(d)
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let deltas = metering_changes(&prepared);
             if deltas.is_empty() {
-                return self.inner.commit(prepared).await;
+                return self.inner.commit(prepared, key).await;
             }
             self.faults
                 .calls
@@ -155,7 +159,7 @@ impl PersistenceBackend for MeterBackend {
             if matches!(reply, Some(Reply::Unknown)) {
                 return Err(Failure::Unknown);
             }
-            let result = self.inner.commit(prepared).await;
+            let result = self.inner.commit(prepared, key).await;
             match reply {
                 Some(Reply::Lost) => Err(Failure::Unknown),
                 Some(Reply::Unwind) => {

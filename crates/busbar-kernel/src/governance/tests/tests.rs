@@ -4194,6 +4194,7 @@ impl busbar_contract::persistence::PersistenceBackend for NativeIdentityBackend 
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
         Box::pin(async move {
             if self.faults.fail_writes.load(Ordering::SeqCst) {
@@ -4214,7 +4215,7 @@ impl busbar_contract::persistence::PersistenceBackend for NativeIdentityBackend 
                 let _ = entered.send(());
                 let _ = release.await;
             }
-            let result = self.inner.commit(candidate).await;
+            let result = self.inner.commit(candidate, key).await;
             if matches!(
                 result,
                 Ok(busbar_contract::persistence::Decision::Applied(_))

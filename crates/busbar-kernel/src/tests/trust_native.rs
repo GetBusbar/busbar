@@ -74,7 +74,11 @@ impl PersistenceBackend for NativeBackend {
             Ok(page)
         })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             assert!(
                 !self.panic_commit.swap(false, Ordering::SeqCst),
@@ -83,7 +87,7 @@ impl PersistenceBackend for NativeBackend {
             if self.refuse_commit.load(Ordering::SeqCst) {
                 return Err(Failure::Refused);
             }
-            let result = self.inner.commit(candidate).await;
+            let result = self.inner.commit(candidate, key).await;
             assert!(
                 !self.panic_after.swap(false, Ordering::SeqCst),
                 "native postcommit panic"

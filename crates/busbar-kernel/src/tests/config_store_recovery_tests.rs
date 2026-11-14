@@ -37,8 +37,12 @@ impl PersistenceBackend for FailOverlayReads {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         self.actual.scan(request)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
-        self.actual.commit(candidate)
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
+        self.actual.commit(candidate, key)
     }
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.actual.clock(dataset)

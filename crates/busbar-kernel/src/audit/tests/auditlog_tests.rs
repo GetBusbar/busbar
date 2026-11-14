@@ -1112,8 +1112,12 @@ async fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
         fn clock(&self, d: DatasetId) -> Call<'_, ClockObservation> {
             self.inner.clock(d)
         }
-        fn commit(&self, c: PreparedCandidate) -> Call<'_, Decision> {
-            self.inner.commit(c)
+        fn commit(
+            &self,
+            c: PreparedCandidate,
+            key: busbar_contract::persistence::CommitKey,
+        ) -> Call<'_, Decision> {
+            self.inner.commit(c, key)
         }
     }
     let fail = Arc::new(AtomicBool::new(false));

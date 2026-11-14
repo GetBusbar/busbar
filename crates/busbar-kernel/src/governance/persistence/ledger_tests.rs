@@ -123,7 +123,11 @@ impl PersistenceBackend for Backend {
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async { Ok(self.now()) })
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let mut state = self.0.lock().unwrap();
             let c = prepared.candidate();
