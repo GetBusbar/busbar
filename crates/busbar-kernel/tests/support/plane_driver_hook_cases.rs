@@ -23,6 +23,9 @@ use super::{rig_with_hooks, Way};
 #[path = "plane_driver_project_copy_cases.rs"]
 mod project_copy_cases;
 
+#[path = "plane_driver_observe_only_cases.rs"]
+mod observe_only_cases;
+
 pub(crate) struct Nobody;
 
 impl CallerFacts for Nobody {
