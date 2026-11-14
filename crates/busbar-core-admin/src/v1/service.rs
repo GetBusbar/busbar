@@ -412,9 +412,55 @@ static CATALOG_SCAN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 
 const CATALOG_SCAN_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-// Hash only archives the admission scans. Unrelated files (including a Store's
-// journal) must not invalidate inventory; archive bytes must, even with preserved
-// size and mtime. This runs on the transaction's blocking worker.
+/// A file changed this recently may still change within the same timestamp tick, so its stat cannot
+/// vouch for its bytes yet (git's "racy clean" rule); such a file is hashed by content.
+const FINGERPRINT_RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What identifies one archive's bytes without reading them: device, inode, length, mtime and
+/// ctime (both to the nanosecond). A rewrite changes ctime (userspace cannot set it) and a
+/// replace changes the inode, so equal keys mean equal bytes once the file is past the racy window.
+#[cfg(unix)]
+fn archive_stat_key(meta: &std::fs::Metadata) -> Option<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let changed = std::time::UNIX_EPOCH
+        + std::time::Duration::new(
+            u64::try_from(meta.ctime()).ok()?,
+            u32::try_from(meta.ctime_nsec()).ok()?,
+        );
+    let settled = std::time::SystemTime::now()
+        .duration_since(changed)
+        .is_ok_and(|age| age >= FINGERPRINT_RACY_WINDOW);
+    settled.then(|| {
+        format!(
+            "stat:{}:{}:{}:{}.{}:{}.{}",
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn archive_stat_key(_: &std::fs::Metadata) -> Option<String> {
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            audit = "plugin_catalog_content_fingerprint",
+            "no ctime on this platform; the plugin catalog fingerprint hashes archive bytes"
+        );
+    }
+    None
+}
+
+// Fingerprint only archives the admission scans. Unrelated files (including a Store's journal)
+// must not invalidate inventory; archive bytes must, even with preserved size and mtime. A settled
+// archive is keyed by its stat (no read); one changed within the racy window, or on a platform
+// without ctime, is hashed by content (WASTE-CORE-LIFECYCLE W7). This runs on the transaction's
+// blocking worker.
 fn plugins_dir_fingerprint(
     dir: &Path,
     is_tarball: &dyn Fn(&str) -> bool,
@@ -432,11 +478,21 @@ fn plugins_dir_fingerprint(
                         "non-UTF-8 plugin filename",
                     )
                 })?;
-                if !is_tarball(file) || !entry.path().metadata()?.is_file() {
+                if !is_tarball(file) {
                     continue;
                 }
-                let bytes = operations::read_archive_bounded(&entry.path(), max_bytes)?;
-                entries.push((name, busbar_contract::redacted::sha256_hex(&bytes)));
+                let meta = entry.path().metadata()?;
+                if !meta.is_file() {
+                    continue;
+                }
+                let identity = match archive_stat_key(&meta) {
+                    Some(stat) => stat,
+                    None => {
+                        let bytes = operations::read_archive_bounded(&entry.path(), max_bytes)?;
+                        format!("sha256:{}", busbar_contract::redacted::sha256_hex(&bytes))
+                    }
+                };
+                entries.push((name, identity));
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
