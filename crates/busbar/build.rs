@@ -61,10 +61,6 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=BUSBAR_PROVENANCE_SOURCE");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
-    println!("cargo::rustc-check-cfg=cfg(distribution_root)");
-    if metadata_value(&manifest, "package.metadata.busbar.core", "dir").is_some() {
-        println!("cargo::rustc-cfg=distribution_root");
-    }
     let core = core_dir(&manifest);
     println!(
         "cargo:rerun-if-changed={}",
@@ -133,7 +129,7 @@ fn main() {
         let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
         env::var_os(var).is_some()
     };
-    let (source, cfgs) = linked_source(&manifest, &enabled);
+    let (source, _) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
     std::fs::write(out, source).expect("write linked.rs");
 
@@ -155,34 +151,24 @@ fn main() {
     )
     .expect("write migration_table.rs");
 
-    for cfg in seam_cfgs() {
+    let cfgs = build_cfgs(&manifest, &enabled);
+    for (cfg, on) in &cfgs {
         println!("cargo::rustc-check-cfg=cfg({cfg})");
-    }
-    for cfg in cfgs {
-        println!("cargo::rustc-cfg={cfg}");
-    }
-
-    for cfg in linked_axis_cfgs(&manifest, &enabled).1 {
-        println!("cargo::rustc-check-cfg=cfg({cfg})");
-    }
-
-    println!(
-        "cargo:rustc-env=BUSBAR_LINKED_AXES={}",
-        linked_axis_cfgs(&manifest, &enabled).0.join(" ")
-    );
-    for cfg in linked_axis_cfgs(&manifest, &enabled).0 {
-        println!("cargo::rustc-cfg={cfg}");
-    }
-
-    let mut sections: Vec<String> = Vec::new();
-    for (feature, section) in metadata_map(&manifest, "package.metadata.busbar.linked-section") {
-        let cfg = format!("linked_section_{}", section.replace('-', "_"));
-        println!("cargo::rustc-check-cfg=cfg({cfg})");
-        if enabled(&feature) {
+        if *on {
             println!("cargo::rustc-cfg={cfg}");
-            sections.push(section);
         }
     }
+    let axes: Vec<&str> = cfgs
+        .iter()
+        .filter(|(cfg, on)| *on && cfg.starts_with("linked_axis_"))
+        .map(|(cfg, _)| cfg.as_str())
+        .collect();
+    println!("cargo:rustc-env=BUSBAR_LINKED_AXES={}", axes.join(" "));
+    let sections: Vec<String> = metadata_map(&manifest, "package.metadata.busbar.linked-section")
+        .into_iter()
+        .filter(|(feature, _)| enabled(feature))
+        .map(|(_, section)| section)
+        .collect();
     println!(
         "cargo:rustc-env=BUSBAR_LINKED_SECTIONS={}",
         sections.join(" ")
@@ -194,58 +180,20 @@ fn main() {
         .collect();
     println!("cargo:rustc-env=BUSBAR_ENABLED_FEATURES={}", on.join(" "));
 
-    println!("cargo::rustc-check-cfg=cfg(linked_every_plane_door)");
-    let every_plane_door = metadata_map(&manifest, "package.metadata.busbar.linked-axes")
-        .iter()
-        .filter(|(_, axes)| axes.split_whitespace().any(|a| a == "plane-door"))
-        .all(|(feature, _)| enabled(feature));
-    if every_plane_door {
-        println!("cargo::rustc-cfg=linked_every_plane_door");
-    }
-
-    println!("cargo::rustc-check-cfg=cfg(linked_every_auth)");
-    let every_auth = metadata_map(&manifest, "package.metadata.busbar.linked-axes")
-        .iter()
-        .filter(|(_, axes)| axes.split_whitespace().any(|a| a == AUTH_AXIS))
-        .all(|(feature, _)| enabled(feature));
-    if every_auth {
-        println!("cargo::rustc-cfg=linked_every_auth");
-    }
-
-    println!("cargo::rustc-check-cfg=cfg(linked_operator_auth)");
-    if metadata_value(&manifest, "package.metadata.busbar.operator-auth", "row")
-        .is_some_and(|row| enabled(&row))
-    {
-        println!("cargo::rustc-cfg=linked_operator_auth");
-    }
-
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
         .join("linked_plane_doors.rs");
     std::fs::write(out, linked_plane_doors_source(&manifest, &enabled))
         .expect("write linked_plane_doors.rs");
-
-    println!("cargo::rustc-check-cfg=cfg(linked_driver_proofs)");
-    if metadata_map(&manifest, "package.metadata.busbar.driver-proofs")
-        .iter()
-        .any(|(feature, _)| enabled(feature))
-    {
-        println!("cargo::rustc-cfg=linked_driver_proofs");
-    }
 
     let (proofs, words) = driver_proofs_source(&manifest, &enabled);
     let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(out_dir.join("driver_proofs.rs"), proofs).expect("write driver_proofs.rs");
     std::fs::write(out_dir.join("driver_words.rs"), words).expect("write driver_words.rs");
 
-    let (wires, wires_off) = linked_transports_source(&manifest, &enabled);
+    let wires = linked_transports_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
         .join("linked_transports.rs");
     std::fs::write(out, wires).expect("write linked_transports.rs");
-
-    println!("cargo::rustc-check-cfg=cfg(linked_every_transport)");
-    if wires_off == 0 {
-        println!("cargo::rustc-cfg=linked_every_transport");
-    }
 
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
         .join("source_scan_needles.rs");
@@ -685,35 +633,6 @@ fn driver_proofs_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Stri
     (proofs, words)
 }
 
-fn linked_axis_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Vec<String>, Vec<String>) {
-    let cfg_of = |axis: &str| format!("linked_axis_{}", axis.replace('-', "_"));
-
-    let mut declared: Vec<String> = vec![
-        cfg_of("plane"),
-        cfg_of(EXPORT_DOOR_AXIS),
-        cfg_of(DOOR_AXIS),
-        cfg_of(PLANE_DOOR_AXIS),
-    ];
-    declared.extend(AXES.iter().map(|(axis, _, _)| cfg_of(axis)));
-
-    declared.push(cfg_of(AUTH_AXIS));
-
-    declared.push(cfg_of(EXPORT_DOOR_AXIS));
-    let mut set: Vec<String> = Vec::new();
-    for (feature, axes) in metadata_map(manifest, "package.metadata.busbar.linked-axes") {
-        if !enabled(&feature) {
-            continue;
-        }
-        for axis in axes.split_whitespace() {
-            let cfg = cfg_of(axis);
-            if declared.contains(&cfg) && !set.contains(&cfg) {
-                set.push(cfg);
-            }
-        }
-    }
-    (set, declared)
-}
-
 fn linked_plane_doors_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
     let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
@@ -741,7 +660,7 @@ fn linked_plane_doors_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> 
     out
 }
 
-fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String, usize) {
+fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
     let features = declared_features(manifest);
     let required = required_deps(manifest);
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
@@ -863,7 +782,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
          #[allow(unused_imports)]\n\
          use busbar_core_connector::doors as __busbar_doors;\n",
     );
-    (source, off)
+    source
 }
 
 #[cfg(test)]
