@@ -4915,6 +4915,12 @@ pub fn member_routes(
             },
         );
     }
+    // One resolve per provider for this call (WASTE-AUTH-SECRETS W3): every member of a provider
+    // presents the same `r.provider.credential`, so N members resolved it N times. The map holds
+    // zeroizing values for this call only and wipes on return, so the next call (a reload)
+    // resolves fresh and sees a rotated value. Errors are not memoized: `?` returns as before.
+    let mut by_provider: std::collections::HashMap<String, busbar_kernel::config::secret::Held> =
+        std::collections::HashMap::new();
     for r in resolved {
         #[expect(
             clippy::disallowed_methods,
@@ -4922,11 +4928,15 @@ pub fn member_routes(
         )]
         let credential = if r.provider.credential.is_none() {
             busbar_kernel::config::secret::Held::default()
+        } else if let Some(held) = by_provider.get(&r.name) {
+            held.clone()
         } else {
-            reach
+            let held = reach
                 .secrets
                 .resolve_at_config(&r.provider.credential, scope)
-                .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
+                .map_err(|e| format!("provider '{}' credential: {e}", r.name))?;
+            by_provider.insert(r.name.clone(), held.clone());
+            held
         };
 
         let from_credential = reach.auths.style_flags(&r.style).is_some_and(|flags| {
