@@ -358,11 +358,16 @@ fi
 # definition near the top of this file. $LSE_FLAG (arm64 default only; see its definition) joins
 # here exactly as it joined the instrumented build, and BOLT's emit-relocs path is unchanged by it.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
+CAPTURE="${BUSBAR_CARGO_CAPTURE_DIR:-$WORK/cargo-final}"
+scripts/release/cargo-capture.sh begin "$CAPTURE" dist/default/Cargo.toml "$TARGET" \
+  || pgo_fail "could not record the locked metadata before the optimized build"
 BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
 RUSTFLAGS="-Cprofile-use=$MERGED $REMAP_FLAGS${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
   python3 scripts/release/cargo_capture.py --directory "${BUSBAR_CARGO_CAPTURE_DIR:-$WORK/cargo-final}" -- \
   build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
+scripts/release/cargo-capture.sh end "$CAPTURE" dist/default/Cargo.toml "$TARGET" \
+  || pgo_fail "the lock or resolved metadata changed during the optimized build"
 [ -x "$OUT" ] || pgo_fail "optimized binary missing at $OUT"
 
 # ── OUTPUT-SIDE PGO PROOF: ASK THE ARTIFACT, NOT THE BUILD ────────────────────────────────────
