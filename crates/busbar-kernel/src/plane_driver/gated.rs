@@ -252,6 +252,9 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                         return Err(Stopped::Unreadable);
                     }
                     if let Some(body) = &next.rewritten {
+                        busbar_contract::stage_probe::tick(
+                            busbar_contract::stage_probe::Derive::ProjectCopy,
+                        );
                         self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
                     }
                     view = next;
