@@ -8,6 +8,9 @@ use std::sync::{Arc, Mutex};
 
 const AUDIENCE: &str = "api://auth-self-groups";
 
+/// One presentation: its name, the headers it carries, and the 4032 reason it must be refused with.
+type Case = (&'static str, Vec<(&'static str, String)>, &'static str);
+
 /// What a deployment with no `oauth_as` answers for any DPoP-bound or DPoP-scheme presentation.
 const UNVERIFIABLE: &str = "This deployment does not verify DPoP proofs, so a DPoP-bound or \
                             DPoP-scheme presentation cannot be accepted (RFC 9449). Present an \
@@ -258,7 +261,7 @@ async fn without_an_authorization_server_a_dpop_bound_token_is_refused_at_the_do
     let bound = bound_token(serde_json::json!(
         "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
     ));
-    let cases: Vec<(&str, Vec<(&str, String)>, &str)> = vec![
+    let cases: Vec<Case> = vec![
         (
             "bound bearer",
             vec![("authorization", format!("Bearer {bound}"))],
@@ -338,7 +341,7 @@ async fn without_an_authorization_server_a_dpop_bound_token_is_never_exchanged()
         "error": "sender_constrained",
         "error_description": UNVERIFIABLE,
     });
-    let cases: Vec<(&str, Vec<(&str, String)>, &str)> = vec![
+    let cases: Vec<Case> = vec![
         (
             "bound bearer",
             vec![("authorization", format!("Bearer {bound}"))],
