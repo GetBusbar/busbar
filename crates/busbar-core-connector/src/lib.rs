@@ -696,6 +696,8 @@ struct Judging {
     within: Within,
     /// Writes the caller made before the dial, in order.
     early: VecDeque<(Bytes, bool, bool)>,
+    /// The bytes `early` holds, kept current wherever it changes (LINT-RULES LR-108, BP04).
+    early_bytes: usize,
     answer: Answer,
     /// A dial through a proxy ([`proxy`]): the proxy, and whether the target's own judgement has
     proxied: Option<Proxied>,
@@ -2501,6 +2503,7 @@ impl Connector {
             };
             let mut judging = held.judging.lock().expect("judging");
             let j = judging.as_mut().expect("the crossing owns replay");
+            j.early_bytes -= took;
             if took == bytes.len() {
                 j.early.pop_front();
                 remaining -= 1;
@@ -2571,6 +2574,7 @@ impl Connector {
                             egress_class,
                             within: Within::new(),
                             early: VecDeque::new(),
+                            early_bytes: 0,
                             answer,
                             proxied: Some(proxied),
                         }),
@@ -2626,6 +2630,7 @@ impl Connector {
                         egress_class,
                         within: Within::new(),
                         early: VecDeque::new(),
+                        early_bytes: 0,
                         answer,
                         proxied: Some(proxied),
                     }),
@@ -2688,6 +2693,7 @@ impl Connector {
                     egress_class,
                     within: Within::from_slice(within),
                     early: VecDeque::new(),
+                    early_bytes: 0,
                     answer,
                     proxied: None,
                 }),
@@ -4399,13 +4405,13 @@ impl Conns for Connector {
                 if j.early.back().is_some_and(|(bytes, _, _)| bytes.is_empty()) {
                     return Err(ConnError::Pending);
                 }
-                let held_bytes: usize = j.early.iter().map(|(b, _, _)| b.len()).sum();
                 let take = bytes
                     .len()
-                    .min(WRITE_BUFFER_BYTES.saturating_sub(held_bytes));
+                    .min(WRITE_BUFFER_BYTES.saturating_sub(j.early_bytes));
                 if take == 0 && !bytes.is_empty() {
                     return Err(ConnError::Pending);
                 }
+                j.early_bytes += take;
                 j.early.push_back((
                     Bytes::copy_from_slice(&bytes[..take]),
                     end && take == bytes.len(),

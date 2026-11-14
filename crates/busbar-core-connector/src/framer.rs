@@ -2296,6 +2296,7 @@ impl Framing {
                     return Err(error);
                 }
                 if let Some(t) = ticket.take() {
+                    self.parked_input = self.parked_input.saturating_add(yielded_input(&yielded));
                     self.parked.push(Parked {
                         op: op.owned(),
                         yielded,

@@ -104,6 +104,7 @@ fn line_with_connection_held_out(closing: bool) -> Line {
             refused: Default::default(),
             missed: Vec::new(),
             parked: Default::default(),
+            parked_total: 0,
             held: Default::default(),
             next: 3,
         }),
