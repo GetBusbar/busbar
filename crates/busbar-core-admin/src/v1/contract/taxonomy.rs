@@ -130,6 +130,9 @@ pub enum Cond {
     StillReferenced,
     /// A usage read reached a class the rate card in force does not price (#42).
     Unpriced,
+    /// A restart-only admin config change on an in-memory (Ephemeral) Store: the restart that
+    /// would apply it is the same event that erases it, so it is refused, not silently lost.
+    RestartUnreachable,
 }
 
 impl Cond {
@@ -208,6 +211,10 @@ impl Cond {
             Cond::Unpriced => {
                 "a rate card is configured and names no price for a class this usage reached \
                  (an unpriced class refuses; it never reads 0)"
+            }
+            Cond::RestartUnreachable => {
+                "restart-only change on an in-memory Store (set it in config.yaml or configure a \
+                 durable store)"
             }
             Cond::NameCollision => {
                 "the plugin name/alias collides with an already-installed plugin under a different \
@@ -401,6 +408,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / MalformedIfMatch,
             Validation / NoDiskBase,
             VersionConflict / StaleIfMatch,
+            Conflict / RestartUnreachable,
         ],
         (Post, "/config/validate") => de![Validation / MalformedBody],
         (Post, "/auth/cache/flush") => de![Validation / MalformedBody],
@@ -541,6 +549,7 @@ fn named_map_declared_errors(
             Conflict / BaseDefined,
             Conflict / TrustCeilingRaise,
             VersionConflict / StaleIfMatch,
+            Conflict / RestartUnreachable,
         ],
         (Put, NamedMapShape::Item) => de![
             Validation / MalformedBody,
@@ -549,6 +558,7 @@ fn named_map_declared_errors(
             Validation / NoDiskBase,
             Conflict / BaseDefined,
             VersionConflict / StaleIfMatch,
+            Conflict / RestartUnreachable,
         ],
         (Delete, NamedMapShape::Item) if section.has_trust_ceiling() => de![
             Validation / MalformedIfMatch,
@@ -557,6 +567,7 @@ fn named_map_declared_errors(
             Conflict / BaseDefined,
             Conflict / StillReferenced,
             VersionConflict / StaleIfMatch,
+            Conflict / RestartUnreachable,
         ],
         (Delete, NamedMapShape::Item) => de![
             Validation / MalformedIfMatch,
@@ -564,6 +575,7 @@ fn named_map_declared_errors(
             NotFound / UnknownResource,
             Conflict / BaseDefined,
             VersionConflict / StaleIfMatch,
+            Conflict / RestartUnreachable,
         ],
         (Patch, NamedMapShape::Settings) => de![
             Validation / MalformedBody,
@@ -573,6 +585,7 @@ fn named_map_declared_errors(
             NotFound / UnknownResource,
             Conflict / BaseDefined,
             VersionConflict / StaleIfMatch,
+            Conflict / RestartUnreachable,
         ],
 
         (Get, NamedMapShape::Item) => de![NotFound / UnknownResource],

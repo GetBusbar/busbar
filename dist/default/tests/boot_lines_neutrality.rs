@@ -255,7 +255,7 @@ fn boot_lines_match_1_5_5_shape() {
 
     let expected = vec![
         "<TS>  INFO busbar starting version=\"<V>\"".to_string(),
-        "<TS>  INFO config is mutable; admin-API changes persist to the configured Store (restart durability follows that Store) overlay=configured Store".to_string(),
+        "<TS>  INFO config is mutable; admin-API changes are held by the in-memory Store: live changes last until restart, restart-only changes are refused (BUSBAR-8016) overlay=configured Store".to_string(),
         "<TS>  INFO metadata protection: 11 hosts blocked (--print-metadata-blocklist to view)"
             .to_string(),
         "<TS>  INFO plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"

@@ -18016,7 +18016,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml), raising `max_admin_scope` is refused over the admin API; the trust ceiling is operator file policy; lower it here, raise it in config.yaml | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), raising `max_admin_scope` is refused over the admin API; the trust ceiling is operator file policy; lower it here, raise it in config.yaml, restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -18285,7 +18285,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml), another config section still references this definition by bare name (remove the reference first) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), another config section still references this definition by bare name (remove the reference first), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -18551,7 +18551,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19240,7 +19240,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19535,7 +19535,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19801,7 +19801,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -20492,7 +20492,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -20762,7 +20762,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -21029,7 +21029,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -21721,7 +21721,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -21991,7 +21991,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -22258,7 +22258,7 @@
             }
           },
           "409": {
-            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`conflict`: base-defined (edit config.yaml), restart-only change on an in-memory Store (set it in config.yaml or configure a durable store) | `version_conflict`: stale `If-Match` (re-read and retry)",
             "content": {
               "application/json": {
                 "schema": {
@@ -29182,7 +29182,7 @@
             }
           },
           "409": {
-            "description": "`version_conflict`: stale `If-Match` (re-read and retry)",
+            "description": "`version_conflict`: stale `If-Match` (re-read and retry) | `conflict`: restart-only change on an in-memory Store (set it in config.yaml or configure a durable store)",
             "content": {
               "application/json": {
                 "schema": {

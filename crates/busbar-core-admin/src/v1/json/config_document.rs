@@ -135,6 +135,8 @@ pub(super) async fn put(
         let store = snapshot.overlay_path.clone().ok_or_else(|| AdminError::Validation(
             busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.into(),
         ))?;
+        busbar_kernel::config::overlay::admit_restart_scoped(&store, &pending)
+            .map_err(|msg| restart_unreachable("config.document", &pending, msg))?;
         let config_path = snapshot.config_path.clone().ok_or_else(|| AdminError::Validation(
             "document_patch requires an operator config file as its base".into(),
         ))?;
@@ -227,6 +229,24 @@ pub(super) async fn put(
             busbar_kernel::config::readback::ConfiguredView::capture_documents(
                 &mut next, &loaded.deploy, &loaded.defs,
             );
+            {
+                let mut own = busbar_kernel::plugin_routes::paths_awaiting_restart(
+                    &next.plugin_routes, &snapshot.plugin_routes, &next.boot_route_paths,
+                );
+                own.extend(busbar_kernel::state::planes_awaiting_restart_added(&next, &snapshot));
+                let exports: std::collections::BTreeSet<_> = next.export_defs.keys()
+                    .chain(snapshot.export_defs.keys()).cloned().collect();
+                for name in exports {
+                    let def = next.export_defs.get(&name);
+                    if def != snapshot.export_defs.get(&name)
+                        && busbar_kernel::export::plugin::requires_restart(&name, def)
+                    {
+                        own.push(format!("export.{name}"));
+                    }
+                }
+                busbar_kernel::config::overlay::admit_restart_scoped(&store, &own)
+                    .map_err(|msg| restart_unreachable("config.document", &own, msg))?;
+            }
             next.config_pending_restart.extend(pending);
             next.config_pending_restart.extend(busbar_kernel::plugin_routes::paths_awaiting_restart(
                 &next.plugin_routes, &snapshot.plugin_routes, &next.boot_route_paths,
@@ -382,6 +402,18 @@ fn shadowed_path(doc: &OverlayDoc, patch: &DocumentPatch) -> Result<Option<Strin
         }
     }
     Ok(None)
+}
+
+/// A restart-only admin edit refused on an in-memory Store: log the refusal under BUSBAR-8016, so
+/// the operator log carries the same explanation as the 409, and answer `conflict`.
+pub(super) fn restart_unreachable(endpoint: &str, restart: &[String], msg: String) -> AdminError {
+    busbar_kernel::diagnostics::diag_warn!(
+        busbar_kernel::diagnostics::GOVERNANCE_STORE_EPHEMERAL,
+        endpoint,
+        paths = %restart.join(", "),
+        "admin config change refused: restart-only entries on an in-memory Store would be lost on the restart that applies them"
+    );
+    AdminError::Conflict(msg)
 }
 
 fn restart_paths(paths: &[String]) -> Vec<String> {

@@ -59,6 +59,46 @@ pub(crate) async fn core() -> Arc<busbar_kernel::persistence::facade::CoreStore>
     core_over(native_backend().await).await
 }
 
+/// A Store that loses its state with the process: delegates every call to `inner` and reports
+/// `BackendInfo.durability == Ephemeral`, as the in-memory Store does (BUSBAR-8016).
+pub(crate) struct EphemeralInfo(
+    pub(crate) Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+);
+
+impl busbar_contract::persistence::PersistenceBackend for EphemeralInfo {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        busbar_contract::persistence::BackendInfo {
+            durability: busbar_contract::persistence::Durability::Ephemeral,
+            ..self.0.info()
+        }
+    }
+    fn read(
+        &self,
+        request: Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        self.0.read(request)
+    }
+    fn scan(
+        &self,
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.0.scan(request)
+    }
+    fn commit(
+        &self,
+        candidate: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        self.0.commit(candidate)
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.0.clock(dataset)
+    }
+}
+
 pub(crate) async fn admin_scoped() -> Arc<busbar_kernel::persistence::scoped::ScopedStore> {
     Arc::new(
         busbar_core_admin::idempotency::durable::scoped_store(core().await)
