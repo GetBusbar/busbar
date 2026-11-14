@@ -36,6 +36,8 @@ crc32fast = { workspace = true }
 tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }
 url = { workspace = true }
+http = { workspace = true }
+hyper-util = { workspace = true, features = ["client-proxy"] }
 base64 = { workspace = true }
 tracing = { workspace = true }
 
