@@ -3744,3 +3744,7 @@ mod completed_head_tests;
 #[cfg(test)]
 #[path = "tests/declared_need_arc_tests.rs"]
 mod declared_need_arc_tests;
+
+#[cfg(test)]
+#[path = "tests/locate_count_tests.rs"]
+mod locate_count_tests;
