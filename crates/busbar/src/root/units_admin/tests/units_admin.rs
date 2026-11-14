@@ -683,7 +683,7 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesOperator {
         match candidate {
             Some("admin-token") => busbar_kernel_identity::module::AuthOutcome::Identify(
                 busbar_kernel_identity::principal::Principal::from_id(
-                    crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
+                    crate::root::auth_bindings::ADMIN_PRINCIPAL_ID.to_owned(),
                 ),
             ),
             _ => busbar_kernel_identity::module::AuthOutcome::Pass,
@@ -762,7 +762,9 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesSomebodyElse {
     fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
         match candidate {
             Some("a-tenants-token") => busbar_kernel_identity::module::AuthOutcome::Identify(
-                busbar_kernel_identity::principal::Principal::from_id("acct:not-the-operator"),
+                busbar_kernel_identity::principal::Principal::from_id(
+                    "acct:not-the-operator".to_owned(),
+                ),
             ),
             _ => busbar_kernel_identity::module::AuthOutcome::Pass,
         }

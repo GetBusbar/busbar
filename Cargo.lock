@@ -489,6 +489,7 @@ name = "busbar-kernel-breaker"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "foldhash",
 ]
 
 [[package]]
@@ -504,6 +505,7 @@ name = "busbar-kernel-identity"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "foldhash",
  "hex",
  "ring",
 ]
@@ -513,6 +515,7 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "foldhash",
  "serde",
 ]
 

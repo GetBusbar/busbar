@@ -21,7 +21,7 @@ fn test_chain_identifies_with_module_and_principal() {
                 "second",
                 Box::new(Canned::new(
                     "mod-b",
-                    AuthOutcome::Identify(Principal::from_id("alice")),
+                    AuthOutcome::Identify(Principal::from_id("alice".to_owned())),
                 )),
             ),
         ],
@@ -43,7 +43,10 @@ fn test_chain_identifies_with_module_and_principal() {
 
 #[test]
 fn test_reject_stops_the_chain() {
-    let later = Canned::new("later", AuthOutcome::Identify(Principal::from_id("bob")));
+    let later = Canned::new(
+        "later",
+        AuthOutcome::Identify(Principal::from_id("bob".to_owned())),
+    );
     let c = chain(
         vec![
             entry("rejecter", Box::new(Canned::new("r", AuthOutcome::Reject))),
@@ -63,11 +66,11 @@ fn test_reject_stops_the_chain() {
 fn test_first_identify_wins_among_two_modules_that_would_both_identify() {
     let first = Canned::new(
         "first-mod",
-        AuthOutcome::Identify(Principal::from_id("alice")),
+        AuthOutcome::Identify(Principal::from_id("alice".to_owned())),
     );
     let second = Canned::new(
         "second-mod",
-        AuthOutcome::Identify(Principal::from_id("bob")),
+        AuthOutcome::Identify(Principal::from_id("bob".to_owned())),
     );
     let second_calls = second.calls.clone();
     let c = chain(
@@ -120,7 +123,7 @@ fn test_keys_in_chain_sets_flag_not_module() {
         !c.is_open(),
         "a chain naming the keys arm is not an open door"
     );
-    assert!(c.chain_names().is_empty());
+    assert!(c.chain_names().next().is_none());
     assert!(c.keys_in_chain());
     assert_eq!(
         c.run_chain(None),
@@ -150,7 +153,7 @@ fn test_keys_arm_runs_after_every_module_and_identifies() {
         } => {
             assert_eq!(module, "keys");
             assert_eq!(principal.id, "vk_one");
-            assert!(resolved.is_some(), "only an engine arm resolves a key");
+            assert!(resolved, "only an engine arm resolves a key");
         }
         other => panic!("expected the keys arm to identify, got {other:?}"),
     }
@@ -217,7 +220,7 @@ fn test_chain_names_are_the_modules_own_names() {
         ],
         false,
     );
-    assert_eq!(c.chain_names(), vec!["mod-a", "mod-b"]);
+    assert!(c.chain_names().eq(["mod-a", "mod-b"]));
 }
 
 #[test]

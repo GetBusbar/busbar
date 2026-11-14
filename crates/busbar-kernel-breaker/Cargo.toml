@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+foldhash = { workspace = true }
 
 [lints]
 workspace = true

@@ -25,19 +25,15 @@ pub struct Principal {
 }
 
 impl Principal {
-    /// A principal with nothing but a stable id — the shape a built-in module hands back.
-    pub fn from_id(id: impl Into<String>) -> Self {
+    /// A principal with nothing but a stable id — the shape a built-in module hands back. The id is
+    /// taken owned, so a module that already holds it moves it in and nothing is copied here.
+    pub fn from_id(id: String) -> Self {
         Principal {
-            id: id.into(),
+            id,
             name: None,
             roles: Vec::new(),
             ttl_secs: None,
         }
-    }
-
-    /// The anonymous caller: no id of its own, no roles, no bucket.
-    pub fn anonymous() -> Self {
-        Principal::from_id(ANONYMOUS)
     }
 
     /// Whether this principal is the anonymous one.
