@@ -15,7 +15,7 @@ type AsPlaneBuildFn =
         Vec<(String, String)>,
         Vec<String>,
         Option<Arc<dyn Any + Send + Sync>>,
-        Option<Arc<crate::persistence::facade::CoreStore>>,
+        Arc<crate::persistence::facade::CoreStore>,
     ) -> Pin<Box<dyn Future<Output = Result<Arc<dyn Any + Send + Sync>, String>> + Send>>;
 
 type AsPlaneCheckFn = fn(&serde_yaml::Value) -> Result<Vec<(String, SecretRef)>, String>;

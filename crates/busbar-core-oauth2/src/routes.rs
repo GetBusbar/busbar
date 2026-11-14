@@ -151,7 +151,7 @@ async fn device_verification(
                     Ok(false) => None,
                     Err(error) => {
                         tracing::warn!(%error, "oauth_as: the device form could not be consumed");
-                        return device_store_unavailable();
+                        return store_unavailable();
                     }
                 }
             }
@@ -173,7 +173,7 @@ async fn device_verification(
         .await
     {
         tracing::warn!(%error, "oauth_as: the device form could not be kept");
-        return device_store_unavailable();
+        return store_unavailable();
     }
     let cookie = device_session_cookie(plane.identity(), &session);
     let Ok(cookie) = axum::http::HeaderValue::from_str(&cookie) else {
@@ -223,7 +223,7 @@ fn device_session_cookie(identity: &crate::config::AsIdentity, id: &str) -> Stri
     )
 }
 
-fn device_store_unavailable() -> Response {
+fn store_unavailable() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         [(axum::http::header::CACHE_CONTROL, "no-store")],
@@ -370,7 +370,10 @@ async fn consent_screen(
     let Some(id) = new_session_id() else {
         return no_entropy();
     };
-    plane.open_session(ADMIN_SUBJECT, id.clone()).await;
+    if let Err(error) = plane.open_session(ADMIN_SUBJECT, id.clone()).await {
+        tracing::warn!(%error, "oauth_as: the consent session could not be kept");
+        return store_unavailable();
+    }
     let page = consent_page(target, &pending);
 
     let mut response = axum::response::Html(page).into_response();
@@ -449,7 +452,10 @@ async fn consent_submit(
             Some(handle) => super::consent::pushed_key(&client_id, &handle),
             None => super::consent::request_key(&client_id, target),
         };
-        plane.stake(&session, key, approve).await;
+        if let Err(error) = plane.stake(&session, key, approve).await {
+            tracing::warn!(%error, "oauth_as: the consent answer could not be kept");
+            return store_unavailable();
+        }
     }
     (
         axum::http::StatusCode::FOUND,

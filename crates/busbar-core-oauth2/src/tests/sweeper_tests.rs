@@ -22,9 +22,15 @@ fn block() -> serde_yaml::Value {
 }
 
 async fn generation() -> Arc<dyn std::any::Any + Send + Sync> {
-    seam_build::<crate::NoConnections>(block(), Vec::new(), Vec::new(), None, None)
-        .await
-        .expect("builds")
+    seam_build::<crate::NoConnections>(
+        block(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        crate::testkit::memory_store().await,
+    )
+    .await
+    .expect("builds")
 }
 
 #[tokio::test]

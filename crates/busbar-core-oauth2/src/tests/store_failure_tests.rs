@@ -20,7 +20,7 @@ async fn plane_over(backend: &Arc<MemoryBackend>) -> crate::plane::AsPlane {
         None,
         Vec::new(),
         crate::cimd::unconnected(),
-        Arc::new(crate::plane::Carried::over(Some(store)).expect("the store opens")),
+        Arc::new(crate::plane::Carried::over(store).expect("the store opens")),
     )
     .await
     .expect("the plane builds")
@@ -34,8 +34,32 @@ async fn a_consent_session_the_store_refused_is_not_opened() {
     let opened = plane
         .open_session("busbar-operator", "session-refused".to_string())
         .await;
+    assert!(opened.is_err(), "a session the store refused is an error");
     assert!(
         plane.sessions().subject("session-refused").is_none(),
         "a session the store refused was opened in memory anyway: {opened:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_consent_answer_the_store_refused_is_an_error_and_not_staked() {
+    let backend = Arc::new(MemoryBackend::default());
+    let plane = plane_over(&backend).await;
+    let session = plane
+        .open_session("busbar-operator", "session-kept".to_string())
+        .await
+        .expect("the store keeps the session");
+    backend.refuse_commits.store(true, Ordering::SeqCst);
+    assert!(
+        plane
+            .stake(&session, "request-1".to_string(), true)
+            .await
+            .is_err(),
+        "an answer the store refused must not read as kept"
+    );
+    backend.refuse_commits.store(false, Ordering::SeqCst);
+    assert!(
+        !plane.is_staked(&session, "request-1").await,
+        "the refused answer is not staked"
     );
 }
