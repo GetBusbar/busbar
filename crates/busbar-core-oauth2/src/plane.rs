@@ -179,27 +179,25 @@ impl Carried {
     pub(crate) fn over(
         store: Arc<busbar_kernel::persistence::facade::CoreStore>,
     ) -> Result<Self, String> {
-        match store {
-            Some(store) => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: names why the authorization server's store could not be scoped"
-                )]
-                let scoped = busbar_kernel::persistence::scoped::ScopedStore::host_private(
-                    store,
-                    "oauth-as",
-                    super::shared::Shared::schemas(),
-                )
-                .map_err(|e| format!("oauth_as store: {e:?}"))?;
-                Ok(Self {
-                    records: Arc::new(super::cimd::Records::shared(Arc::new(
-                        super::shared::Shared::new(Arc::new(scoped)),
-                    ))),
-                    ..Self::default()
-                })
-            }
-            None => Ok(Self::default()),
-        }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: names why the authorization server's store could not be scoped"
+        )]
+        let scoped = busbar_kernel::persistence::scoped::ScopedStore::host_private(
+            store,
+            "oauth-as",
+            super::shared::Shared::schemas(),
+        )
+        .map_err(|e| format!("oauth_as store: {e:?}"))?;
+        Ok(Self {
+            records: Arc::new(super::cimd::Records::shared(Arc::new(
+                super::shared::Shared::new(Arc::new(scoped)),
+            ))),
+            sessions: Arc::default(),
+            ephemeral_key: std::sync::OnceLock::new(),
+            limiter: Arc::default(),
+            registrations: Arc::default(),
+        })
     }
 
     pub(crate) fn store(&self) -> &Arc<super::shared::Shared> {
@@ -293,15 +291,11 @@ impl AsPlane {
                             clippy::disallowed_methods,
                             reason = "error: names why a signing key could not be minted"
                         )]
-                        let fresh = match carried.store() {
-                            Some(store) => store
-                                .signing_key(|| {
-                                    Es256Key::generate_pkcs8().map_err(|e| e.to_string())
-                                })
-                                .await
-                                .map_err(AsBuildError::SigningKeyMaterial)?,
-                            None => Es256Key::generate_pkcs8().map_err(AsBuildError::SigningKey)?,
-                        };
+                        let fresh = carried
+                            .store()
+                            .signing_key(|| Es256Key::generate_pkcs8().map_err(|e| e.to_string()))
+                            .await
+                            .map_err(AsBuildError::SigningKeyMaterial)?;
                         carried.ephemeral_key.get_or_init(|| fresh)
                     }
                 };
@@ -863,15 +857,6 @@ pub(crate) fn seam_build<C: crate::Connections>(
             );
                 None
             }
-            None => {
-                diag_warn!(
-                    OAUTH_AS_EPHEMERAL_SIGNING_KEY,
-                    "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
-                 generated. Every token this deployment issues stops verifying when the \
-                 process restarts. Set `oauth_as.signing_key` for anything but a trial."
-                );
-                None
-            }
             Some(_) => Some({
                 #[expect(
                     clippy::disallowed_methods,
@@ -911,14 +896,7 @@ pub(crate) fn seam_build<C: crate::Connections>(
 
 /// Holds the sweep's work alive; the clock task ends when it drops.
 pub(crate) struct Sweeper {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "held only to keep the sweep registered; tests probe it"
-        )
-    )]
-    work: Arc<SweepWork>,
+    _work: Arc<SweepWork>,
 }
 
 impl Sweeper {

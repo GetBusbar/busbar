@@ -179,6 +179,14 @@ impl AuthCalls for RelendingAuth {
         self.now().relend(settings)
     }
 
+    fn answering(&self) -> bool {
+        self.now().answering()
+    }
+
+    fn reusable(&self) -> bool {
+        self.now().reusable()
+    }
+
     fn login_presentation(&self) -> Option<LoginPresentation> {
         self.now().login_presentation()
     }

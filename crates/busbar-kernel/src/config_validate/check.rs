@@ -36,13 +36,37 @@ pub struct Check<'a> {
 #[cold]
 #[inline(never)]
 pub fn check(cfg: &RootCfg, c: Check<'_>) -> Result<Arc<dyn PluginRows>, Refusal> {
-    let semantic = || super::validate_with_plugins(cfg, c.unset_env_vars, c.plugins.enabled);
-    let verdict = if super::boot_advised() {
-        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), semantic)
-    } else {
-        semantic()
-    };
-    verdict.map_err(Refusal::Config)?;
+    check_with(cfg, None, c)
+}
+
+/// `check`, consuming the semantic pass's one result when the caller already judged this exact
+/// configuration (`judge_effective`): its advisories are logged here and the pass is not repeated.
+/// Inside the boot narration scope (`after_boot_advice`) they stay silent: the narration covered
+/// them.
+#[cold]
+#[inline(never)]
+pub fn check_with(
+    cfg: &RootCfg,
+    judged: Option<super::Judged>,
+    c: Check<'_>,
+) -> Result<Arc<dyn PluginRows>, Refusal> {
+    match judged {
+        Some(judged) if super::boot_advised() => drop(judged),
+        Some(judged) => judged.log(),
+        None => {
+            let semantic =
+                || super::validate_with_plugins(cfg, c.unset_env_vars, c.plugins.enabled);
+            let verdict = if super::boot_advised() {
+                tracing::subscriber::with_default(
+                    tracing::subscriber::NoSubscriber::default(),
+                    semantic,
+                )
+            } else {
+                semantic()
+            };
+            verdict.map_err(Refusal::Config)?;
+        }
+    }
     (c.root)(cfg).map_err(Refusal::Root)?;
     if let Some(fetch) = c.fetch {
         fetch().map_err(Refusal::Plugins)?;
