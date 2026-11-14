@@ -28,6 +28,28 @@ impl RoutingPolicy for Tap {
     }
 }
 
+/// A built-in ranking strategy: it says it is content-blind.
+struct Ranking;
+
+#[async_trait::async_trait]
+impl RoutingPolicy for Ranking {
+    async fn decide(
+        &self,
+        _: &RoutingRequest<'_>,
+        _: &[Candidate<'_>],
+        _: &RoutingContext<'_>,
+        _: Duration,
+    ) -> PolicyResult {
+        Ok(RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "ranking"
+    }
+    fn content_blind(&self) -> bool {
+        true
+    }
+}
+
 fn tap() -> busbar_kernel::hooks::TapEntry {
     (Duration::from_millis(500), true, Arc::new(Tap), Vec::new())
 }

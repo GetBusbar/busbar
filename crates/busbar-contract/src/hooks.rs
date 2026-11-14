@@ -369,6 +369,14 @@ pub trait RoutingPolicy: Send + Sync + 'static {
         false
     }
 
+    /// Whether this policy only ranks on the request's shape (the facts core states, never its
+    /// content) and so cannot stop, change or screen the request on what it says. `true` only for
+    /// a policy whose constructor was built for that; DEFAULT `false`, so a policy that does not
+    /// say otherwise is taken to read the request.
+    fn content_blind(&self) -> bool {
+        false
+    }
+
     /// PUSH a settings map to the hook (`PATCH /admin/v1/hooks/{name}/settings`): send the
     /// `configure` message and wait for the ack, bounded by `budget`. `Ok(())` = the hook
     /// acknowledged (the caller commits); any error/nack/timeout = NOT committed. Default: this
