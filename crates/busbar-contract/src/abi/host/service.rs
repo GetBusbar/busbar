@@ -471,6 +471,13 @@ pub const FOUND: u64 = 1;
 pub const CLAIM_WON: u64 = 1;
 /// `value` of [`op::RECORDS_CLAIM`]: the key was already claimed.
 pub const CLAIM_TAKEN: u64 = 2;
+/// `value` of ANY service's REFUSED answer: the host backs the service for no caller here, so it is
+/// read as UNSERVED, exactly as an absent slot (the `records.*` services on a deployment with no
+/// store bound). Every other REFUSED `value` is a refusal, and an older host's REFUSED (`0`) stays
+/// one: the reading only ever narrows to "unserved" on the host's word, never by default. A host
+/// answers it only once the caller's own standing (admission, declared kind, a well-formed `in`) is
+/// judged, so a misconfigured caller is REFUSED, never UNSERVED.
+pub const REFUSED_UNSERVED: u64 = u64::MAX;
 
 /// [`op::DEST_JUDGE`]'s `in`: judge a destination named inside content against the egress rules of
 /// a class (the allow-list, the class, the cloud metadata hosts) without dialing. A refusal decidable
