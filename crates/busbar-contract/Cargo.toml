@@ -60,6 +60,10 @@ test-seal = ["test-support"]
 # behind the dev-dependency-only `test-seal` feature.
 test-support = []
 
+# Dev-only count probes for the single-path stages (`stage_probe`, SINGLE-PATH §8). Named only in
+# [dev-dependencies]; without it every probe call compiles to nothing.
+stage-probe = []
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
