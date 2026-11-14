@@ -913,6 +913,15 @@ fn merged_errors(load: &Outcome, probe: &Outcome) -> BTreeMap<String, u64> {
 mod tests {
     use super::*;
 
+    /// codeaudit r1 error-handling-7: a CPU reading that was never taken (sampler missing,
+    /// thread failed, skipped/failed case) is absent from the report, not a real-looking 0.0.
+    #[test]
+    fn unmeasured_cpu_is_absent_not_zero() {
+        let v = serde_json::to_value(CaseResult::default()).unwrap();
+        assert!(v.get("cpu_us_per_req").is_none(), "{v}");
+        assert!(v.get("hammer_cpu_us_per_req").is_none(), "{v}");
+    }
+
     /// SELFTEST (design mcp-issuer §3.4, §4): a case with `contains:` checks EVERY body, not one
     /// in 97, and fails on any miss. A local far end answers one body in a hundred without the
     /// marker; every answered body is checked, the misses are counted as `body_miss n/total`, and
