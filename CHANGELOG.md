@@ -864,13 +864,15 @@ each dialect translates, field by field, is listed in the generated
   and `streams:` are new top-level keys; every 1.5.5 key keeps its 1.5.5 meaning and default, and a
   config with none of the three new keys boots and behaves exactly as it did under 1.5.5 (see
   [Behaviour identical to 1.5.5](#behaviour-identical-to-155) above), with one exception below.
-- **A `rate_card` must price every billable class the build declares, or boot refuses.** An unpriced
-  class never silently bills 0. A 1.5.5 config with a `rate_card` needs each entry to gain a
-  `units:` map pricing every LLM open class (`search_units`, `classifications`,
-  `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms` and the nine Bedrock
-  `guardrail_*` units; 0 keeps each free, as 1.5.5 billed them), and a rate card written through
-  `PUT /api/v1/admin/config/settings` needs the same keys or the write answers 400. `--validate`
-  names every class it wants.
+- **An open billable class a `rate_card` does not price is unpriced, never silently billed 0.** A
+  present card must still name every configured model and lane: one it leaves out refuses boot,
+  `--validate` and `PUT /api/v1/admin/config/settings` (400) with a paste-ready zeroed stub. A
+  named entry missing a rate for an open class only warns (naming the lane and classes); its
+  quantities are still recorded, and usage reads that need its price answer `409 unpriced_class`.
+  To keep 1.5.5's billing, give each entry of a 1.5.5 `rate_card` a `units:` map pricing every LLM
+  open class (`search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`,
+  `images`, `audio_ms` and the nine Bedrock `guardrail_*` units; 0 keeps each free, as 1.5.5
+  billed them).
 - **Every count a provider reports is ledgered under its own class** (owner ruling LEDGER-100).
   Beside its tokens, a turn now ledgers Cohere's billed `classifications`, Anthropic's
   `web_fetch_requests`, the tokens a provider's stated total counts above its itemized buckets
