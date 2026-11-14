@@ -80,7 +80,7 @@ fn an_auth_line_needs_a_fixed_identity_and_a_none_line_needs_no_auth_verdict() {
     let providers = ["actual-auth".to_owned()];
     for answer in [None, Some(Judged::Denied), Some(Judged::Overloaded)] {
         assert!(!matches!(
-            fixed_answer_at(&[answer], &providers, &HashSet::new(), false),
+            fixed_answer_at(&[answer], &providers, &HashSet::default(), false),
             Some(Fixed::Admitted(_))
         ));
     }
@@ -88,7 +88,7 @@ fn an_auth_line_needs_a_fixed_identity_and_a_none_line_needs_no_auth_verdict() {
         fixed_answer_at(
             &[Some(Judged::Identity)],
             &providers,
-            &HashSet::new(),
+            &HashSet::default(),
             false
         ),
         Some(Fixed::Admitted(0))

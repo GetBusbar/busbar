@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -91,11 +91,14 @@ pub trait DestJudge: Send + Sync {
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal>;
 
     fn judge_host(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
-        self.judge_name(host, class, false)
-            .map_err(|verdict| DestRefusal {
-                verdict,
-                reason: format!("host `{host}` was refused by the destination guard"),
-            })
+        self.judge_name(host, class, false).map_err(|verdict| {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a refused destination's reason names the host"
+            )]
+            let reason = format!("host `{host}` was refused by the destination guard");
+            DestRefusal { verdict, reason }
+        })
     }
 
     fn destinations_applied(&self, d: &crate::config::Destinations) {
@@ -475,13 +478,16 @@ fn submit_async(
 }
 
 pub trait SignKey: Send + Sync {
-    fn sign(&self, domain: &str, data: &[u8]) -> Option<(String, Vec<u8>)>;
+    /// Signs `data` in `domain`: appends the signature to `sig` (the answer's own buffer) and
+    /// answers the signing key's id. `None` = no key, and `sig` is left as it was.
+    fn sign(&self, domain: &str, data: &[u8], sig: &mut Vec<u8>) -> Option<String>;
 }
 
 impl SignKey for crate::governance::GovState {
-    fn sign(&self, domain: &str, data: &[u8]) -> Option<(String, Vec<u8>)> {
-        self.sign_in_domain(domain, data)
-            .map(|(kid, sig)| (kid, sig.to_vec()))
+    fn sign(&self, domain: &str, data: &[u8], sig: &mut Vec<u8>) -> Option<String> {
+        let (kid, signature) = self.sign_in_domain(domain, data)?;
+        sig.extend_from_slice(&signature);
+        Some(kid)
     }
 }
 
@@ -594,7 +600,10 @@ impl std::fmt::Debug for HostTicketAdmission {
 #[async_trait::async_trait]
 pub trait TicketPress: Send + Sync {
     /// Mint with the host's exact admitted unit and caller identity. Reservation-aware presses
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "config: the press receives the admitted unit, caller and principal as one call"
+    )]
     async fn mint_for_unit(
         &self,
         unit: u64,
@@ -792,10 +801,23 @@ pub type Standing = Arc<
         + Sync,
 >;
 
+/// The monotonic origin a services instance measures `mono_ns` from, read once as it is built.
+fn boot_instant() -> Instant {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the services instance fixes its monotonic origin once, as it is built"
+    )]
+    return Instant::now();
+}
+
 fn system_wall_ms() -> u64 {
-    SystemTime::now()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the host-services wall clock's single source, injected as WallMs; ops read it once and pass the value down"
+    )]
+    return SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
 }
 
 struct NativeWorkWriter {
@@ -810,11 +832,15 @@ impl NativeWorkWriter {
     fn rows(
         &self,
     ) -> Result<crate::persistence::scoped::ScopedStore, crate::persistence::scoped::Error> {
-        crate::persistence::scoped::ScopedStore::host_private(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: persistence::scoped owns its schema names; a native work op binds the one work schema"
+        )]
+        return crate::persistence::scoped::ScopedStore::host_private(
             Arc::clone(&self.store),
             &self.instance,
             [WORK_SCHEMA.as_str().to_string()],
-        )
+        );
     }
     fn put(&self, key: Vec<u8>, value: RecordBytes, acked: Acked) {
         let instance = Arc::clone(&self.instance);
@@ -936,7 +962,7 @@ pub struct KernelServices {
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
     trust_decisions: Mutex<HashMap<TrustDecisionKey, Arc<str>>>,
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
-    native_record_bootstrap: Mutex<HashMap<String, crate::host_record_bootstrap::Bootstrap>>,
+    native_record_bootstrap: Mutex<HashMap<Arc<str>, crate::host_record_bootstrap::Bootstrap>>,
     plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
     records: OnceLock<Records>,
     persistence: OnceLock<Arc<crate::persistence::facade::CoreStore>>,
@@ -1061,7 +1087,7 @@ impl KernelServices {
     pub fn new() -> Self {
         Self {
             observations: observations_runtime::ObservationRuntime::default(),
-            origin: Instant::now(),
+            origin: boot_instant(),
             wall_ms: Arc::new(system_wall_ms),
             mono_ns: None,
             instances: Mutex::default(),
@@ -1127,7 +1153,9 @@ impl KernelServices {
         if grants.contains_key(&key) {
             return None;
         }
-        grants.insert(key.clone(), Arc::from(counterparty));
+        // busbar:expect(bp::into_alloc, reason = "config: an operator's private trust decision write holds its counterparty while it is served")
+        let counterparty: Arc<str> = Arc::from(counterparty);
+        grants.insert(key.clone(), counterparty);
         Some(TrustDecisionGrant {
             services: self,
             key,
@@ -1214,9 +1242,10 @@ impl KernelServices {
 
     #[must_use]
     pub fn ticket_prefix_of(&self, instance: &str) -> Option<String> {
-        self.lock_instances()
-            .get(instance)
-            .and_then(|f| f.ticket_prefix.clone())
+        let instances = self.lock_instances();
+        let facts = instances.get(instance)?;
+        // busbar:expect(bp::clone_alloc, reason = "boot: a served plane's ticket prefix is read once, as its routes are built")
+        facts.ticket_prefix.clone()
     }
 
     pub fn open_carrier_session(&self, caller: &Caller, principal: &str, sink: CarrierSink) -> u64 {
@@ -1225,14 +1254,18 @@ impl KernelServices {
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                number,
+            .insert(number, {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: a carrier session keeps its principal once, as its line opens"
+                )]
+                let principal = principal.to_string();
                 CarrierSession {
                     incarnation: caller.incarnation().clone(),
-                    principal: principal.to_string(),
+                    principal,
                     sink,
-                },
-            );
+                }
+            });
         number
     }
 
@@ -1316,10 +1349,12 @@ impl KernelServices {
     }
 
     pub fn bound_work(&self, instance: &str, bounds: WorkBounds) {
+        // busbar:expect(bp::into_alloc, reason = "boot: an instance's work bounds are recorded once, as it is admitted")
+        let instance: Arc<str> = Arc::from(instance);
         self.bounds_of
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(Arc::from(instance), bounds);
+            .insert(instance, bounds);
     }
 
     #[must_use]
@@ -1390,7 +1425,7 @@ impl KernelServices {
         if grants.contains_key(caller.namespace().as_ref()) {
             return Err("native record bootstrap caller already bound");
         }
-        grants.insert(caller.namespace().to_string(), grant);
+        grants.insert(Arc::clone(caller.namespace()), grant);
         Ok(())
     }
 
@@ -1449,19 +1484,23 @@ impl KernelServices {
         {
             return Err(Stored::refused(NOT_A_KIND));
         }
-        let mut schemas: Vec<String> = facts
-            .record_kinds
-            .iter()
-            .map(|schema| schema.as_str().to_string())
-            .collect();
-        schemas.push(crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().into());
-        crate::host_records_async::AsyncRecords::authorized(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: host_records_async owns its schema names, so a native record op names its declared kinds; no intermediate list"
+        )]
+        let rows = crate::host_records_async::AsyncRecords::authorized(
             Arc::clone(store),
             caller.namespace(),
-            schemas,
-        )
-        .map(|rows| Some(NativeRecordScope { rows, facts }))
-        .map_err(|_| failed(STORE_FAILED))
+            facts
+                .record_kinds
+                .iter()
+                .map(|schema| schema.as_str().to_string())
+                .chain(std::iter::once(
+                    crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string(),
+                )),
+        );
+        rows.map(|rows| Some(NativeRecordScope { rows, facts }))
+            .map_err(|_| failed(STORE_FAILED))
     }
 
     #[must_use]
@@ -1482,6 +1521,7 @@ impl KernelServices {
         demotions: Arc<DemotionRecord>,
         default_instance: &str,
     ) -> Self {
+        // busbar:expect(bp::into_alloc, reason = "boot: the demotion record's default instance is fixed once, as services are built")
         self.demotions = OnceLock::from(Demotions {
             record: demotions,
             default_instance: Arc::from(default_instance),
@@ -1498,6 +1538,7 @@ impl KernelServices {
     }
 
     pub fn attach_demotions(&self, demotions: Arc<DemotionRecord>, default_instance: &str) -> bool {
+        // busbar:expect(bp::into_alloc, reason = "boot: the demotion record's default instance is fixed once, as it is attached")
         self.demotions
             .set(Demotions {
                 record: demotions,
@@ -1542,6 +1583,10 @@ impl KernelServices {
                  the instance is refused rather than write beside, or purge under its own rule, \
                  the kernel's records"
             );
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: an admission refusal names the instance and what it collided with"
+            )]
             return Err(AdmitRefused::KindReserved {
                 instance: instance.to_string(),
                 kind: kind.as_str().to_string(),
@@ -1559,7 +1604,7 @@ impl KernelServices {
                 return Err(unknown);
             }
         }
-        let mut conditional_kinds = std::collections::HashSet::new();
+        let mut conditional_kinds = foldhash::HashSet::default();
         for &kind in &facts.conditional_record_kinds {
             let Some(schema) = facts.record_kinds.get(kind as usize) else {
                 return Err(AdmitRefused::ConditionalKind { kind });
@@ -1575,6 +1620,7 @@ impl KernelServices {
                 return Err(AdmitRefused::ConditionalKind { kind });
             }
         }
+        // busbar:expect(bp::into_alloc, reason = "boot: an instance's label is interned once, when it is admitted")
         let key: Arc<str> = Arc::from(instance);
 
         let (snapshot, default) = match self.demotions.get() {
@@ -1596,6 +1642,10 @@ impl KernelServices {
             .contains_key(instance)
             && instances.contains_key(instance)
         {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: an admission refusal names the instance and what it collided with"
+            )]
             return Err(AdmitRefused::BootstrapHeld {
                 instance: instance.to_string(),
             });
@@ -1609,6 +1659,10 @@ impl KernelServices {
                 grant.instance == instance && (instances.contains_key(instance) || !grant.bound())
             })
         {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: an admission refusal names the instance and what it collided with"
+            )]
             return Err(AdmitRefused::BootstrapHeld {
                 instance: instance.to_string(),
             });
@@ -1623,6 +1677,10 @@ impl KernelServices {
                 &***label != instance && f.signing.as_ref().is_some_and(|s| s.domain == domain)
             });
             if let Some((held_by, _)) = holder {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: an admission refusal names the instance and what it collided with"
+                )]
                 return Err(AdmitRefused::DomainHeld {
                     domain: domain.to_string(),
                     held_by: held_by.to_string(),
@@ -1635,6 +1693,10 @@ impl KernelServices {
             .and_then(|f| f.ticket_prefix.as_ref())
         {
             if facts.ticket_prefix.as_ref() != Some(prefix) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: an admission refusal names the instance and what it collided with"
+                )]
                 return Err(AdmitRefused::TicketPrefixChanged {
                     instance: instance.to_string(),
                     prefix: prefix.clone(),
@@ -1645,6 +1707,10 @@ impl KernelServices {
             if let Some((held_by, _)) = instances.iter().find(|(label, f)| {
                 &***label != instance && f.ticket_prefix.as_ref() == Some(prefix)
             }) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: an admission refusal names the instance and what it collided with"
+                )]
                 return Err(AdmitRefused::TicketPrefixHeld {
                     prefix: prefix.clone(),
                     held_by: held_by.to_string(),
@@ -1743,6 +1809,7 @@ impl KernelServices {
             .trust
             .rule(instance, counterparty, item, ruling, expected)
             .map_err(trust_refused)?;
+        // busbar:expect(bp::fresh_buffer, reason = "config: an operator trust decision lists the demotion rows it clears")
         let mut clear = Vec::new();
         if fact.item.is_none() && ruling == Ruling::Approve {
             clear.push(demotion_key(&fact.instance, &fact.counterparty));
@@ -1896,14 +1963,23 @@ impl KernelServices {
         }
         let pending = &self.pending;
         let make = || {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the read-your-writes overlay keeps its own copy of a queued write; the writer lent the bytes"
+            )]
             let seq = match chain {
                 Some(_) => 0,
                 None => pending.enqueue(caller.namespace(), kind, key, value.as_slice().to_vec()),
             };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the write-behind queue owns a write's key until the store acks it; the writer lent the key"
+            )]
+            let key = key.to_vec();
             Write {
                 instance: Arc::clone(caller.namespace()),
                 schema,
-                key: key.to_vec(),
+                key,
                 value,
                 seq,
                 owed: WriteOwed::new(acked),
@@ -1968,9 +2044,13 @@ impl KernelServices {
         if !facts.record_chains.iter().any(|chain| chain.kind == kind) {
             return Err("life observation requires a declared chain");
         }
-        let scope = crate::host_chains::scope_of(scope)
-            .ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?
-            .to_string();
+        let scope =
+            crate::host_chains::scope_of(scope).ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a chain-life observation's scope outlives this call in its async completion"
+        )]
+        let scope = scope.to_string();
         if self.persistence.get().is_some() {
             let rows = self
                 .native_records(caller, schema.as_str())
@@ -2057,6 +2137,10 @@ impl KernelServices {
         for predicate in &candidate.predicates {
             let schema = schema_at(predicate.kind, false)?;
             request.predicates.reserve(1);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: busbar-contract conditional::Request owns its schema names; a transaction names each one it touches"
+            )]
             request.predicates.push(Predicate {
                 schema: schema.as_str().to_string(),
                 key: record_key(caller.namespace(), &predicate.key),
@@ -2065,6 +2149,10 @@ impl KernelServices {
         }
         for mutation in &candidate.mutations {
             request.mutations.reserve(1);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: busbar-contract conditional::Request owns its schema names; a transaction names each one it touches"
+            )]
             request.mutations.push(match mutation {
                 RecordMutation::Put { kind, key, value } => {
                     let schema = schema_at(*kind, false)?;
@@ -2085,7 +2173,7 @@ impl KernelServices {
         }
         let mut chains =
             zeroize::Zeroizing::new(Vec::<crate::host_chains::ConditionalChain>::new());
-        let mut chain_scopes = std::collections::HashMap::new();
+        let mut chain_scopes = foldhash::HashMap::default();
         for chain in &candidate.chains {
             use crate::host_chains::ConditionalChainAction;
             let (kind, scope, life) = match chain {
@@ -2125,6 +2213,10 @@ impl KernelServices {
             chain_scopes.insert(address, chains.len());
             let framing = chain_at(kind).ok_or(NOT_A_KIND)?;
             chains.reserve(1);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a conditional chain mutation's scope is held by the transaction until it settles"
+            )]
             chains.push(crate::host_chains::ConditionalChain {
                 schema,
                 scope: scope.to_string(),
@@ -2288,6 +2380,10 @@ impl KernelServices {
     fn cleanup_planes(&self, cx: &mut std::task::Context<'_>) -> bool {
         let drivers = {
             let mut registered = self.plane_cleanup.lock().unwrap_or_else(|e| e.into_inner());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the 1 s flush tick prunes dropped planes; no request runs it"
+            )]
             registered.retain(|driver| driver.strong_count() != 0);
             registered.clone()
         };
@@ -2300,17 +2396,27 @@ impl KernelServices {
 
     /// Settle dropped callers before final billing flushes, retaining pending work on timeout.
     pub async fn drain_plane_cleanup(&self, deadline: std::time::Duration) -> bool {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the shutdown drain fixes its deadline once"
+        )]
         let until = tokio::time::Instant::now() + deadline;
         loop {
             if std::future::poll_fn(|cx| std::task::Poll::Ready(self.cleanup_planes(cx))).await {
                 return true;
             }
-            if tokio::time::Instant::now() >= until {
+            // busbar:expect(bp::clock_repeat, reason = "boot: the shutdown drain re-reads the clock once per 2 ms poll until its deadline")
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: the shutdown drain re-reads the clock once per 2 ms poll until its deadline"
+            )]
+            let now = tokio::time::Instant::now();
+            if now >= until {
                 return false;
             }
             tokio::time::sleep_until(std::cmp::min(
                 until,
-                tokio::time::Instant::now() + std::time::Duration::from_millis(2),
+                now + std::time::Duration::from_millis(2),
             ))
             .await;
         }
@@ -2319,6 +2425,10 @@ impl KernelServices {
     pub async fn flushes(&self) {
         use futures::StreamExt as _;
         let every = crate::host_records::FLUSH_INTERVAL;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the flusher schedules its first tick once, as it starts"
+        )]
         let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut jobs = futures::stream::FuturesUnordered::new();
@@ -2393,12 +2503,22 @@ impl KernelServices {
     }
 
     pub fn drain(&self, deadline: std::time::Duration) -> bool {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the shutdown drain fixes its deadline once"
+        )]
         let until = Instant::now() + deadline;
         loop {
             if self.batcher.idle() {
                 return true;
             }
-            if Instant::now() >= until {
+            // busbar:expect(bp::clock_repeat, reason = "boot: the shutdown drain re-reads the clock once per 2 ms poll until its deadline")
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: the shutdown drain re-reads the clock once per 2 ms poll until its deadline"
+            )]
+            let now = Instant::now();
+            if now >= until {
                 return false;
             }
             self.flush_tick();
@@ -2586,14 +2706,24 @@ pub const DEMOTION_SEP: char = '\u{1f}';
 
 #[must_use]
 pub fn demotion_key(instance: &str, counterparty: &str) -> String {
-    format!("{instance}{DEMOTION_SEP}{counterparty}")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a demotion row's key is spelled for an operator trust decision or an admission replay"
+    )]
+    return format!("{instance}{DEMOTION_SEP}{counterparty}");
 }
 
 #[must_use]
 pub fn claim_token(instance: &str, kind: &str, key: &[u8]) -> String {
-    let digest = busbar_contract::abi::sdk::digest::sha256(
-        &[instance.as_bytes(), &[0], kind.as_bytes(), &[0], key].concat(),
-    );
+    use sha2::Digest as _;
+    let digest: [u8; 32] = sha2::Sha256::new()
+        .chain_update(instance.as_bytes())
+        .chain_update([0])
+        .chain_update(kind.as_bytes())
+        .chain_update([0])
+        .chain_update(key)
+        .finalize()
+        .into();
     let minted = IdempotencyKey::mint(&crate::seal::acquire(), digest);
     hex::encode(minted.bytes())
 }
@@ -2707,6 +2837,10 @@ impl HostServices for KernelServices {
                     .sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: an operator inspection lists the carrier sessions it asked about"
+                )]
                 let observations = sessions
                     .iter()
                     .map(|session| SessionObservation {
@@ -2722,15 +2856,24 @@ impl HostServices for KernelServices {
     }
 
     fn now(&self) -> Reading {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the host clock service's single wall source; a plugin's `now` call reads it once and passes it down"
+        )]
         let wall = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the host clock service's monotonic source when no MonoNs is injected"
+        )]
+        let mono_ns = self.mono_ns.as_ref().map_or_else(
+            || u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            |mono| mono(),
+        );
         Reading {
             wall_ns: wall,
-            mono_ns: self.mono_ns.as_ref().map_or_else(
-                || u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
-                |mono| mono(),
-            ),
+            mono_ns,
         }
     }
 
@@ -2779,6 +2922,10 @@ impl HostServices for KernelServices {
                 let Some(pool) = self.pool() else {
                     return Ran::Now(Stored::refused(NO_POOL));
                 };
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: a native record read moves its schema into the async read; host_records_async takes owned names"
+                )]
                 let schema = kind.to_string();
                 let key = record_key(caller.namespace(), key);
                 return submit_async(pool, later, async move {
@@ -2821,7 +2968,7 @@ impl HostServices for KernelServices {
         let reads = Arc::clone(&records.reads);
         let key = record_key(caller.namespace(), key);
         submit(pool, later, move || match reads.record_get(schema, &key) {
-            Ok(Some(v)) if !v.as_slice().is_empty() => found(v.as_slice().to_vec()),
+            Ok(Some(v)) if !v.as_slice().is_empty() => found(v.into_vec()),
             Ok(_) => Stored::ready(svc::ABSENT),
             Err(_) => failed(STORE_FAILED),
         })
@@ -2856,9 +3003,10 @@ impl HostServices for KernelServices {
                     return Ran::Now(Stored::refused(NOT_ADMITTED));
                 };
                 let instance = Arc::clone(caller.namespace());
-                let scope = record_key(&instance, &[]).len();
+                let scope = crate::host_records::record_scope_len(&instance);
                 let prefix = record_key(&instance, &list.prefix);
                 return submit_async(pool, later, async move {
+                    // busbar:expect(bp::fresh_buffer, reason = "config: busbar-contract merge_list takes the listed rows as an owned list")
                     let mut rows = Vec::new();
                     let mut cursor = None;
                     loop {
@@ -2870,11 +3018,12 @@ impl HostServices for KernelServices {
                             Ok(page) => page,
                             Err(_) => return failed(STORE_FAILED),
                         };
-                        for (key, value) in page.rows {
-                            let Some(key) = key.get(scope..) else {
+                        for (mut key, value) in page.rows {
+                            if key.len() < scope {
                                 return failed(STORE_FAILED);
-                            };
-                            rows.push((key.to_vec(), value.expose(&crate::seal::lend()).clone()));
+                            }
+                            key.drain(..scope);
+                            rows.push((key, value.expose(&crate::seal::lend()).clone()));
                         }
                         cursor = page.next;
                         if cursor.is_none() {
@@ -2909,16 +3058,25 @@ impl HostServices for KernelServices {
         };
         let reads = Arc::clone(&records.reads);
         let instance = Arc::clone(caller.namespace());
-        let scope = record_key(caller.namespace(), &[]).len();
+        let scope = crate::host_records::record_scope_len(caller.namespace());
         let prefix = record_key(caller.namespace(), &list.prefix);
 
         submit(pool, later, move || {
             match reads.record_scan(schema, &prefix, u32::MAX) {
                 Ok(rows) => {
+                    // In place: the scanned rows are unscoped and moved, never copied.
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: an in-place collect over the scanned rows' own buffers; busbar-contract merge_list takes an owned list"
+                    )]
                     let rows: Vec<(Vec<u8>, Vec<u8>)> = rows
                         .into_iter()
-                        .filter_map(|(k, v)| {
-                            Some((k.get(scope..)?.to_vec(), v.as_slice().to_vec()))
+                        .filter_map(|(mut k, v)| {
+                            if k.len() < scope {
+                                return None;
+                            }
+                            k.drain(..scope);
+                            Some((k, v.into_vec()))
                         })
                         .collect();
                     let rows = match chain {
@@ -2961,11 +3119,11 @@ impl HostServices for KernelServices {
                 return Ran::Now(failed(STORE_FAILED));
             }
             let token = claim_token(caller.namespace(), kind, key);
-            let claim_key = (
-                Arc::clone(caller.namespace()),
-                kind.to_string(),
-                token.clone(),
-            );
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a native claim holds its kind and token in the in-flight claim table until it settles"
+            )]
+            let claim_key = (Arc::clone(caller.namespace()), kind.to_string(), token);
             let attempt = {
                 let mut claims = self
                     .native_claims
@@ -2995,16 +3153,16 @@ impl HostServices for KernelServices {
             };
             let store = Arc::clone(store);
             let instance = Arc::clone(caller.namespace());
-            let kind = kind.to_string();
             return submit_async(pool, later, async move {
                 use crate::persistence::scoped::{ClaimOutcome, ScopedStore};
+                let (_, kind, token) = &guard.key;
                 let scoped = match ScopedStore::authorized(store, &instance, Vec::<String>::new()) {
                     Ok(scoped) => scoped,
                     Err(_) => return failed(STORE_FAILED),
                 };
                 let result = match attempt.pending {
-                    Some(pending) => scoped.retry_claim(&kind, pending).await,
-                    None => scoped.redeem(&kind, &token, attempt.expires_at).await,
+                    Some(pending) => scoped.retry_claim(kind, pending).await,
+                    None => scoped.redeem(kind, token, attempt.expires_at).await,
                 };
                 match result {
                     Ok(ClaimOutcome::Claimed) => {
@@ -3058,6 +3216,10 @@ impl HostServices for KernelServices {
         let expires_at = expires_ms.div_ceil(1000);
         let token = claim_token(caller.namespace(), kind, key);
         let rows = Arc::clone(&records.reads);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a claim moves its kind into the offloaded store call, which outlives this one"
+        )]
         let kind = kind.to_string();
         submit(pool, later, move || {
             match rows.claim(&kind, &token, expires_at, now) {
@@ -3075,17 +3237,25 @@ impl HostServices for KernelServices {
         let Some(signing) = facts.signing.as_ref() else {
             return Stored::refused(NO_DOMAIN);
         };
-        let Some((kid, sig)) = self
+        // The key (prefix + kid) leads the answer, the signature follows: signed first into the
+        // answer's own buffer, then the key appended and rotated to the front, in place.
+        let mut stored = Stored::ready(0);
+        let Some(kid) = self
             .signer
             .get()
-            .and_then(|s| s.sign(&signing.domain, data))
+            .and_then(|s| s.sign(&signing.domain, data, &mut stored.bytes))
         else {
             return Stored::refused(NO_KEY);
         };
-        spans_of(vec![(
-            format!("{}{kid}", signing.kid_prefix).into_bytes(),
-            sig,
-        )])
+        let sig_len = stored.bytes.len();
+        stored
+            .bytes
+            .extend_from_slice(signing.kid_prefix.as_bytes());
+        stored.bytes.extend_from_slice(kid.as_bytes());
+        let key_len = stored.bytes.len() - sig_len;
+        stored.bytes.rotate_right(key_len);
+        stored.spans.push(span(0, key_len, key_len, sig_len));
+        stored
     }
 
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
@@ -3131,6 +3301,10 @@ impl HostServices for KernelServices {
         let record = Arc::clone(&d.record);
         let key = demotion_key(caller.namespace(), counterparty);
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: only a sighting that changes trust state settles a durable row, keyed by its counterparty"
+        )]
         let unprefixed =
             (*caller.namespace() == d.default_instance).then(|| counterparty.to_string());
         let owed = TrustSightOwed {
@@ -3186,6 +3360,10 @@ impl HostServices for KernelServices {
             return Ran::Now(Stored::refused(NOT_READABLE));
         }
         let (secret, live) = credentials.read(kind, id);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a credential read answers in its own zeroizing buffer; the credential store keeps its copy"
+        )]
         let mut bytes =
             zeroize::Zeroizing::new(secret.expose(&crate::seal::lend()).as_bytes().to_vec());
         let span = ItemSpan {
@@ -3229,9 +3407,18 @@ impl HostServices for KernelServices {
             return Stored::refused(SESSION_NOT_OPEN);
         }
 
+        // `session:<u64>` is at most 28 bytes: the audit subject is spelled on the stack.
+        let mut subject = [0u8; 28];
+        let subject = {
+            use std::io::Write as _;
+            let mut at = &mut subject[..];
+            let _ = write!(at, "session:{session}");
+            let len = 28 - at.len();
+            std::str::from_utf8(&subject[..len]).unwrap_or_default()
+        };
         crate::audit::auditlog::emit_admin_hostless_now(
             SESSION_EMIT_ACTION,
-            &format!("session:{session}"),
+            subject,
             busbar_contract::vocab::OUTCOME_APPLIED,
             &principal,
         );
@@ -3302,6 +3489,7 @@ impl HostServices for KernelServices {
         let Some(key) = self.units.get(unit).and_then(|r| r.principal.clone()) else {
             return Ran::Now(Stored::refused(TICKET_NO_PRINCIPAL));
         };
+        // busbar:expect(bp::clone_alloc, reason = "config: a ticket mint carries its instance's prefix into the async press")
         let Some(prefix) = self.facts(caller).and_then(|f| f.ticket_prefix.clone()) else {
             return Ran::Now(Stored::refused(TICKET_NO_PREFIX));
         };
@@ -3312,6 +3500,10 @@ impl HostServices for KernelServices {
             return Ran::Now(Stored::refused(NO_POOL));
         };
         let caller = caller.clone();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a ticket mint carries its lent record into the async press as a zeroizing secret"
+        )]
         let record = busbar_contract::Secret::new(record.to_vec());
         let now = (self.wall_ms)() / 1000;
         submit_async(pool, later, async move {
@@ -3354,7 +3546,12 @@ impl HostServices for KernelServices {
             return Stored::refused(FILL_OUT_OF_RANGE);
         }
         let mut bytes = vec![0; len as usize];
-        if getrandom::fill(&mut bytes).is_err() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the plugin random service answers from OS entropy; a seeded userspace CSPRNG is a security design call (reported)"
+        )]
+        let filled = getrandom::fill(&mut bytes);
+        if filled.is_err() {
             return failed(NO_RANDOMNESS);
         }
         Stored {
@@ -3422,15 +3619,13 @@ impl HostServices for KernelServices {
     }
 
     fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
-        let rows: Vec<KeyRow> = self
-            .trust
-            .rows()
-            .into_iter()
-            .filter(|r| {
+        let all = self.trust.rows();
+        let rows = || {
+            all.iter().filter(|r| {
                 r.instance.as_str() == caller.namespace().as_ref() && r.counterparty == counterparty
             })
-            .collect();
-        let Some(whole) = rows.iter().find(|r| r.item.is_none()) else {
+        };
+        let Some(whole) = rows().find(|r| r.item.is_none()) else {
             return Stored::refused(if self.facts(caller).is_some() {
                 NOT_A_COUNTERPARTY
             } else {
@@ -3439,20 +3634,25 @@ impl HostServices for KernelServices {
         };
         let mut stored = Stored::ready(key_code(whole.state));
         let cap = usize::try_from(MAX_SPANS).unwrap_or(usize::MAX);
-        for row in rows.iter().filter(|r| r.item.is_some()).take(cap) {
+        for row in rows().filter(|r| r.item.is_some()).take(cap) {
             let item = row.item.as_deref().unwrap_or_default();
-            let value = format!(
-                "{}\0{}\0{}",
-                row.state.word(),
-                row.approved.as_deref().unwrap_or_default(),
-                row.seen.as_deref().unwrap_or_default()
-            );
             let off = stored.bytes.len();
             stored.bytes.extend_from_slice(item.as_bytes());
-            stored.bytes.extend_from_slice(value.as_bytes());
+            // The value: `state\0approved\0seen`, written straight into the answer.
+            let value_off = stored.bytes.len();
+            stored.bytes.extend_from_slice(row.state.word().as_bytes());
+            stored.bytes.push(0);
+            stored
+                .bytes
+                .extend_from_slice(row.approved.as_deref().unwrap_or_default().as_bytes());
+            stored.bytes.push(0);
+            stored
+                .bytes
+                .extend_from_slice(row.seen.as_deref().unwrap_or_default().as_bytes());
+            let value_len = stored.bytes.len() - value_off;
             stored
                 .spans
-                .push(span(off, item.len(), off + item.len(), value.len()));
+                .push(span(off, item.len(), value_off, value_len));
         }
         stored
     }
@@ -3647,8 +3847,11 @@ impl HostServices for KernelServices {
                 let book = Arc::clone(&self.work);
                 let bounds = self.work_bounds_of(caller.namespace());
                 let wall_ms = Arc::clone(&self.wall_ms);
-                let kind = kind.to_string();
-                let record = record.to_vec();
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: a native work open moves its lent kind and record into the async writer"
+                )]
+                let (kind, record) = (kind.to_string(), record.to_vec());
                 let owed = Owed(Some(later));
                 let pool = Arc::clone(&writer.pool);
                 pool.run_async(Box::pin(async move {
@@ -3666,11 +3869,21 @@ impl HostServices for KernelServices {
                     let now_ms = wall_ms();
                     for gone in book.sweep(&writer.instance, now_ms, bounds.retain_ms) {
                         if let Ok(empty) = RecordBytes::new(Vec::new()) {
-                            writer.put(gone.to_vec(), empty, Box::new(|_| {}));
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "config: an expired work row's tombstone takes an owned key; only rows past retention reach here"
+                            )]
+                            let gone = gone.to_vec();
+                            writer.put(gone, empty, Box::new(|_| {}));
                         }
                     }
                     let mut reference = [0; 16];
-                    if getrandom::fill(&mut reference).is_err() {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: a work reference is drawn from OS entropy; a seeded userspace CSPRNG is a security design call (reported)"
+                    )]
+                    let filled = getrandom::fill(&mut reference);
+                    if filled.is_err() {
                         owed.answer(failed(NO_RANDOMNESS));
                         return;
                     }
@@ -3701,8 +3914,13 @@ impl HostServices for KernelServices {
                         reference,
                         owed: Some(owed),
                     };
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: the write-behind queue owns a work row's key until the store acks it"
+                    )]
+                    let key = reference.to_vec();
                     writer.put(
-                        reference.to_vec(),
+                        key,
                         row,
                         Box::new(move |result| opening.answer(result)),
                     );
@@ -3729,6 +3947,10 @@ impl HostServices for KernelServices {
         let bounds = self.work_bounds_of(caller.namespace());
         let wall_ms = Arc::clone(&self.wall_ms);
         let instance = Arc::clone(caller.namespace());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a work open moves its lent kind and record into the offloaded writer"
+        )]
         let (kind, record) = (kind.to_string(), record.to_vec());
         submit(pool, later, move || {
             if book.load(&*rows, &instance).is_err() {
@@ -3742,7 +3964,12 @@ impl HostServices for KernelServices {
                 }
             }
             let mut reference = [0u8; 16];
-            if getrandom::fill(&mut reference).is_err() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a work reference is drawn from OS entropy; a seeded userspace CSPRNG is a security design call (reported)"
+            )]
+            let filled = getrandom::fill(&mut reference);
+            if filled.is_err() {
                 return failed(NO_RANDOMNESS);
             }
             let work = Work {
@@ -3942,12 +4169,17 @@ impl HostServices for KernelServices {
                 }
                 let owner = self.owner_of_unit(unit);
                 let in_flight = |unit| self.units.get(unit).is_some();
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: a settled work row keeps its record; the plugin lent the bytes"
+                )]
+                let record = record.to_vec();
                 let settled = match self.work.settle(
                     caller.namespace(),
                     handle,
                     owner.as_ref(),
                     &in_flight,
-                    record.to_vec(),
+                    record,
                     (self.wall_ms)(),
                 ) {
                     Ok(settled) => settled,
@@ -3957,6 +4189,10 @@ impl HostServices for KernelServices {
                     self.work.cancel_settle(handle);
                     return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
                 };
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the write-behind queue owns a work row's key until the store acks it"
+                )]
                 let key = settled.reference.to_vec();
                 let unwritten = Unwritten {
                     book: Arc::clone(&self.work),
@@ -3987,12 +4223,17 @@ impl HostServices for KernelServices {
 
         let owner = self.owner_of_unit(unit);
         let in_flight = |u: u64| self.units.get(u).is_some();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a settled work row keeps its record; the plugin lent the bytes"
+        )]
+        let record = record.to_vec();
         let settled = match self.work.settle(
             caller.namespace(),
             handle,
             owner.as_ref(),
             &in_flight,
-            record.to_vec(),
+            record,
             now_ms,
         ) {
             Ok(v) => v,
@@ -4064,8 +4305,13 @@ impl HostServices for KernelServices {
             Ok(stage) => stage,
             Err(refused) => return Ran::Now(refused),
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a content scan hands its lent bytes to the async stage, which outlives this call"
+        )]
+        let content = content.to_vec();
         stage.scan(
-            content.to_vec(),
+            content,
             Box::new(move |answer| {
                 later(match answer {
                     StageAnswer::Pass => Stored::ready(svc::CONTENT_PASS),
@@ -4152,25 +4398,33 @@ pub type Judged = Box<dyn FnOnce(Result<SocketAddr, u64>) + Send>;
 pub type Admitted = Result<(SocketAddr, Vec<IpAddr>), Refused>;
 
 fn judged(v: Admitted, explain: bool) -> Stored {
-    let (mut s, keys) = match v {
-        Ok((_, addrs)) => (
-            Stored::ready(svc::DEST_ALLOWED),
-            addrs.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        ),
-        Err(r) => (
-            Stored::ready(r.verdict),
-            r.detail.filter(|_| explain).into_iter().collect(),
-        ),
-    };
-    for key in keys {
-        let at = s.bytes.len();
-        s.bytes.extend_from_slice(key.as_bytes());
+    use std::io::Write as _;
+    // Each key (an admitted address, or the refusal's detail) is written straight into the answer.
+    fn key_span(s: &mut Stored, at: usize) {
         s.spans.push(ItemSpan {
             value: absent_span(),
             ..span(at, s.bytes.len() - at, 0, 0)
         });
     }
-    s
+    match v {
+        Ok((_, addrs)) => {
+            let mut s = Stored::ready(svc::DEST_ALLOWED);
+            for addr in &addrs {
+                let at = s.bytes.len();
+                let _ = write!(s.bytes, "{addr}");
+                key_span(&mut s, at);
+            }
+            s
+        }
+        Err(r) => {
+            let mut s = Stored::ready(r.verdict);
+            if let Some(detail) = r.detail.filter(|_| explain) {
+                s.bytes.extend_from_slice(detail.as_bytes());
+                key_span(&mut s, 0);
+            }
+            s
+        }
+    }
 }
 
 impl KernelServices {

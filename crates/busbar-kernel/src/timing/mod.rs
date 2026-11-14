@@ -108,11 +108,22 @@ pub use crate::timeit;
 
 #[cfg(feature = "timing")]
 mod imp {
-    use std::collections::HashMap;
+    use foldhash::HashMap;
     use std::panic::catch_unwind;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, Weak};
     use std::time::Instant;
+
+    /// The profiler's one clock seam: every sample is `now() - start`, both readings taken here.
+    #[inline(always)]
+    fn now() -> Instant {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the opt-in `timing` feature plus BUSBAR_TIMING profiler; the clock read is the measurement"
+        )]
+        let t = Instant::now();
+        t
+    }
 
     const N_BUCKETS: usize = 65;
 
@@ -209,14 +220,22 @@ mod imp {
 
     type ThreadRegistry = HashMap<&'static str, MethodStat>;
 
-    fn threads() -> &'static Mutex<Vec<Weak<Mutex<ThreadRegistry>>>> {
-        static THREADS: OnceLock<Mutex<Vec<Weak<Mutex<ThreadRegistry>>>>> = OnceLock::new();
-        THREADS.get_or_init(|| Mutex::new(Vec::new()))
+    /// Every live thread's accumulator, keyed by its allocation address. A thread removes its own
+    /// entry as it ends (see [`LocalHandle`]), so the registry never needs a sweep.
+    type Threads = HashMap<usize, Weak<Mutex<ThreadRegistry>>>;
+
+    fn threads() -> &'static Mutex<Threads> {
+        static THREADS: OnceLock<Mutex<Threads>> = OnceLock::new();
+        THREADS.get_or_init(|| Mutex::new(Threads::default()))
+    }
+
+    fn thread_key(registry: &Arc<Mutex<ThreadRegistry>>) -> usize {
+        Arc::as_ptr(registry) as usize
     }
 
     fn accumulated() -> &'static Mutex<ThreadRegistry> {
         static ACCUMULATED: OnceLock<Mutex<ThreadRegistry>> = OnceLock::new();
-        ACCUMULATED.get_or_init(|| Mutex::new(ThreadRegistry::new()))
+        ACCUMULATED.get_or_init(|| Mutex::new(ThreadRegistry::default()))
     }
 
     fn fold_into(dst: &mut ThreadRegistry, src: &ThreadRegistry) {
@@ -225,17 +244,13 @@ mod imp {
         }
     }
 
-    fn live_registries() -> Vec<Arc<Mutex<ThreadRegistry>>> {
-        let mut all = threads().lock().unwrap_or_else(|p| p.into_inner());
-        let mut live = Vec::with_capacity(all.len());
-        all.retain(|w| match w.upgrade() {
-            Some(a) => {
-                live.push(a);
-                true
-            }
-            None => false,
-        });
-        live
+    /// Folds every live thread's accumulator into `dst`.
+    fn fold_live_into(dst: &mut ThreadRegistry) {
+        let all = threads().lock().unwrap_or_else(|p| p.into_inner());
+        for registry in all.values().filter_map(Weak::upgrade) {
+            let g = registry.lock().unwrap_or_else(|p| p.into_inner());
+            fold_into(dst, &g);
+        }
     }
 
     struct LocalHandle(Arc<Mutex<ThreadRegistry>>);
@@ -245,6 +260,11 @@ mod imp {
             let mut acc = accumulated().lock().unwrap_or_else(|p| p.into_inner());
             let taken = std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()));
             fold_into(&mut acc, &taken);
+            drop(acc);
+            threads()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&thread_key(&self.0));
         }
     }
 
@@ -252,11 +272,11 @@ mod imp {
         /// This thread's accumulator. Created lazily and registered into [`threads`] on first touch;
         /// its [`LocalHandle`] wrapper hands the samples off to [`accumulated`] when the thread ends.
         static LOCAL: LocalHandle = {
-            let a = Arc::new(Mutex::new(ThreadRegistry::new()));
+            let a = Arc::new(Mutex::new(ThreadRegistry::default()));
             threads()
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .push(Arc::downgrade(&a));
+                .insert(thread_key(&a), Arc::downgrade(&a));
             LocalHandle(a)
         };
     }
@@ -294,7 +314,10 @@ mod imp {
         {
             // SAFETY: `atexit` stores a plain `extern "C"` fn pointer that takes no args and returns
             // nothing; `timing_atexit` matches that ABI and only reads process-global state.
-            #[allow(unsafe_code)]
+            #[expect(
+                unsafe_code,
+                reason = "config: BUSBAR_TIMING installs its exit-time report hook once"
+            )]
             unsafe {
                 libc::atexit(timing_atexit);
             }
@@ -336,7 +359,7 @@ mod imp {
         #[inline]
         fn drop(&mut self) {
             if let Some(start) = self.start {
-                record(self.name, start.elapsed().as_nanos() as u64);
+                record(self.name, (now() - start).as_nanos() as u64);
             }
         }
     }
@@ -346,24 +369,18 @@ mod imp {
         Timer {
             name,
 
-            start: enabled().then(Instant::now),
+            start: enabled().then(now),
         }
     }
 
     #[inline]
     pub fn scope<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
-        let start = enabled().then(Instant::now);
-        let out = f();
-        if let Some(start) = start {
-            record(name, start.elapsed().as_nanos() as u64);
-        }
-        out
+        let _timer = timer(name);
+        f()
     }
 
     pub fn reset() {
         LOCAL.with(|h| h.0.lock().unwrap_or_else(|p| p.into_inner()).clear());
-
-        drop(live_registries());
     }
 
     pub fn dump_scoped() {
@@ -384,10 +401,7 @@ mod imp {
     fn merged_snapshot() -> ThreadRegistry {
         let acc = accumulated().lock().unwrap_or_else(|p| p.into_inner());
         let mut merged: ThreadRegistry = acc.clone();
-        for h in live_registries() {
-            let g = h.lock().unwrap_or_else(|p| p.into_inner());
-            fold_into(&mut merged, &g);
-        }
+        fold_live_into(&mut merged);
         merged
     }
 
@@ -396,8 +410,12 @@ mod imp {
             eprintln!("BUSBAR_TIMING scope={scope} (no samples)");
             return;
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the BUSBAR_TIMING report table, printed on demand or at exit"
+        )]
         let mut rows: Vec<(&&'static str, &MethodStat)> = map.iter().collect();
-        rows.sort_by_key(|(_, s)| std::cmp::Reverse(s.total_ns));
+        rows.sort_unstable_by_key(|(_, s)| std::cmp::Reverse(s.total_ns));
         eprintln!(
             "BUSBAR_TIMING scope={scope}  {:<28} {:>10} {:>11} {:>10} {:>10} {:>10} {:>10} {:>10}",
             "name", "count", "total", "mean", "p50", "p99", "min", "max"
@@ -409,23 +427,56 @@ mod imp {
                 "BUSBAR_TIMING scope={scope}  {:<28} {:>10} {:>11} {:>10} {:>10} {:>10} {:>10} {:>10}",
                 name,
                 s.count,
-                fmt_ns(s.total_ns),
-                fmt_ns(mean),
-                fmt_ns(s.percentile(0.50)),
-                fmt_ns(s.percentile(0.99)),
-                fmt_ns(min),
-                fmt_ns(s.max_ns),
+                Ns(s.total_ns),
+                Ns(mean),
+                Ns(s.percentile(0.50)),
+                Ns(s.percentile(0.99)),
+                Ns(min),
+                Ns(s.max_ns),
             );
         }
     }
 
-    fn fmt_ns(ns: u64) -> String {
-        if ns < 1_000 {
-            format!("{ns}ns")
-        } else if ns < 1_000_000 {
-            format!("{:.2}us", ns as f64 / 1_000.0)
-        } else {
-            format!("{:.2}ms", ns as f64 / 1_000_000.0)
+    /// A nanosecond count rendered as `Nns` / `N.NNus` / `N.NNms`, honouring the table's width and
+    /// alignment. It is written into a stack buffer, so a table row allocates no strings.
+    struct Ns(u64);
+
+    impl std::fmt::Display for Ns {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            use std::fmt::Write as _;
+            let mut buf = StackText::default();
+            let ns = self.0;
+            if ns < 1_000 {
+                write!(buf, "{ns}ns")?;
+            } else if ns < 1_000_000 {
+                write!(buf, "{:.2}us", ns as f64 / 1_000.0)?;
+            } else {
+                write!(buf, "{:.2}ms", ns as f64 / 1_000_000.0)?;
+            }
+            f.pad(buf.as_str())
+        }
+    }
+
+    /// A fixed stack buffer for one [`Ns`] cell; `u64::MAX` ns is 18 digits plus `.NNms`.
+    #[derive(Default)]
+    struct StackText {
+        bytes: [u8; 32],
+        len: usize,
+    }
+
+    impl StackText {
+        fn as_str(&self) -> &str {
+            std::str::from_utf8(&self.bytes[..self.len]).unwrap_or_default()
+        }
+    }
+
+    impl std::fmt::Write for StackText {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            let end = self.len + s.len();
+            let dst = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
+            dst.copy_from_slice(s.as_bytes());
+            self.len = end;
+            Ok(())
         }
     }
 

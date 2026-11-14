@@ -284,7 +284,7 @@ pub trait CallerFacts: Send + Sync {
         fire_stage_taps_where(
             taps,
             &shape,
-            stage_at(
+            &stage_at(
                 "response",
                 None,
                 None,
@@ -1683,7 +1683,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             fire_stage_taps_where(
                 &hooks.taps.candidate,
                 &view.shape(hooks.request_id, &pool),
-                stage_at("candidate", None, None, Some(keep.len()), None, None, None),
+                &stage_at("candidate", None, None, Some(keep.len()), None, None, None),
                 SignalBag::default(),
                 &*hooks.groups,
             );
@@ -1987,7 +1987,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         fire_stage_taps_where(
             &hooks.taps.routing,
             &view.shape(hooks.request_id, &st.hooked_pool),
-            stage_at(
+            &stage_at(
                 "routing",
                 Some(member),
                 Some(attempt_no),
@@ -2021,7 +2021,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             fire_stage_taps_where(
                 &hooks.taps.response,
                 &view.shape(hooks.request_id, &st.hooked_pool),
-                stage_at(
+                &stage_at(
                     "response",
                     None,
                     None,

@@ -83,6 +83,9 @@ pub struct PromptProjection<'a> {
     pub messages: Vec<(std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>)>,
 }
 
+/// A hook's self-described settings schema (`GET /admin/v1/hooks/{name}/schema`), proxied verbatim.
+pub type HookSchema = serde_json::Value;
+
 /// Debug REDACTS the content: this struct exists precisely because the operator opted prompt text
 impl std::fmt::Debug for PromptProjection<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -382,7 +385,7 @@ pub trait RoutingPolicy: Send + Sync + 'static {
 
     /// Ask the hook to DESCRIBE its settings schema (`GET /admin/v1/hooks/{name}/schema`).
     /// `None` = the transport/hook doesn't answer describe. Proxied verbatim.
-    async fn describe(&self, _budget: std::time::Duration) -> Option<serde_json::Value> {
+    async fn describe(&self, _budget: std::time::Duration) -> Option<HookSchema> {
         None
     }
 

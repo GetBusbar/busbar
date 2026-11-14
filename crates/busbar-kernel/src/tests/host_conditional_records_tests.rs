@@ -527,7 +527,11 @@ fn changed_body_operation_identity_is_distinct_from_condition_conflict() {
     let mut write = queued(changed, Arc::clone(&answers));
     write.prepared = true;
     assert!(write
-        .attempt(&rows, &crate::host_chains::ChainBook::default())
+        .attempt(
+            &rows,
+            &crate::host_chains::ChainBook::default(),
+            std::time::Instant::now()
+        )
         .is_none());
     assert_eq!(
         answers.lock().unwrap()[0].decision,
@@ -547,7 +551,11 @@ fn replay_horizon_reports_indeterminate_without_new_dispatch_or_loss_of_custody(
     );
     let identity = write.request.clone();
     let retained = write
-        .attempt(&rows, &crate::host_chains::ChainBook::default())
+        .attempt(
+            &rows,
+            &crate::host_chains::ChainBook::default(),
+            std::time::Instant::now(),
+        )
         .expect("expired ambiguous operation remains owned");
     assert_eq!(retained.request, identity);
     assert_eq!(
@@ -556,7 +564,11 @@ fn replay_horizon_reports_indeterminate_without_new_dispatch_or_loss_of_custody(
     );
     assert!(rows.0.lock().unwrap().calls.is_empty());
     assert!(retained
-        .attempt(&rows, &crate::host_chains::ChainBook::default())
+        .attempt(
+            &rows,
+            &crate::host_chains::ChainBook::default(),
+            std::time::Instant::now()
+        )
         .is_some());
     assert_eq!(answers.lock().unwrap().len(), 1);
 }
@@ -724,16 +736,28 @@ fn later_refusal_does_not_discard_an_earlier_unknown_commit() {
     let answers = Arc::new(Mutex::new(Vec::new()));
     let write = queued(request(Expected::Absent, b"state"), Arc::clone(&answers));
     let unknown = write
-        .attempt(&rows, &crate::host_chains::ChainBook::default())
+        .attempt(
+            &rows,
+            &crate::host_chains::ChainBook::default(),
+            std::time::Instant::now(),
+        )
         .unwrap();
     rows.0.lock().unwrap().refuse = true;
     let still_unknown = unknown
-        .attempt(&rows, &crate::host_chains::ChainBook::default())
+        .attempt(
+            &rows,
+            &crate::host_chains::ChainBook::default(),
+            std::time::Instant::now(),
+        )
         .expect("refused retry does not settle earlier commit");
     assert!(answers.lock().unwrap().is_empty());
     rows.0.lock().unwrap().refuse = false;
     assert!(still_unknown
-        .attempt(&rows, &crate::host_chains::ChainBook::default())
+        .attempt(
+            &rows,
+            &crate::host_chains::ChainBook::default(),
+            std::time::Instant::now()
+        )
         .is_none());
     assert_eq!(answers.lock().unwrap()[0].decision, Ok(Decision::Applied));
     let state = rows.0.lock().unwrap();

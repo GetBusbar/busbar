@@ -44,7 +44,8 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     );
     for (configured, expected) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
         cfg.chain[0].max_admin_scope = Some(configured.into());
-        let caps = crate::router::project_auth_scope_caps(&cfg);
+        let caps: std::collections::HashMap<String, String> =
+            crate::router::project_auth_scope_caps(&cfg);
         assert_eq!(
             crate::auth::cap_admin_scope(
                 bound,

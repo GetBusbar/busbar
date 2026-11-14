@@ -3808,12 +3808,9 @@ impl ListenerPlan {
         &self,
         app: &busbar_kernel::state::App,
         guests: &busbar_kernel::guest::GuestList,
-    ) -> Result<
-        std::collections::HashMap<String, Arc<dyn busbar_contract::auth_calls::AuthCalls>>,
-        String,
-    > {
+    ) -> Result<busbar_kernel::inbound::Auths, String> {
         let declared = self.needs(app)?;
-        let mut auths = std::collections::HashMap::new();
+        let mut auths = busbar_kernel::inbound::Auths::default();
         for name in guests
             .lines()
             .iter()
