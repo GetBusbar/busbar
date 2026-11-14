@@ -509,12 +509,14 @@ dependencies = [
  "loom",
  "metrics",
  "metrics-util",
+ "proc-macro2",
  "reqwest",
  "schemars",
  "serde",
  "serde_json",
  "smallvec",
  "sonic-rs",
+ "syn 2.0.117",
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
@@ -554,6 +556,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
  "foldhash",
+ "futures",
 ]
 
 [[package]]
