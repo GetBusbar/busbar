@@ -5568,7 +5568,10 @@ impl DataRoutes {
                 arrived: arrived.secs(),
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: 0,
-                credential: door.credential.clone(),
+                credential: door.credential.as_ref().map(|credential| {
+                    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
+                    credential.clone()
+                }),
                 ticket: door.ticket,
             },
         )
@@ -6167,7 +6170,12 @@ impl DataRoutes {
                 arrived: arrived.secs(),
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: nesting.as_ref().map_or(0, |n| n.depth),
-                credential: credential.clone(),
+                credential: credential.as_ref().map(|credential| {
+                    busbar_contract::stage_probe::tick(
+                        busbar_contract::stage_probe::Derive::SecretCopy,
+                    );
+                    credential.clone()
+                }),
                 ticket,
             },
         )
@@ -6380,7 +6388,12 @@ impl<'d> DoorFar<'d, '_> {
                     pool,
                     connection_required: self.steps.connection_required(),
                     authorization: Some(Arc::clone(&self.authorization)),
-                    caller_credential: self.credential.clone(),
+                    caller_credential: self.credential.as_ref().map(|credential| {
+                        busbar_contract::stage_probe::tick(
+                            busbar_contract::stage_probe::Derive::SecretCopy,
+                        );
+                        credential.clone()
+                    }),
                     once: self.steps.once(),
 
                     wants_stream: self.steps.streamed(),

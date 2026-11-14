@@ -2162,7 +2162,12 @@ impl Inbound {
                 upgrade_used: std::sync::atomic::AtomicBool::new(false),
                 table: Arc::clone(&unit.table),
                 admitted: unit.admitted.clone(),
-                credential: unit.credential.clone(),
+                credential: unit.credential.as_ref().map(|credential| {
+                    busbar_contract::stage_probe::tick(
+                        busbar_contract::stage_probe::Derive::SecretCopy,
+                    );
+                    credential.clone()
+                }),
                 signed: unit.signed,
                 original: unit.head.as_ref().unwrap_or(handed).clone(),
                 handed: handed.clone(),

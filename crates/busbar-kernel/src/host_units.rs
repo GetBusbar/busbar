@@ -208,6 +208,8 @@ impl UnitRecords {
 
 impl busbar_contract::conn::LendCredential for UnitRecords {
     fn lent(&self, unit: u64) -> Option<busbar_contract::redacted::Secret<Vec<u8>>> {
-        self.lock(unit).get(&unit)?.lent.clone()
+        let lent = self.lock(unit).get(&unit)?.lent.clone()?;
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
+        Some(lent)
     }
 }
