@@ -122,6 +122,19 @@ pub fn judge_effective(
     }
 }
 
+/// Test support only: with `BUSBAR_TEST_SEMANTIC_PASS_PROBE` set, each semantic pass over a
+/// configuration writes one line to stderr. Stderr is open before logging is, so a test can count
+/// every pass a boot makes, including one made before the log subscriber is installed.
+#[cfg(feature = "test-support")]
+pub const SEMANTIC_PASS_PROBE: &str = "[test-support] semantic configuration pass";
+
+#[cfg(feature = "test-support")]
+fn probe_semantic_pass() {
+    if std::env::var_os("BUSBAR_TEST_SEMANTIC_PASS_PROBE").is_some() {
+        eprintln!("{SEMANTIC_PASS_PROBE}");
+    }
+}
+
 pub(super) fn validate_with_plugins(
     cfg: &RootCfg,
     unset_env_vars: &[String],
@@ -139,6 +152,8 @@ fn judge_with_plugins(
     plugins_enabled: bool,
     advisories: &mut Advisories,
 ) -> Result<(), Vec<String>> {
+    #[cfg(feature = "test-support")]
+    probe_semantic_pass();
     let mut errors = Vec::new();
 
     if let Err(security_errors) = validate_bootstrap_security(cfg) {
