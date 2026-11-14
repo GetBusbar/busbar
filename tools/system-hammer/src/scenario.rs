@@ -486,6 +486,31 @@ mod tests {
     }
 
     #[test]
+    fn every_admin_noun_a_scenario_description_names_is_driven() {
+        let dir = scenarios_dir();
+        for n in &all_names(&dir) {
+            let s = load(&dir, n).unwrap_or_else(|e| panic!("{e}"));
+            if s.group != "admin" {
+                continue;
+            }
+            for noun in ["keys", "stats"] {
+                let named = s.description.contains(noun);
+                let suffix = format!("/{noun}");
+                let driven = s.cases.iter().any(|c| {
+                    c.requests
+                        .iter()
+                        .chain(c.background.iter().flat_map(|b| &b.requests))
+                        .any(|r| r.path.ends_with(&suffix))
+                });
+                assert!(
+                    !named || driven,
+                    "{n}: description names {noun} but no request drives it"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn fill_replaces_only_known_tokens() {
         let mut v = BTreeMap::new();
         v.insert("KEY".to_string(), "k1".to_string());
