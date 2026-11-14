@@ -913,6 +913,13 @@ fn merged_errors(load: &Outcome, probe: &Outcome) -> BTreeMap<String, u64> {
 mod tests {
     use super::*;
 
+    /// An empty request list would make the driver's `seq % n` divide by zero in every worker,
+    /// and the swallowed panics would read as a clean 0-rps run. It must be rejected up front.
+    #[test]
+    fn a_case_with_no_requests_is_rejected_before_the_driver() {
+        assert!(reqs(&[], &BTreeMap::new()).is_err());
+    }
+
     /// SELFTEST (design mcp-issuer §3.4, §4): a case with `contains:` checks EVERY body, not one
     /// in 97, and fails on any miss. A local far end answers one body in a hundred without the
     /// marker; every answered body is checked, the misses are counted as `body_miss n/total`, and
