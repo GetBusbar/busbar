@@ -1390,9 +1390,9 @@ impl EgressFarEnd<'_> {
         };
         let url = join(&base_url, &request.target);
 
-        let located = match e
+        let (located, carried) = match e
             .conns
-            .head_defaults(e.caller, need, &url, self.attempt_cap())
+            .locate_head(e.caller, need, &url, self.attempt_cap())
         {
             Ok(located) => located,
             Err(_) => {
@@ -1570,7 +1570,7 @@ impl EgressFarEnd<'_> {
             return false;
         }
 
-        let opened = e.conns.open_with_security(
+        let opened = e.conns.open_located(
             e.caller,
             need,
             &OpenDesc {
@@ -1595,6 +1595,7 @@ impl EgressFarEnd<'_> {
                 unit: self.route.unit.get(),
             },
             require_secure,
+            carried.as_deref(),
         );
         let now_ms = e.clock.now_millis();
         let now_us = e.clock.now_micros();
