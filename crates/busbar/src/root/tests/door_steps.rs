@@ -43,6 +43,9 @@ pub(crate) fn isolated_fixture_done(test: &str, case: &str) {
     println!("DOOR-STEPS-CASE-DONE {test} {case}");
 }
 
+#[path = "door_steps_entry_once.rs"]
+mod entry_once;
+
 pub(crate) async fn boot_fixture_prices(app: &busbar_kernel::state::App) {
     let store = app
         .governance
@@ -4795,6 +4798,3 @@ fn settings_only_validation_requires_the_auth_declaration_capability() {
 
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(door_steps);
-
-#[path = "door_steps_entry_once.rs"]
-mod entry_once;
