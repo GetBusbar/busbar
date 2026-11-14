@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! SINGLE-PATH SP-R3: the outbound auth `FieldsRequest` is copied once per attempt, by the far end
-//! that builds it. The loader lends the plugin the request it was handed, on the spot and on a
-//! ticket, including the ticket's grown resubmit, and copies none of it.
+//! SINGLE-PATH SP-R3: the outbound auth `FieldsRequest` is built once per attempt, by the far end.
+//! On a ticket the loader moves the request it was handed into what it lends the plugin and
+//! copies it only for a grown resubmit, while the first lend is still out. On the spot it is
+//! borrowed, so the lend, which owns what it lends, copies it once.
 
 use super::*;
 use busbar_contract::stage_probe::{Derive, Scope};
@@ -12,7 +13,7 @@ use busbar_contract::stage_probe::{Derive, Scope};
 fn auth_fields_request_copied_once() {
     let a = opened();
     // Handle 1 answers within the first lend; handle 2 answers short and is asked again, grown.
-    for (handle, answered) in [(1, 1), (2, 17)] {
+    for (handle, answered, regrown) in [(1, 1, 0), (2, 17, 1)] {
         let wide = |f: Fields| match f {
             Fields::Ready(v) => v.len(),
             other => panic!("{other:?}"),
@@ -22,8 +23,8 @@ fn auth_fields_request_copied_once() {
         assert_eq!(a.fields_now(handle, &request()).map(wide), Some(answered));
         assert_eq!(
             scope.count(Derive::AuthFieldsCopy),
-            0,
-            "handle {handle}: on the spot the loader lends the caller's request, copying none"
+            1,
+            "handle {handle}: on the spot the borrowed request is copied once into the lend"
         );
         drop(scope);
 
@@ -34,8 +35,8 @@ fn auth_fields_request_copied_once() {
         );
         assert_eq!(
             scope.count(Derive::AuthFieldsCopy),
-            0,
-            "handle {handle}: on a ticket (and its grown resubmit) the request moves in once"
+            regrown,
+            "handle {handle}: on a ticket the request moves in; only a grown resubmit copies it"
         );
     }
 }
