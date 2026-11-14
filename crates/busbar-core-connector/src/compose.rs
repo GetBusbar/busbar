@@ -23,6 +23,7 @@ use crate::carrier::{Carried, Dest, DialFailure};
 use crate::endpoint;
 use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
 use crate::hostio::HostIo;
+use crate::secure_vec::{Scratch, SecureVec, Tail, READ_SCRATCH, TLS_PLAIN};
 
 /// How much one socket read takes.
 const READ_CHUNK: usize = 16 * 1024;
@@ -38,6 +39,9 @@ pub const EXCHANGE_STREAM: u64 = 1;
 
 /// THE WRITE BUFFER CAP: the most bytes one connection holds on a caller's behalf and not yet on the
 pub const WRITE_BUFFER_BYTES: usize = 256 * 1024;
+
+/// The capacity a drained `out` keeps; above it, a drained buffer gives its memory back.
+const OUT_KEEP: usize = 64 * 1024;
 
 /// THE RECEIVE BUFFER CAP: the most bytes the far end sent that one connection holds read off its
 pub const RECEIVE_BUFFER_BYTES: usize = 1024 * 1024;
@@ -158,6 +162,26 @@ fn dial_failure(f: DialFailure) -> Failure {
     }
 }
 
+/// `rustls::Connection::write_tls`'s sink: TLS records appended to the connection's `out`.
+struct OutSink<'a> {
+    out: &'a mut SecureVec,
+    queued: &'a mut u64,
+}
+
+impl Write for OutSink<'_> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        self.out
+            .extend(b)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        *self.queued += b.len() as u64;
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// One composed connection.
 pub struct Connection {
     /// The framer's entry; `None` = the carrier is carried as itself (a raw stream, a program's
@@ -172,8 +196,9 @@ pub struct Connection {
     framing: Option<Framing>,
     established: Established,
     phase: Phase,
-    /// Bytes for the carrier (ciphertext under TLS).
-    out: VecDeque<u8>,
+    /// Bytes for the carrier (ciphertext under TLS). A [`SecureVec`]: one contiguous run, and
+    /// what the carrier took is wiped (request heads carry the injected `Authorization`).
+    out: SecureVec,
     /// Where a frame of the carrier's own wire ends in what was queued for it, as counts of every
     ends: VecDeque<(u64, bool)>,
     /// Every byte ever queued for the carrier.
@@ -931,7 +956,7 @@ impl Connection {
             framing: None,
             established,
             phase: Phase::Connecting,
-            out: VecDeque::new(),
+            out: SecureVec::new(),
             ends: VecDeque::new(),
             queued: 0,
             unflushed: false,
@@ -1039,7 +1064,7 @@ impl Connection {
             framing: None,
             established,
             phase: Phase::Connecting,
-            out: VecDeque::new(),
+            out: SecureVec::new(),
             ends: VecDeque::new(),
             queued: 0,
             unflushed: false,
@@ -1154,7 +1179,7 @@ impl Connection {
             framing: None,
             established,
             phase: Phase::Handshaking,
-            out: VecDeque::new(),
+            out: SecureVec::new(),
             ends: VecDeque::new(),
             queued: 0,
             unflushed: false,
@@ -1415,18 +1440,27 @@ impl Connection {
                 tls.writer().write_all(bytes).map_err(failed)?;
                 self.tls_out()?;
             }
-            None => self.queue(bytes, end),
+            None => self.queue(bytes, end)?,
         }
         Ok(())
     }
 
-    /// Queue `bytes` for the carrier; `end` = they end a frame of the carrier's own wire.
-    fn queue(&mut self, bytes: &[u8], end: bool) {
-        self.out.extend(bytes);
+    /// Queue `bytes` for the carrier; `end` = they end a frame of the carrier's own wire. A buffer
+    /// that cannot grow fails this connection (`write buffer`), never another.
+    fn queue(&mut self, bytes: &[u8], end: bool) -> Result<(), Failure> {
+        if let Err(e) = self.out.extend(bytes) {
+            tracing::warn!(
+                dest = %self.target,
+                error = %e,
+                "connector write buffer allocation failed; connection closed"
+            );
+            return Err(Failure::Refused("write buffer".into()));
+        }
         self.queued += bytes.len() as u64;
         if end {
             self.ends.push_back((self.queued, bytes.is_empty()));
         }
+        Ok(())
     }
 }
 
@@ -1811,7 +1845,7 @@ impl Connection {
                         t.asked = true;
                         t.deadline = Some(now + crate::proxy::CONNECT_HANDSHAKE);
                         let request = std::mem::take(&mut t.request);
-                        self.queue(&request, false);
+                        self.queue(&request, false)?;
                         moved |= self.flush(cx)?;
                     } else {
                         self.connected()?;
@@ -1907,7 +1941,7 @@ impl Connection {
             if self.out.is_empty() && self.ends.is_empty() {
                 return Ok(moved);
             }
-            let (a, _) = self.out.as_slices();
+            let a = self.out.as_slice();
 
             let (a, end) = match self.ends.front() {
                 Some(&(at, _)) => {
@@ -1927,7 +1961,10 @@ impl Connection {
                     if end && n == a.len() {
                         self.ends.pop_front();
                     }
-                    self.out.drain(..n);
+                    self.out.consume(n);
+                    if self.out.is_empty() {
+                        self.out.shrink_when_empty(OUT_KEEP);
+                    }
                     self.flushed += n as u64;
                     self.unflushed = true;
                     moved = true;
@@ -1943,18 +1980,39 @@ impl Connection {
         if self.read_end {
             return Ok(false);
         }
-        let mut buf = [0_u8; READ_CHUNK];
-        match self.carried.poll_read(cx, &mut buf) {
-            Poll::Ready(Ok((0, false))) => {
+        // T11-dev: the carrier (a plugin door on dev) reads into this thread's wiping scratch,
+        // never a stack buffer left holding the response. `Tail::Wipe`: core trusts no plugin to
+        // have written nothing past the count it reports. The guard wipes and returns the slot.
+        let mut scratch = Scratch::take(&READ_SCRATCH);
+        let (mut pending, mut end_of_frame) = (false, false);
+        let carried = &mut self.carried;
+        let got = scratch
+            .read_into(READ_CHUNK, Tail::Wipe, |dst| {
+                match carried.poll_read(cx, dst) {
+                    Poll::Ready(Ok((n, eof))) => {
+                        end_of_frame = eof;
+                        Ok(n)
+                    }
+                    Poll::Ready(Err(e)) => Err(e),
+                    Poll::Pending => {
+                        pending = true;
+                        Ok(0)
+                    }
+                }
+            })
+            .map_err(|_| Failure::Refused("read buffer".into()))?;
+        match got {
+            _ if pending => Ok(false),
+            Ok(0) if !end_of_frame => {
                 self.read_end = true;
                 self.feed(&[], true, false)?;
                 Ok(true)
             }
-            Poll::Ready(Ok((n, end_of_frame))) => {
-                self.feed(&buf[..n], false, end_of_frame)?;
+            Ok(_) => {
+                self.feed(scratch.as_slice(), false, end_of_frame)?;
                 Ok(true)
             }
-            Poll::Ready(Err(e)) => {
+            Err(e) => {
                 if self.door.is_none() && self.tls.is_none() {
                     #[expect(
                         clippy::disallowed_methods,
@@ -1965,7 +2023,6 @@ impl Connection {
                 }
                 Err(failed(e))
             }
-            Poll::Pending => Ok(false),
         }
     }
 
@@ -2220,6 +2277,8 @@ impl Connection {
             return self.ingest(bytes, end, end_of_frame);
         };
         let mut rest = bytes;
+        // The plaintext rustls holds after the last `process_new_packets` (T6: an exact read).
+        let mut plaintext = 0_usize;
         while !rest.is_empty() {
             if tls.read_tls(&mut rest).map_err(failed)? == 0 {
                 break;
@@ -2277,22 +2336,43 @@ impl Connection {
         plain.clear();
         let mut closed = false;
         if let Some(tls) = self.tls.as_mut() {
-            let mut buf = [0_u8; READ_CHUNK];
-            loop {
-                match tls.reader().read(&mut buf) {
-                    Ok(0) => {
-                        closed = true;
-                        break;
-                    }
-                    Ok(n) => plain.extend_from_slice(&buf[..n]),
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(e) => return Err(failed(e)),
+            if plaintext > 0 {
+                match plain
+                    .read_into(plaintext, Tail::Trusted, |dst| tls.reader().read(dst))
+                    .map_err(|_| Failure::Refused("tls read buffer".into()))?
+                {
+                    Ok(k) if k == plaintext => {}
+                    _ => return Err(Failure::Refused("tls: plaintext count mismatch".into())),
                 }
             }
+            // One more read into a NON-EMPTY buffer once the plaintext is drained: rustls'
+            // `Reader::read` answers without checking the close state while plaintext remains or
+            // the buffer is empty; only this read reaches its close_notify / unclean-EOF check.
+            let mut probe = [0_u8; 64];
+            let r = loop {
+                match tls.reader().read(&mut probe) {
+                    // close_notify received.
+                    Ok(0) => {
+                        closed = true;
+                        break Ok(());
+                    }
+                    Ok(k) => {
+                        if plain.extend(&probe[..k]).is_err() {
+                            break Err(Failure::Refused("tls read buffer".into()));
+                        }
+                    }
+                    // A ticket-only record (no plaintext) lands here.
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break Ok(()),
+                    // UnexpectedEof: the truncation guard.
+                    Err(e) => break Err(failed(e)),
+                }
+            };
+            probe.fill(0);
+            r?;
         }
         self.tls_out()?;
         if matches!(self.phase, Phase::Open) && (!plain.is_empty() || closed) {
-            self.ingest(&plain, closed, true)?;
+            self.ingest(plain.as_slice(), closed, true)?;
         }
         plain.clear();
         self.tls_plain = plain;
@@ -2359,7 +2439,7 @@ impl Connection {
                     written?;
                     self.tls_out()?;
                 }
-                None => self.queue(&wire, false),
+                None => self.queue(&wire, false)?,
             }
             wire.zeroize();
         }
@@ -2409,7 +2489,8 @@ impl Connection {
         Ok(())
     }
 
-    /// Move whatever TLS owes the far side into the socket's queue.
+    /// Move whatever TLS owes the far side into the socket's queue, straight into `out` (T6: no
+    /// temporary `Vec`, one copy). It marks no frame end.
     fn tls_out(&mut self) -> Result<(), Failure> {
         if let Some(tls) = self.tls.as_mut() {
             // What TLS owes is gathered in the connection's reused buffer, taken out while it is
@@ -2417,7 +2498,17 @@ impl Connection {
             let mut bytes = std::mem::take(&mut self.tls_wire);
             bytes.clear();
             while tls.wants_write() {
-                tls.write_tls(&mut bytes).map_err(failed)?;
+                match tls.write_tls(&mut sink) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::OutOfMemory => {
+                        tracing::warn!(
+                            dest = %self.target,
+                            "connector write buffer allocation failed; connection closed"
+                        );
+                        return Err(Failure::Refused("write buffer".into()));
+                    }
+                    Err(e) => return Err(failed(e)),
+                }
             }
             self.queue(&bytes, false);
             bytes.clear();
@@ -2450,3 +2541,15 @@ impl Connection {
 #[cfg(test)]
 #[path = "tests/compose_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/compose_out_tests.rs"]
+mod out_tests;
+
+#[cfg(test)]
+#[path = "tests/compose_read_tests.rs"]
+mod read_tests;
+
+#[cfg(test)]
+#[path = "tests/compose_tls_tests.rs"]
+mod tls_tests;

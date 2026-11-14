@@ -49,7 +49,7 @@ tracing = { workspace = true }
 test-support = ["busbar-contract/test-support"]
 
 [dev-dependencies]
-busbar-contract = { path = "../busbar-contract", features = ["test-support", "stage-probe"] }
+busbar-contract = { path = "../busbar-contract", features = ["test-support", "stage-probe", "test-seal"] }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
