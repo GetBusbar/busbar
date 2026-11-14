@@ -11,13 +11,13 @@ enum Spelling {
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct Rule {
-    globs: Vec<String>,
-    #[serde(default)]
-    enabled: Option<bool>,
-    #[serde(default)]
-    spelling: Option<Spelling>,
+    #[serde(rename = "globs")]
+    _globs: Vec<String>,
+    #[serde(default, rename = "enabled")]
+    _enabled: Option<bool>,
+    #[serde(default, rename = "spelling")]
+    _spelling: Option<Spelling>,
 }
 fn field(name: &str, shape: Shape, required: bool) -> Key {
     Key {
