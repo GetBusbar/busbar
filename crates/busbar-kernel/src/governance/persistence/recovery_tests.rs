@@ -942,7 +942,7 @@ async fn shared_runtime_orders_prior_audit_staging_before_recovery_frames() {
     recovery.confirm_owned_checkpoint(&intent()).await.unwrap();
 }
 
-#[path = "usage_origin_final_fold.rs"]
+#[path = "usage_origin_final_fold_tests.rs"]
 mod usage_origin_final_fold;
 
 #[tokio::test]
