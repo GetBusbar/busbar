@@ -263,6 +263,33 @@ pub trait Conns: Send + Sync {
         self.open_with_security(caller, need, desc, require_secure)
     }
 
+    /// [`Conns::open_located`], opening with `head` as its fields in place of `desc.fields` (which
+    /// a caller of this leaves empty): the table takes the head the opener built and keeps it for
+    /// the dial without copying it again. A table that keeps none (the default) lends a view of
+    /// `head` as `desc.fields` to [`Conns::open_located`], exactly as an opener lending it would,
+    /// and the head's values are wiped when it drops.
+    fn open_owned(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        head: OwnedHead,
+        require_secure: bool,
+        located: Option<&LocatedTarget>,
+    ) -> Result<ConnId, ConnError> {
+        let fields = head.view();
+        self.open_located(
+            caller,
+            need,
+            &OpenDesc {
+                fields: &fields,
+                ..desc.clone()
+            },
+            require_secure,
+            located,
+        )
+    }
+
     /// Offer `bytes` to the connection (`end` = the caller's message is complete, `text` = it is a
     fn write(
         &self,
@@ -609,6 +636,69 @@ impl CompletedHead {
             return None;
         }
         Some(count)
+    }
+}
+
+/// ONE OUTBOUND HEAD, OWNED: the opening's fields, in order, built once by the opener and moved
+/// into the open that sends them ([`Conns::open_owned`]), so a table keeps this very head for its
+/// dial instead of copying a borrowed one. Every value is wiped when the head drops.
+#[doc = "host-side; no ABI representation"]
+#[derive(Default)]
+pub struct OwnedHead(Vec<(String, Vec<u8>)>);
+
+impl OwnedHead {
+    /// An empty head with room for `capacity` fields.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(Vec::with_capacity(capacity))
+    }
+
+    /// Append one field.
+    pub fn push(&mut self, name: String, value: Vec<u8>) {
+        self.0.push((name, value));
+    }
+
+    /// The head as the borrowed fields an [`OpenDesc`] lends, in order.
+    #[must_use]
+    pub fn view(&self) -> Vec<(&str, &[u8])> {
+        self.0
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_slice()))
+            .collect()
+    }
+
+    /// Wipe every field's value in place (dropping the head does this too).
+    pub fn wipe(&mut self) {
+        for (_, value) in &mut self.0 {
+            zeroize::Zeroize::zeroize(value);
+        }
+    }
+
+    /// The fields themselves, for a table that keeps them (and wipes their values when it lets
+    /// them go).
+    #[must_use]
+    pub fn into_fields(mut self) -> Vec<(String, Vec<u8>)> {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl Extend<(String, Vec<u8>)> for OwnedHead {
+    fn extend<I: IntoIterator<Item = (String, Vec<u8>)>>(&mut self, fields: I) {
+        self.0.extend(fields);
+    }
+}
+
+impl Drop for OwnedHead {
+    fn drop(&mut self) {
+        self.wipe();
+    }
+}
+
+impl std::fmt::Debug for OwnedHead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedHead")
+            .field("fields", &self.0.len())
+            .finish_non_exhaustive()
     }
 }
 
