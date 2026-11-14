@@ -309,6 +309,34 @@ fn a_sync_caller_reads_a_submitted_answer_without_a_runtime() {
     assert_eq!(answer, Some(alice()));
 }
 
+#[test]
+fn a_submitted_verify_input_is_lent_without_another_copy() {
+    use busbar_contract::stage_probe::{Derive, Scope};
+    let a = opened("judge-a");
+    let scope = Scope::open();
+    assert_eq!(a.verify_now(&request(Some("good"), None)), Some(alice()));
+    assert_eq!(
+        scope.count(Derive::VerifyCopy),
+        1,
+        "a borrowed request is copied once to be lent"
+    );
+    let mut v = a.verify(request(Some("good"), None));
+    assert_eq!(
+        scope.count(Derive::VerifyCopy),
+        1,
+        "a submitted request moves into what the plugin is lent"
+    );
+    let mut answer = None;
+    for _ in 0..500 {
+        answer = v.settled();
+        if answer.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(answer, Some(alice()));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_short_answer_is_recalled_once_with_the_buffers_it_named() {
     let a = opened("judge-a");
@@ -1691,33 +1719,44 @@ fn a_verify_crossing_keeps_zeroising_request_facts_until_its_last_owner_retires(
         req.authority = "caller.example".into();
         req.path = "/private".into();
         req.query = Some("token=query-canary".into());
-        let held = super::Held::new(&req, None, &super::Headers::None, 16, 1, 1);
-        wiped_when_dropped(&held.peer);
-        wiped_when_dropped(&held.body);
-        wiped_when_dropped(&held.method);
-        wiped_when_dropped(&held.authority);
-        wiped_when_dropped(&held.path);
-        wiped_when_dropped(&held.query);
+        let held = super::Held::new(
+            super::VerifyInput::copied(&req, None, &super::Headers::None),
+            16,
+            1,
+            1,
+        );
+        wiped_when_dropped(&held.input.peer);
+        wiped_when_dropped(&held.input.body);
+        wiped_when_dropped(&held.input.method);
+        wiped_when_dropped(&held.input.authority);
+        wiped_when_dropped(&held.input.path);
+        wiped_when_dropped(&held.input.query);
 
         let in_flight = Arc::clone(&held);
         drop(req);
         drop(held);
         let frame = in_flight.input(false);
         if point == AuthPoint::Peer {
-            assert_eq!(in_flight.peer.as_deref(), Some(&b"peer-canary"[..]));
-            assert!(in_flight.body.is_none());
-            assert_eq!(frame.peer.ptr, in_flight.peer.as_ref().unwrap().as_ptr());
+            assert_eq!(in_flight.input.peer.as_deref(), Some(&b"peer-canary"[..]));
+            assert!(in_flight.input.body.is_none());
+            assert_eq!(
+                frame.peer.ptr,
+                in_flight.input.peer.as_ref().unwrap().as_ptr()
+            );
             assert_eq!(frame.peer.len, b"peer-canary".len());
         } else {
-            assert!(in_flight.peer.is_none());
-            assert_eq!(in_flight.body.as_deref(), Some(&b"body-canary"[..]));
-            assert_eq!(frame.body.ptr, in_flight.body.as_ref().unwrap().as_ptr());
+            assert!(in_flight.input.peer.is_none());
+            assert_eq!(in_flight.input.body.as_deref(), Some(&b"body-canary"[..]));
+            assert_eq!(
+                frame.body.ptr,
+                in_flight.input.body.as_ref().unwrap().as_ptr()
+            );
             assert_eq!(frame.body.len, b"body-canary".len());
         }
-        assert_eq!(in_flight.method.as_str(), "POST");
-        assert_eq!(in_flight.authority.as_str(), "caller.example");
-        assert_eq!(in_flight.path.as_str(), "/private");
-        assert_eq!(in_flight.query.as_deref(), Some("token=query-canary"));
+        assert_eq!(in_flight.input.method.as_str(), "POST");
+        assert_eq!(in_flight.input.authority.as_str(), "caller.example");
+        assert_eq!(in_flight.input.path.as_str(), "/private");
+        assert_eq!(in_flight.input.query.as_deref(), Some("token=query-canary"));
         let retired = Arc::downgrade(&in_flight);
         drop(in_flight);
         assert!(retired.upgrade().is_none());
@@ -1933,14 +1972,7 @@ fn a_login_outages_retry_after_is_read_only_from_the_hosts_identity_buffer() {
     use busbar_contract::abi::auth::retry_after_extensions;
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
     const CAP: usize = 64;
-    let held = super::Held::new(
-        &VerifyRequest::default(),
-        None,
-        &super::Headers::None,
-        CAP,
-        1,
-        0,
-    );
+    let held = super::Held::new(super::VerifyInput::empty(), CAP, 1, 0);
     let entry = retry_after_extensions(120);
     // SAFETY: `held.buf` is `CAP` writable bytes this test owns; nothing else reads them now.
     unsafe { std::ptr::copy_nonoverlapping(entry.as_ptr(), held.buf.add(8), entry.len()) };
