@@ -75,7 +75,7 @@ impl HookPolicy {
             name: Arc::from(name),
             signals: Vec::new(),
             child: None,
-            statics: std::sync::Mutex::new(Vec::new()),
+            statics: std::sync::Mutex::default(),
         }))
     }
 
@@ -108,7 +108,7 @@ impl HookPolicy {
                 out,
                 frame,
                 ..
-            } => Ok(lower_decide(&out, &frame, candidates)),
+            } => Ok(lower_decide(&self.name, &out, &frame, candidates)),
 
             other => Err(PolicyError::from(unanswered(&self.name, budget, other))),
         }

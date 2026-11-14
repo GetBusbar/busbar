@@ -243,7 +243,7 @@ fn resolved(policy: Arc<dyn RoutingPolicy>) -> ResolvedPolicy {
 }
 
 fn no_read<'a>(
-    _: &'a str,
+    _: &'a [&'a str],
     _: Option<&'a str>,
     _: &'a str,
     _: bool,
@@ -282,7 +282,7 @@ async fn a_gate_that_abstains_over_unpriced_members_logs_nothing() {
         None,
     ));
     let hooks = unit_hooks(vec![(0, gate.clone())]);
-    let view = Projection::default();
+    let view = Projection::empty("", "");
     let shown = [member(0, unpriced()), member(1, SignalBag::new())];
     let asked = Asked {
         view: &view,

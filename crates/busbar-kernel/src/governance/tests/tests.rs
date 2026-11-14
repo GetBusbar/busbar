@@ -6448,6 +6448,7 @@ fn exhausted_unit(
         terminal: None,
         audit: None,
         measurement: None,
+        unread: None,
     }
 }
 

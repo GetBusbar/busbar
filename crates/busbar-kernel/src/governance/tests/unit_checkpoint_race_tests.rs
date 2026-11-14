@@ -460,6 +460,7 @@ fn unit(revision: u64) -> UnitCheckpoint {
         terminal: terminal.then(|| vec![terminal_event()]),
         audit: Some(b"{}".to_vec()),
         measurement: None,
+        unread: None,
     }
 }
 fn selected_revision(backend: &Mem) -> Option<u64> {

@@ -3203,8 +3203,6 @@ pub mod login;
 pub mod instances;
 pub mod login_limits;
 
-pub mod instances;
-
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
@@ -3251,7 +3249,7 @@ impl AuthMiddleware {
             readers: vec![CredentialReader {
                 name: "reader".into(),
                 calls,
-                kinds: Vec::new(),
+                kinds: std::sync::Arc::from([]),
                 carriers: vec![carrier.clone()],
                 issued: None,
             }],

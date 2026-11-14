@@ -301,7 +301,7 @@ impl FirstStart {
                         ),
                     }],
                 )?;
-                Attempt::new(candidate, self.backend.clone())
+                Attempt::proven(candidate, self.backend.clone())
                     .map_err(|_| startup::Error::Authority)?
             };
             match startup::decided(&attempt).await {

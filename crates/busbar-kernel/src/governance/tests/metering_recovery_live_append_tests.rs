@@ -88,8 +88,12 @@ impl PersistenceBackend for Traffic {
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.inner.clock(dataset)
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
-        self.inner.commit(prepared)
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
+        self.inner.commit(prepared, key)
     }
 }
 

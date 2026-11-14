@@ -1306,7 +1306,10 @@ mod tests {
         let mut source = source::SourceDocument::parse(base).unwrap();
         let before = source.to_yaml_bytes().unwrap();
         assert!(source.apply(&edit).is_err());
-        assert_eq!(source.to_yaml_bytes().unwrap(), before);
+        assert_eq!(
+            source.to_yaml_bytes().unwrap().as_slice(),
+            before.as_slice()
+        );
         assert!(edit.compacted_against_yaml(base).is_err());
     }
 
@@ -1327,7 +1330,7 @@ mod tests {
                     .compacted_against_yaml(base)
                     .unwrap();
             }
-            assert_eq!(source_text(&edit, base), baseline);
+            assert_eq!(source_text(&edit, base).as_slice(), baseline.as_slice());
             assert_eq!(edit.paths().count(), 0);
             assert!(edit.to_json_bytes().unwrap().len() < 32);
         }
@@ -1342,8 +1345,8 @@ mod tests {
             .unwrap();
         assert_eq!(replaced.paths().count(), 1);
         assert_eq!(
-            source_text(&replaced, base),
-            source_text(&patch(json!({"set": {"/members": []}})), base)
+            source_text(&replaced, base).as_slice(),
+            source_text(&patch(json!({"set": {"/members": []}})), base).as_slice()
         );
     }
 
