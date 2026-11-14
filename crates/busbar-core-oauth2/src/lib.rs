@@ -30,6 +30,9 @@ mod mount_tests;
 #[cfg(test)]
 #[path = "tests/reload_tests.rs"]
 mod reload_tests;
+#[cfg(test)]
+#[path = "tests/store_failure_tests.rs"]
+mod store_failure_tests;
 
 pub trait Connections: 'static {
     fn table() -> Option<Table>;
