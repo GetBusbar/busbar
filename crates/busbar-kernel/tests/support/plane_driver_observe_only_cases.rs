@@ -189,7 +189,7 @@ async fn a_unit_whose_policy_is_a_gate_transport_states_nothing() {
     }
 }
 
-/// A pool ordering as `ranked_policy` resolves a built-in strategy, varied by what makes a
+/// A pool ordering as `ranked_policy` resolves a built-in strategy (a content-blind policy), varied by what makes a
 /// policy read the request.
 fn ranking(send_prompt: bool, chained: bool) -> ResolvedPolicy {
     let chain = chained.then(|| busbar_kernel::hooks::FallbackHook {
@@ -200,14 +200,13 @@ fn ranking(send_prompt: bool, chained: bool) -> ResolvedPolicy {
         on_empty: PolicyOnError::Reject,
     });
     ResolvedPolicy::Policy {
-        policy: Arc::new(Tap),
+        policy: Arc::new(Ranking),
         on_error: PolicyOnError::default(),
         on_error_chain: chain.into_iter().collect(),
         timeout: Duration::from_millis(500),
         send_prompt,
         send_user: false,
         on_empty: PolicyOnError::Reject,
-        content_blind: true,
     }
 }
 

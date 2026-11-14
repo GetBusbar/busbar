@@ -149,7 +149,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         binder: &dyn HookBinder,
         ran: &mut Vec<HookApplied>,
     ) -> Result<(), Stopped> {
-        let (arena, first) = self.project(self.fresh_arena(), None, false);
+        let (arena, first) = self.project(self.fresh_arena(), None, false, false);
         let (principal, recorded, route) = {
             let st = self.lock();
             (
@@ -232,7 +232,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
                     let arena = spare.take().unwrap_or_else(|| self.fresh_arena());
-                    let (mut arena, next) = self.project(arena, Some(&bytes), true);
+                    let (mut arena, next) = self.project(arena, Some(&bytes), true, false);
                     let names_entry = |pool: &str| pool == entry || (scoped && pool.is_empty());
                     let next = match next {
                         Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => next,

@@ -254,7 +254,6 @@ fn unavailable_projection_cannot_clear_a_configured_gate_even_when_advisory() {
                 send_prompt: true,
                 send_user: false,
                 on_empty: PolicyOnError::Reject,
-                content_blind: false,
             },
         )],
         rewrites: Vec::new(),
