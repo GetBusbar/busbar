@@ -93,15 +93,6 @@ impl<'r> MeteredRow<'r> {
         price_in_view(&self.entries(arrived_ms)?, view)?.micros_i64()
     }
 
-    /// [`MeteredRow::spend_micros_in_view`] with the final projection WITHHELD: the exact figure
-    pub fn exact_in_view(
-        &self,
-        arrived_ms: u64,
-        view: &HistoryView<'_>,
-    ) -> Result<i128, MoneyError> {
-        price_exact(&self.entries(arrived_ms)?, view)
-    }
-
     /// The row as the ledger slice the one function prices, at `arrived_ms`.
     fn entries(&self, arrived_ms: u64) -> Result<Vec<LedgerEntry>, MoneyError> {
         let (lanes, fee_count) = self.lanes()?;

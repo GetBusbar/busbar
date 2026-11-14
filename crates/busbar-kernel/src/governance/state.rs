@@ -947,10 +947,6 @@ impl GovState {
         self.delete_key_outcome_async(id).await.map_err(Into::into)
     }
 
-    pub async fn delete_key_outcome(&self, id: &str) -> Result<(), KeyMutationError> {
-        self.delete_key_outcome_async(id).await
-    }
-
     pub fn reclaim_group_cells(&self, group: &str) -> usize {
         let mut dropped = 0usize;
         for mut shard in self.budget.write_all() {

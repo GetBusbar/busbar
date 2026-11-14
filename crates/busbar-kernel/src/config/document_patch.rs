@@ -272,12 +272,6 @@ impl DocumentPatch {
         self.stages().flat_map(stage_paths)
     }
 
-    /// Conservative index detection also fences numeric map keys; it never guesses a sequence
-    /// from a resolved pool. All actual traversal is still validated against consumed source.
-    pub fn has_indexed_paths(&self) -> bool {
-        self.paths().any(indexed_path)
-    }
-
     /// True for an identical, ancestor, or descendant pointer.
     pub fn overlaps_path(&self, path: &str) -> Result<bool, PatchError> {
         let target = pointer(path)?;
