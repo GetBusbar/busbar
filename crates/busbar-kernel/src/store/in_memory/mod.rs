@@ -100,12 +100,10 @@ pub(crate) const LATENCY_EWMA_ALPHA: f64 = 0.2;
 
 impl HealthState {
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn cell_err_for_test(&self, pool: &str, lane: usize) -> u64 {
         self.cell(pool, lane).err_count()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(lanes: Vec<LaneData>) -> Self {
         Self::new_with_limits(
             lanes,
@@ -220,13 +218,11 @@ impl HealthState {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn open_state(&self, lane: usize, now_time: u64, cfg: &BreakerCfg) {
         self.open_state_with_retry_after(lane, now_time, cfg, None);
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn open_state_with_retry_after(
         &self,
         lane: usize,
@@ -243,7 +239,6 @@ impl HealthState {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn closed_state(&self, lane: usize, _now_time: u64) {
         self.get_lane(lane).cell.close();
     }
@@ -370,7 +365,6 @@ impl HealthState {
         now()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn usable_for(&self, pool: &str, lane: usize, now: u64) -> bool {
         self.lane_admissible(lane)
             && !matches!(self.cell(pool, lane).acquire(now), ProbeAdmit::Denied(_))
@@ -389,7 +383,6 @@ impl HealthState {
         ls.budget.remaining().is_some_and(|r| r <= 0)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn breaker_state_for(&self, pool: &str, lane: usize) -> BreakerState {
         if self.get_lane(lane).dead.load(Ordering::Relaxed) {
             return BreakerState::Open { until: u64::MAX };
@@ -507,7 +500,6 @@ impl HealthState {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-#[allow(dead_code)]
 impl HealthState {
     pub(crate) fn recover_close_if_recoverable(
         &self,

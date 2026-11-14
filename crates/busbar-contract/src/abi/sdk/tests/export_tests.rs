@@ -34,7 +34,6 @@ const STATEMENT: Statement = Statement {
 /// The probe's settings.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct ProbeSettings {
     path: String,
 }

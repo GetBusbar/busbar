@@ -29,7 +29,6 @@ pub enum ErrKind {
     /// stays real for the `ErrKind ↔ AdminError` bridge (`err_kind_of`, test-only), so it is only
     /// CONSTRUCTED under `test`; narrow-suppress the dead-code lint in the openapi-schema-only build
     /// rather than deleting a kind the frozen taxonomy still recognizes.
-    #[cfg_attr(not(test), allow(dead_code))]
     Forbidden,
     /// A usage read over a class the rate card in force does not price (`unpriced_class`, 409).
     UnpricedClass,
@@ -72,12 +71,8 @@ pub use crate::test_support::err_kind_of;
 /// Named in the production signature `err_json_cond(e: &AdminError, cond: Cond)`, so the enum type
 /// itself is always live — but most individual variants are only CONSTRUCTED inside `declared_errors`
 /// (gated: `any(test, feature = "openapi-schema")`), so a release build without either cfg on sees
-/// most variants as unconstructed. Narrow suppression rather than deleting the enum's dead_code
-/// visibility entirely, since the type stays real in every build.
-#[cfg_attr(
-    not(any(test, feature = "openapi-schema", feature = "test-support")),
-    allow(dead_code)
-)]
+/// most variants as unconstructed there; the enum is exported (`v1::contract::taxonomy`), so its
+/// variants stay live in every build.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Cond {
     StaleIfMatch,

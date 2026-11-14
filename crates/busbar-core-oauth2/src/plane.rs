@@ -850,7 +850,6 @@ pub(crate) fn seam_build<C: crate::Connections>(
 }
 
 pub(crate) struct Sweeper {
-    #[cfg_attr(not(test), allow(dead_code))]
     work: Arc<SweepWork>,
 }
 

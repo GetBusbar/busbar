@@ -535,7 +535,6 @@ mod tests {
             refused(error.to_string(), literal.trim_matches('"'));
             let yaml = format!("api_key: {literal}\n");
             #[derive(Debug, Deserialize)]
-            #[allow(dead_code)]
             struct Keyed {
                 api_key: SecretRef,
             }

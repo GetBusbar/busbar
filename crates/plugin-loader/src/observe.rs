@@ -87,7 +87,6 @@ struct Intake {
 #[derive(Default)]
 struct IntakeCounts {
     sent: std::sync::atomic::AtomicU64,
-    #[cfg_attr(not(test), allow(dead_code))]
     done: std::sync::atomic::AtomicU64,
     dropped: std::sync::atomic::AtomicU64,
 }

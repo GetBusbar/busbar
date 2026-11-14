@@ -5,7 +5,6 @@ use crate::diagnostics::{
     PLUGIN_LOADED_UNVERIFIED, PLUGIN_SKIPPED_TRUST_POLICY,
 };
 
-#[allow(unused_imports)]
 use crate::{
     admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
     export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,

@@ -44,13 +44,11 @@ fn same_resolved_inputs(
 pub mod gate;
 pub mod taps;
 
-#[allow(unused_imports)]
 pub use busbar_contract::hooks::{
     CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
 
-#[allow(unused_imports)]
 pub use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 
 pub fn requested_signals(
@@ -1425,7 +1423,6 @@ pub fn resolve_gate_hooks(
     ranked
 }
 
-#[allow(unused_imports)]
 pub use busbar_kernel::config::plane_sections::attach_list;
 
 pub const SECTION_SCOPE: &str = busbar_contract::section::RESERVED_SECTION_KEYS[0];

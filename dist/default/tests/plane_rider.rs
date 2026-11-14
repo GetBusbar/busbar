@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 #[path = "fixtures/plane_driver_test_plane.rs"]
-#[allow(dead_code)]
 mod plane;
 
 #[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]

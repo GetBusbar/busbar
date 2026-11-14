@@ -13,7 +13,6 @@ use busbar_plugin_loader::dispatch::{
     self, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink,
 };
 
-#[allow(dead_code)]
 #[path = "../../../../dist/default/tests/fixtures/plane_driver_test_plane.rs"]
 mod fixture;
 

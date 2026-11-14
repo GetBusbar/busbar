@@ -13,7 +13,6 @@ use crate::abi::sdk::{Safe, SafeSlot};
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct Settings {
     url: String,
     password: String,

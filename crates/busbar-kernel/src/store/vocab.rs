@@ -27,7 +27,6 @@ pub enum Unavailable {
     /// estimate, in which case `recovery_hint_ms` falls back to [`AT_CAPACITY_RECOVERY_FLOOR_MS`].
     AtCapacity { drain_hint_ms: Option<u64> },
     /// Inbound backpressure shed this request before lane selection (`limits.max_inbound_concurrent`).
-    #[cfg_attr(not(test), allow(dead_code))]
     Shedding,
 }
 
@@ -98,7 +97,7 @@ pub fn fnv1a_u64(s: &str) -> u64 {
 
 #[must_use]
 pub enum Permit {
-    Bounded(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit),
+    Bounded(tokio::sync::OwnedSemaphorePermit),
     Unbounded,
 }
 
@@ -269,7 +268,6 @@ pub trait LaneRuntime: Send + Sync + 'static {
         self.usable_in("", lane, now)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     fn usable_in(&self, pool: &str, lane: usize, now: u64) -> bool;
 
     #[cfg(any(test, feature = "test-support"))]
@@ -295,7 +293,6 @@ pub trait LaneRuntime: Send + Sync + 'static {
 
     fn record_latency_in(&self, pool: &str, lane: usize, latency_ms: f64);
 
-    #[cfg_attr(not(test), allow(dead_code))]
     fn acquire_for_dispatch_in(&self, pool: &str, lane: usize, now: u64) -> bool;
 
     fn classify(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable>;
@@ -311,10 +308,8 @@ pub trait LaneRuntime: Send + Sync + 'static {
         now: u64,
     ) -> Result<Option<u64>, Unavailable>;
 
-    #[cfg_attr(not(test), allow(dead_code))]
     fn release_probe_in(&self, pool: &str, lane: usize);
 
-    #[cfg_attr(not(test), allow(dead_code))]
     fn probe_epoch_in(&self, pool: &str, lane: usize) -> u64;
 
     fn release_probe_owned_in(&self, pool: &str, lane: usize, owned_epoch: u64);

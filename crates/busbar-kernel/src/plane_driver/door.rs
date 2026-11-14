@@ -905,7 +905,6 @@ fn openapi(decl: &PlaneDecl) -> serde_json::Value {
     )
 }
 
-#[allow(dead_code)]
 pub(crate) fn stated_schemas(
     decl: &PlaneDecl,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {

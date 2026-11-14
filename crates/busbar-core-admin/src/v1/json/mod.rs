@@ -235,7 +235,6 @@ fn service(handle: &Arc<AppHandle>) -> AdminService {
     AdminService::new(handle.load())
 }
 
-#[cfg_attr(not(feature = "openapi-schema"), allow(unused_imports))]
 pub use busbar_kernel::api::ap;
 
 pub(crate) use busbar_kernel::config::transaction::{config_transaction, Outcome};
@@ -271,7 +270,6 @@ pub(crate) fn unconfigured_plane(
     if decl.is_none_or(|d| handle.load().plane_configured(d)) {
         return None;
     }
-    #[cfg_attr(not(test), allow(unused_mut))]
     let mut resp = err_json(&AdminError::not_found("resource"));
 
     #[cfg(test)]

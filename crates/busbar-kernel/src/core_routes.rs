@@ -125,7 +125,6 @@ impl CoreRouteTable {
             .any(|target| raw_affix_matches(target, path))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn routes(&self) -> &[CoreRoute] {
         &self.routes
     }

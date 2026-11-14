@@ -30,7 +30,6 @@ pub use busbar_contract::authz::{Grants, Scope};
 /// Some variants are exercised only by endpoints in upcoming slices (conflict/forbidden land with the
 /// mutation surface); the taxonomy is defined whole so the frozen contract + its test lock exist from
 /// the start.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum AdminError {
     /// The named resource does not exist. `code = not_found`. `what` NAMES the missing thing (the

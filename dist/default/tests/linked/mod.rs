@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![allow(dead_code)]
-
 use busbar_kernel::plane_driver::registry::{plane_decls, PlaneDecl};
 
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));

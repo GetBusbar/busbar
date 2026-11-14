@@ -17,7 +17,6 @@ use crate::root::test_plugins as plugins;
 #[cfg(feature = "openapi-schema")]
 use self::openapi::openapi_doc_seamed;
 
-#[allow(unused_imports)]
 use busbar_core_admin::{admin_codec, restart, v1, verb};
 
 pub(crate) fn ensure_seam() {

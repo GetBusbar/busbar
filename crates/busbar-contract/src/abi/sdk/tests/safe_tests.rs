@@ -77,7 +77,7 @@ mod plugin {
     use super::*;
 
     macro_rules! safe_slot {
-        ($name:ident, $state:ty, $in:ty, $out:ty, |$inst:ident, $input:ident, $o:ident| $body:expr) => {
+        ($name:ident, $state:ty, $in:ty, $out:ty, |$inst:ident, $input:ident, $o:pat_param| $body:expr) => {
             pub struct $name;
             impl SafeSlot for $name {
                 type Kind = FixtureKind;
@@ -87,7 +87,7 @@ mod plugin {
                 fn call(
                     $inst: Instance<'_, $state>,
                     $input: Lent<'_, $in>,
-                    #[allow(unused_mut)] mut $o: Out<'_, $out>,
+                    $o: Out<'_, $out>,
                 ) -> Outcome {
                     $body
                 }
@@ -103,7 +103,7 @@ mod plugin {
             Outcome::Refused
         }
     });
-    safe_slot!(Open, Probe, OpenIn, OpenOut, |i, input, o| {
+    safe_slot!(Open, Probe, OpenIn, OpenOut, |i, input, mut o| {
         let s = input.field(|x| &x.settings);
         // The test lends its counter's address as the settings pointer.
         // SAFETY: the test's leaked, `'static` counter.
@@ -146,11 +146,11 @@ mod plugin {
         });
         Outcome::Ready
     });
-    safe_slot!(Tick, Probe, TickIn, TickOut, |i, _input, o| {
+    safe_slot!(Tick, Probe, TickIn, TickOut, |i, _input, mut o| {
         o.set(|o| &o.next_tick_ns, i.get().map_or(0, |p| p.value + 1));
         Outcome::Ready
     });
-    safe_slot!(Drive, Probe, DriveIn, OutHead, |i, input, o| {
+    safe_slot!(Drive, Probe, DriveIn, OutHead, |i, input, mut o| {
         match input.head.flags {
             DRIVE_LOCAL_LEASE => {
                 let local = crate::abi::sdk::life::Leases::default();
@@ -189,7 +189,7 @@ mod plugin {
             }
         }
     });
-    safe_slot!(Close, Probe, InHead, OutHead, |i, input, o| {
+    safe_slot!(Close, Probe, InHead, OutHead, |i, input, mut o| {
         if input.flags == CLOSE_FAILS {
             Outcome::Failed
         } else {

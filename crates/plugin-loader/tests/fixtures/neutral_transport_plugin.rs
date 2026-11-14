@@ -83,7 +83,6 @@ macro_rules! transport {
     };
 }
 transport!("neutral-carrier-witness", &CARRIER, Refuse<BeginIn, FramerOut>);
-#[allow(dead_code)]
 pub mod framer {
     use super::*;
     transport!(

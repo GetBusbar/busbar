@@ -1,6 +1,5 @@
 use axum::Router;
 
-#[allow(unused_imports)]
 use crate::{
     admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
     export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,
@@ -397,7 +396,6 @@ async fn reshape_oversized_413_with(
     render()
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     build_router_with_limits(
         app,
@@ -408,7 +406,6 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     .0
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_router_with_limits(
     app: std::sync::Arc<state::App>,
     request_body_max_bytes: usize,

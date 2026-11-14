@@ -3721,7 +3721,7 @@ mod upgrade_tests;
 mod unix_target_tests;
 
 #[cfg(test)]
-#[allow(unsafe_code, dead_code)]
+#[allow(unsafe_code)]
 #[path = "tests/support.rs"]
 mod support;
 

@@ -38,12 +38,10 @@ mod alloc_gate_instrument {
     pub(crate) struct CountingJemalloc;
 
     impl CountingJemalloc {
-        #[allow(dead_code)]
         pub(crate) fn count() -> u64 {
             ALLOC_COUNT.with(|c| c.get())
         }
 
-        #[allow(dead_code)]
         pub(crate) fn reset() -> u64 {
             ALLOC_COUNT.with(|c| c.replace(0))
         }
@@ -158,7 +156,6 @@ pub mod host_disk;
 pub mod host_measurement;
 pub mod host_outbound;
 pub mod host_records;
-#[allow(dead_code)]
 pub mod host_records_async;
 pub mod host_units;
 pub mod host_verify;
@@ -254,11 +251,9 @@ pub use router::{
     REQUEST_ACTIVITY_TICKS,
 };
 
-#[allow(unused_imports)]
 pub(crate) use router::base_data_router;
 
 #[cfg(not(any(test, feature = "test-support")))]
-#[allow(unused_imports)]
 pub(crate) use router::build_router_with_limits;
 #[cfg(any(test, feature = "test-support"))]
 pub use router::build_router_with_limits;

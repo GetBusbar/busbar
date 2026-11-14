@@ -144,7 +144,6 @@ macro_rules! abi_op {
         }
 
         #[doc = concat!("The RED table of `", stringify!($check), "`: one case per (field, rule) its declaration states unconditionally.")]
-        #[allow(dead_code)]
         $v const $table: &[$crate::abi::mechanism::decl::RedCase<$ot>] =
             $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [] $($steps)*);
     };
@@ -419,7 +418,6 @@ macro_rules! abi_answers {
     ) => {
         /// The kind's answer checks, one per op that has one ([`check_answer`] dispatches here).
         pub mod answer {
-            #[allow(unused_imports)]
             use super::*;
             $(
                 $crate::abi::mechanism::decl::abi_answers!(@op $op ($($frames)*) |$oc, $i, $o, $c| $body; $cx);

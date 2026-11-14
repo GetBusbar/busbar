@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![allow(dead_code)]
-
 use std::marker::PhantomData;
 
 use std::sync::atomic::{AtomicU64, Ordering};

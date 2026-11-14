@@ -317,7 +317,6 @@ impl Shape {
 /// Everything the SHARED pipeline needs to know about any request on any protocol.
 pub trait IrFacts {
     /// The semantic operation — the same closed vocabulary the metrics label and the `paths:` config
-    #[cfg_attr(not(test), allow(dead_code))]
     fn verb(&self) -> OpVerb;
 
     /// Did the caller ask to stream?

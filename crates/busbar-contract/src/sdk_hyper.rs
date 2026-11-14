@@ -21,7 +21,6 @@
 macro_rules! hyper_io {
     ($buf:ty) => {
         /// The sans-IO `hyper` drive (`busbar_contract::hyper_io!`).
-        #[allow(dead_code)]
         pub(crate) mod hyper_io {
             use std::collections::{HashMap, VecDeque};
             use std::future::Future;
@@ -560,7 +559,7 @@ macro_rules! hyper_io {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code, unused_imports)]
+#[allow(unsafe_code)]
 mod wiping_tests {
     crate::hyper_io!(bytes::Bytes);
 

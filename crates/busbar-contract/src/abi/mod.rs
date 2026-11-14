@@ -280,11 +280,12 @@ pub const fn honoured_size(advertised_size: u32, struct_size: usize) -> u32 {
     }
 }
 
-/// The byte size of whatever `p` points at — the type-level companion to [`field_present`], used to
+/// The byte size of the field `_project` names (the closure is never called) — the type-level
+/// companion to [`field_present`], used by [`read_sized_field!`].
 #[inline]
 #[must_use]
-pub const fn pointee_size<T>(_p: *const T) -> usize {
-    core::mem::size_of::<T>()
+pub fn field_size<S, F>(_project: impl Fn(&S) -> &F) -> usize {
+    core::mem::size_of::<F>()
 }
 
 /// The raw copy used by [`read_sized_field!`].
@@ -360,18 +361,11 @@ macro_rules! read_sized_field {
         // compiled. See `honoured_size`.
         let advertised: u32 =
             $crate::abi::honoured_size($size, ::core::mem::size_of::<$struct>());
-        // The field's END offset, derived WITHOUT touching `p`: a full-size `MaybeUninit` probe is a
-        // real, correctly-sized, correctly-aligned allocation, and `addr_of!` only computes an
-        // address — it never reads the uninitialized bytes. Const-folds to a literal.
-        let probe = ::core::mem::MaybeUninit::<$struct>::uninit();
-        // The address projection needs its own unsafe context in the macro definition, even
-        // when the caller's required unsafe context also surrounds this expansion.
-        #[allow(unused_unsafe)]
+        // The field's END offset, derived WITHOUT touching `p`: the field's type is named through a
+        // never-called projection closure, so no value and no unsafe is involved. Const-folds to a
+        // literal.
         let end = ::core::mem::offset_of!($struct, $field)
-            + $crate::abi::pointee_size(
-                // SAFETY: `probe` is a whole, aligned `$struct`; `addr_of!` performs no read.
-                unsafe { ::core::ptr::addr_of!((*probe.as_ptr()).$field) },
-            );
+            + $crate::abi::field_size(|whole: &$struct| &whole.$field);
         if $crate::abi::field_present(advertised, end) {
             // Deliberately no unsafe block here: the caller must establish the raw prefix's
             // validity. The helper also enforces `Copy`, so owned fields cannot be duplicated.

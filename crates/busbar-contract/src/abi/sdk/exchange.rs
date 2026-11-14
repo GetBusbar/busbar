@@ -610,7 +610,6 @@ impl Exchange {
     }
 
     /// The whole head this exchange frames, sealed values included (`test_support::chip` alone).
-    #[allow(dead_code)]
     pub(crate) fn head_bytes(&self) -> Vec<u8> {
         match &self.sending {
             Sending::Framed { head, .. } => head.to_vec(),

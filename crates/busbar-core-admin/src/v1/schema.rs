@@ -485,7 +485,6 @@ pub struct ConfigVersionPageView {
     pub next_cursor: Option<String>,
 }
 
-#[allow(unused)]
 fn _error_taxonomy_is_referenced(e: &AdminError) {
     match e {
         AdminError::NotFound { .. }
