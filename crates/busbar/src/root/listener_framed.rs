@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -14,6 +14,7 @@ use busbar_core_connector::framer::{
     self, Established, FramerDoor, Framing, Got, GuestLines, Head, Yielded,
 };
 use bytes::Bytes;
+use foldhash::{HashMap, HashSet};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 
@@ -92,10 +93,15 @@ fn configured_framer(
             |n| n.checked_add(1),
         )
         .ok()?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the listener's scheme is copied once, when its framer is configured"
+    )]
+    let scheme = scheme.to_owned();
     Some(DataFramer {
         door,
         owner,
-        scheme: scheme.to_owned(),
+        scheme,
         listener: match policy {
             Some(policy) => crate::root::inbound::ListenerRegistration::with_policy(
                 owner,
@@ -154,6 +160,26 @@ enum Op {
         done: oneshot::Sender<bool>,
     },
 
+    /// A head whose field list the stream task moved to its connection, which encodes it into
+    /// its thread's reused block buffer: `timing` replaces every same-named field, written last.
+    FieldHead {
+        status: u32,
+        fields: busbar_kernel::plane_driver::HeadFields,
+        timing: Option<String>,
+        end: bool,
+        done: oneshot::Sender<bool>,
+    },
+
+    /// Trailers as a moved field list, encoded like [`Op::FieldHead`].
+    FieldTrailers {
+        fields: busbar_kernel::plane_driver::HeadFields,
+        done: oneshot::Sender<bool>,
+    },
+
+    /// A queued op already taken out of the middle of the pending queue: the slot it leaves, so
+    /// a take never shifts the queue. The queue's front is never `Taken`.
+    Taken,
+
     Admit {
         permit: Option<busbar_kernel::inbound::UpgradePermit>,
         reply: oneshot::Sender<bool>,
@@ -171,6 +197,52 @@ enum Op {
     Ended {
         scope: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     },
+}
+
+thread_local! {
+    /// The block a moved field list is encoded into for the framer, reused by every connection
+    /// this thread drives (the framer copies what it keeps before the call returns).
+    static BLOCK: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// A field list's wire block written into `block` (cleared first): a `Server-Timing` value
+/// replaces every same-named field and is written last.
+fn encode_fields(
+    block: &mut Vec<u8>,
+    fields: &busbar_kernel::plane_driver::HeadFields,
+    timing: Option<&str>,
+) {
+    let timing_name = busbar_kernel::router::ServerTiming::HEADER.as_bytes();
+    block.clear();
+    for (name, value) in fields {
+        if timing.is_none() || !name.eq_ignore_ascii_case(timing_name) {
+            put_field(block, name, value);
+        }
+    }
+    if let Some(value) = timing {
+        put_field(block, timing_name, value.as_bytes());
+    }
+}
+
+/// Hand `emit` the wire block of a moved field list, encoded into this thread's reused buffer.
+fn with_block<R>(
+    fields: &busbar_kernel::plane_driver::HeadFields,
+    timing: Option<&str>,
+    emit: impl FnOnce(&[u8]) -> R,
+) -> R {
+    // Taken, not borrowed: a nested use (never expected) encodes into a fresh buffer instead.
+    let mut block = BLOCK.take();
+    encode_fields(&mut block, fields, timing);
+    let r = emit(block.as_slice());
+    BLOCK.set(block);
+    r
+}
+
+fn put_field(block: &mut Vec<u8>, name: &[u8], value: &[u8]) {
+    block.extend_from_slice(name);
+    block.extend_from_slice(fields::SEPARATOR);
+    block.extend_from_slice(value);
+    block.extend_from_slice(fields::LINE_END);
 }
 
 /// A stream task's end of its connection.
@@ -243,6 +315,42 @@ struct Inflow {
 struct InboundBody {
     pieces: mpsc::UnboundedReceiver<Result<Bytes, BodyError>>,
     ended: bool,
+}
+
+/// A request body gathered from its pieces: a body that arrives in one piece is kept as received
+/// (no copy); only one that arrives in several is joined.
+#[derive(Default)]
+struct Gathered {
+    /// The single piece so far; empty once `joined` holds the body.
+    first: Bytes,
+    joined: Option<bytes::BytesMut>,
+}
+
+impl Gathered {
+    fn len(&self) -> usize {
+        self.first.len() + self.joined.as_ref().map_or(0, bytes::BytesMut::len)
+    }
+
+    fn push(&mut self, piece: Bytes) {
+        if piece.is_empty() {
+            return;
+        }
+        if let Some(joined) = self.joined.as_mut() {
+            joined.extend_from_slice(&piece);
+        } else if self.first.is_empty() {
+            self.first = piece;
+        } else {
+            let first = std::mem::take(&mut self.first);
+            let mut joined = bytes::BytesMut::with_capacity(first.len() + piece.len());
+            joined.extend_from_slice(&first);
+            joined.extend_from_slice(&piece);
+            self.joined = Some(joined);
+        }
+    }
+
+    fn into_bytes(self) -> Bytes {
+        self.joined.map_or(self.first, bytes::BytesMut::freeze)
+    }
 }
 
 type SessionSlot = busbar_kernel::plane_routes::FramedSession;
@@ -370,8 +478,8 @@ pub(super) async fn serve<I>(
         out: VecDeque::new(),
         read_done: false,
         ended: false,
-        heads: HashMap::new(),
-        inflows: HashMap::new(),
+        heads: HashMap::default(),
+        inflows: HashMap::default(),
         tasks: tokio::task::JoinSet::new(),
         ops,
         tx,
@@ -380,7 +488,7 @@ pub(super) async fn serve<I>(
         admissions,
         staged: None,
         prewire: false,
-        full: HashSet::new(),
+        full: HashSet::default(),
         deadline: None,
         session: None,
         stopping: *stop.borrow(),
@@ -448,20 +556,34 @@ struct StagedUpgrade {
     phase: UpgradePhase,
     stream: u64,
     yielded: Vec<Yielded>,
-    incoming: Vec<zeroize::Zeroizing<Vec<u8>>>,
-    incoming_len: usize,
+    /// How many leading `yielded` batches lost their heads and field pieces when the opening was
+    /// accepted: they are skipped where those batches are read, never swept out.
+    stripped: usize,
+    /// Bytes read ahead of the commit, in one buffer that grows by replacement (never by an
+    /// in-place reallocation that would leave an un-zeroized copy behind).
+    incoming: zeroize::Zeroizing<Vec<u8>>,
     opening_status: Option<u32>,
     bound: Pin<Box<tokio::time::Sleep>>,
 }
 
 impl StagedUpgrade {
     fn take_incoming(&mut self) -> zeroize::Zeroizing<Vec<u8>> {
-        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(self.incoming_len));
-        for chunk in self.incoming.drain(..) {
-            bytes.extend_from_slice(&chunk);
+        std::mem::take(&mut self.incoming)
+    }
+
+    fn stage_incoming(&mut self, bytes: &[u8]) {
+        let len = self.incoming.len() + bytes.len();
+        if len > self.incoming.capacity() {
+            let capacity = (self.incoming.capacity() * 2)
+                .max(len)
+                .min(WRITE_ROOM.max(len));
+            let held = std::mem::replace(
+                &mut self.incoming,
+                zeroize::Zeroizing::new(Vec::with_capacity(capacity)),
+            );
+            self.incoming.extend_from_slice(&held);
         }
-        self.incoming_len = 0;
-        bytes
+        self.incoming.extend_from_slice(bytes);
     }
 }
 
@@ -581,10 +703,17 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         Poll::Ready(())
     }
 
-    fn absorb(&mut self, mut y: Yielded) {
+    fn absorb(&mut self, y: Yielded) {
+        self.absorb_from(y, false);
+    }
+
+    /// Absorb a batch; a `stripped` staged batch contributes no heads and no field pieces.
+    fn absorb_from(&mut self, mut y: Yielded, stripped: bool) {
         self.out.extend(y.wire.iter().copied());
-        for head in std::mem::take(&mut y.heads) {
-            self.heads.insert(head.stream, head);
+        if !stripped {
+            for head in std::mem::take(&mut y.heads) {
+                self.heads.insert(head.stream, head);
+            }
         }
         for flow in &y.flow {
             match flow {
@@ -596,11 +725,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 }
             }
         }
-        for g in y.pieces.iter().filter(|g| g.ends_stream() || g.failed) {
+        let kept = |g: &Got| !(stripped && g.fields);
+        for g in y
+            .pieces
+            .iter()
+            .filter(|g| kept(g) && (g.ends_stream() || g.failed))
+        {
             self.full.remove(&g.stream);
         }
         for piece in std::mem::take(&mut y.pieces) {
-            self.piece(piece);
+            if kept(&piece) {
+                self.piece(piece);
+            }
         }
         self.deadline = y.deadline_ns.map(|ns| {
             Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
@@ -728,14 +864,14 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         if self
             .staged
             .as_ref()
-            .is_none_or(|stage| stage.incoming_len >= WRITE_ROOM)
+            .is_none_or(|stage| stage.incoming.len() >= WRITE_ROOM)
         {
             return false;
         }
         let remaining = self
             .staged
             .as_ref()
-            .map_or(0, |stage| WRITE_ROOM - stage.incoming_len);
+            .map_or(0, |stage| WRITE_ROOM - stage.incoming.len());
         let mut bytes = [0_u8; READ_CHUNK];
         let mut buffer = ReadBuf::new(&mut bytes[..remaining.min(READ_CHUNK)]);
         match Pin::new(&mut self.io).poll_read(cx, &mut buffer) {
@@ -746,10 +882,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
             Poll::Ready(Ok(())) => {
                 if let Some(stage) = self.staged.as_mut() {
-                    stage
-                        .incoming
-                        .push(zeroize::Zeroizing::new(buffer.filled().to_vec()));
-                    stage.incoming_len += buffer.filled().len();
+                    stage.stage_incoming(buffer.filled());
                 }
 
                 true
@@ -872,6 +1005,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 }
                 if piece.failed {
                     if let Some(body) = inflow.body.take() {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "error: a failed body piece hands its reason to the reader once, as the stream ends"
+                        )]
                         let reason = String::from_utf8_lossy(&piece.bytes).into_owned();
                         let _ = body.send(Err(BodyError::from(reason)));
                     }
@@ -974,9 +1111,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 // Queue only the bounded refusal, never an overflow execution task. The
                 // StreamEnd below follows these messages in the same stream's FIFO.
                 let (done, _) = oneshot::channel();
-                out.send(Op::Head {
+                out.send(Op::FieldHead {
                     status: rendered.status,
-                    fields: neutral_fields(&rendered.fields),
+                    fields: rendered.fields,
+                    timing: None,
                     end: rendered.body.is_empty(),
                     done,
                 });
@@ -1073,17 +1211,25 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     }
 
     fn apply_front(&mut self) -> Step {
-        let mut blocked = HashSet::new();
+        let mut blocked = HashSet::default();
         let mut next = None;
         let framing = self.framing.as_ref();
         for (index, (stream, op)) in self.pending.iter().enumerate() {
+            if matches!(op, Op::Taken) {
+                continue;
+            }
             if self
                 .inflows
                 .get(stream)
                 .is_some_and(|inflow| inflow.refused)
                 && matches!(
                     op,
-                    Op::Head { .. } | Op::Data { .. } | Op::Trailers { .. } | Op::Switch { .. }
+                    Op::Head { .. }
+                        | Op::FieldHead { .. }
+                        | Op::Data { .. }
+                        | Op::Trailers { .. }
+                        | Op::FieldTrailers { .. }
+                        | Op::Switch { .. }
                 )
             {
                 next = Some(index);
@@ -1097,8 +1243,14 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 break;
             }
             let waits = framing.is_some_and(|framing| framing.holds(*stream))
-                || matches!(op, Op::Head { .. } | Op::Data { .. } | Op::Trailers { .. })
-                    && (self.out.len() >= WRITE_ROOM || self.full.contains(stream));
+                || matches!(
+                    op,
+                    Op::Head { .. }
+                        | Op::FieldHead { .. }
+                        | Op::Data { .. }
+                        | Op::Trailers { .. }
+                        | Op::FieldTrailers { .. }
+                ) && (self.out.len() >= WRITE_ROOM || self.full.contains(stream));
             if waits || blocked.contains(stream) {
                 blocked.insert(*stream);
                 continue;
@@ -1109,16 +1261,26 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         let Some(index) = next else {
             return Step::Wait;
         };
-        let Some((stream, op)) = self.pending.remove(index) else {
+        // Take the op out of its slot without shifting the queue; the front stays live.
+        let Some((stream, slot)) = self.pending.get_mut(index) else {
             return Step::Wait;
         };
+        let stream = *stream;
+        let op = std::mem::replace(slot, Op::Taken);
+        while matches!(self.pending.front(), Some((_, Op::Taken))) {
+            self.pending.pop_front();
+        }
         if self
             .inflows
             .get(&stream)
             .is_some_and(|inflow| inflow.refused)
         {
             match op {
-                Op::Head { done, .. } | Op::Data { done, .. } | Op::Trailers { done, .. } => {
+                Op::Head { done, .. }
+                | Op::FieldHead { done, .. }
+                | Op::Data { done, .. }
+                | Op::Trailers { done, .. }
+                | Op::FieldTrailers { done, .. } => {
                     let _ = done.send(false);
                     return Step::Done;
                 }
@@ -1131,10 +1293,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
         }
         if let Op::Admit { reply, permit } = op {
-            self.stage_upgrade(stream, permit, reply);
+            self.stage_upgrade(stream, permit.as_ref(), reply);
             return Step::Done;
         }
-        if matches!(op, Op::Head { .. } | Op::Refuse { .. }) {
+        if matches!(
+            op,
+            Op::Head { .. } | Op::FieldHead { .. } | Op::Refuse { .. }
+        ) {
             self.staged.take();
         }
         let Some(framing) = self.framing.as_mut() else {
@@ -1142,6 +1307,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         };
         match op {
             Op::Admit { .. } => unreachable!("admission is processed before the framing borrow"),
+            Op::Taken => unreachable!("a taken slot is skipped, never chosen"),
             Op::Head {
                 status,
                 fields,
@@ -1157,6 +1323,24 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 }
                 let _ = done.send(ok);
             }
+            Op::FieldHead {
+                status,
+                fields,
+                timing,
+                end,
+                done,
+            } => {
+                let r = with_block(&fields, timing.as_deref(), |block| {
+                    framing.emit_head(stream, block, end, status)
+                });
+                let ok = self.took(r);
+                if ok {
+                    if let Some(inflow) = self.inflows.get_mut(&stream) {
+                        inflow.head_sent = true;
+                    }
+                }
+                let _ = done.send(ok);
+            }
             Op::Data { bytes, end, done } => {
                 let r = framing.emit(stream, &bytes, end, false);
                 let ok = self.took(r);
@@ -1164,6 +1348,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
             Op::Trailers { fields, done } => {
                 let r = framing.emit_trailers(stream, &fields);
+                let ok = self.took(r);
+                let _ = done.send(ok);
+            }
+            Op::FieldTrailers { fields, done } => {
+                let r = with_block(&fields, None, |block| framing.emit_trailers(stream, block));
                 let ok = self.took(r);
                 let _ = done.send(ok);
             }
@@ -1199,7 +1388,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     fn stage_upgrade(
         &mut self,
         stream: u64,
-        permit: Option<busbar_kernel::inbound::UpgradePermit>,
+        permit: Option<&busbar_kernel::inbound::UpgradePermit>,
         reply: oneshot::Sender<bool>,
     ) {
         if reply.is_closed() {
@@ -1210,18 +1399,16 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             let _ = reply.send(false);
             return;
         }
-        let claim = permit.as_ref().and_then(|permit| {
+        let claim = permit.and_then(|permit| {
             let admission = self.inflows.get(&stream)?.admission.as_ref()?;
             let scope = self.framing.as_ref()?.scope()?;
-            permit
-                .consume(admission, scope.owner(), scope.leg(), stream)
-                .map(str::to_owned)
+            permit.consume(admission, scope.owner(), scope.leg(), stream)
         });
         let Some(claim) = claim else {
             let _ = reply.send(false);
             return;
         };
-        let Some(door) = (self.framer.upgrade)(&claim) else {
+        let Some(door) = (self.framer.upgrade)(claim) else {
             let _ = reply.send(false);
             return;
         };
@@ -1254,7 +1441,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
         };
         drop(self.framing.take());
-        self.established.claim = Some(claim);
+        // The connection's claim string is rewritten in place: no fresh String per upgrade.
+        let mut held = self.established.claim.take().unwrap_or_default();
+        held.clear();
+        held.push_str(claim);
+        self.established.claim = Some(held);
         match Framing::adopt_detached_staged(door, SIDE_ACCEPT, leftover, &self.established) {
             Ok((framing, yielded)) => {
                 self.framing = Some(framing);
@@ -1264,8 +1455,8 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     phase: UpgradePhase::Adopting(reply),
                     stream,
                     yielded: Vec::new(),
-                    incoming: Vec::new(),
-                    incoming_len: 0,
+                    stripped: 0,
+                    incoming: zeroize::Zeroizing::new(Vec::new()),
                     opening_status: None,
                     bound: Box::pin(tokio::time::sleep(self.timeout)),
                 });
@@ -1295,6 +1486,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         let accepted = stage
             .yielded
             .iter()
+            .skip(stage.stripped)
             .flat_map(|batch| &batch.pieces)
             .find(|piece| {
                 piece.stream == stage.stream
@@ -1331,10 +1523,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             if !accepted {
                 return;
             }
-            for batch in &mut stage.yielded {
-                batch.pieces.retain(|piece| !piece.fields);
-                batch.heads.clear();
-            }
+            stage.stripped = stage.yielded.len();
             let phase = std::mem::replace(&mut stage.phase, UpgradePhase::Admitted);
             if let UpgradePhase::Adopting(reply) = phase {
                 if reply.send(true).is_err() {
@@ -1359,8 +1548,8 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
             self.session = Some(session);
             self.prewire = false;
-            for batch in stage.yielded {
-                self.absorb(batch);
+            for (index, batch) in stage.yielded.into_iter().enumerate() {
+                self.absorb_from(batch, index < stage.stripped);
             }
             if !incoming.is_empty() {
                 if let Some(framing) = self.framing.as_mut() {
@@ -1460,17 +1649,6 @@ fn decoded_head(head: &Head, block: &[u8]) -> Option<busbar_kernel::inbound::Hea
     })
 }
 
-fn neutral_fields(fields: &busbar_kernel::plane_driver::HeadFields) -> Vec<u8> {
-    let mut block = Vec::new();
-    for (name, value) in fields {
-        block.extend_from_slice(name);
-        block.extend_from_slice(fields::SEPARATOR);
-        block.extend_from_slice(value);
-        block.extend_from_slice(fields::LINE_END);
-    }
-    block
-}
-
 struct ActorCaller {
     out: Emitter,
     stated: std::sync::Mutex<Option<u32>>,
@@ -1482,7 +1660,7 @@ impl ActorCaller {
     fn response_head(
         &self,
         status: u32,
-        mut fields: busbar_kernel::plane_driver::HeadFields,
+        fields: busbar_kernel::plane_driver::HeadFields,
         end: bool,
     ) {
         let mut stated = self
@@ -1496,16 +1674,14 @@ impl ActorCaller {
         if end {
             self.ended.store(true, std::sync::atomic::Ordering::Release);
         }
-        // A head written while `serve_data` measures the request carries its `Server-Timing`.
-        if let Some(value) = busbar_kernel::router::ServerTiming::current_value() {
-            let name = busbar_kernel::router::ServerTiming::HEADER.as_bytes();
-            fields.retain(|(field, _)| !field.eq_ignore_ascii_case(name));
-            fields.push((name.to_vec(), value.into_bytes()));
-        }
+        // A head written while `serve_data` measures the request carries its `Server-Timing`, in
+        // place of any same-named field (the connection writes it last when it encodes the block).
+        let timing = busbar_kernel::router::ServerTiming::current_value();
         let (done, _) = oneshot::channel();
-        self.out.send(Op::Head {
+        self.out.send(Op::FieldHead {
             status,
-            fields: neutral_fields(&fields),
+            fields,
+            timing,
             end,
             done,
         });
@@ -1529,7 +1705,8 @@ impl busbar_kernel::plane_driver::SessionCaller for ActorCaller {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(body) = first {
-            return Some(body.to_vec());
+            // A uniquely held body hands over its allocation; a shared one is copied once.
+            return Some(Vec::from(body));
         }
         // Request-body completion does not close the response-side session.
         // Stream cancellation aborts its inflow task; connection closure drops the receiver.
@@ -1577,10 +1754,7 @@ impl crate::root::serve::neutral::Output for ActorCaller {
             return;
         }
         let (done, _) = oneshot::channel();
-        self.out.send(Op::Trailers {
-            fields: neutral_fields(&fields),
-            done,
-        });
+        self.out.send(Op::FieldTrailers { fields, done });
     }
 }
 
@@ -1704,7 +1878,10 @@ pub(in crate::root) async fn serve_admitted_wire_test(
     wire
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one admitted stream's parts, moved into its actor"
+)]
 async fn serve_data(
     routes: Arc<crate::root::serve::DataRoutes>,
     admission: busbar_kernel::inbound::RequestAdmission,
@@ -1725,7 +1902,9 @@ async fn serve_data(
         body: std::sync::Mutex::new(None),
         ended: std::sync::atomic::AtomicBool::new(false),
     });
-    let work = async {
+    // Boxed once: the request's whole future is too large to move through the measurement and
+    // deadline wrappers by value.
+    let work = Box::pin(async {
         let context = match busbar_kernel::auth::admitted_context(&admission).await {
             Ok(context) => context,
             Err(refused) => {
@@ -1739,7 +1918,7 @@ async fn serve_data(
                 return None;
             }
         };
-        let mut whole = Vec::new();
+        let mut whole = Gathered::default();
         while !body.ended {
             match tokio::time::timeout(timeout, body.pieces.recv()).await {
                 Ok(Some(Ok(bytes))) => {
@@ -1750,7 +1929,7 @@ async fn serve_data(
                         refuse_data(&routes, &admission, &caller, ReasonCode::BodyTooLarge).await;
                         return None;
                     }
-                    whole.extend_from_slice(&bytes);
+                    whole.push(bytes);
                 }
                 Ok(None) => body.ended = true,
                 Ok(Some(Err(_))) => {
@@ -1763,7 +1942,7 @@ async fn serve_data(
                 }
             }
         }
-        let body = Bytes::from(whole);
+        let body = whole.into_bytes();
         *caller
             .body
             .lock()
@@ -1771,7 +1950,7 @@ async fn serve_data(
         routes
             .serve_admitted(&admission, context, body, scheme, slot, Arc::clone(&caller))
             .await
-    };
+    });
     // With `Server-Timing` on, the request is served under its measurement, so the forward path
     // records the upstream round trip the header subtracts and its head carries the header
     // (`ActorCaller::response_head`).

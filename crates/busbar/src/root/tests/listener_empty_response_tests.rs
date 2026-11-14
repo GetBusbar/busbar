@@ -34,15 +34,18 @@ async fn empty_rendered_response_ends_in_its_initial_head() {
     match rx.recv().await.unwrap() {
         (
             1,
-            Op::Head {
+            Op::FieldHead {
                 status,
                 fields,
+                timing,
                 end,
                 ..
             },
         ) => {
             assert_eq!(status, 200);
-            assert_eq!(fields, b"result-code: 12\r\n");
+            let mut block = Vec::new();
+            encode_fields(&mut block, &fields, timing.as_deref());
+            assert_eq!(block, b"result-code: 12\r\n");
             assert!(
                 end,
                 "a complete empty response must end in its initial head"
@@ -71,7 +74,7 @@ async fn bodyful_rendered_response_preserves_head_then_data() {
             rx.recv().await.unwrap(),
             (
                 1,
-                Op::Head {
+                Op::FieldHead {
                     status: 409,
                     end: false,
                     ..
@@ -98,10 +101,13 @@ async fn streaming_head_remains_immediate_and_trailers_end_separately() {
     caller.head(200, Vec::new());
     assert!(matches!(
         rx.try_recv().unwrap(),
-        (1, Op::Head { end: false, .. })
+        (1, Op::FieldHead { end: false, .. })
     ));
     caller.trailers(vec![(b"result-code".to_vec(), b"0".to_vec())]);
-    assert!(matches!(rx.try_recv().unwrap(), (1, Op::Trailers { .. })));
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        (1, Op::FieldTrailers { .. })
+    ));
     assert!(caller.ended.load(Ordering::Acquire));
     assert!(rx.try_recv().is_err());
 }

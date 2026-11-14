@@ -381,7 +381,7 @@ test_plane_owned:
         .refreshed(
             &sections["test_plane"],
             &sections["test_plane"],
-            &serde_json::Map::new(),
+            &[],
             2,
             secrets,
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -479,15 +479,8 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     let facts = dialect_facts(&section, &providers);
     let names: Vec<&str> = facts.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["eng-a", "eng-b"], "referenced, once each, in order");
-    let snapshot = super::open(
-        &plane,
-        &["test_plane"],
-        &section,
-        None,
-        &Default::default(),
-        &facts,
-    )
-    .expect("the door opens");
+    let snapshot =
+        super::open(&plane, &["test_plane"], &section, None, &[], &facts).expect("the door opens");
     let handed: serde_json::Value = serde_json::from_slice(
         snapshot
             .resource_facts
@@ -511,7 +504,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
         &["test_plane"],
         &serde_yaml::Value::Null,
         None,
-        &Default::default(),
+        &[],
         &none,
     )
     .expect("the door opens");
@@ -621,6 +614,7 @@ async fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     .expect("the door plane composes");
     let composed = &served.planes[0].live;
     let pools = Arc::new(super::DoorApply {
+        instance: Arc::clone(&composed.instance),
         observations_supported: composed.observations_supported,
         plugin: Arc::clone(&composed.plugin),
         dispatcher: Arc::clone(&composed.dispatcher),

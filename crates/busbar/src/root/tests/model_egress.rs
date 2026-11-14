@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 fn wire_provider(dialect: &str) -> HashMap<String, busbar_kernel::config::ProviderDef> {
     busbar_kernel::config::providers::catalog_from_str(&format!(
@@ -76,7 +77,7 @@ async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
         app: LiveApp::fixed(Arc::clone(&app)),
         names: Arc::default(),
         queued: crate::root::egress_ports::WalkTelemetry::default(),
-        reservoirs: Arc::new(HashMap::new()),
+        reservoirs: Arc::default(),
     };
     let previous = make();
     let current = make();
@@ -114,20 +115,20 @@ fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
             .map(|(name, lane)| (DestinationId::new(lane as u64), name.to_string()))
             .collect(),
     );
-    let mut records: HashMap<String, busbar_kernel::store::BreakerCfg> = pools
+    let mut records: foldhash::HashMap<Arc<str>, busbar_kernel::store::BreakerCfg> = pools
         .iter()
         .map(|pool| {
             (
-                (*pool).to_owned(),
+                Arc::from(*pool),
                 busbar_kernel::store::BreakerCfg::default(),
             )
         })
         .collect();
-    records.insert(String::new(), busbar_kernel::store::BreakerCfg::default());
+    records.insert(Arc::from(""), busbar_kernel::store::BreakerCfg::default());
     WalkCells::over(
         app,
         Arc::new(CellPlan {
-            records,
+            records: Arc::new(records),
             direct: direct.iter().map(|m| (*m).to_owned()).collect(),
             names,
         }),
@@ -324,7 +325,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
     let slot = Arc::new(std::sync::OnceLock::new());
     slot.set(Arc::downgrade(&handle)).unwrap();
-    let cells = cells_routing(LiveApp::new(slot, Arc::clone(&first)), &["p"], &[]);
+    let cells = cells_routing(LiveApp::new(slot, &first), &["p"], &[]);
     let signals = ModelSignals {
         app: cells.live.clone(),
         names: Arc::clone(&cells.plan.names),
@@ -509,7 +510,7 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
     let slot = Arc::new(std::sync::OnceLock::new());
     slot.set(Arc::downgrade(&handle)).unwrap();
-    let cells = cells_routing(LiveApp::new(slot, Arc::clone(&first)), &["p"], &[]);
+    let cells = cells_routing(LiveApp::new(slot, &first), &["p"], &[]);
     let destination = DestinationId::new(0);
     assert!(cells.spend_budget(destination));
     assert_eq!(first.store.lane_budget_remaining(0), Some(1));
@@ -1113,7 +1114,7 @@ async fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
     let live = Arc::new(std::sync::OnceLock::new());
     let _ = live.set(Arc::downgrade(&handle));
-    let cells = cells_routing(LiveApp::new(live, Arc::clone(&first)), &["p"], &[]);
+    let cells = cells_routing(LiveApp::new(live, &first), &["p"], &[]);
     let dest = DestinationId::new(0);
     let token = busbar_kernel::test_hooks::tokens::pass();
     let now = wall_secs();
@@ -1201,7 +1202,7 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
     };
     let retired_boot = Arc::downgrade(&boot);
     let slot = Arc::new(std::sync::OnceLock::new());
-    let source = LiveApp::new(slot.clone(), boot.clone());
+    let source = LiveApp::new(slot.clone(), &boot);
     assert!(
         Arc::ptr_eq(&source.load(), &boot),
         "boot remains usable before the handle exists"
