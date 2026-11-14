@@ -10,7 +10,7 @@ pub mod validate;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
 /// The secret kind's ABI version.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = super::versions::SECRET.raw();
 
 /// The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x305714fde3324815;

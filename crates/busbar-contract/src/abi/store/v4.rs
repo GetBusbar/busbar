@@ -24,7 +24,7 @@ use crate::abi::mechanism::ticket::HostTables;
 
 /// Primitive Store ABI: one increment from the version 2 released with v1.5.5.
 /// Admission also requires this table's independent layout fingerprint.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = crate::abi::versions::STORE.raw();
 /// Initial canonical candidate encoding version.
 pub const CODEC_VERSION: u32 = 1;
 /// Mandatory primitive slots after the existing lifecycle.

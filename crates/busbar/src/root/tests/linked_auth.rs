@@ -205,6 +205,7 @@ fn synthetic_calls(alias: &str, mode: &str) -> Arc<dyn busbar_contract::auth_cal
         Default::default(),
         busbar_kernel::host_services::caller_binding(),
     ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     crate::root::loader::auth_axis::AuthRows::new(synthetic_registry(alias), dispatcher)
         .open(
             alias,
@@ -430,10 +431,11 @@ fn the_operator_token_ref_is_checked_by_shape_only() {
         .is_ok(),
         "a plugin-backed secret module is checked at plugin pre-flight, not here"
     );
-    let keyless = SecretRef::Source(busbar_contract::secret_ref::SourceReference {
-        module: "env".to_string(),
-        settings: serde_json::Map::new().into(),
-    });
+    let SecretRef::Source(mut keyless) = env_ref("BUSBAR_ADMIN_TOKEN") else {
+        unreachable!("the env sugar names a source");
+    };
+    keyless.settings = serde_json::Map::new().into();
+    let keyless = SecretRef::Source(keyless);
     let errs = build(keyless).expect_err("an env ref without settings.key");
     let path = format!("auth.admin_auth.{}.token", config::operator_provider());
     assert!(
@@ -1250,14 +1252,13 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
 
 type CarrierCase = (&'static str, Vec<(&'static str, String)>, u16);
 
-/// The `{ env: VAR }` reference, written in its canonical `{module, settings}` form.
+/// The `{ env: VAR }` reference, as the linked env source's declared sugar writes it.
 fn env_ref(var: &str) -> SecretRef {
-    SecretRef::Source(busbar_contract::secret_ref::SourceReference {
-        module: "env".to_string(),
-        settings: serde_json::json!({ "key": var })
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
-            .into(),
-    })
+    use busbar_contract::secret::SecretAxis as _;
+    link();
+    crate::root::linked::secret_rows()
+        .sugars()
+        .get("env")
+        .expect("the linked env source declares the `env:` sugar")
+        .reference(var)
 }
