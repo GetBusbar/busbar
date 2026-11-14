@@ -365,6 +365,9 @@ struct Ctx {
     rate: f64,
     seq: AtomicU64,
     first_error: std::sync::Mutex<Option<String>>,
+    /// h2c: one connection slot per group of `h2_streams` workers, the only place an h2c worker
+    /// gets a connection from (a dead one is redialled once for its whole group).
+    h2: Vec<tokio::sync::Mutex<Option<Sender>>>,
 }
 
 impl Ctx {
@@ -454,7 +457,7 @@ impl Ctx {
     }
 }
 
-async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>) -> Local {
+async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>, group: usize) -> Local {
     let mut local = Local::new(ctx.windows);
     let end = ctx.plan.end();
     let n = ctx.reqs.len() as u64;
@@ -478,8 +481,21 @@ async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>) -> Local {
         let p = &ctx.reqs[(seq % n) as usize];
         let collect = p.expect_contains.is_some()
             || (ctx.plan.sample_every > 0 && seq.is_multiple_of(ctx.plan.sample_every));
-        if sender.is_none() {
-            match connect(ctx.plan.addr, ctx.plan.proto).await {
+        let closed = matches!(&sender, Some(Sender::H2(s)) if s.is_closed());
+        if sender.is_none() || closed {
+            let got = match ctx.plan.proto {
+                Proto::H1 => connect(ctx.plan.addr, Proto::H1).await,
+                Proto::H2c => {
+                    let mut slot = ctx.h2[group].lock().await;
+                    if !matches!(&*slot, Some(Sender::H2(s)) if !s.is_closed()) {
+                        *slot = connect(ctx.plan.addr, Proto::H2c).await.ok();
+                    }
+                    slot.as_ref()
+                        .and_then(Sender::clone_h2)
+                        .ok_or_else(|| std::io::Error::other("h2 group connect"))
+                }
+            };
+            match got {
                 Ok(s) => sender = Some(s),
                 Err(e) => {
                     ctx.note_error(|| format!("connect: {e}"));
@@ -494,7 +510,9 @@ async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>) -> Local {
         let s = sender.as_mut().expect("connected above");
         let result = tokio::time::timeout(ctx.plan.timeout, exchange(s, p, collect)).await;
         let done = Instant::now();
-        if !ctx.record(&mut local, started, done, result, p) {
+        // A failed h2 stream (above all a timeout) leaves its connection usable, and a closed one
+        // is redialled for its whole group above: only an h1 connection is dropped here.
+        if !ctx.record(&mut local, started, done, result, p) && ctx.plan.proto == Proto::H1 {
             sender = None;
         }
     }
@@ -510,6 +528,11 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
         Shape::Open { rate, connections } => (connections.max(1), rate.max(0.001)),
     };
     let permits = matches!(plan.shape, Shape::Open { .. }).then(|| Arc::new(Semaphore::new(0)));
+    let per_conn = plan.h2_streams.max(1);
+    let groups = match plan.proto {
+        Proto::H1 => 0,
+        Proto::H2c => workers.div_ceil(per_conn),
+    };
     let ctx = Arc::new(Ctx {
         reqs: prepare(&plan),
         windows,
@@ -518,21 +541,21 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
         rate,
         seq: AtomicU64::new(0),
         first_error: std::sync::Mutex::new(None),
+        h2: (0..groups).map(|_| tokio::sync::Mutex::new(None)).collect(),
         plan,
     });
 
     // Connections first (outside the measured window), then wait for the start instant.
     let mut senders: Vec<Option<Sender>> = Vec::with_capacity(workers);
-    let per_conn = ctx.plan.h2_streams.max(1);
-    let mut shared: Option<Sender> = None;
     for i in 0..workers {
         let s = match ctx.plan.proto {
             Proto::H1 => connect(ctx.plan.addr, Proto::H1).await.ok(),
             Proto::H2c => {
+                let mut slot = ctx.h2[i / per_conn].lock().await;
                 if i % per_conn == 0 {
-                    shared = connect(ctx.plan.addr, Proto::H2c).await.ok();
+                    *slot = connect(ctx.plan.addr, Proto::H2c).await.ok();
                 }
-                shared.as_ref().and_then(Sender::clone_h2)
+                slot.as_ref().and_then(Sender::clone_h2)
             }
         };
         senders.push(s);
@@ -550,7 +573,8 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
 
     let handles: Vec<_> = senders
         .into_iter()
-        .map(|s| tokio::spawn(worker(Arc::clone(&ctx), s)))
+        .enumerate()
+        .map(|(i, s)| tokio::spawn(worker(Arc::clone(&ctx), s, i / per_conn)))
         .collect();
     let mut out = Outcome::new(windows);
     for h in handles {
