@@ -81,8 +81,16 @@ pub fn compose(
     }
 }
 
-const TICKET_CUSTODY_CAP: usize = busbar_kernel::host_records::QUEUE_CAP;
-const TICKET_SWEEP_BATCH: usize = busbar_kernel::host_records::BATCH_CAP;
+/// The most unredeemed tickets one node holds in custody, across every key.
+const TICKET_CUSTODY_CAP: usize = 4_096;
+/// The tickets one sweep observes.
+const TICKET_SWEEP_BATCH: usize = 256;
+/// The most unredeemed tickets one key holds on one node, unless
+/// `auth.policy.max_outstanding_tickets_per_key` says otherwise. At these defaults, 16 saturated
+/// keys are needed to fill a node.
+pub(crate) const TICKET_CUSTODY_PER_KEY: usize = 256;
+/// One full sweep cycle, in seconds: the sweep visits every held ticket in this many passes.
+const TICKET_SWEEP_CYCLE_SECS: u64 = (TICKET_CUSTODY_CAP / TICKET_SWEEP_BATCH) as u64;
 
 static TICKET_NODES: std::sync::LazyLock<Mutex<Vec<std::sync::Weak<TicketCustody>>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
@@ -94,11 +102,98 @@ pub(crate) struct TicketCustody {
     entries: Mutex<TicketEntries>,
 }
 
+/// The node's ticket custody. `tickets` is the map; `by_key` partitions it per key id as
+/// `(expires_at, ticket id)`, and `pending` names each unit's one ticket not yet ready. Only
+/// [`TicketEntries::insert`], [`TicketEntries::remove`], [`TicketEntries::take_pending`] and
+/// [`TicketEntries::take_all`] change them, and each keeps the three in step.
 #[derive(Default)]
 struct TicketEntries {
     tickets: BTreeMap<String, TicketEntry>,
+    by_key: std::collections::HashMap<Box<str>, std::collections::BTreeSet<(u64, Box<str>)>>,
+    pending: std::collections::HashMap<busbar_contract::UnitKey, Box<str>>,
     cursor: Option<String>,
     version: u64,
+}
+
+impl TicketEntries {
+    /// Hold `entry` under `id`, indexed by its key and, when not ready, by its unit. A ticket the
+    /// map already held under `id` is answered, unindexed, for the caller to drop outside the lock.
+    fn insert(&mut self, id: String, entry: TicketEntry) -> Option<TicketEntry> {
+        let replaced = self.remove(&id);
+        let ticket: Box<str> = id.as_str().into();
+        self.by_key
+            .entry(entry.source.key.id.as_str().into())
+            .or_default()
+            .insert((entry.expires_at, ticket.clone()));
+        if !entry.ready {
+            self.pending.insert(entry.source.unit, ticket);
+        }
+        self.tickets.insert(id, entry);
+        replaced
+    }
+
+    /// Release the ticket `id`, out of every index.
+    fn remove(&mut self, id: &str) -> Option<TicketEntry> {
+        let entry = self.tickets.remove(id)?;
+        let key = entry.source.key.id.as_str();
+        if let Some(held) = self.by_key.get_mut(key) {
+            held.remove(&(entry.expires_at, Box::from(id)));
+            if held.is_empty() {
+                self.by_key.remove(key);
+            }
+        }
+        if self
+            .pending
+            .get(&entry.source.unit)
+            .is_some_and(|pending| &**pending == id)
+        {
+            self.pending.remove(&entry.source.unit);
+        }
+        Some(entry)
+    }
+
+    /// Release `unit`'s one ticket not yet ready, if it holds one.
+    fn take_pending(&mut self, unit: busbar_contract::UnitKey) -> Option<TicketEntry> {
+        let id = self.pending.get(&unit)?.clone();
+        self.remove(&id)
+    }
+
+    /// Release every ticket.
+    fn take_all(&mut self) -> BTreeMap<String, TicketEntry> {
+        self.by_key.clear();
+        self.pending.clear();
+        std::mem::take(&mut self.tickets)
+    }
+
+    /// Whether one more ticket for `key_id` may be held at `now` (Unix seconds): refused when the
+    /// key already holds `per_key` (retry when its own earliest ticket has expired and one sweep
+    /// cycle has passed), or when the node holds [`TICKET_CUSTODY_CAP`] (retry after one cycle).
+    fn admits(
+        &self,
+        key_id: &str,
+        per_key: usize,
+        now: u64,
+    ) -> Result<(), busbar_kernel::governance::TicketRefusal> {
+        use busbar_kernel::governance::TicketRefusal;
+        let held = self.by_key.get(key_id);
+        if held.map_or(0, std::collections::BTreeSet::len) >= per_key {
+            let earliest = held
+                .and_then(std::collections::BTreeSet::first)
+                .map_or(now, |(expires_at, _)| *expires_at);
+            let retry = earliest
+                .saturating_sub(now)
+                .saturating_add(TICKET_SWEEP_CYCLE_SECS);
+            return Err(TicketRefusal::KeySaturated {
+                retry_after_secs: u32::try_from(retry).unwrap_or(u32::MAX).max(1),
+            });
+        }
+        if self.tickets.len() >= TICKET_CUSTODY_CAP {
+            return Err(TicketRefusal::NodeSaturated {
+                retry_after_secs: TICKET_SWEEP_CYCLE_SECS as u32,
+            });
+        }
+        Ok(())
+    }
 }
 
 struct TicketEntry {
@@ -118,6 +213,8 @@ struct TicketSource {
     instance_nonce: Arc<()>,
     live: std::sync::Weak<DoorApply>,
     unit: busbar_contract::UnitKey,
+    /// The most unredeemed tickets this source's key may hold on its node.
+    per_key: usize,
     actual: Mutex<
         Option<(
             busbar_contract::caps::CallId,
@@ -152,15 +249,16 @@ impl Drop for TicketSourceOwner {
                 .entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let ids: Vec<_> = entries
-                .tickets
-                .iter()
-                .filter(|(_, e)| !e.ready && Arc::ptr_eq(&e.source, &self.source))
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.into_iter()
-                .filter_map(|id| entries.tickets.remove(&id))
-                .collect::<Vec<_>>()
+            let owned = entries
+                .pending
+                .get(&self.source.unit)
+                .and_then(|id| entries.tickets.get(&**id))
+                .is_some_and(|e| Arc::ptr_eq(&e.source, &self.source));
+            if owned {
+                entries.take_pending(self.source.unit)
+            } else {
+                None
+            }
         };
         drop(pending);
     }
@@ -198,6 +296,10 @@ impl TicketCustody {
             instance_nonce: Arc::clone(&live.ticket_nonce),
             live: Arc::downgrade(&served.live),
             unit,
+            per_key: app
+                .mint_policy
+                .max_outstanding_tickets_per_key
+                .map_or(TICKET_CUSTODY_PER_KEY, |n| n as usize),
             actual: Mutex::new(None),
             reserved: std::sync::atomic::AtomicBool::new(false),
             active: std::sync::atomic::AtomicBool::new(true),
@@ -206,7 +308,7 @@ impl TicketCustody {
             .sources
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if sources.len() >= TICKET_CUSTODY_CAP || sources.contains_key(&unit) {
+        if sources.contains_key(&unit) {
             return None;
         }
         sources.insert(unit, Arc::clone(&source));
@@ -282,19 +384,29 @@ impl TicketCustody {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !source.active.load(std::sync::atomic::Ordering::Acquire)
             || self.closed.load(std::sync::atomic::Ordering::Acquire)
-            || entries.tickets.len() >= TICKET_CUSTODY_CAP
             || entries.tickets.contains_key(identity.id())
+            || entries.pending.contains_key(&source.unit)
         {
             drop(entries);
             drop(reservation);
             return Err(TicketRefusal::NotKept);
         }
-        entries.version = entries
-            .version
-            .checked_add(1)
-            .ok_or(TicketRefusal::NotKept)?;
-        let version = entries.version;
-        entries.tickets.insert(
+        if let Err(refusal) = entries.admits(
+            source.key.id.as_str(),
+            source.per_key,
+            busbar_kernel::store::now(),
+        ) {
+            drop(entries);
+            drop(reservation);
+            return Err(refusal);
+        }
+        let Some(version) = entries.version.checked_add(1) else {
+            drop(entries);
+            drop(reservation);
+            return Err(TicketRefusal::NotKept);
+        };
+        entries.version = version;
+        let replaced = entries.insert(
             identity.id().to_owned(),
             TicketEntry {
                 reservation,
@@ -305,6 +417,8 @@ impl TicketCustody {
                 expires_at: identity.expires_at(),
             },
         );
+        drop(entries);
+        drop(replaced);
         Ok(())
     }
 
@@ -314,23 +428,17 @@ impl TicketCustody {
                 .entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let ids: Vec<_> = entries
-                .tickets
-                .iter()
-                .filter(|(_, e)| e.source.unit == key && !e.ready)
-                .map(|(id, _)| id.clone())
-                .collect();
-            let mut removed = Vec::new();
-            for id in ids {
-                if acknowledged_completed {
-                    if let Some(entry) = entries.tickets.get_mut(&id) {
+            match entries.pending.get(&key).map(|id| String::from(&**id)) {
+                Some(id) if acknowledged_completed => {
+                    let ready = entries.take_pending(key).map(|mut entry| {
                         entry.ready = true;
-                    }
-                } else if let Some(entry) = entries.tickets.remove(&id) {
-                    removed.push(entry);
+                        entry
+                    });
+                    ready.and_then(|entry| entries.insert(id, entry))
                 }
+                Some(_) => entries.take_pending(key),
+                None => None,
             }
-            removed
         };
         drop(removed);
     }
@@ -364,7 +472,7 @@ impl TicketCustody {
             if !entry.ready || entry.version != version || !entry.reservation.matches(identity) {
                 return None;
             }
-            entries.tickets.remove(identity.id())
+            entries.remove(identity.id())
         };
         removed.map(|entry| entry.reservation)
     }
@@ -377,7 +485,7 @@ impl TicketCustody {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.closed
                 .store(true, std::sync::atomic::Ordering::Release);
-            std::mem::take(&mut entries.tickets)
+            entries.take_all()
         };
         drop(entries);
     }
@@ -438,7 +546,7 @@ impl TicketCustody {
                         .get(&id)
                         .is_some_and(|e| e.version == version)
                     {
-                        entries.tickets.remove(&id)
+                        entries.remove(&id)
                     } else {
                         None
                     }
@@ -484,41 +592,40 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
         ttl_secs: u64,
         record: &[u8],
         now: u64,
-    ) -> Result<(String, u64), &'static str> {
+    ) -> Result<(String, u64), busbar_kernel::governance::TicketRefusal> {
         use busbar_kernel::governance::TicketRefusal;
         if ttl_secs == 0 || now.checked_add(ttl_secs).is_none() {
-            return Err(TicketRefusal::NoLifetime.reason());
+            return Err(TicketRefusal::NoLifetime);
         }
-        let app = self
-            .0
-            .upgrade()
-            .ok_or(TicketRefusal::NoSigner.reason())?
-            .load();
-        let gov = app
-            .governance
-            .as_deref()
-            .ok_or(TicketRefusal::NoSigner.reason())?;
+        let app = self.0.upgrade().ok_or(TicketRefusal::NoSigner)?.load();
+        let gov = app.governance.as_deref().ok_or(TicketRefusal::NoSigner)?;
+        let unit_key = busbar_contract::UnitKey::new(unit);
         let mut found = None;
         for node in ticket_nodes() {
             let source = node
                 .sources
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .values()
-                .find(|s| {
-                    s.unit.get() == unit
-                        && s.instance == caller.namespace().as_ref()
+                .get(&unit_key)
+                .filter(|s| {
+                    s.instance == caller.namespace().as_ref()
                         && s.key.as_ref() == principal.as_ref()
                 })
                 .cloned();
             if let Some(source) = source {
                 if found.is_some() {
-                    return Err(TicketRefusal::NotKept.reason());
+                    return Err(TicketRefusal::NotKept);
                 }
                 found = Some((node, source));
             }
         }
-        let (node, source) = found.ok_or(TicketRefusal::NotKept.reason())?;
+        let (node, source) = found.ok_or(TicketRefusal::NotKept)?;
+        // A saturated key or node writes nothing: `bind` stays the authoritative gate, and the
+        // mint's compensating delete covers only a race between the two checks.
+        node.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .admits(principal.id.as_str(), source.per_key, now)?;
         gov.mint_ticket_bound(
             &principal.id,
             prefix,
@@ -529,7 +636,6 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
             |identity| node.bind(&source, identity),
         )
         .await
-        .map_err(TicketRefusal::reason)
     }
 
     async fn mint(
@@ -539,17 +645,10 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
         ttl_secs: u64,
         record: &[u8],
         now: u64,
-    ) -> Result<(String, u64), &'static str> {
+    ) -> Result<(String, u64), busbar_kernel::governance::TicketRefusal> {
         use busbar_kernel::governance::TicketRefusal;
-        let app = self
-            .0
-            .upgrade()
-            .ok_or(TicketRefusal::NoSigner.reason())?
-            .load();
-        let gov = app
-            .governance
-            .as_deref()
-            .ok_or(TicketRefusal::NoSigner.reason())?;
+        let app = self.0.upgrade().ok_or(TicketRefusal::NoSigner)?.load();
+        let gov = app.governance.as_deref().ok_or(TicketRefusal::NoSigner)?;
         gov.mint_ticket(
             key_id,
             prefix,
@@ -559,7 +658,6 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
             now,
         )
         .await
-        .map_err(TicketRefusal::reason)
     }
 }
 

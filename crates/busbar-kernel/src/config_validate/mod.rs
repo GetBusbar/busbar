@@ -612,6 +612,13 @@ pub(super) fn validate_with_plugins(
                 ));
             }
         }
+        if policy.max_outstanding_tickets_per_key == Some(0) {
+            errors.push(
+                "auth.policy.max_outstanding_tickets_per_key is 0, which refuses every ephemeral \
+                 secret; set at least 1, or omit it for the default of 256"
+                    .to_string(),
+            );
+        }
         for (role, ceiling) in &policy.mint_ceilings {
             if let (Some(block), Some(modes)) = (&policy.binding_modes, &ceiling.binding_modes) {
                 for mode in modes.iter().filter(|m| !block.contains(m)) {

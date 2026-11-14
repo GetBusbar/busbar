@@ -51,8 +51,8 @@ pub use safe::{Instance, Safe, SafeSlot};
 pub mod recovery;
 pub mod services;
 pub use services::{
-    CredentialSecret, Judged, Minted, Names, Pend, Records, ServiceError, Services, Signature,
-    Signed, StaticServices, StaticWake, TrustItem, TrustItems, Wake,
+    CredentialSecret, Judged, MintError, Minted, Names, Pend, Records, ServiceError, Services,
+    Signature, Signed, StaticServices, StaticWake, TrustItem, TrustItems, Wake,
 };
 
 pub mod digest;
