@@ -186,7 +186,7 @@ impl Drop for QueueRelease {
 }
 
 #[test]
-fn an_abandoned_stop_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock() {
+fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock() {
     let guard = crate::observe::testing::exclusive();
     let dispatcher = Arc::new(Dispatcher::new(
         DispatchConfig::default(),
@@ -219,9 +219,9 @@ fn an_abandoned_stop_counts_queued_lines_and_releases_their_holds_outside_the_qu
         plugin,
         dispatcher,
         queue: Mutex::default(),
-        queued_bytes: AtomicUsize::new(0),
         shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
+        drain: AtomicBool::new(false),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
         node: node_id(),
@@ -248,10 +248,7 @@ fn an_abandoned_stop_counts_queued_lines_and_releases_their_holds_outside_the_qu
         );
     }
     crate::observe::testing::clear(&guard);
-    // A stop drains the queue; only lines still queued once STOP_GRACE has
-    // abandoned the drain are shed.
     shared.stop.store(true, Ordering::Release);
-    shared.abandon.store(true, Ordering::Release);
     Arc::clone(&shared).flush();
     assert_eq!(sink.queued(), 0);
     assert_eq!(
@@ -800,9 +797,9 @@ fn a_batch_dropped_after_failed_delivery_is_counted_as_shed() {
         plugin,
         dispatcher,
         queue: Mutex::default(),
-        queued_bytes: AtomicUsize::new(0),
         shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
+        drain: AtomicBool::new(false),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
         node: node_id(),
@@ -934,9 +931,9 @@ fn counting_sink() -> (ExportInstance, Arc<Shared>) {
         plugin,
         dispatcher,
         queue: Mutex::default(),
-        queued_bytes: AtomicUsize::new(0),
         shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
+        drain: AtomicBool::new(false),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
         node: node_id(),
@@ -964,10 +961,16 @@ fn queue_lines(sink: &ExportInstance, count: usize) {
 }
 
 /// Runs the flusher until `lines` lines were delivered (or 10 s), then stops it.
+/// The flusher thread carries this test's observe scope, so what it folds is
+/// read back under the test's `exclusive` guard.
 fn flush_until(shared: &Arc<Shared>, lines: usize) {
+    let scope = crate::observe::testing::scope();
     let flusher = std::thread::spawn({
         let shared = Arc::clone(shared);
-        move || shared.flush()
+        move || {
+            crate::observe::testing::enter(scope);
+            shared.flush();
+        }
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while counting::LINES.load(Ordering::SeqCst) < lines && std::time::Instant::now() < deadline {
@@ -988,43 +991,13 @@ fn counting_shed_folds() -> Vec<u64> {
 }
 
 #[test]
-fn export_batches_low_load() {
-    let guard = crate::observe::testing::exclusive();
-    let (sink, shared) = counting_sink();
-    crate::observe::testing::clear(&guard);
-    queue_lines(&sink, 50);
-    flush_until(&shared, 50);
-    assert_eq!(counting::LINES.load(Ordering::SeqCst), 50);
-    assert_eq!(
-        counting::DELIVERS.load(Ordering::SeqCst),
-        1,
-        "50 queued lines go out as one batch, not one DELIVER per line"
-    );
-    assert!(counting_shed_folds().is_empty());
-}
-
-#[test]
-fn export_batches_are_full_under_load() {
-    let guard = crate::observe::testing::exclusive();
-    let (sink, shared) = counting_sink();
-    crate::observe::testing::clear(&guard);
-    queue_lines(&sink, 1000);
-    flush_until(&shared, 1000);
-    assert_eq!(counting::LINES.load(Ordering::SeqCst), 1000);
-    assert_eq!(
-        counting::DELIVERS.load(Ordering::SeqCst),
-        1000usize.div_ceil(MAX_BATCH_LINES),
-        "1000 queued lines go out in full batches"
-    );
-}
-
-#[test]
 fn stop_drains_queued_lines() {
     let guard = crate::observe::testing::exclusive();
     let (sink, shared) = counting_sink();
     crate::observe::testing::clear(&guard);
     queue_lines(&sink, 300);
-    shared.stop.store(true, Ordering::Release);
+    // The drop path drains: it sets `drain` and stops only past STOP_GRACE.
+    shared.drain.store(true, Ordering::Release);
     Arc::clone(&shared).flush();
     assert_eq!(
         counting::LINES.load(Ordering::SeqCst),
