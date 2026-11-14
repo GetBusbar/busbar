@@ -307,7 +307,9 @@ pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry, LinkedEntry,
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
-pub use stage::{install_native_load_guard, keep_door, sweep_dead_staging, NativeLoadGuard};
+#[cfg(any(test, feature = "test-support"))]
+pub use stage::keep_door;
+pub use stage::{install_native_load_guard, sweep_dead_staging, NativeLoadGuard};
 
 pub fn intern_name(name: &str) -> &'static str {
     use std::collections::HashSet;
