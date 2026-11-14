@@ -132,18 +132,24 @@ pub(super) async fn serve(
 
 pub(super) fn head_block(status: u16, headers: &HeaderMap, exact: Option<u64>) -> Vec<u8> {
     let mut block = field_block(headers);
-    let bodyless = status < 200 || status == 204 || status == 304;
     let stated = headers.contains_key(axum::http::header::CONTENT_LENGTH)
         || headers.contains_key(axum::http::header::TRANSFER_ENCODING);
-    if let Some(len) =
-        exact.filter(|_| !bodyless && !stated && !headers.contains_key(axum::http::header::TRAILER))
-    {
+    let trailer = headers.contains_key(axum::http::header::TRAILER);
+    if let Some(len) = exact.filter(|_| length_due(u32::from(status), stated, trailer)) {
         block.extend_from_slice(b"content-length");
         block.extend_from_slice(fields::SEPARATOR);
         block.extend_from_slice(len.to_string().as_bytes());
         block.extend_from_slice(fields::LINE_END);
     }
     block
+}
+
+/// Whether an HTTP head opening a body of known size must state its `content-length`: not for a
+/// bodyless status, nor when framing (`content-length`, `transfer-encoding`) or a `trailer` is
+/// already stated.
+pub(super) fn length_due(status: u32, stated: bool, trailer: bool) -> bool {
+    let bodyless = status < 200 || status == 204 || status == 304;
+    !bodyless && !stated && !trailer
 }
 
 pub(super) fn field_block(headers: &HeaderMap) -> Vec<u8> {
