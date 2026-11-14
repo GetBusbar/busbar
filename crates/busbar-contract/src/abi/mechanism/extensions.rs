@@ -152,6 +152,9 @@ pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
 /// The full span records' key in an export door's `Statement::extensions`.
 pub const EXT_SPAN_RECORDS: &str = "span_records";
 
+/// The whole-batch carriage key in an export door's `Statement::extensions`.
+pub const EXT_WHOLE_BATCHES: &str = "whole_batches";
+
 pub use crate::export_calls::{EXT_PERSISTENT_ROUTES, EXT_PUBLIC_ROUTES};
 
 /// Read a route-path list from Statement extensions. An absent entry declares none.
@@ -177,6 +180,18 @@ pub fn span_records(extensions: &[u8]) -> Result<bool, String> {
         serde_json::from_slice(value)
             .map_err(|_| format!("extensions.{EXT_SPAN_RECORDS} is not a JSON boolean"))
     })
+}
+
+/// Whether a Statement's extensions state the door carries each DELIVER as one unit (one request
+/// or one write for the whole batch), so no line in a batch waits for another. Absent is false.
+pub fn whole_batches(extensions: &[u8]) -> Result<bool, String> {
+    match get(extensions, EXT_WHOLE_BATCHES) {
+        None | Some(b"false") => Ok(false),
+        Some(b"true") => Ok(true),
+        Some(_) => Err(format!(
+            "extensions.{EXT_WHOLE_BATCHES} is not a JSON boolean"
+        )),
+    }
 }
 
 /// The length of the bytes [`encode`] writes for `entries`: what [`concat`] is sized by.
