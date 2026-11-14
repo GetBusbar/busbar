@@ -407,13 +407,15 @@ impl Pools {
                 }
                 !expired
             });
-            let mut idle: Vec<(Instant, usize)> = entries
-                .iter()
-                .enumerate()
-                .filter_map(|(i, e)| e.idle.map(|since| (since, i)))
-                .collect();
+            // Count first: the idle entries are collected and sorted only when the shard keeps
+            // more than its budget, so a release within it allocates nothing.
             let per_shard = self.per_shard(posture);
-            if idle.len() > per_shard {
+            if entries.iter().filter(|e| e.idle.is_some()).count() > per_shard {
+                let mut idle: Vec<(Instant, usize)> = entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, e)| e.idle.map(|since| (since, i)))
+                    .collect();
                 idle.sort();
                 let mut drop: Vec<usize> = idle[..idle.len() - per_shard]
                     .iter()
