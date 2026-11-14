@@ -528,3 +528,66 @@ async fn required_store_read_failure_is_not_mistaken_for_absence() {
         .await
         .is_err());
 }
+
+/// Delegates every call and reports `durability: Ephemeral`, as the in-memory Store does.
+struct EphemeralInfo(std::sync::Arc<dyn busbar_contract::persistence::PersistenceBackend>);
+
+impl busbar_contract::persistence::PersistenceBackend for EphemeralInfo {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        busbar_contract::persistence::BackendInfo {
+            durability: busbar_contract::persistence::Durability::Ephemeral,
+            ..self.0.info()
+        }
+    }
+    fn read(
+        &self,
+        request: std::sync::Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        self.0.read(request)
+    }
+    fn scan(
+        &self,
+        request: std::sync::Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.0.scan(request)
+    }
+    fn commit(
+        &self,
+        candidate: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        self.0.commit(candidate)
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.0.clock(dataset)
+    }
+}
+
+#[tokio::test]
+async fn restart_scoped_admission_follows_store_durability() {
+    let ephemeral = OverlayStore::from_core(
+        crate::real_store::core_over(std::sync::Arc::new(EphemeralInfo(
+            crate::real_store::native_backend().await,
+        )))
+        .await,
+    )
+    .unwrap();
+    let durable = OverlayStore::from_core(crate::real_store::core().await).unwrap();
+    assert!(ephemeral.is_ephemeral());
+    assert!(!durable.is_ephemeral());
+
+    assert_eq!(admit_restart_scoped(&ephemeral, &[]), Ok(()));
+    let refused = admit_restart_scoped(&ephemeral, &["listen".to_string()])
+        .expect_err("a restart-only path on an in-memory Store is refused");
+    assert!(
+        refused.contains("listen") && refused.contains("BUSBAR-8016"),
+        "{refused}"
+    );
+    assert_eq!(
+        admit_restart_scoped(&durable, &["listen".to_string()]),
+        Ok(())
+    );
+}

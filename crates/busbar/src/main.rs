@@ -1057,6 +1057,11 @@ async fn run(
             "config is LOCKED (config.locked: true): admin-API config mutations are refused; edit \
              config.yaml and POST /config/reload to change config"
         );
+    } else if let Some(p) = overlay_path.as_ref().filter(|p| p.is_ephemeral()) {
+        tracing::info!(
+            overlay = %p.display(),
+            "config is mutable; admin-API changes are held by the in-memory Store: live changes last until restart, restart-only changes are refused (BUSBAR-8016)"
+        );
     } else if let Some(p) = overlay_path.as_ref() {
         tracing::info!(
             overlay = %p.display(),

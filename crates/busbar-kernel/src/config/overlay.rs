@@ -11,6 +11,23 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const NO_WRITABLE_OVERLAY_MSG: &str = "config mutation refused: this busbar has no writable Store-backed config overlay; edit config.yaml and reload a locked deployment";
 
+/// A restart-only admin edit is admitted only when the restart that applies it can still read it.
+/// On a Store whose durability is `Ephemeral` the restart that would apply `restart` is the same
+/// event that erases it, so a non-empty `restart` is refused there. Pure and synchronous: no Store
+/// I/O and no build. On a durable Store, or with nothing restart-only, it is `Ok`.
+pub fn admit_restart_scoped(store: &OverlayStore, restart: &[String]) -> Result<(), String> {
+    if restart.is_empty() || !store.is_ephemeral() {
+        return Ok(());
+    }
+    Err(format!(
+        "config mutation refused: {} take effect only on a process restart, and this busbar's configured \
+         Store is in-memory (BUSBAR-8016), so the restart that applies them would also discard them. \
+         Nothing was changed. Set them in config.yaml and restart, or configure a durable store first. \
+         Settings that apply live may be sent without these paths.",
+        restart.join(", ")
+    ))
+}
+
 pub const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
 #[derive(Debug, Clone)]
 pub struct OverlayResolution {
