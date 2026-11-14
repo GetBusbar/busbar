@@ -37,14 +37,14 @@ impl GovState {
         let observed = self.observation_total_async(bucket_id, window).await?;
         if observed.spent_nanos != 0 || !observed.units.is_empty() {
             return self
-                .price_observed_cell(cost, include_request_fee, cell, observed)?
+                .price_observed_cell(cost, include_request_fee, &cell, observed)?
                 .map_err(|error| money_refusal(bucket_id, &error));
         }
         let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
             None => {
-                let priced = self.price_cell(cost, include_request_fee, cell)?;
+                let priced = self.price_cell(cost, include_request_fee, &cell)?;
                 self.money_view.keep(bucket_id, inputs, priced.clone());
                 priced
             }
@@ -132,7 +132,7 @@ impl GovState {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
         let observed = self.observation_total_async(bucket_id, window).await?;
-        self.price_observed_cell(cost, include_request_fee, cell, observed)
+        self.price_observed_cell(cost, include_request_fee, &cell, observed)
     }
 
     pub(super) async fn observation_total_async(
@@ -165,7 +165,7 @@ impl GovState {
         &self,
         cost: &crate::cost::CostModel,
         include_request_fee: bool,
-        cell: BudgetCell,
+        cell: &BudgetCell,
         observed: crate::persistence::observations::BudgetTotal,
     ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
         if observed.spent_nanos == 0 && observed.units.is_empty() {

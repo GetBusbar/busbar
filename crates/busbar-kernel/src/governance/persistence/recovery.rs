@@ -194,18 +194,45 @@ impl AdoptionProof {
 }
 
 fn unavailable(why: impl std::fmt::Debug) -> RecoveryError {
-    RecoveryError::Unavailable(format!("{why:?}"))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the refusal text is built only when recovery custody is unavailable"
+    )]
+    let why = format!("{why:?}");
+    RecoveryError::Unavailable(why)
 }
 
-fn invalid(why: impl ToString) -> RecoveryError {
-    RecoveryError::Invalid(why.to_string())
+fn invalid(why: &str) -> RecoveryError {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the refusal text is built only when a recovery record is invalid"
+    )]
+    let why = why.to_owned();
+    RecoveryError::Invalid(why)
+}
+
+fn invalid_from(error: &dyn std::fmt::Display) -> RecoveryError {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the refusal text is built only when a recovery record is invalid"
+    )]
+    let why = error.to_string();
+    RecoveryError::Invalid(why)
 }
 
 fn body(candidate: &Candidate) -> Result<Vec<u8>, RecoveryError> {
-    let encoded = serde_json::to_vec(candidate).map_err(invalid)?;
     let mut writer = BodyWriter::new();
-    writer.text(TAG).bytes(&encoded);
-    Ok(writer.finish())
+    writer.text(TAG);
+    let mut body = writer.finish();
+    // The candidate is the body's second field, framed exactly as `BodyWriter::bytes` frames
+    // one (u64 LE length, then the bytes), but serialized straight into the body rather than
+    // through a separate encoding that is then copied in.
+    let at = body.len();
+    body.extend_from_slice(&0u64.to_le_bytes());
+    serde_json::to_writer(&mut body, candidate).map_err(|e| invalid_from(&e))?;
+    let len = (body.len() - at - 8) as u64;
+    body[at..at + 8].copy_from_slice(&len.to_le_bytes());
+    Ok(body)
 }
 
 fn candidate(record: &JournalRecord) -> Result<Option<Candidate>, RecoveryError> {
@@ -222,7 +249,9 @@ fn candidate(record: &JournalRecord) -> Result<Option<Candidate>, RecoveryError>
     if !reader.is_done() {
         return Err(invalid("trailing recovery candidate bytes"));
     }
-    serde_json::from_slice(encoded).map(Some).map_err(invalid)
+    serde_json::from_slice(encoded)
+        .map(Some)
+        .map_err(|e| invalid_from(&e))
 }
 
 /// Historical schema_records used the original full operation16 directly as
@@ -251,8 +280,11 @@ pub(crate) fn legacy_head_authorizes(candidate: &Address) -> bool {
 }
 
 fn address(operation: &[u8; 16]) -> Address {
-    let mut key = RECOVERY.0.to_vec();
-    key.extend_from_slice(operation);
+    // One allocation at the final size: the namespace tag, then the operation id.
+    let mut key = vec![0u8; RECOVERY.0.len() + operation.len()];
+    let (tag, id) = key.split_at_mut(RECOVERY.0.len());
+    tag.copy_from_slice(&RECOVERY.0);
+    id.copy_from_slice(operation);
     Address {
         namespace: partition::namespace(RECOVERY, &[&operation[..1]]).0,
         key,
@@ -285,13 +317,14 @@ async fn read(
     Ok(values)
 }
 async fn check(store: &CoreStore, predicates: Vec<Predicate>) -> Result<(), RecoveryError> {
-    let values = read(
-        store,
-        predicates.iter().map(|p| p.address.clone()).collect(),
-    )
-    .await?;
-    for (predicate, value) in predicates.into_iter().zip(values) {
-        let matches = match (predicate.expected, value) {
+    // Move each address into the read instead of cloning it; only the expectations stay behind.
+    let (addresses, expected): (Vec<_>, Vec<_>) = predicates
+        .into_iter()
+        .map(|p| (p.address, p.expected))
+        .unzip();
+    let values = read(store, addresses).await?;
+    for (expected, value) in expected.into_iter().zip(values) {
+        let matches = match (expected, value) {
             (ExpectedValue::Absent, None) => true,
             (ExpectedValue::Exact(expected), Some(actual)) => expected == actual,
             _ => false,
@@ -312,7 +345,7 @@ async fn head(
         return Ok(None);
     };
     let decoded: Head =
-        serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(invalid)?;
+        serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(|e| invalid_from(&e))?;
     if decoded.version != 1 || decoded.node == 0 || decoded.sequence == 0 {
         return Err(invalid("invalid recovery selection head"));
     }
@@ -324,11 +357,12 @@ async fn heads(store: &CoreStore) -> Result<Vec<([u8; 16], Head)>, RecoveryError
     let mut buckets = stream::iter(0..=u8::MAX)
         .map(|bucket| bucket_heads(store, bucket))
         .buffer_unordered(4);
+    // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
     let mut result = Vec::new();
     while let Some(bucket) = buckets.next().await {
         result.extend(bucket?);
     }
-    result.sort_by_key(|(operation, _)| *operation);
+    result.sort_unstable_by_key(|(operation, _)| *operation);
     Ok(result)
 }
 
@@ -336,11 +370,16 @@ async fn bucket_heads(
     store: &CoreStore,
     bucket: u8,
 ) -> Result<Vec<([u8; 16], Head)>, RecoveryError> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
     let mut result = Vec::new();
     let namespace = partition::namespace(RECOVERY, &[&[bucket]]);
     let mut after = None;
     let mut generation = None;
     loop {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: recovery heads are read only by startup replay and operator inspection"
+        )]
         let page = store
             .backend()
             .scan(Arc::new(Scan {
@@ -367,9 +406,9 @@ async fn bucket_heads(
             {
                 return Err(invalid("invalid recovery head identity"));
             }
-            let operation = at.key[16..].try_into().map_err(invalid)?;
-            let tip: Head =
-                serde_json::from_slice(value.expose(&crate::seal::lend())).map_err(invalid)?;
+            let operation = at.key[16..].try_into().map_err(|e| invalid_from(&e))?;
+            let tip: Head = serde_json::from_slice(value.expose(&crate::seal::lend()))
+                .map_err(|e| invalid_from(&e))?;
             if tip.version != 1 || tip.node == 0 || tip.sequence == 0 {
                 return Err(invalid("invalid recovery head"));
             }
@@ -488,13 +527,14 @@ impl<'a> History<'a> {
         Self::decode_candidate(&record)
     }
     fn decode_candidate(record: &Record) -> Result<Candidate, RecoveryError> {
-        let decoded = JournalRecord::decode(&record.body).map_err(invalid)?;
+        let decoded = JournalRecord::decode(&record.body).map_err(|e| invalid_from(&e))?;
         if decoded.identity() != record.identity() {
             return Err(invalid("recovery key and sealed identity differ"));
         }
         candidate(&decoded)?.ok_or_else(|| invalid("selected frame is not a recovery candidate"))
     }
     async fn finish(&self) -> Result<(), RecoveryError> {
+        // busbar:expect(bp::fresh_buffer, reason = "config: recovery custody is written only by the background flush, unit checkpoint and correction drivers, never inline with a request")
         let mut predicates = Vec::new();
         for (node, proof) in &self.proofs {
             predicates.extend(
@@ -585,7 +625,7 @@ struct Pending {
 struct PendingAdoption {
     proof: AdoptionProof,
     guards_digest: [u8; 32],
-    guards: Arc<Vec<Predicate>>,
+    guards: Arc<[Predicate]>,
     transitions: Vec<RecoveryEvent>,
     records: Vec<Record>,
     target: Head,
@@ -944,6 +984,10 @@ impl StoreRecovery {
                 .pending
                 .insert(event.operation_id, pending.clone());
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: recovery custody is written only by the background flush, unit checkpoint and correction drivers, never inline with a request"
+        )]
         let selection = Selection {
             operation_id: event.operation_id,
             address: address(&event.operation_id),
@@ -951,7 +995,7 @@ impl StoreRecovery {
                 .predecessor
                 .clone()
                 .map_or(ExpectedValue::Absent, ExpectedValue::Exact),
-            value: Secret::new(serde_json::to_vec(&pending.head).map_err(invalid)?),
+            value: Secret::new(serde_json::to_vec(&pending.head).map_err(|e| invalid_from(&e))?),
         };
         let selected = applied(
             journal
@@ -1114,9 +1158,12 @@ impl StoreRecovery {
                 reason: resolution.reason.clone(),
             };
             self.owned().await?;
+            // busbar:expect(bp::fresh_buffer, reason = "error: operator adoption of an unresolved recovery operation")
             let mut runs = Vec::new();
+            // busbar:expect(bp::fresh_buffer, reason = "error: operator adoption of an unresolved recovery operation")
             let mut records = Vec::new();
             let mut previous_head = current;
+            let staged_at = crate::store::now_ms() / 1000;
             for (index, event) in transitions.iter().enumerate() {
                 let encoded = body(&Candidate {
                     event: event.clone(),
@@ -1125,8 +1172,7 @@ impl StoreRecovery {
                 })?;
                 let run = self
                     .journal
-                    .stage_run(&[Entry::new(RecordClass::Reconciliation, encoded)
-                        .at(crate::store::now_ms() / 1000, 0)])
+                    .stage_run(&[Entry::new(RecordClass::Reconciliation, encoded).at(staged_at, 0)])
                     .map_err(unavailable)?;
                 let record = run.records()[0].clone();
                 previous_head = Head {
@@ -1139,10 +1185,14 @@ impl StoreRecovery {
                 records.push(record);
                 runs.push(run);
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: operator adoption of an unresolved recovery operation"
+            )]
             let pending = PendingAdoption {
                 proof,
                 guards_digest,
-                guards: Arc::new(imported::copy_guards(guards)),
+                guards: imported::copy_guards(guards),
                 transitions: transitions.to_vec(),
                 records,
                 target: previous_head,
@@ -1169,11 +1219,15 @@ impl StoreRecovery {
                 .adoptions
                 .insert(resolution.operation_id, pending.clone());
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: operator adoption of an unresolved recovery operation"
+        )]
         let selection = Selection {
             operation_id: resolution.operation_id,
             address: address(&resolution.operation_id),
             expected: ExpectedValue::Exact(pending.predecessor.clone()),
-            value: Secret::new(serde_json::to_vec(&pending.target).map_err(invalid)?),
+            value: Secret::new(serde_json::to_vec(&pending.target).map_err(|e| invalid_from(&e))?),
         };
         let committed = applied(
             journal
@@ -1223,6 +1277,7 @@ impl RecoverySink for StoreRecovery {
     async fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
         self.adopt_imported().await?;
         let local = self.owned().await?;
+        // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
         let mut result = Vec::new();
         for (operation, tip) in heads(&self.store).await? {
             if tip.node == self.node {
@@ -1241,10 +1296,12 @@ impl RecoverySink for StoreRecovery {
     async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
         self.adopt_imported().await?;
         let local = self.owned().await?;
+        // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
         let mut events = Vec::new();
         for (operation, tip) in heads(&self.store).await? {
             if tip.node == self.node {
                 let mut history = History::new(&self.store);
+                // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
                 let mut chain = Vec::new();
                 history
                     .selection(&operation, &tip, |_, candidate| {
@@ -1277,6 +1334,7 @@ impl RecoverySink for StoreRecovery {
     }
     async fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
         let local = self.owned().await?;
+        // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
         let mut result = Vec::new();
         for (operation, tip) in heads(&self.store).await? {
             if tip.node != self.node {
@@ -1314,6 +1372,7 @@ impl RecoverySink for StoreRecovery {
             .ok_or_else(|| invalid("selected handover disappeared"))?
             .0;
         let mut history = History::new(&self.store);
+        // busbar:expect(bp::fresh_buffer, reason = "error: operator adoption of an unresolved recovery operation")
         let mut events = Vec::new();
         history
             .selection(&resolution.operation_id, &tip, |_, candidate| {
