@@ -6951,6 +6951,10 @@
               "integer_format": "uint64",
               "client": "lossless-number-token-v1; preserve raw token before binary64 conversion"
             }
+          },
+          "overlay_ignored": {
+            "type": "boolean",
+            "description": "Present and `true` when this process was booted with `--ignore-overlay`; a later\nreload/apply re-merges the overlay."
           }
         },
         "required": [

@@ -1040,15 +1040,15 @@ summary = "A budget flush tick could not persist one or more group-budget bucket
 action = "Investigate the governance store if the failure count stays non-zero across ticks — a transient store hiccup self-heals on the next flush. Spend is retained and re-tried, so budgets are not lost, only delayed."
 
 [[diagnostic]]
-name = "SAFE_MODE_OVERLAY_QUARANTINED"
-doc = "--safe-mode boot: the config overlay was quarantined; running on base config.yaml alone."
+name = "OVERLAY_IGNORED"
+doc = "--ignore-overlay boot: the config overlay was not merged; running on base config.yaml/providers.yaml alone."
 code = 8012
 class = "Governance"
-slug = "safe-mode-overlay-quarantined"
-title = "SAFE MODE: config overlay not merged (running on base config.yaml alone)"
+slug = "overlay-ignored"
+title = "IGNORE OVERLAY: config overlay not merged (running on base config alone)"
 severity = "Actionable"
-summary = "busbar was booted with `--safe-mode`, so the persisted config overlay (API-registered hooks) was NOT merged and busbar is running on the operator-owned base config.yaml alone. This is the intentional escape hatch for an applied hook that harms traffic and re-applies itself every boot. The overlay file is untouched, not deleted."
-action = "This is an operator-requested state. Repair or remove the offending overlay entry, then boot WITHOUT `--safe-mode` to re-apply the overlay. Until then, API-registered hooks are not in effect."
+summary = "busbar was booted with `--ignore-overlay`, so the persisted config overlay (API-registered hooks) was NOT merged and busbar is running on the operator-owned base config.yaml/providers.yaml alone. This is the intentional escape hatch for an applied hook that harms traffic and re-applies itself every boot. The overlay in the Store is untouched, not deleted. `GET /api/v1/admin/info` reports `overlay_ignored: true`."
+action = "Operator-requested state. Repair or remove the offending overlay entry, then boot WITHOUT `--ignore-overlay`. An admin reload, apply or config write in this process re-merges the Store overlay and persists to it."
 
 [[diagnostic]]
 name = "PROVIDER_API_KEY_UNRESOLVED"

@@ -164,7 +164,7 @@ pub(crate) struct Resolver {
     documents: std::sync::Arc<super::documents::Documents>,
     config_path: std::path::PathBuf,
     providers_override: Option<std::path::PathBuf>,
-    safe_mode: bool,
+    ignore_overlay: bool,
     value_budget: usize,
     bindings: Bindings,
     owners: BTreeSet<String>,
@@ -175,7 +175,7 @@ impl Resolver {
         documents: std::sync::Arc<super::documents::Documents>,
         config_path: std::path::PathBuf,
         providers_override: Option<std::path::PathBuf>,
-        safe_mode: bool,
+        ignore_overlay: bool,
         index_budget: usize,
         value_budget: usize,
         inventory: &DeclarationInventory,
@@ -185,7 +185,7 @@ impl Resolver {
             documents,
             config_path,
             providers_override,
-            safe_mode,
+            ignore_overlay,
             value_budget,
             bindings,
             owners: inventory
@@ -227,7 +227,7 @@ impl Resolver {
         }
         let mut deploy = match doc
             .and_then(|doc| doc.document_patch.as_ref())
-            .filter(|_| !self.safe_mode)
+            .filter(|_| !self.ignore_overlay)
         {
             Some(patch) => patch
                 .compacted_against_yaml(&input)?
@@ -265,7 +265,7 @@ impl Resolver {
         );
         let defs = match doc
             .and_then(|doc| doc.providers_patch.as_ref())
-            .filter(|_| !self.safe_mode)
+            .filter(|_| !self.ignore_overlay)
         {
             Some(patch) => patch
                 .compacted_against_yaml(&providers)?
@@ -273,7 +273,7 @@ impl Resolver {
             None => config::providers::catalog_from_str(&providers)
                 .map_err(|_| "retained provider parsing refused")?,
         };
-        if let Some(doc) = doc.filter(|_| !self.safe_mode) {
+        if let Some(doc) = doc.filter(|_| !self.ignore_overlay) {
             // The ordinary merge reports malformed named definitions diagnostically.
             // Frozen migration must instead refuse before any definition is skipped.
             for section in config::named_map::NamedMapSection::sections() {
@@ -289,7 +289,7 @@ impl Resolver {
         }
         let mut cfg = config::resolve(&deploy, &defs)
             .map_err(|_| "frozen effective configuration resolution refused")?;
-        if let Some(doc) = doc.filter(|_| !self.safe_mode) {
+        if let Some(doc) = doc.filter(|_| !self.ignore_overlay) {
             config::overlay::merge_into(&mut cfg, doc.clone());
         }
         Ok(cfg)

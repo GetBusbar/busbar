@@ -683,3 +683,68 @@ pub fn refusals(c: &RefusalCanaries) -> (Vec<Sink>, Vec<String>) {
     let _ = std::fs::remove_dir_all(&dir);
     (sinks, notes)
 }
+
+#[test]
+fn ignore_overlay_reports_overlay_ignored_on_info() {
+    const TOKEN: &str = "ignore-overlay-admin-token";
+    let dir = scratch("ignore-overlay");
+    let (data, admin) = (common::boot::free_port(), common::boot::free_port());
+    let catalog = if cfg!(linked_section_pools) {
+        "providers: {}\nmodels: {}\n"
+    } else {
+        ""
+    };
+    std::fs::write(dir.join("providers.yaml"), "{}\n").expect("providers.yaml");
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            "listen: \"127.0.0.1:{data}\"\nadmin_listen: \"127.0.0.1:{admin}\"\n\
+             store: {{module: memory}}\nadmin_require_mtls: false\n\
+             identity-providers:\n  admin-tokens:\n    module: admin-tokens\n    \
+             token: {{ env: IGNORE_OVERLAY_ADMIN_TOKEN }}\n\
+             auth:\n  chain: []\n  admin_auth:\n    - admin-tokens\n{catalog}"
+        ),
+    )
+    .expect("config.yaml");
+    let log_path = dir.join("node.log");
+    let log = std::fs::File::create(&log_path).expect("the node log");
+    let mut cmd = Command::new(common::boot::exe());
+    cmd.arg("--ignore-overlay")
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env("IGNORE_OVERLAY_ADMIN_TOKEN", TOKEN)
+        .env("RUST_LOG", "info")
+        .stdout(log.try_clone().expect("the log twice"))
+        .stderr(log);
+    let mut child = Reap(cmd.spawn().expect("spawn busbar"));
+    let _dump = common::boot::DumpOnPanic(&log_path);
+    let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
+    let up = wait_for(Duration::from_secs(30), || {
+        child.0.try_wait().ok().flatten().is_some() || common::boot::healthz_answers(data)
+    });
+    assert!(
+        up && child.0.try_wait().ok().flatten().is_none(),
+        "--ignore-overlay boots and serves; log:\n{}",
+        read_log()
+    );
+    let bearer = format!("Bearer {TOKEN}");
+    let answer = http(
+        admin,
+        "GET",
+        "/api/v1/admin/info",
+        &[("authorization", &bearer)],
+        "",
+    );
+    stop(&mut child.0);
+    let log = read_log();
+    assert_eq!(
+        log.matches("IGNORE OVERLAY:").count(),
+        1,
+        "the boot warning reaches stderr exactly once:\n{log}"
+    );
+    let body = answer.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+    let info: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|e| panic!("the /info body is JSON ({e}): {answer}"));
+    assert_eq!(info["overlay_ignored"], serde_json::json!(true), "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

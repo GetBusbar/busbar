@@ -69,8 +69,9 @@ config:
   and security policy, framer settings, pool settings and listener self-dial protection are finalized
   before those effective plugins open. Existing anchor connections retain custody throughout.
   An unavailable, incomplete,
-  corrupt or newer Store overlay refuses recovery; `--safe-mode` explicitly quarantines it and
-  starts from base inputs without deleting Store records. `--validate` reads operator inputs only
+  corrupt or newer Store overlay refuses recovery; `--ignore-overlay` explicitly ignores it (left
+  untouched) and starts from base inputs without deleting Store records. It affects boot only: an
+  admin reload, apply or config write afterwards re-merges the Store overlay and persists to it. `--validate` reads operator inputs only
   and never opens or probes a Store.
 - Live reload retains the same anchor. A runtime `store` setting edit remains restart-to-apply for
   governance; at restart the effective governance Store may differ, but runtime config still lives
@@ -153,7 +154,7 @@ the middle bullets before you wire this into CI.
   Boot agrees: since 1.6.0 an unresolvable provider `api_key` reference refuses boot
   (`BUSBAR-8020`), including on admin apply. It checks *structure* and secret resolution, never upstream
   reachability.
-- Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--safe-mode` exactly as boot does.
+- Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--ignore-overlay` exactly as boot does.
   Because it reuses the boot path, a clean `--validate` means a clean boot.
 
 ### Inspecting the SSRF denylist (`busbar --print-metadata-blocklist`)

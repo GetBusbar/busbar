@@ -126,6 +126,7 @@ impl AdminService {
             },
             config_persistence: self.app.overlay_path.is_some(),
             config_version: self.app.config_version,
+            overlay_ignored: busbar_kernel::appbuild::booted_with_ignore_overlay(),
         })
     }
 
