@@ -32,6 +32,9 @@ rcgen = { workspace = true }
 webpki = { workspace = true }
 zeroize = { workspace = true }
 crc32fast = { workspace = true }
+# NO_PROXY matching (LR-132): hyper-util's matcher, never a hand-written one.
+hyper-util = { workspace = true }
+http = { workspace = true }
 
 tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }

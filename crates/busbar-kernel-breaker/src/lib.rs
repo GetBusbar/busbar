@@ -150,29 +150,9 @@ impl Destination {
     }
 }
 
-/// The destination map's hasher: a destination is a small integer, so one multiply spreads it
-/// over the table, where the default SipHash would spend a keyed hash per admission.
-#[derive(Default, Clone, Copy)]
-struct DestinationHash(u64);
-
-impl std::hash::Hasher for DestinationHash {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-
-    fn write_u64(&mut self, n: u64) {
-        self.0 = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-}
-
-type Destinations =
-    HashMap<DestinationId, Destination, std::hash::BuildHasherDefault<DestinationHash>>;
+/// The destination map, on the sanctioned fast hasher (foldhash, seeded per process; ruling 311):
+/// the default SipHash would spend a keyed hash per admission.
+type Destinations = HashMap<DestinationId, Destination, foldhash::fast::RandomState>;
 
 /// The breaker unit: every `(pool, destination)` breaker cell plus every destination's lifetime
 pub struct BreakerUnit {

@@ -434,6 +434,8 @@ dependencies = [
  "crc32fast",
  "dimpl",
  "futures",
+ "http",
+ "hyper-util",
  "libc",
  "rcgen",
  "ring",
@@ -744,6 +746,7 @@ name = "busbar-kernel-breaker"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "foldhash 0.2.0",
 ]
 
 [[package]]

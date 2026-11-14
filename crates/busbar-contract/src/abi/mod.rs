@@ -135,8 +135,8 @@ macro_rules! abi_lists {
             "the borrow of `self`: true of a list set by [`Self::", stringify!($with), "`] (items ",
             "that live for the program) and not since written through the pub pointer and length ",
             "fields, which this tree's code honours. #1471 makes those fields private and this ",
-            "reader safe; a plugin calls it as `unsafe { x.", stringify!($list), "() }` under ",
-            "`#[allow(unused_unsafe)]`, and the same line compiles before and after."
+            "reader safe; a plugin calls it as `unsafe { x.", stringify!($list), "() }` until then, ",
+            "and drops the `unsafe` block once it is safe."
         )]
         #[must_use]
         pub unsafe fn $list(&self) -> &[$t] {

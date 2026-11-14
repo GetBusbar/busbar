@@ -2129,8 +2129,10 @@ fn redact_credential(mut text: String, needles: &[String]) -> String {
 pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
     #[derive(serde::Deserialize)]
     struct TokenUri {
-        client_email: serde::de::IgnoredAny,
-        private_key: serde::de::IgnoredAny,
+        #[serde(rename = "client_email")]
+        _client_email: serde::de::IgnoredAny,
+        #[serde(rename = "private_key")]
+        _private_key: serde::de::IgnoredAny,
         token_uri: Option<String>,
     }
     let parsed: TokenUri = serde_json::from_str(credential).map_err(|e| e.to_string())?;

@@ -14,7 +14,6 @@ use crate::preflight::{
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
-#[allow(unused_imports)]
 use crate::{
     admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
     export, governance, hooks, ingress, ir, json, oauth_as, observability, operation,
