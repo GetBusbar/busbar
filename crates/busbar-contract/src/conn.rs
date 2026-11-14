@@ -288,6 +288,38 @@ pub struct ConnCause {
     pub text: String,
 }
 
+/// WHY A NEED OR A CONNECTION FAILED BEFORE A LINE EXISTED, as the host's own table knows it
+/// (host-only: never crosses the ABI; a plugin reads [`DeclaredConns::cause`] alone). It says who
+/// failed: the host's own policy (nothing was dialled) or the path, and on the path which hop: the
+/// target or the operator's egress proxy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NeedRefusal {
+    /// The host's own policy refused the target. Nothing was dialled.
+    Policy(&'static str),
+    /// The path to the target failed before a line existed: a DNS outcome, or a dial failure's
+    /// text (a far-end or unix-socket refusal alike, so it is never [`NeedRefusal::Policy`]).
+    Unreached(String),
+    /// The host's own policy refused the operator's egress proxy. Nothing was dialled.
+    ProxyPolicy(&'static str),
+    /// The hop to the operator's egress proxy failed: its DNS outcome, or its dial's text.
+    ProxyUnreached(String),
+}
+
+impl NeedRefusal {
+    /// THE ONE RENDERER: the reason in words naming who failed. `scrub` is applied to the dynamic
+    /// (`*Unreached`) text only; every policy text is static.
+    pub fn render(&self, scrub: impl Fn(&str) -> String) -> String {
+        match self {
+            Self::Policy(t) => format!("busbar refused it before connecting: {t}"),
+            Self::Unreached(t) => format!("could not connect to the registry: {}", scrub(t)),
+            Self::ProxyPolicy(t) => format!("busbar refused the egress proxy: {t}"),
+            Self::ProxyUnreached(t) => {
+                format!("could not connect to the egress proxy: {}", scrub(t))
+            }
+        }
+    }
+}
+
 /// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
 pub trait DeclaredConns: Conns {
     /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
@@ -390,6 +422,19 @@ pub trait DeclaredConns: Conns {
 
     /// Why `owner`'s connection `conn` failed, once it has: where (a `CAUSE_*` stage) and the
     fn cause(&self, owner: InstanceId, conn: ConnId) -> Option<ConnCause> {
+        let _ = (owner, conn);
+        None
+    }
+
+    /// Why `owner`'s `need` failed at `declare` or `open`, before any connection existed (the latest
+    /// such failure; every `declare` overwrites it). `None` = none held, or this table keeps none.
+    fn refusal(&self, owner: InstanceId, need: NeedId) -> Option<NeedRefusal> {
+        let _ = (owner, need);
+        None
+    }
+
+    /// Why `owner`'s `conn` failed while judging or dialling, before a line existed. `None` = none.
+    fn conn_refusal(&self, owner: InstanceId, conn: ConnId) -> Option<NeedRefusal> {
         let _ = (owner, conn);
         None
     }

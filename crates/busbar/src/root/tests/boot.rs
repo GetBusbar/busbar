@@ -100,6 +100,39 @@ fn the_roots_fetch_refuses_a_metadata_host_through_the_kernels_guard() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// RED (F-013): THE OPERATOR SEES WHY A CREDENTIALED plugins.fetch URL IS REFUSED, and never its
+/// password.
+#[test]
+fn the_roots_fetch_names_a_userinfo_refusal_and_never_shows_the_password() {
+    let dir = scratch("userinfo");
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let spec = super::super::loader::FetchSpec {
+        url: format!("http://fetcher:pw-H10-s3cr3t@127.0.0.1:{port}/a.tar.gz"),
+        sha256: None,
+        filename: "a.tar.gz".into(),
+    };
+    let errors = super::super::loader::fetch_plugins(
+        &dir,
+        &[spec],
+        true,
+        &crate::root::plugin_fetch::downloader(&[]),
+    )
+    .unwrap_err();
+    assert!(
+        errors[0].contains(
+            "busbar refused it before connecting: the URL carries userinfo; busbar never sends \
+             credentials embedded in a URL"
+        ),
+        "{errors:?}"
+    );
+    assert!(!errors[0].contains("pw-H10-s3cr3t"), "{errors:?}");
+    assert!(!dir.join("a.tar.gz").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     use crate::root::loader::sign::{evaluate, sign, Manifest, SigningKey, Verdict};
