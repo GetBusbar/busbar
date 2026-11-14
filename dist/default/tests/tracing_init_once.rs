@@ -3,7 +3,6 @@
 
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
-#![cfg(feature = "export-prometheus")]
 
 mod common;
 
