@@ -3848,10 +3848,6 @@ struct ListenerPlaneLine {
 /// The mounted plugin paths, in the set type the kernel's configuration check takes.
 pub type MountedPaths = std::collections::HashSet<String>;
 
-/// The opened auths a line names, by name, in the map type the kernel's inbound listener takes.
-pub type InboundAuths =
-    std::collections::HashMap<String, Arc<dyn busbar_contract::auth_calls::AuthCalls>>;
-
 pub type PreparedListeners =
     foldhash::HashMap<String, Arc<busbar_kernel::router::PreparedListener>>;
 
