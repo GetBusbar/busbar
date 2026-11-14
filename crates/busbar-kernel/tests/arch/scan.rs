@@ -60,6 +60,16 @@ pub struct Package {
     roots: Vec<(PathBuf, Class)>,
 }
 
+impl Package {
+    /// The lib, bin and other non-test, non-build-script target roots.
+    pub fn production_roots(&self) -> impl Iterator<Item = &Path> {
+        self.roots
+            .iter()
+            .filter(|(_, class)| *class == Class::Production)
+            .map(|(root, _)| root.as_path())
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Class {
     Production,
@@ -537,6 +547,67 @@ impl Parsed {
             .any(|(start, end)| (*start..=*end).contains(&line))
     }
 
+    /// `unsafe` keywords outside test and doc ranges: blocks, fns, impls, traits, attributes.
+    pub fn unsafe_keywords(&self) -> usize {
+        let mut lines = Vec::new();
+        if let Some(stream) = &self.tokens {
+            idents_named(stream.clone(), "unsafe", &mut lines);
+        }
+        lines
+            .into_iter()
+            .filter(|line| !self.excluded(*line))
+            .count()
+    }
+
+    /// `allow(unsafe_code)` or `expect(unsafe_code)` attributes outside test ranges.
+    pub fn unsafe_allows(&self) -> usize {
+        let mut lines = Vec::new();
+        if let Some(stream) = &self.tokens {
+            lint_attributes(
+                stream.clone(),
+                &["allow", "expect"],
+                &|lint| lint == "unsafe_code",
+                &mut lines,
+            );
+        }
+        lines
+            .into_iter()
+            .filter(|line| !self.excluded(*line))
+            .count()
+    }
+
+    /// `allow`/`expect` attributes naming `dead_code` or an `unused*` lint, outside test ranges.
+    pub fn dead_code_allows(&self) -> usize {
+        let mut lines = Vec::new();
+        if let Some(stream) = &self.tokens {
+            lint_attributes(
+                stream.clone(),
+                &["allow", "expect"],
+                &|lint| lint == "dead_code" || lint.starts_with("unused"),
+                &mut lines,
+            );
+        }
+        lines
+            .into_iter()
+            .filter(|line| !self.excluded(*line))
+            .count()
+    }
+
+    /// True when the file carries the inner attribute `#![<level>(unsafe_code)]`.
+    pub fn inner_lint(&self, level: &str) -> bool {
+        self.syntax.as_ref().is_some_and(|file| {
+            file.attrs.iter().any(|attr| {
+                matches!(attr.style, syn::AttrStyle::Inner(_))
+                    && attr.path().is_ident(level)
+                    && attr
+                        .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                        .is_ok_and(|lints| {
+                            lints.iter().any(|lint| lint.path().is_ident("unsafe_code"))
+                        })
+            })
+        })
+    }
+
     fn count(&self, build_script: bool) -> usize {
         let Some(stream) = &self.tokens else {
             return 0;
@@ -555,6 +626,52 @@ impl Parsed {
             find_includes(stream.clone(), &mut out);
         }
         out
+    }
+}
+
+fn idents_named(stream: TokenStream, name: &str, out: &mut Vec<usize>) {
+    for tree in stream {
+        match tree {
+            TokenTree::Ident(ident) if ident == name => out.push(ident.span().start().line),
+            TokenTree::Group(group) => idents_named(group.stream(), name, out),
+            _ => {}
+        }
+    }
+}
+
+/// The line of every `#[level(.. lint ..)]` / `#![level(.. lint ..)]` attribute.
+fn lint_attributes(
+    stream: TokenStream,
+    levels: &[&str],
+    lint: &dyn Fn(&str) -> bool,
+    out: &mut Vec<usize>,
+) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Punct(pound) if pound.as_char() == '#' => {
+                let mut next = index + 1;
+                if matches!(trees.get(next), Some(TokenTree::Punct(bang)) if bang.as_char() == '!')
+                {
+                    next += 1;
+                }
+                let Some(TokenTree::Group(body)) = trees.get(next) else {
+                    continue;
+                };
+                let inner: Vec<TokenTree> = body.stream().into_iter().collect();
+                if let [TokenTree::Ident(level), TokenTree::Group(args), ..] = inner.as_slice() {
+                    let named = args.stream().into_iter().any(|token| match &token {
+                        TokenTree::Ident(ident) => lint(&ident.to_string()),
+                        _ => false,
+                    });
+                    if levels.iter().any(|wanted| level == wanted) && named {
+                        out.push(pound.span().start().line);
+                    }
+                }
+            }
+            TokenTree::Group(group) => lint_attributes(group.stream(), levels, lint, out),
+            _ => {}
+        }
     }
 }
 
