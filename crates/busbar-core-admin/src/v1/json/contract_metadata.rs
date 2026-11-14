@@ -70,7 +70,7 @@ pub(super) fn root_settings_schema() -> Value {
             "admin_require_mtls": {"type":["boolean","null"]},
             "rate_card": {"type":["object","null"],"additionalProperties":{
                 "anyOf":[{"type":"object","additionalProperties":true},{"type":"array","items":{}}],
-                "description":"RateEntryCfg: input_utok, output_utok, cache_read_utok, cache_write_utok and units. Normal rate validation applies."
+                "description":"RateEntryCfg: input_utok, output_utok, cache_read_utok, cache_write_utok and units. An omitted or null cache_write_utok is priced at input_utok. Normal rate validation applies."
             }},
             "plugin_rate_cards": {
                 "type":["object","null"],

@@ -71,9 +71,34 @@ struct State {
 pub struct Documents {
     state: Mutex<State>,
     environment: Mutex<BTreeMap<String, Option<Zeroizing<String>>>>,
+    /// Startup conversion notices raised before the log is installed, replayed by
+    /// [`Documents::replay_notices`] so none is silently dropped.
+    notices: Mutex<Vec<String>>,
 }
 
 impl Documents {
+    /// Report a startup conversion notice (an authored key and fixed text, never a value) at WARN:
+    /// now when the log is installed, else held for [`Documents::replay_notices`].
+    pub fn notice(&self, notice: &str) {
+        if tracing::dispatcher::has_been_set() {
+            tracing::warn!(change = %notice, "startup converted a 1.5.5 configuration value");
+        } else if let Ok(mut held) = self.notices.lock() {
+            held.push(notice.to_owned());
+        }
+    }
+
+    /// Log every notice held from before the log was installed. Called once logging starts.
+    pub fn replay_notices(&self) {
+        let held = self
+            .notices
+            .lock()
+            .map(|mut held| std::mem::take(&mut *held))
+            .unwrap_or_default();
+        for notice in held {
+            tracing::warn!(change = %notice, "startup converted a 1.5.5 configuration value");
+        }
+    }
+
     fn captured_env(&self, key: &str) -> Option<String> {
         let mut captured = self
             .environment
@@ -191,6 +216,11 @@ impl Documents {
                 })?;
                 runtime_only = host.runtime_only();
                 let debt = output.todos.len();
+                // Change lines may quote interpolated values and are zeroized; a notice holds only
+                // an authored key and fixed text, so the operator sees it at WARN.
+                for notice in &output.notices {
+                    self.notice(notice);
+                }
                 output.changes.zeroize();
                 output.todos.zeroize();
                 output.warnings.zeroize();

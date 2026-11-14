@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "root": {
+    "rate_card": {
+      "test-model": {
+        "input_utok": 2.5,
+        "output_utok": 10.0,
+        "cache_read_utok": 0.0,
+        "cache_write_utok": 0.0
+      }
+    }
+  }
+}

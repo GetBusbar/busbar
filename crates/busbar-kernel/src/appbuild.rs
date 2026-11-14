@@ -277,6 +277,20 @@ pub fn load_config_from_disk_compacting_document_patches(
                 config::current_format::legacy_config_error(&markers)
             ));
         }
+        // Startup unfolds a literal 1.5.5 `cache_write_utok: 0` before this reader; one that still
+        // arrives (a runtime edit, or an env-interpolated value) is refused rather than made free.
+        // Admin-API zeros live in the overlay patch, applied below, and are not touched.
+        if let Some(model) = doc
+            .as_mapping()
+            .and_then(|root| config::zero_cache_write_models(root).into_iter().next())
+        {
+            return Err(format!(
+                "config.yaml: rate_card.{model}.cache_write_utok: 0 is refused. In a root \
+                 rate_card it is the 1.5.5 spelling of 'no separate write tariff' and would make \
+                 cache writes free. Remove the key (writes price at input_utok) or set free writes \
+                 through the admin API."
+            ));
+        }
 
         let keys: Vec<&str> = doc
             .as_mapping()

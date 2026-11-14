@@ -72,7 +72,19 @@ impl MigrateHost for OverlayHost<'_> {
     }
 }
 
-pub fn migrate_overlay_with(bytes: &[u8], host: &dyn MigrateHost) -> Result<OverlayDoc, String> {
+/// A converted 1.5.5 overlay and what the conversion changed: `changes` for an explicit report
+/// (`--migrate-overlay`), `notices` for a startup caller that zeroizes `changes` and logs these
+/// at WARN instead (they hold only authored keys and fixed text).
+pub struct OverlayMigration {
+    pub doc: OverlayDoc,
+    pub changes: Vec<String>,
+    pub notices: Vec<String>,
+}
+
+pub fn migrate_overlay_with(
+    bytes: &[u8],
+    host: &dyn MigrateHost,
+) -> Result<OverlayMigration, String> {
     let mut source = super::overlay_legacy::parse_legacy_overlay(bytes)?;
     host.admit_config_profile(&super::provenance::HistoricalConfigProof::settings(
         "overlay.v1",
@@ -110,7 +122,7 @@ pub fn migrate_overlay_with(bytes: &[u8], host: &dyn MigrateHost) -> Result<Over
     let fragment = super::migrate_plugins::yaml_value(&Value::Object(fragment))?;
     let raw =
         serde_yaml::to_string(&fragment).map_err(|_| "cannot encode overlay migration input")?;
-    let converted = super::migrate::migrate_overlay_fragment(&raw, &OverlayHost(host))?;
+    let mut converted = super::migrate::migrate_overlay_fragment(&raw, &OverlayHost(host))?;
     if !converted.todos.is_empty() {
         return Err("overlay migration has unresolved plugin or configuration prerequisites; migrate the affected settings before retrying".into());
     }
@@ -142,7 +154,11 @@ pub fn migrate_overlay_with(bytes: &[u8], host: &dyn MigrateHost) -> Result<Over
     let bytes = serde_json::to_vec(&source).map_err(|_| "cannot encode migrated overlay")?;
     let mut doc = super::overlay_legacy::decode_legacy_overlay(&bytes)?;
     doc.version = busbar_kernel::config::overlay::OVERLAY_VERSION;
-    Ok(doc)
+    Ok(OverlayMigration {
+        doc,
+        changes: std::mem::take(&mut converted.changes),
+        notices: std::mem::take(&mut converted.notices),
+    })
 }
 
 #[cfg(test)]
@@ -216,7 +232,7 @@ mod tests {
     #[test]
     fn actual_overlay_shape_preserves_tombstones_controls_and_converts_plugin_settings() {
         let bytes = br#"{"version":1,"hooks":{"guard":{"kind":"tap","plugin":"observer","at":"response","groups":["restricted"],"on_error":"reject"}},"global_hooks":["guard"],"deleted":["old-hook"],"groups":{"restricted":{"enabled":false}},"deleted_groups":["old-grant"],"root":{"per_request_fee":7},"named_maps":{"identity-providers":{"corp":{"module":"test-lift","settings":{"token":"${UNCHANGED}"}}}}}"#;
-        let doc = migrate_overlay_with(bytes, &Host).unwrap();
+        let doc = migrate_overlay_with(bytes, &Host).unwrap().doc;
         assert_eq!(doc.deleted, ["old-hook"]);
         assert_eq!(doc.deleted_groups, ["old-grant"]);
         assert!(!doc.groups["restricted"].enabled);
@@ -233,5 +249,41 @@ mod tests {
     #[test]
     fn duplicate_overlay_fields_are_refused_before_plugin_conversion() {
         assert!(migrate_overlay_with(br#"{"groups":{},"groups":{}}"#, &Host).is_err());
+    }
+    /// A 1.5.5 overlay card in 1.5.5's exact serialization (`cache_write_utok: 0.0` on every card,
+    /// written by its `f64` default) is converted, by the one function both version-1 entry points
+    /// use (`--migrate-overlay` and the startup Store binding), to a card that prices cache writes
+    /// at input_utok: the zero is removed, named as a change line and as a startup notice.
+    #[test]
+    fn frozen_v1_overlay_binding_prices_writes_at_input() {
+        const LINE: &str = "rate_card.test-model.cache_write_utok: 0 removed (1.5.5 spelling of \
+                            'no separate write tariff'); cache writes price at input_utok";
+        let bytes = br#"{"version":1,"root":{"rate_card":{"test-model":{"input_utok":2.5,"output_utok":10.0,"cache_read_utok":0.0,"cache_write_utok":0.0}}}}"#;
+        let converted = migrate_overlay_with(bytes, &Host).expect("the 1.5.5 overlay converts");
+        assert_eq!(
+            converted.changes.iter().filter(|c| *c == LINE).count(),
+            1,
+            "{:?}",
+            converted.changes
+        );
+        assert_eq!(converted.notices, [LINE]);
+        let root = converted
+            .doc
+            .root
+            .expect("the overlay keeps its root settings");
+        let entry = &root.rate_card.expect("the overlay keeps its card")["test-model"];
+        assert_eq!(entry.cache_write_utok, None, "the 1.5.5 zero is removed");
+        assert_eq!(
+            entry.cache_read_utok, 0.0,
+            "every other tier is kept as written"
+        );
+        assert_eq!(entry.cache_write_rate(), 2.5);
+        // 20 aggregate Chat cache writes price at 20 x 2.5 micro-units, never 0.
+        let rates = entry.raw_tier_rates();
+        assert_eq!(rates.cache_write, rates.input);
+        assert_eq!(
+            rates.cache_write,
+            busbar_kernel_ledger::cost::representable_nano_rate(2.5)
+        );
     }
 }

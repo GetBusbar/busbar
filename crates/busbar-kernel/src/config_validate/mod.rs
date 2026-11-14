@@ -1453,7 +1453,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 ("input_utok", r.input_utok),
                 ("output_utok", r.output_utok),
                 ("cache_read_utok", r.cache_read_utok),
-                ("cache_write_utok", r.cache_write_utok),
+                ("cache_write_utok", r.cache_write_rate()),
             ];
             for (tier, v) in tiers {
                 if !v.is_finite() || v < 0.0 {
