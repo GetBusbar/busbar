@@ -158,8 +158,10 @@ paths. An empty provider override is ignored. Worker counts retain the old posit
 and 128-worker cap; invalid values are reported and leave the configured/Tokio fallback intact.
 For the upstream switches, empty or `0` becomes false and every other supplied value becomes true,
 including the old string `false`. These are migration rules; serving uses the configured booleans.
-Remove the retired variables from launchers after conversion. The current `--providers` flag remains
-supported. A missing selected catalog remains an error during normal validation/startup.
+Remove the retired variables from launchers after conversion. A retired variable that is still set is
+reported as BUSBAR-3029 ("set but ignored", naming the key to use instead) at boot and by
+`--validate`; it has no effect. The current `--providers` flag remains supported. A missing
+selected catalog remains an error during normal validation/startup.
 
 **Containers.** The 1.5.x image set `BUSBAR_PROVIDERS=/etc/busbar/providers.yaml`; the 1.6.0 image
 does not set it. With `config.yaml` at the image's default `/etc/busbar/config.yaml` the catalog

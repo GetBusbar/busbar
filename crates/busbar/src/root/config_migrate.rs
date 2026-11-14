@@ -14,6 +14,7 @@ use crate::root::loader::PluginRegistry;
 #[path = "migrate_environment.rs"]
 mod environment;
 pub(super) use environment::capture as capture_environment;
+pub(crate) use environment::ignored_launch_env;
 
 mod index_field {
     pub const PLUGINS: &str = "plugins";
