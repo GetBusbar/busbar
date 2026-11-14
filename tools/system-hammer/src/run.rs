@@ -112,6 +112,9 @@ pub struct CaseResult {
     pub proto: String,
     pub rps: f64,
     pub ok: u64,
+    /// Answered bodies checked against the case's `contains:` (every one), and those missing it.
+    pub body_total: u64,
+    pub body_miss: u64,
     pub errors: BTreeMap<String, u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_error: Option<String>,
@@ -828,15 +831,16 @@ fn run_case(
             }
         }
     }
-    let status = if !alive || out.ok == 0 {
-        "failed"
-    } else {
-        "ok"
-    };
+    let status = case_status(alive, out.ok, out.body_miss);
     let note = if !alive {
         Some(format!("gateway died:\n{}", gw.log_tail(15)))
     } else if out.ok == 0 {
         Some("no request succeeded".to_string())
+    } else if out.body_miss > 0 {
+        Some(format!(
+            "body_miss {}: answers without the expected `contains:` marker",
+            body_miss_text(out.body_miss, out.body_total)
+        ))
     } else {
         None
     };
@@ -850,6 +854,8 @@ fn run_case(
         proto: format!("{:?}", c.proto).to_lowercase(),
         rps: out.rps(),
         ok: out.ok,
+        body_total: out.body_total,
+        body_miss: out.body_miss,
         errors: merged_errors(&out, &probe),
         first_error,
         latency_us: Pcts::of(&out.latency),
@@ -878,6 +884,21 @@ fn run_case(
         }),
         mock_hits: Value::Object(hits),
     }
+}
+
+/// A case is FAILED when the gateway died, nothing succeeded, or any checked body missed its
+/// `contains:` marker.
+fn case_status(alive: bool, ok: u64, body_miss: u64) -> &'static str {
+    if !alive || ok == 0 || body_miss > 0 {
+        "failed"
+    } else {
+        "ok"
+    }
+}
+
+/// `n/total`: checked bodies that missed their `contains:` marker, of all checked.
+pub fn body_miss_text(miss: u64, total: u64) -> String {
+    format!("{miss}/{total}")
 }
 
 fn merged_errors(load: &Outcome, probe: &Outcome) -> BTreeMap<String, u64> {
