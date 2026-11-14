@@ -285,9 +285,17 @@ impl DataRoutes {
         };
         let span =
             self.entries[plane].open(claim, &context.head.method, &context.head.target, field);
-        self.serve_admitted_inner(admission, context, body, scheme, slot, caller)
-            .instrument(span)
-            .await
+        self.serve_admitted_inner(
+            admission,
+            (plane, claim),
+            context,
+            body,
+            scheme,
+            slot,
+            caller,
+        )
+        .instrument(span)
+        .await
     }
 
     /// The same teller driver, money seam, hooks and NodeEndPost as the compatibility adapter.
@@ -296,13 +304,14 @@ impl DataRoutes {
     async fn serve_admitted_inner<C: Output>(
         self: Arc<Self>,
         admission: &RequestAdmission,
+        // `serve_admitted`'s claim of the selected line, looked up once (SINGLE-PATH SP-A1).
+        (plane, claim): DoorClaim,
         context: AdmittedContext,
         body: Bytes,
         scheme: u8,
         slot: FramedSession,
         caller: Arc<C>,
     ) -> Option<SessionPipe> {
-        let (plane, claim) = self.admitted_claim(admission)?;
         if let Some(document) = resource_documents(&self.served).get(&(plane, claim)) {
             let rendered = busbar_kernel::ingress::protocol::metadata_rendered(
                 &busbar_kernel::ingress::protocol::Metadata {
