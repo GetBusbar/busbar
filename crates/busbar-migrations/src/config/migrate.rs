@@ -82,7 +82,6 @@ pub(super) mod vocabulary {
         pub const ROLE_BINDINGS: &str = "role_bindings";
         pub const RPM_LIMIT: &str = "rpm_limit";
         pub const SERVER_TIMING: &str = "server_timing";
-        pub const SERVERS: &str = "servers";
         pub const SETTINGS: &str = "settings";
         pub const SHA256: &str = "sha256";
         pub const SIGNALS: &str = "signals";
@@ -91,7 +90,6 @@ pub(super) mod vocabulary {
         pub const TIMEOUT_SECS: &str = "timeout_secs";
         pub const TOKENS: &str = "tokens";
         pub const TOKEN: &str = "token";
-        pub const TOOLS: &str = "tools";
         pub const TPM_LIMIT: &str = "tpm_limit";
         pub const TRIP: &str = "trip";
         pub const URL: &str = "url";
