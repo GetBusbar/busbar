@@ -209,7 +209,6 @@ fn the_dedupe_log_keeps_a_fixed_size_record_per_op() {
     let large: Vec<(&str, u64, UsageDelta)> = (0..500).map(|w| ("b", w, delta(1))).collect();
     assert_eq!(Dedupe::usage(&small).body().len(), 32);
     assert_eq!(Dedupe::usage(&large).body().len(), 32);
-    assert_eq!(Dedupe::usage(&large).body_hex().len(), 64);
 }
 
 #[test]
@@ -285,7 +284,7 @@ fn an_async_bodys_answer_is_done_replay_or_conflict() {
     let other = Dedupe::usage(&[]);
     assert_eq!(d.answer(Ok(None::<Vec<u8>>)), Ok(()));
     assert_eq!(d.answer(Ok(Some(d.body().to_vec()))), Ok(()));
-    assert_eq!(d.answer(Ok(Some(d.body_hex()))), Ok(()));
+    assert_eq!(d.answer(Ok(Some(hex::encode(d.body())))), Ok(()));
     assert_eq!(
         d.answer(Ok(Some(r#"add_usage_batch:[("b", 60, UsageDelta { requests: 1, billable_requests: 1, models: [ModelTokensDelta { model: "m", usage_units: {"input": 7} }] })]"#))),
         Err(OpRefused::Conflict)
@@ -407,7 +406,7 @@ fn quantity_identity_uses_all_sixteen_bytes_and_signedness() {
         let d = Dedupe::usage(&cells);
         assert!(bodies.insert(*d.body()));
         assert_eq!(d.seen(Some(d.body())), Seen::Replay);
-        assert_eq!(d.seen(Some(d.body_hex().as_bytes())), Seen::Replay);
+        assert_eq!(d.seen(Some(hex::encode(d.body()).as_bytes())), Seen::Replay);
     }
     let mut bodies = std::collections::HashSet::new();
     for n in [0, 1, (1_i128 << 64) + 1, i128::MAX] {

@@ -4,9 +4,8 @@
 //! Tests for the exact decimal quantity (DECISION #81).
 
 use super::{
-    read_count, stored_scale_default, Count, CountError, COUNT_SCALE, MAX,
-    MAX_ACROSS_A_64_BIT_COLUMN, MIN, MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS,
-    SCALE_WHOLE_UNITS,
+    read_count, Count, CountError, COUNT_SCALE, MAX, MAX_ACROSS_A_64_BIT_COLUMN, MIN,
+    MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
 };
 
 /// Parse text that is expected to be a count, or fail the test saying which text did not.
@@ -386,13 +385,7 @@ fn multiplying_a_count_by_a_rate_is_exact_or_a_refusal() {
         Err(CountError::Inexact)
     );
 
-    assert_eq!(ok("0.000001").checked_mul_wide(ok("0.000001")), Ok(1));
-    assert_eq!(
-        ok("27.5").checked_mul_wide(ok("1.87")),
-        Ok(51_425_000_000_000)
-    );
     assert_eq!(MAX.checked_mul(ok("2")), Err(CountError::Overflow));
-    assert_eq!(MAX.checked_mul_wide(ok("2")), Err(CountError::Overflow));
 }
 
 #[test]
@@ -423,11 +416,10 @@ fn ordering_is_the_ordering_of_the_quantities() {
 /// A ROW'S SILENCE MEANS WHOLE UNITS, AND NOTHING ON DISK IS TOUCHED.
 #[test]
 fn an_old_row_reads_as_whole_units_and_a_new_row_as_a_mantissa() {
-    assert_eq!(stored_scale_default(), SCALE_WHOLE_UNITS);
     assert_eq!(SCALE_MICRO_UNITS, COUNT_SCALE);
     assert_ne!(SCALE_WHOLE_UNITS, SCALE_MICRO_UNITS);
 
-    assert_eq!(Count::from_stored(27, stored_scale_default()), Ok(ok("27")));
+    assert_eq!(Count::from_stored(27, SCALE_WHOLE_UNITS), Ok(ok("27")));
 
     assert_eq!(
         Count::from_stored(27_500_000, SCALE_MICRO_UNITS),

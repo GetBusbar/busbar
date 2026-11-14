@@ -91,11 +91,6 @@ impl QuantitySource {
     pub fn is_reported(&self) -> bool {
         !self.is_kernel_derived()
     }
-
-    /// Whether a figure from this source is a floor rather than an exact count. Only the byte
-    pub fn is_floor(&self) -> bool {
-        matches!(self, QuantitySource::KernelBytes { .. })
-    }
 }
 
 /// One reported quantity, against one declared meter class.

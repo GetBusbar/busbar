@@ -31,12 +31,6 @@ pub const SCALE_WHOLE_UNITS: u32 = 0;
 /// The scale every row written from here on declares: micro-units, i.e. [`COUNT_SCALE`].
 pub const SCALE_MICRO_UNITS: u32 = COUNT_SCALE;
 
-/// The scale a record's absent discriminator means — the function `#[serde(default = "…")]` names.
-#[must_use]
-pub const fn stored_scale_default() -> u32 {
-    SCALE_WHOLE_UNITS
-}
-
 /// An exact decimal quantity: an `i128` count of micro-units.
 ///
 /// Two counts are equal when they are the same quantity, and ordered the way the quantities are
@@ -184,14 +178,6 @@ impl Count {
                     Ok(Count(wide / SCALE_FACTOR))
                 }
             }
-        }
-    }
-
-    /// The exact mantissa of `self * rate` at DOUBLE the scale (12 places).
-    pub const fn checked_mul_wide(self, rate: Count) -> Result<i128, CountError> {
-        match self.0.checked_mul(rate.0) {
-            Some(wide) => Ok(wide),
-            None => Err(CountError::Overflow),
         }
     }
 
