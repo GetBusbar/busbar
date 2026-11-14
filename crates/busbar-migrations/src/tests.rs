@@ -502,13 +502,14 @@ async fn unknown_copy_retains_exact_candidate_and_atomic_checkpoint() {
     let native = backend.0.lock().unwrap();
     let sends = &native.sends;
     assert_eq!(sends[sends.len() - 1], sends[sends.len() - 2]);
+    // The copy page is self-fenced: its retry resolves by readback, so no slot row.
     assert_eq!(
         native
             .receipts
             .iter()
             .filter(|(id, _)| *id == operation)
             .count(),
-        1
+        0
     );
 }
 

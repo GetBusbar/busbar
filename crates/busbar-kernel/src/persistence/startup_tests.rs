@@ -400,7 +400,8 @@ async fn first_start_host_initialization_takeover_fences_stale_completion() {
         prior
             .initialize_host(initial_binding("host", 1), predicates, mutations)
             .await,
-        Err(Error::Authority)
+        // The successor superseded the exact birth witness: audited Reconcile (section 2.3 c).
+        Ok(Progress::Reconcile)
     );
     let (predicates, mutations) = host_initialization(b"initial");
     assert_eq!(
@@ -474,7 +475,8 @@ async fn first_start_before_plan_freeze_can_resume_but_fences_delayed_old_writes
     ));
     assert_eq!(
         prior.freeze(vec![initial_binding("one", 1)]).await,
-        Ok(Progress::Reconcile)
+        // A self-fenced FENCED on a first send is final (section 2.3).
+        Err(Error::Authority)
     );
     assert!(!prior.permits("one").await.unwrap());
     assert!(!prior.published().await);
@@ -536,8 +538,10 @@ async fn first_start_frozen_plan_and_native_initialization_survive_crash_exactly
     assert!(current.permits("two").await.unwrap());
     // A late replay can correctly acknowledge old effects; only the final current
     // owner CAS grants publication, so that acknowledgment cannot revive the owner.
-    assert_eq!(prior.complete("one").await.unwrap(), Progress::Advanced);
-    assert_eq!(prior.complete("two").await, Ok(Progress::Reconcile));
+    // The successor superseded the exact birth witness, so the late replay is an
+    // audited Reconcile (section 2.3 c) and the held attempt blocks any other change.
+    assert_eq!(prior.complete("one").await.unwrap(), Progress::Reconcile);
+    assert_eq!(prior.complete("two").await, Err(Error::Authority));
     assert!(!prior.permits("two").await.unwrap());
     assert!(!prior.published().await);
     assert!(current.permits("two").await.unwrap());
@@ -602,11 +606,12 @@ async fn first_start_late_applied_ready_cannot_publish_after_owner_takeover() {
     let successor = admitted(&mut startup(&backend, false)).await;
     let current = successor.first_start().unwrap();
     current.freeze(plan).await.unwrap();
-    assert_eq!(prior.complete("one").await.unwrap(), Progress::Advanced);
+    // The successor superseded the exact birth witness: audited Reconcile (section 2.3 c).
+    assert_eq!(prior.complete("one").await.unwrap(), Progress::Reconcile);
     assert_eq!(
         prior.publish().await,
-        Ok(Progress::Reconcile),
-        "late Applied proves old effects, never current publication ownership"
+        Err(Error::Authority),
+        "an unresolved READY never grants publication"
     );
     assert!(!prior.permits("one").await.unwrap());
     assert!(!prior.published().await);
@@ -847,6 +852,9 @@ async fn startup_absent_markers_do_not_prove_empty_and_create_is_explicit() {
         .insert(address.clone(), Secret::new(b"preserve".to_vec()));
     let mut start = startup(&backend, true);
     assert_eq!(start.advance().await.unwrap(), Progress::Advanced);
+    // Every store answers FENCED to Initialize on a non-empty dataset (section 2.6); the
+    // re-inspect finds no dataset root and refuses as before.
+    assert_eq!(start.advance().await.unwrap(), Progress::Advanced);
     assert_eq!(start.advance().await, Err(Error::Backend(Failure::Refused)));
     let native = backend.0.lock().unwrap();
     assert_eq!(native.rows.len(), 1);
@@ -957,7 +965,7 @@ async fn claims_queued_expiry_and_clock_rewind_cannot_consume_outside_interval()
 }
 
 #[tokio::test]
-async fn claims_lost_reply_replays_after_expiry_without_reclassifying_unknown() {
+async fn claims_lost_reply_replays_and_an_unevaluated_send_expires_on_retry() {
     use crate::persistence::claims::{Claims, Outcome};
     let backend = Arc::new(Backend::default());
     let store = admitted(&mut startup(&backend, true)).await;
@@ -974,11 +982,10 @@ async fn claims_lost_reply_replays_after_expiry_without_reclassifying_unknown() 
         panic!("expected retained claim")
     };
     backend.0.lock().unwrap().now = 21;
-    assert!(matches!(
-        claims.retry(pending).await.unwrap(),
-        Outcome::Reconcile(_)
-    ));
-    assert_eq!(store.stop_admission().unwrap().len(), 1);
+    // The first send was never evaluated, so the equal-seq retry is the slot row's
+    // single evaluation: a consistent time-guard refusal is final (section 2.3).
+    assert_eq!(claims.retry(pending).await.unwrap(), Outcome::Expired);
+    assert!(store.stop_admission().unwrap().is_empty());
 }
 
 fn business(store: &CoreStore, key: u8) -> PreparedCandidate {
@@ -1159,7 +1166,8 @@ async fn live_roll_conflict_and_expired_authority_are_not_admission() {
         assert_eq!(
             start.advance().await,
             if expired {
-                Ok(Progress::Reconcile)
+                // A FENCED self-fenced first send is final (section 2.3).
+                Err(Error::Authority)
             } else {
                 Err(Error::Conflict)
             }
