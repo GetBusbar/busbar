@@ -1096,6 +1096,14 @@ impl AuthMiddleware {
     }
 
     pub fn extract_client_token(&self, headers: &HeaderMap) -> Option<String> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::CredentialExtract);
+        carried_credential(&self.carriers, headers)
+    }
+
+    /// The token-exchange endpoint's own credential read. That endpoint is a plain HTTP request
+    /// with no inbound unit, so there is no carried credential to read instead.
+    pub(crate) fn exchange_token(&self, headers: &HeaderMap) -> Option<String> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ExchangeToken);
         carried_credential(&self.carriers, headers)
     }
 
@@ -1247,7 +1255,10 @@ fn unauthorized_ingress_response(ingress: crate::plane_driver::dispatch::Ingress
     crate::ingress::native::native_error(ingress, status, kind, message)
 }
 
-pub(crate) fn inbound_candidate(
+/// The inbound candidate credential: a DPoP-bound token first (when this node is an OAuth
+/// authorization server), else the first carrier. Read once per unit, by its `Derived` record,
+/// which counts the read; a refusal with no unit reads it through a record of its own.
+pub(crate) fn candidate_of(
     app: &crate::state::App,
     headers: &HeaderMap,
 ) -> Option<busbar_contract::redacted::Secret<String>> {
@@ -2188,16 +2199,13 @@ pub(crate) async fn auth_middleware(
             Ok(context) => context,
             Err(refused) => {
                 let admission = inbound.plane_admission();
-                let token = app
-                    .auth
-                    .extract_client_token(&crate::inbound::header_map(&inbound.inner.original));
+                let token = inbound.client_token();
                 return Err(match refused {
-                    AdmittedRefusal::Identity(refusal) => identity_refusal_response(
-                        refusal,
-                        admission.as_ref(),
-                        token.is_some(),
-                        || unauthorized_with_completion_taps(&app, &path, door.as_ref()),
-                    ),
+                    AdmittedRefusal::Identity(refusal) => {
+                        identity_refusal_response(refusal, admission, token.is_some(), || {
+                            unauthorized_with_completion_taps(&app, &path, door.as_ref())
+                        })
+                    }
                     AdmittedRefusal::SenderConstraint | AdmittedRefusal::Audience(_) => {
                         let description = match refused {
                             AdmittedRefusal::Audience(description) => description,
@@ -2217,13 +2225,12 @@ pub(crate) async fn auth_middleware(
             }
         };
         // The operator adapter alone converts the admitted neutral head back to HTTP.
-        *req.headers_mut() = crate::inbound::header_map(&context.head);
+        *req.headers_mut() = crate::inbound::served_header_map(&context.head);
         strike_named(&mut req, &mut context.consumed, &inbound.inner.strips);
-        let original = crate::inbound::header_map(&inbound.inner.original);
-        let token = app.auth.extract_client_token(&original).or_else(|| {
+        let token = inbound.client_token().map(str::to_owned).or_else(|| {
             app.oauth_as
                 .as_ref()
-                .and_then(|_| dpop::dpop_credential(&original))
+                .and_then(|_| dpop::dpop_credential(inbound.original_headers()))
         });
         req.extensions_mut().insert(CallerToken(token));
         req.extensions_mut().insert(context.principal);
@@ -2233,7 +2240,7 @@ pub(crate) async fn auth_middleware(
     }
     let inbound_headers = inbound
         .as_ref()
-        .map(|admission| crate::inbound::header_map(&admission.inner.original));
+        .map(crate::inbound::RequestAdmission::original_headers);
 
     let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
@@ -2243,7 +2250,7 @@ pub(crate) async fn auth_middleware(
                 .then(|| app.planes.admission_for(&path).cloned())
                 .flatten()
         },
-        crate::inbound::RequestAdmission::plane_admission,
+        |inbound| inbound.plane_admission().cloned(),
     );
 
     let door: Option<RefusalDoor> = core_routes.door_refusal(&path, req.method()).map(|refuse| {
@@ -2289,9 +2296,10 @@ pub(crate) async fn auth_middleware(
     let is_admin = declared_admin
         || (!claimed_at_key && (path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX)));
 
-    let client_token: Option<String> = app
-        .auth
-        .extract_client_token(inbound_headers.as_ref().unwrap_or_else(|| req.headers()));
+    let client_token: Option<String> = match inbound.as_ref() {
+        Some(inbound) => inbound.client_token().map(str::to_owned),
+        None => app.auth.extract_client_token(req.headers()),
+    };
 
     let mut dpop_proven = false;
 
@@ -2303,7 +2311,7 @@ pub(crate) async fn auth_middleware(
             &app,
             req.method(),
             &path,
-            inbound_headers.as_ref().unwrap_or_else(|| req.headers()),
+            inbound_headers.unwrap_or_else(|| req.headers()),
             client_token.as_deref(),
             &mut read,
         )
@@ -2368,7 +2376,7 @@ pub(crate) async fn auth_middleware(
                 &app,
                 req.method().as_str(),
                 target,
-                inbound_headers.as_ref().unwrap_or_else(|| req.headers()),
+                inbound_headers.unwrap_or_else(|| req.headers()),
                 false,
                 true,
                 &mut strips,
@@ -2383,7 +2391,7 @@ pub(crate) async fn auth_middleware(
             req.method().as_str(),
             target,
             inbound_headers
-                .clone()
+                .cloned()
                 .unwrap_or_else(|| req.headers().clone()),
             &door,
         );

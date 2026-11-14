@@ -1706,6 +1706,14 @@ fn refused_ref(owner: u64, generation: u64, r: &svc::AuthRef) -> Option<Answered
         .map(|e| Answered::bare(Outcome::Refused, e.text()))
 }
 
+/// What [`request_generation`] read: the generation the request is judged at and, for a
+/// presented unit, the secret it found, which [`refused_unit`] checks the unit's MAC against
+/// instead of reading it again (SINGLE-PATH SP-AU5).
+struct Requested {
+    generation: u64,
+    secret: Option<super::auth_handle::UnitSecret>,
+}
+
 fn request_generation(
     owner: u64,
     host: Option<&Arc<dyn AuthHandleHost>>,
@@ -1714,41 +1722,54 @@ fn request_generation(
     stream: u64,
     peer: bool,
     teardown: bool,
-) -> Result<u64, &'static str> {
+) -> Result<Requested, &'static str> {
     let context = super::framing_context::current();
     if let Some(context) = &context {
         context.check(owner, conn, teardown)?;
     } else if host.is_some_and(|host| host.requires_scope()) {
         return Err(super::framing_context::CONTEXT_REFUSED);
     }
-    if !unit.is_none() {
-        if let Some(secret) = host.and_then(|h| h.unit_secret(owner, unit.id)) {
-            return Ok(secret.generation);
-        }
+    let secret = if unit.is_none() {
+        None
+    } else {
+        host.and_then(|h| h.unit_secret(owner, unit.id))
+    };
+    if let Some(found) = secret {
+        return Ok(Requested {
+            generation: found.generation,
+            secret,
+        });
     }
-    if let Some(context) = context.filter(|scope| scope.listener() != 0) {
-        if let Some(generation) = context.policy_generation(stream, peer) {
-            return Ok(generation);
-        }
-        if host.is_some_and(|host| host.requires_scope()) {
-            return Err(super::framing_context::CONTEXT_REFUSED);
-        }
-    }
-    Ok(super::auth_handle::generation())
+    let generation = match context.filter(|scope| scope.listener() != 0) {
+        Some(context) => match context.policy_generation(stream, peer) {
+            Some(generation) => generation,
+            None if host.is_some_and(|host| host.requires_scope()) => {
+                return Err(super::framing_context::CONTEXT_REFUSED);
+            }
+            None => super::auth_handle::generation(),
+        },
+        None => super::auth_handle::generation(),
+    };
+    Ok(Requested {
+        generation,
+        secret: None,
+    })
 }
 
+/// Check a presented unit's MAC against the secret [`request_generation`] already read for it.
 fn refused_unit(
     owner: u64,
     host: Option<&Arc<dyn AuthHandleHost>>,
     u: &svc::UnitRef,
+    secret: Option<super::auth_handle::UnitSecret>,
 ) -> Option<Answered> {
     if u.is_none() {
         return None;
     }
-    let Some(host) = host else {
+    if host.is_none() {
         return Some(Answered::bare(Outcome::Refused, UNIT_UNVERIFIED));
-    };
-    let refused = match host.unit_secret(owner, u.id) {
+    }
+    let refused = match secret {
         Some(s) => super::auth_handle::verify_unit_ref(s.secret, s.generation, owner, s.line, u)
             .err()
             .map(super::auth_handle::RefRefused::text),
@@ -1920,7 +1941,7 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
         op::AUTH_CALL,
         |i, owner, store, route, head| {
             let host = auth_host(&route);
-            let generation = match request_generation(
+            let Requested { generation, secret } = match request_generation(
                 owner,
                 host.as_ref(),
                 &i.unit,
@@ -1929,11 +1950,11 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 i.point == busbar_contract::abi::auth::POINT_PEER,
                 false,
             ) {
-                Ok(generation) => generation,
+                Ok(requested) => requested,
                 Err(error) => return Answered::bare(Outcome::Refused, error),
             };
             if let Some(r) = refused_ref(owner, generation, &i.auth)
-                .or_else(|| refused_unit(owner, host.as_ref(), &i.unit))
+                .or_else(|| refused_unit(owner, host.as_ref(), &i.unit, secret))
             {
                 return r;
             }
@@ -2025,7 +2046,7 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
         op::UNIT_HAND_IN,
         |i, owner, _, route, head| {
             let host = auth_host(&route);
-            let generation = match request_generation(
+            let Requested { generation, secret } = match request_generation(
                 owner,
                 host.as_ref(),
                 &i.unit,
@@ -2034,11 +2055,11 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
                 false,
                 false,
             ) {
-                Ok(generation) => generation,
+                Ok(requested) => requested,
                 Err(error) => return Answered::bare(Outcome::Refused, error),
             };
             if let Some(r) = refused_ref(owner, generation, &i.auth)
-                .or_else(|| refused_unit(owner, host.as_ref(), &i.unit))
+                .or_else(|| refused_unit(owner, host.as_ref(), &i.unit, secret))
             {
                 return r;
             }
@@ -2131,7 +2152,7 @@ pub(crate) fn refusals_held() -> usize {
 extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     exact::<svc::UnitRefuseIn>(ctx, input, out, op::UNIT_REFUSE, |i, owner, _, route, h| {
         let host = auth_host(&route);
-        let generation = match request_generation(
+        let Requested { generation, secret } = match request_generation(
             owner,
             host.as_ref(),
             &i.unit,
@@ -2140,10 +2161,10 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             false,
             true,
         ) {
-            Ok(generation) => generation,
+            Ok(requested) => requested,
             Err(error) => return Answered::bare(Outcome::Refused, error),
         };
-        if let Some(r) = refused_unit(owner, host.as_ref(), &i.unit) {
+        if let Some(r) = refused_unit(owner, host.as_ref(), &i.unit, secret) {
             return r;
         }
         if svc::check_unit_refuse_in(&i).is_err() {
