@@ -913,6 +913,16 @@ fn merged_errors(load: &Outcome, probe: &Outcome) -> BTreeMap<String, u64> {
 mod tests {
     use super::*;
 
+    /// codeaudit r1 error-handling-5: a failed system RNG fill must never be discarded, or the
+    /// admin token degrades to `hammer-admin-` plus 32 zeros.
+    #[test]
+    fn rng_fill_result_is_never_discarded() {
+        let src = include_str!("run.rs");
+        assert!(!src
+            .lines()
+            .any(|l| l.trim_start().starts_with("let _ =") && l.contains("SecureRandom::fill")));
+    }
+
     /// SELFTEST (design mcp-issuer §3.4, §4): a case with `contains:` checks EVERY body, not one
     /// in 97, and fails on any miss. A local far end answers one body in a hundred without the
     /// marker; every answered body is checked, the misses are counted as `body_miss n/total`, and
