@@ -103,6 +103,7 @@ async fn complete_context(
         app.governance.as_ref(),
         busbar_kernel::store::now(),
         app.root_rules.as_ref(),
+        request.carried_ticket(),
     )
     .await
     .map_err(|()| AdmittedRefusal::Identity(IdentityRefusal::Denied))?;
