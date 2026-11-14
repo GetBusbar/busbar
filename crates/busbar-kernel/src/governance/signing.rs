@@ -146,7 +146,7 @@ impl TokenSigner {
     }
 
     pub fn sign_with_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {
-        let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
+        let key = self.subkey(domain);
         key.sign(input).to_bytes()
     }
 
@@ -157,6 +157,12 @@ impl TokenSigner {
         der[..ED25519_KEY_INFO_PREFIX.len()].copy_from_slice(&ED25519_KEY_INFO_PREFIX);
         der[ED25519_KEY_INFO_PREFIX.len()..].copy_from_slice(key.verifying_key().as_bytes());
         base64::engine::general_purpose::STANDARD.encode(der)
+    }
+
+    fn subkey(&self, domain: &str) -> SigningKey {
+        #[cfg(test)]
+        SUBKEY_DERIVATIONS.with(|c| c.set(c.get() + 1));
+        SigningKey::from_bytes(&self.derived_subkey_seed(domain))
     }
 
     pub fn mint(&self, sub: &str, exp: u64, generation: Option<&str>) -> String {
@@ -370,6 +376,12 @@ impl TokenVerifier {
         }
         Ok(claims)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Domain subkey derivations on this thread (sha256 of the root secret plus a scalar mult).
+    pub(crate) static SUBKEY_DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
