@@ -20,7 +20,6 @@ fi
 : "${BUSBAR_ADMIN_TOKEN:?Set the admin token before starting the example}"
 export BUSBAR_SIGNING_KEY BUSBAR_ADMIN_TOKEN
 export BUSBAR_CONFIG="$HERE/config.yaml"
-export BUSBAR_PROVIDERS="$ROOT/providers.yaml"
 export RUST_LOG="${RUST_LOG:-warn}"
 
-exec "$ROOT/target/release/busbar"
+exec "$ROOT/target/release/busbar" --providers "$ROOT/providers.yaml"

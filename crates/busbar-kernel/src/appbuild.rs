@@ -26,19 +26,6 @@ use busbar_kernel::plane_driver::route_input::{
 
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
-pub const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
-
-pub const ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE: &str = "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE";
-
-pub const ENV_UPSTREAM_HTTP1_ONLY: &str = "BUSBAR_UPSTREAM_HTTP1_ONLY";
-
-pub fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
-    match env {
-        Some(v) => v != "0" && !v.is_empty(),
-        None => config_val,
-    }
-}
-
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
 
 pub fn open_relay_banner(chain_empty: bool, auth_present: bool) -> Option<&'static str> {
