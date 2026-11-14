@@ -10,7 +10,7 @@ use crate::abi::secret::{
     ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_INVALID, ERROR_KIND_NOT_FOUND,
     ERROR_KIND_UNAVAILABLE,
 };
-use crate::secret::{SecretErrorKind, SecretModuleError, SecretResult};
+use crate::secret::{SecretErrorKind, SecretModuleError};
 
 /// The `abi::secret::ERROR_KIND_*` code of a [`SecretErrorKind`].
 #[must_use]
@@ -24,34 +24,8 @@ pub const fn error_kind(kind: SecretErrorKind) -> u32 {
     }
 }
 
-/// A resolve's settings bytes as the JSON object they must be (empty = none).
-pub fn settings_of(bytes: &[u8]) -> SecretResult<serde_json::Map<String, serde_json::Value>> {
-    if bytes.is_empty() {
-        return Ok(serde_json::Map::new());
-    }
-    serde_json::from_slice(bytes).map_err(|e| {
-        SecretModuleError::invalid(format!("secret settings are not a JSON object: {e}"))
-    })
-}
-
-/// The instance settings of the source `module`, which takes none: empty bytes or an empty object.
-pub fn takes_no_settings(bytes: &[u8], module: &str, names: &str) -> Result<(), String> {
-    if bytes.is_empty() {
-        return Ok(());
-    }
-    match serde_json::from_slice::<serde_json::Value>(bytes) {
-        Ok(serde_json::Value::Object(m)) => match m.keys().next() {
-            None => Ok(()),
-            Some(k) => Err(format!(
-                "secret module '{module}' takes no settings; remove settings.{} (each reference \
-                 names its {names})",
-                k.escape_debug()
-            )),
-        },
-        Err(e) => Err(format!("settings: {e}")),
-        Ok(_) => Err("settings: must be a JSON object".to_string()),
-    }
-}
+/// A resolve's settings, read at configure time ([`super::settings`]).
+pub use super::settings::{settings_of, takes_no_settings};
 
 /// `resolve`'s failure answer: `e`'s code in `error_kind`, its text, FAILED.
 pub fn failed(out: &mut Out<'_, ResolveOut>, e: SecretModuleError) -> Outcome {

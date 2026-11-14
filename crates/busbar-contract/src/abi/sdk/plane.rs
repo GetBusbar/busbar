@@ -41,20 +41,8 @@ pub fn settle_piece(
     short
 }
 
-/// The refusal of a dealt blob that is JSON but not an object.
-pub const NOT_A_MAP: &str = "the dealt settings are not a map of the plane's sections";
-
-/// The section `verb` names in the dealt blob `settings`: `None` when the blob is empty, writes no
-pub fn dealt_section(settings: &[u8], verb: &str) -> Result<Option<serde_json::Value>, String> {
-    if settings.is_empty() {
-        return Ok(None);
-    }
-    let value: serde_json::Value = serde_json::from_slice(settings).map_err(|e| e.to_string())?;
-    let serde_json::Value::Object(mut verbs) = value else {
-        return Err(NOT_A_MAP.to_string());
-    };
-    Ok(verbs.remove(verb).filter(|section| !section.is_null()))
-}
+/// The section `verb` names in the dealt blob (moved to the configure-time [`super::settings`]).
+pub use super::settings::{dealt_section, NOT_A_MAP};
 
 /// What a plane `cancel` names: the ticket whose op is cancelled, and the unit the host names
 /// ([`PlaneCancelIn::unit`], the key its `arrive` carried; `0` names none).

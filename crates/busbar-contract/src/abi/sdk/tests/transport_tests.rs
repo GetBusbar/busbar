@@ -11,6 +11,7 @@ use crate::abi::sdk::life::Refreshed;
 use crate::abi::sdk::test_support::zeroed;
 use crate::abi::sdk::{Lent, Out, Safe, SafeSlot};
 use crate::abi::transport::{slot, ConnIn, Ops, ShutIn};
+use crate::abi::transport::{SETTING_COUNT, SETTING_FLAG, SETTING_TEXT};
 
 /// The probe's one setting.
 const BODY: [SettingRow; 1] = [SettingRow {

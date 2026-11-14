@@ -436,6 +436,23 @@ pub fn open_failed<T: AbiOut>(
     Outcome::Failed
 }
 
+/// A host buffer's stated capacity, a `usize` or a `u32` by kind, as a `usize`.
+trait Capacity {
+    fn capacity(self) -> usize;
+}
+
+impl Capacity for usize {
+    fn capacity(self) -> usize {
+        self
+    }
+}
+
+impl Capacity for u32 {
+    fn capacity(self) -> usize {
+        self as usize
+    }
+}
+
 /// The accessors of each `in`, one per pointer field and named after it, stated once. Each is `unsafe` inside only
 /// because the kind's ABI, cited beside it, is what makes the pointer valid for the call.
 macro_rules! lend {
@@ -478,8 +495,7 @@ macro_rules! lend {
         #[doc = concat!("The HOST buffer `", stringify!($p), "`/`", stringify!($n), "` the call fills.")]
         #[must_use]
         pub fn $name(self) -> HostBuf<'a, $el> {
-            #[allow(clippy::unnecessary_cast)] // a capacity is a `usize` or a `u32`, by kind
-            let cap = self.get().$n as usize;
+            let cap = Capacity::capacity(self.get().$n);
             // SAFETY: the kind's ABI states this as a host buffer of `cap` writable values for the
             // call, overlapping nothing else the call is lent.
             unsafe { HostBuf::new(self.get().$p, cap) }
@@ -513,7 +529,6 @@ mod host_source {
 ///     fn tables(&self) -> &HostTables { &self.0 }
 /// }
 /// ```
-#[allow(private_bounds)]
 pub(crate) trait HostSource: host_source::Sealed {
     /// The carrier whose nested table prefixes this loan proves readable during construction.
     #[doc(hidden)]
@@ -811,10 +826,19 @@ lend_export_list!(lend);
 /// [`lend!`] accessor above (a list, a buffer, loose bytes or one struct).
 macro_rules! lent_fields {
     ($($ty:ty { $($how:ident $name:ident $(: $t:ty)?;)+ })+) => {$(
-        // A field named `len` reads the field the host stated; its struct has no emptiness.
-        #[allow(clippy::len_without_is_empty)]
         impl<'a> Lent<'a, $ty> { $( lent_fields!(@one $how $name $(: $t)?); )+ }
     )+};
+    (@one val len: $t:ty) => {
+        #[doc = "`len`, as the host lent it."]
+        #[must_use]
+        #[expect(
+            clippy::len_without_is_empty,
+            reason = "a field named `len` reads the length the host stated; its struct has no emptiness"
+        )]
+        pub fn len(self) -> $t {
+            self.lent.len
+        }
+    };
     (@one val $name:ident: $t:ty) => {
         #[doc = concat!("`", stringify!($name), "`, as the host lent it.")]
         #[must_use]

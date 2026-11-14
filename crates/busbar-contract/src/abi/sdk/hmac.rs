@@ -136,6 +136,18 @@ pub(crate) fn sha256_wiped(prefix: Option<&[u8; BLOCK]>, data: &[u8]) -> Zeroizi
     sha256_resume(state, consumed, data)
 }
 
+/// SHA-256 of the concatenation of `parts`, streamed through one wiped stack block
+/// ([`digests::absorb`]): the message is never copied whole.
+pub(crate) fn sha256_parts<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> Zeroizing<[u8; 32]> {
+    let mut state = Zeroizing::new(SHA256_IV);
+    digests::absorb(parts, true, 0, |block| compress(&mut state, block));
+    let mut out = Zeroizing::new([0_u8; 32]);
+    for (o, w) in out.as_chunks_mut::<4>().0.iter_mut().zip(state.iter()) {
+        *o = w.to_be_bytes();
+    }
+    out
+}
+
 /// SHA-256 finished from a chaining `state` that has already absorbed `consumed` bytes (whole blocks).
 fn sha256_resume(
     mut state: Zeroizing<[u32; 8]>,
@@ -199,6 +211,22 @@ impl HmacSha256Key {
         let inner = sha256_resume(self.inner.clone(), BLOCK as u64, data);
         sha256_resume(self.outer.clone(), BLOCK as u64, &inner[..])
     }
+
+    /// [`Self::mac`] of the concatenation of `parts`, streamed: the message is never copied whole.
+    pub(crate) fn mac_parts<'a>(
+        &self,
+        parts: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Zeroizing<[u8; 32]> {
+        let mut state = self.inner.clone();
+        digests::absorb(parts, true, BLOCK as u64, |block| {
+            compress(&mut state, block)
+        });
+        let mut inner = Zeroizing::new([0_u8; 32]);
+        for (o, w) in inner.as_chunks_mut::<4>().0.iter_mut().zip(state.iter()) {
+            *o = w.to_be_bytes();
+        }
+        sha256_resume(self.outer.clone(), BLOCK as u64, &inner[..])
+    }
 }
 
 /// HMAC-SHA256 of `data` under `key` (RFC 2104; a key past the block size is hashed first). HMAC
@@ -233,12 +261,7 @@ pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
     for (p, k) in pad.iter_mut().zip(k0.iter()) {
         *p = k ^ 0x36;
     }
-    let inner = {
-        let mut inner_parts = Vec::with_capacity(parts.len() + 1);
-        inner_parts.push(&pad[..]);
-        inner_parts.extend_from_slice(parts);
-        digests::sha1(&inner_parts)
-    };
+    let inner = digests::sha1_of(std::iter::once(&pad[..]).chain(parts.iter().copied()));
     for (p, k) in pad.iter_mut().zip(k0.iter()) {
         *p = k ^ 0x5c;
     }

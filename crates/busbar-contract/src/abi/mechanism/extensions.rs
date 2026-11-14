@@ -7,6 +7,12 @@
 #[must_use]
 pub fn encode(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
+    encode_into(&mut out, entries);
+    out
+}
+
+/// [`encode`], appended to `out`: no buffer of its own.
+pub fn encode_into(out: &mut Vec<u8>, entries: &[(&str, &[u8])]) {
     for (key, value) in entries {
         let (Ok(k), Ok(v)) = (u16::try_from(key.len()), u32::try_from(value.len())) else {
             continue;
@@ -16,7 +22,6 @@ pub fn encode(entries: &[(&str, &[u8])]) -> Vec<u8> {
         out.extend_from_slice(&v.to_le_bytes());
         out.extend_from_slice(value);
     }
-    out
 }
 
 /// The length of the one entry `key` and `value` encode to: what [`entry`] is sized by.

@@ -1011,6 +1011,135 @@ impl NotifyFrame {
     }
 }
 
+/// THE 1.5.5 JSON PROJECTIONS of the SDK's decoded hook views: the JSON a 1.5.5 host handed a hook,
+/// rebuilt as a `serde_json::Value` for the host's frames ([`DecideFrame::projection_json`],
+/// [`NotifyFrame::projection_json`]) and the parity tests. A hook's own path writes the envelope
+/// straight into its buffer ([`crate::abi::sdk::hook::Decoded::write_projection`]) instead.
+mod projection_json {
+    use std::borrow::Cow;
+
+    use crate::abi::sdk::hook::{Decoded, DecodedTap};
+    use crate::hook_wire::{HookStageProjection, OP_NOTIFY};
+    use crate::hooks::{
+        BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext,
+        RoutingRequest,
+    };
+
+    impl<'a> Decoded<'a> {
+        /// The request as the OLD projection types, borrowing this view (the 1.5.5 JSON path only).
+        fn request(&self) -> RoutingRequest<'_> {
+            RoutingRequest {
+                request_id: self.request_id,
+                pool: &self.pool,
+                ingress_protocol: &self.ingress_dialect,
+                requested_model: None,
+                message_count: self.message_count as usize,
+                tool_count: 0,
+                has_tools: self.has_tools,
+                total_chars: self.total_chars as usize,
+                system_chars: 0,
+                max_tokens: self.max_tokens,
+                stream: self.stream,
+                prompt: self.prompt.as_ref().map(|p| PromptProjection {
+                    system: p.system.as_deref().map(Cow::Borrowed),
+                    messages: p
+                        .messages
+                        .iter()
+                        .map(|(r, t)| (Cow::Borrowed(&**r), Cow::Borrowed(&**t)))
+                        .collect(),
+                }),
+                identity: self.user.as_ref().map(|u| CallerIdentity {
+                    key_id: u.key_id.as_deref().map(str::to_string),
+                    key_name: u.key_name.as_deref().map(str::to_string),
+                    user: u.user.as_deref().map(str::to_string),
+                }),
+                signals: self.signals.clone(),
+                session: self.session,
+            }
+        }
+
+        fn candidates(&self) -> Vec<Candidate<'_>> {
+            self.candidates
+                .iter()
+                .map(|c| Candidate {
+                    idx: c.idx,
+                    model: &c.model,
+                    provider: &c.provider,
+                    weight: c.weight,
+                    context_max: c.context_max,
+                    tier: c.tier.as_deref(),
+                    cost_per_mtok: c.cost_per_mtok,
+                    tags: &[],
+                    latency_ms: c.latency_ms,
+                    available_concurrency: c.available_concurrency,
+                    budget_remaining: c.budget_remaining,
+                    rate_headroom: c.rate_headroom,
+                    signals: c.signals.clone(),
+                })
+                .collect()
+        }
+
+        /// THE 1.5.5 PROJECTION: the JSON 1.5.5's host handed a hook for `op` (`decide` or
+        #[must_use]
+        pub fn projection_json(&self, op: &'static str) -> serde_json::Value {
+            let req = self.request();
+            let tags: Vec<Vec<String>> = self
+                .candidates
+                .iter()
+                .map(|c| c.tags.iter().map(|t| t.to_string()).collect())
+                .collect();
+            let mut cands = self.candidates();
+            for (c, t) in cands.iter_mut().zip(&tags) {
+                c.tags = t;
+            }
+            let budget: Vec<BudgetBucketState> = self
+                .budget
+                .iter()
+                .map(|b| BudgetBucketState {
+                    bucket_id: b.bucket_id.to_string(),
+                    budget_group: b.budget_group.as_deref().map(str::to_string),
+                    pool: b.pool.as_deref().map(str::to_string),
+                    spend_micros_at_current_rate: b.spend_micros_at_current_rate,
+                    remaining_micros: b.remaining_micros,
+                    window_start: b.window_start,
+                    budget_period: b.budget_period.to_string(),
+                })
+                .collect();
+            let ctx = RoutingContext {
+                pool: &self.pool,
+                budget_remaining: self.budget_remaining,
+                budget: &budget,
+            };
+            serde_json::to_value(crate::hook_wire::build(op, &req, &cands, &ctx))
+                .unwrap_or_else(|_| serde_json::json!({}))
+        }
+    }
+
+    impl DecodedTap<'_> {
+        /// THE 1.5.5 NOTIFY PROJECTION, rebuilt byte for byte.
+        #[must_use]
+        pub fn projection_json(&self) -> serde_json::Value {
+            let req = self.request.request();
+            let ctx = RoutingContext {
+                pool: &self.request.pool,
+                budget_remaining: None,
+                budget: &[],
+            };
+            let mut wire = crate::hook_wire::build(OP_NOTIFY, &req, &[], &ctx);
+            wire.stage = self.stage.as_ref().map(|s| HookStageProjection {
+                at: s.at,
+                model: s.model.as_deref(),
+                attempt_number: s.attempt_number,
+                remaining_candidates: s.remaining_candidates,
+                previous_failure: s.previous_failure.as_deref(),
+                outcome: s.outcome.as_deref(),
+                status: s.status,
+            });
+            serde_json::to_value(wire).unwrap_or_else(|_| serde_json::json!({}))
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/host_hook_tests.rs"]
 mod tests;

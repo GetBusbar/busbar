@@ -107,7 +107,13 @@ fn host_text(s: AbiStr) -> String {
         return String::new();
     }
     // SAFETY: the host's text, `len` bytes, valid for the process's life (the service rule).
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    let text = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) });
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the host's error text, owned once per failed service"
+    )]
+    let text = text.into_owned();
+    text
 }
 
 impl<'h> Io<'h> {
@@ -371,14 +377,16 @@ impl<'h> Io<'h> {
     /// }
     /// ```
     pub fn spawn(&mut self, program: &str, args: &[&str], env: &[(&str, &str)]) -> IoAnswer<u64> {
-        let args: Vec<AbiStr> = args.iter().map(|arg| text(arg)).collect();
-        let env: Vec<Field> = env
-            .iter()
-            .map(|(name, value)| Field {
-                name: text(name),
-                value: text(value),
-            })
-            .collect();
+        // On the stack for the usual few arguments and variables; spilled only past eight.
+        let mut args_abi = smallvec::SmallVec::<[AbiStr; 8]>::new();
+        args_abi.extend(args.iter().map(|arg| text(arg)));
+        let args = args_abi;
+        let mut env_abi = smallvec::SmallVec::<[Field; 8]>::new();
+        env_abi.extend(env.iter().map(|(name, value)| Field {
+            name: text(name),
+            value: text(value),
+        }));
+        let env = env_abi;
         let i = SpawnIn {
             head: head(),
             program: text(program),

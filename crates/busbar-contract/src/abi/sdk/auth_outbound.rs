@@ -415,9 +415,16 @@ impl OpenRefusal {
     /// The answer's text: the lines, one per line (a single `'static` line is not copied).
     fn text(mut self) -> Cow<'static, str> {
         if self.lines.len() == 1 {
-            return self.lines.remove(0);
+            if let Some(line) = self.lines.pop() {
+                return line;
+            }
         }
-        Cow::Owned(self.lines.join("\n"))
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refused open_outbound's answer text, joined once per refusal"
+        )]
+        let text = self.lines.join("\n");
+        Cow::Owned(text)
     }
 }
 

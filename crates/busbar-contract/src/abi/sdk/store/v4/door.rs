@@ -196,7 +196,7 @@ trait Primitive<B: Backend>: Send + Sync + 'static {
     ) -> Result<(Self::Out, bool), encode::EncodeError>;
 }
 fn invoke<B: Backend, P: Primitive<B>>(
-    instance: Instance<'_, Held<Served<B>>>,
+    instance: &Instance<'_, Held<Served<B>>>,
     input: Lent<'_, P::In>,
     mut out: Out<'_, P::Out>,
 ) -> Outcome {
@@ -497,7 +497,7 @@ macro_rules! safe_slot {
                 input: Lent<'_, Self::In>,
                 out: Out<'_, Self::Out>,
             ) -> Outcome {
-                invoke::<B, Self>(instance, input, out)
+                invoke::<B, Self>(&instance, input, out)
             }
         }
     };

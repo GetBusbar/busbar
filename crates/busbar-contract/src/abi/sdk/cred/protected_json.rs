@@ -16,8 +16,7 @@
 use std::ops::Range;
 
 use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
-use serde_json::Value;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use super::{Held as Opaque, JsonReplyError};
 
@@ -64,7 +63,10 @@ impl Custody for Unwatched {
 
 /// Structural outcome of selecting an object-field path. Indices refer only to the supplied
 /// path: errors never disclose a response value or a sibling's name.
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 pub enum SelectedJson {
     /// The object has no member at this path index.
     Missing { segment: usize },
@@ -86,7 +88,10 @@ pub enum SelectedJson {
 /// with work O(depth * input + object members log members), bounded by input and nesting.
 /// Official serde_json still owns numeric-token scratch; its wiping remains an upstream limit.
 pub fn select_json(body: Opaque<Vec<u8>>, path: &[&str]) -> Result<SelectedJson, JsonReplyError> {
-    select_with(body.wire(), path, Unwatched).map_err(JsonReplyError::from)
+    let selected = select_with(body.wire(), path, Unwatched);
+    // The body is consumed: wiped as soon as its value is selected.
+    drop(body);
+    selected.map_err(JsonReplyError::from)
 }
 
 /// Read selected text members of a JSON object into wiping holders. Missing and null members
@@ -132,7 +137,7 @@ impl<'de, C: Custody, const N: usize> Visitor<'de> for TextMembers<'_, C, N> {
             let ObjectKey::Text(key) = key else {
                 return Err(A::Error::custom("expected a JSON object"));
             };
-            if let Some(index) = self.names.iter().position(|name| *name == key.as_str()) {
+            if let Some(index) = name_index(&self.names, key.as_str()) {
                 if std::mem::replace(&mut seen[index], true) {
                     return Err(A::Error::custom("duplicate selected field"));
                 }
@@ -193,7 +198,7 @@ fn select_with<C: Custody>(
 }
 
 /// A copy of `body` with every byte inside a string (escapes included) replaced by `x`.
-fn masked<C: Custody>(body: &[u8], custody: C) -> Zeroizing<Vec<u8>> {
+pub(super) fn masked<C: Custody>(body: &[u8], custody: C) -> Zeroizing<Vec<u8>> {
     let mut view = Zeroizing::new(body.to_vec());
     custody.held(Held::View, &view);
     let mut inside = false;
@@ -218,10 +223,10 @@ const CONTROL: &str = "control character (\\u0000-\\u001F) found while parsing a
 /// The document a reader walks: its real bytes, the masked view serde reads, and the custody
 /// every buffer filled from it is reported to.
 #[derive(Clone, Copy)]
-struct Doc<'a, C> {
-    body: &'a [u8],
-    view: &'a [u8],
-    custody: C,
+pub(super) struct Doc<'a, C> {
+    pub(super) body: &'a [u8],
+    pub(super) view: &'a [u8],
+    pub(super) custody: C,
 }
 
 impl<'a, C: Custody> Doc<'a, C> {
@@ -234,7 +239,11 @@ impl<'a, C: Custody> Doc<'a, C> {
     }
 
     /// The string serde read as `masked`, decoded from the real bytes into a guarded buffer.
-    fn decoded<E: Error>(self, masked: &str, what: Held) -> Result<Zeroizing<String>, E> {
+    pub(super) fn decoded<E: Error>(
+        self,
+        masked: &str,
+        what: Held,
+    ) -> Result<Zeroizing<String>, E> {
         let raw = self.raw::<E>(masked)?;
         let mut decoded = Zeroizing::new(String::with_capacity(raw.len()));
         let result = decode(raw, &mut *decoded);
@@ -539,8 +548,14 @@ impl<'de, C: Custody> Visitor<'de> for Render<'_, '_, C> {
             });
         }
         // The parsed value's map order (byte order of the keys), the last of equal keys winning:
-        // the sort is stable, so the last of a run of equal names is the document's last.
-        members.sort_by(|a, b| arena.get(&a.name).cmp(arena.get(&b.name)));
+        // equal names stay in document order (their arena offsets), so the last of a run of equal
+        // names is the document's last.
+        members.sort_unstable_by(|a, b| {
+            arena
+                .get(&a.name)
+                .cmp(arena.get(&b.name))
+                .then(a.name.start.cmp(&b.name.start))
+        });
         out.push(b"{");
         let mut lead: &[u8] = b"";
         for (i, member) in members.iter().enumerate() {
@@ -697,12 +712,12 @@ impl<'de, C: Custody> Visitor<'de> for Skip<'_, C> {
 /// An actual object key, or serde_json's synthetic arbitrary-precision number tag.
 /// Actual keys always borrow from the masked view. Checking that provenance before the tag
 /// prevents a document key with serde's private spelling from impersonating a number.
-enum ObjectKey {
+pub(super) enum ObjectKey {
     Text(Zeroizing<String>),
     Number,
 }
 
-struct AnyKey<'a, C>(Doc<'a, C>);
+pub(super) struct AnyKey<'a, C>(pub(super) Doc<'a, C>);
 
 impl<'de, C: Custody> DeserializeSeed<'de> for AnyKey<'_, C> {
     type Value = ObjectKey;
@@ -732,7 +747,7 @@ impl<'de, C: Custody> Visitor<'de> for AnyKey<'_, C> {
 
 /// Only the synthetic number map supplies an owned string. JSON strings still use the guarded
 /// decoder above; this numeric token has already been validated by serde_json's lexer.
-struct NumberText;
+pub(super) struct NumberText;
 
 impl<'de> DeserializeSeed<'de> for NumberText {
     type Value = serde_json::Number;
@@ -848,177 +863,9 @@ fn hex4(raw: &mut &[u8]) -> Result<u32, &'static str> {
     Ok(value)
 }
 
-/// A settings JSON value whose strings and object keys wipe on drop, including partially parsed
-/// trees and replaced duplicate values. This is for readable configuration, not extracted secret
-/// responses (those use [`SelectedJson`]). Numeric scratch in serde_json is not zeroized.
-#[derive(Clone)]
-pub struct SettingsValue(pub(crate) Value);
-
-impl std::fmt::Debug for SettingsValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("SettingsValue(<redacted>)")
-    }
-}
-
-impl std::ops::Deref for SettingsValue {
-    type Target = Value;
-    fn deref(&self) -> &Value {
-        &self.0
-    }
-}
-
-impl From<Value> for SettingsValue {
-    fn from(value: Value) -> Self {
-        Self(value)
-    }
-}
-
-impl SettingsValue {
-    /// Mutably visit a configuration value by JSON pointer. Any value moved out must be put
-    /// into another wiping owner by the caller; dropping this document only wipes what remains.
-    pub fn pointer_mut(&mut self, pointer: &str) -> Option<&mut Value> {
-        self.0.pointer_mut(pointer)
-    }
-
-    fn object() -> Self {
-        Self(Value::Object(serde_json::Map::new()))
-    }
-    fn put(&mut self, key: &mut String, value: &mut Value) {
-        if let Value::Object(items) = &mut self.0 {
-            if let Some(previous) = items.get_mut(key.as_str()) {
-                std::mem::swap(previous, value);
-            } else {
-                items.insert(std::mem::take(key), std::mem::take(value));
-            }
-        }
-    }
-    fn push(&mut self, value: &mut Value) {
-        if let Value::Array(items) = &mut self.0 {
-            items.push(std::mem::take(value));
-        }
-    }
-    /// Move a configuration member out, leaving null under its wiping key.
-    pub fn take(&mut self, key: &str) -> Option<Self> {
-        self.0.get_mut(key).map(|value| Self(std::mem::take(value)))
-    }
-    /// Move a configuration string out. The caller owns its cleanup from here.
-    pub fn into_string(mut self) -> Option<String> {
-        match &mut self.0 {
-            Value::String(s) => Some(std::mem::take(s)),
-            _ => None,
-        }
-    }
-}
-
-impl Drop for SettingsValue {
-    fn drop(&mut self) {
-        wipe(&mut self.0);
-    }
-}
-
-pub(crate) fn wipe(v: &mut Value) {
-    match v {
-        Value::String(s) => s.zeroize(),
-        Value::Number(_) => *v = Value::from(0u64),
-        Value::Bool(b) => *b = false,
-        Value::Array(items) => items.iter_mut().for_each(wipe),
-        Value::Object(map) => {
-            for (mut key, mut value) in std::mem::take(map) {
-                key.zeroize();
-                wipe(&mut value);
-            }
-        }
-        Value::Null => {}
-    }
-}
-
-/// Read a configuration document with guarded strings, rejecting duplicate top-level members.
-/// Schema and value policy belong to the caller. Nested objects retain last-duplicate-wins
-/// semantics. Entire input validation and serde's ordinary nesting bound apply.
-pub fn settings_document(body: &[u8]) -> Result<SettingsValue, JsonReplyError> {
-    document(body, true).map_err(JsonReplyError::from)
-}
-
-pub(crate) fn document(body: &[u8], unique_root: bool) -> Result<SettingsValue, serde_json::Error> {
-    let view = masked(body, Unwatched);
-    let doc = Doc {
-        body,
-        view: &view,
-        custody: Unwatched,
-    };
-    let mut de = serde_json::Deserializer::from_slice(&view);
-    Tree(doc, unique_root)
-        .deserialize(&mut de)
-        .and_then(|value| de.end().map(|()| value))
-}
-
-/// Any value, kept whole (the token's reference).
-struct Tree<'a, C>(Doc<'a, C>, bool);
-
-impl<'de, C: Custody> DeserializeSeed<'de> for Tree<'_, C> {
-    type Value = SettingsValue;
-
-    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<SettingsValue, D::Error> {
-        de.deserialize_any(self)
-    }
-}
-
-impl<'de, C: Custody> Visitor<'de> for Tree<'_, C> {
-    type Value = SettingsValue;
-
-    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a JSON value")
-    }
-
-    fn visit_unit<E: Error>(self) -> Result<SettingsValue, E> {
-        Ok(SettingsValue(Value::Null))
-    }
-
-    fn visit_bool<E: Error>(self, value: bool) -> Result<SettingsValue, E> {
-        Ok(SettingsValue(Value::Bool(value)))
-    }
-
-    fn visit_i64<E: Error>(self, value: i64) -> Result<SettingsValue, E> {
-        Ok(SettingsValue(Value::from(value)))
-    }
-
-    fn visit_u64<E: Error>(self, value: u64) -> Result<SettingsValue, E> {
-        Ok(SettingsValue(Value::from(value)))
-    }
-
-    fn visit_f64<E: Error>(self, value: f64) -> Result<SettingsValue, E> {
-        Ok(SettingsValue(Value::from(value)))
-    }
-
-    fn visit_borrowed_str<E: Error>(self, value: &'de str) -> Result<SettingsValue, E> {
-        let mut text = self.0.decoded::<E>(value, Held::Value)?;
-        Ok(SettingsValue(Value::String(std::mem::take(&mut *text))))
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<SettingsValue, A::Error> {
-        let mut items = SettingsValue(Value::Array(Vec::new()));
-        while let Some(mut item) = seq.next_element_seed(Tree(self.0, false))? {
-            items.push(&mut item.0);
-        }
-        Ok(items)
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<SettingsValue, A::Error> {
-        let mut tree = SettingsValue::object();
-        while let Some(key) = map.next_key_seed(AnyKey(self.0))? {
-            let ObjectKey::Text(mut key) = key else {
-                return Ok(SettingsValue(Value::Number(
-                    map.next_value_seed(NumberText)?,
-                )));
-            };
-            if self.1 && tree.0.get(key.as_str()).is_some() {
-                return Err(A::Error::custom("duplicate configuration field"));
-            }
-            let mut value = map.next_value_seed(Tree(self.0, false))?;
-            tree.put(&mut key, &mut value.0);
-        }
-        Ok(tree)
-    }
+/// The index of `key` among a reader's selected names (a handful, fixed by its caller).
+fn name_index(names: &[&str], key: &str) -> Option<usize> {
+    names.iter().position(|name| *name == key)
 }
 
 #[cfg(any(test, feature = "test-seal"))]
@@ -1042,6 +889,8 @@ pub(crate) fn observing<T>(observe: Observer, action: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::abi::sdk::cred::settings_document;
+    use serde_json::Value;
 
     #[test]
     fn text_members_decode_escapes_and_ignore_nested_or_unknown_values() {

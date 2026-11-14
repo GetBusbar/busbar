@@ -272,7 +272,10 @@ impl Serialize for MigrationAuthoring<'_> {
 ///     text: "secret", file: None, kind: std::marker::PhantomData::<busbar_contract::plugin::markers::AuthKind>,
 /// };
 /// ```
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 pub struct MigrationCredential<'a, K: crate::plugin::KindMarker> {
     text: &'a str,
     file: Option<&'a [u8]>,
@@ -306,7 +309,10 @@ impl<K: crate::plugin::KindMarker> MigrationCredential<'_, K> {
 }
 
 /// File bytes lent only to the receiving migration owner for format validation.
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 pub struct MigrationFile<'a> {
     bytes: &'a [u8],
 }

@@ -6,9 +6,9 @@
 type Op<'a> = KindGenericOp<'a, crate::plugin::markers::HookKind>;
 type Instance<'a, T> = KindGenericInstance<'a, T, crate::plugin::markers::HookKind>;
 
+use foldhash::HashMap;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -32,11 +32,11 @@ use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::exchange::{Context, Exchange, Op as KindGenericOp, Parks};
 use crate::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
-use crate::abi::sdk::{Instance as KindGenericInstance, Lent, LentList, Out, SafeSlot};
-use crate::hook_wire::{HookStageProjection, OP_NOTIFY};
-use crate::hooks::{
-    BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingRequest,
+use crate::abi::sdk::settings::{
+    configure_settings, describe_bytes, empty_admin_json, status_bytes, AdminJson, JsonValue,
+    SettingsMap,
 };
+use crate::abi::sdk::{Instance as KindGenericInstance, Lent, LentList, Out, SafeSlot};
 use crate::signal::{Signal, SignalBag, SignalValue};
 
 pub mod configure_checkpoint;
@@ -288,94 +288,6 @@ impl<'a> Decoded<'a> {
         }
     }
 
-    /// The request as the OLD projection types, borrowing this view (the 1.5.5 JSON path only).
-    fn request(&self) -> RoutingRequest<'_> {
-        RoutingRequest {
-            request_id: self.request_id,
-            pool: &self.pool,
-            ingress_protocol: &self.ingress_dialect,
-            requested_model: None,
-            message_count: self.message_count as usize,
-            tool_count: 0,
-            has_tools: self.has_tools,
-            total_chars: self.total_chars as usize,
-            system_chars: 0,
-            max_tokens: self.max_tokens,
-            stream: self.stream,
-            prompt: self.prompt.as_ref().map(|p| PromptProjection {
-                system: p.system.as_deref().map(Cow::Borrowed),
-                messages: p
-                    .messages
-                    .iter()
-                    .map(|(r, t)| (Cow::Borrowed(&**r), Cow::Borrowed(&**t)))
-                    .collect(),
-            }),
-            identity: self.user.as_ref().map(|u| CallerIdentity {
-                key_id: u.key_id.as_deref().map(str::to_string),
-                key_name: u.key_name.as_deref().map(str::to_string),
-                user: u.user.as_deref().map(str::to_string),
-            }),
-            signals: self.signals.clone(),
-            session: self.session,
-        }
-    }
-
-    fn candidates(&self) -> Vec<Candidate<'_>> {
-        self.candidates
-            .iter()
-            .map(|c| Candidate {
-                idx: c.idx,
-                model: &c.model,
-                provider: &c.provider,
-                weight: c.weight,
-                context_max: c.context_max,
-                tier: c.tier.as_deref(),
-                cost_per_mtok: c.cost_per_mtok,
-                tags: &[],
-                latency_ms: c.latency_ms,
-                available_concurrency: c.available_concurrency,
-                budget_remaining: c.budget_remaining,
-                rate_headroom: c.rate_headroom,
-                signals: c.signals.clone(),
-            })
-            .collect()
-    }
-
-    /// THE 1.5.5 PROJECTION: the JSON 1.5.5's host handed a hook for `op` (`decide` or
-    #[must_use]
-    pub fn projection_json(&self, op: &'static str) -> serde_json::Value {
-        let req = self.request();
-        let tags: Vec<Vec<String>> = self
-            .candidates
-            .iter()
-            .map(|c| c.tags.iter().map(|t| t.to_string()).collect())
-            .collect();
-        let mut cands = self.candidates();
-        for (c, t) in cands.iter_mut().zip(&tags) {
-            c.tags = t;
-        }
-        let budget: Vec<BudgetBucketState> = self
-            .budget
-            .iter()
-            .map(|b| BudgetBucketState {
-                bucket_id: b.bucket_id.to_string(),
-                budget_group: b.budget_group.as_deref().map(str::to_string),
-                pool: b.pool.as_deref().map(str::to_string),
-                spend_micros_at_current_rate: b.spend_micros_at_current_rate,
-                remaining_micros: b.remaining_micros,
-                window_start: b.window_start,
-                budget_period: b.budget_period.to_string(),
-            })
-            .collect();
-        let ctx = RoutingContext {
-            pool: &self.pool,
-            budget_remaining: self.budget_remaining,
-            budget: &budget,
-        };
-        serde_json::to_value(crate::hook_wire::build(op, &req, &cands, &ctx))
-            .unwrap_or_else(|_| serde_json::json!({}))
-    }
-
     /// Append the canonical 1.5.5 projection envelope, with `op` last, directly to `out`.
     pub fn write_projection(
         &self,
@@ -461,28 +373,6 @@ impl<'a> DecodedTap<'a> {
         }
     }
 
-    /// THE 1.5.5 NOTIFY PROJECTION, rebuilt byte for byte.
-    #[must_use]
-    pub fn projection_json(&self) -> serde_json::Value {
-        let req = self.request.request();
-        let ctx = RoutingContext {
-            pool: &self.request.pool,
-            budget_remaining: None,
-            budget: &[],
-        };
-        let mut wire = crate::hook_wire::build(OP_NOTIFY, &req, &[], &ctx);
-        wire.stage = self.stage.as_ref().map(|s| HookStageProjection {
-            at: s.at,
-            model: s.model.as_deref(),
-            attempt_number: s.attempt_number,
-            remaining_candidates: s.remaining_candidates,
-            previous_failure: s.previous_failure.as_deref(),
-            outcome: s.outcome.as_deref(),
-            status: s.status,
-        });
-        serde_json::to_value(wire).unwrap_or_else(|_| serde_json::json!({}))
-    }
-
     /// Append this tap's canonical projection envelope, with `op` last, directly to `out`.
     pub fn write_projection(
         &self,
@@ -559,7 +449,13 @@ pub fn write_verdict(v: &Verdict, input: Lent<'_, DecideIn>, out: &mut DecideOut
             reject.extend(message.as_bytes());
         }
         Verdict::Restrict(t) => {
-            tags.extend(t.join("\0").as_bytes());
+            // The tags, NUL-separated, written straight into the host's buffer.
+            for (n, tag) in t.iter().enumerate() {
+                if n != 0 {
+                    tags.extend(b"\0");
+                }
+                tags.extend(tag.as_bytes());
+            }
         }
         Verdict::Abstain | Verdict::Failed(_) => {}
     }
@@ -625,35 +521,6 @@ pub fn write_rewrite(
         RewriteVerdict::Failed(_) => return Outcome::Failed,
     }
     Outcome::Ready
-}
-
-/// An owned hook settings/reply tree. Only its initialized owned strings and map keys are
-struct JsonValue(serde_json::Value);
-
-impl<'de> serde::Deserialize<'de> for JsonValue {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        <serde_json::Value as serde::Deserialize>::deserialize(de).map(Self)
-    }
-}
-
-impl Drop for JsonValue {
-    fn drop(&mut self) {
-        fn wipe(value: &mut serde_json::Value) {
-            use zeroize::Zeroize;
-            match value {
-                serde_json::Value::String(text) => text.zeroize(),
-                serde_json::Value::Array(items) => items.iter_mut().for_each(wipe),
-                serde_json::Value::Object(items) => {
-                    for (mut key, mut value) in std::mem::take(items) {
-                        key.zeroize();
-                        wipe(&mut value);
-                    }
-                }
-                _ => {}
-            }
-        }
-        wipe(&mut self.0);
-    }
 }
 
 /// The decision fields consumed after reject and restrict have taken precedence.
@@ -795,30 +662,26 @@ pub trait Hook: Send + Sync {
         Poll::Ready(())
     }
     /// `configure`: `Ok` acknowledges the version; `Err` refuses it, saying why in the hook's own
-    fn configure(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-        version: u64,
-    ) -> Result<(), String> {
+    fn configure(&self, settings: &SettingsMap, version: u64) -> Result<(), String> {
         let _ = (settings, version);
         Ok(())
     }
     /// Apply a push and return its complete effective configuration under the same plugin lock.
     fn configure_checkpoint(
         &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
+        settings: &SettingsMap,
         version: u64,
     ) -> Result<Option<ConfigureCheckpoint>, String> {
         self.configure(settings, version)?;
         Ok(None)
     }
     /// `status`: the 1.5.5 status envelope (`{"status": {...}}`, or `{}` = unsupported).
-    fn status(&self) -> serde_json::Value {
-        serde_json::json!({})
+    fn status(&self) -> AdminJson {
+        empty_admin_json()
     }
     /// `describe`: the 1.5.5 self-description envelope (`{"schema": ...}`, or `{}`).
-    fn describe(&self) -> serde_json::Value {
-        serde_json::json!({})
+    fn describe(&self) -> AdminJson {
+        empty_admin_json()
     }
 }
 
@@ -1071,7 +934,7 @@ macro_rules! hook_op {
             fn call(
                 $i: Instance<'_, Held<HookLife<P>>>,
                 $input: Lent<'_, $in>,
-                #[allow(unused_mut)] mut $o: Out<'_, $out>,
+                mut $o: Out<'_, $out>,
             ) -> Outcome {
                 let Some($held) = $i.get() else {
                     return Outcome::Fault;
@@ -1207,11 +1070,9 @@ hook_op!(
     ConfigureIn,
     ConfigureOut,
     |held, _i, input, out| {
-        let bytes = input.field(|i| &i.settings).bytes();
-        let bytes = if bytes.is_empty() { &b"{}"[..] } else { bytes };
-        let settings = match serde_json::from_slice::<JsonValue>(bytes) {
+        let settings = match configure_settings(input.field(|i| &i.settings).bytes()) {
             Ok(settings) => settings,
-            Err(e) => return out.fail(Refusal::failed(format!("settings: not valid JSON: {e}"))),
+            Err(refusal) => return out.fail(refusal),
         };
         let Some(map) = settings.0.as_object() else {
             return out.fail(Refusal::failed("settings: must be a JSON object"));
@@ -1242,11 +1103,10 @@ hook_op!(
     StatusOut,
     |held, _i, _input, out| {
         // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
-        let status = JsonValue(held.life().hook().status());
-        let mut bytes = crate::abi::sdk::secret_bytes::SecretBytes::default();
-        if let Err(e) = serde_json::to_writer(&mut bytes, &status.0) {
-            return out.fail(Refusal::failed(format!("status: {e}")));
-        }
+        let bytes = match status_bytes(held.life().hook().status()) {
+            Ok(bytes) => bytes,
+            Err(refusal) => return out.fail(refusal),
+        };
         let o = out.raw();
         o.status = held
             .leases()
@@ -1262,9 +1122,9 @@ hook_op!(
     DescribeOut,
     |held, _i, _input, out| {
         // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
-        let bytes = match serde_json::to_vec(&held.life().hook().describe()) {
+        let bytes = match describe_bytes(&held.life().hook().describe()) {
             Ok(bytes) => bytes,
-            Err(e) => return out.fail(Refusal::failed(format!("describe: {e}"))),
+            Err(refusal) => return out.fail(refusal),
         };
         let o = out.raw();
         o.describe = held.leases().blob(&mut o.head, bytes, BLOB_JSON);

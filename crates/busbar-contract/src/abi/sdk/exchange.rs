@@ -117,7 +117,10 @@ impl Zeroize for ExchangeResponse {
 
 /// A framed reply whose body stays in credential custody. The public head has an empty body;
 /// only the credential SDK can read the protected body. Dropping either part wipes its buffers.
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds secret bytes: no Debug, so none can print"
+)]
 pub struct ProtectedResponse {
     /// Public status, reason and fields; its body is always empty when returned by the exchange.
     pub head: Zeroizing<ExchangeResponse>,
@@ -374,10 +377,7 @@ impl Exchange {
             }
         };
         if now >= expiry {
-            return self.timeout_failed(
-                c,
-                ConnFailure::Failed(crate::conn::ConnError::Timeout.text().to_owned()),
-            );
+            return self.timeout_failed(c, timed_out());
         }
         Ok(())
     }
@@ -498,6 +498,10 @@ impl Exchange {
         }
         for (_, name, _) in &sealed {
             if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a refused request's text, written once per refusal"
+                )]
                 return Err(ConnFailure::Refused(format!(
                     "the sealed request field `{}` is a pseudo-field or carries a line break",
                     String::from_utf8_lossy(name)
@@ -506,6 +510,10 @@ impl Exchange {
         }
         for (_, name, seal) in &sealed {
             if seal.wire().iter().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a refused request's text, written once per refusal"
+                )]
                 return Err(ConnFailure::Refused(format!(
                     "the sealed request field `{}` carries a line break or NUL",
                     String::from_utf8_lossy(name)
@@ -514,12 +522,20 @@ impl Exchange {
         }
         for (name, value) in &request.fields {
             if name.first() == Some(&b':') {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a refused request's text, written once per refusal"
+                )]
                 return Err(ConnFailure::Refused(format!(
                     "a request field `{}` is a pseudo-field; the framer names its own head",
                     String::from_utf8_lossy(name)
                 )));
             }
             if name.iter().chain(value).any(|b| *b == b'\r' || *b == b'\n') {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a refused request's text, written once per refusal"
+                )]
                 return Err(ConnFailure::Refused(format!(
                     "the request field `{}` carries a line break",
                     String::from_utf8_lossy(name)
@@ -562,6 +578,8 @@ impl Exchange {
                 index += 1;
             }
         }
+        // Every seal is in the head now: wipe them here, not when the request is dropped.
+        drop(sealed);
         let head_piece = Box::new(RequestPiece {
             kind: REQUEST_HEAD,
             method: span(0, m),
@@ -598,7 +616,7 @@ impl Exchange {
             } => fields::lines(spanned(&head[..], head_piece.fields))
                 .enumerate()
                 .map(|(i, (name, value))| {
-                    if self.sealed_lines.contains(&i) {
+                    if self.sealed_lines.binary_search(&i).is_ok() {
                         (name, &b"<sealed>"[..])
                     } else {
                         (name, value)
@@ -610,11 +628,11 @@ impl Exchange {
     }
 
     /// The whole head this exchange frames, sealed values included (`test_support::chip` alone).
-    #[allow(dead_code)]
-    pub(crate) fn head_bytes(&self) -> Vec<u8> {
+    #[cfg(any(test, feature = "test-seal"))]
+    pub(crate) fn head_bytes(&self) -> &[u8] {
         match &self.sending {
-            Sending::Framed { head, .. } => head.to_vec(),
-            Sending::Raw(bytes) => bytes.to_vec(),
+            Sending::Framed { head, .. } => head,
+            Sending::Raw(bytes) => bytes,
         }
     }
 }
@@ -626,7 +644,22 @@ fn spanned(buf: &[u8], span: FrameSpan) -> &[u8] {
 }
 
 fn failed<T>(text: &str) -> Answer<T> {
-    Poll::Ready(Err(ConnFailure::Failed(text.to_string())))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failed exchange's text, owned once per failure"
+    )]
+    let text = text.to_string();
+    Poll::Ready(Err(ConnFailure::Failed(text)))
+}
+
+/// A timed-out exchange's failure (`ConnFailure::Failed` owns its text).
+pub(crate) fn timed_out() -> ConnFailure {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a timed-out exchange's text, owned once per timeout"
+    )]
+    let text = crate::conn::ConnError::Timeout.text().to_owned();
+    ConnFailure::Failed(text)
 }
 
 /// Ready(Ok(v)) -> v; anything else returns it from the calling function.
@@ -679,9 +712,7 @@ fn bounded_step<T, K: KindMarker>(
         };
         match c.clock_now() {
             Poll::Ready(Ok(now)) if now.mono_ns < expiry => Ok(()),
-            Poll::Ready(Ok(_)) => Err(ConnFailure::Failed(
-                crate::conn::ConnError::Timeout.text().to_owned(),
-            )),
+            Poll::Ready(Ok(_)) => Err(timed_out()),
             Poll::Ready(Err(error)) => Err(error),
             Poll::Pending => Err(ConnFailure::Fault),
         }

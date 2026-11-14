@@ -95,9 +95,12 @@ impl ConfigureCheckpoint {
                 }
                 let revision = u64::from_le_bytes(value[..8].try_into().map_err(|_| INVALID)?);
                 let version = u64::from_le_bytes(value[8..HEADER].try_into().map_err(|_| INVALID)?);
-                found = Some(
-                    Self::new(revision, version, value[HEADER..].to_vec()).map_err(|_| INVALID)?,
-                );
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: a configure checkpoint's settings, restored once per configure"
+                )]
+                let settings = value[HEADER..].to_vec();
+                found = Some(Self::new(revision, version, settings).map_err(|_| INVALID)?);
             }
         }
         Ok(found)
