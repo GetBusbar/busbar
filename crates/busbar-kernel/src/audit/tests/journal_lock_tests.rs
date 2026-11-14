@@ -86,10 +86,14 @@ impl PersistenceBackend for GateBackend {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         self.inner.scan(request)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             self.crossing(Crossing::Commit).await;
-            self.inner.commit(candidate).await
+            self.inner.commit(candidate, key).await
         })
     }
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {

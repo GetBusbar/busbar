@@ -67,8 +67,12 @@ async fn two_nodes_duplicate_final_and_restart_correction_settle_once() {
         fn scan(&self, r: Arc<Scan>) -> Call<'_, Page> {
             self.0.scan(r)
         }
-        fn commit(&self, r: PreparedCandidate) -> Call<'_, Decision> {
-            self.0.commit(r)
+        fn commit(
+            &self,
+            r: PreparedCandidate,
+            key: busbar_contract::persistence::CommitKey,
+        ) -> Call<'_, Decision> {
+            self.0.commit(r, key)
         }
         fn clock(&self, d: DatasetId) -> Call<'_, ClockObservation> {
             self.0.clock(d)
@@ -352,8 +356,12 @@ async fn ephemeral_store_never_advertises_observation_capability() {
         fn scan(&self, r: Arc<Scan>) -> Call<'_, Page> {
             self.0.scan(r)
         }
-        fn commit(&self, r: PreparedCandidate) -> Call<'_, Decision> {
-            self.0.commit(r)
+        fn commit(
+            &self,
+            r: PreparedCandidate,
+            key: busbar_contract::persistence::CommitKey,
+        ) -> Call<'_, Decision> {
+            self.0.commit(r, key)
         }
         fn clock(&self, d: DatasetId) -> Call<'_, ClockObservation> {
             self.0.clock(d)

@@ -1184,11 +1184,12 @@ impl busbar_contract::persistence::PersistenceBackend for RefusedReplayBackend {
     fn commit(
         &self,
         request: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
         if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
             Box::pin(async { Err(busbar_contract::persistence::Failure::Refused) })
         } else {
-            self.inner.commit(request)
+            self.inner.commit(request, key)
         }
     }
 }

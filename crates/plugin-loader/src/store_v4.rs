@@ -488,7 +488,11 @@ impl PersistenceBackend for LoadedPersistence {
             .await
         })
     }
-    fn commit(&self, candidate: owned::PreparedCandidate) -> owned::Call<'_, owned::Decision> {
+    fn commit(
+        &self,
+        candidate: owned::PreparedCandidate,
+        key: owned::CommitKey,
+    ) -> owned::Call<'_, owned::Decision> {
         Box::pin(async move {
             if candidate.candidate().id.dataset != self.info.dataset {
                 return Err(Failure::Refused);
@@ -681,7 +685,6 @@ struct ScanRequest {
     bytes: WipedBytes,
 }
 struct CommitRequest {
-    original: owned::PreparedCandidate,
     source: sdk::Commit,
     bytes: WipedBytes,
 }
@@ -813,28 +816,20 @@ impl Request for CommitRequest {
     const SLOT: u32 = wire::slot::COMMIT;
     const COMMIT: bool = true;
     fn frame(&mut self) -> Frame<Self::I, Self::O> {
-        Frame::new(
-            self.source.frame(in_head(), output_bytes(&mut self.bytes)),
-            blank(),
-        )
+        Frame::new(self.source.frame(in_head(), self.key), blank())
     }
-    fn grow(&mut self, _: u64, bytes: u64, limits: Limits) -> Result<(), ()> {
-        grow(&mut Vec::<u8>::new(), &mut self.bytes, 0, bytes, limits, 0)
+    fn grow(&mut self, _: u64, _: u64, _: Limits) -> Result<(), ()> {
+        Err(())
     }
     fn decode(
         &self,
         outcome: Outcome,
         frame: &Frame<Self::I, Self::O>,
-        budget: usize,
+        _: usize,
         expected: [u8; 16],
     ) -> Result<Self::Value, ResponseError> {
-        let value = response::commit(outcome, &frame.input, &frame.out, &self.bytes, budget)?;
+        let value = response::commit(outcome, &frame.input, &frame.out)?;
         authority(frame.out.authority, expected)?;
-        if let owned::Decision::Applied(ref result) = value {
-            if result != &self.original.candidate().result {
-                return Err(ResponseError::Malformed);
-            }
-        }
         Ok(value)
     }
 }

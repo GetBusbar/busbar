@@ -17,9 +17,13 @@ struct Backend {
     writer: control::Writer,
     replies: Mutex<VecDeque<Reply>>,
     sent: Mutex<Vec<[u8; 32]>>,
+    keys: Mutex<Vec<busbar_contract::persistence::CommitKey>>,
 }
 
 impl Backend {
+    fn calls_made(&self) -> usize {
+        self.sent.lock().unwrap().len()
+    }
     fn new(replies: Vec<Reply>) -> Self {
         Self {
             root: control::Dataset {
@@ -32,6 +36,7 @@ impl Backend {
             },
             replies: Mutex::new(replies.into()),
             sent: Mutex::new(Vec::new()),
+            keys: Mutex::new(Vec::new()),
         }
     }
 }
@@ -80,8 +85,13 @@ impl PersistenceBackend for Backend {
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async { Err(Failure::Unavailable) })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         self.sent.lock().unwrap().push(candidate.fingerprint());
+        self.keys.lock().unwrap().push(key);
         let reply = self
             .replies
             .lock()
@@ -411,4 +421,148 @@ async fn promotion_preserves_closed_admission_and_rejects_overflow() {
         }),
         Err(AccessError::Authority)
     );
+}
+
+fn sized(pending_operations: usize) -> Limits {
+    Limits {
+        pending_operations,
+        ..limits()
+    }
+}
+
+async fn store_with(replies: Vec<Reply>, pending_operations: usize) -> (Arc<Backend>, CoreStore) {
+    let backend = Arc::new(Backend::new(replies));
+    let store = CoreStore::attach(backend.clone(), authority(), sized(pending_operations))
+        .await
+        .unwrap();
+    (backend, store)
+}
+
+fn unknown() -> Reply {
+    Some(Err(Failure::Unknown))
+}
+
+/// §2.1: push at registration, pop at removal; LIFO reuse with a strictly larger seq.
+#[tokio::test]
+async fn slots_are_leased_lifo_with_a_larger_seq_on_every_lease() {
+    let (backend, store) = store_with(vec![applied(), applied(), unknown()], 2).await;
+    store.submit(candidate(&store, 1, 1)).await.unwrap();
+    store.submit(candidate(&store, 2, 2)).await.unwrap();
+    let held = store.submit(candidate(&store, 3, 3)).await.unwrap();
+    assert!(matches!(held.result, SubmitResult::Uncertain));
+    let keys: Vec<_> = backend
+        .keys
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|k| k.wire())
+        .collect();
+    assert_eq!(keys, vec![(0, 1), (0, 2), (0, 3)]);
+    assert_eq!(store.slot_states().unwrap().free, 1);
+}
+
+/// 8.6: one bound. Every entry holds a slot; a full queue is Overloaded, sets the
+/// lock-free arrival flag, and the gauge states add up to the capacity.
+#[tokio::test]
+async fn a_full_queue_is_overloaded_audited_and_counted() {
+    let (backend, store) = store_with(
+        vec![
+            unknown(),
+            unknown(),
+            unknown(),
+            unknown(),
+            // settle pass, in slot order 0..4
+            applied(),
+            Some(Ok(Decision::Fenced)),
+            unknown(),
+            unknown(),
+        ],
+        4,
+    )
+    .await;
+    let mut ids = Vec::new();
+    for operation in 1..=4 {
+        ids.push(
+            store
+                .submit(candidate(&store, operation, 0))
+                .await
+                .unwrap()
+                .id,
+        );
+    }
+    assert!(!store.exhausted());
+    assert_eq!(store.settle_in_doubt(SETTLE_PER_TICK).await.unwrap(), 4);
+    let states = store.slot_states().unwrap();
+    assert_eq!(
+        states,
+        SlotStates {
+            free: 0,
+            in_flight: 0,
+            in_doubt: 2,
+            resolved_uncollected: 1,
+            reconcile: 1,
+        }
+    );
+    assert!(matches!(
+        store.submit(candidate(&store, 9, 0)).await,
+        Err(AccessError::Overloaded)
+    ));
+    assert!(store.exhausted(), "arrival refusal reads the flag");
+    assert_eq!(
+        backend.calls_made(),
+        8,
+        "the refused registration never crossed"
+    );
+    // Collecting the resolved answer pops its entry and its slot.
+    assert!(matches!(
+        store.retry(ids[0]).await.unwrap().result,
+        SubmitResult::Decided(_)
+    ));
+    assert!(!store.exhausted());
+    assert_eq!(store.slot_states().unwrap().free, 1);
+}
+
+/// 8.6 (settle): at most SETTLE_PER_TICK in-doubt attempts per tick, round-robin.
+#[tokio::test]
+async fn settle_resubmits_at_most_the_per_tick_limit_round_robin() {
+    let (backend, store) = store_with((0..70 + 128).map(|_| unknown()).collect(), 70).await;
+    for operation in 1..=70u8 {
+        store.submit(candidate(&store, operation, 0)).await.unwrap();
+    }
+    assert_eq!(store.settle_in_doubt(SETTLE_PER_TICK).await.unwrap(), 64);
+    assert_eq!(store.settle_in_doubt(SETTLE_PER_TICK).await.unwrap(), 64);
+    let keys = backend.keys.lock().unwrap();
+    let second: Vec<u32> = keys[70 + 64..].iter().map(|k| k.wire().0).collect();
+    assert_eq!(
+        second[..6],
+        [64, 65, 66, 67, 68, 69],
+        "continues after the cursor"
+    );
+    assert_eq!(second[6], 0, "then wraps");
+    assert_eq!(store.slot_states().unwrap().in_doubt, 70);
+}
+
+/// 8.8: operation ids never collide across CoreStores in one process, or across
+/// two boots (distinct door node).
+#[tokio::test]
+async fn operation_ids_are_unique_across_stores_and_boots() {
+    let (_, first) = store_with(vec![], 1).await;
+    let (_, second) = store_with(vec![], 1).await;
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..500_000 {
+        assert!(seen.insert(first.next_id().unwrap().operation));
+        assert!(seen.insert(second.next_id().unwrap().operation));
+    }
+    let boot_a = crate::door::OpIds::boot(11);
+    let boot_b = crate::door::OpIds::boot(12);
+    assert_ne!(boot_a.mint(), boot_b.mint());
+}
+
+#[tokio::test]
+async fn queue_capacity_is_bounded_by_max_slots() {
+    let backend = Arc::new(Backend::new(vec![]));
+    assert!(matches!(
+        CoreStore::attach(backend, authority(), sized(MAX_SLOTS as usize + 1)).await,
+        Err(AccessError::InvalidLimits)
+    ));
 }

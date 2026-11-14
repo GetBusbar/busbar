@@ -149,6 +149,7 @@ impl Backend for Fake {
         &self,
         op: &mut Op<'_>,
         source: &owned::PreparedCandidate<Own>,
+        _: crate::abi::sdk::store::v4::backend::CommitSlot,
     ) -> Step<Result<Committed<Own>, owned::Failure>> {
         let pointer = source.candidate().result.expose_own(self.owner()).as_ptr() as usize;
         if !op.resuming() {
@@ -350,6 +351,8 @@ fn v4_native_pending_short_retry_metadata_and_cancel() {
         execution_epoch: 1,
     };
     input.candidate.codec = wire::CODEC_VERSION;
+    input.candidate.slot = 0;
+    input.candidate.seq = 1;
     input.candidate.result = Blob {
         ptr: b"candidate-result".as_ptr(),
         len: 16,
@@ -379,43 +382,26 @@ fn v4_native_pending_short_retry_metadata_and_cancel() {
     input.head.flags |= FLAG_RESUME;
     assert_eq!(
         call(table().commit, opened.instance, &input, &mut output),
-        Outcome::Failed
+        Outcome::Ready,
+        "a commit answer carries no result bytes, so it is never short"
     );
-    assert_eq!(output.needed, 15);
-    assert_eq!(COMMITS.load(Ordering::SeqCst), 1);
-    input.candidate.result = Blob {
-        ptr: b"changed".as_ptr(),
-        len: 7,
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    };
-    input.head.flags = 0;
-    assert_eq!(
-        call(table().commit, opened.instance, &input, &mut output),
-        Outcome::Refused
-    );
-    assert_eq!(COMMITS.load(Ordering::SeqCst), 1);
-    input.candidate.result = Blob {
-        ptr: b"candidate-result".as_ptr(),
-        len: 16,
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    };
-    let mut bytes = [0; 15];
-    input.head.flags = 0;
-    input.result = crate::abi::store::HostBuf {
-        ptr: bytes.as_mut_ptr(),
-        cap: bytes.len(),
-    };
-    assert_eq!(
-        call(table().commit, opened.instance, &input, &mut output),
-        Outcome::Ready
-    );
+    assert_eq!(output.code, wire::COMMIT_APPLIED);
     assert_eq!(output.observed_at, 41);
     assert_eq!(output.authority, [3; 16]);
-    assert_eq!(&bytes, b"original-result");
     assert_eq!(COMMITS.load(Ordering::SeqCst), 1);
-
+    // 8.9: slot fields are refused at the door, before the store runs.
+    input.head.flags = 0;
+    for (slot, seq) in [(wire::MAX_SLOTS, 1), (0, 0), (wire::SLOT_SELF_FENCED, 1)] {
+        input.candidate.slot = slot;
+        input.candidate.seq = seq;
+        assert_eq!(
+            call(table().commit, opened.instance, &input, &mut output),
+            Outcome::Refused
+        );
+    }
+    assert_eq!(COMMITS.load(Ordering::SeqCst), 1);
+    input.candidate.slot = 0;
+    input.candidate.seq = 1;
     let address = wire::Address {
         namespace: [8; 16],
         key: wire::Bytes {
@@ -509,49 +495,6 @@ fn v4_native_pending_short_retry_metadata_and_cancel() {
         Outcome::Fault
     );
     assert_eq!(COMMITS.load(Ordering::SeqCst), 1);
-    // A completed short reply also retires its candidate and original result on cancel.
-    // SAFETY: watched initialized allocations remain on this thread through cancellation.
-    let probe = unsafe { crate::alloc_counter::InitializedPayloadProbe::start().unwrap() };
-    input.head = head::<wire::CommitIn>(
-        wire::slot::COMMIT,
-        Ticket {
-            slot: 6,
-            generation: 1,
-        },
-    );
-    input.result = crate::abi::store::HostBuf {
-        ptr: core::ptr::null_mut(),
-        cap: 0,
-    };
-    assert_eq!(
-        call(table().commit, opened.instance, &input, &mut output),
-        Outcome::Pending
-    );
-    input.head.flags = FLAG_RESUME;
-    assert_eq!(
-        call(table().commit, opened.instance, &input, &mut output),
-        Outcome::Failed
-    );
-    assert_eq!(COMMITS.load(Ordering::SeqCst), 2);
-    cancel.ticket = input.head.ticket;
-    assert_eq!(
-        call(
-            table().head.cancel,
-            opened.instance,
-            &cancel,
-            &mut cancelled
-        ),
-        Outcome::Ready
-    );
-    let observed = probe.finish();
-    assert!(!observed.reentered);
-    assert_eq!(observed.payloads.len(), 2);
-    for payload in observed.payloads {
-        assert!(payload.freed);
-        assert!(!payload.reallocated);
-        #[cfg(target_os = "linux")]
-        assert!(payload.wiped);
-    }
     let mut close: InHead = head::<InHead>(lc::slot::CLOSE, Ticket::NONE);
     close.size = std::mem::size_of::<InHead>() as u32;
     assert_eq!(

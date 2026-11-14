@@ -18,7 +18,7 @@ use busbar_kernel::persistence::{
     import_target::candidate_codec,
 };
 
-pub(super) const NAMESPACE: Id = *b"busbar.migrate1\0";
+pub(super) const NAMESPACE: Id = busbar_contract::persistence::witness::MIGRATION_NAMESPACE.0;
 
 pub(super) fn reserved(namespace: Id) -> bool {
     namespace == NAMESPACE
@@ -777,8 +777,8 @@ impl Coordinator {
             .ok_or(Error::Bounds)?;
         let snapshot = candidate_codec::encode(&candidate, budget, &crate::seal::lend())
             .map_err(|_| Error::Bounds)?;
-        let attempt =
-            Attempt::new(candidate, self.backend.clone()).map_err(|_| Error::IdentityMismatch)?;
+        let attempt = Attempt::proven(candidate, self.backend.clone())
+            .map_err(|_| Error::IdentityMismatch)?;
         self.pending = Some(Pending {
             next,
             attempt,
@@ -852,8 +852,7 @@ impl Coordinator {
             && pending.next.state != self.manifest.state
         {
             use busbar_contract::persistence::lifecycle::{ActivationReceipt, CompletionPhase};
-            let Decision::Applied(original_result) =
-                pending.decided.as_deref().ok_or(Error::InvalidState)?
+            let Decision::Applied(_) = pending.decided.as_deref().ok_or(Error::InvalidState)?
             else {
                 return Err(Error::InvalidState);
             };
@@ -866,7 +865,6 @@ impl Coordinator {
             let proof = Arc::new(ActivationReceipt {
                 attempt: pending.attempt.candidate().candidate().id,
                 candidate_fingerprint: pending.attempt.candidate().fingerprint(),
-                original_result: original_result.clone(),
                 checkpoint_address: address(pending.next.migration),
                 checkpoint_value_digest: busbar_contract::crypto::sha256(&checkpoint).into(),
                 phase,

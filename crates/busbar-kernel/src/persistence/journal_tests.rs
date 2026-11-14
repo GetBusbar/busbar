@@ -129,7 +129,7 @@ impl PersistenceBackend for Backend {
             let mut state = self.state.lock().unwrap();
             let candidate = prepared.candidate();
             if self.expire_receipt.swap(false, Ordering::SeqCst) {
-                return Ok(Decision::ExpiredUnknown);
+                return Ok(Decision::Fenced);
             }
             if let Some(digest) = state.receipts.get(&candidate.id.operation) {
                 return Ok(if *digest == prepared.fingerprint() {
@@ -576,9 +576,12 @@ async fn recovery_selection_cancelled_candidate_cannot_select_a_changed_original
         else {
             panic!()
         };
-        // Cancellation leaves a possible prior effect. A later native
-        // predicate conflict cannot resolve that earlier uncertainty.
-        assert!(matches!(reply.result, SubmitResult::Reconcile));
+        // STORE-TRANSACTIONS section 2.3: the retry carries the same key, so the store
+        // replays the cancelled send's verdict if it was evaluated. A conflict is final.
+        assert!(matches!(
+            reply.result,
+            SubmitResult::Decided(ref decision) if matches!(decision.as_ref(), Decision::ConditionConflict)
+        ));
         let state = backend.state.lock().unwrap();
         assert_eq!(state.sent[1].candidate().id, state.sent[2].candidate().id);
         assert_eq!(state.sent[1].fingerprint(), state.sent[2].fingerprint());
@@ -1110,9 +1113,12 @@ async fn cancelled_cold_transfer_keeps_exact_proof_and_cannot_overwrite_changed_
         else {
             panic!()
         };
-        // Cancellation leaves a possible prior effect. A later native
-        // predicate conflict cannot resolve that earlier uncertainty.
-        assert!(matches!(reply.result, SubmitResult::Reconcile));
+        // STORE-TRANSACTIONS section 2.3: the retry carries the same key, so the store
+        // replays the cancelled send's verdict if it was evaluated. A conflict is final.
+        assert!(matches!(
+            reply.result,
+            SubmitResult::Decided(ref decision) if matches!(decision.as_ref(), Decision::ConditionConflict)
+        ));
         let state = backend.state.lock().unwrap();
         assert_eq!(state.sent[1].candidate().id, state.sent[2].candidate().id);
         assert_eq!(state.sent[1].fingerprint(), state.sent[2].fingerprint());

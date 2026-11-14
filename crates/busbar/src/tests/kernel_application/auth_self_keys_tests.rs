@@ -52,7 +52,11 @@ impl PersistenceBackend for ObservedBackend {
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.actual.clock(dataset)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         let overlay_writes = candidate
             .candidate()
             .mutations
@@ -75,7 +79,7 @@ impl PersistenceBackend for ObservedBackend {
             self.record_writes
                 .fetch_add(overlay_writes, std::sync::atomic::Ordering::SeqCst);
         }
-        self.actual.commit(candidate)
+        self.actual.commit(candidate, key)
     }
 }
 

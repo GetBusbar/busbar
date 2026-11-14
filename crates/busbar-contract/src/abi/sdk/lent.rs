@@ -1578,12 +1578,3 @@ impl<'a> Lent<'a, crate::abi::store::v4::ScanIn> {
         unsafe { v4_outputs(rows.items, rows.items_cap, rows.bytes) }
     }
 }
-impl<'a> Lent<'a, crate::abi::store::v4::CommitIn> {
-    /// Exclusive initialized result loan. Invoke once per crossing.
-    /// # Safety
-    /// No other access to this output may coexist with the returned slice.
-    pub(crate) unsafe fn v4_output(self) -> Option<&'a mut [u8]> {
-        // SAFETY: caller transfers the unique loan guaranteed by the ABI.
-        unsafe { v4_outputs::<u8>(core::ptr::null_mut(), 0, self.result).map(|(_, bytes)| bytes) }
-    }
-}

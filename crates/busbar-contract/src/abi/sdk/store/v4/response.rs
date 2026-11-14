@@ -293,17 +293,15 @@ pub fn scan(
 }
 
 /// Decode a commit decision. Errors never imply that execution had no effect.
+/// `Applied` carries empty bytes; the host attempt owns the candidate's result.
 pub fn commit(
     outcome: Outcome,
     input: &wire::CommitIn,
     out: &wire::CommitOut,
-    bytes: &[u8],
-    allocation_budget: usize,
 ) -> Result<owned::Decision, ResponseError> {
     head::<wire::CommitOut>(outcome, &out.head)?;
     wire::check::commit(outcome, input, out).map_err(ResponseError::Envelope)?;
-    let bytes = written(input.result, bytes, out.written)?;
-    status(outcome, true, 0, out.needed)?;
+    status(outcome, true, 0, 0)?;
     let observed_at = observation(out.authority, out.observed_at)?;
     let permitted = super::decode::time(input.candidate.time)
         .map_err(|_| ResponseError::Malformed)?
@@ -314,11 +312,12 @@ pub fn commit(
         return Err(ResponseError::Malformed);
     }
     Ok(match out.code {
-        wire::COMMIT_APPLIED => owned::Decision::Applied(Budget(allocation_budget).secret(bytes)?),
+        wire::COMMIT_APPLIED => owned::Decision::Applied(Secret::new(Vec::new())),
         wire::COMMIT_CONDITION_CONFLICT => owned::Decision::ConditionConflict,
         wire::COMMIT_TIME_GUARD_FAILED => owned::Decision::TimeGuardFailed { observed_at },
         wire::COMMIT_OPID_CONFLICT => owned::Decision::OpIdConflict,
-        wire::COMMIT_EXPIRED_UNKNOWN => owned::Decision::ExpiredUnknown,
+        wire::COMMIT_FENCED => owned::Decision::Fenced,
+        wire::COMMIT_STALE => owned::Decision::Stale,
         _ => return Err(ResponseError::Malformed),
     })
 }

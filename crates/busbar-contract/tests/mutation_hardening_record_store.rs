@@ -115,7 +115,7 @@ fn failed_writes_never_claim_credential_revocation_deletion_or_token_success() {
         out.head.outcome = RawOutcome::of(outcome);
         out.head.size = std::mem::size_of_val(&out) as u32;
         assert_eq!(
-            response::commit(outcome, &input, &out, &[], 0).unwrap_err(),
+            response::commit(outcome, &input, &out).unwrap_err(),
             error(outcome, true)
         );
     }

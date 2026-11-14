@@ -962,8 +962,9 @@ impl busbar_contract::persistence::PersistenceBackend for Gauge {
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
-        self.backend.commit(candidate)
+        self.backend.commit(candidate, key)
     }
     fn clock(
         &self,
@@ -1314,8 +1315,9 @@ impl busbar_contract::persistence::PersistenceBackend for Gate {
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
-        self.backend.commit(candidate)
+        self.backend.commit(candidate, key)
     }
     fn clock(
         &self,
@@ -1388,6 +1390,7 @@ impl busbar_contract::persistence::PersistenceBackend for Refusing {
     fn commit(
         &self,
         _candidate: busbar_contract::persistence::PreparedCandidate,
+        _key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
         Box::pin(async { Err(busbar_contract::persistence::Failure::Refused) })
     }

@@ -108,6 +108,66 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-1010",
+    "number": 1010,
+    "class": "durability",
+    "slug": "store-inflight-exhausted",
+    "title": "Store in-flight queue exhausted: new store writes are refused until slots free up",
+    "severity": "actionable",
+    "summary": "Every pending-operation slot of this writer is held, so new store commits answer Overloaded and money-path arrivals are refused with DurabilityUnavailable. Emitted when exhaustion starts and again when it ends, with the in_doubt, resolved_uncollected and reconcile counts of the held slots.",
+    "action": "store unreachable or slow (in_doubt); a domain not collecting answers (resolved_uncollected, a bug); operator reconciliation pending (reconcile). See the busbar_store_slots gauge.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-1011",
+    "number": 1011,
+    "class": "durability",
+    "slug": "store-commit-fenced-in-doubt",
+    "title": "A store commit whose earlier send may have applied was fenced on retry",
+    "severity": "actionable",
+    "summary": "A slotted commit lost its reply, and its retry found the writer's epoch no longer admitted (the writer was closed, which also deleted its slot rows). Whether the earlier send applied cannot be decided automatically, so the operation is held for reconciliation instead of being assumed either way.",
+    "action": "Reconcile the named operation against the store's records before reusing its effects. This follows a writer closure (recovery adoption or shutdown) while a commit was in doubt.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-1012",
+    "number": 1012,
+    "class": "durability",
+    "slug": "store-slot-invariant",
+    "title": "A live store commit was answered STALE: the slot queue invariant was broken",
+    "severity": "actionable",
+    "summary": "The store reported that a later sequence of this commit's slot was already evaluated. A live attempt holds its slot, so this means the slot was leased twice or the store's slot row is wrong. Nothing was applied by this send; an in-doubt attempt is held for reconciliation.",
+    "action": "This is a bug in the slot facade or the store plugin. Capture the log line (writer, slot) and file a bug; reconcile any held operation.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-1013",
+    "number": 1013,
+    "class": "durability",
+    "slug": "store-self-fenced-ambiguous",
+    "title": "A self-fenced store commit's readback could not decide whether it applied",
+    "severity": "actionable",
+    "summary": "An administrative commit that can apply at most once lost its reply, and the readback of its witness and predicates could not prove it applied or prove it never will (a record moved past both values, a domain predicate could return to its expected value, or the store refused a predicate that holds). It is held for reconciliation instead of being assumed.",
+    "action": "Reconcile the named administrative step (boot registration, writer transition, first start or migration step) against the store before retrying it.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-1014",
+    "number": 1014,
+    "class": "durability",
+    "slug": "store-time-guard-inconsistent",
+    "title": "The store answered an inconsistent time-guard failure",
+    "severity": "actionable",
+    "summary": "The store reported a time-guard failure whose observation came from another clock authority, or whose time the commit's guard permits, or for a commit with no guard. That is a store fault; retrying would replay the same recorded verdict, so the operation is held for reconciliation.",
+    "action": "Check the store plugin and its clock authority. Capture the log line (store, writer, slot, observed authority and time, the guard) and reconcile the held operation.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-2001",
     "number": 2001,
     "class": "audit",

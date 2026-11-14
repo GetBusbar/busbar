@@ -300,20 +300,39 @@ pub fn completion_marker_address(upgrade: Id) -> super::Address {
     }
 }
 /// Native-verifiable proof of an exact confirmed core checkpoint commit.
-#[derive(Debug)]
-pub struct ActivationReceipt<O = Kernel> {
+#[derive(Debug, Clone)]
+pub struct ActivationReceipt {
     /// The exact retained candidate's original attempt identity.
     pub attempt: super::AttemptId,
     /// The exact confirmed candidate fingerprint.
     pub candidate_fingerprint: Digest,
-    /// Exact original applied result read from the native receipt.
-    pub original_result: Secret<Vec<u8>, O>,
     /// Target control/checkpoint address actually committed by core.
     pub checkpoint_address: super::Address,
     /// Exact current checkpoint bytes to verify without interpreting migration JSON.
     pub checkpoint_value_digest: Digest,
     /// Distinct native verification obligation, never inferred from a caller boolean.
     pub phase: CompletionPhase,
+}
+/// A finish phase the host verified once for every store (decision 185). The store
+/// executes a fixed compare-and-write with it:
+/// 1. if the slot for `phase` holds a digest: equal to `phase_digest` → success, no
+///    write and no precondition (replay); different → `Refused`;
+/// 2. else (a Complete also needs a filled Activation slot) the stored checkpoint and
+///    marker bytes must hash to `checkpoint_value_digest` and `marker_value_digest`;
+///    then `phase_digest` is written to that phase's slot only. The Activation slot
+///    is never overwritten, and `RecoveryReady` is built from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishDecision {
+    /// The phase being published.
+    pub phase: CompletionPhase,
+    /// Host-computed identity of the verified proof; the slot's write-once value.
+    pub phase_digest: Digest,
+    /// The core checkpoint the proof names.
+    pub checkpoint_address: super::Address,
+    /// SHA-256 the stored checkpoint bytes must have.
+    pub checkpoint_value_digest: Digest,
+    /// SHA-256 the stored completion-marker bytes must have.
+    pub marker_value_digest: Digest,
 }
 /// Final native authorization for the already-open recovered backend.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,12 +386,13 @@ pub enum Request<O = Kernel> {
         /// Retained native authority.
         upgrade: UpgradeRef<O>,
     },
-    /// Confirm core activation and idempotently finalize the physical selector.
+    /// Publish a phase the host already verified (STORE-TRANSACTIONS decision 185).
+    /// The store only compares bytes and fills a write-once slot; it judges nothing.
     Finish {
         /// Retained native authority.
         upgrade: UpgradeRef<O>,
-        /// Original confirmed core activation receipt bytes.
-        activation_receipt: ActivationReceipt<O>,
+        /// What the host decided.
+        decision: FinishDecision,
     },
 }
 /// Definitive typed native result; uncertainty is never a false no-effect answer.
@@ -446,18 +466,6 @@ impl<O> Clone for SourceSelector<O> {
         }
     }
 }
-impl<O> Clone for ActivationReceipt<O> {
-    fn clone(&self) -> Self {
-        Self {
-            attempt: self.attempt,
-            candidate_fingerprint: self.candidate_fingerprint,
-            original_result: self.original_result.clone(),
-            checkpoint_address: self.checkpoint_address.clone(),
-            checkpoint_value_digest: self.checkpoint_value_digest,
-            phase: self.phase,
-        }
-    }
-}
 impl<O> Clone for Request<O> {
     fn clone(&self) -> Self {
         match self {
@@ -494,12 +502,9 @@ impl<O> Clone for Request<O> {
             Self::CheckFence { upgrade } => Self::CheckFence {
                 upgrade: upgrade.clone(),
             },
-            Self::Finish {
-                upgrade,
-                activation_receipt,
-            } => Self::Finish {
+            Self::Finish { upgrade, decision } => Self::Finish {
                 upgrade: upgrade.clone(),
-                activation_receipt: activation_receipt.clone(),
+                decision: decision.clone(),
             },
         }
     }

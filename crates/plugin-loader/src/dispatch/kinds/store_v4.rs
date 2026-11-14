@@ -94,9 +94,6 @@ impl Kind for StoreV4 {
             slot::SCAN => answer
                 .out::<v4::ScanOut>()
                 .is_ok_and(|out| out.needed_items != 0 || out.needed_bytes != 0),
-            slot::COMMIT => answer
-                .out::<v4::CommitOut>()
-                .is_ok_and(|out| out.needed != 0),
             slot::BOOTSTRAP => answer
                 .out::<v4::BootstrapOut>()
                 .is_ok_and(|out| out.needed != 0),

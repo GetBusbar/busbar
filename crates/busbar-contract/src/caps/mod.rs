@@ -13,6 +13,7 @@ pub mod egress;
 pub mod hold;
 pub mod migration;
 pub mod seat_verdict;
+pub mod slot;
 pub mod step;
 pub mod token;
 pub mod unit_end;
@@ -29,6 +30,7 @@ pub use hold::{
 };
 pub use migration::{MigrationGrant, MigrationSeal};
 pub use seat_verdict::{ReasonCode, Refusal, SeatVerdict};
+pub use slot::SlotSeal;
 pub use step::{
     Admit, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Authenticated,
     Challenge, Decode, Encode, Frame, LaneId, Meter, MeterClassId, OpClassId, PrincipalId, Route,

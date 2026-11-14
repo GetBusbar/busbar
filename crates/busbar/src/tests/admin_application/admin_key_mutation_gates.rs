@@ -26,7 +26,11 @@ impl PersistenceBackend for GatedKeyStore {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         Box::pin(async move { self.inner.scan(request).await })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let gated = key_mutation(&candidate)
                 && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst);
@@ -53,7 +57,7 @@ impl PersistenceBackend for GatedKeyStore {
                     }
                 }
             }
-            let answer = self.inner.commit(candidate).await;
+            let answer = self.inner.commit(candidate, key).await;
             if gated && matches!(answer, Ok(Decision::Applied(_))) {
                 if let Some(id) = id {
                     let _ = self.landed.try_send(id);
@@ -83,7 +87,11 @@ impl PersistenceBackend for SlowNthPutKeyStore {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         Box::pin(async move { self.inner.scan(request).await })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             if key_mutation(&candidate) {
                 let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -91,7 +99,7 @@ impl PersistenceBackend for SlowNthPutKeyStore {
                     tokio::time::sleep(self.delay).await;
                 }
             }
-            self.inner.commit(candidate).await
+            self.inner.commit(candidate, key).await
         })
     }
 }
@@ -116,7 +124,11 @@ impl PersistenceBackend for BarrierStore {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         Box::pin(async move { self.inner.scan(request).await })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             if key_mutation(&candidate)
                 && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -133,7 +145,7 @@ impl PersistenceBackend for BarrierStore {
                     }
                 }
             }
-            self.inner.commit(candidate).await
+            self.inner.commit(candidate, key).await
         })
     }
 }

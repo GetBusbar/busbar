@@ -128,45 +128,35 @@ fn scan_short_in_one_dimension_is_legal_but_a_fitting_short_is_not() {
     assert!(check::scan(Outcome::Failed, &input, &out).is_ok());
 }
 #[test]
-fn only_an_applied_commit_can_publish_original_result_bytes() {
+fn commit_codes_one_through_six_and_stale_only_when_slotted() {
     let mut input = blank_in::<CommitIn>();
-    input.result.cap = 512;
     let mut out = blank_out::<CommitOut>();
-    out.code = COMMIT_APPLIED;
-    out.written = 1;
-    assert!(check::commit(Outcome::Ready, &input, &out).is_ok());
-    for code in COMMIT_CONDITION_CONFLICT..=COMMIT_EXPIRED_UNKNOWN {
+    for code in COMMIT_APPLIED..=COMMIT_STALE {
+        out.code = code;
+        assert!(check::commit(Outcome::Ready, &input, &out).is_ok());
+    }
+    for code in [0, COMMIT_STALE + 1] {
         out.code = code;
         assert!(check::commit(Outcome::Ready, &input, &out).is_err());
-        out.written = 0;
-        assert!(check::commit(Outcome::Ready, &input, &out).is_ok());
-        out.written = 1;
     }
+    out.code = COMMIT_STALE;
+    input.candidate.slot = SLOT_SELF_FENCED;
+    assert!(check::commit(Outcome::Ready, &input, &out).is_err());
+    out.code = COMMIT_FENCED;
+    assert!(check::commit(Outcome::Ready, &input, &out).is_ok());
 }
 #[test]
-fn commit_reserved_capacity_and_failed_short_rules_are_checked() {
-    let mut input = blank_in::<CommitIn>();
-    input.result.cap = 4;
+fn commit_reserved_field_is_checked_and_failures_carry_no_verdict() {
+    let input = blank_in::<CommitIn>();
     let mut out = blank_out::<CommitOut>();
     out.code = COMMIT_APPLIED;
-    out.written = 5;
-    assert!(check::commit(Outcome::Ready, &input, &out).is_err());
-    out.written = 0;
     out._reserved = 1;
     assert!(check::commit(Outcome::Ready, &input, &out).is_err());
     out._reserved = 0;
-    out.needed = 5;
-    assert!(check::commit(Outcome::Failed, &input, &out).is_ok());
-    assert!(check::commit(Outcome::Refused, &input, &out).is_err());
-    out.needed = 4;
-    assert!(check::commit(Outcome::Failed, &input, &out).is_err());
-    out.needed = 0;
-    out.written = 1;
     for outcome in [Outcome::Failed, Outcome::Refused, Outcome::Pending] {
-        assert!(check::commit(outcome, &input, &out).is_err());
+        assert!(check::commit(outcome, &input, &out).is_ok());
     }
 }
-
 #[test]
 fn bootstrap_retains_instance_across_pending_short_and_error_responses() {
     let input = blank_in::<BootstrapIn>();

@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use busbar_contract::persistence::{
-    control, Address, AttemptId, Candidate, DatasetId, Decision, ExpectedValue, Failure, Mutation,
-    NamespaceId, PersistenceBackend, Predicate, PreparedCandidate, Read, ReadResult,
-    CANDIDATE_VERSION,
+    control, witness, Address, AttemptId, Candidate, DatasetId, Decision, ExpectedValue, Failure,
+    Mutation, NamespaceId, PersistenceBackend, Predicate, PreparedCandidate, Read, ReadResult,
+    CANDIDATE_VERSION, MAX_SLOTS,
 };
 use busbar_contract::Secret;
 
@@ -21,7 +21,7 @@ use super::{
     first_start::{self, Birth, FirstStart},
 };
 
-const NAMESPACE: NamespaceId = NamespaceId(*b"busbar.format1\0\0");
+const NAMESPACE: NamespaceId = witness::FORMAT_NAMESPACE;
 const KEY: &[u8] = b"active";
 const FORMAT: u32 = 1;
 
@@ -143,6 +143,8 @@ pub struct Startup {
     limits: Limits,
     initialize_empty: bool,
     phase: Phase,
+    /// Definitive CAS losses of Initialize or Register (STORE-TRANSACTIONS §2.3).
+    lost: usize,
 }
 
 impl Startup {
@@ -158,7 +160,11 @@ impl Startup {
         {
             return Err(Error::Authority);
         }
-        if limits.pending_operations == 0 || limits.scan_items == 0 || limits.scan_bytes == 0 {
+        if limits.pending_operations == 0
+            || limits.pending_operations > MAX_SLOTS as usize
+            || limits.scan_items == 0
+            || limits.scan_bytes == 0
+        {
             return Err(Error::Access(AccessError::InvalidLimits));
         }
         Ok(Self {
@@ -166,6 +172,7 @@ impl Startup {
             limits,
             initialize_empty,
             phase: Phase::Inspect,
+            lost: 0,
         })
     }
 
@@ -175,13 +182,23 @@ impl Startup {
         match self.phase.clone() {
             Phase::Inspect => self.inspect().await?,
             Phase::Initialize(attempt) => {
-                if let Some(progress) = decided(&attempt).await? {
+                // A definitive loss (a peer initialized first) re-inspects; the lost
+                // candidate can never apply (readback rows d/e are final).
+                let result = attempt.submit().await;
+                if is_loss(&result, true) {
+                    return self.lose();
+                }
+                if let Some(progress) = settle(result)? {
                     return Ok(progress);
                 }
                 self.phase = Phase::Inspect;
             }
             Phase::Register(manifest, authority, birth, attempt) => {
-                if let Some(progress) = decided(&attempt).await? {
+                let result = attempt.submit().await;
+                if is_loss(&result, false) {
+                    return self.lose();
+                }
+                if let Some(progress) = settle(result)? {
                     return Ok(progress);
                 }
                 self.phase = Phase::Attach(manifest, authority, birth);
@@ -330,6 +347,11 @@ impl Startup {
                 if values[2].is_some() {
                     return Err(Error::Corrupt);
                 }
+                // A FENCED Initialize that left no dataset root was not a peer's win: the
+                // dataset holds foreign rows, which the store refuses to initialize.
+                if self.lost > 0 {
+                    return Err(Error::Backend(Failure::Refused));
+                }
                 if !self.initialize_empty {
                     return Err(Error::InitializationNotAllowed);
                 }
@@ -386,6 +408,12 @@ impl Startup {
                     .as_ref()
                     .map(|bytes| Birth::decode(bytes.expose(&seal), info.dataset))
                     .transpose()?;
+                // Interim rule until FIRST-START-TAKEOVER lands: after a definitive loss,
+                // an unpublished birth record (owned or not) builds no candidate. The
+                // loser refuses boot in this boot, writing nothing and retiring nobody.
+                if self.lost > 0 && birth.as_ref().is_some_and(|birth| !birth.published) {
+                    return Err(Error::Conflict);
+                }
                 let mut predicates = vec![
                     exact(root_address(), root_bytes.expose(&seal).clone()),
                     exact(manifest_address(), bytes.expose(&seal).clone()),
@@ -469,10 +497,21 @@ impl Startup {
         }
     }
 
+    /// Every Startup commit is self-fenced: Initialize and Register by their fresh
+    /// writer row (A), writer transitions by the writer row (E).
     fn attempt(&self, candidate: PreparedCandidate) -> Result<Arc<Attempt>, Error> {
-        Attempt::new(candidate, self.backend.clone())
+        Attempt::proven(candidate, self.backend.clone())
             .map(Arc::new)
             .map_err(|_| Error::Authority)
+    }
+
+    fn lose(&mut self) -> Result<Progress, Error> {
+        self.lost += 1;
+        if self.lost > self.limits.conflict_retries {
+            return Err(Error::Conflict);
+        }
+        self.phase = Phase::Inspect;
+        Ok(Progress::Advanced)
     }
 }
 
@@ -495,7 +534,20 @@ fn writer_transition(session: &Session, next: control::Writer) -> Result<Prepare
 }
 
 pub(super) async fn decided(attempt: &Attempt) -> Result<Option<Progress>, Error> {
-    match attempt.submit().await {
+    settle(attempt.submit().await)
+}
+
+/// A definitive CAS loss: a peer's commit won, so this candidate never applies.
+/// A FENCED Register means the registrar is retired, which stays `Err(Authority)`.
+fn is_loss(result: &SubmitResult, initialize: bool) -> bool {
+    matches!(result, SubmitResult::Decided(decision) if matches!(
+        decision.as_ref(),
+        Decision::ConditionConflict
+    ) || (initialize && matches!(decision.as_ref(), Decision::Fenced)))
+}
+
+fn settle(result: SubmitResult) -> Result<Option<Progress>, Error> {
+    match result {
         SubmitResult::Decided(value) => match value.as_ref() {
             Decision::Applied(_) => Ok(None),
             Decision::ConditionConflict => Err(Error::Conflict),

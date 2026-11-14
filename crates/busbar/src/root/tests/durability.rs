@@ -118,7 +118,11 @@ impl NativeFixture {
         })
         .unwrap();
         assert!(matches!(
-            self.faults.actual.commit(candidate).await.unwrap(),
+            self.faults
+                .actual
+                .commit(candidate, test_commit_key())
+                .await
+                .unwrap(),
             Decision::Applied(_)
         ));
     }
@@ -566,4 +570,14 @@ async fn unreadable_or_malformed_registry_cannot_report_complete_verification() 
         "{:?}",
         walk.findings
     );
+}
+
+/// A direct test commit: a slotted key minted with the test-only seal.
+fn test_commit_key() -> busbar_contract::persistence::CommitKey {
+    busbar_contract::persistence::CommitKey::slotted(
+        0,
+        1,
+        &busbar_contract::caps::SlotSeal::acquire_for_tests(),
+    )
+    .expect("slot 0, seq 1 is a valid key")
 }

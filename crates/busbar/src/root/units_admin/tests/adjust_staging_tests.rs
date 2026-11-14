@@ -97,7 +97,11 @@ impl PersistenceBackend for FaultStore {
             self.inner.scan(request).await
         })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let correction = candidate.candidate().mutations.iter().any(|m| {
                 matches!(m, Mutation::Put { address, .. } if address.key.first() == Some(&b'U'))
@@ -105,7 +109,7 @@ impl PersistenceBackend for FaultStore {
             if correction {
                 self.submissions.fetch_add(1, Ordering::SeqCst);
             }
-            let decision = self.inner.commit(candidate).await?;
+            let decision = self.inner.commit(candidate, key).await?;
             if correction && self.lose_reply.swap(false, Ordering::SeqCst) {
                 assert!(
                     matches!(decision, Decision::Applied { .. }),
