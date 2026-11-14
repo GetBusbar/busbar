@@ -1180,16 +1180,22 @@ async fn run(
     )
     .unwrap_or_else(|error| die(format!("effective connector boot configuration: {error}")));
 
-    if let Some(doc) = overlay_doc {
-        config::overlay::merge_into(&mut cfg, doc);
-    }
-
-    config_validate::judge_quietly(&cfg).unwrap_or_else(|errors| {
-        die(format!(
-            "effective configuration errors: {}",
-            errors.join("; ")
-        ))
-    });
+    // Semantic validation of the effective configuration runs once per boot. Ordinarily that is
+    // inside the application build the startup continuation drives (`appbuild` ->
+    // `config_validate::check_with`), after the export sinks open and before any Store
+    // publication or listener. A fresh-instance transition already judged its effective
+    // configuration (the same deploy, definitions and overlay) before writing its Store baseline:
+    // the application is built from that judged value and consumes that one result, so neither the
+    // pass nor its warnings repeat.
+    let (cfg, judged) = match judged_effective {
+        Some((effective, judged)) => (effective, Some(judged)),
+        None => {
+            if let Some(doc) = overlay_doc {
+                config::overlay::merge_into(&mut cfg, doc);
+            }
+            (cfg, None)
+        }
+    };
 
     let blocked =
         config_validate::metadata_denylist_entries().len() + cfg.blocked_metadata_hosts.len();
