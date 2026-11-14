@@ -141,6 +141,18 @@ impl<T: Source> Registered<T> {
             }
         }
     }
+
+    /// The sized form of [`Registered::poll_io`]. IOCP is level-triggered (tokio issue 5866): a
+    /// short transfer proves nothing, so this is exactly `poll_io`.
+    pub fn poll_io_sized(
+        &self,
+        dir: Direction,
+        _want: usize,
+        cx: &mut Context<'_>,
+        op: impl FnMut(&T) -> io::Result<usize>,
+    ) -> Poll<io::Result<usize>> {
+        self.poll_io(dir, cx, op)
+    }
 }
 
 impl Registered<TcpListener> {
