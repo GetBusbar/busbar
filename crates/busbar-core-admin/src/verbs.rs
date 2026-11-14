@@ -41,7 +41,7 @@
 //! and nothing in the type system would have asked it not to.
 
 use crate::governance::{Governance, GovernanceError};
-use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
+use crate::rate::{MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
 use crate::verb::{KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, NEW_VERBS};
 use busbar_contract::caps::{AdminVerb, Grant};
@@ -56,22 +56,15 @@ pub struct Verbs<G: Governance, S: Store + ?Sized> {
     governance: G,
 
     store: Option<Arc<S>>,
-    config_class_rules: &'static [ConfigClassRule],
 
     limiter: Arc<MutationLimiter>,
 }
 
 impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
-    pub fn new(
-        governance: G,
-        store: Option<Arc<S>>,
-        config_class_rules: &'static [ConfigClassRule],
-        limiter: Arc<MutationLimiter>,
-    ) -> Self {
+    pub fn new(governance: G, store: Option<Arc<S>>, limiter: Arc<MutationLimiter>) -> Self {
         Verbs {
             governance,
             store,
-            config_class_rules,
             limiter,
         }
     }
@@ -86,7 +79,7 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         if !granted.allows(required_scope(verb)) {
             return Err(Refusal::new(RefusalStep::Admit, ReasonCode::Unauthorized));
         }
-        let class = MutationClass::for_verb(verb, self.config_class_rules);
+        let class = MutationClass::for_verb(verb);
         if class == MutationClass::Forbidden || !NEW_VERBS.contains(&verb) {
             return Ok(class);
         }

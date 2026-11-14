@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::governance::{Governance, GovernanceError};
-use crate::rate::CONFIG_CLASS_RULES;
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::Verbs;
 use busbar_contract::caps::{AdminVerb, Grant};
@@ -17,7 +16,6 @@ fn make_verbs<G: Governance>(gov: G) -> Verbs<G, RecordingStore> {
     Verbs::new(
         gov,
         Some(std::sync::Arc::new(RecordingStore::new())),
-        CONFIG_CLASS_RULES,
         node_limiter(),
     )
 }
@@ -224,7 +222,7 @@ async fn amend_rate_history_is_a_full_scope_new_verb() {
         VerbScope::Full
     );
     assert_eq!(
-        MutationClass::for_verb(KernelVerb::AmendRateHistory, CONFIG_CLASS_RULES),
+        MutationClass::for_verb(KernelVerb::AmendRateHistory),
         MutationClass::Crud
     );
 
@@ -347,7 +345,6 @@ async fn rate_limit_is_enforced_across_execute_calls() {
         Verbs::new(
             FakeGovernance::new(),
             Some(std::sync::Arc::new(RecordingStore::new())),
-            CONFIG_CLASS_RULES,
             std::sync::Arc::clone(&limiter),
         )
     };
@@ -478,14 +475,14 @@ async fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
 async fn a_ledger_view_never_spends_a_mutation_slot() {
     for verb in crate::verb::LEDGER_VERBS {
         assert_eq!(
-            crate::rate::MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
+            crate::rate::MutationClass::for_verb(*verb),
             crate::rate::MutationClass::Forbidden,
             "{verb:?} is classified as a mutation"
         );
     }
 
     assert_ne!(
-        crate::rate::MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
+        crate::rate::MutationClass::for_verb(KernelVerb::Adjust),
         crate::rate::MutationClass::Forbidden
     );
 }
@@ -576,14 +573,14 @@ async fn an_audit_chain_read_requires_what_the_legacy_audit_read_requires() {
 async fn an_audit_chain_read_never_spends_a_mutation_slot() {
     for verb in crate::verb::AUDIT_VERBS {
         assert_eq!(
-            crate::rate::MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
+            crate::rate::MutationClass::for_verb(*verb),
             crate::rate::MutationClass::Forbidden,
             "{verb:?} is classified as a mutation"
         );
     }
 
     assert_ne!(
-        crate::rate::MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
+        crate::rate::MutationClass::for_verb(KernelVerb::Adjust),
         crate::rate::MutationClass::Forbidden
     );
 }
@@ -751,7 +748,6 @@ fn recovery_verbs() -> Verbs<FakeGovernance, RecordingStore> {
     Verbs::new(
         FakeGovernance::new(),
         Some(std::sync::Arc::new(RecordingStore::new())),
-        CONFIG_CLASS_RULES,
         node_limiter(),
     )
 }
@@ -789,12 +785,8 @@ async fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
 #[tokio::test]
 async fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() {
     let admin = admin();
-    let v: Verbs<FakeGovernance, RecordingStore> = Verbs::new(
-        FakeGovernance::new(),
-        None,
-        CONFIG_CLASS_RULES,
-        node_limiter(),
-    );
+    let v: Verbs<FakeGovernance, RecordingStore> =
+        Verbs::new(FakeGovernance::new(), None, node_limiter());
     let refused = [
         v.chain_break(&admin, "alice", VerbScope::Full, 0).await,
         v.store_restore(&admin, "alice", VerbScope::Full, 0, "backup-1")

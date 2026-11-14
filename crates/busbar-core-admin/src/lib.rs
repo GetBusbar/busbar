@@ -26,7 +26,6 @@ pub mod versions;
 
 pub use admin_state::{AdminState, AppAdmin};
 pub use governance::{Governance, GovernanceError};
-pub use rate::ConfigClassRule;
 pub use refusal::{ReasonCode, Refusal, RefusalStep};
 pub use verb::{
     verb_name, KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
