@@ -41,7 +41,6 @@ impl StreamInput {
 }
 
 impl StreamRecord {
-    #[allow(dead_code)]
     pub(crate) fn from_parts(
         scope: String,
         seq: u64,

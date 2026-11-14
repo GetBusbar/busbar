@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 #![cfg(unix)]
-#![allow(dead_code)]
 
 #[path = "../common/mod.rs"]
 mod common;

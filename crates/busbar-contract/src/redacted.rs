@@ -75,7 +75,6 @@ macro_rules! own_seal {
 
         impl $name {
             /// The crate's seal: constructed only inside this crate.
-            #[allow(dead_code)]
             pub(crate) const fn here() -> Self {
                 Self(())
             }

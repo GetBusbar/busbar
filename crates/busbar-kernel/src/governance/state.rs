@@ -360,7 +360,6 @@ impl GovState {
         ))
     }
 
-    #[allow(dead_code)]
     pub fn signing_secret(&self) -> Option<[u8; 32]> {
         self.signing_material().map(|m| m.signer.secret_bytes())
     }

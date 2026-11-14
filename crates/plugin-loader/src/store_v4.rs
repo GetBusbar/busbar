@@ -307,10 +307,10 @@ impl LoadedPersistence {
             self.next_worker.fetch_add(1, Ordering::Relaxed) % self.dispatcher.workers().max(1);
         let ticket = self.dispatcher.mint(worker).ok_or(Failure::Overloaded)?;
         let _recycle = Recycle(&self.dispatcher, ticket);
-        let retained = Arc::new(Retained(
-            UnsafeCell::new(request),
-            Some(self._session.clone()),
-        ));
+        let retained = Arc::new(Retained {
+            cell: UnsafeCell::new(request),
+            _session: Some(self._session.clone()),
+        });
         let until = deadline();
         for attempt in 0..2 {
             let frame = retained.frame();
@@ -525,7 +525,10 @@ trait Request: Send + 'static {
     ) -> Result<Self::Value, ResponseError>;
 }
 
-struct Retained<R>(UnsafeCell<R>, #[allow(dead_code)] Option<Arc<Session>>);
+struct Retained<R> {
+    cell: UnsafeCell<R>,
+    _session: Option<Arc<Session>>,
+}
 // SAFETY: Only the caller accesses the request, before submission and after native
 // completion. The dispatcher retains ownership without accessing this cell, including
 // after caller cancellation; native code accesses only stable pointed-to allocations.
@@ -534,13 +537,13 @@ unsafe impl<R: Request> Send for Retained<R> {}
 unsafe impl<R: Request> Sync for Retained<R> {}
 impl<R: Request> Retained<R> {
     fn get(&self) -> &R {
-        unsafe { &*self.0.get() }
+        unsafe { &*self.cell.get() }
     }
     fn frame(&self) -> Frame<R::I, R::O> {
-        unsafe { &mut *self.0.get() }.frame()
+        unsafe { &mut *self.cell.get() }.frame()
     }
     fn grow(&self, items: u64, bytes: u64, limits: Limits) -> Result<(), ()> {
-        unsafe { &mut *self.0.get() }.grow(items, bytes, limits)
+        unsafe { &mut *self.cell.get() }.grow(items, bytes, limits)
     }
 }
 

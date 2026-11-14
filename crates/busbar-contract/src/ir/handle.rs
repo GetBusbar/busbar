@@ -128,9 +128,7 @@ pub mod handle_impl {
 /// names `Sealed`, and no `Box<dyn Any>` downcast is used.
 #[doc(hidden)]
 pub mod sealed {
-    #[allow(dead_code)]
     pub trait Sealed {}
 }
 
-#[allow(unused_imports)]
 pub use handle_impl::IrHandle;

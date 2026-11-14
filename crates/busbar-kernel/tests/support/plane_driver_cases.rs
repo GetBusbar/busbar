@@ -36,7 +36,6 @@ pub mod stat {
 
     pub const LAST_DISPOSITION: usize = 4;
 
-    #[allow(dead_code)]
     pub const DRIVES: usize = 5;
 
     pub const UNIT: usize = 6;
@@ -101,7 +100,6 @@ impl Far {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn naming_its_pool(mut self) -> Self {
         self.names_its_pool = true;
         self
@@ -114,7 +112,6 @@ impl Far {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn held(members: &[&'static str]) -> Self {
         Far {
             held: true,
@@ -126,12 +123,10 @@ impl Far {
         self.sent.lock().unwrap().clone()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn picks(&self) -> u32 {
         self.picks.load(Ordering::SeqCst)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn written(&self) -> Vec<(Vec<u8>, bool)> {
         self.written.lock().unwrap().clone()
     }
@@ -411,7 +406,6 @@ pub(crate) struct Book {
 }
 
 impl Book {
-    #[allow(dead_code)]
     pub(crate) fn forwarding(money: Arc<dyn MoneySeam>) -> Self {
         Book {
             forward: Some(money),
@@ -475,7 +469,6 @@ impl Book {
         self.served.lock().unwrap().clone()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn laned(&self) -> Vec<String> {
         self.laned.lock().unwrap().clone()
     }

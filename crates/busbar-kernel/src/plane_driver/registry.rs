@@ -500,7 +500,6 @@ plane_behaviour! {
     /// here, so the document can never silently omit a mounted verb.
     // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test; a
     // default `--no-default-features` build has neither, so the field is genuinely unread there.
-    #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
     openapi: Option<fn(&PlaneDecl) -> serde_json::Value>,
 
     /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of

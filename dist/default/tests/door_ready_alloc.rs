@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 #[path = "fixtures/plane_driver_test_plane.rs"]
-#[allow(dead_code)]
 mod plane;
 
 use std::alloc::{GlobalAlloc, Layout, System};

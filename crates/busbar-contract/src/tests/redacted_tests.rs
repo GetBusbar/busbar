@@ -39,7 +39,6 @@ fn debug_display_and_to_string_are_the_1_5_5_bytes() {
 #[test]
 fn embedded_in_a_derived_debug_struct_is_redacted() {
     #[derive(Debug)]
-    #[allow(dead_code)]
     struct Holder {
         id: String,
         token: Secret<String>,

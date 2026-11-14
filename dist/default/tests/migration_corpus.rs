@@ -26,8 +26,6 @@
 //! ADDING A RELEASE: drop its `config.yaml` in as `v<x.y.z>_config.yaml`. No code change; the test
 //! discovers the directory. `tests/migration-corpus/refresh.sh` regenerates the whole set from tags.
 
-#![cfg_attr(not(linked_operator_auth), allow(dead_code))]
-
 mod common;
 
 use std::path::{Path, PathBuf};

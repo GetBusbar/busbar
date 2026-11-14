@@ -1310,7 +1310,6 @@ mod ticketed {
         served: AtomicU64,
     }
 
-    #[allow(unused_variables)]
     impl HostServices for SlowSecrets {
         fn now(&self) -> Reading {
             panic!("unexpected host service in the records-secret scheduling boundary: now")

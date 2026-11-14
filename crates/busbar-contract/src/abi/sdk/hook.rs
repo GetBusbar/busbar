@@ -1059,7 +1059,7 @@ impl<P: HookOpen> Life for HookLife<P> {
 /// A hook op: `$in`/`$out` over `Held<HookLife<P>>`, its body handed the held state.
 macro_rules! hook_op {
     ($(#[$m:meta])* $name:ident, $in:ty, $out:ty,
-     |$held:ident, $i:ident, $input:ident, $o:ident| $body:expr) => {
+     |$held:ident, $i:ident, $input:ident, $o:pat_param| $body:expr) => {
         $(#[$m])*
         #[derive(Debug)]
         pub struct $name<P>(PhantomData<P>);
@@ -1071,7 +1071,7 @@ macro_rules! hook_op {
             fn call(
                 $i: Instance<'_, Held<HookLife<P>>>,
                 $input: Lent<'_, $in>,
-                #[allow(unused_mut)] mut $o: Out<'_, $out>,
+                $o: Out<'_, $out>,
             ) -> Outcome {
                 let Some($held) = $i.get() else {
                     return Outcome::Fault;
@@ -1093,7 +1093,7 @@ hook_op!(
     Decide,
     DecideIn,
     DecideOut,
-    |held, i, input, out| {
+    |held, i, input, mut out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
@@ -1135,7 +1135,7 @@ hook_op!(
     Transform,
     DecideIn,
     TransformOut,
-    |held, i, input, out| {
+    |held, i, input, mut out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
@@ -1177,7 +1177,7 @@ hook_op!(
     Notify,
     NotifyIn,
     OutHead,
-    |held, i, input, out| {
+    |held, i, input, mut out| {
         if check_notify_in(&input).is_err() {
             return Outcome::Fault;
         }
@@ -1206,7 +1206,7 @@ hook_op!(
     Configure,
     ConfigureIn,
     ConfigureOut,
-    |held, _i, input, out| {
+    |held, _i, input, mut out| {
         let bytes = input.field(|i| &i.settings).bytes();
         let bytes = if bytes.is_empty() { &b"{}"[..] } else { bytes };
         let settings = match serde_json::from_slice::<JsonValue>(bytes) {
@@ -1240,7 +1240,7 @@ hook_op!(
     Status,
     InHead,
     StatusOut,
-    |held, _i, _input, out| {
+    |held, _i, _input, mut out| {
         // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
         let status = JsonValue(held.life().hook().status());
         let mut bytes = crate::abi::sdk::secret_bytes::SecretBytes::default();
@@ -1260,7 +1260,7 @@ hook_op!(
     Describe,
     InHead,
     DescribeOut,
-    |held, _i, _input, out| {
+    |held, _i, _input, mut out| {
         // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
         let bytes = match serde_json::to_vec(&held.life().hook().describe()) {
             Ok(bytes) => bytes,

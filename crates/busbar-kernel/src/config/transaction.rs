@@ -304,7 +304,6 @@ impl<'a> Txn<'a> {
         Outcome::swap(next, value)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn done<T, E>(&self, value: T) -> Outcome<T, E> {
         Outcome::Value(value)
     }

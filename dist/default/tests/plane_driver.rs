@@ -5,7 +5,6 @@
 mod common;
 
 #[path = "fixtures/plane_driver_test_plane.rs"]
-#[allow(dead_code)]
 mod plane;
 
 #[path = "../../../crates/busbar-kernel/tests/support/plane_driver_cases.rs"]

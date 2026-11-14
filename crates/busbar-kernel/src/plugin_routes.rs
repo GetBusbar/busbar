@@ -219,7 +219,6 @@ impl PluginRouteTable {
         routes
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn empty() -> Self {
         Self::default()
     }

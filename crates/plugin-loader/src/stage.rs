@@ -53,16 +53,23 @@ fn parent_is_trusted(parent: &std::path::Path) -> Result<std::fs::Metadata, Stri
     Ok(meta)
 }
 
+/// A directory builder that creates owner-only (0700) directories on unix.
+#[cfg(unix)]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    let mut builder = std::fs::DirBuilder::new();
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+}
+
+/// Windows has no mode bits; the directory inherits its parent's ACL.
+#[cfg(not(unix))]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    std::fs::DirBuilder::new()
+}
+
 fn ensure_staging_parent(temp_base: &std::path::Path) -> Result<PathBuf, String> {
     let parent = staging_parent_in(temp_base);
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
-    }
-    match builder.create(&parent) {
+    match private_dir_builder().create(&parent) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => {
@@ -144,14 +151,7 @@ fn ensure_staging_dir(state: &mut StagingState) -> Result<PathBuf, String> {
     let name = format!("{STAGING_PREFIX}{}-{}", std::process::id(), random_hex(8)?);
     let dir = ensure_staging_parent(&std::env::temp_dir())?.join(name);
 
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
-    }
-    builder.create(&dir).map_err(|e| {
+    private_dir_builder().create(&dir).map_err(|e| {
         format!(
             "cannot create private plugin staging dir {}: {e}",
             dir.display()

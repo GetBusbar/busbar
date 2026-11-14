@@ -1115,7 +1115,6 @@ impl AuthMiddleware {
         &self.carriers
     }
 
-    #[allow(dead_code)]
     pub fn validate_token(&self, token: Option<&str>) -> bool {
         !matches!(self.run_chain(token), ChainVerdict::Denied)
     }

@@ -369,7 +369,6 @@ mod legacy_refusals {
     }
     #[derive(Debug, Deserialize)]
     #[serde(deny_unknown_fields)]
-    #[allow(dead_code)]
     struct Rule {
         globs: Vec<String>,
         #[serde(default)]
@@ -444,7 +443,6 @@ mod actual_plane_legacy_grammar {
     }
     #[derive(Debug, Deserialize)]
     #[serde(deny_unknown_fields)]
-    #[allow(dead_code)]
     struct ModelCapabilities {
         models: Vec<String>,
         #[serde(default)]
