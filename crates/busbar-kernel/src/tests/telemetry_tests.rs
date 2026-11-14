@@ -937,7 +937,7 @@ fn phase_observations_follow_callsites_and_survive_reload_without_off_metrics_bu
         .request_family(model_plane_key(), protocol, "phase-pool")
         .unwrap()
         .producer_duration[0];
-    let mounted = first.mounted_duration["telemetry-mounted-phase"][0][0];
+    let mounted = first.mounted["telemetry-mounted-phase"][0].phase[0];
     assert!(!crate::snapshot::retaining());
     // Warm the legacy request counter bank; the new phase observation adds no allocation or
     // histogram-buffer lock/materialization while metrics are off.
