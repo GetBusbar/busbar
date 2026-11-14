@@ -45,10 +45,6 @@ pub mod correction;
 /// Shared logical operation fingerprints and replay results.
 pub mod dedupe;
 
-/// One host-record call in flight.
-pub type RecordCall<'a, T> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, RecordFailure>> + Send + 'a>>;
-
 /// Why a host-record call answered without its result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordFailure {

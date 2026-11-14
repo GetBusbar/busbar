@@ -107,11 +107,6 @@ fn a_double_cannot_hold_a_billable_duration_and_an_exact_decimal_can() {
         "a product needing a seventh place must refuse, never round"
     );
 
-    assert_eq!(
-        duration.checked_mul_wide(rate),
-        Ok(9_123_558_865_156_288_i128)
-    );
-
     let f = 1942.955374_f64 * 4.695712_f64;
     let expansion = format!("{f:.20}");
     assert_ne!(

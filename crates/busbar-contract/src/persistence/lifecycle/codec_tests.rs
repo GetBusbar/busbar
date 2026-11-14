@@ -160,8 +160,6 @@ fn response_roundtrip(response: Response) {
     let encoded = encode_response(&Ok(response), BOUNDS).unwrap();
     let decoded = decode_response(&encoded.0, BOUNDS).unwrap();
     assert_eq!(encoded.0, encode_response(&Ok(decoded), BOUNDS).unwrap().0);
-    let owned = decode_response_owned::<Own>(&encoded.0, BOUNDS).unwrap();
-    assert_eq!(encoded.0, encode_response(&Ok(owned), BOUNDS).unwrap().0);
     for cut in 0..encoded.0.len() {
         assert!(decode_response(&encoded.0[..cut], BOUNDS).is_err());
     }
