@@ -66,9 +66,6 @@ foldhash = { workspace = true }
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
 
-[target.'cfg(target_env = "musl")'.dependencies]
-tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] }
-
 [features]
 default = ["root-admin"]
 root-admin = ["dep:tower"]

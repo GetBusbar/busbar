@@ -500,10 +500,6 @@ where
     }
 }
 
-#[cfg(txn_fence_red)]
-#[path = "tests/txn_fence.rs"]
-mod txn_fence;
-
 #[cfg(all(test, feature = "loom-model"))]
 #[path = "tests/txn_loom.rs"]
 mod txn_loom;

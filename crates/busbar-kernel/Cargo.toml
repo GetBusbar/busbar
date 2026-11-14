@@ -30,7 +30,6 @@ tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "io-std", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_urlencoded = { workspace = true }
 url = { workspace = true }
 indexmap = { workspace = true }
 schemars = { workspace = true, optional = true }
@@ -44,7 +43,6 @@ futures = { workspace = true }
 bytes = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }
-http-body = { workspace = true }
 http-body-util = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["recency"] }
@@ -56,7 +54,6 @@ hex = { workspace = true }
 getrandom = { workspace = true }
 foldhash = { workspace = true }
 ed25519-dalek = { workspace = true }
-crc32fast = { workspace = true }
 async-trait = { workspace = true }
 arc-swap = { workspace = true }
 foldhash = { workspace = true }
