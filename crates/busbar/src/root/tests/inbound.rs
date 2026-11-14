@@ -897,3 +897,37 @@ mod close_tests;
 #[cfg(feature = "root-admin")]
 #[path = "operator_admission_identity.rs"]
 mod operator_admission_identity;
+
+/// UPG-A20: the models plane's doors carry the card qualifier `""` (`DoorFacts.plane`), and the
+/// served `/v1/models` catalogue passes that qualifier to `catalog_names`. It must list the models
+/// plane's catalogue (the fallback plane), not an empty set, and still honour the key's scope.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn models_plane_qualifier_lists_the_fallback_catalog() {
+    let (app, _config, _book) = app(true).await;
+    let fallback = busbar_kernel::plane_driver::dispatch::fallback_key();
+    assert!(
+        !fallback.is_empty(),
+        "the linked model plane is the registered fallback plane"
+    );
+    let open = busbar_kernel::governance::GovCtx::default();
+    let listed = busbar_kernel::endpoints::catalog_names(&app, &open, "");
+    assert!(
+        listed.iter().any(|name| name == "priced-context"),
+        "the models plane qualifier lists the configured model: {listed:?}"
+    );
+    assert_eq!(
+        listed,
+        busbar_kernel::endpoints::catalog_names(&app, &open, fallback),
+        "the models plane qualifier names the fallback plane's catalogue"
+    );
+    let scoped_to_nothing = busbar_kernel::governance::GovCtx {
+        key: Some(Arc::new(busbar_contract::records::VirtualKey {
+            allowed_scopes: Some(vec![]),
+            ..busbar_contract::records::VirtualKey::default()
+        })),
+    };
+    assert!(
+        busbar_kernel::endpoints::catalog_names(&app, &scoped_to_nothing, "").is_empty(),
+        "an explicit empty scope still lists nothing"
+    );
+}
