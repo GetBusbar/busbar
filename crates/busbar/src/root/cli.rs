@@ -301,43 +301,76 @@ fn ordinary_cli_flags() -> Option<i32> {
     }
 }
 
-pub(crate) fn validate_config_command() -> i32 {
-    let providers_override = providers_override();
-    let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
-    let safe_mode = safe_mode_requested(std::env::args());
+/// What `--validate`'s offline judgement established about the authored (unmigrated) bytes.
+pub(crate) struct Validated {
+    pub cfg: config::RootCfg,
+    /// The loaded documents; the overlay document has already been merged into `cfg`.
+    pub loaded: busbar_kernel::LoadedConfig,
+    /// `config_validate::check`'s registry.
+    pub registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+}
 
-    let mut loaded = match load_config_from_disk(
-        &config_path,
-        providers_override.as_deref(),
+/// Which step of `--validate`'s judgement refused, with the refusal it carried.
+#[derive(Debug)]
+pub(crate) enum ValidateRefusal {
+    /// `load_config_from_disk` refused the files.
+    Load(String),
+    /// `config::resolve` refused the loaded documents.
+    Resolve(Vec<String>),
+    /// `config_validate::check` refused the resolved configuration.
+    Check(config_validate::Refusal),
+}
+
+impl ValidateRefusal {
+    /// The banner `--validate` prints for this refusal.
+    pub(crate) fn diagnostic(&self) -> &'static busbar_contract::diagnostic::Diagnostic {
+        match self {
+            Self::Check(config_validate::Refusal::Plugins(_)) => {
+                &diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED
+            }
+            _ => &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
+        }
+    }
+
+    /// The text `--validate` prints after the banner.
+    pub(crate) fn detail(&self) -> String {
+        match self {
+            Self::Load(e) => e.clone(),
+            Self::Resolve(errs) => format!("config errors:\n  - {}", errs.join("\n  - ")),
+            Self::Check(config_validate::Refusal::Config(errs)) => {
+                format!("config validation failed:\n  - {}", errs.join("\n  - "))
+            }
+            Self::Check(config_validate::Refusal::Root(e)) => {
+                format!("config validation failed:\n  - {e}")
+            }
+            Self::Check(
+                config_validate::Refusal::Plugins(e) | config_validate::Refusal::Unresolved(e),
+            ) => e.clone(),
+        }
+    }
+}
+
+/// `--validate`'s offline judgement of the authored bytes: load, overlay, resolve, overlay merge
+/// and `config_validate::check`. Reads files only; never opens a Store or loads plugin code.
+pub(crate) fn validate_judged(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    safe_mode: bool,
+) -> Result<Validated, ValidateRefusal> {
+    let mut loaded = load_config_from_disk(
+        config_path,
+        providers_override,
         safe_mode,
         config::EnvSubst::Lenient,
-    ) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!(
-                "[error] {}: {e}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
-            );
-            return EXIT_FAILURE;
-        }
-    };
-    let providers_path = loaded.providers_path.clone();
+    )
+    .map_err(ValidateRefusal::Load)?;
     let unset_env_vars = loaded.unset_env_vars.clone();
 
     if let Some(doc) = loaded.overlay_doc.as_ref() {
         config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
     }
-    let mut cfg = match config::resolve(&loaded.deploy, &loaded.defs) {
-        Ok(c) => c,
-        Err(errs) => {
-            eprintln!(
-                "[error] {}: config errors:\n  - {}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
-                errs.join("\n  - ")
-            );
-            return EXIT_FAILURE;
-        }
-    };
+    let mut cfg =
+        config::resolve(&loaded.deploy, &loaded.defs).map_err(ValidateRefusal::Resolve)?;
 
     if let Some(doc) = loaded.overlay_doc.take() {
         config::overlay::merge_into(&mut cfg, doc);
@@ -345,7 +378,7 @@ pub(crate) fn validate_config_command() -> i32 {
 
     let destination_guard =
         |c: &config::RootCfg| crate::root::connector::guard_for(&c.destinations()).map(|_| ());
-    let registry = match config_validate::check(
+    let registry = config_validate::check(
         &cfg,
         config_validate::Check {
             plugins: &loaded.deploy.plugins,
@@ -354,38 +387,37 @@ pub(crate) fn validate_config_command() -> i32 {
             fetch: None,
             resolve_builtins: true,
         },
-    ) {
-        Ok(r) => r,
-        Err(config_validate::Refusal::Config(errs)) => {
+    )
+    .map_err(ValidateRefusal::Check)?;
+    Ok(Validated {
+        cfg,
+        loaded,
+        registry,
+    })
+}
+
+pub(crate) fn validate_config_command() -> i32 {
+    let providers_override = providers_override();
+    let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
+    let safe_mode = safe_mode_requested(std::env::args());
+
+    let Validated {
+        cfg,
+        loaded,
+        registry,
+    } = match validate_judged(&config_path, providers_override.as_deref(), safe_mode) {
+        Ok(v) => v,
+        Err(refusal) => {
             eprintln!(
-                "[error] {}: config validation failed:\n  - {}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
-                errs.join("\n  - ")
-            );
-            return EXIT_FAILURE;
-        }
-        Err(config_validate::Refusal::Root(e)) => {
-            eprintln!(
-                "[error] {}: config validation failed:\n  - {e}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
-            );
-            return EXIT_FAILURE;
-        }
-        Err(config_validate::Refusal::Plugins(e)) => {
-            eprintln!(
-                "[error] {}: {e}",
-                diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
-            );
-            return EXIT_FAILURE;
-        }
-        Err(config_validate::Refusal::Unresolved(e)) => {
-            eprintln!(
-                "[error] {}: {e}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+                "[error] {}: {}",
+                refusal.diagnostic().banner(),
+                refusal.detail()
             );
             return EXIT_FAILURE;
         }
     };
+    let providers_path = loaded.providers_path.clone();
+    let unset_env_vars = loaded.unset_env_vars.clone();
 
     let Some(registry) = crate::root::loader::rows::registry_arc(registry) else {
         eprintln!(
