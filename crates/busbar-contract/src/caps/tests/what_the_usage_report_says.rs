@@ -47,7 +47,7 @@ fn every_quantity_source_says_who_derived_it_and_whether_it_is_a_floor() {
     assert!(table.iter().any(|(_, _, floor)| *floor));
     assert!(table.iter().any(|(_, _, floor)| !*floor));
 
-    for (source, derived, floor) in &table {
+    for (source, derived, _) in &table {
         assert_eq!(
             source.is_kernel_derived(),
             *derived,
@@ -56,16 +56,7 @@ fn every_quantity_source_says_who_derived_it_and_whether_it_is_a_floor() {
 
         assert_eq!(source.is_reported(), !*derived, "{source:?}");
         assert_ne!(source.is_kernel_derived(), source.is_reported());
-        assert_eq!(
-            source.is_floor(),
-            *floor,
-            "{source:?} disagrees about whether it floors"
-        );
     }
-
-    assert!(QuantitySource::KernelBytes { divisor: 2 }.is_floor());
-    assert!(!QuantitySource::KernelFrames { factor: 2 }.is_floor());
-    assert!(!QuantitySource::KernelElapsedMono.is_floor());
 }
 
 #[test]

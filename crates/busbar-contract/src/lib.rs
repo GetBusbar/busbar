@@ -107,8 +107,8 @@ pub type Millis = u64;
 pub use bounded::{
     BoundedVec, FactValue, Facts, FactsExhausted, Ir, Labels, Overflow, PlaneAlloc,
     PlaneAllocBudget, ScratchBytes, SlabBytes, Span, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS,
-    MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
-    MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES, SCRATCH_BASE_BYTES,
+    MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
+    SCRATCH_BASE_BYTES,
 };
 pub use count::{
     read_count, read_count_bytes, Count, CountError, COUNT_SCALE, MAX_ACROSS_A_64_BIT_COLUMN,
@@ -138,10 +138,7 @@ pub use redacted::{constant_time_eq, sha256_hex, OwnerSeal, Secret};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
-pub use unit::{
-    AbortBy, AdmitFacts, AuditFacts, FailureReason, FinishClass, LegResult, Origin, Refusal,
-    RefusalReason, ResourceLocator, ScopeFacts, Step, Unit, UnitEnd, UsageLocator, UsageLocators,
-};
+pub use unit::{AuditFacts, FinishClass, RefusalReason, ResourceLocator, ScopeFacts};
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,

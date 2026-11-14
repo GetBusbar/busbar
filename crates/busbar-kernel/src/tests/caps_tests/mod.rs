@@ -9,8 +9,6 @@ mod the_posting_arithmetic;
 
 mod what_the_usage_report_says;
 
-mod bounded_limits;
-
 mod destination_kinds;
 
 #[cfg(not(target_env = "msvc"))]

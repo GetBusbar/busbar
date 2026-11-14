@@ -125,52 +125,6 @@ fn the_two_byte_handles_do_what_they_say() {
     assert!(inverted.is_empty());
 }
 
-/// A plane may name two places for the response ceiling, and the FIRST that resolves is the one.
-#[test]
-fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
-    use busbar_contract::bounded::{BoundedVec, Ir, MAX_RESPONSE_PTRS};
-    use busbar_contract::grammar::{ArrivalLocation, Location};
-    use busbar_contract::unit::AdmitFacts;
-
-    assert_eq!(MAX_RESPONSE_PTRS, 2);
-
-    let older = Location::Arrival(ArrivalLocation::FirstFrameJsonPointer("/max_tokens"));
-    let newer = Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
-        "/max_completion_tokens",
-    ));
-    let mut ptrs: BoundedVec<Location, MAX_RESPONSE_PTRS> = BoundedVec::new();
-    ptrs.push(older).expect("the first fits");
-    ptrs.push(newer).expect("the second fits");
-    ptrs.push(older).expect_err("a third does not");
-
-    let facts = AdmitFacts {
-        max_response_ptrs: ptrs,
-        ..AdmitFacts::default()
-    };
-
-    let only_newer = br#"{"max_completion_tokens":256}"#;
-    let ir = Ir::new(
-        only_newer,
-        &[("/max_completion_tokens", Span { start: 25, end: 28 })],
-    );
-    assert_eq!(facts.max_response_bytes(&ir), Some(&b"256"[..]));
-
-    let both = br#"{"max_tokens":1,"max_completion_tokens":2}"#;
-    let ir = Ir::new(
-        both,
-        &[
-            ("/max_tokens", Span { start: 14, end: 15 }),
-            ("/max_completion_tokens", Span { start: 39, end: 40 }),
-        ],
-    );
-    assert_eq!(facts.max_response_bytes(&ir), Some(&b"1"[..]));
-
-    let ir = Ir::new(b"{}", &[]);
-    assert_eq!(facts.max_response_bytes(&ir), None);
-
-    assert_eq!(AdmitFacts::default().max_response_bytes(&ir), None);
-}
-
 /// An arena that leaks, because a span table handed back from `spans::resolve` borrows the arena
 struct LeakPlaneAlloc;
 
