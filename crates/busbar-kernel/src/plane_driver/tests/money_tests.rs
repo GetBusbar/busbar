@@ -2585,3 +2585,100 @@ async fn host_measurement_request_cancellation_and_scope_drop_revoke_pending_aut
     );
     money.settle_end(unit, 200);
 }
+
+/// Durable unit custody for the UPG-H2 case: the checkpoint path, not the ordinary bill.
+#[derive(Default)]
+struct HeldCheckpoints(std::sync::Mutex<Vec<crate::governance::unit_checkpoint::UnitCheckpoint>>);
+#[async_trait::async_trait]
+impl crate::governance::unit_checkpoint::UnitCheckpointSink for HeldCheckpoints {
+    async fn persist(
+        &self,
+        snapshot: &crate::governance::unit_checkpoint::UnitCheckpoint,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        snapshot.validate()?;
+        let mut held = self.0.lock().unwrap();
+        held.retain(|kept| kept.id != snapshot.id);
+        held.push(snapshot.clone());
+        Ok(())
+    }
+    async fn remove(
+        &self,
+        snapshot: &crate::governance::unit_checkpoint::UnitCheckpoint,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.0.lock().unwrap().retain(|kept| kept.id != snapshot.id);
+        Ok(())
+    }
+    async fn replay(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<
+        Vec<crate::governance::unit_checkpoint::UnitCheckpoint>,
+    > {
+        Ok(self.0.lock().unwrap().clone())
+    }
+}
+
+#[derive(Default)]
+struct HeldRecovery(std::sync::Mutex<Vec<crate::governance::recovery::RecoveryEvent>>);
+#[async_trait::async_trait]
+impl crate::governance::recovery::RecoverySink for HeldRecovery {
+    async fn persist(
+        &self,
+        event: &crate::governance::recovery::RecoveryEvent,
+    ) -> Result<(), crate::governance::recovery::RecoveryError> {
+        let mut held = self.0.lock().unwrap();
+        if !held.contains(event) {
+            held.push(event.clone());
+        }
+        Ok(())
+    }
+    async fn replay(
+        &self,
+    ) -> Result<
+        Vec<crate::governance::recovery::RecoveryEvent>,
+        crate::governance::recovery::RecoveryError,
+    > {
+        Ok(self.0.lock().unwrap().clone())
+    }
+}
+
+/// UPG-H2: a pool 503 ends the unit before any member binds its lane. Its terminal checkpoint
+/// (lane `""`, plane fee units only) must leave the key and its group priced, not LaneUnpriced.
+#[tokio::test]
+async fn a_laneless_failed_unit_checkpoint_leaves_the_key_and_group_priced() {
+    let r = rig_with(Some(1_000), 5, ExhaustionMode::FinishUnit, plane_fees()).await;
+    r.gov
+        .attach_recovery_sink(Arc::new(HeldRecovery::default()))
+        .await
+        .unwrap();
+    r.gov
+        .attach_unit_checkpoint_sink(Arc::new(HeldCheckpoints::default()))
+        .await
+        .unwrap();
+    assert!(r.gov.unit_checkpoints_enabled());
+    let unit = UnitKey::new(2);
+    let grant = Arc::new(r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted"));
+    r.money.open_admitted(
+        unit,
+        UnitMoney {
+            lane: String::new(),
+            ..r.unit.clone()
+        },
+        grant,
+    );
+    r.money.settle_end_as(unit, ended(503, false));
+    let key = r
+        .gov
+        .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .await
+        .expect("the key's usage read prices after a lane-less failed unit");
+    assert_eq!(
+        (key.requests, key.spend_cents),
+        (1, 0),
+        "the failure is counted and its fee refunded"
+    );
+    let (_, group_spend) = group_month(&r, NOW).await;
+    assert_eq!(group_spend, 0, "the group's bucket prices too");
+    r.gov
+        .try_admit(&r.cost, &r.key, "", NOW)
+        .expect("the group is not refused as exhausted");
+}

@@ -336,7 +336,7 @@ impl GovState {
             .ledger()
             .get_usage_pair(bucket_id, &era_bucket(bucket_id), window)
             .await?;
-        durable_cell(row, eras, window)
+        durable_cell(bucket_id, row, eras, window)
     }
 }
 

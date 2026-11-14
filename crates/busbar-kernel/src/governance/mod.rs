@@ -96,6 +96,44 @@ struct ModelCell {
     /// The last durably-ACKNOWLEDGED (flushed) unit counters — the additive-flush baseline.
     flushed: std::collections::BTreeMap<String, Count>,
     flushed_era: std::collections::BTreeMap<String, Count>,
+    /// Zero-sized: only [`ModelCell::new`] can build one, so only it writes a `ModelCell` literal.
+    seal: model_cell_seal::Seal,
+}
+
+mod model_cell_seal {
+    use super::Count;
+    use std::collections::BTreeMap;
+
+    /// Only `ModelCell::new` can build this, so only it can write a `ModelCell` literal.
+    #[derive(Clone, Copy)]
+    pub(super) struct Seal(());
+
+    impl super::ModelCell {
+        /// The only constructor. Refuses the poison shape: an unnamed lane with no count in
+        /// `cur`, `flushed` or `flushed_era` (it prices as LaneUnpriced and carries nothing).
+        /// A NAMED model with all-empty maps is allowed (dated-era split on load; correction
+        /// baselines). An unnamed lane WITH counts is still built: it must stay visible and fail
+        /// closed as LaneUnpriced, never be dropped (UPG-H2, lint `laneless-ledger-row`).
+        pub(super) fn new(
+            model: std::sync::Arc<str>,
+            era: super::RawRateEra,
+            cur: BTreeMap<String, Count>,
+            flushed: BTreeMap<String, Count>,
+            flushed_era: BTreeMap<String, Count>,
+        ) -> Option<Self> {
+            let empty = !super::has_units(&cur)
+                && !super::has_units(&flushed)
+                && !super::has_units(&flushed_era);
+            (!(model.is_empty() && empty)).then(|| super::ModelCell {
+                model,
+                era,
+                cur,
+                flushed,
+                flushed_era,
+                seal: Seal(()),
+            })
+        }
+    }
 }
 
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
@@ -360,21 +398,18 @@ impl BudgetCell {
                         }
                     }
                     None if has_units(&s.cur) => {
-                        cell.models.push(ModelCell {
-                            model: s.model.clone(),
-                            era: s.era,
-                            cur: std::collections::BTreeMap::new(),
-                            flushed: if dated {
-                                Default::default()
-                            } else {
-                                s.cur.clone()
-                            },
-                            flushed_era: if dated {
-                                s.cur.clone()
-                            } else {
-                                Default::default()
-                            },
-                        });
+                        let (flushed, flushed_era) = if dated {
+                            (Default::default(), s.cur.clone())
+                        } else {
+                            (s.cur.clone(), Default::default())
+                        };
+                        cell.models.extend(ModelCell::new(
+                            s.model.clone(),
+                            s.era,
+                            std::collections::BTreeMap::new(),
+                            flushed,
+                            flushed_era,
+                        ));
                         cell.dirty = true;
                     }
                     None => {}

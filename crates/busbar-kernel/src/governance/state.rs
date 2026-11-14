@@ -2203,6 +2203,7 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
 }
 
 pub(super) fn durable_cell(
+    bucket_id: &str,
     row: busbar_contract::records::UsageLedger,
     eras: busbar_contract::records::UsageLedger,
     window: u64,
@@ -2212,7 +2213,7 @@ pub(super) fn durable_cell(
     cell.billable_requests = row.billable_requests;
     cell.flushed_requests = row.requests;
     cell.flushed_billable_requests = row.billable_requests;
-    cell.models = durable_segments(row.models)?;
+    cell.models = durable_segments(bucket_id, row.models)?;
     let (mut fees, mut undated_fees) = (Vec::new(), row.billable_requests);
     for e in eras.models {
         for raw in e.usage_units.values() {
@@ -2293,14 +2294,13 @@ pub(super) fn durable_cell(
             cur.insert(unit, n);
         }
         let model = rest.model.clone();
-        let flushed = BTreeMap::new();
-        cell.models.push(ModelCell {
+        cell.models.extend(ModelCell::new(
             model,
             era,
             cur,
-            flushed,
-            flushed_era: BTreeMap::new(),
-        });
+            BTreeMap::new(),
+            BTreeMap::new(),
+        ));
     }
     for m in &mut cell.models {
         // busbar:expect(bp::clone_alloc, reason = "config: a cell is rebuilt from its durable row only for operator usage views, corrections and recovery")
@@ -2314,6 +2314,7 @@ pub(super) fn durable_cell(
 }
 
 fn durable_segments(
+    bucket_id: &str,
     rows: Vec<busbar_contract::records::ModelTokens>,
 ) -> RecordStoreResult<Vec<ModelCell>> {
     #[expect(
