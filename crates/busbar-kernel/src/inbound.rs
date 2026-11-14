@@ -2056,6 +2056,7 @@ impl Inbound {
     }
 
     fn units(&self) -> std::sync::MutexGuard<'_, HashMap<u64, UnitState>> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UnitsLock);
         self.units.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -2392,6 +2393,7 @@ impl Inbound {
         {
             return false;
         }
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UnitMac);
         (self.seals.mac)(&UnitTag {
             secret: u.secret,
             generation: u.generation,

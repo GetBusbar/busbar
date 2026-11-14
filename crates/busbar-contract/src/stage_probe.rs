@@ -28,17 +28,24 @@ pub enum Derive {
     CredentialExtract,
     /// The token-exchange endpoint's own credential read; no inbound unit exists there.
     ExchangeToken,
+    /// A presented unit reference's MAC checked by the kernel (SP-AU5).
+    UnitMac,
+    /// The kernel's inbound units table locked (SP-AU5). A lock, not a derivation, counted
+    /// here so one scope reads both.
+    UnitsLock,
 }
 
 impl Derive {
     /// Every id, in counter order.
-    pub const ALL: [Derive; 6] = [
+    pub const ALL: [Derive; 8] = [
         Derive::PlaneAdmission,
         Derive::AdmissionOnHead,
         Derive::HeaderMap,
         Derive::ServedHeaderMap,
         Derive::CredentialExtract,
         Derive::ExchangeToken,
+        Derive::UnitMac,
+        Derive::UnitsLock,
     ];
 
     #[cfg(feature = "stage-probe")]
@@ -50,6 +57,8 @@ impl Derive {
             Derive::ServedHeaderMap => 3,
             Derive::CredentialExtract => 4,
             Derive::ExchangeToken => 5,
+            Derive::UnitMac => 6,
+            Derive::UnitsLock => 7,
         }
     }
 }
