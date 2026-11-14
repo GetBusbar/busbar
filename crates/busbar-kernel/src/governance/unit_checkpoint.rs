@@ -411,3 +411,7 @@ impl GovState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "tests/unit_checkpoint_tests.rs"]
+mod tests;

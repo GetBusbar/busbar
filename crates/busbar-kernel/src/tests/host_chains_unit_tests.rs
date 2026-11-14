@@ -190,9 +190,15 @@ fn expired_retry_does_not_bypass_a_renewed_store_claim() {
         .append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
         .is_err());
 
-    for held in book.claimed.lock().unwrap().values_mut() {
+    let at = (
+        Arc::clone(&instance),
+        EV.as_str().to_string(),
+        SCOPE.to_string(),
+    );
+    assert!(book.claimed.lock().unwrap().update(&at, |held| {
         held.expires_at = 0;
-    }
+        Some(WallNs::from_secs(0))
+    }));
     assert!(book
         .append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
         .is_err());
@@ -443,4 +449,49 @@ fn a_scope_is_never_a_record_key() {
     assert_eq!(scope_of(b""), None);
     assert_eq!(scope_of(b"\xff"), None);
     assert_eq!(scope_of(&chain_key(b"t1", 1)), None);
+}
+
+thread_local! {
+    static NOW_S: std::cell::Cell<u64> = const { std::cell::Cell::new(1_000) };
+}
+
+fn clock() -> u64 {
+    NOW_S.with(std::cell::Cell::get)
+}
+
+fn position(i: usize) -> Position {
+    (Arc::from("inst"), EV.as_str().to_string(), format!("s{i}"))
+}
+
+/// C6: a claim check reads one position, whatever the book holds.
+#[test]
+fn holds_checks_one_position() {
+    let cost = |n: usize| {
+        let book = ChainBook::with_clock(clock);
+        for i in 0..n {
+            book.hold(&position(i), "t".into(), 2_000);
+        }
+        let before = book.claims_held().1;
+        assert_eq!(book.holds(&position(0), "t", 1_000), Some(2_000));
+        book.claims_held().1 - before
+    };
+    assert_eq!(cost(10), cost(POSITIONS_CAP));
+}
+
+/// C6 (7c): a full book past its deadlines drains with no appends, within
+/// ⌈POSITIONS_CAP / MAINT_PASS_UNITS⌉ + 1 passes, each within its budget.
+#[test]
+fn retained_claims_drain_to_idle() {
+    NOW_S.with(|c| c.set(1_000));
+    let book = ChainBook::with_clock(clock);
+    for i in 0..POSITIONS_CAP {
+        book.hold(&position(i), "t".into(), 1_001);
+    }
+    assert_eq!(book.claims_held().0, POSITIONS_CAP);
+    NOW_S.with(|c| c.set(1_001));
+    let passes = POSITIONS_CAP / expiry::MAINT_PASS_UNITS as usize + 1;
+    for _ in 0..passes {
+        assert!(book.drain() <= expiry::MAINT_PASS_UNITS + expiry::MAINT_SLICE_ITEMS as u32);
+    }
+    assert_eq!(book.claims_held().0, 0);
 }
