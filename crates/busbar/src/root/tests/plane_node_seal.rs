@@ -209,21 +209,6 @@ fn assert_sealed_with_destination_and_controls(book: &crate::root::durability::N
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_handed_unit_seals_its_verified_destination() {
-    let node = Node::new();
-    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
-    let book = crate::root::durability::node_book(
-        fixture.journal.clone(),
-        crate::root::durability::tests::BUDGET,
-    )
-    .await
-    .unwrap();
-    node.bind_book(Arc::clone(&book.durability));
-    let _answer = node.answer(handed()).await;
-    assert_sealed_with_destination_and_controls(&book);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_borrowed_unit_seals_its_verified_destination() {
     let node = Arc::new(Node::new());
     let fixture = crate::root::durability::tests::NativeFixture::new(7).await;

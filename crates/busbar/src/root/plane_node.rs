@@ -131,6 +131,10 @@ pub struct Node {
 
     mono: AtomicU64,
 
+    /// The clock a unit's arrival is read from: once, at the door, and every window it is
+    /// admitted and billed in is the one that reading names.
+    clock: Arc<dyn busbar_kernel::Clock>,
+
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
 
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
@@ -181,10 +185,20 @@ impl Node {
             marked: AtomicU64::new(0),
             lost: Mutex::new(HashMap::default()),
             mono: AtomicU64::new(0),
+            clock: Arc::new(busbar_kernel::WallClock),
 
             #[cfg(test)]
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
             ticket_custody: crate::root::serve::TicketCustody::new(),
+        }
+    }
+
+    /// A node whose arrivals are read from `clock`.
+    #[must_use]
+    pub fn with_clock(clock: Arc<dyn busbar_kernel::Clock>) -> Self {
+        Self {
+            clock,
+            ..Self::new()
         }
     }
 
@@ -215,10 +229,7 @@ impl Node {
     }
 
     pub fn arrived(&self) -> Arrived {
-        Arrived::at(
-            busbar_kernel::store::now_ms(),
-            self.mono.fetch_add(1, Ordering::AcqRel),
-        )
+        Arrived::at(self.clock.now(), self.mono.fetch_add(1, Ordering::AcqRel))
     }
 
     #[cfg(test)]
@@ -2190,7 +2201,7 @@ fn bind_node_book(
     node.bind_book(book);
 }
 
-#[cfg(all(test, linked_axis_node))]
+#[cfg(test)]
 #[path = "tests/plane_node.rs"]
 mod tests;
 

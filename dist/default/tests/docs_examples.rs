@@ -146,7 +146,7 @@ fn shipped_config_artifacts_validate() {
     }
 }
 
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_section_pools)]
 fn known_protocols() -> Vec<String> {
     let dir = fixture_dir("known-protocols");
     let providers = dir.join("providers.yaml");
@@ -183,7 +183,7 @@ fn known_protocols() -> Vec<String> {
         .collect()
 }
 
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_section_pools)]
 #[test]
 fn test_shipped_providers_catalog_valid() {
     let raw =
