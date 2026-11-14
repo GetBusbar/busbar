@@ -1432,6 +1432,8 @@ pub(in crate::governance) mod tests {
         adoption_attempts: Mutex<Vec<(RecoveryResolution, Vec<RecoveryEvent>)>>,
         confirmed_adoptions: Mutex<ConfirmedAdoptions>,
         lose_adoption_reply: AtomicBool,
+        pub(in crate::governance) persists: std::sync::atomic::AtomicUsize,
+        pub(in crate::governance) persisted_ops: Mutex<Vec<[u8; 16]>>,
     }
     #[async_trait::async_trait]
     impl RecoverySink for Journal {
@@ -1439,6 +1441,8 @@ pub(in crate::governance) mod tests {
             Ok(self.selected.lock().unwrap().clone())
         }
         async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+            self.persists.fetch_add(1, Ordering::Relaxed);
+            self.persisted_ops.lock().unwrap().push(event.operation_id);
             if self
                 .foreign
                 .lock()
@@ -1672,13 +1676,21 @@ pub(in crate::governance) mod tests {
         sink.fail_after_write.store(false, Ordering::Relaxed);
         book.keep(&event).await.unwrap();
         assert_eq!(book.selected(event.operation_id), Some(event.clone()));
+        let persisted = sink.persists.load(Ordering::Relaxed);
         book.keep(&event).await.unwrap();
         sink.fail_after_write.store(true, Ordering::Relaxed);
-        assert!(
-            book.keep(&event).await.is_err(),
-            "cached selected events still require Store authority confirmation"
+        book.keep(&event).await.unwrap();
+        assert_eq!(
+            sink.persists.load(Ordering::Relaxed),
+            persisted,
+            "an already selected event with nothing pending is not re-persisted"
         );
-        assert_eq!(sink.selected.lock().unwrap().as_slice(), &[event]);
+        assert_eq!(sink.selected.lock().unwrap().as_slice(), &[event.clone()]);
+        sink.fail_after_write.store(false, Ordering::Relaxed);
+        let next = successor(&event, RecoveryState::Applied);
+        book.keep(&next).await.unwrap();
+        assert_eq!(sink.persists.load(Ordering::Relaxed), persisted + 1);
+        assert_eq!(book.selected(event.operation_id), Some(next));
     }
 
     #[tokio::test]
@@ -1907,6 +1919,112 @@ pub(in crate::governance) mod tests {
         assert_eq!(
             gov.recovery_event(intent.operation_id).unwrap().state,
             RecoveryState::Settled
+        );
+    }
+
+    async fn settled_parent_with_handoffs(
+        store: &Arc<crate::persistence::facade::CoreStore>,
+        sink: &Arc<Journal>,
+        children: usize,
+        settle: bool,
+    ) -> (super::super::GovState, RecoveryEvent) {
+        use super::super::GovState;
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink.clone()).await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
+        let intent = raw_intent(&gov, 1).await;
+        store
+            .ledger()
+            .add_usage_batch_deduped(
+                busbar_contract::records::OpId(intent.operation_id),
+                &[(
+                    "recovery-bucket",
+                    0,
+                    super::super::UsageDelta {
+                        requests: 1,
+                        ..Default::default()
+                    },
+                )],
+            )
+            .await
+            .unwrap();
+        let mut custody: super::super::raw_recovery::UsageCustody =
+            serde_json::from_slice(&intent.payload).unwrap();
+        custody.plain = Default::default();
+        for index in 0..children {
+            let child = GovState::usage_recovery_child(
+                &format!("child-bucket-{index}"),
+                0,
+                super::super::ExactUsageDelta {
+                    requests: 7,
+                    ..Default::default()
+                },
+                super::super::ExactUsageDelta::default(),
+            )
+            .unwrap()
+            .unwrap();
+            custody.handoffs.push(child);
+        }
+        let applied = gov
+            .new_recovery_event(
+                intent.operation_id,
+                intent.kind,
+                intent.body_fingerprint,
+                RecoveryState::Applied,
+                intent.first_sent_at_ms,
+                serde_json::to_vec(&custody).unwrap(),
+            )
+            .unwrap();
+        gov.keep_recovery_event(&applied).await.unwrap();
+        if settle {
+            // The first pass selects and drives every child.
+            gov.resume_raw_recovery().await.unwrap();
+            gov.resume_raw_recovery().await.unwrap();
+        }
+        (gov, applied)
+    }
+
+    #[tokio::test]
+    async fn selected_parent_with_handoffs_is_not_repersisted() {
+        let store = crate::real_store::core().await;
+        let sink = Arc::new(Journal::default());
+        let (gov, parent) = settled_parent_with_handoffs(&store, &sink, 2, true).await;
+        assert!(gov.recovery_event(parent.operation_id).is_some());
+        let settled = sink.persists.load(Ordering::Relaxed);
+        for _ in 0..100 {
+            gov.resume_raw_recovery().await.unwrap();
+        }
+        assert_eq!(
+            sink.persists.load(Ordering::Relaxed) - settled,
+            0,
+            "100 recovery ticks over a settled parent must not re-persist it"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_child_still_selected_after_fast_exit() {
+        let store = crate::real_store::core().await;
+        let sink = Arc::new(Journal::default());
+        let (gov, parent) = settled_parent_with_handoffs(&store, &sink, 1, false).await;
+        let custody: super::super::raw_recovery::UsageCustody =
+            serde_json::from_slice(&parent.payload).unwrap();
+        let child = custody.handoffs[0].clone();
+        assert!(gov.recovery_event(child.operation_id).is_none());
+        sink.persisted_ops.lock().unwrap().clear();
+        gov.resume_raw_recovery().await.unwrap();
+        let selected = gov.recovery_event(child.operation_id).unwrap();
+        assert_eq!(selected.body_fingerprint, child.body_fingerprint);
+        let ops = sink.persisted_ops.lock().unwrap().clone();
+        assert!(
+            ops.iter().any(|op| *op == child.operation_id),
+            "the new child is selected through persist"
+        );
+        assert_eq!(
+            ops.iter().filter(|op| **op == parent.operation_id).count(),
+            0,
+            "the already selected parent is not persisted again"
         );
     }
 
