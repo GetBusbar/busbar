@@ -3039,14 +3039,6 @@ fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::
         .collect()
 }
 
-fn validate_with_rate_warnings(cfg: &RootCfg) -> (Result<(), Vec<String>>, Vec<String>) {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    let capture = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(capture.clone());
-    let result = tracing::subscriber::with_default(subscriber, || validate(cfg));
-    (result, capture.messages())
-}
-
 #[test]
 fn test_validate_completeness_refusal_precedes_the_unknown_model_error() {
     let mut cfg = cost_cfg(&["a", "b", "c"]);
@@ -3213,6 +3205,10 @@ fn test_validate_rate_card_keyed_by_config_name_not_upstream() {
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&["gpt-5"])));
     let errs = validate(&cfg).expect_err("pricing the upstream name must fail");
     let joined = errs.join("\n");
+    assert!(
+        joined.contains("smart:"),
+        "stub names the config model: {joined}"
+    );
     assert!(
         joined.contains("rate_card names model 'gpt-5'"),
         "the upstream-keyed entry is flagged unknown: {joined}"
@@ -3946,8 +3942,8 @@ advanced:
     let joined = errs.join("\n");
 
     assert!(
-        !joined.contains("no rate entry"),
-        "missing rates must not join structural validation errors: {joined}"
+        joined.contains("haiku:") && joined.contains("no rate entry"),
+        "{joined}"
     );
 
     assert!(

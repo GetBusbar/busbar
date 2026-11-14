@@ -1441,6 +1441,7 @@ fn a_non_fallback_planes_card_is_checked_per_lane_including_absent_cards() {
         "the unnamed lane is refused with a stub: {errors:?}"
     );
     assert!(!warnings.contains("lane 'a'"), "{warnings}");
+    // Lane `b` has an entry that leaves out a declared class: advisory only.
     assert!(
         warnings.contains("lane 'b' billable class(es) bytes"),
         "{warnings}"
@@ -1576,10 +1577,18 @@ fn missing_model_entries_refuse_while_unknown_models_and_invalid_rates_still_fai
     );
     let mut errors = Vec::new();
     validate_cost_model(&cfg, &mut errors);
-    assert!(
-        errors.is_empty(),
-        "missing model rate must not refuse: {errors:?}"
+    assert_eq!(
+        errors,
+        vec![
+            "rate_card is present but 1 configured model has no rate entry (rate_card is \
+             AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+             Paste these under rate_card and fill in your rates (micro-units per token):\n\n    \
+             b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"
+                .to_string()
+        ],
+        "a missing model entry refuses; a missing open class does not"
     );
+    let mut errors = Vec::new();
     cfg.rate_card = Some(card_yaml("typo: { input_utok: -1, output_utok: 0.0001 }"));
     validate_cost_model(&cfg, &mut errors);
     assert!(
