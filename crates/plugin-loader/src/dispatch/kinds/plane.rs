@@ -678,6 +678,7 @@ impl crate::dispatch::Plugin<Plane> {
 
 pub type ProbeBind = Arc<dyn Fn() -> Result<crate::dispatch::Plugin<Plane>, String> + Send + Sync>;
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn linked_probe(
     door: busbar_contract::abi::mechanism::door::DoorFn,
     instance: &str,
@@ -970,6 +971,7 @@ pub fn provider_facts(
         .collect()
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn open_door(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
@@ -979,6 +981,7 @@ pub fn open_door(
     checked(plugin, opened(plugin, settings, owned, public_url, &[])?)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn opened(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
@@ -1024,6 +1027,7 @@ fn checked(
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn refresh_door(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],

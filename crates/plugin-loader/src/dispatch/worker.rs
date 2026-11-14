@@ -503,6 +503,7 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn wait_done(&self) -> Done<I, O> {
         let mut g = self.slot.lock();
         loop {
@@ -2463,6 +2464,7 @@ impl Dispatcher {
         self.pool.env.runtime.get()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_services(
         config: DispatchConfig,
         provider: Arc<dyn HostServices>,

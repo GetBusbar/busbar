@@ -782,6 +782,7 @@ pub fn kind_restart_default(kind: &str) -> bool {
     !matches!(kind, "hook" | "auth")
 }
 
+#[cfg(test)]
 /// The EFFECTIVE restart-required verdict for one settings field: the kind-derived default
 /// ([`kind_restart_default`]), with a per-field `x-busbar-restart-required` override honored
 /// ASYMMETRICALLY:

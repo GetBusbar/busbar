@@ -3,7 +3,7 @@
 
 use std::sync::Mutex;
 
-use crate::run_plugin_lifecycle;
+use crate::ffi_thread::on_plugin_thread as run_plugin_lifecycle;
 
 use super::{on_plugin_thread, on_plugin_thread_in, Pool};
 

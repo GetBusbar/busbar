@@ -73,6 +73,7 @@ impl AuthRows {
         self
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_table(mut self, table: AdmissionAuthority) -> Self {
         self.held = Some(table);
