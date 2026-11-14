@@ -144,7 +144,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         &mut jar,
         reqwest::Method::POST,
         &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str())]),
+        Some(&[("return", return_to.as_str()), ("answer", "approve")]),
     )
     .await;
     assert_eq!(status, 302, "an approval must redirect back: {body}");
@@ -249,7 +249,7 @@ async fn mint_access_token(origin: &str, client_id: &str) -> String {
         &mut jar,
         reqwest::Method::POST,
         &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str())]),
+        Some(&[("return", return_to.as_str()), ("answer", "approve")]),
     )
     .await;
     assert_eq!(status, 302, "an approval must redirect back: {body}");
@@ -363,7 +363,7 @@ async fn shown_and_granted(
         &mut jar,
         reqwest::Method::POST,
         &format!("{origin}/consent"),
-        Some(&[("return", return_to.as_str())]),
+        Some(&[("return", return_to.as_str()), ("answer", "approve")]),
     )
     .await;
     assert_eq!(status, 302, "an approval must redirect back: {body}");

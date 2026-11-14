@@ -433,7 +433,7 @@ fn explicit_same_address_needs_share_compatible_physical_policy() {
     let mut candidate = listening_plane("ingress");
     candidate.kind = KindCode::Export;
     let candidates = vec![candidate];
-    let mut doc = serde_json::json!({"tls": {"cert": "cert", "key": "key"}, "export": {
+    let mut doc = serde_json::json!({"tls": {"cert": {"module":"source","settings":{"id":"cert"}}, "key": {"module":"source","settings":{"id":"key"}}}, "export": {
         "first": {"module": "p1", "settings": {"ingress": {"listen": "127.0.0.1:8080"}}},
         "second": {"module": "p1", "settings": {"ingress": {"listen": "127.0.0.1:8080"}}}
     }});
