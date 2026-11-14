@@ -125,36 +125,15 @@ pub fn classify(fact: &HistoricalFact, native_key: &[u8]) -> Result<LogicalGroup
             ])?,
         ),
         HistoricalFact::Audit(record) => (AUDIT, framed(&[b"A", &record.seq.to_be_bytes()])?),
-        HistoricalFact::Record { schema, key, .. } if schema == "busbar.journal.v1" => (
-            ARCHIVAL,
-            crate::legacy::group::journal_group_key(key.expose(&seal))
-                .map_err(|_| Error::Corrupt)?,
-        ),
-        HistoricalFact::Record { schema, key, .. } => (
+        HistoricalFact::Record { schema, key, .. } if schema == crate::legacy::overlay::SCHEMA => (
             ARCHIVAL,
             framed(&[b"R", schema.as_bytes(), key.expose(&seal)])?,
         ),
-        HistoricalFact::History {
-            kind,
-            id,
-            parent,
-            sequence,
-            ..
-        } => (
-            ARCHIVAL,
-            framed(&[
-                b"H",
-                kind.as_bytes(),
-                id.as_bytes(),
-                parent.as_deref().unwrap_or("").as_bytes(),
-                &sequence.to_be_bytes(),
-            ])?,
-        ),
-        HistoricalFact::Token { kind, token, .. } => (
-            ARCHIVAL,
-            framed(&[b"T", kind.as_bytes(), token.expose(&seal)])?,
-        ),
-        HistoricalFact::Receipt { operation, .. } => (ARCHIVAL, framed(&[b"C", operation])?),
+        // Only an unreleased 1.6.0-dev build wrote these. Upgrade from 1.5.5.
+        HistoricalFact::Record { .. }
+        | HistoricalFact::History { .. }
+        | HistoricalFact::Token { .. }
+        | HistoricalFact::Receipt { .. } => return Err(Error::UnsupportedPath),
         HistoricalFact::EvidenceOnly => (ARCHIVAL, framed(&[b"E", native_key])?),
     };
     Ok(LogicalGroup { family, key })

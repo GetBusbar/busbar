@@ -615,11 +615,7 @@ impl StartupUpgrade {
         route_digest: Digest32,
     ) -> Result<Initializing, Error> {
         use crate::{
-            legacy::{
-                self,
-                journal::{Budget, JournalPlan},
-                projection::ProjectionSource,
-            },
+            legacy::{self, projection::ProjectionSource},
             native_source::NativeSnapshot,
             source_facts::grouping::FactGroups,
         };
@@ -665,15 +661,6 @@ impl StartupUpgrade {
             provenance,
             snapshot.rows(),
             resources.semantic_bytes,
-            None,
-        )?;
-        let audit = crate::routes::with_parent_graph_from_facts(
-            identity.format,
-            provenance,
-            snapshot.rows(),
-            resources.index_bytes,
-            prepared_route.resolved_bindings()?,
-            audit,
         )?;
         let grouping = Arc::new(FactGroups::new(
             snapshot
@@ -697,32 +684,8 @@ impl StartupUpgrade {
         if source.identity() != identity {
             return Err(Error::IdentityMismatch);
         }
-        let bounds = crate::Bounds {
-            items: native_bounds.items,
-            bytes: native_bounds.bytes,
-        };
-        let journal = Arc::new(JournalPlan::verify(
-            source.clone(),
-            bounds,
-            Budget {
-                metadata_bytes: resources.index_bytes,
-                max_frame_bytes: resources.limits.frame_bytes,
-                // A source may permit every representable row count. This is
-                // an upper bound, so cap the derived read allowance rather
-                // than rejecting that valid configuration on multiplication.
-                max_frame_reads: resources.limits.rows.saturating_mul(8),
-            },
-        )?);
-        let mut recovery = legacy::recovery::FrozenRecovery::verify(
-            source.clone(),
-            journal.clone(),
-            bounds,
-            resources.index_bytes,
-            resources.limits.frame_bytes,
-        )?;
-        let checked = checked_native_fence(&prepared, upgrade, route_digest).await?;
-        let ancestry = Arc::new(recovery.fenced_receipt_proofs(&checked, resources.index_bytes)?);
-        let proofs = crate::routes::with_ancestry(audit, ancestry.clone());
+        // The native owner must still attest a live fence for this exact route.
+        checked_native_fence(&prepared, upgrade, route_digest).await?;
         let target = target_identity(backend.info())?;
         let projection: Arc<dyn ProjectionSource> = source.clone();
         let route = prepared_route.bind_frozen(
@@ -730,12 +693,8 @@ impl StartupUpgrade {
             &target,
             &catalogue,
             projection,
-            proofs,
-            crate::routes::FrozenCapabilities {
-                journal: Some(journal),
-                overlay,
-                recovery: Some(ancestry),
-            },
+            audit,
+            crate::routes::FrozenCapabilities { overlay },
         )?;
         source.bind_output_budget(Arc::downgrade(&route.transform))?;
         let registry = Arc::new(route.registry);
