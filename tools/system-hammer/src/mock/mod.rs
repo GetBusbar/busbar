@@ -100,6 +100,8 @@ pub struct Stats {
     counts: [AtomicU64; 12],
     /// The last request no far end answered (method and path), for diagnosis.
     unknown: std::sync::Mutex<Option<String>>,
+    /// Failed `accept()` calls (EMFILE, ENFILE, ...), each followed by a short backoff.
+    accept_errors: AtomicU64,
 }
 
 impl Stats {
@@ -111,11 +113,27 @@ impl Stats {
         for (i, r) in ROLES.iter().enumerate() {
             m.insert((*r).into(), json!(self.counts[i].load(Ordering::Relaxed)));
         }
+        m.insert(
+            "accept_errors".into(),
+            json!(self.accept_errors.load(Ordering::Relaxed)),
+        );
         if let Some(u) = self.unknown.lock().unwrap().clone() {
             m.insert("unknown_last".into(), json!(u));
         }
         Value::Object(m)
     }
+}
+
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
+/// Pass an accepted connection through; on error (EMFILE, ENFILE, ...) count it and back off
+/// instead of spinning straight back into `accept()`.
+async fn accepted<T>(r: std::io::Result<T>, stats: &Stats) -> Option<T> {
+    if r.is_err() {
+        stats.accept_errors.fetch_add(1, Ordering::Relaxed);
+        tokio::time::sleep(ACCEPT_BACKOFF).await;
+    }
+    r.ok()
 }
 
 /// The A2A agent's card-signing key: a fixed ed25519 seed (the oracle capture mock's own), so the
@@ -226,7 +244,8 @@ impl Mock {
         rt.spawn(async move {
             let listener = tokio::net::TcpListener::from_std(std_listener).expect("listener");
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
+                let Some((stream, _)) = accepted(listener.accept().await, &state.stats).await
+                else {
                     continue;
                 };
                 let _ = stream.set_nodelay(true);
@@ -236,7 +255,8 @@ impl Mock {
         rt.spawn(async move {
             let listener = tokio::net::TcpListener::from_std(tls_listener).expect("listener");
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
+                let Some((stream, _)) = accepted(listener.accept().await, &st_tls.stats).await
+                else {
                     continue;
                 };
                 let _ = stream.set_nodelay(true);
@@ -557,3 +577,27 @@ async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
 }
 
 const IN_TOK_DEC: i64 = 4;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accept_error_is_counted_and_backs_off() {
+        let stats = Stats::default();
+        let t = std::time::Instant::now();
+        for _ in 0..2 {
+            // EMFILE
+            assert!(
+                accepted::<()>(Err(std::io::Error::from_raw_os_error(24)), &stats)
+                    .await
+                    .is_none()
+            );
+        }
+        assert!(
+            t.elapsed() >= ACCEPT_BACKOFF * 2,
+            "accept error must back off, not spin"
+        );
+        assert_eq!(stats.snapshot()["accept_errors"], 2);
+    }
+}
