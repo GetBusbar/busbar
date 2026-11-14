@@ -2286,13 +2286,13 @@ fn validate_providers_with(
                             format_args!("provider '{provider_name}' {settings}"),
                         )
                         .into();
-                        if !errors.contains(&error) {
+                        if !host_judged(settings) && !errors.contains(&error) {
                             errors.push(error);
                         }
                     } else {
                         errors.push(coded::config_provider_credential_invalid(format!(
                             "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                            provider_cfg.api_key.describe()
+                            describe_reference(&provider_cfg.api_key)
                         )).into());
                     }
                 }
@@ -2302,13 +2302,15 @@ fn validate_providers_with(
                         .check_outbound_settings(style, &params)
                         .unwrap_or_else(|e| vec![e])
                     {
-                        errors.push(
-                            coded::config_provider_credential_invalid(format!(
-                                "provider '{provider_name}' {}",
-                                error.strip_prefix("settings: ").unwrap_or(&error)
-                            ))
-                            .into(),
-                        );
+                        let setting = error.strip_prefix("settings: ").unwrap_or(&error);
+                        if !host_judged(setting) {
+                            errors.push(
+                                coded::config_provider_credential_invalid(format!(
+                                    "provider '{provider_name}' {setting}"
+                                ))
+                                .into(),
+                            );
+                        }
                     }
                 }
             }
@@ -2364,7 +2366,7 @@ fn validate_providers_with(
                     errors.push(
                         coded::config_provider_credential_invalid(format!(
                         "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
+                        describe_reference(&provider_cfg.api_key)
                     ))
                         .into(),
                     );
