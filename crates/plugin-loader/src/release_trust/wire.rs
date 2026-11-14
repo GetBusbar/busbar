@@ -15,63 +15,45 @@ pub const KEYS_TYPE: &str = "busbar-keys";
 
 pub const TARGETS_TYPE: &str = "targets";
 
+/// The canonical (OLPC) bytes of a release document, written by olpc-cjson (DEPENDENCY-LADDER C16)
+/// over the subset both sides sign: non-negative integers and printable ASCII.
 pub fn canonical(v: &Value) -> Result<Vec<u8>, String> {
+    in_canonical_subset(v)?;
     let mut out = Vec::new();
-    write_canonical(v, &mut out)?;
+    let mut ser =
+        serde_json::Serializer::with_formatter(&mut out, olpc_cjson::CanonicalFormatter::new());
+    serde::Serialize::serialize(v, &mut ser).map_err(|e| e.to_string())?;
     Ok(out)
 }
 
-fn write_canonical(v: &Value, out: &mut Vec<u8>) -> Result<(), String> {
+fn in_canonical_subset(v: &Value) -> Result<(), String> {
     match v {
-        Value::Null => out.extend_from_slice(b"null"),
-        Value::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
-        Value::Number(n) => match n.as_u64() {
-            Some(u) => out.extend_from_slice(u.to_string().as_bytes()),
-            None => return Err(format!("number {n} is not a non-negative integer")),
-        },
-        Value::String(s) => write_string(s, out)?,
-        Value::Array(items) => {
-            out.push(b'[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(b',');
-                }
-                write_canonical(item, out)?;
+        Value::Null | Value::Bool(_) => Ok(()),
+        Value::Number(n) if n.as_u64().is_some() => Ok(()),
+        Value::Number(n) => Err(format!("number {n} is not a non-negative integer")),
+        Value::String(s) => printable_ascii(s),
+        Value::Array(items) => items.iter().try_for_each(in_canonical_subset),
+        Value::Object(map) => map.iter().try_for_each(|(k, v)| {
+            printable_ascii(k)?;
+            // olpc-cjson orders keys by their escaped bytes; these are the only keys for which
+            // that differs from the Python (securesystemslib) order.
+            if k.contains([' ', '!', '"']) {
+                return Err(format!(
+                    "key {k:?} holds a space, '!' or '\"', outside the canonical key set"
+                ));
             }
-            out.push(b']');
-        }
-        Value::Object(map) => {
-            let sorted: BTreeMap<&str, &Value> = map.iter().map(|(k, v)| (k.as_str(), v)).collect();
-            out.push(b'{');
-            for (i, (k, v)) in sorted.into_iter().enumerate() {
-                if i > 0 {
-                    out.push(b',');
-                }
-                write_string(k, out)?;
-                out.push(b':');
-                write_canonical(v, out)?;
-            }
-            out.push(b'}');
-        }
+            in_canonical_subset(v)
+        }),
     }
-    Ok(())
 }
 
-fn write_string(s: &str, out: &mut Vec<u8>) -> Result<(), String> {
-    if let Some(c) = s.chars().find(|c| !(' '..='~').contains(c)) {
-        return Err(format!(
+fn printable_ascii(s: &str) -> Result<(), String> {
+    match s.chars().find(|c| !(' '..='~').contains(c)) {
+        Some(c) => Err(format!(
             "string {s:?} holds {c:?}, outside printable ASCII (the canonical subset)"
-        ));
+        )),
+        None => Ok(()),
     }
-    out.push(b'"');
-    for b in s.bytes() {
-        if b == b'"' || b == b'\\' {
-            out.push(b'\\');
-        }
-        out.push(b);
-    }
-    out.push(b'"');
-    Ok(())
 }
 
 pub fn key_object(key: &ReleaseKey) -> Value {

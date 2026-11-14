@@ -68,6 +68,9 @@ loom = "0.7"
 memchr = "2"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
+# Canonical (OLPC) JSON for the signed release documents (plugin-loader release_trust); it rides on
+# serde_json, which it forces (decision 223).
+olpc-cjson = "0.1.4"
 # Keep `axum`, `jwt-p256`, `jwt-rsa` and `jwt-ed25519` off: ES256 runs over ring, and `jwt-rsa` pulls RUSTSEC-2023-0071.
 oauth-as = { version = "1.0.1", features = [
     "http",
