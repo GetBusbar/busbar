@@ -37,26 +37,38 @@ pub fn fallback_pools_authorized(
 
     key.allowed_scopes.as_ref()?;
     let view = app.engine_tables_view();
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut current = pool.to_string();
+    // Walk the fallback chain until it ends, a pool is refused, or it loops. Brent's cycle check
+    // holds one earlier chain member (moved in, never copied) instead of a set of visited names.
+    let mut anchor: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed(pool);
+    let mut next = view.on_exhausted_fallback(pool)?;
+    let (mut power, mut steps) = (1_usize, 0_usize);
     loop {
-        if !visited.insert(current.clone()) {
-            return None;
-        }
-
-        let next = view.on_exhausted_fallback(&current)?;
-
         if let Some(resp) = pool_authorized(gov, &next, proto) {
             return Some(resp);
         }
-        current = next;
+        if *anchor == *next {
+            return None;
+        }
+        steps += 1;
+        if steps == power {
+            anchor = std::borrow::Cow::Owned(next);
+            (power, steps) = (power * 2, 0);
+            next = view.on_exhausted_fallback(&anchor)?;
+        } else {
+            next = view.on_exhausted_fallback(&next)?;
+        }
     }
 }
 
-fn pool_scope_suffix(pool: &Option<String>) -> String {
-    match pool {
-        Some(p) => format!(", pool '{p}'"),
-        None => String::new(),
+/// `, pool '<p>'` when a limit is pool-scoped, nothing otherwise.
+struct PoolScope<'a>(&'a Option<String>);
+
+impl std::fmt::Display for PoolScope<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(p) => write!(f, ", pool '{p}'"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -71,30 +83,26 @@ pub fn admit_check(
         return Ok((None, None));
     };
 
-    let mut effective: Option<String> = None;
-    let mut visited: Vec<String> = Vec::new();
+    // The pools this admission has downgraded to, in order; the last is the effective pool. Each
+    // is a distinct configured pool, so the history is bounded by the pool count.
+    // busbar:expect(bp::fresh_buffer, reason = "error: only a budget-exhausted (LimitBlocked) admission that downgrades records history here")
+    let mut downgraded: Vec<String> = Vec::new();
     let blocked = loop {
-        let attempt_pool = effective.as_deref().unwrap_or(pool);
+        let attempt_pool = downgraded.last().map_or(pool, String::as_str);
         match g.try_admit(&app.cost, key, attempt_pool, charged_at) {
-            Ok(grant) => return Ok((Some(grant), effective)),
+            Ok(grant) => return Ok((Some(grant), downgraded.pop())),
             Err(crate::governance::LimitBlocked::Limit {
                 downgrade_to: Some(to),
                 group,
                 ..
-            }) if !visited.iter().any(|v| v == &to)
-                && visited.len() < app.engine_tables_view().pools().len()
-                && app
-                    .engine_tables_view()
-                    .pools()
-                    .iter()
-                    .any(|(n, _)| *n == to.as_str())
+            }) if !downgraded.contains(&to)
+                && app.engine_tables_view().pool_exists(&to)
                 && pool_authorized(gov, &to, proto).is_none()
                 && fallback_pools_authorized(app, gov, &to, proto).is_none() =>
             {
                 tracing::info!(key_id = %key.id, from = attempt_pool, to = %to, group = %group,
                     "governance: budget exhausted; downgrading pool (on_exhaust: downgrade)");
-                visited.push(to.clone());
-                effective = Some(to);
+                downgraded.push(to);
             }
             Err(blocked) => break blocked,
         }
@@ -105,12 +113,68 @@ pub fn admit_check(
         let mut resp = ingress_error(proto, status, kind, &message);
 
         if let Some(retry) = retry_after {
-            if let Ok(hv) = axum::http::HeaderValue::from_str(&retry.to_string()) {
-                resp.headers_mut()
-                    .insert(axum::http::header::RETRY_AFTER, hv);
-            }
+            resp.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from(retry),
+            );
         }
         Err(Box::new(resp))
+    }
+}
+
+/// The client-facing text of a limit refusal, written straight into its destination.
+struct RefusalText<'a>(&'a crate::governance::LimitBlocked);
+
+impl std::fmt::Display for RefusalText<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::governance::LimitBlocked;
+        match self.0 {
+            LimitBlocked::Limit {
+                group,
+                metric: "concurrent",
+                ..
+            } => write!(
+                f,
+                "Too many concurrent requests (group '{group}' is at its in-flight \
+                     limit). Please retry shortly."
+            ),
+            LimitBlocked::Limit {
+                group,
+                metric: "budget",
+                window,
+                pool: limit_pool,
+                ..
+            } => write!(
+                f,
+                "You have exceeded your current quota (group '{group}' budget per {}{} \
+                     exhausted). Please check your plan and billing details.",
+                window.unwrap_or("total"),
+                PoolScope(limit_pool),
+            ),
+            LimitBlocked::Limit {
+                group,
+                metric,
+                window,
+                pool: limit_pool,
+                ..
+            } => write!(
+                f,
+                "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
+                     after the indicated time.",
+                window.unwrap_or("total"),
+                PoolScope(limit_pool),
+            ),
+            LimitBlocked::Disabled(group) => write!(
+                f,
+                "Your API key does not currently have access to this resource (group \
+                     '{group}' is disabled)."
+            ),
+            LimitBlocked::MissingGroup(group) => write!(
+                f,
+                "Your quota configuration is incomplete (group '{group}' is not \
+                     configured). Please contact your administrator."
+            ),
+        }
     }
 }
 
@@ -120,85 +184,53 @@ pub fn limit_refusal(
     blocked: &crate::governance::LimitBlocked,
 ) -> (StatusCode, &'static str, String, Option<u64>) {
     use crate::governance::LimitBlocked;
-    match blocked {
+    let quota_status = || {
+        StatusCode::from_u16(protocols::quota_exceeded_status(proto))
+            .ok()
+            .unwrap_or(StatusCode::TOO_MANY_REQUESTS)
+    };
+    let (status, kind, retry_after) = match blocked {
         LimitBlocked::Limit {
-            group,
             metric: "concurrent",
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
             busbar_contract::protocol::KIND_RATE_LIMIT,
-            format!(
-                "Too many concurrent requests (group '{group}' is at its in-flight \
-                     limit). Please retry shortly."
-            ),
             None,
         ),
         LimitBlocked::Limit {
-            group,
             metric: "budget",
-            window,
-            pool: limit_pool,
             retry_after,
             ..
         } => (
-            StatusCode::from_u16(protocols::quota_exceeded_status(proto))
-                .ok()
-                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            quota_status(),
             busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
-            format!(
-                "You have exceeded your current quota (group '{group}' budget per {}{} \
-                     exhausted). Please check your plan and billing details.",
-                window.unwrap_or("total"),
-                pool_scope_suffix(limit_pool),
-            ),
             *retry_after,
         ),
-
-        LimitBlocked::Limit {
-            group,
-            metric,
-            window,
-            pool: limit_pool,
-            retry_after,
-            ..
-        } => (
+        LimitBlocked::Limit { retry_after, .. } => (
             StatusCode::TOO_MANY_REQUESTS,
             busbar_contract::protocol::KIND_RATE_LIMIT,
-            format!(
-                "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
-                     after the indicated time.",
-                window.unwrap_or("total"),
-                pool_scope_suffix(limit_pool),
-            ),
             *retry_after,
         ),
-
-        LimitBlocked::Disabled(group) => (
+        LimitBlocked::Disabled(_) => (
             StatusCode::FORBIDDEN,
             busbar_contract::protocol::KIND_PERMISSION,
-            format!(
-                "Your API key does not currently have access to this resource (group \
-                     '{group}' is disabled)."
-            ),
             None,
         ),
-
-        LimitBlocked::MissingGroup(group) => (
-            StatusCode::from_u16(protocols::quota_exceeded_status(proto))
-                .ok()
-                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+        LimitBlocked::MissingGroup(_) => (
+            quota_status(),
             busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
-            format!(
-                "Your quota configuration is incomplete (group '{group}' is not \
-                     configured). Please contact your administrator."
-            ),
             None,
         ),
-    }
+    };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the refusal text of a limit-blocked request; callers carry it as an owned message"
+    )]
+    let message = RefusalText(blocked).to_string();
+    (status, kind, message, retry_after)
 }
 
-#[allow(private_interfaces)]
 pub fn governance_guard(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
@@ -211,7 +243,6 @@ pub fn governance_guard(
     admission_door(app, gov, proto, pool, started, charged_at)
 }
 
-#[allow(private_interfaces)]
 pub fn destination_guard(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
@@ -255,7 +286,6 @@ pub fn destination_guard(
     Ok(())
 }
 
-#[allow(private_interfaces)]
 pub fn admission_door(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
@@ -297,8 +327,10 @@ pub fn finish(
     finish_inner(app, ingress_protocol, pool, started, resp, Some(charge))
 }
 
-#[allow(private_interfaces)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the ingress terminal's public signature carries the whole admission context"
+)]
 pub fn finish_admitted(
     app: &Arc<App>,
     _gov: &crate::governance::GovCtx,
@@ -312,7 +344,6 @@ pub fn finish_admitted(
     finish_inner(app, ingress_protocol, pool, started, resp, charged)
 }
 
-#[allow(private_interfaces)]
 pub fn finish_rejected(
     app: &Arc<App>,
     _gov: &crate::governance::GovCtx,
@@ -337,7 +368,7 @@ fn finish_inner(
 
     let outcome = crate::telemetry::outcome_of(resp.status().as_u16());
 
-    let elapsed = started.elapsed();
+    let elapsed = crate::store::elapsed(started);
     crate::telemetry::request_finished(
         app,
         crate::plane_driver::dispatch::fallback_key(),
@@ -351,13 +382,7 @@ fn finish_inner(
         .export_projections
         .wants_stream(busbar_contract::abi::export::ExportStream::Logs)
     {
-        crate::export::deliver_request_log(&crate::export::RequestLogFacts {
-            ts: busbar_kernel::store::now(),
-            ingress_protocol,
-            pool,
-            outcome,
-            latency_ms: elapsed.as_millis() as u64,
-        });
+        export_request_log(ingress_protocol, pool, outcome, elapsed.as_millis() as u64);
     }
 
     let status = resp.status().as_u16();
@@ -371,11 +396,21 @@ fn finish_inner(
     resp
 }
 
+/// The request-log export record, dated by the wall clock when a sink wants it.
+fn export_request_log(ingress_protocol: &str, pool: &str, outcome: &str, latency_ms: u64) {
+    crate::export::deliver_request_log(&crate::export::RequestLogFacts {
+        ts: busbar_kernel::store::now(),
+        ingress_protocol,
+        pool,
+        outcome,
+        latency_ms,
+    });
+}
+
 pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {
     use axum::response::IntoResponse;
     let (envelope, fields) = protocols::error_parts(proto, status.as_u16(), kind, message);
-    let body = crate::json::to_string(&envelope)
-        .unwrap_or_else(|_| agnostic_error_envelope(kind, message).to_string());
+    let body = crate::json::to_vec(&envelope).unwrap_or_default();
     let mut resp = Response::builder()
         .status(status)
         .header(
@@ -393,10 +428,6 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
         }
     }
     resp
-}
-
-fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
-    serde_json::json!({ "error": { "message": msg, "type": kind } })
 }
 
 pub mod jsonrpc;
@@ -422,11 +453,33 @@ pub mod observe;
 
 pub(crate) use dispatch::protocol_dispatch;
 
+/// The not-found text for `model`: the plane's shaped copy when it has one, else the default.
+pub struct NotFoundMessage<'a> {
+    model: &'a str,
+    shaped: Option<&'a str>,
+}
+
+impl std::fmt::Display for NotFoundMessage<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.shaped {
+            Some(shaped) => f.write_str(shaped),
+            None => write!(
+                f,
+                "The model '{}' does not exist or you do not have access to it.",
+                self.model
+            ),
+        }
+    }
+}
+
 #[must_use]
-pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
-    match model_not_found_message {
-        Some(shaped) => shaped.to_string(),
-        None => format!("The model '{model}' does not exist or you do not have access to it."),
+pub fn not_found_message<'a>(
+    model: &'a str,
+    model_not_found_message: Option<&'a str>,
+) -> NotFoundMessage<'a> {
+    NotFoundMessage {
+        model,
+        shaped: model_not_found_message,
     }
 }
 

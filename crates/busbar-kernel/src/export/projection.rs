@@ -37,7 +37,6 @@
 
 use crate::diagnostics::coded;
 use busbar_contract::abi::export::{ExportField, ExportStream};
-use serde_json::Value;
 
 pub(crate) const PRODUCED_STREAMS: &[ExportStream] = &[
     ExportStream::Metrics,
@@ -176,32 +175,250 @@ impl ProjectionUnion {
     }
 }
 
-pub(crate) struct ProjectedRecord {
-    projection: Projection,
-    stream: ExportStream,
-
-    fields: serde_json::Map<String, Value>,
+/// One field's value as a producer hands it over, borrowed: rendered straight into the record line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FieldValue<'a> {
+    U64(u64),
+    I64(i64),
+    Bool(bool),
+    /// A float: a JSON number when finite, else the typed `{"$busbar_f64": ".."}` marker.
+    F64(f64),
+    Str(&'a str),
+    /// A 64-bit id, as its 16-digit lower-case hex text.
+    Hex(u64),
 }
 
-impl ProjectedRecord {
-    pub(crate) fn new(projection: Projection, stream: ExportStream) -> ProjectedRecord {
-        ProjectedRecord {
-            projection,
-            stream,
-            fields: serde_json::Map::new(),
+impl From<u64> for FieldValue<'_> {
+    fn from(v: u64) -> Self {
+        FieldValue::U64(v)
+    }
+}
+
+impl<'a> From<&'a str> for FieldValue<'a> {
+    fn from(v: &'a str) -> Self {
+        FieldValue::Str(v)
+    }
+}
+
+/// The member a traces record carries its full span record under.
+pub(crate) const SPAN_MEMBER: &str = "span";
+
+/// A record member, in the order a record lays its members out (by name, as a JSON object map
+/// orders its keys).
+#[derive(Clone, Copy)]
+enum Member {
+    /// A field, with its bit (its index in [`ExportField::ALL`]).
+    Field(ExportField, u32),
+    Span,
+}
+
+impl Member {
+    fn name(self) -> &'static str {
+        match self {
+            Member::Field(field, _) => field.as_token(),
+            Member::Span => SPAN_MEMBER,
+        }
+    }
+}
+
+const FIELDS: usize = ExportField::ALL.len();
+
+/// Every member, by name: built once.
+static MEMBER_ORDER: std::sync::LazyLock<[Member; FIELDS + 1]> = std::sync::LazyLock::new(|| {
+    let mut order = [Member::Span; FIELDS + 1];
+    for (bit, (slot, field)) in order.iter_mut().zip(ExportField::ALL).enumerate() {
+        *slot = Member::Field(*field, bit as u32);
+    }
+    order.sort_unstable_by_key(|member| member.name());
+    order
+});
+
+/// The members a rendered record carries, named in record order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Members {
+    fields: u64,
+    span: bool,
+}
+
+impl Members {
+    pub(crate) fn names(self) -> MemberNames {
+        MemberNames { held: self, at: 0 }
+    }
+
+    fn holds(self, member: Member) -> bool {
+        match member {
+            Member::Field(_, bit) => self.fields & (1u64 << bit) != 0,
+            Member::Span => self.span,
+        }
+    }
+}
+
+/// The names of a record's members, in record order.
+pub(crate) struct MemberNames {
+    held: Members,
+    at: usize,
+}
+
+impl Iterator for MemberNames {
+    type Item = &'static str;
+
+    fn next(&mut self) -> Option<&'static str> {
+        while let Some(member) = MEMBER_ORDER.get(self.at).copied() {
+            self.at += 1;
+            if self.held.holds(member) {
+                return Some(member.name());
+            }
+        }
+        None
+    }
+}
+
+/// One record rendered for one sink: the JSON line the sink is handed, and the members it holds.
+#[derive(Debug)]
+pub(crate) struct Rendered {
+    pub(crate) line: Vec<u8>,
+    pub(crate) members: Members,
+}
+
+/// A JSON writer over the one buffer a record is rendered into. Strings and floats are written by
+/// serde_json itself, so the bytes are exactly a serialized document's.
+pub(crate) struct JsonOut(pub(crate) Vec<u8>);
+
+impl JsonOut {
+    pub(crate) fn byte(&mut self, b: u8) {
+        self.0.push(b);
+    }
+
+    /// `"name":`, for a member name that needs no escaping.
+    pub(crate) fn key(&mut self, name: &str) {
+        self.0.push(b'"');
+        self.0.extend_from_slice(name.as_bytes());
+        self.0.extend_from_slice(b"\":");
+    }
+
+    pub(crate) fn str(&mut self, s: &str) {
+        let _ = serde_json::to_writer(&mut self.0, s);
+    }
+
+    /// Already-rendered JSON, appended as is.
+    pub(crate) fn raw(&mut self, json: &[u8]) {
+        self.0.extend_from_slice(json);
+    }
+
+    pub(crate) fn u64(&mut self, n: u64) {
+        use std::io::Write as _;
+        let _ = write!(self.0, "{n}");
+    }
+
+    pub(crate) fn i64(&mut self, n: i64) {
+        use std::io::Write as _;
+        let _ = write!(self.0, "{n}");
+    }
+
+    pub(crate) fn bool(&mut self, b: bool) {
+        self.0.extend_from_slice(if b { b"true" } else { b"false" });
+    }
+
+    /// JSON numbers cannot carry the IEEE-754 non-finite values. This exact one-key marker is
+    /// reserved for typed floats in the neutral trace record; strings stay strings.
+    pub(crate) fn f64(&mut self, v: f64) {
+        if v.is_finite() {
+            let _ = serde_json::to_writer(&mut self.0, &v);
+        } else {
+            use std::io::Write as _;
+            let _ = write!(self.0, "{{\"$busbar_f64\":\"{v}\"}}");
         }
     }
 
-    pub(crate) fn set(&mut self, field: ExportField, value: impl Into<Value>) -> &mut Self {
+    pub(crate) fn hex(&mut self, id: u64) {
+        use std::io::Write as _;
+        let _ = write!(self.0, "\"{id:016x}\"");
+    }
+
+    pub(crate) fn value(&mut self, value: FieldValue<'_>) {
+        match value {
+            FieldValue::U64(n) => self.u64(n),
+            FieldValue::I64(n) => self.i64(n),
+            FieldValue::Bool(b) => self.bool(b),
+            FieldValue::F64(v) => self.f64(v),
+            FieldValue::Str(s) => self.str(s),
+            FieldValue::Hex(id) => self.hex(id),
+        }
+    }
+}
+
+/// One record built to its sink's projection: a field the projection does not grant is never
+/// written, so it never reaches the sink. Members are laid out by name when it is finished.
+pub(crate) struct ProjectedRecord<'a> {
+    projection: Projection,
+    stream: ExportStream,
+    values: [Option<FieldValue<'a>>; FIELDS],
+    span: Option<&'a [u8]>,
+}
+
+impl<'a> ProjectedRecord<'a> {
+    pub(crate) fn new(projection: Projection, stream: ExportStream) -> ProjectedRecord<'a> {
+        ProjectedRecord {
+            projection,
+            stream,
+            values: [None; FIELDS],
+            span: None,
+        }
+    }
+
+    pub(crate) fn set(
+        &mut self,
+        field: ExportField,
+        value: impl Into<FieldValue<'a>>,
+    ) -> &mut Self {
         if self.projection.grants(self.stream, field) {
-            self.fields
-                .insert(field.as_token().to_string(), value.into());
+            self.values[field.bit() as usize] = Some(value.into());
         }
         self
     }
 
-    pub(crate) fn finish(self) -> Value {
-        Value::Object(self.fields)
+    /// Carry a full span record (already one JSON object) as the `span` member.
+    pub(crate) fn span(&mut self, record: &'a [u8]) -> &mut Self {
+        self.span = Some(record);
+        self
+    }
+
+    pub(crate) fn finish(&self) -> Rendered {
+        let size = self.span.map_or(0, <[u8]>::len) + 192;
+        let mut out = JsonOut(Vec::with_capacity(size));
+        let mut members = Members::default();
+        out.byte(b'{');
+        for member in MEMBER_ORDER.iter() {
+            match *member {
+                Member::Field(field, bit) => {
+                    let Some(value) = self.values[bit as usize] else {
+                        continue;
+                    };
+                    if members.fields != 0 || members.span {
+                        out.byte(b',');
+                    }
+                    out.key(field.as_token());
+                    out.value(value);
+                    members.fields |= 1u64 << bit;
+                }
+                Member::Span => {
+                    let Some(record) = self.span else {
+                        continue;
+                    };
+                    if members.fields != 0 {
+                        out.byte(b',');
+                    }
+                    out.key(SPAN_MEMBER);
+                    out.raw(record);
+                    members.span = true;
+                }
+            }
+        }
+        out.byte(b'}');
+        Rendered {
+            line: out.0,
+            members,
+        }
     }
 }
 
@@ -228,6 +445,10 @@ pub(crate) fn resolve_projection(
         );
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the subscribed streams resolve once, at config load"
+    )]
     let subscribed: Vec<ExportStream> = match stream_tokens {
         None => module_carries.unwrap_or(PRODUCED_STREAMS).to_vec(),
         Some([]) => {
@@ -243,6 +464,7 @@ pub(crate) fn resolve_projection(
             Vec::new()
         }
         Some(list) => {
+            // busbar:expect(bp::fresh_buffer, reason = "config: the subscribed streams resolve once, at config load")
             let mut out = Vec::new();
             for tok in list {
                 let Some(stream) = ExportStream::from_token(tok) else {
@@ -313,6 +535,10 @@ pub(crate) fn resolve_projection(
         }
     };
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the granted fields resolve once, at config load"
+    )]
     let granted: Vec<ExportField> = match fields {
         None => subscribed
             .iter()
@@ -383,6 +609,7 @@ fn resolve_fields_override(
         }
     }
 
+    // busbar:expect(bp::fresh_buffer, reason = "config: the granted fields resolve once, at config load")
     let mut granted: Vec<ExportField> = Vec::new();
     for tok in list {
         let Some(field) = ExportField::from_token(tok) else {
@@ -477,21 +704,32 @@ fn pinned_reason(field: ExportField) -> &'static str {
     }
 }
 
-fn tokens(streams: &[ExportStream]) -> String {
-    streams
-        .iter()
-        .map(|s| s.as_token())
-        .collect::<Vec<_>>()
-        .join(" | ")
+/// Tokens separated by ` | `, written straight into the message they appear in.
+struct Joined<I>(I);
+
+impl<I: Iterator<Item = &'static str> + Clone> std::fmt::Display for Joined<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, token) in self.0.clone().enumerate() {
+            if i > 0 {
+                f.write_str(" | ")?;
+            }
+            f.write_str(token)?;
+        }
+        Ok(())
+    }
 }
 
-fn subscribed_field_tokens(subscribed: &[ExportStream]) -> String {
-    ExportField::ALL
-        .iter()
-        .filter(|f| subscribed.iter().any(|s| s.default_fields().contains(f)))
-        .map(|f| f.as_token())
-        .collect::<Vec<_>>()
-        .join(" | ")
+fn tokens(streams: &[ExportStream]) -> impl std::fmt::Display + '_ {
+    Joined(streams.iter().map(|s| s.as_token()))
+}
+
+fn subscribed_field_tokens(subscribed: &[ExportStream]) -> impl std::fmt::Display + '_ {
+    Joined(
+        ExportField::ALL
+            .iter()
+            .filter(|f| subscribed.iter().any(|s| s.default_fields().contains(f)))
+            .map(|f| f.as_token()),
+    )
 }
 
 #[cfg(test)]

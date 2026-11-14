@@ -566,7 +566,7 @@ impl PlaneDriver {
         )]
         for principal in gov.all_keys_async().await.map_err(|e| e.to_string())? {
             services
-                .resolve_caller_reference(caller, &principal.id, &key.caller_ref(&principal.id))
+                .resolve_caller_reference(caller, &principal.id, key.caller_ref(&principal.id))
                 .await
                 .map_err(str::to_owned)?;
         }
@@ -1553,7 +1553,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 let proposed = key.caller_ref(principal.as_str());
                 let reference = match &self.driver.records {
                     Some((services, caller)) => services
-                        .resolve_caller_reference(caller, principal.as_str(), &proposed)
+                        .resolve_caller_reference(caller, principal.as_str(), proposed)
                         .await
                         .map_err(|_| Refusal::new(ReasonCode::DurabilityUnavailable))?,
                     None => proposed,

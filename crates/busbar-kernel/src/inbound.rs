@@ -1580,8 +1580,8 @@ enum Judging<'a> {
 struct SignedAnswer {
     answer: VerifyAnswer,
     faulted: bool,
-    kinds: Vec<String>,
-    provider: String,
+    kinds: Arc<[String]>,
+    provider: Arc<str>,
 }
 
 pub type SignedIngress = Arc<dyn Fn(&App, &str) -> bool + Send + Sync>;

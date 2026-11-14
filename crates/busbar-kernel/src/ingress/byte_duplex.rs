@@ -37,7 +37,7 @@
 //! what, session-scoped state, cancellation semantics — lives in the plane, on the far side of these
 //! two callbacks. This crate names none of it.
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -145,9 +145,8 @@ struct Shared {
 
     next_ref: AtomicU64,
 
-    inflight: Mutex<std::collections::HashSet<u64>>,
-
-    next_inflight: AtomicU64,
+    /// Handlers spawned and not yet finished; only the count is ever read.
+    inflight: std::sync::atomic::AtomicUsize,
 
     handlers: Arc<tokio::sync::Semaphore>,
 
@@ -211,10 +210,9 @@ const SINK_REFUSED: &str = "the message sink refused the frame (the channel is c
 fn new_shared(sink: Box<dyn FrameSink>) -> Arc<Shared> {
     Arc::new(Shared {
         sink: tokio::sync::Mutex::new(sink),
-        pending: Mutex::new(HashMap::new()),
+        pending: Mutex::new(HashMap::default()),
         next_ref: AtomicU64::new(1),
-        inflight: Mutex::new(std::collections::HashSet::new()),
-        next_inflight: AtomicU64::new(0),
+        inflight: std::sync::atomic::AtomicUsize::new(0),
         handlers: Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_HANDLERS)),
         queued: std::sync::atomic::AtomicUsize::new(0),
     })
@@ -305,9 +303,7 @@ fn spawn_handler<P: DuplexPlane>(
     frame: Vec<u8>,
     permit: tokio::sync::OwnedSemaphorePermit,
 ) {
-    let key = shared.next_inflight.fetch_add(1, Ordering::Relaxed);
-
-    shared.inflight.lock().unwrap().insert(key);
+    shared.inflight.fetch_add(1, Ordering::AcqRel);
 
     shared
         .queued
@@ -321,24 +317,19 @@ fn spawn_handler<P: DuplexPlane>(
 
         let _slot = InflightSlot {
             shared: for_cleanup,
-            key,
         };
         plane.handle(frame, handle).await;
     });
 }
 
+/// One running handler's share of [`Shared::inflight`], released when the handler ends or unwinds.
 struct InflightSlot {
     shared: Arc<Shared>,
-    key: u64,
 }
 
 impl Drop for InflightSlot {
     fn drop(&mut self) {
-        self.shared
-            .inflight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.key);
+        self.shared.inflight.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -347,20 +338,22 @@ async fn drain_and_flush(
     dispatcher: tokio::task::JoinHandle<()>,
     stop_dispatcher: tokio::sync::watch::Sender<bool>,
 ) {
-    let deadline = tokio::time::Instant::now() + EOF_DRAIN;
-
     let working = || {
         shared.queued.load(std::sync::atomic::Ordering::Acquire) > 0
-            || !shared.inflight.lock().unwrap().is_empty()
+            || shared.inflight.load(Ordering::Acquire) > 0
     };
-    while working() && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    // The drain bound is one timer armed here; the poll itself reads no clock.
+    let _ = tokio::time::timeout(EOF_DRAIN, async {
+        while working() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
 
     let _ = stop_dispatcher.send(true);
     let _ = dispatcher.await;
 
-    let stragglers = shared.inflight.lock().unwrap().len();
+    let stragglers = shared.inflight.load(Ordering::Acquire);
     if stragglers > 0 {
         tracing::debug!(
             stragglers,
@@ -371,6 +364,42 @@ async fn drain_and_flush(
 
     if let Err(e) = shared.sink.lock().await.flush().await {
         tracing::debug!(error = %e, "duplex: the end-of-session flush failed; buffered bytes were lost");
+    }
+}
+
+/// The session's newline framer. Each complete frame is handed to the plane as its own buffer, and
+/// the next read starts with that frame's capacity, so a steady stream reads into one allocation per
+/// frame rather than regrowing from empty.
+struct LineFrames<R> {
+    lines: tokio::io::BufReader<R>,
+    buf: Vec<u8>,
+}
+
+impl<R: AsyncRead + Unpin> LineFrames<R> {
+    /// The next non-blank frame, or `None` at end of input, on a read error, or past the frame cap.
+    async fn next(&mut self) -> Option<Vec<u8>> {
+        loop {
+            self.buf.clear();
+
+            let read = (&mut self.lines)
+                .take((MAX_FRAME_BYTES + 1) as u64)
+                .read_until(b'\n', &mut self.buf)
+                .await;
+            match read {
+                Ok(0) | Err(_) => return None,
+                Ok(_) => {}
+            }
+            if self.buf.last() == Some(&b'\n') {
+                self.buf.pop();
+            } else if self.buf.len() > MAX_FRAME_BYTES {
+                return None;
+            }
+            if self.buf.trim_ascii().is_empty() {
+                continue;
+            }
+            let next = Vec::with_capacity(self.buf.len());
+            return Some(std::mem::replace(&mut self.buf, next));
+        }
     }
 }
 
@@ -385,29 +414,12 @@ where
         shared: shared.clone(),
     };
     let (frames, dispatcher, stop_dispatcher) = spawn_dispatcher(&shared, &handle, &plane);
-    let mut lines = tokio::io::BufReader::new(reader);
-    let mut buf: Vec<u8> = Vec::new();
-    loop {
-        buf.clear();
-
-        let read = (&mut lines)
-            .take((MAX_FRAME_BYTES + 1) as u64)
-            .read_until(b'\n', &mut buf)
-            .await;
-        match read {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-        } else if buf.len() > MAX_FRAME_BYTES {
-            break;
-        }
-        if buf.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        if offer_frame(&shared, &plane, &frames, std::mem::take(&mut buf)) == Offered::Overrun {
+    let mut lines = LineFrames {
+        lines: tokio::io::BufReader::new(reader),
+        buf: Vec::new(),
+    };
+    while let Some(frame) = lines.next().await {
+        if offer_frame(&shared, &plane, &frames, frame) == Offered::Overrun {
             break;
         }
     }
