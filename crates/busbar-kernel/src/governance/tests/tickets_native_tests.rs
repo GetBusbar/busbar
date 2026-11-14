@@ -152,7 +152,7 @@ async fn expiry_cleanup_uses_native_time_and_keeps_valid_records_under_fast_call
         .mint_ticket(&id, "tk_", 1, None, b"original", 10)
         .await
         .unwrap();
-    let original_id = gov.checked_ticket("tk_", &original, 10).unwrap().1;
+    let original_id = gov.verify_ticket("tk_", &original, 10).unwrap().0.id;
     gov.mint_ticket(&id, "tk_", 60, None, b"fast-node", 100)
         .await
         .unwrap();

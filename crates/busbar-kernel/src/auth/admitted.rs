@@ -95,10 +95,13 @@ async fn complete_context(
             .filter_map(|strip| HeaderName::from_bytes(strip.name.as_bytes()).ok()),
     );
     let ticketed = claimed_ticket_verdict(
-        request.inner.signed,
-        app.auth.keys_in_chain,
-        request.ticket_prefix(),
-        client_token.as_deref(),
+        PresentedTicket {
+            signed: request.inner.signed,
+            keys_in_chain: app.auth.keys_in_chain,
+            prefix: request.ticket_prefix(),
+            token: client_token.as_deref(),
+            carried: request.carried_ticket(),
+        },
         app.governance.as_ref(),
         busbar_kernel::store::now(),
         app.root_rules.as_ref(),
