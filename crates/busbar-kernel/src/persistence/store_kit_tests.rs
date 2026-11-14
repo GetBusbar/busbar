@@ -70,8 +70,13 @@ impl PersistenceBackend for Mock {
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
-            if request.dataset != DATASET || request.time.is_some() {
+            if request.dataset != DATASET {
                 return Err(Failure::Refused);
+            }
+            if request.time.is_some_and(|guard| !guard.permits(1)) {
+                return Ok(ReadResult::TimeGuardFailed {
+                    observed_at: observed(),
+                });
             }
             let state = self.state.lock().unwrap();
             Ok(ReadResult::Values {
@@ -102,7 +107,7 @@ impl PersistenceBackend for Mock {
                     Decision::OpIdConflict
                 });
             }
-            if candidate.id.dataset != DATASET || candidate.time.is_some() {
+            if candidate.id.dataset != DATASET {
                 return Err(Failure::Refused);
             }
             let initialization = control::initialization(candidate, DATASET);
@@ -126,6 +131,11 @@ impl PersistenceBackend for Mock {
                 {
                     return Ok(Decision::ExpiredUnknown);
                 }
+            }
+            if !blind && candidate.time.is_some_and(|guard| !guard.permits(1)) {
+                return Ok(Decision::TimeGuardFailed {
+                    observed_at: observed(),
+                });
             }
             if !blind {
                 for predicate in &candidate.predicates {
