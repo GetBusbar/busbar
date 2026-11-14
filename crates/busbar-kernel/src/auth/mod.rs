@@ -2811,6 +2811,10 @@ mod acceptance_1_5_5_tests;
 mod ticket_admission_policy;
 
 #[cfg(test)]
+#[path = "tests/ticket_single_path.rs"]
+mod ticket_single_path;
+
+#[cfg(test)]
 #[path = "tests/verified_caller_policy.rs"]
 mod verified_caller_policy;
 
