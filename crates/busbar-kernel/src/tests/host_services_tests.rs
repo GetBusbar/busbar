@@ -398,6 +398,39 @@ fn records_are_refused_on_a_host_with_no_store() {
 }
 
 #[test]
+fn only_a_well_formed_claim_on_a_host_with_no_store_is_unserved_never_a_misconfigured_one() {
+    let s = KernelServices::new();
+    s.admit_sync(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![KIND],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    let a = run(|l| s.records_claim(&caller("inst"), "approval", b"k", 1, l));
+    assert_eq!(
+        (a.outcome, a.value, a.error),
+        (Outcome::Refused, svc::REFUSED_UNSERVED, NO_STORE),
+        "no store bound: the host keeps no claim ledger, so the claim is unserved"
+    );
+    for (who, kind, ttl_ms, why) in [
+        ("stranger", "approval", 1, NOT_ADMITTED),
+        ("inst", "other", 1, NOT_A_KIND),
+        ("inst", "approval", 0, NO_TTL),
+        ("inst", "approval", u64::MAX, EXPIRY_OVERFLOW),
+    ] {
+        let a = run(|l| s.records_claim(&caller(who), kind, b"k", ttl_ms, l));
+        assert_eq!((a.outcome, a.error), (Outcome::Refused, why));
+        assert_ne!(
+            a.value,
+            svc::REFUSED_UNSERVED,
+            "a misconfigured claim ({why}) is refused, never unserved, even with no store bound"
+        );
+    }
+}
+
+#[test]
 fn sign_signs_under_the_declared_domain_with_the_prefixed_key_id() {
     let r = rig();
     let s = r.s.sign(&caller("inst"), b"data");

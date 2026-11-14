@@ -35,8 +35,8 @@ use crate::abi::host::service::{
     TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn,
     VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT,
     CLAIM_WON, CONTENT_BLOCK, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN,
-    SECRET_LIVE, SNAPSHOT_NOT_READY_VALUE, TICKET_TAKEN, TRUST_DECIDE_APPROVE, TRUST_DECIDE_REVOKE,
-    TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
+    REFUSED_UNSERVED, SECRET_LIVE, SNAPSHOT_NOT_READY_VALUE, TICKET_TAKEN, TRUST_DECIDE_APPROVE,
+    TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Field, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -75,7 +75,8 @@ pub enum WorkStatus {
 /// Why a service call has no value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceError {
-    /// The host serves no such service.
+    /// The host serves no such service: its slot is absent, or it answered REFUSED marked
+    /// [`REFUSED_UNSERVED`](crate::abi::host::service::REFUSED_UNSERVED).
     Unserved,
     /// The host refused or failed the call.
     Declined(Outcome),
@@ -1933,6 +1934,11 @@ impl<K: KindMarker> Services<K> {
         // borrowed output slices. The trusted host writes only those buffers during `slot`;
         // they remain live and unwritten while the validator reads the reported answer.
         let filled = unsafe { check(input, ret, &out) }.map_err(|_| ServiceError::Broken)?;
+        // A REFUSED the host marks as unserved reads as the absent slot does; any other REFUSED
+        // stays a refusal.
+        if ret.outcome() == Outcome::Refused && out.value == REFUSED_UNSERVED {
+            return Err(ServiceError::Unserved);
+        }
         Ok((ret.outcome(), out, filled))
     }
 
