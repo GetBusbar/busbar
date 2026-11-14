@@ -4,8 +4,8 @@
 use super::HistoricalFact;
 use crate::{
     legacy::{
-        assemble_usage, attach_metering_units, attach_usage_units, canonical_metering,
-        canonical_usage, transform::Output, HistoricalRow, UsageCell,
+        assemble_usage, canonical_metering, canonical_usage, transform::Output, HistoricalRow,
+        UsageCell,
     },
     Error,
 };
@@ -13,7 +13,7 @@ use busbar_contract::{
     persistence::lifecycle::source::{AccountingRole, RequestAggregation},
     records::{MeteringRow, ModelTokens, UsageLedger, RESERVED_UNITS},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 fn invalid(_: crate::legacy::Error) -> Error {
     Error::Verification
 }
@@ -45,10 +45,8 @@ fn projections<'a>(
 ) -> Result<VerifiedAccounting, Error> {
     let mut exact_usage = BTreeMap::<UsageKey, UsageLedger>::new();
     let mut usage_mirrors = BTreeMap::<(UsageKey, String), UsageLedger>::new();
-    let mut usage_units = BTreeMap::<(UsageKey, String, String), i128>::new();
     let mut exact_metering = BTreeMap::<MeterKey, MeteringRow>::new();
     let mut meter_mirrors = BTreeMap::<MeterKey, MeteringRow>::new();
-    let mut meter_units = BTreeMap::<(MeterKey, String), i128>::new();
     for input in rows {
         let (authoritative, decoded) = input?;
         let duplicate = match decoded {
@@ -60,48 +58,12 @@ fn projections<'a>(
             HistoricalRow::Usage(cell) => usage_mirrors
                 .insert(((cell.bucket, cell.window), cell.model), cell.ledger)
                 .is_some(),
-            HistoricalRow::UsageUnit {
-                bucket,
-                window,
-                model,
-                unit,
-                count,
-            } => usage_units
-                .insert(((bucket, window), model, unit), count)
-                .is_some(),
             HistoricalRow::Metering { bucket, row } if authoritative => exact_metering
                 .insert(meter_key(bucket, &row), row)
                 .is_some(),
             HistoricalRow::Metering { bucket, row } if !authoritative => {
                 meter_mirrors.insert(meter_key(bucket, &row), row).is_some()
             }
-            HistoricalRow::MeteringUnit {
-                bucket,
-                key_id,
-                provider,
-                model,
-                priced_from_ms,
-                key_group_at_use: Some(group),
-                pricing_version: Some(version),
-                unit,
-                count,
-            } => meter_units
-                .insert(
-                    (
-                        (
-                            bucket,
-                            key_id,
-                            provider,
-                            model,
-                            priced_from_ms,
-                            group,
-                            version,
-                        ),
-                        unit,
-                    ),
-                    count,
-                )
-                .is_some(),
             _ => return Err(Error::UnsupportedPath),
         };
         if duplicate {
@@ -139,33 +101,15 @@ fn projections<'a>(
             {
                 return Err(Error::Verification);
             }
-            for (unit, count) in &model.usage_units {
-                if RESERVED_UNITS.contains(&unit.as_str()) || *count == 0 {
-                    continue;
-                }
-                if usage_units.remove(&(key.clone(), model.model.clone(), unit.clone()))
-                    != Some(projected(*count))
-                {
-                    return Err(Error::Verification);
-                }
+            // A released source has no open-unit mirror rows, so a non-zero open
+            // unit in the exact ledger cannot be proven.
+            if model
+                .usage_units
+                .iter()
+                .any(|(unit, count)| !RESERVED_UNITS.contains(&unit.as_str()) && *count != 0)
+            {
+                return Err(Error::Verification);
             }
-        }
-    }
-    // A valid writer may have persisted a zero open-unit mirror immediately
-    // before omitting zero open units from its exact JSON. Keep its raw source
-    // evidence and coverage; it must still name an existing exact model.
-    for ((key, model, unit), count) in &usage_units {
-        if *count != 0
-            || RESERVED_UNITS.contains(&unit.as_str())
-            || !exact_usage.get(key).is_some_and(|ledger| {
-                ledger.models.iter().any(|m| {
-                    m.model == *model
-                        && !m.model.is_empty()
-                        && m.usage_units.get(unit).copied().unwrap_or(0) == 0
-                })
-            })
-        {
-            return Err(Error::Verification);
         }
     }
     if !usage_mirrors.is_empty() {
@@ -179,18 +123,12 @@ fn projections<'a>(
         expected.tokens_cache_write = projected(expected.tokens_cache_write);
         expected.requests = projected_requests(expected.requests);
         expected.billable_requests = projected_requests(expected.billable_requests);
-        for (unit, count) in &mut expected.usage_units {
-            *count = projected(*count);
-            if meter_units.remove(&(key.clone(), unit.clone())) != Some(*count) {
-                return Err(Error::Verification);
-            }
-        }
-        expected.usage_units.clear();
-        if meter_mirrors.remove(key).as_ref() != Some(&expected) {
+        if !expected.usage_units.is_empty() || meter_mirrors.remove(key).as_ref() != Some(&expected)
+        {
             return Err(Error::Verification);
         }
     }
-    if !meter_mirrors.is_empty() || !meter_units.is_empty() {
+    if !meter_mirrors.is_empty() {
         return Err(Error::Verification);
     }
     Ok(VerifiedAccounting {
@@ -208,109 +146,25 @@ fn projections<'a>(
 fn fragments(decoded: Vec<HistoricalRow<'_>>, out: &mut Output) -> Result<(), Error> {
     let mut usage = BTreeMap::<(String, u64), Vec<UsageCell>>::new();
     let mut meters = Vec::new();
-    let mut units = Vec::new();
     for row in decoded {
         match row {
             HistoricalRow::Usage(cell) => usage
                 .entry((cell.bucket.clone(), cell.window))
                 .or_default()
                 .push(cell),
-            HistoricalRow::UsageUnit { .. } | HistoricalRow::MeteringUnit { .. } => units.push(row),
             HistoricalRow::Metering { bucket, row } => meters.push((bucket, row)),
             _ => return Err(Error::UnsupportedPath),
         }
     }
-    // Historical readers explicitly allowed sparse open-unit-only
-    // usage groups and supplied zero absent request/reserved columns.
-    for unit in &units {
-        if let HistoricalRow::UsageUnit { bucket, window, .. } = unit {
-            usage.entry((bucket.clone(), *window)).or_default();
-        }
-    }
-    let mut consumed = BTreeSet::new();
     for ((bucket, window), cells) in usage {
-        let mut selected = Vec::new();
-        for (i, unit) in units.iter().enumerate() {
-            if let HistoricalRow::UsageUnit {
-                bucket: b,
-                window: w,
-                model,
-                unit,
-                count,
-            } = unit
-            {
-                if b == &bucket && *w == window {
-                    consumed.insert(i);
-                    selected.push(HistoricalRow::UsageUnit {
-                        bucket: b.clone(),
-                        window: *w,
-                        model: model.clone(),
-                        unit: unit.clone(),
-                        count: *count,
-                    });
-                }
-            }
-        }
-        let base = if cells.is_empty() {
-            UsageLedger::default()
-        } else {
-            assemble_usage(&cells).map_err(invalid)?
-        };
-        let ledger = attach_usage_units(&bucket, window, &base, &selected).map_err(invalid)?;
+        let ledger = assemble_usage(&cells).map_err(invalid)?;
         out.canonical(
             canonical_usage(&bucket, window, &ledger).map_err(invalid)?,
             true,
         )?;
     }
     for (bucket, row) in meters {
-        let mut selected = Vec::new();
-        for (i, unit) in units.iter().enumerate() {
-            if let HistoricalRow::MeteringUnit {
-                bucket: b,
-                key_id,
-                provider,
-                model,
-                priced_from_ms,
-                key_group_at_use,
-                pricing_version,
-                unit,
-                count,
-            } = unit
-            {
-                if *b == bucket
-                    && key_id == &row.key_id
-                    && provider == &row.provider
-                    && model == &row.model
-                    && *priced_from_ms == row.priced_from_ms
-                    && key_group_at_use
-                        .as_ref()
-                        .is_none_or(|v| v == &row.key_group_at_use)
-                    && pricing_version
-                        .as_ref()
-                        .is_none_or(|v| v == &row.pricing_version)
-                {
-                    if !consumed.insert(i) {
-                        return Err(Error::Verification);
-                    }
-                    selected.push(HistoricalRow::MeteringUnit {
-                        bucket: *b,
-                        key_id: key_id.clone(),
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        priced_from_ms: *priced_from_ms,
-                        key_group_at_use: key_group_at_use.clone(),
-                        pricing_version: pricing_version.clone(),
-                        unit: unit.clone(),
-                        count: *count,
-                    });
-                }
-            }
-        }
-        let row = attach_metering_units(bucket, &row, &selected).map_err(invalid)?;
         out.canonical(canonical_metering(bucket, &row).map_err(invalid)?, true)?;
-    }
-    if consumed.len() != units.len() {
-        return Err(Error::Verification);
     }
     Ok(())
 }
@@ -345,53 +199,11 @@ fn row(fact: &HistoricalFact) -> Result<(AccountingRole, HistoricalRow<'static>)
                 })
             },
         ),
-        HistoricalFact::UsageUnit {
-            bucket,
-            window,
-            model,
-            unit,
-            count,
-            role,
-        } => (
-            *role,
-            HistoricalRow::UsageUnit {
-                bucket: bucket.clone(),
-                window: *window,
-                model: model.clone(),
-                unit: unit.clone(),
-                count: *count,
-            },
-        ),
         HistoricalFact::Metering { bucket, row, role } => (
             *role,
             HistoricalRow::Metering {
                 bucket: *bucket,
                 row: row.clone(),
-            },
-        ),
-        HistoricalFact::MeteringUnit {
-            bucket,
-            key_id,
-            provider,
-            model,
-            priced_from_ms,
-            key_group_at_use,
-            pricing_version,
-            unit,
-            count,
-            role,
-        } => (
-            *role,
-            HistoricalRow::MeteringUnit {
-                bucket: *bucket,
-                key_id: key_id.clone(),
-                provider: provider.clone(),
-                model: model.clone(),
-                priced_from_ms: *priced_from_ms,
-                key_group_at_use: key_group_at_use.clone(),
-                pricing_version: pricing_version.clone(),
-                unit: unit.clone(),
-                count: *count,
             },
         ),
         _ => return Err(Error::Corrupt),
@@ -493,10 +305,7 @@ mod tests {
             models: vec![ModelTokens {
                 scale: 6,
                 model: "m".into(),
-                usage_units: BTreeMap::from([
-                    ("input".into(), i128::from(i64::MAX) + 1),
-                    ("seconds".into(), 9),
-                ]),
+                usage_units: BTreeMap::from([("input".into(), i128::from(i64::MAX) + 1)]),
             }],
         }
     }
@@ -547,14 +356,6 @@ mod tests {
                 },
                 AccountingRole::Signed64Projection,
             ),
-            fact(HistoricalFact::UsageUnit {
-                bucket: "bucket".into(),
-                window: 0,
-                model: "m".into(),
-                unit: "seconds".into(),
-                count: 9,
-                role: AccountingRole::Signed64Projection,
-            }),
         ]
     }
     fn output(facts: &[FactRow]) -> Result<Vec<crate::TargetRow>, Error> {
@@ -574,7 +375,7 @@ mod tests {
                 .iter()
                 .any(|r| r.address == address && r.value == value));
         }
-        for missing in 0..4 {
+        for missing in 0..3 {
             let mut facts = projected_group();
             facts.remove(missing);
             assert!(
@@ -583,8 +384,8 @@ mod tests {
             );
         }
         let mut wrong = projected_group();
-        if let HistoricalFact::UsageUnit { count, .. } = &mut wrong[3].chunk.facts[0] {
-            *count = 10;
+        if let HistoricalFact::Usage { ledger, .. } = &mut wrong[0].chunk.facts[0] {
+            ledger.models[0].usage_units.insert("seconds".into(), 9);
         }
         assert!(matches!(output(&wrong), Err(Error::Verification)));
     }
