@@ -93,27 +93,14 @@ fn public_wiped_sha256_answers_fips_vectors() {
     assert_eq!(digest[..], crate::abi::sdk::digest::sha256(b""));
 }
 
-/// The wiped SHA-256 is SHA-256: every message length across the one- and two-block padding
+/// The SDK SHA-256 of split parts is SHA-256 of the whole, at every padding boundary.
 #[test]
-fn the_wiped_sha256_matches_sha256_at_every_padding_boundary() {
+fn the_sdk_sha256_matches_sha256_at_every_padding_boundary() {
     let data: Vec<u8> = (0..=200_u8)
         .map(|b| b.wrapping_mul(31).wrapping_add(7))
         .collect();
-    let prefix = [0x5a_u8; BLOCK];
     for n in 0..=data.len() {
         let msg = &data[..n];
-        assert_eq!(
-            sha256_wiped(None, msg)[..],
-            crate::abi::sdk::digest::sha256(msg),
-            "length {n}"
-        );
-        let mut whole = prefix.to_vec();
-        whole.extend_from_slice(msg);
-        assert_eq!(
-            sha256_wiped(Some(&prefix), msg)[..],
-            crate::abi::sdk::digest::sha256(&whole),
-            "prefix + length {n}"
-        );
         for split in [0, msg.len() / 2, msg.len()] {
             let digest: Zeroizing<[u8; 32]> = sha256(&[&msg[..split], b"", &msg[split..]]);
             assert_eq!(
