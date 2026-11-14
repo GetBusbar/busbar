@@ -31,7 +31,7 @@ fn a_heterogeneous_pool_warning_prints_once_per_boot() {
     std::fs::write(
         dir.join("providers.yaml"),
         "first:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n\
-         second:\n  protocol: openai-chat\n  base_url: \"http://127.0.0.1:9\"\n",
+         second:\n  protocol: openai\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
     std::fs::write(
