@@ -974,7 +974,7 @@ mod tests {
     /// thread failed, skipped/failed case) is absent from the report, not a real-looking 0.0.
     #[test]
     fn unmeasured_cpu_is_absent_not_zero() {
-        let v = sonic_rs::to_value(CaseResult::default()).unwrap();
+        let v = sonic_rs::to_value(&CaseResult::default()).unwrap();
         assert!(v.get("cpu_us_per_req").is_none(), "{v}");
         assert!(v.get("hammer_cpu_us_per_req").is_none(), "{v}");
     }
