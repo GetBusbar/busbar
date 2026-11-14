@@ -24,7 +24,7 @@ use std::sync::OnceLock;
 /// The caller credential read once from the original head's carriers. Both of today's views are
 /// kept, so the DPoP difference stays exact.
 struct Carried {
-    /// `inbound_candidate`'s answer: a DPoP-bound token first (when this node is an OAuth
+    /// The inbound candidate's answer: a DPoP-bound token first (when this node is an OAuth
     /// authorization server), else the first carrier.
     candidate: Option<Secret<String>>,
     /// `extract_client_token`'s answer: the first carrier only.
@@ -70,7 +70,7 @@ impl Derived {
         })
     }
 
-    /// The inbound candidate credential (DPoP-preferring), as `inbound_candidate` reads it.
+    /// The inbound candidate credential (DPoP-preferring).
     pub(crate) fn candidate(
         &self,
         app: &crate::state::App,
