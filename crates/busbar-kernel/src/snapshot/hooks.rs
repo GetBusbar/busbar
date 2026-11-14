@@ -147,7 +147,7 @@ async fn refresh(
         Some(status) => status
             .metrics
             .as_ref()
-            .map(|m| busbar_contract::hook_wire::reply::parse_status_metrics(m))
+            .map(|m| crate::hooks::text_cut::parse_hook_status_metrics(name, m))
             .unwrap_or_default(),
 
         None => Vec::new(),

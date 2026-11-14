@@ -43,6 +43,7 @@ fn same_resolved_inputs(
 
 pub mod gate;
 pub mod taps;
+pub mod text_cut;
 
 pub use busbar_contract::hooks::{
     CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
