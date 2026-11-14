@@ -4031,7 +4031,12 @@ mod transport_pin {
             let issuer = rustls::CertificateError::UnknownIssuer;
             let unknown = rustls::Error::InvalidCertificate(issuer);
             assert_eq!(cause.stage, CAUSE_SECURITY);
-            assert_eq!(cause.text, unknown.to_string(), "the stack's own refusal");
+            assert!(
+                cause.text.starts_with(&unknown.to_string())
+                    && cause.text.contains("does not chain"),
+                "the stack's own refusal, explained: {}",
+                cause.text
+            );
             assert!(
                 cause.text.contains("invalid peer certificate"),
                 "the stack's own words: {}",
