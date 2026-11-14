@@ -202,3 +202,112 @@ fn tls_plain_wiped() {
         drop(c);
     });
 }
+
+/// RED against the r7 snippet (no `Phase::Open` gate): the far end's post-handshake
+/// NewSessionTicket records, alone, make no `ingest` call and deliver no piece.
+#[test]
+fn tls_ticket_only_record_makes_no_ingest() {
+    crate::tls::install_crypto_provider();
+    worker().block_on(async {
+        let before = crate::compose::tls_probe::ingests();
+        // The far end answers nothing: after the handshake it sends only its session tickets.
+        let mut c = dialled(Finish::Hold, b"").await;
+        let quiet = tokio::time::timeout(Duration::from_millis(500), next(&mut c)).await;
+        assert!(
+            quiet.is_err(),
+            "no piece for ticket-only records: {quiet:?}"
+        );
+        assert!(c.is_open(), "the handshake completed");
+        assert_eq!(
+            crate::compose::tls_probe::ingests(),
+            before,
+            "ticket-only records make no ingest call"
+        );
+    });
+}
+
+/// One TLS read of one data record is one `ingest`, however many ticket records surround it.
+#[test]
+fn tls_in_one_ingest_per_read() {
+    crate::tls::install_crypto_provider();
+    worker().block_on(async {
+        let (calls, _) = crate::compose::tls_probe::ingests();
+        let mut c = dialled(Finish::Hold, b"world").await;
+        let quiet = tokio::time::timeout(Duration::from_millis(300), next(&mut c)).await;
+        assert!(quiet.is_err(), "nothing more arrives: {quiet:?}");
+        assert_eq!(
+            crate::compose::tls_probe::ingests().0,
+            calls + 1,
+            "the answer's one record was ingested once; the tickets not at all"
+        );
+    });
+}
+
+/// `tls_out` writes TLS records straight into `out`: byte for byte what a `Vec` sink receives,
+/// through rustls' vectored writes, with `queued` counting every byte and no frame end marked.
+#[test]
+fn tls_out_bytes_identical() {
+    let chunks: [&[u8]; 4] = [
+        b"\x16\x03\x01",
+        b"",
+        b"record-body-0123456789",
+        b"\x17\x03\x03tail",
+    ];
+    let mut out = SecureVec::new();
+    let mut queued = 0_u64;
+    let mut expected = Vec::new();
+    {
+        let mut sink = OutSink {
+            out: &mut out,
+            queued: &mut queued,
+        };
+        let mut rest: Vec<std::io::IoSlice<'_>> =
+            chunks.iter().map(|c| std::io::IoSlice::new(c)).collect();
+        let mut slices = rest.as_mut_slice();
+        while !slices.is_empty() {
+            let n = std::io::Write::write_vectored(&mut sink, slices).unwrap();
+            std::io::IoSlice::advance_slices(&mut slices, n);
+            if n == 0 && slices.iter().all(|s| s.is_empty()) {
+                break;
+            }
+        }
+        std::io::Write::flush(&mut sink).unwrap();
+    }
+    for c in chunks {
+        std::io::Write::write_all(&mut expected, c).unwrap();
+    }
+    assert_eq!(out.as_slice(), expected.as_slice());
+    assert_eq!(queued, expected.len() as u64);
+
+    // A real flight: a ClientHello written through the sink is one well-formed record run whose
+    // lengths add up to what was queued.
+    crate::tls::install_crypto_provider();
+    let roots = rustls::RootCertStore::empty();
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let mut client = rustls::ClientConnection::new(
+        Arc::new(config),
+        rustls_pki_types::ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
+    let mut out = SecureVec::new();
+    let mut queued = 0_u64;
+    let mut sink = OutSink {
+        out: &mut out,
+        queued: &mut queued,
+    };
+    while client.wants_write() {
+        client.write_tls(&mut sink).unwrap();
+    }
+    let bytes = out.as_slice();
+    let mut at = 0;
+    while at < bytes.len() {
+        assert!(at + 5 <= bytes.len(), "a whole record header");
+        let len = usize::from(u16::from_be_bytes([bytes[at + 3], bytes[at + 4]]));
+        at += 5 + len;
+    }
+    assert_eq!(at, bytes.len(), "whole records only");
+    assert_eq!(bytes[0], 0x16, "a handshake record first");
+    assert_eq!(queued, bytes.len() as u64);
+}
