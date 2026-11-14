@@ -49,6 +49,12 @@ version = "1.3.0@git:70f47864db8ae763979f47cde6785449cd790dad"
 importable = false
 notes = "Full exact fixed Git snapshot review, not human owner approval. All 2792 production lines including complete docs/comments reviewed, with unchanged exact Git blobs carried from the prior full review and the entire fixed delta plus127-line regression read; all18tracked files byte-match treefb2cad634f6bbe374f2af449e3888b51d41ceea4. No unsafe Rust, FFI, dependencies, build script, hidden command/network capability or generated deployed code. Caller-directed file/tree read/copy/move/remove are the advertised powerful capabilities, and all error/cleanup paths were reasoned. Fixed non-UTF8 existing-destination clobber preserves overwrite/skip contracts. Progress copying rejects zero buffers before opening destination so errors cannot trigger move-source deletion; new Unix files begin with source mode, opened-handle source permissions precede first data write and are restored after writes. ActualLinux baseline failures and fixed4/4+earlier2/2regressions pass; macOS4/4newcases pass. Windows execution remains unrun. Recorded notes: these APIs intentionally follow normal filesystem/symlink semantics, do not promise no-follow/race-free containment or atomic snapshots, do not copy arbitrary ACLs/ownership, and require caller path authorization/resource budgets; directories and platformpermission semantics differ. These are reviewed advertised contracts, not a confinement waiver or a restriction solely to Busbar's trusted build use. No remaining source-confirmed serious security surprise was found under reasonable documented use. This local nonimportable full audit covers only the exact fixed Git snapshot, not published registry1.3.0 or a release/native-platform qualification."
 
+[[audits.granit-parser]]
+criteria = "safe-to-deploy"
+delta = "2.1.0 -> 2.1.0@git:8c5ec50275a0056501615a039ca1a8e6be103da3"
+importable = false
+notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning): upstream tag 2.1.0 (f8d30ef6, byte-identical src to the published crate) plus two commits adding Options::bom_inside_document_as_content (default false; when true a U+FEFF where a token would begin inside a document starts a plain scalar, as libyaml reads it; BOM before content still skipped) and its doc. scanner.rs +4/-1, options.rs +10, tests. No unsafe, no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."
+
 [[audits.h2]]
 criteria = "safe-to-deploy"
 delta = "0.4.18 -> 0.4.18@git:d6146a5c425e55653cdfebc5660e52d87430c588"
@@ -79,6 +85,12 @@ notes = "Actual source review, not human approval or executed tests. Archive SHA
 criteria = "safe-to-deploy"
 version = "0.3.34"
 notes = "Actual source review, not human approval or executed tests. Exact crate archive SHA256 f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548 matches the target dist lock and every archive file matches reviewed cached source. All implementation code, manifests, README, inline tests and external Rust test reviewed. No unsafe code, code generation, network client, installer or hidden subprocess is present. pkg-config/pkgconf is invoked directly through Command with separate arguments, and output is parsed into library/include/link metadata. Native library source/selection remains an explicit trusted build input, not a route from runtime untrusted requests. No unsafe code. Trusted tool, .pc files, package names and build environment are required. The helper intentionally permits linker arguments and paths from pkg-config output; it is not a validator for malicious system-library metadata. Malformed or non-UTF-8 tool output can panic through UTF-8/first-line parsing or byte-prefix slicing. This is a build failure, with no unsafe memory operation or production parser exposure in intended usage. Command Display output is diagnostic text and not robust shell quoting for hostile names; actual execution does not use that display string."
+
+[[audits.serde-saphyr]]
+criteria = "safe-to-deploy"
+delta = "2.1.1 -> 2.1.1@git:61b12ca45482dbecb3b8461ead62ae05d3777493"
+importable = false
+notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning, both should-fix findings fixed in the second commit): upstream tag 2.1.1 (07bfc26a, byte-identical src to the published crate) plus opt-in Options null_scalars_as_text, lowercase_radix_prefixes_only and bom_inside_document_as_content (all default false), mirroring serde_yaml 0.9's reading; deserializer.rs, key_nodes.rs, parse_scalars.rs, options.rs, cfg.rs, tests. No unsafe (crate forbids it), no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."
 
 [[audits.sseer]]
 criteria = "safe-to-deploy"
@@ -111,15 +123,3 @@ notes = "Full registry snapshot source review, not human approval or executed Ru
 criteria = "safe-to-deploy"
 version = "0.1.5"
 notes = "Actual source review, not human approval or executed Rust tests. Archive SHA256 993ad287eb20e8ba755312801cfe1413e0f25d604075863acaddca10b04c1833 matches the target lock and all archive files match reviewed cached source. Read all handwritten runtime code, manifests and tests; independently parsed all generated range data. Runtime is safe Rust over immutable range tables with no dependencies, build script, procedural macros, FFI, allocation, mutable globals or ambient filesystem/network/process/environment capabilities. Verified sorted/nonoverlapping scalar endpoints, all 3466 general-category ranges against official Unicode18.0.0 data over 1114112 codepoints, and all633 emoji ranges over1112064 Rust scalars. Emoji lookup's sole unwrap is total over Rust scalars; successful binary-search indices stay within the array. Both shipped/default features reviewed. Generator at declared VCS b5594806088d6492327228a74d05c881b9b3c042 read but not executed; generated package table matches its commit-addressed source. This is a source safety audit, not full Unicode conformance certification or an audit of stringprep/dependencies."
-
-[[audits.granit-parser]]
-criteria = "safe-to-deploy"
-delta = "2.1.0 -> 2.1.0@git:8c5ec50275a0056501615a039ca1a8e6be103da3"
-importable = false
-notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning): upstream tag 2.1.0 (f8d30ef6, byte-identical src to the published crate) plus two commits adding Options::bom_inside_document_as_content (default false; when true a U+FEFF where a token would begin inside a document starts a plain scalar, as libyaml reads it; BOM before content still skipped) and its doc. scanner.rs +4/-1, options.rs +10, tests. No unsafe, no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."
-
-[[audits.serde-saphyr]]
-criteria = "safe-to-deploy"
-delta = "2.1.1 -> 2.1.1@git:61b12ca45482dbecb3b8461ead62ae05d3777493"
-importable = false
-notes = "busbar's own patch, reviewed by us (parser input-safety review before pinning, both should-fix findings fixed in the second commit): upstream tag 2.1.1 (07bfc26a, byte-identical src to the published crate) plus opt-in Options null_scalars_as_text, lowercase_radix_prefixes_only and bom_inside_document_as_content (all default false), mirroring serde_yaml 0.9's reading; deserializer.rs, key_nodes.rs, parse_scalars.rs, options.rs, cfg.rs, tests. No unsafe (crate forbids it), no new dependencies, no I/O; default behaviour unchanged. Offered upstream. Covers only this exact revision."

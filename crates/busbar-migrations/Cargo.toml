@@ -19,7 +19,7 @@ serde_json = { workspace = true }
 zeroize = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
-x509-parser = { workspace = true }
+x509-cert = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 [dev-dependencies]

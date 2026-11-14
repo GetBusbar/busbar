@@ -27,7 +27,7 @@ tokio-rustls = { workspace = true }
 futures = { workspace = true }
 tokio-util = { workspace = true }
 webpki-roots = { workspace = true }
-x509-parser = { workspace = true }
+x509-cert = { workspace = true }
 socket2 = { workspace = true }
 # The DTLS protocol engine only (types and state machine); its crypto provider is the backend's,
 # reached through `busbar_contract::crypto::dtls`.
