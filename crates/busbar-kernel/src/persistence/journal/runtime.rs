@@ -154,6 +154,10 @@ impl RuntimeJournal {
             return Err(RuntimeError::Invalid);
         }
         let journal = StoreJournal::new(&store, node).map_err(RuntimeError::from)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the one replay that builds the live head"
+        )]
         let mut replay = journal
             .historical_replay()
             .await
@@ -305,6 +309,10 @@ impl RuntimeJournal {
         budget: BufferBudget,
     ) -> std::result::Result<Vec<JournalRecord>, RuntimeError> {
         let journal = StoreJournal::new(&self.store, node).map_err(RuntimeError::from)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "read-only history of a foreign node, off the live path"
+        )]
         let mut replay = journal
             .historical_replay()
             .await

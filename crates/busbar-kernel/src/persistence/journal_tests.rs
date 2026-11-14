@@ -295,6 +295,7 @@ fn historical_snapshot_refuses_changed_frame_or_unverified_bridge_anchor() {
 }
 
 #[tokio::test]
+#[expect(clippy::disallowed_methods, reason = "tests the replay proof itself")]
 async fn store_snapshot_binds_historical_frames_to_exact_selected_head() {
     let backend = Arc::new(Backend::default());
     let store = attach(backend.clone(), 4).await;
@@ -1247,6 +1248,7 @@ async fn bounds_and_unported_bridge_histories_refuse_before_commit() {
 }
 
 #[tokio::test]
+#[expect(clippy::disallowed_methods, reason = "tests the replay proof itself")]
 async fn verified_original_prefix_survives_append_without_granting_stale_selection() {
     let backend = Arc::new(Backend::default());
     let (store, first) = old_journal(&backend).await;

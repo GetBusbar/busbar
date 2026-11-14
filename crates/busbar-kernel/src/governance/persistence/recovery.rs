@@ -464,6 +464,10 @@ impl<'a> History<'a> {
             return Ok(proof.clone());
         }
         let journal = StoreJournal::new(self.store, node).map_err(unavailable)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "recovery and read-only observation: one cached proof per node"
+        )]
         let mut cursor = journal.historical_replay().await.map_err(unavailable)?;
         // Keep staging private until the entire prefix and its seal are valid.
         // Taking the old cache also bounds the total retained allocation while
@@ -492,6 +496,10 @@ impl<'a> History<'a> {
                 .map_err(unavailable)?;
             return Self::decode_candidate(record);
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "recovery: a record the cached replay did not retain"
+        )]
         let record = journal
             .read_verified_record(&proof, at.sequence)
             .await
