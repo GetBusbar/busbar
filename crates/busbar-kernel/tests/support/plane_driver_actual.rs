@@ -21,6 +21,9 @@ mod close_cases;
 #[path = "plane_driver_session_input_cases.rs"]
 mod session_input_cases;
 
+#[path = "plane_driver_session_route_cases.rs"]
+mod session_route_cases;
+
 #[path = "plane_driver_completion_retirement.rs"]
 mod completion_retirement;
 
@@ -269,6 +272,8 @@ struct Sessions {
     open: Mutex<Vec<u64>>,
     initials: AtomicU64,
     server_first: AtomicBool,
+    /// A server-first session restates its dial route (verb, target) on every caller frame.
+    restates: AtomicBool,
     read: Mutex<Vec<(u64, Vec<u8>)>>,
     read_at: Mutex<Vec<usize>>,
     collects: AtomicU64,
@@ -820,6 +825,12 @@ impl Double {
                 s.read.lock().unwrap().push((i.stream, body.clone()));
                 if s.server_first.load(Ordering::SeqCst) {
                     reply(o, &body);
+                    if s.restates.load(Ordering::SeqCst) {
+                        let mut at = 0;
+                        o.verb = put(i, &mut at, b"GET");
+                        o.target = put(i, &mut at, b"/open");
+                        o.arena_written = at as u64;
+                    }
                     o.flags = EMIT_TO_FAR_END;
                     return ready(Outcome::Ready);
                 }
