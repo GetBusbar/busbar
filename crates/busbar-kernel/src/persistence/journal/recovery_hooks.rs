@@ -208,6 +208,7 @@ impl<'a> StoreJournal<'a> {
             failed: false,
             historical: true,
             records_seal: [0; 32],
+            ahead: Default::default(),
         };
         let mut found = None;
         let mut ordinal = 0u64;
