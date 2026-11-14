@@ -3768,3 +3768,161 @@ async fn an_ungoverned_unit_runs_lent_the_empty_reference() {
         "{lent:?}"
     );
 }
+
+/// One attempt of a [`Refusing`] walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Try {
+    /// The member's own credential could not be presented: nothing was sent.
+    Credential,
+    /// The member shed the request (a retryable failure the walk fails over on).
+    Shed,
+}
+
+/// A far end whose walk is `tries`, one member each, then exhausted as a shed: it says whether
+/// the LAST attempted member refused its credential, as the egress far end does.
+struct Refusing {
+    tries: Vec<Try>,
+    sends: AtomicU32,
+    refused: AtomicBool,
+}
+
+impl Refusing {
+    fn new(tries: &[Try]) -> Self {
+        Self {
+            tries: tries.to_vec(),
+            sends: AtomicU32::new(0),
+            refused: AtomicBool::new(false),
+        }
+    }
+}
+
+impl busbar_kernel::plane_driver::FarEnd for Refusing {
+    fn member<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = busbar_kernel::plane_driver::Pick> + Send + 'a {
+        use busbar_kernel::plane_driver::Pick;
+        let pick = if (attempt_no as usize) <= self.tries.len() {
+            Pick::Member {
+                name: format!("m{attempt_no}"),
+                pool: "pool-a".to_string(),
+                passthrough: false,
+                provider: "acme".to_string(),
+            }
+        } else {
+            Pick::Exhausted {
+                status: 503,
+                retry_after: Some(2),
+                detail: "The service is temporarily overloaded. Please retry shortly.",
+            }
+        };
+        async move { pick }
+    }
+
+    async fn send(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        let at = self.sends.fetch_add(1, Ordering::SeqCst) as usize;
+        let refused = self.tries.get(at) == Some(&Try::Credential);
+        self.refused.store(refused, Ordering::SeqCst);
+        !refused
+    }
+
+    async fn next(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<busbar_kernel::plane_driver::FarPiece> {
+        Some(busbar_kernel::plane_driver::FarPiece {
+            last: true,
+            fail_over: true,
+            ..busbar_kernel::plane_driver::FarPiece::default()
+        })
+    }
+
+    async fn write(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+
+    fn credential_refused(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> bool {
+        self.refused.load(Ordering::SeqCst)
+    }
+}
+
+/// How a [`Refusing`] walk ended: the unit's outcome, the rendered status and body.
+async fn refusing(tries: &[Try]) -> (busbar_contract::caps::Outcome, u32, String) {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        Refusing::new(tries),
+        cases::Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/call", b"p"), 0);
+    let outcome = drive_over(&units).await;
+    let rendered = units.take_rendered().expect("the terminal is rendered");
+    assert_eq!(caller.text(), "", "{tries:?}: nothing reached the caller");
+    (
+        outcome,
+        rendered.status,
+        String::from_utf8_lossy(&rendered.body).into_owned(),
+    )
+}
+
+#[tokio::test]
+async fn an_exhausted_walk_whose_last_member_refused_its_credential_fails_credential_unavailable() {
+    use busbar_contract::caps::{Outcome as Unit, ReasonCode, StepName};
+    for tries in [
+        &[Try::Credential][..],
+        &[Try::Shed, Try::Credential][..],
+        &[Try::Credential, Try::Credential][..],
+    ] {
+        let (outcome, status, body) = refusing(tries).await;
+        assert!(
+            matches!(
+                outcome,
+                Unit::Failed(StepName::Route, ReasonCode::CredentialUnavailable)
+                    | Unit::Refused(StepName::Route, ReasonCode::CredentialUnavailable)
+            ),
+            "{tries:?}: a credential the last member could not present is no overload: {outcome:?}"
+        );
+        assert_eq!(status, 503, "{tries:?}: {body}");
+        assert!(
+            body.starts_with("refused:503:") && !body.contains("overloaded"),
+            "{tries:?}: the credential refusal's own words: {body}"
+        );
+        assert!(
+            !body.contains(":retry="),
+            "{tries:?}: a retry hits the same refusal, so no Retry-After: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_credential_refusal_followed_by_a_shed_still_exhausts_with_retry_after() {
+    use busbar_contract::caps::{Outcome as Unit, ReasonCode, StepName};
+    let (outcome, status, body) = refusing(&[Try::Credential, Try::Shed]).await;
+    assert!(
+        matches!(
+            outcome,
+            Unit::Failed(StepName::Route, ReasonCode::BreakerOpen)
+                | Unit::Refused(StepName::Route, ReasonCode::BreakerOpen)
+        ),
+        "the last member shed: its retryable answer stands: {outcome:?}"
+    );
+    assert_eq!(status, 503);
+    assert_eq!(
+        body,
+        "refused:503:The service is temporarily overloaded. Please retry shortly.:retry=2"
+    );
+}
