@@ -23,7 +23,7 @@ use crate::carrier::{Carried, Dest, DialFailure};
 use crate::endpoint;
 use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
 use crate::hostio::HostIo;
-use crate::secure_vec::{Scratch, SecureVec, Tail, READ_SCRATCH};
+use crate::secure_vec::{Scratch, SecureVec, Tail, READ_SCRATCH, TLS_PLAIN};
 
 /// How much one socket read takes.
 const READ_CHUNK: usize = 16 * 1024;
@@ -159,6 +159,26 @@ fn dial_failure(f: DialFailure) -> Failure {
     match f {
         DialFailure::Refused(t) => Failure::Refused(t),
         DialFailure::Failed(t) => Failure::Failed(t),
+    }
+}
+
+/// `rustls::Connection::write_tls`'s sink: TLS records appended to the connection's `out`.
+struct OutSink<'a> {
+    out: &'a mut SecureVec,
+    queued: &'a mut u64,
+}
+
+impl Write for OutSink<'_> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        self.out
+            .extend(b)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        *self.queued += b.len() as u64;
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -2001,16 +2021,21 @@ impl Connection {
             return self.ingest(bytes, end, end_of_frame);
         };
         let mut rest = bytes;
+        // The plaintext rustls holds after the last `process_new_packets` (T6: an exact read).
+        let mut plaintext = 0_usize;
         while !rest.is_empty() {
             if tls.read_tls(&mut rest).map_err(failed)? == 0 {
                 break;
             }
-            if let Err(e) = tls.process_new_packets() {
-                self.security_error = Some(e.to_string());
-                // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
-                // peer sees it before the TCP close.
-                let _ = self.tls_out();
-                return Err(Failure::Refused(format!("tls: {e}")));
+            match tls.process_new_packets() {
+                Ok(state) => plaintext = state.plaintext_bytes_to_read(),
+                Err(e) => {
+                    self.security_error = Some(e.to_string());
+                    // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
+                    // peer sees it before the TCP close.
+                    let _ = self.tls_out();
+                    return Err(Failure::Refused(format!("tls: {e}")));
+                }
             }
         }
         if end {
@@ -2039,25 +2064,27 @@ impl Connection {
                 self.begin()?;
             }
         }
-        let mut plain = Vec::new();
+        // T6: the plaintext lands in this thread's TLS_PLAIN scratch (never the carrier's), read
+        // exactly: no doubling `Vec`, no 16 KiB stack buffer, and the guard wipes it on every exit.
+        let mut plain = Scratch::take(&TLS_PLAIN);
         let mut closed = false;
         if let Some(tls) = self.tls.as_mut() {
-            let mut buf = [0_u8; READ_CHUNK];
-            loop {
-                match tls.reader().read(&mut buf) {
-                    Ok(0) => {
-                        closed = true;
-                        break;
-                    }
-                    Ok(n) => plain.extend_from_slice(&buf[..n]),
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(e) => return Err(failed(e)),
+            if plaintext > 0 {
+                match plain
+                    .read_into(plaintext, Tail::Trusted, |dst| tls.reader().read(dst))
+                    .map_err(|_| Failure::Refused("tls read buffer".into()))?
+                {
+                    Ok(k) if k == plaintext => {}
+                    _ => return Err(Failure::Refused("tls: plaintext count mismatch".into())),
                 }
             }
+            // RED STUB (TRANSPORT-TLS §8 item 5): the r2 shape, one exact read and no further
+            // read, so a close_notify or an unclean end is never seen.
+            let _ = &mut closed;
         }
         self.tls_out()?;
         if matches!(self.phase, Phase::Open) && (!plain.is_empty() || closed) {
-            self.ingest(&plain, closed, true)?;
+            self.ingest(plain.as_slice(), closed, true)?;
         }
         Ok(())
     }
@@ -2166,14 +2193,27 @@ impl Connection {
         Ok(())
     }
 
-    /// Move whatever TLS owes the far side into the socket's queue.
+    /// Move whatever TLS owes the far side into the socket's queue, straight into `out` (T6: no
+    /// temporary `Vec`, one copy). It marks no frame end.
     fn tls_out(&mut self) -> Result<(), Failure> {
         if let Some(tls) = self.tls.as_mut() {
-            let mut bytes = Vec::new();
+            let mut sink = OutSink {
+                out: &mut self.out,
+                queued: &mut self.queued,
+            };
             while tls.wants_write() {
-                tls.write_tls(&mut bytes).map_err(failed)?;
+                match tls.write_tls(&mut sink) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::OutOfMemory => {
+                        tracing::warn!(
+                            dest = %self.target,
+                            "connector write buffer allocation failed; connection closed"
+                        );
+                        return Err(Failure::Refused("write buffer".into()));
+                    }
+                    Err(e) => return Err(failed(e)),
+                }
             }
-            self.queue(&bytes, false)?;
         }
         Ok(())
     }
@@ -2210,3 +2250,7 @@ mod out_tests;
 #[cfg(test)]
 #[path = "tests/compose_read_tests.rs"]
 mod read_tests;
+
+#[cfg(test)]
+#[path = "tests/compose_tls_tests.rs"]
+mod tls_tests;

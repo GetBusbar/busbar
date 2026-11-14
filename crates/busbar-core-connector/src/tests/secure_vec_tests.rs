@@ -293,3 +293,16 @@ fn read_scratch_reentrant_never_aliases() {
         slot.set(Some(kept));
     });
 }
+
+/// T6 has its own slot: holding the carrier read's scratch never empties the TLS plaintext's.
+#[test]
+fn scratch_slots_are_independent() {
+    let before = misses();
+    let mut read = Scratch::take(&READ_SCRATCH);
+    read.extend(b"ciphertext").unwrap();
+    let mut plain = Scratch::take(&TLS_PLAIN);
+    plain.extend(b"plaintext").unwrap();
+    assert_eq!(misses(), before, "neither taker found its slot held");
+    assert_eq!(read.as_slice(), b"ciphertext");
+    assert_eq!(plain.as_slice(), b"plaintext");
+}
