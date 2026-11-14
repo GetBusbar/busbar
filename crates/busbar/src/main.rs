@@ -16,9 +16,15 @@
 
 #![forbid(unsafe_code)]
 
-#[cfg(not(target_env = "msvc"))]
+#[cfg(all(not(target_env = "msvc"), not(test)))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// Test builds count every allocation for the per-request work-budget gate (`perf/work-budget.toml`).
+#[cfg(all(not(target_env = "msvc"), test))]
+#[global_allocator]
+static GLOBAL: busbar_contract::work_count::Counting<tikv_jemallocator::Jemalloc> =
+    busbar_contract::work_count::Counting(tikv_jemallocator::Jemalloc);
 
 use std::sync::Arc;
 use std::time::Duration;
