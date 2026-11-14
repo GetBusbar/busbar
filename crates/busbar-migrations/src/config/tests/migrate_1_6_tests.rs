@@ -70,11 +70,11 @@ fn a_provider_1_5_5_admitted_ungoverned_gains_the_ungoverned_binding_and_a_warni
     );
     assert_eq!(
         rb.at("corp").at("*"),
-        &Value::Map(Mapping::new()),
+        &Value::Map(Mapping::new().into()),
         "{}",
         out.yaml
     );
-    assert_eq!(rb.at("sso").at("*"), &Value::Map(Mapping::new()));
+    assert_eq!(rb.at("sso").at("*"), &Value::Map(Mapping::new().into()));
     assert_eq!(
         rb.at("sso").at("eng").at("allowed_pools"),
         &yaml::from_str::<Value>("[fast]").unwrap(),

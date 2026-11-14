@@ -235,7 +235,7 @@ fn registry_planes() -> Vec<PlaneFacts> {
 /// without native format provenance. This never changes Store bootstrap bindings,
 /// repins plugins, rewrites catalogs or applies implicit historical access grants.
 pub(super) fn migrate_recognized(
-    root: &mut Mapping,
+    root: &mut Pairs,
     host: &dyn MigrateHost,
     ledger: &mut Ledger<'_>,
 ) {
@@ -276,12 +276,12 @@ pub(super) fn migrate_recognized(
     }
 }
 
-pub(super) fn migrate(root: &mut Mapping, host: &dyn MigrateHost, ledger: &mut Ledger<'_>) {
+pub(super) fn migrate(root: &mut Pairs, host: &dyn MigrateHost, ledger: &mut Ledger<'_>) {
     migrate_over(root, host, ledger, &registry_planes());
 }
 
 pub(super) fn migrate_over(
-    root: &mut Mapping,
+    root: &mut Pairs,
     host: &dyn MigrateHost,
     ledger: &mut Ledger<'_>,
     planes: &[PlaneFacts],
@@ -365,7 +365,7 @@ fn migration_json(
 }
 
 fn sites(
-    root: &Mapping,
+    root: &Pairs,
     planes: &[PlaneFacts],
     host: &dyn MigrateHost,
     ledger: &mut Ledger<'_>,
@@ -541,7 +541,7 @@ struct ProviderDocuments {
 }
 
 fn merged_providers(
-    root: &Mapping,
+    root: &Pairs,
     host: &dyn MigrateHost,
     ledger: &mut Ledger<'_>,
 ) -> Result<ProviderDocuments, ()> {
@@ -619,7 +619,7 @@ fn kind_word(kind: Kind) -> &'static str {
 }
 
 fn apply(
-    root: &mut Mapping,
+    root: &mut Pairs,
     host: &dyn MigrateHost,
     site: &Site,
     handed: &serde_json::Value,
@@ -865,7 +865,7 @@ fn decimal_value(text: &str) -> Option<(bool, String, i64)> {
 }
 
 fn write_back(
-    root: &mut Mapping,
+    root: &mut Pairs,
     site: &Site,
     handed: &serde_json::Value,
     settings: &serde_json::Value,
@@ -901,7 +901,7 @@ fn write_back(
     let Some((last, parents)) = site.at.split_last() else {
         return Err("no place to write".into());
     };
-    let mut at: &mut Mapping = root;
+    let mut at: &mut Pairs = root;
     for seg in parents {
         at = match at.get_key_mut(seg.as_str()) {
             Some(Value::Map(m)) => m,
@@ -916,7 +916,7 @@ fn write_back(
     Ok(())
 }
 
-fn allow_destination(root: &mut Mapping, plugin: &str, host: &str, ledger: &mut Ledger<'_>) {
+fn allow_destination(root: &mut Pairs, plugin: &str, host: &str, ledger: &mut Ledger<'_>) {
     let host = host.trim();
     if host.is_empty() {
         return;
@@ -932,8 +932,8 @@ fn allow_destination(root: &mut Mapping, plugin: &str, host: &str, ledger: &mut 
     }
 }
 
-fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, String> {
-    let advanced = root.entry_or_insert_with(field::ADVANCED, || Value::Map(Mapping::new()));
+fn push_allowed(root: &mut Pairs, plugin: &str, host: &str) -> Result<bool, String> {
+    let advanced = root.entry_or_insert_with(field::ADVANCED, || Value::Map(Pairs::new()));
     let Value::Map(advanced) = advanced else {
         return Err(format!(
             "advanced: is not a mapping, so '{host}', which the plugin '{plugin}' needs allowed, \
@@ -955,7 +955,7 @@ fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, St
     Ok(true)
 }
 
-fn already_allowed(root: &Mapping, name: &str) -> bool {
+fn already_allowed(root: &Pairs, name: &str) -> bool {
     let Some(Value::Map(advanced)) = root.get_key(field::ADVANCED) else {
         return false;
     };
@@ -969,7 +969,7 @@ fn already_allowed(root: &Mapping, name: &str) -> bool {
 }
 
 fn allow_if_private(
-    root: &mut Mapping,
+    root: &mut Pairs,
     host: &dyn MigrateHost,
     plugin: &str,
     raised: &str,
@@ -1094,7 +1094,7 @@ fn allow_if_private(
     }
 }
 
-fn fetch_list(root: &mut Mapping) -> Option<&mut Vec<Value>> {
+fn fetch_list(root: &mut Pairs) -> Option<&mut Vec<Value>> {
     let Some(Value::Map(plugins)) = root.get_key_mut(field::PLUGINS) else {
         return None;
     };
@@ -1104,7 +1104,7 @@ fn fetch_list(root: &mut Mapping) -> Option<&mut Vec<Value>> {
     }
 }
 
-fn repin_fetch(root: &mut Mapping, host: &dyn MigrateHost, ledger: &mut Ledger<'_>) {
+fn repin_fetch(root: &mut Pairs, host: &dyn MigrateHost, ledger: &mut Ledger<'_>) {
     let Some(list) = fetch_list(root) else {
         return;
     };
@@ -1151,7 +1151,7 @@ fn repo_of(github: &str) -> String {
 }
 
 fn pin_unserved(
-    root: &mut Mapping,
+    root: &mut Pairs,
     host: &dyn MigrateHost,
     wanted: &[(String, String)],
     ledger: &mut Ledger<'_>,
@@ -1186,7 +1186,7 @@ fn pin_unserved(
         if have.contains(&repo_of(&pin)) {
             continue;
         }
-        let plugins = root.entry_or_insert_with(field::PLUGINS, || Value::Map(Mapping::new()));
+        let plugins = root.entry_or_insert_with(field::PLUGINS, || Value::Map(Pairs::new()));
         let Value::Map(plugins) = plugins else {
             ledger.todos.push("plugins: is not a mapping; required plugin pins could not be added. The original value was preserved; fix plugins and re-run migration".into());
             return;
@@ -1196,7 +1196,7 @@ fn pin_unserved(
             ledger.todos.push("plugins.fetch: is not a list; required plugin pins could not be added. The original value was preserved; fix plugins.fetch and re-run migration".into());
             return;
         };
-        let mut entry = Mapping::new();
+        let mut entry = Pairs::new();
         entry.insert_key(FETCH_GITHUB_PIN_KEY, Value::from(pin.as_str()));
         list.push(Value::Map(entry));
         ledger.changes.push(format!(

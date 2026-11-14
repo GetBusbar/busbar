@@ -252,7 +252,7 @@ fn registration(
     pin.insert_key("key", key.into());
     let mut r = Mapping::new();
     r.insert_key(target, url.into());
-    r.insert_key(pin_key(served).0, Value::Map(pin));
+    r.insert_key(pin_key(served).0, Value::Map(pin.into()));
     if let Some((cert, private)) = identity {
         let mut id = Mapping::new();
         id.insert_key("cert", file(cert));
@@ -263,9 +263,9 @@ fn registration(
         } else {
             trust
         };
-        r.insert_key(identity, Value::Map(id));
+        r.insert_key(identity, Value::Map(id.into()));
     }
-    Value::Map(r)
+    Value::Map(r.into())
 }
 
 fn seal(

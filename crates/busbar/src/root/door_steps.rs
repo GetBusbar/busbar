@@ -2217,16 +2217,16 @@ impl busbar_kernel::appbuild::RootRules for Rules {
 pub fn kernel_sections(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Result<BTreeMap<&'static str, busbar_contract::yaml::Value>, String> {
-    use busbar_contract::yaml::{Mapping, Value};
-    fn opt(m: &mut Mapping, key: &str, v: Option<Value>) {
+    use busbar_contract::yaml::{Pairs, Value};
+    fn opt(m: &mut Pairs, key: &str, v: Option<Value>) {
         if let Some(v) = v {
             m.insert_key(Value::from(key), v);
         }
     }
     let mut out = BTreeMap::new();
-    let mut providers = Mapping::new();
+    let mut providers = Pairs::new();
     for (name, p) in &cfg.providers {
-        let mut m = Mapping::new();
+        let mut m = Pairs::new();
         for (key, value) in &p.table {
             m.insert_key(
                 Value::from(key.clone()),
@@ -2242,9 +2242,9 @@ pub fn kernel_sections(
         );
         providers.insert_key(Value::from(name.clone()), Value::Map(m));
     }
-    let mut models = Mapping::new();
+    let mut models = Pairs::new();
     for (name, model) in &cfg.models {
-        let mut m = Mapping::new();
+        let mut m = Pairs::new();
         m.insert_key(
             Value::from(MODEL_PROVIDER_KEY),
             Value::from(model.provider.clone()),
@@ -2272,13 +2272,13 @@ pub fn kernel_sections(
         );
         models.insert_key(Value::from(name.clone()), Value::Map(m));
     }
-    let mut pools = Mapping::new();
+    let mut pools = Pairs::new();
     for (name, pool) in &cfg.pools {
         let members = pool
             .members
             .iter()
             .map(|member| {
-                let mut m = Mapping::new();
+                let mut m = Pairs::new();
                 m.insert_key(Value::from("model"), Value::from(member.model.clone()));
                 opt(&mut m, "reasoning", member.reasoning.map(Value::from));
                 opt(
@@ -2289,7 +2289,7 @@ pub fn kernel_sections(
                 Value::Map(m)
             })
             .collect();
-        let mut p = Mapping::new();
+        let mut p = Pairs::new();
         p.insert_key(Value::from(POOL_MEMBERS_KEY), Value::Array(members));
         if let Some(busbar_kernel::config::pools::OnExhaustedCfg::FallbackPool(fallback)) =
             &pool.on_exhausted

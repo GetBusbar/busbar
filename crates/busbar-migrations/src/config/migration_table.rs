@@ -13,7 +13,7 @@ pub fn pairs(key: &str) -> Vec<(&'static str, &'static str)> {
 
 pub fn rewrite_retired(
     kind_root: &str,
-    section: &mut Mapping,
+    section: &mut Pairs,
     apply: bool,
 ) -> Option<(String, &'static str)> {
     let old = section

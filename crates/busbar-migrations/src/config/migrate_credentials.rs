@@ -8,7 +8,7 @@ use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::yaml::{self, prelude::*};
 
 pub(super) fn migrate(
-    root: &mut Mapping,
+    root: &mut Pairs,
     host: &dyn MigrateHost,
     path: &[String],
     module: &str,

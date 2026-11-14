@@ -48,10 +48,10 @@ fn released_module_streams() -> Vec<(&'static str, Vec<ExportStream>)> {
         .collect()
 }
 
-fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
-    let entry = root.entry_or_insert_with(Kind::Export.root(), || Value::Map(Mapping::new()));
+fn export_map_mut(root: &mut Pairs) -> &mut Pairs {
+    let entry = root.entry_or_insert_with(Kind::Export.root(), || Value::Map(Pairs::new()));
     if !matches!(entry, Value::Map(_)) {
-        *entry = Value::Map(Mapping::new());
+        *entry = Value::Map(Pairs::new());
     }
     match entry {
         Value::Map(m) => m,
@@ -59,7 +59,7 @@ fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
     }
 }
 
-pub(super) fn uniq_export_name(export: &Mapping, base: &str) -> String {
+pub(super) fn uniq_export_name(export: &Pairs, base: &str) -> String {
     if !export.contains_key(base) {
         return base.to_string();
     }
@@ -69,13 +69,13 @@ pub(super) fn uniq_export_name(export: &Mapping, base: &str) -> String {
         .expect("an unbounded counter always finds a free name")
 }
 
-pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<String>) {
+pub(super) fn migrate_export_named_map(root: &mut Pairs, changes: &mut Vec<String>) {
     let Some(Value::Map(export)) = root.get_key(Kind::Export.root()).cloned() else {
         return;
     };
     let type_keys = export_type_keys();
 
-    let mut kept = Mapping::new();
+    let mut kept = Pairs::new();
     let mut to_rewrite: Vec<(String, Value)> = Vec::new();
     for (k, v) in export {
         let key = k.as_str().unwrap_or_default().to_string();
@@ -96,7 +96,7 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
             .find(|(t, _, _)| *t == type_key)
             .expect("only retired type keys reach here");
         let name = uniq_export_name(&kept, base_name);
-        let mut inst = Mapping::new();
+        let mut inst = Pairs::new();
         inst.insert_key("module", Value::from(*module));
 
         if let Some(settings) = body.as_mapping().and_then(|m| m.get_key("settings")) {
@@ -112,14 +112,14 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
 }
 
 pub(super) fn migrate_export_projection(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
 ) {
     let Some(Value::Map(mut export)) = root.get_key(Kind::Export.root()).cloned() else {
         return;
     };
-    let mut out = Mapping::new();
+    let mut out = Pairs::new();
     for key in export.keys().cloned().collect::<Vec<_>>() {
         let Some(name) = key.as_str().map(str::to_string) else {
             if let Some(value) = export.get_key(&key) {
@@ -147,7 +147,7 @@ pub(super) fn migrate_export_projection(
 
 fn migrate_one_export_projection(
     name: &str,
-    inst: &mut Mapping,
+    inst: &mut Pairs,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
 ) {
@@ -194,7 +194,7 @@ fn migrate_one_export_projection(
     ));
 }
 
-pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<String>) {
+pub(super) fn migrate_observability_block(root: &mut Pairs, changes: &mut Vec<String>) {
     let removed = swap_remove_key(root, "observability");
     let Some(Value::Map(mut obs)) = removed else {
         if let Some(other) = removed {
@@ -221,9 +221,9 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
             export,
             super::migration_table::text("export_trace_instance"),
         );
-        let mut settings = Mapping::new();
+        let mut settings = Pairs::new();
         settings.insert_key("url", url);
-        let mut inst = Mapping::new();
+        let mut inst = Pairs::new();
         inst.insert_key("module", Value::from(module));
         inst.insert_key("settings", Value::Map(settings));
         export.insert_key(name.as_str(), Value::Map(inst));

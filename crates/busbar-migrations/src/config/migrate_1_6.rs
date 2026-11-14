@@ -5,18 +5,18 @@ use busbar_contract::yaml::prelude::*;
 
 const LEGACY_UNPRICED_BILLABLE_UNIT_RATE: i32 = 0;
 
-pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
+pub(super) fn migrate(root: &mut Pairs, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
     migrate_bootstrap(root, changes);
     drop_hostless_metadata_entries(root, changes);
     price_open_units(root, changes);
     bind_ungoverned_principals(root, changes, warnings);
 }
 
-pub(super) fn migrate_bootstrap(root: &mut Mapping, changes: &mut Vec<String>) {
+pub(super) fn migrate_bootstrap(root: &mut Pairs, changes: &mut Vec<String>) {
     drop_overlay_selector(root, changes);
 }
 
-fn drop_overlay_selector(root: &mut Mapping, changes: &mut Vec<String>) {
+fn drop_overlay_selector(root: &mut Pairs, changes: &mut Vec<String>) {
     if let Some(config) = mapping_mut(root, "config") {
         if super::swap_remove_key(config, "overlay").is_some() {
             changes.push("config.overlay removed; current management uses config.locked and the configured Store".into());
@@ -24,14 +24,14 @@ fn drop_overlay_selector(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-fn mapping_mut<'a>(m: &'a mut Mapping, key: &str) -> Option<&'a mut Mapping> {
+fn mapping_mut<'a>(m: &'a mut Pairs, key: &str) -> Option<&'a mut Pairs> {
     match m.get_key_mut(key) {
         Some(Value::Map(inner)) => Some(inner),
         _ => None,
     }
 }
 
-fn drop_hostless(m: &mut Mapping, list_key: &str, path: &str, changes: &mut Vec<String>) {
+fn drop_hostless(m: &mut Pairs, list_key: &str, path: &str, changes: &mut Vec<String>) {
     let Some(Value::Array(entries)) = m.get_key_mut(list_key) else {
         return;
     };
@@ -53,7 +53,7 @@ fn drop_hostless(m: &mut Mapping, list_key: &str, path: &str, changes: &mut Vec<
     });
 }
 
-fn drop_hostless_metadata_entries(root: &mut Mapping, changes: &mut Vec<String>) {
+fn drop_hostless_metadata_entries(root: &mut Pairs, changes: &mut Vec<String>) {
     if let Some(security) = mapping_mut(root, "security") {
         for key in ["blocked_metadata_hosts", "allow_metadata_hosts"] {
             drop_hostless(security, key, &format!("security.{key}"), changes);
@@ -70,7 +70,7 @@ fn drop_hostless_metadata_entries(root: &mut Mapping, changes: &mut Vec<String>)
     }
 }
 
-fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
+fn price_open_units(root: &mut Pairs, changes: &mut Vec<String>) {
     let open: Vec<&'static str> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback)
@@ -97,7 +97,7 @@ fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
         let Value::Map(entry) = entry else {
             continue;
         };
-        let units = entry.entry_or_insert_with("units", || Value::Map(Mapping::new()));
+        let units = entry.entry_or_insert_with("units", || Value::Map(Pairs::new()));
         let Value::Map(units) = units else {
             continue;
         };
@@ -124,7 +124,7 @@ fn ungoverned_role() -> Value {
 }
 
 fn bind_ungoverned_principals(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
@@ -145,12 +145,12 @@ fn bind_ungoverned_principals(
     if providers.is_empty() {
         return;
     }
-    let bindings = auth.entry_or_insert_with("role_bindings", || Value::Map(Mapping::new()));
+    let bindings = auth.entry_or_insert_with("role_bindings", || Value::Map(Pairs::new()));
     let Value::Map(bindings) = bindings else {
         return;
     };
     for provider in providers {
-        let table = bindings.entry_or_insert_with(provider.as_str(), || Value::Map(Mapping::new()));
+        let table = bindings.entry_or_insert_with(provider.as_str(), || Value::Map(Pairs::new()));
         let Value::Map(table) = table else {
             continue;
         };
@@ -158,7 +158,7 @@ fn bind_ungoverned_principals(
             continue;
         }
         let had_roles = !table.is_empty();
-        table.insert_key(ungoverned_role(), Value::Map(Mapping::new()));
+        table.insert_key(ungoverned_role(), Value::Map(Pairs::new()));
         let role = busbar_kernel::config::auth::UNGOVERNED_ROLE;
         let who = if had_roles {
             "a principal it identifies that asserts no roles"
