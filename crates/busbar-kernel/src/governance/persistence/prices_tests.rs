@@ -937,7 +937,7 @@ fn counts(backend: &Backend) -> (usize, usize) {
 
 async fn foreign_future_entry(store: &CoreStore, time: u64, base: EntryKey) -> EntryKey {
     let mut future = entry(time, Some(base));
-    future.card.per_request_fee = time % 1000 + 3;
+    future.card.per_request_fee = i64::try_from(time % 1000).unwrap() + 3;
     let key = future.key;
     applied(
         &store.prices(),
