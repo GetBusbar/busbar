@@ -207,6 +207,7 @@ impl MintPolicy {
                 .and_then(|s| crate::config::parse::parse_duration_secs(s).ok()),
             block_binding_modes: modes_to_wire(&policy.binding_modes),
             ceilings,
+            max_outstanding_tickets_per_key: policy.max_outstanding_tickets_per_key,
         }
     }
 
