@@ -152,7 +152,9 @@ async fn the_caller_secret_is_shared_from_the_door_to_the_far_ends_route() {
             arrived: 0,
             records: Some(Arc::clone(&records)),
             depth: 0,
-            credential: Some(b"sk-caller-secret".to_vec().into()),
+            credential: Some(busbar_kernel::auth::CallerCredential::adopted(
+                busbar_contract::Secret::new(b"sk-caller-secret".to_vec()),
+            )),
             ticket: None,
         },
     );
@@ -170,7 +172,9 @@ async fn the_caller_secret_is_shared_from_the_door_to_the_far_ends_route() {
         egress: Some(&egress),
         steps: &steps,
         unit: busbar_contract::UnitKey::new(1),
-        credential: Some(b"sk-caller-secret".to_vec().into()),
+        credential: Some(busbar_kernel::auth::CallerCredential::adopted(
+            busbar_contract::Secret::new(b"sk-caller-secret".to_vec()),
+        )),
         far: OnceLock::new(),
         shown: None,
     };

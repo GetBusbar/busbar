@@ -2280,7 +2280,7 @@ fn auth_request(
                 .lender
                 .as_ref()
                 .and_then(|l| l.lent(unit))
-                .unwrap_or_else(|| busbar_contract::redacted::Secret::new(Vec::new())),
+                .unwrap_or_default(),
         )
     } else {
         None

@@ -176,11 +176,14 @@ struct Lend {
     fields: Vec<FieldSpan>,
 }
 
-// SAFETY: the raw pointers in `named` point only into `request`'s own heap bytes, owned here; the
-// plugin writes `field_buf`/`fields` only while its op is in flight, and the host reads them only
-// after the op's answer, which the dispatcher orders after the crossing.
+// SAFETY: the raw pointers in `named` point only into `request`'s own heap bytes, owned here, and
+// the lent caller credential points into the unit's one shared buffer (SP-AU6), which `request`
+// holds a handle on, so it lives at least as long as this lend and is never mutated; the plugin
+// writes `field_buf`/`fields` only while its op is in flight, and the host reads them only after
+// the op's answer, which the dispatcher orders after the crossing.
 unsafe impl Send for Lend {}
-// SAFETY: as above; no host code mutates a `Lend` once the op is submitted.
+// SAFETY: as above; no host code mutates a `Lend` once the op is submitted, and no holder mutates
+// the shared credential buffer.
 unsafe impl Sync for Lend {}
 
 impl Drop for Lend {
@@ -198,7 +201,8 @@ impl Lend {
     }
 
     /// A grown resubmit's lend: the same request (its capability already in place) with larger
-    /// answer buffers. The first lend is still lent to the dispatcher, so the request is copied.
+    /// answer buffers. The first lend is still lent to the dispatcher, so the request is copied,
+    /// and its caller credential is a cloned handle on the same shared buffer, never its bytes.
     fn regrown(previous: &Lend, bytes: usize, fields: usize) -> Box<Self> {
         Self::over(copy(&previous.request), bytes, fields)
     }
@@ -322,6 +326,8 @@ fn security_requirement(blob: Blob) -> Option<bool> {
     (consumed == bytes.len()).then_some(secure)
 }
 
+/// The request's own fields copied, its caller credential a cloned handle on the one shared
+/// buffer (SP-AU6), so the plugin is lent the same bytes, never a copy of them.
 fn copy(r: &FieldsRequest) -> FieldsRequest {
     busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AuthFieldsCopy);
     FieldsRequest {

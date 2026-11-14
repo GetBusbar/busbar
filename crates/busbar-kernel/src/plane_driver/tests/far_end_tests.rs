@@ -761,6 +761,35 @@ fn route() -> UnitRoute {
     }
 }
 
+/// Egress one attempt through a passthrough member, the unit's route carrying `caller`, and
+/// answer the caller credential each of the member's auth calls was lent (SINGLE-PATH SP-AU6, read
+/// from the claim on in `inbound_caller_secret.rs`).
+pub(crate) async fn lent_on_egress(
+    caller: Option<crate::auth::CallerCredential>,
+) -> Vec<Option<Vec<u8>>> {
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    for member in &mut r.egress.pools.get_mut(POOL).unwrap().members {
+        member.passthrough = true;
+    }
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        caller_credential: caller,
+        ..route()
+    });
+    let Pick::Member { passthrough, .. } = far.member(&t, 1).await else {
+        panic!("a member");
+    };
+    assert!(passthrough, "the member relays its caller's credential");
+    assert!(far.send(&t, request()).await);
+    let _ = drain(&far, &t).await;
+    let lent = r.auth.callers.lock().unwrap().clone();
+    lent
+}
+
 async fn read_out(far: &EgressFarEnd<'_>, t: &Pass<Route>) {
     loop {
         let p = far.next(t).await.expect("a piece through the last");
@@ -1182,7 +1211,9 @@ async fn a_passthrough_members_401_records_nothing_and_is_relayed() {
     );
     let t = token();
     let far = r.egress.unit(UnitRoute {
-        caller_credential: Some(b"caller-key".to_vec().into()),
+        caller_credential: Some(crate::auth::CallerCredential::adopted(
+            busbar_contract::Secret::new(b"caller-key".to_vec()),
+        )),
         ..route()
     });
     let Pick::Member { passthrough, .. } = far.member(&t, 1).await else {
@@ -2037,7 +2068,9 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
     );
     let t = token();
     let far = r.egress.unit(UnitRoute {
-        caller_credential: Some(b"caller-key".to_vec().into()),
+        caller_credential: Some(crate::auth::CallerCredential::adopted(
+            busbar_contract::Secret::new(b"caller-key".to_vec()),
+        )),
         ..route()
     });
     let mut relays = Vec::new();
@@ -2073,7 +2106,9 @@ async fn a_passthrough_pool_member_is_lent_the_callers_credential_or_an_empty_on
     let t = token();
     for credential in [Some(b"caller-key".to_vec()), None] {
         let far = r.egress.unit(UnitRoute {
-            caller_credential: credential.clone().map(Into::into),
+            caller_credential: credential
+                .clone()
+                .map(|c| crate::auth::CallerCredential::adopted(busbar_contract::Secret::new(c))),
             ..route()
         });
         let Pick::Member {

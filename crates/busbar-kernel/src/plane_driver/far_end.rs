@@ -59,7 +59,6 @@ use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
-use busbar_contract::redacted::Secret;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use busbar_kernel_egress::{
     attempt::attempt_cap_ms,
@@ -1329,7 +1328,7 @@ impl EgressFarEnd<'_> {
 
             caller_credential: if binding.passthrough || self.live_passthrough() {
                 Some(self.route.caller_credential.as_ref().map_or_else(
-                    || Secret::new(Vec::new()),
+                    busbar_contract::SharedSecret::default,
                     crate::auth::CallerCredential::lend,
                 ))
             } else {
@@ -2570,7 +2569,7 @@ impl FarEnd for EgressFarEnd<'_> {
 
 #[cfg(test)]
 #[path = "tests/far_end_tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 fn delivered(live: &mut Live, piece: &FarPiece, streamed: bool) {
     if streamed && live.answered && live.error_left.is_none() && !piece.bytes.is_empty() {

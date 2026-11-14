@@ -152,7 +152,7 @@ fn outbound_auth_inputs_wipe_on_success_failure_cancel_unwind_and_last_owner_dro
                 // The sealed credential's bytes are watched before they move into the `Secret`.
                 let credential = b"private-caller-credential".to_vec();
                 watch(&credential);
-                request.caller_credential = Some(Secret::new(credential));
+                request.caller_credential = Some(Secret::new(credential).share());
             } else {
                 watch(input_bytes(&request, field));
             }
@@ -199,6 +199,37 @@ fn outbound_auth_inputs_wipe_on_success_failure_cancel_unwind_and_last_owner_dro
             assert_eq!(WIPED.with(Cell::get), Some(true), "{field} on {exit}");
         }
     }
+}
+
+busbar_contract::own_seal!(Own);
+
+/// SINGLE-PATH SP-AU6: a `SharedSecret`'s handles share one buffer; it stays intact while any
+/// handle lives and is wiped, by `Secret`'s own `Drop`, when the last one drops.
+#[test]
+fn shared_secret_wiped_on_last_drop() {
+    let bytes = b"private-shared-secret".to_vec();
+    watch(&bytes);
+    let first = Secret::<Vec<u8>, Own>::held(bytes).share();
+    let others: Vec<_> = (0..3).map(|_| first.clone()).collect();
+    let last = first.clone();
+    drop(first);
+    drop(others);
+    assert_eq!(
+        WIPED.with(Cell::get),
+        None,
+        "a handle remains, so the one buffer is still held"
+    );
+    assert_eq!(
+        last.expose_own(&Own::here()).as_slice(),
+        b"private-shared-secret",
+        "the bytes stay intact while any handle lives"
+    );
+    drop(last);
+    assert_eq!(
+        WIPED.with(Cell::get),
+        Some(true),
+        "the last handle's drop wipes the one buffer before it is freed"
+    );
 }
 
 #[test]
