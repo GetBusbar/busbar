@@ -593,11 +593,18 @@ pub struct FeeCharge {
     lane: Option<String>,
     era: RawRateEra,
     cells: Vec<(String, u64)>,
+    chain: Option<crate::cost::ChainPlan>,
 }
 
 impl FeeCharge {
     pub fn raw_era(&self) -> RawRateEra {
         self.era
+    }
+
+    /// The key's budget chain the admission charged through, resolved once and carried to the
+    /// unit's settlement (SINGLE-PATH SP-AD1).
+    pub fn chain(&self) -> Option<&crate::cost::ChainPlan> {
+        self.chain.as_ref()
     }
 }
 

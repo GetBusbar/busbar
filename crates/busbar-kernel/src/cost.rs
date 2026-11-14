@@ -184,6 +184,14 @@ impl<'a> Chain<'a> {
     pub fn group_indices(&self) -> &[usize] {
         &self.groups
     }
+
+    /// This chain as a carried plan: `carried` itself when it names these groups (no copy).
+    pub fn plan(&self, carried: Option<&ChainPlan>) -> ChainPlan {
+        match carried {
+            Some(plan) if plan.0[..] == self.groups[..] => plan.clone(),
+            _ => ChainPlan(self.groups.as_slice().into()),
+        }
+    }
 }
 
 /// Resolve common measurement prices once, using the host's collision-free namespace.
@@ -573,13 +581,6 @@ impl CostModel {
         key: &'a busbar_contract::records::VirtualKey,
     ) -> Result<Chain<'a>, &'a str> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ChainFor);
-        let mut buckets: Vec<ChainBucket<'a>> = Vec::with_capacity(8);
-
-        buckets.push(ChainBucket {
-            bucket_id: &key.id,
-            window: crate::governance::WINDOW_TOTAL,
-            ..ChainBucket::default()
-        });
         let mut groups: Vec<usize> = Vec::new();
         let group = key.group.as_deref();
         let mut next = group
@@ -589,8 +590,27 @@ impl CostModel {
             if groups.len() >= self.groups.len() {
                 break;
             }
-            let g = &self.groups[i];
             groups.push(i);
+            next = self.groups[i].parent;
+        }
+        Ok(self.chain_of(key, groups))
+    }
+
+    /// The key's chain over the groups its walk reached, in walk order: its own bucket, then
+    /// each group's buckets.
+    fn chain_of<'a>(
+        &'a self,
+        key: &'a busbar_contract::records::VirtualKey,
+        groups: Vec<usize>,
+    ) -> Chain<'a> {
+        let mut buckets: Vec<ChainBucket<'a>> = Vec::with_capacity(8);
+        buckets.push(ChainBucket {
+            bucket_id: &key.id,
+            window: crate::governance::WINDOW_TOTAL,
+            ..ChainBucket::default()
+        });
+        for &i in &groups {
+            let g = &self.groups[i];
             for b in &g.buckets {
                 buckets.push(ChainBucket {
                     bucket_id: &b.bucket_id,
@@ -605,11 +625,59 @@ impl CostModel {
                     budget_admission: b.budget_admission,
                 });
             }
-            next = g.parent;
         }
-        Ok(Chain { buckets, groups })
+        Chain { buckets, groups }
+    }
+
+    /// Resolve the key's budget chain once, for its unit to carry ([`ChainPlan`]); `None` when a
+    /// group it names is missing (a reader then resolves again and meets the same refusal).
+    #[must_use]
+    pub fn plan_chain(&self, key: &busbar_contract::records::VirtualKey) -> Option<ChainPlan> {
+        self.chain_for(key).ok().map(|chain| chain.plan(None))
+    }
+
+    /// The key's chain from the plan its unit carried, without walking the groups again. A plan
+    /// this model's groups do not walk to for this key (a plan from another model, or none) is
+    /// resolved afresh, so a carried plan never names a chain the key does not have.
+    pub(crate) fn chain_carried<'a>(
+        &'a self,
+        key: &'a busbar_contract::records::VirtualKey,
+        plan: Option<&ChainPlan>,
+    ) -> Result<Chain<'a>, &'a str> {
+        match plan {
+            Some(plan) if self.walks_to(key, &plan.0) => Ok(self.chain_of(key, plan.0.to_vec())),
+            _ => self.chain_for(key),
+        }
+    }
+
+    /// Whether [`Self::chain_for`]'s walk for `key` reaches exactly `groups`, in order: the key's
+    /// group first, each next its predecessor's parent, ending where the walk ends.
+    fn walks_to(&self, key: &busbar_contract::records::VirtualKey, groups: &[usize]) -> bool {
+        if groups.len() > self.groups.len() {
+            return false;
+        }
+        let mut expected = match key.group.as_deref() {
+            None => return groups.is_empty(),
+            Some(name) => groups
+                .first()
+                .copied()
+                .filter(|&i| self.groups.get(i).is_some_and(|g| g.name == name)),
+        };
+        for &i in groups {
+            if expected != Some(i) {
+                return false;
+            }
+            expected = self.groups[i].parent;
+        }
+        expected.is_none() || groups.len() >= self.groups.len()
     }
 }
+
+/// A key's budget chain as one walk resolved it: the indices of the groups it reached, in walk
+/// order. A unit resolves it once at admission and carries it on its grant
+/// ([`crate::governance::FeeCharge::chain`]) to its charge and its settlement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainPlan(std::sync::Arc<[usize]>);
 
 #[cfg(test)]
 #[path = "tests/cost_tests.rs"]
