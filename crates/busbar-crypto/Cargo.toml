@@ -1,0 +1,29 @@
+[package]
+# The crypto facade (CRYPTO-SEAM §2.1-2.3). Crypto-free: every primitive is the backend's. Reached by
+# every other crate as `busbar_contract::crypto`; no crate but busbar-contract names it.
+name = "busbar-crypto"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "busbar's one crypto API. Calls exactly one busbar-crypto-backend, swappable by [patch]."
+license = "Apache-2.0"
+
+[dependencies]
+# Named by core's git URL on the dev branch so a plugin without a [patch] resolves it; core's roots
+# `[patch.'https://github.com/GetBusbar/busbar']` it to crates/busbar-crypto-backend, and a private
+# build patches its own crate of the same name in.
+busbar-crypto-backend = { git = "https://github.com/GetBusbar/busbar", branch = "dev" }
+zeroize = { version = "1", default-features = false }
+# Protocol crates only, with no provider features (the backend turns its provider on).
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"], optional = true }
+rustls-pki-types = { version = "1", default-features = false, features = ["std"], optional = true }
+
+[features]
+# TLS configs, verifiers and the ticketer, built only through this crate (no public provider).
+tls = ["dep:rustls", "dep:rustls-pki-types", "busbar-crypto-backend/tls"]
+# Test certificates; dev-dependencies only.
+test-support = ["tls", "busbar-crypto-backend/test-support"]
+
+[dev-dependencies]
+busbar-crypto = { path = ".", features = ["test-support"] }

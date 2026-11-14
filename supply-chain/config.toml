@@ -81,6 +81,10 @@ criteria = "safe-to-deploy"
 version = "1.5.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.aws-lc-rs]]
+version = "1.19.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.axum]]
 version = "0.8.9"
 criteria = "safe-to-deploy"
@@ -91,6 +95,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.base64]]
 version = "0.23.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.blake3]]
+version = "1.8.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.block-buffer]]
@@ -135,6 +143,10 @@ notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0
 version = "0.10.2"
 criteria = "safe-to-deploy"
 notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
+
+[[exemptions.constant_time_eq]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
 
 [[exemptions.core_affinity]]
 version = "0.8.3"
@@ -544,11 +556,11 @@ version = "0.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rand]]
-version = "0.9.5"
+version = "0.10.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.rand]]
-version = "0.10.2"
+version = "0.9.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.rand_xoshiro]]
