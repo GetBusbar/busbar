@@ -9,8 +9,6 @@ use busbar_contract::crypto::Sha256;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError};
 
-use crate::host_records::{record_key, RecordRows};
-
 mod status;
 
 pub const WORK_SCHEMA: RecordSchemaId = RecordSchemaId::new("kernel-work");
@@ -256,11 +254,6 @@ impl Work {
 
 const ROW_VERSION: u8 = 1;
 
-#[must_use]
-pub fn work_key(instance: &str, reference: &Reference) -> Vec<u8> {
-    record_key(instance, reference)
-}
-
 #[derive(Debug, Default)]
 struct Book {
     next: u64,
@@ -321,28 +314,6 @@ impl WorkBook {
     #[must_use]
     pub fn loaded(&self, instance: &str) -> bool {
         self.lock().loaded.contains(instance)
-    }
-
-    pub fn load(&self, rows: &dyn RecordRows, instance: &Arc<str>) -> Result<(), StoreError> {
-        if self.loaded(instance) {
-            return Ok(());
-        }
-        let scope = record_key(instance, &[]);
-        let found = rows.record_scan(WORK_SCHEMA, &scope, u32::MAX)?;
-        let mut book = self.lock();
-        for (key, row) in found {
-            let Some(reference) = key
-                .get(scope.len()..)
-                .and_then(|r| <Reference>::try_from(r).ok())
-            else {
-                continue;
-            };
-            if let Some(w) = Work::read(instance, reference, row.as_slice()) {
-                book.insert(w);
-            }
-        }
-        book.loaded.insert(Arc::clone(instance));
-        Ok(())
     }
 
     pub(crate) async fn load_native(
