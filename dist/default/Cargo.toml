@@ -843,6 +843,12 @@ name = "provider_key_never_surfaces"
 path = "tests/provider_key_never_surfaces.rs"
 required-features = ["auth-admin-tokens", "export-prometheus"]
 
+# Boots the real binary, then reloads onto another provider and pool (DIET-BUSBAR MR3).
+[[test]]
+name = "apply_serves_the_new_providers_and_pools"
+path = "tests/apply_serves_the_new_providers_and_pools.rs"
+required-features = ["auth-admin-tokens"]
+
 # Boots the image's shipped default, which names the operator credential (`admin-tokens`).
 [[test]]
 name = "default_config_no_outbound"
