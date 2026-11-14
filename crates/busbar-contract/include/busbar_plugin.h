@@ -812,6 +812,9 @@ extern "C" {
 #define BB_HSVC_MAX_TICKET_RECORD UINT64_C(0x10000) /* The most record bytes one `ticket.mint` stores with its ticket. */
 #define BB_HSVC_TICKET_NONE UINT64_C(0) /* `ticket.take`: the unit was admitted by a key, not a ticket; nothing is written. */
 #define BB_HSVC_TICKET_TAKEN UINT64_C(1) /* `ticket.take`: the record of the ticket that admitted the unit, written once. */
+#define BB_HSVC_TICKET_REFUSED_OTHER UINT32_C(0) /* A REFUSED `ticket.mint`'s code: no ticket is minted, for a reason the reason text gives. */
+#define BB_HSVC_KEY_SATURATED UINT32_C(1) /* A REFUSED `ticket.mint`'s code: the principal's key holds its maximum of unredeemed tickets. */
+#define BB_HSVC_NODE_SATURATED UINT32_C(2) /* A REFUSED `ticket.mint`'s code: this node holds its maximum of unredeemed tickets. */
 #define BB_HSVC_OUTBOUND_PUBLISH UINT32_C(1) /* Publish or replace host-held outbound credential custody. */
 #define BB_HSVC_OUTBOUND_BIND UINT32_C(2) /* Bind an existing custody revision to the serving unit. */
 #define BB_HSVC_OUTBOUND_REVOKE UINT32_C(3) /* Revoke custody, including a revision-zero tombstone for an absent connection. */

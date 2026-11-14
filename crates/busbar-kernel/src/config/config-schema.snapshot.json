@@ -209,6 +209,10 @@
           "optional": true,
           "type": "String"
         },
+        "max_outstanding_tickets_per_key": {
+          "optional": true,
+          "type": "u32"
+        },
         "max_ttl": {
           "optional": true,
           "type": "String"

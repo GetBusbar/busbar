@@ -374,6 +374,10 @@ pub struct AuthPolicyCfg {
     /// Empty by default.
     #[serde(default)]
     pub mint_ceilings: std::collections::BTreeMap<String, MintCeilingCfg>,
+    /// The most unredeemed tickets (ephemeral secrets, `POST /v1/realtime/client_secrets`) one key
+    /// may hold on one node. Absent ⇒ 256. A key over it is refused 429 with `Retry-After`; other
+    /// keys are unaffected. At least 1 (enforced at validate, fail boot).
+    pub max_outstanding_tickets_per_key: Option<u32>,
 }
 
 /// Per-provider browser-login parameters (`identity-providers.<name>.browser_login:`). PRESENCE of

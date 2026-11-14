@@ -604,7 +604,7 @@ pub trait TicketPress: Send + Sync {
         ttl_secs: u64,
         record: &[u8],
         now: u64,
-    ) -> Result<(String, u64), &'static str> {
+    ) -> Result<(String, u64), crate::governance::TicketRefusal> {
         let _ = (unit, caller);
         self.mint(&principal.id, prefix, ttl_secs, record, now)
             .await
@@ -617,7 +617,7 @@ pub trait TicketPress: Send + Sync {
         ttl_secs: u64,
         record: &[u8],
         now: u64,
-    ) -> Result<(String, u64), &'static str>;
+    ) -> Result<(String, u64), crate::governance::TicketRefusal>;
 }
 
 pub const TICKET_NO_PRINCIPAL: &str = "no ticket is minted outside a unit with a principal";
@@ -3332,7 +3332,10 @@ impl HostServices for KernelServices {
                     spans: Vec::new(),
                     ..Stored::ready(expires_at)
                 },
-                Err(why) => Stored::refused(why),
+                Err(refusal) => Stored {
+                    value: svc::ticket_refused(refusal.code(), refusal.retry_after_secs()),
+                    ..Stored::refused(refusal.reason())
+                },
             }
         })
     }
