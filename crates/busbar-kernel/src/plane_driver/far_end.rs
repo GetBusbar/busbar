@@ -1601,8 +1601,8 @@ impl EgressFarEnd<'_> {
             },
             require_secure,
         );
-        let now_ms = e.clock.now_millis();
         let now_us = e.clock.now_micros();
+        let now_ms = now_us / 1000;
         match opened {
             Ok(conn) => {
                 {
