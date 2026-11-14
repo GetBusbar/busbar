@@ -2112,9 +2112,9 @@ pub fn pools_into(
     let busbar_contract::yaml::Value::Map(section) = section else {
         return;
     };
-    let mut map = busbar_contract::yaml::Mapping::new();
+    let mut map = busbar_contract::yaml::Pairs::new();
     for (name, pool) in stated {
-        let mut entry = busbar_contract::yaml::Mapping::new();
+        let mut entry = busbar_contract::yaml::Pairs::new();
         entry.insert_key(
             POOL_MEMBERS_KEY,
             busbar_contract::yaml::Value::Array(
@@ -2122,7 +2122,7 @@ pub fn pools_into(
                     .iter()
                     .zip(0u64..)
                     .map(|(m, tier)| {
-                        let mut member = busbar_contract::yaml::Mapping::new();
+                        let mut member = busbar_contract::yaml::Pairs::new();
                         member.insert_key(POOL_MEMBER_NAME_KEY, m.as_str().into());
                         member.insert_key(POOL_MEMBER_TIER_KEY, tier.into());
                         busbar_contract::yaml::Value::Map(member)
@@ -2262,7 +2262,7 @@ pub(crate) async fn compose_planes_over(
                 continue;
             }
             let facts = plugin.served();
-            let empty = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Mapping::new());
+            let empty = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Pairs::new());
             let section = match sections.get(facts.section) {
                 Some(section) => section,
                 None if facts.owns.iter().any(|name| sections.contains_key(name)) => &empty,
@@ -2317,7 +2317,7 @@ pub(crate) async fn compose_planes_over(
     for (instance, plugin) in doors {
         let served_facts = plugin.served();
 
-        let empty = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Mapping::new());
+        let empty = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Pairs::new());
         let section = match sections.get(served_facts.section) {
             Some(section) => section,
             None if served_facts.owns.iter().any(|n| sections.contains_key(n)) => &empty,
@@ -2591,7 +2591,7 @@ fn fold_catalog_routes(
     section: &busbar_contract::yaml::Value,
     catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
 ) -> (busbar_contract::yaml::Value, Option<String>) {
-    use busbar_contract::yaml::{Mapping, Value};
+    use busbar_contract::yaml::{Pairs, Value};
     let mut routes = section.clone();
     let named = section
         .get(SESSION_KEY)
@@ -2607,7 +2607,7 @@ fn fold_catalog_routes(
     else {
         return (routes, None);
     };
-    let mut folded = Mapping::new();
+    let mut folded = Pairs::new();
     folded.insert_key("provider", entry.provider.clone().into());
     if let Some(upstream) = &entry.upstream_model {
         folded.insert_key("upstream_model", upstream.clone().into());
@@ -2615,7 +2615,7 @@ fn fold_catalog_routes(
     if let Some(ms) = entry.attempt_timeout_ms {
         folded.insert_key("attempt_timeout_ms", ms.into());
     }
-    let mut models = Mapping::new();
+    let mut models = Pairs::new();
     models.insert_key(model, Value::Map(folded));
     map.insert_key(models_key, Value::Map(models));
     (routes, Some(model.to_string()))
@@ -2901,7 +2901,7 @@ fn settings_of(
         }
         own
     };
-    let mut keyed = busbar_contract::yaml::Mapping::new();
+    let mut keyed = busbar_contract::yaml::Pairs::new();
     keyed.insert_key(facts.section, own);
     for name in &facts.consumed {
         if let Some(value) = sections.get(name) {
@@ -2924,7 +2924,7 @@ fn walked_section(
         .flatten();
     match models {
         Some(models) if facts.section == RESERVED_POOLS_KEY => {
-            let mut uniform = busbar_contract::yaml::Mapping::new();
+            let mut uniform = busbar_contract::yaml::Pairs::new();
             uniform.insert_key(RESERVED_MODELS_KEY, models.clone());
             let mut pools = section.clone();
             if let Some(policy) = pools

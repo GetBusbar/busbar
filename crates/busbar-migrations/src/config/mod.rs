@@ -19,7 +19,7 @@ pub mod migration_table;
 pub mod overlay_legacy;
 mod retired;
 
-use busbar_contract::yaml::{self, prelude::*};
+use busbar_contract::yaml::{self, prelude::*, same_tree};
 
 /// The actual default used by supported released configurations that omitted Store.
 #[must_use]
@@ -264,29 +264,6 @@ fn check_tree(root: &Value) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Whether two trees say the same thing, as 1.5.5 compared them: a mapping equals another with
-/// the same keys and equal values in ANY order (serde_yaml's `Mapping` was an `IndexMap`, whose
-/// equality ignores order), a sequence compares element by element, and NaN equals NaN (YAML has
-/// one NaN). The `Value` `==` is order-sensitive over mappings, which would turn a pure key
-/// reordering by the migration into a rewrite of the authored bytes.
-fn same_tree(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Map(a), Value::Map(b)) => {
-            a.len() == b.len()
-                && a.iter().all(|(key, value)| {
-                    b.iter()
-                        .find(|(other, _)| same_tree(key, other))
-                        .is_some_and(|(_, other)| same_tree(value, other))
-                })
-        }
-        (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_tree(a, b))
-        }
-        (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
-        (a, b) => a == b,
-    }
 }
 
 #[cfg(test)]

@@ -134,7 +134,7 @@ impl<'de> Visitor<'de> for Read<'_> {
             return self.done(read);
         };
 
-        let mut out = yaml::Mapping::new();
+        let mut out = yaml::Pairs::new();
         while let Some(key) = map.next_key::<yaml::Value>()? {
             if out.contains_key(&key) {
                 return Err(de::Error::custom(duplicate_entry(&key)));

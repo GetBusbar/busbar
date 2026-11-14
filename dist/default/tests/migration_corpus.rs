@@ -101,7 +101,7 @@ fn apply_deferred_decisions(yaml: &str) -> String {
         busbar_contract::yaml::from_str(&format!("[{op}]")).expect("literal parses")
     });
 
-    let idp = map.entry_or_insert_with("identity-providers", || Value::Map(Mapping::new()));
+    let idp = map.entry_or_insert_with("identity-providers", || Mapping::new().into());
     if let Some(m) = idp.as_mapping_mut() {
         m.entry_or_insert_with(op.as_str(), || {
             busbar_contract::yaml::from_str(&format!(

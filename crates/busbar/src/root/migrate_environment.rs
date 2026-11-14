@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use busbar_contract::yaml::{Mapping, MappingExt, Value, ValueExt};
+use busbar_contract::yaml::{MappingExt, Pairs, Value, ValueExt};
 
 pub(crate) struct Captured {
     pub yaml: String,
@@ -89,8 +89,8 @@ pub(crate) fn capture(
     })
 }
 
-fn advanced(root: &mut Mapping) -> Result<&mut Mapping, String> {
-    root.entry_or_insert_with("advanced", || Value::Map(Mapping::new()))
+fn advanced(root: &mut Pairs) -> Result<&mut Pairs, String> {
+    root.entry_or_insert_with("advanced", || Value::Map(Pairs::new()))
         .as_mapping_mut()
         .ok_or_else(|| {
             "cannot capture retired environment settings: advanced must be a mapping".into()

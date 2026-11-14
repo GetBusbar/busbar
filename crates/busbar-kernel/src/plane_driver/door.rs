@@ -277,7 +277,7 @@ impl PlaneCfg for DoorSection {
         let entry: busbar_contract::yaml::Value = busbar_contract::yaml::to_value(def)
             .map_err(|e| format!("invalid `{}.{name}` definition: {e}", self.section))?;
         if !self.value.is_mapping() {
-            self.value = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Mapping::new());
+            self.value = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Pairs::new());
         }
         if let Some(m) = self.value.as_mapping_mut() {
             m.insert_key(busbar_contract::yaml::Value::Text(name.to_string()), entry);

@@ -32,12 +32,158 @@ use serde::Serialize;
 pub use ciborium::Value;
 pub use serde_saphyr::{Deserializer, Location};
 
-/// A YAML mapping: the key/value pairs of a [`Value::Map`], in document order.
-pub type Mapping = Vec<(Value, Value)>;
+/// The key/value pairs of a [`Value::Map`], in document order: the tree's own mapping payload.
+pub type Pairs = Vec<(Value, Value)>;
+
+/// A YAML mapping as serde_yaml's `Mapping` was: its pairs keep their insertion order for output,
+/// and equality ignores that order (same keys, equal values; nested mappings likewise), as an
+/// `IndexMap`'s did. It derefs to its [`Pairs`], so [`MappingExt`] and the `Vec` methods apply.
+#[derive(Clone, Debug, Default)]
+pub struct Mapping(Pairs);
+
+impl Mapping {
+    /// An empty mapping.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Pairs::new())
+    }
+
+    /// An empty mapping with room for `capacity` pairs.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(Pairs::with_capacity(capacity))
+    }
+}
+
+impl std::ops::Deref for Mapping {
+    type Target = Pairs;
+    fn deref(&self) -> &Pairs {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Mapping {
+    fn deref_mut(&mut self) -> &mut Pairs {
+        &mut self.0
+    }
+}
+
+impl From<Pairs> for Mapping {
+    fn from(pairs: Pairs) -> Self {
+        Self(pairs)
+    }
+}
+
+impl From<Mapping> for Pairs {
+    fn from(mapping: Mapping) -> Self {
+        mapping.0
+    }
+}
+
+impl From<Mapping> for Value {
+    fn from(mapping: Mapping) -> Self {
+        Value::Map(mapping.0)
+    }
+}
+
+impl IntoIterator for Mapping {
+    type Item = (Value, Value);
+    type IntoIter = std::vec::IntoIter<(Value, Value)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Mapping {
+    type Item = &'a (Value, Value);
+    type IntoIter = std::slice::Iter<'a, (Value, Value)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Mapping {
+    type Item = &'a mut (Value, Value);
+    type IntoIter = std::slice::IterMut<'a, (Value, Value)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
+    }
+}
+
+impl FromIterator<(Value, Value)> for Mapping {
+    fn from_iter<T: IntoIterator<Item = (Value, Value)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl Extend<(Value, Value)> for Mapping {
+    fn extend<T: IntoIterator<Item = (Value, Value)>>(&mut self, iter: T) {
+        self.0.extend(iter);
+    }
+}
+
+impl PartialEq for Mapping {
+    /// serde_yaml's `Mapping` equality: the same keys with equal values, in any order.
+    fn eq(&self, other: &Self) -> bool {
+        same_pairs(&self.0, &other.0)
+    }
+}
+
+impl Serialize for Mapping {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in &self.0 {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Mapping {
+    /// A YAML mapping, keeping its key order; null reads as an empty mapping, as serde_yaml's did.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match untag(<Value as serde::Deserialize>::deserialize(deserializer)?) {
+            Value::Map(pairs) => Ok(Self(pairs)),
+            Value::Null => Ok(Self::new()),
+            other => Err(serde::de::Error::invalid_type(
+                unexpected(&other),
+                &"a YAML mapping",
+            )),
+        }
+    }
+}
+
+/// Whether two trees say the same thing, as serde_yaml (1.5.5) compared them: a mapping equals
+/// another with the same keys and equal values in ANY order (serde_yaml's `Mapping` was an
+/// `IndexMap`, whose equality ignores order), a sequence compares element by element, and NaN
+/// equals NaN (YAML has one NaN). [`Value`]'s own `==` is order-sensitive over mappings.
+#[must_use]
+pub fn same_tree(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Map(a), Value::Map(b)) => same_pairs(a, b),
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_tree(a, b))
+        }
+        (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
+        (Value::Tag(at, a), Value::Tag(bt, b)) => at == bt && same_tree(a, b),
+        (a, b) => a == b,
+    }
+}
+
+/// [`same_tree`] over two mappings' pairs.
+fn same_pairs(a: &[(Value, Value)], b: &[(Value, Value)]) -> bool {
+    a.len() == b.len()
+        && a.iter().all(|(key, value)| {
+            b.iter()
+                .find(|(other, _)| same_tree(key, other))
+                .is_some_and(|(_, other)| same_tree(value, other))
+        })
+}
 
 /// Everything a YAML call site needs in scope: the tree, the mapping, and their lookups.
 pub mod prelude {
-    pub use super::{Index, Mapping, MappingExt, Value, ValueExt};
+    pub use super::{Index, Mapping, MappingExt, Pairs, Value, ValueExt};
 }
 
 /// The parser options, pinned to 1.5.5's meaning. The one place they are set.
@@ -168,11 +314,10 @@ pub fn from_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
     from_str(text)
 }
 
-/// Read a YAML document whose top level must be a mapping, keeping its key order. ([`Mapping`] is
-/// a `Vec` of pairs, so `from_str::<Mapping>` would ask for a sequence; read it through here.)
+/// Read a YAML document whose top level must be a mapping, keeping its key order.
 pub fn mapping_from_str(text: &str) -> Result<Mapping, Error> {
     match from_str::<Value>(text)? {
-        Value::Map(mapping) => Ok(mapping),
+        Value::Map(mapping) => Ok(Mapping(mapping)),
         _ => Err(Error::unplaced("invalid type: expected a mapping")),
     }
 }
@@ -180,7 +325,7 @@ pub fn mapping_from_str(text: &str) -> Result<Mapping, Error> {
 /// [`mapping_from_str`] over UTF-8 bytes.
 pub fn mapping_from_slice(bytes: &[u8]) -> Result<Mapping, Error> {
     match from_slice::<Value>(bytes)? {
-        Value::Map(mapping) => Ok(mapping),
+        Value::Map(mapping) => Ok(Mapping(mapping)),
         _ => Err(Error::unplaced("invalid type: expected a mapping")),
     }
 }
@@ -445,7 +590,7 @@ fn visit_sequence<'de, V: serde::de::Visitor<'de>>(
 }
 
 fn visit_mapping<'de, V: serde::de::Visitor<'de>>(
-    mapping: Mapping,
+    mapping: Pairs,
     visitor: V,
 ) -> Result<V::Value, Error> {
     let len = mapping.len();
@@ -638,7 +783,7 @@ impl<'de> serde::Deserializer<'de> for ValueDeserializer {
     fn deserialize_map<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
         match untag(self.value) {
             Value::Map(m) => visit_mapping(m, visitor),
-            Value::Null => visit_mapping(Mapping::new(), visitor),
+            Value::Null => visit_mapping(Pairs::new(), visitor),
             other => Err(invalid_type(&other, &visitor)),
         }
     }
@@ -967,7 +1112,7 @@ impl Index for usize {
 
 impl Index for Value {
     fn position(&self, mapping: &[(Value, Value)]) -> Option<usize> {
-        mapping.iter().position(|(k, _)| k == self)
+        mapping.iter().position(|(k, _)| same_tree(k, self))
     }
     fn element<'v>(&self, sequence: &'v [Value]) -> Option<&'v Value> {
         let at = usize::try_from(self.as_integer()?).ok()?;
@@ -1017,9 +1162,9 @@ pub trait ValueExt {
     /// The string, if this is a string.
     fn as_str(&self) -> Option<&str>;
     /// The mapping, if this is a mapping.
-    fn as_mapping(&self) -> Option<&Mapping>;
+    fn as_mapping(&self) -> Option<&Pairs>;
     /// The mapping, mutably.
-    fn as_mapping_mut(&mut self) -> Option<&mut Mapping>;
+    fn as_mapping_mut(&mut self) -> Option<&mut Pairs>;
     /// The sequence, if this is a sequence.
     fn as_sequence(&self) -> Option<&Vec<Value>>;
     /// The sequence, mutably.
@@ -1069,7 +1214,7 @@ impl ValueExt for Value {
 
     fn at_mut<I: Index>(&mut self, index: I) -> &mut Value {
         if self.is_null() {
-            *self = Value::Map(Mapping::new());
+            *self = Value::Map(Pairs::new());
         }
         match self {
             Value::Map(m) => {
@@ -1093,11 +1238,11 @@ impl ValueExt for Value {
         self.as_text()
     }
 
-    fn as_mapping(&self) -> Option<&Mapping> {
+    fn as_mapping(&self) -> Option<&Pairs> {
         self.as_map()
     }
 
-    fn as_mapping_mut(&mut self) -> Option<&mut Mapping> {
+    fn as_mapping_mut(&mut self) -> Option<&mut Pairs> {
         self.as_map_mut()
     }
 
@@ -1155,7 +1300,7 @@ impl ValueExt for Value {
     }
 }
 
-/// serde_yaml `Mapping`-style key operations over a [`Mapping`] (a `Vec` of pairs, in order).
+/// serde_yaml `Mapping`-style key operations over [`Pairs`] (and so over a [`Mapping`], by deref).
 ///
 /// The names differ from serde_yaml's where `Vec` already has a method of that name
 /// (`get`, `get_mut`, `insert`, `remove`, `retain`).
@@ -1190,7 +1335,7 @@ pub trait MappingExt {
     fn retain_pairs(&mut self, keep: impl FnMut(&Value, &mut Value) -> bool);
 }
 
-impl MappingExt for Mapping {
+impl MappingExt for Pairs {
     fn get_key<I: Index>(&self, key: I) -> Option<&Value> {
         key.position(self).map(|at| &self[at].1)
     }

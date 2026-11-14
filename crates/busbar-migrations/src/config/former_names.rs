@@ -71,7 +71,7 @@ pub(super) fn needed(doc: &Value) -> bool {
         })
 }
 
-pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+pub(super) fn migrate(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     if let Some(store) = root.get_key_mut("store").and_then(Value::as_mapping_mut) {
         module(store, "store", changes);
     }
@@ -137,7 +137,7 @@ pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     }
 }
 
-fn module(definition: &mut Mapping, path: &str, changes: &mut Vec<String>) {
+fn module(definition: &mut Pairs, path: &str, changes: &mut Vec<String>) {
     let Some(old) = definition.get_key("module").and_then(Value::as_str) else {
         return;
     };

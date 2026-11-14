@@ -55,7 +55,7 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     let Some(root) = doc.as_mapping() else {
         return markers;
     };
-    let get = |m: &Mapping, k: &str| -> Option<Value> { m.get_key(k).cloned() };
+    let get = |m: &Pairs, k: &str| -> Option<Value> { m.get_key(k).cloned() };
 
     if get(root, field::GOVERNANCE).is_some() {
         markers.push(
@@ -278,7 +278,7 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     markers
 }
 
-pub(super) fn is_new_hook_defs(hooks: &Mapping) -> bool {
+pub(super) fn is_new_hook_defs(hooks: &Pairs) -> bool {
     !hooks.is_empty()
         && hooks.iter().all(|(_, e)| {
             e.as_mapping().is_some_and(|em| {

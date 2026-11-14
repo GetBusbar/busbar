@@ -1239,6 +1239,7 @@ pools: {}
             .and_then(|l| l.as_mapping())
             .cloned()
             .unwrap_or_default()
+            .into()
     };
     let field = |group: &str, key: &str| -> Value {
         limit(group)
