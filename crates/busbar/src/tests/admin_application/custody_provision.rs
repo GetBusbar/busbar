@@ -24,7 +24,11 @@ impl PersistenceBackend for RefusesKeyWrites {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         self.0.scan(request)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             if candidate
                 .candidate()
@@ -42,7 +46,7 @@ impl PersistenceBackend for RefusesKeyWrites {
             {
                 return Err(Failure::Refused);
             }
-            self.0.commit(candidate).await
+            self.0.commit(candidate, key).await
         })
     }
 }

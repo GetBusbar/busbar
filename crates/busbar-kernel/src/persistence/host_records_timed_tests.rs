@@ -72,7 +72,11 @@ impl PersistenceBackend for Backend {
             })
         })
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let operation = prepared.candidate().id.operation;
             let known = self.receipts.lock().unwrap().contains(&operation);
@@ -90,7 +94,7 @@ impl PersistenceBackend for Backend {
                     },
                 });
             }
-            let decision = self.inner.commit(prepared).await?;
+            let decision = self.inner.commit(prepared, key).await?;
             if matches!(decision, Decision::Applied(_)) {
                 self.receipts.lock().unwrap().insert(operation);
                 if self.lose_reply.swap(false, Ordering::SeqCst) {

@@ -6,12 +6,23 @@ use busbar_contract::persistence::{BackendInfo, Call, ClockObservation, Durabili
 use futures::FutureExt;
 use std::{collections::BTreeMap, sync::Mutex};
 
+/// One evaluated verdict, as a slot row records it.
+#[derive(Clone, Copy)]
+enum Verdict {
+    Applied,
+    Conflict,
+    Time(u64),
+}
 #[derive(Default)]
 struct Native {
     rows: BTreeMap<Address, Secret<Vec<u8>>>,
-    receipts: Vec<(AttemptId, [u8; 32])>,
+    /// (writer, slot) → (seq, fingerprint, verdict): STORE-TRANSACTIONS §2.5.
+    slots: BTreeMap<([u8; 16], u32), (u64, [u8; 32], Verdict)>,
+    applied: usize,
     sends: Vec<[u8; 32]>,
     lose_reply: bool,
+    /// Lose the reply of the next evaluated send, whatever its verdict.
+    lose_any: bool,
     hold_reply: bool,
     now: u64,
     commit_now: Option<u64>,
@@ -55,35 +66,53 @@ impl PersistenceBackend for Backend {
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async { panic!("writer identities must not come from wall time") })
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
-            let hold = {
+            let (decision, hold) = {
                 let mut native = self.0.lock().unwrap();
                 let digest = prepared.fingerprint();
                 native.sends.push(digest);
                 let candidate = prepared.candidate();
-                if let Some((_, prior)) = native.receipts.iter().find(|(id, _)| id == &candidate.id)
-                {
-                    return Ok(if *prior == digest {
-                        Decision::Applied(candidate.result.clone())
-                    } else {
-                        Decision::OpIdConflict
-                    });
-                }
-                let seal = crate::seal::lend();
                 if std::mem::take(&mut native.unknown_before) {
                     return Err(Failure::Unknown);
                 }
+                let (slot, seq) = key.wire();
+                let row = (candidate.id.writer, slot);
+                let observed = |native: &Native, now: u64| ClockObservation {
+                    authority: [3; 16],
+                    unix_seconds: if now == 0 { native.now } else { now },
+                };
+                if !key.is_self_fenced() {
+                    if let Some(&(recorded, fingerprint, verdict)) = native.slots.get(&row) {
+                        if seq < recorded {
+                            return Ok(Decision::Stale);
+                        }
+                        if seq == recorded {
+                            if fingerprint != digest {
+                                return Ok(Decision::OpIdConflict);
+                            }
+                            return Ok(match verdict {
+                                Verdict::Applied => Decision::Applied(Secret::new(Vec::new())),
+                                Verdict::Conflict => Decision::ConditionConflict,
+                                Verdict::Time(now) => Decision::TimeGuardFailed {
+                                    observed_at: observed(&native, now),
+                                },
+                            });
+                        }
+                    }
+                }
+                let seal = crate::seal::lend();
                 if let Some(now) = native.commit_now.take() {
                     native.now = now;
                 }
-                if !native.rows.contains_key(&root_address()) {
-                    if !native.rows.is_empty()
-                        || !native.receipts.is_empty()
+                let fenced = if !native.rows.contains_key(&root_address()) {
+                    !native.rows.is_empty()
+                        || !native.slots.is_empty()
                         || !control::initialization(candidate, self.info().dataset)
-                    {
-                        return Err(Failure::Refused);
-                    }
                 } else {
                     let root = native
                         .rows
@@ -94,49 +123,77 @@ impl PersistenceBackend for Backend {
                         .rows
                         .get(&writer_address(candidate.id.writer))
                         .and_then(|v| control::Writer::decode(v.expose(&seal)));
-                    if root.writer_epoch != candidate.id.writer_epoch
+                    root.writer_epoch != candidate.id.writer_epoch
                         || !writer.is_some_and(|w| w.admits(candidate.id.execution_epoch))
-                    {
-                        return Ok(Decision::ExpiredUnknown);
-                    }
-                }
-                if candidate
+                };
+                let verdict = if fenced {
+                    None
+                } else if candidate
                     .time
                     .is_some_and(|guard| !guard.permits(native.now))
                 {
-                    return Ok(Decision::TimeGuardFailed {
-                        observed_at: ClockObservation {
-                            authority: [3; 16],
-                            unix_seconds: native.now,
-                        },
-                    });
-                }
-                for predicate in &candidate.predicates {
+                    Some(Verdict::Time(native.now))
+                } else if candidate.predicates.iter().any(|predicate| {
                     let value = native.rows.get(&predicate.address);
-                    let matches = match &predicate.expected {
+                    !match &predicate.expected {
                         ExpectedValue::Absent => value.is_none(),
                         ExpectedValue::Exact(expected) => value == Some(expected),
-                    };
-                    if !matches {
-                        return Ok(Decision::ConditionConflict);
                     }
-                }
-                for mutation in &candidate.mutations {
-                    let Mutation::Put { address, value } = mutation else {
-                        panic!("unexpected startup mutation")
-                    };
-                    native.rows.insert(address.clone(), value.clone());
-                }
-                native.receipts.push((candidate.id, digest));
-                if std::mem::take(&mut native.lose_reply) {
+                }) {
+                    Some(Verdict::Conflict)
+                } else {
+                    for mutation in &candidate.mutations {
+                        let Mutation::Put { address, value } = mutation else {
+                            panic!("unexpected startup mutation")
+                        };
+                        native.rows.insert(address.clone(), value.clone());
+                        // Closure deletes every slot row of the closed writer.
+                        if let Some(control::Key::Writer(closed)) = (address.namespace
+                            == control::NAMESPACE.0)
+                            .then(|| control::Key::decode(&address.key))
+                            .flatten()
+                        {
+                            if control::Writer::decode(value.expose(&seal))
+                                .is_some_and(|w| w.retired_through == w.admitted_through)
+                            {
+                                native.slots.retain(|(writer, _), _| *writer != closed);
+                            }
+                        }
+                    }
+                    native.applied += 1;
+                    Some(Verdict::Applied)
+                };
+                let decision = match verdict {
+                    None => Decision::Fenced,
+                    Some(verdict) => {
+                        if !key.is_self_fenced() {
+                            native.slots.insert(row, (seq, digest, verdict));
+                        }
+                        match verdict {
+                            Verdict::Applied => Decision::Applied(Secret::new(Vec::new())),
+                            Verdict::Conflict => Decision::ConditionConflict,
+                            Verdict::Time(now) => Decision::TimeGuardFailed {
+                                observed_at: observed(&native, now),
+                            },
+                        }
+                    }
+                };
+                if std::mem::take(&mut native.lose_any) {
                     return Err(Failure::Unknown);
                 }
-                std::mem::take(&mut native.hold_reply)
+                if matches!(decision, Decision::Applied(_)) {
+                    if std::mem::take(&mut native.lose_reply) {
+                        return Err(Failure::Unknown);
+                    }
+                    (decision, std::mem::take(&mut native.hold_reply))
+                } else {
+                    (decision, false)
+                }
             };
             if hold {
                 std::future::pending::<()>().await;
             }
-            Ok(Decision::Applied(prepared.candidate().result.clone()))
+            Ok(decision)
         })
     }
 }
@@ -698,11 +755,7 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
                 native.sends[0], native.sends[1],
                 "retry retains the complete original candidate"
             );
-            assert_eq!(
-                native.receipts.len(),
-                1,
-                "no separate format publication commit"
-            );
+            assert_eq!(native.applied, 1, "no separate format publication commit");
             assert_eq!(native.rows.len(), 4);
             assert!(native.rows.contains_key(&root_address()));
             assert!(native.rows.contains_key(&manifest_address()));
@@ -714,7 +767,7 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
         let mut reopened = startup(&backend, false);
         admitted(&mut reopened).await;
         assert_eq!(
-            backend.0.lock().unwrap().receipts.len(),
+            backend.0.lock().unwrap().applied,
             2,
             "only initialization and new-writer registration"
         );
@@ -1127,4 +1180,263 @@ async fn live_roll_epoch_exhaustion_is_explicit_and_does_not_send() {
     assert!(Arc::ptr_eq(&store, &start.store().unwrap()));
     start.begin_retirement().unwrap();
     assert_eq!(start.advance().await.unwrap(), Progress::Retired);
+}
+
+fn writer_row(backend: &Backend, writer: [u8; 16]) -> Option<control::Writer> {
+    let seal = crate::seal::lend();
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .get(&writer_address(writer))
+        .and_then(|value| control::Writer::decode(value.expose(&seal)))
+}
+
+fn writer_rows(backend: &Backend) -> usize {
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .keys()
+        .filter(|address| {
+            address.namespace == control::NAMESPACE.0
+                && matches!(
+                    control::Key::decode(&address.key),
+                    Some(control::Key::Writer(_))
+                )
+        })
+        .count()
+}
+
+async fn finish_first_start(store: &CoreStore) {
+    let first = store.first_start().expect("first-start owner");
+    assert_eq!(first.freeze(Vec::new()).await, Ok(Progress::Advanced));
+    assert_eq!(first.publish().await, Ok(Progress::Advanced));
+    assert!(first.published().await);
+}
+
+/// 8.2: a lost reply on Initialize, then on Register: the retry is answered
+/// FENCED/CONDITION_CONFLICT and the readback finds this attempt's own writer row.
+#[tokio::test]
+async fn lost_initialize_and_register_replies_resolve_by_readback() {
+    let backend = Arc::new(Backend::default());
+    let mut start = startup(&backend, true);
+    assert_eq!(start.advance().await, Ok(Progress::Advanced));
+    backend.0.lock().unwrap().lose_reply = true;
+    assert_eq!(start.advance().await, Ok(Progress::Pending));
+    assert_eq!(
+        start.advance().await,
+        Ok(Progress::Advanced),
+        "FENCED → readback → Applied"
+    );
+    assert!(matches!(start.phase, Phase::Inspect));
+    assert_eq!(start.advance().await, Ok(Progress::Advanced));
+    backend.0.lock().unwrap().lose_reply = true;
+    assert_eq!(start.advance().await, Ok(Progress::Pending));
+    assert_eq!(
+        start.advance().await,
+        Ok(Progress::Advanced),
+        "CONFLICT → readback → Applied"
+    );
+    assert_eq!(start.advance().await, Ok(Progress::Admitted));
+    finish_first_start(&start.store().unwrap()).await;
+}
+
+/// 8.2: a lost reply on a writer transition (retirement) resolves by its (E) witness.
+#[tokio::test]
+async fn lost_writer_transition_reply_resolves_by_readback() {
+    let backend = Arc::new(Backend::default());
+    let mut start = startup(&backend, true);
+    let store = admitted(&mut start).await;
+    finish_first_start(&store).await;
+    start.begin_retirement().unwrap();
+    backend.0.lock().unwrap().lose_reply = true;
+    assert_eq!(start.advance().await, Ok(Progress::Pending));
+    assert_eq!(start.advance().await, Ok(Progress::Retired));
+}
+
+async fn initialized_only(backend: &Arc<Backend>) {
+    let mut first = startup(backend, true);
+    assert_eq!(first.advance().await, Ok(Progress::Advanced));
+    assert_eq!(first.advance().await, Ok(Progress::Advanced));
+    assert!(matches!(first.phase, Phase::Inspect));
+}
+
+/// 8.2b: racing initializers, plain and with the loser's reply lost. The loser
+/// resolves its lost attempt definitively, re-inspects, builds no candidate and
+/// refuses boot; the winner's writer row is untouched and it finishes first start.
+#[tokio::test]
+async fn racing_initializers_loser_refuses_and_winner_finishes() {
+    for lose in [false, true] {
+        for loser_reinspects_before_winner_registers in [true, false] {
+            let backend = Arc::new(Backend::default());
+            let mut a = startup(&backend, true);
+            let mut b = startup(&backend, true);
+            assert_eq!(a.advance().await, Ok(Progress::Advanced));
+            assert_eq!(b.advance().await, Ok(Progress::Advanced));
+            assert_eq!(b.advance().await, Ok(Progress::Advanced), "B initializes");
+            if !loser_reinspects_before_winner_registers {
+                assert_eq!(b.advance().await, Ok(Progress::Advanced));
+                assert_eq!(b.advance().await, Ok(Progress::Advanced), "B registers");
+            }
+            if lose {
+                backend.0.lock().unwrap().lose_any = true;
+                assert_eq!(a.advance().await, Ok(Progress::Pending));
+            }
+            assert_eq!(
+                a.advance().await,
+                Ok(Progress::Advanced),
+                "A resolves Fenced"
+            );
+            let rows = writer_rows(&backend);
+            let sends = backend.0.lock().unwrap().sends.len();
+            assert_eq!(a.advance().await, Err(Error::Conflict));
+            assert_eq!(writer_rows(&backend), rows, "A wrote nothing");
+            assert_eq!(
+                backend.0.lock().unwrap().sends.len(),
+                sends,
+                "A built no candidate"
+            );
+            let store = admitted(&mut b).await;
+            let winner = store.authority().unwrap().writer;
+            assert!(writer_row(&backend, winner).is_some_and(|w| w.admits(1)));
+            finish_first_start(&store).await;
+            assert!(writer_row(&backend, winner).is_some_and(|w| w.admits(1)));
+        }
+    }
+}
+
+/// 8.2b winner-late: B's Initialize applies but its reply is lost; A's is FENCED
+/// and A refuses without registering; B's retry reads back Applied, inspects an
+/// unowned birth record and registers retiring nobody.
+#[tokio::test]
+async fn racing_initializers_winner_late_registers_retiring_nobody() {
+    let backend = Arc::new(Backend::default());
+    let mut a = startup(&backend, true);
+    let mut b = startup(&backend, true);
+    assert_eq!(a.advance().await, Ok(Progress::Advanced));
+    assert_eq!(b.advance().await, Ok(Progress::Advanced));
+    backend.0.lock().unwrap().lose_reply = true;
+    assert_eq!(
+        b.advance().await,
+        Ok(Progress::Pending),
+        "B applied, reply lost"
+    );
+    assert_eq!(a.advance().await, Ok(Progress::Advanced), "A is FENCED");
+    assert_eq!(a.advance().await, Err(Error::Conflict));
+    let rows = writer_rows(&backend);
+    let store = admitted(&mut b).await;
+    assert_eq!(writer_rows(&backend), rows + 1, "only B's new writer");
+    let seal = crate::seal::lend();
+    for (address, value) in &backend.0.lock().unwrap().rows {
+        if address.namespace == control::NAMESPACE.0 && address.key != control::DATASET_KEY {
+            let writer = control::Writer::decode(value.expose(&seal)).unwrap();
+            assert!(writer.admits(1), "nobody was retired");
+        }
+    }
+    finish_first_start(&store).await;
+}
+
+/// 8.2c: racing Register on first start. B registers; A's reply is lost; A's retry
+/// is a CONDITION_CONFLICT the readback proves final (W absent, birth predicate
+/// failed, no-ABA); A refuses boot and B is not retired.
+#[tokio::test]
+async fn racing_register_loser_refuses_and_winner_is_not_retired() {
+    let backend = Arc::new(Backend::default());
+    initialized_only(&backend).await;
+    let mut a = startup(&backend, false);
+    let mut b = startup(&backend, false);
+    assert_eq!(a.advance().await, Ok(Progress::Advanced));
+    assert_eq!(b.advance().await, Ok(Progress::Advanced));
+    assert_eq!(b.advance().await, Ok(Progress::Advanced), "B registers");
+    backend.0.lock().unwrap().lose_any = true;
+    assert_eq!(a.advance().await, Ok(Progress::Pending));
+    assert_eq!(
+        a.advance().await,
+        Ok(Progress::Advanced),
+        "readback: ConditionConflict"
+    );
+    assert_eq!(a.advance().await, Err(Error::Conflict));
+    let store = admitted(&mut b).await;
+    let winner = store.authority().unwrap().writer;
+    assert!(writer_row(&backend, winner).is_some_and(|w| w.admits(1)));
+    finish_first_start(&store).await;
+}
+
+/// Repeated CAS losses on a published dataset stay bounded by `conflict_retries`.
+#[tokio::test]
+async fn losses_are_bounded_by_conflict_retries() {
+    let backend = Arc::new(Backend::default());
+    let mut start = startup(&backend, true);
+    start.lost = limits().conflict_retries;
+    assert_eq!(start.lose(), Err(Error::Conflict));
+}
+
+#[test]
+fn pending_operations_above_max_slots_are_invalid_limits() {
+    let backend = Arc::new(Backend::default());
+    assert!(matches!(
+        Startup::new(
+            backend,
+            Limits {
+                pending_operations: MAX_SLOTS as usize + 1,
+                ..limits()
+            },
+            true
+        ),
+        Err(Error::Access(AccessError::InvalidLimits))
+    ));
+}
+
+/// 8.2 (TargetBootstrap): a lost Initialize reply reaches Ready within two
+/// advances; after a peer initialized, it ends in ReconciliationRequired in one.
+#[tokio::test]
+async fn target_bootstrap_lost_reply_and_peer_initialization() {
+    use super::super::import_target::{
+        target::{BootstrapProgress, TargetBootstrap},
+        ImportError,
+    };
+    let authority = WriterAuthority {
+        writer: [0x77; 16],
+        writer_epoch: 1,
+        execution_epoch: 1,
+    };
+    let backend = Arc::new(Backend::default());
+    let mut bootstrap = TargetBootstrap::new(backend.clone(), authority, [0x78; 16]).unwrap();
+    assert!(matches!(
+        bootstrap.advance().await,
+        Ok(BootstrapProgress::Advanced)
+    ));
+    backend.0.lock().unwrap().lose_reply = true;
+    assert!(matches!(
+        bootstrap.advance().await,
+        Ok(BootstrapProgress::Pending)
+    ));
+    assert!(matches!(
+        bootstrap.advance().await,
+        Ok(BootstrapProgress::Ready)
+    ));
+
+    let backend = Arc::new(Backend::default());
+    let mut bootstrap = TargetBootstrap::new(backend.clone(), authority, [0x78; 16]).unwrap();
+    assert!(matches!(
+        bootstrap.advance().await,
+        Ok(BootstrapProgress::Advanced)
+    ));
+    let peer = WriterAuthority {
+        writer: [0x79; 16],
+        ..authority
+    };
+    let mut peer = TargetBootstrap::new(backend.clone(), peer, [0x7A; 16]).unwrap();
+    assert!(matches!(
+        peer.advance().await,
+        Ok(BootstrapProgress::Advanced)
+    ));
+    assert!(matches!(peer.advance().await, Ok(BootstrapProgress::Ready)));
+    assert!(matches!(
+        bootstrap.advance().await,
+        Err(ImportError::ReconciliationRequired)
+    ));
 }

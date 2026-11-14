@@ -63,7 +63,11 @@ impl PersistenceBackend for Backend {
     fn scan(&self, _: Arc<Scan>) -> Call<'_, Page> {
         Box::pin(async { Err(Failure::Unavailable) })
     }
-    fn commit(&self, _: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        _: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async { Err(Failure::Refused) })
     }
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {

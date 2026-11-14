@@ -577,7 +577,11 @@ impl PersistenceBackend for UnknownUsage {
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.inner.clock(dataset)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, NativeDecision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, NativeDecision> {
         Box::pin(async move {
             let fail_key = self.fail_key.load(Ordering::SeqCst);
             let target = candidate.candidate().mutations.iter().any(|mutation| {
@@ -592,7 +596,7 @@ impl PersistenceBackend for UnknownUsage {
                 }
             });
             let id = PendingId(candidate.candidate().id.operation);
-            let result = self.inner.commit(candidate).await?;
+            let result = self.inner.commit(candidate, key).await?;
             if target
                 && self.fail.swap(false, Ordering::SeqCst)
                 && matches!(result, NativeDecision::Applied(_))

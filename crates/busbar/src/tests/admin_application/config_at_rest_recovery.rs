@@ -400,7 +400,11 @@ impl PersistenceBackend for RewrapStore {
             self.actual.scan(request).await
         })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             for mutation in &candidate.candidate().mutations {
                 let address = match mutation {
@@ -422,7 +426,7 @@ impl PersistenceBackend for RewrapStore {
                     return Err(Failure::Refused);
                 }
             }
-            self.actual.commit(candidate).await
+            self.actual.commit(candidate, key).await
         })
     }
 }

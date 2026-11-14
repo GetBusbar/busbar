@@ -1457,7 +1457,11 @@ impl PersistenceBackend for PriceStoreFaults {
             self.inner.read(request).await
         })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let price = candidate.candidate().mutations.iter().any(|m| matches!(m, Mutation::Put {address,..} if address.namespace == busbar_kernel::governance::persistence::prices::PRICES.0));
             let preparation = candidate.candidate().mutations.iter().any(|m| matches!(m, Mutation::Put {address,..} if address.namespace == busbar_kernel::governance::persistence::prices::PRICES.0 && address.key.first() == Some(&b'E')));
@@ -1503,7 +1507,7 @@ impl PersistenceBackend for PriceStoreFaults {
                 (selected || self.overlay) && mode == 2 && !self.lost.swap(true, Ordering::SeqCst);
             let pause = selected && mode == 3 && !self.paused.swap(true, Ordering::SeqCst);
             let panic_after = self.overlay && mode == 4 && !self.lost.swap(true, Ordering::SeqCst);
-            let result = self.inner.commit(candidate).await;
+            let result = self.inner.commit(candidate, key).await;
             if pause {
                 self.pause.wait().await;
             }

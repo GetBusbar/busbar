@@ -128,7 +128,11 @@ impl PersistenceBackend for Backend {
         })
     }
 
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let hold = {
                 let mut native = self.0.lock().unwrap();
@@ -531,4 +535,55 @@ async fn registered_scopes_rotate_and_retain_cancelled_pages_without_store_cycle
         weak.upgrade().is_none(),
         "maintenance must not own an Arc back to its attachment"
     );
+}
+
+/// 8.7: a sweep tick on a full slot queue gets Overloaded and keeps its prepared
+/// page unregistered; once a slot frees, the next tick submits and completes.
+#[tokio::test]
+async fn sweep_on_a_full_queue_is_overloaded_then_completes_next_tick() {
+    use busbar_contract::persistence::{Candidate, Mutation, CANDIDATE_VERSION};
+    let (backend, store) = fixture(20, 4096).await;
+    let claims = Claims::authorized(&store, "owner", "kind");
+    let address = insert(&backend, &claims, "token", 99);
+    let mut held = Vec::new();
+    for n in 0..4u8 {
+        backend.0.lock().unwrap().unknown_before = true;
+        let candidate = PreparedCandidate::new(Candidate {
+            id: store.next_id().unwrap(),
+            codec: CANDIDATE_VERSION,
+            predicates: vec![],
+            mutations: vec![Mutation::Put {
+                address: Address {
+                    namespace: [7; 16],
+                    key: vec![n],
+                },
+                value: Secret::new(vec![n]),
+            }],
+            time: None,
+            result: Secret::new(vec![]),
+        })
+        .unwrap();
+        held.push(store.submit(candidate).await.unwrap().id);
+    }
+    let mut sweep = claims.sweep().unwrap();
+    assert!(matches!(
+        sweep.advance().await,
+        Err(Error::Access(
+            crate::persistence::facade::AccessError::Overloaded
+        ))
+    ));
+    assert!(store.exhausted());
+    assert!(matches!(
+        store.retry(held[0]).await.unwrap().result,
+        crate::persistence::commit::SubmitResult::Decided(_)
+    ));
+    assert_eq!(
+        sweep.advance().await.unwrap(),
+        SweepOutcome::Page {
+            scanned: 1,
+            deleted: 1,
+            complete: true
+        }
+    );
+    assert!(!backend.0.lock().unwrap().rows.contains_key(&address));
 }
