@@ -541,7 +541,7 @@ fn test_translation_bank_counts_known_protocol_pair() {
 /// THE CLASS INVARIANT: an observation costs BOUNDED memory whether or not anyone ever scrapes
 /// `/metrics`, and the memory it does cost is RELEASED once the traffic stops.
 ///
-/// Per-request observations must be drained into bounded aggregates even when no metrics scrape arrives. Both the bank's per-thread sample `Vec` and the exporter's `AtomicBucket` of raw `(value, timestamp)` pairs need an independent drain; retaining either raw-sample layer would let memory grow with total requests instead of reaching a plateau. The test exercises that unscripted-scrape case.
+/// Per-request observations must be drained into bounded aggregates even when no metrics scrape arrives. Both the bank's per-thread sample `Vec` and the exporter's per-histogram `Samples` buffer of raw `(value, timestamp)` pairs need an independent drain; retaining either raw-sample layer would let memory grow with total requests instead of reaching a plateau. The test exercises that unscripted-scrape case.
 ///
 ///
 ///
