@@ -45,6 +45,7 @@ fn the_production_pgo_trainer_configuration_validates() {
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("PGO_MOCK_KEY", "pgo-test-upstream")
+        .env("PGO_BEDROCK_KEY", "AKIAPGOTRAINERTEST:pgo-test-secret")
         .env("PGO_ADMIN_TOKEN", "pgo-test-admin")
         .env(
             "PGO_SIGNING_KEY",
