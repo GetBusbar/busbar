@@ -787,9 +787,10 @@ a warning does not authorize treating an unknown cost as zero. `GET /usage`, `/g
 rate card in force names no price for class \`<class>\` of \`<lane>\`"}}`) instead of a bare `500
 internal`; no figure moves, only the status and code the caller sees change.
 
-> **Upgrading from 1.5.5.** Every 1.5.5 deployment with a `rate_card:` now FAILS BOOT until the card
-> configures every class its plane declares — in practice, add the `units:` map above (every LLM
-> open class at `0`) to any one entry of the flat/`pools` card, and price the ones you bill. The
+> **Upgrading from 1.5.5.** A 1.5.5 `rate_card:` that names every configured model still boots, but
+> each class its plane declares and the card does not price is left unpriced, with a warning naming
+> the lane and classes. To keep 1.5.5's billing, add the `units:` map above (every LLM open class
+> at `0`) to any one entry of the flat/`pools` card, and price the ones you bill. The
 > declared classes per plane are: `pools` (LLM) = `input`, `output`, `cache_read`, `cache_write`,
 > `search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, `guardrail_automated_reasoning_policies`, `guardrail_automated_reasoning_policy_units`, `guardrail_content_policy_image_units`, `guardrail_content_policy_units`, `guardrail_contextual_grounding_policy_units`, `guardrail_sensitive_information_policy_free_units`, `guardrail_sensitive_information_policy_units`, `guardrail_topic_policy_units`, `guardrail_word_policy_units`; `tools`
 > (MCP) = `tool_calls`, `bytes`; `agents` (A2A) = `bytes`; `decisions` = `decision`, `input_tokens`,
