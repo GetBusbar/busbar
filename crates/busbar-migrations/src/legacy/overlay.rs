@@ -77,7 +77,7 @@ pub fn frozen_overlay_from_facts(
         if charge > budget {
             return Err(Error::Bounds);
         }
-        let digest: [u8; 32] = busbar_contract::crypto::sha256(key.expose(&seal)).into();
+        let digest: [u8; 32] = busbar_contract::crypto::sha256(key.expose(&seal));
         if entries
             .insert(
                 digest,
@@ -93,7 +93,7 @@ pub fn frozen_overlay_from_facts(
         Ok(())
     })?;
     let lookup = |key: &[u8]| -> Result<Option<&Secret<Vec<u8>>>, Error> {
-        let digest: [u8; 32] = busbar_contract::crypto::sha256(key).into();
+        let digest: [u8; 32] = busbar_contract::crypto::sha256(key);
         let Some(entry) = entries.get(&digest) else {
             return Ok(None);
         };
@@ -125,14 +125,14 @@ pub fn frozen_overlay_from_facts(
         }
         output.extend_from_slice(chunk);
     }
-    if <[u8; 32]>::from(busbar_contract::crypto::sha256(&output)) != head.digest {
+    if busbar_contract::crypto::sha256(&output) != head.digest {
         return Err(Error::Verification);
     }
     Ok(Some(FrozenOverlay {
         source: identity.clone(),
         bytes: Secret::new(output.into_vec()),
         digest: head.digest,
-        head_digest: busbar_contract::crypto::sha256(raw.expose(&seal)).into(),
+        head_digest: busbar_contract::crypto::sha256(raw.expose(&seal)),
     }))
 }
 
@@ -340,7 +340,7 @@ mod tests {
     fn fixture() -> Rows {
         let bytes = b"{\"version\":1,\"deleted\":[\"removed-owner\"]}";
         let generation = [4; 16];
-        let head = serde_json::to_vec(&serde_json::json!({"version":1,"generation":generation,"length":bytes.len(),"digest":<[u8;32]>::from(busbar_contract::crypto::sha256(bytes))})).unwrap();
+        let head = serde_json::to_vec(&serde_json::json!({"version":1,"generation":generation,"length":bytes.len(),"digest":busbar_contract::crypto::sha256(bytes)})).unwrap();
         let mut chunk = b"chunk:".to_vec();
         chunk.extend_from_slice(&generation);
         chunk.extend_from_slice(&0u64.to_be_bytes());

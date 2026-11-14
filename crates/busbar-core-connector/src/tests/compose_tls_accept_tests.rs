@@ -388,13 +388,13 @@ fn tls_read_with_carrier_scratch_held_allocates_nothing() {
     };
     for _ in 0..3 {
         let rec = records(&mut client, &[b'w'; RECORD]);
-        step(&mut conn, &*pipe, rec);
-        step(&mut plain, &*plain_pipe, vec![b'w'; RECORD]);
+        step(&mut conn, &pipe, rec);
+        step(&mut plain, &plain_pipe, vec![b'w'; RECORD]);
     }
     let misses = scratch_misses();
     let rec = records(&mut client, &[b'r'; RECORD]);
-    let clear = step(&mut plain, &*plain_pipe, vec![b'r'; RECORD]);
-    let secured = step(&mut conn, &*pipe, rec);
+    let clear = step(&mut plain, &plain_pipe, vec![b'r'; RECORD]);
+    let secured = step(&mut conn, &pipe, rec);
     assert_eq!(
         scratch_misses(),
         misses,

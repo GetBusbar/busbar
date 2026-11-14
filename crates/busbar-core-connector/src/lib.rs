@@ -1925,7 +1925,7 @@ impl Connector {
                         &located.authority,
                         Some(egress_class),
                         "plaintext",
-                        Some((u64::from(owner.0), need.0)),
+                        Some((owner.0, need.0)),
                     );
                     return Err(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                 }
@@ -1934,7 +1934,7 @@ impl Connector {
                         &located.authority,
                         Some(egress_class),
                         egress_audit::verdict_name(v),
-                        Some((u64::from(owner.0), need.0)),
+                        Some((owner.0, need.0)),
                     );
                     return Err(verdict_reason(v, false));
                 }
