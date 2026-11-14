@@ -66,6 +66,8 @@ fn idp_with_secret(env: &str) -> crate::config::AuthCfg {
             browser_login: Some(crate::config::BrowserLoginCfg {
                 client_secret: Some(crate::config::secret::fixed_reference(env)),
                 client_id: Some("client-abc".into()),
+                max_failures: None,
+                failure_window: None,
             }),
             settings: serde_json::Map::new().into(),
         },

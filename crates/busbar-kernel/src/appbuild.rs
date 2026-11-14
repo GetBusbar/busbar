@@ -1851,6 +1851,11 @@ async fn build_app_native(
         || Arc::new(ratelimit::MutationLimiter::new()),
         |p| p.mutation_limiter.clone(),
     );
+    let login_guard = prior.map_or_else(
+        || Arc::new(crate::auth::login_limits::LoginGuard::default()),
+        |p| p.login_guard.clone(),
+    );
+    login_guard.configure(cfg.login_limits.clone());
     let admin_chain = cfg.admin_auth.clone();
     let public_url = cfg.public_url.clone();
 
@@ -1985,6 +1990,7 @@ async fn build_app_native(
         export_projections,
         mutation_limiter,
         login_methods,
+        login_guard,
     );
     rules.check_built(&app)?;
     if let Some(paths) = rules.mounted_plugin_paths(&app) {

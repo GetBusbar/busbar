@@ -12,11 +12,19 @@ use busbar_contract::auth::{BeginLogin, CompleteLogin, LoginOutcome, Principal};
 use busbar_contract::auth_calls::LoginCallback;
 use busbar_kernel::auth::login::seam::{Answer, FormAnswer, LoginSeam};
 use busbar_kernel::auth::login::{
-    issue_self_key, login_method, login_methods, login_step, LoginStep, SelfKeyIssue,
+    issue_self_key, login_method, login_methods, login_step, remember_login_form, LoginStep,
+    SelfKeyIssue,
+};
+use busbar_kernel::auth::login_limits::key::StateKey;
+use busbar_kernel::auth::login_limits::{
+    claim_login_state, credential_attempt, ClientAddr, CredentialAttempt, CredentialVerdict,
+    StateClaim,
 };
 use busbar_kernel::state::{App, AppHandle};
 
-const LOGIN_COOKIE: &str = "busbar_login";
+/// The login-state cookie. `__Host-`: Secure, `Path=/`, no `Domain`, so a sibling subdomain cannot
+/// plant ("toss") one; its value is MACed and single-use (see [`LoginCookie`]).
+const LOGIN_COOKIE: &str = "__Host-busbar_login";
 
 const FORM_STATE_FIELD: &str = "__state";
 
@@ -108,7 +116,12 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
     };
 
     let outcome = login_step(app, method, LoginStep::Begin(begin)).await;
+    if let LoginOutcome::Prompt(form) = &outcome {
+        remember_login_form(app, method, form);
+    }
+    let seal = CookieSeal::of(app);
     begin_outcome(
+        &seal,
         method,
         login_method(app, method)
             .and_then(|m| m.presentation)
@@ -124,6 +137,7 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
 
 #[allow(clippy::too_many_arguments)]
 fn begin_outcome(
+    seal: &CookieSeal,
     method: &str,
     presentation: Option<&busbar_contract::auth_calls::LoginPresentation>,
     base_url: &str,
@@ -148,8 +162,9 @@ fn begin_outcome(
                 state,
                 nonce,
                 refresh,
+                iat: seal.now,
             }
-            .encode();
+            .encode(seal);
             let mut resp = Response::builder()
                 .status(StatusCode::FOUND)
                 .header(header::LOCATION, location)
@@ -170,8 +185,9 @@ fn begin_outcome(
                 state: state.clone(),
                 nonce: String::new(),
                 refresh,
+                iat: seal.now,
             }
-            .encode();
+            .encode(seal);
             let page = render_login_form(method, presentation, &form, &state, base_url, refresh);
             let mut resp = html_no_store(page);
             resp.headers_mut().append(
@@ -196,12 +212,9 @@ async fn callback(
     code: String,
     state: Option<String>,
 ) -> Response {
-    let Some(cookie) = cookie_raw.and_then(|raw| LoginCookie::decode(&raw)) else {
-        return error_page(
-            StatusCode::BAD_REQUEST,
-            "Sign-in session expired",
-            "Your sign-in session expired or was already used. Head back and start again.",
-        );
+    let seal = CookieSeal::of(app);
+    let Some(cookie) = cookie_raw.and_then(|raw| LoginCookie::decode(&raw, &seal)) else {
+        return session_expired();
     };
 
     let state_ok = state
@@ -222,6 +235,9 @@ async fn callback(
             "That sign-in method is no longer available. Head back and choose one of the listed \
              options.",
         ));
+    }
+    if let Err(response) = claim_once(app, &cookie).await {
+        return response;
     }
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
 
@@ -336,13 +352,11 @@ async fn credential_submit(
     handle: &Arc<AppHandle>,
     cookie_raw: String,
     form: Vec<(String, String)>,
+    source: busbar_kernel::auth::login_limits::ClientSource,
 ) -> Response {
-    let Some(cookie) = LoginCookie::decode(&cookie_raw) else {
-        return clear_and(error_page(
-            StatusCode::BAD_REQUEST,
-            "Sign-in session expired",
-            "Your sign-in session expired or was already used. Head back and start again.",
-        ));
+    let seal = CookieSeal::of(app);
+    let Some(cookie) = LoginCookie::decode(&cookie_raw, &seal) else {
+        return clear_and(session_expired());
     };
 
     let submitted_state = form
@@ -369,28 +383,87 @@ async fn credential_submit(
             "This sign-in method can't be completed here. Please head back and start again.",
         ));
     }
+    if let Err(response) = claim_once(app, &cookie).await {
+        return response;
+    }
 
-    let submitted: Vec<(String, busbar_contract::redacted::Secret<String>)> = form
-        .into_iter()
-        .filter(|(k, _)| k != FORM_STATE_FIELD)
-        .map(|(k, v)| (k, busbar_contract::redacted::Secret::new(v)))
-        .collect();
-    let cl = CompleteLogin {
-        submitted,
-        ..Default::default()
-    };
-
-    let request = LoginCallback {
-        state: cookie.state.clone(),
-        nonce: None,
-        login: cl,
-    };
-    let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
-    let principal = match credential_outcome(&cookie.method, outcome) {
+    let verdict = credential_attempt(
+        app,
+        CredentialAttempt {
+            method: cookie.method.clone(),
+            state: cookie.state.clone(),
+            form: form
+                .into_iter()
+                .filter(|(k, _)| k != FORM_STATE_FIELD)
+                .collect(),
+            source,
+        },
+    )
+    .await;
+    let principal = match verdict_response(&cookie.method, verdict) {
         Ok(principal) => principal,
         Err(response) => return *response,
     };
     clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
+}
+
+/// Render what the limiter and the plugin came to.
+fn verdict_response(method: &str, verdict: CredentialVerdict) -> Result<Principal, Box<Response>> {
+    match verdict {
+        CredentialVerdict::Identified(principal) => Ok(principal),
+        CredentialVerdict::Declined => credential_outcome(method, LoginOutcome::Reject),
+        CredentialVerdict::Outage { retry_after_secs } => {
+            credential_outcome(method, LoginOutcome::Outage { retry_after_secs })
+        }
+        CredentialVerdict::Unfinished => {
+            credential_outcome(method, LoginOutcome::SecurityCheckFailed)
+        }
+        CredentialVerdict::Throttled { retry_after_secs } => {
+            Err(Box::new(clear_and(too_many_attempts(retry_after_secs))))
+        }
+        CredentialVerdict::Unavailable { retry_after_secs } => {
+            Err(Box::new(clear_and(provider_unreachable(retry_after_secs))))
+        }
+        CredentialVerdict::Malformed => Err(Box::new(clear_and(error_page(
+            StatusCode::BAD_REQUEST,
+            "Sign-in didn't finish",
+            "This sign-in didn't complete. Please head back and try again.",
+        )))),
+    }
+}
+
+/// THE THROTTLED ANSWER: one page, one header shape, whichever limiter tripped and whether or not
+/// the account exists.
+fn too_many_attempts(retry_after_secs: u64) -> Response {
+    let mut page = error_page(
+        StatusCode::TOO_MANY_REQUESTS,
+        "Too many sign-in attempts",
+        "Please wait a few minutes, then try again. If this keeps happening, contact your Busbar \
+         admin.",
+    );
+    page.headers_mut().insert(
+        header::RETRY_AFTER,
+        header::HeaderValue::from(retry_after_secs),
+    );
+    page
+}
+
+fn session_expired() -> Response {
+    error_page(
+        StatusCode::BAD_REQUEST,
+        "Sign-in session expired",
+        "Your sign-in session expired or was already used. Head back and start again.",
+    )
+}
+
+/// Spend the login's state: a cookie completes at most once, fleet-wide.
+async fn claim_once(app: &App, cookie: &LoginCookie) -> Result<(), Response> {
+    let expires_at = cookie.iat.saturating_add(u64::from(LOGIN_COOKIE_MAX_AGE));
+    match claim_login_state(app, &cookie.state, expires_at).await {
+        StateClaim::Fresh => Ok(()),
+        StateClaim::Replayed => Err(clear_and(session_expired())),
+        StateClaim::Unavailable => Err(clear_and(provider_unreachable(None))),
+    }
 }
 
 fn credential_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Box<Response>> {
@@ -424,26 +497,58 @@ struct LoginCookie {
     /// keeps older cookies decoding.
     #[serde(default)]
     refresh: bool,
+    /// When the login began (Unix seconds); the cookie is refused outside
+    /// [`LOGIN_COOKIE_MAX_AGE`] of it.
+    #[serde(default)]
+    iat: u64,
 }
 
-impl LoginCookie {
-    fn encode(&self) -> String {
-        B64.encode(serde_json::to_vec(self).expect("serialize login cookie"))
+/// What seals a login cookie: the MAC key (derived from the signing key) and the time now.
+struct CookieSeal {
+    key: Arc<StateKey>,
+    now: u64,
+}
+
+impl CookieSeal {
+    fn of(app: &App) -> Self {
+        Self {
+            key: busbar_kernel::auth::login_limits::state_key(app),
+            now: busbar_kernel::store::now(),
+        }
     }
-    fn decode(raw: &str) -> Option<Self> {
-        let bytes = B64.decode(raw).ok()?;
-        serde_json::from_slice(&bytes).ok()
+}
+
+/// How far ahead of this node's clock a cookie's `iat` may be (another node's clock).
+const LOGIN_COOKIE_SKEW_SECS: u64 = 60;
+
+impl LoginCookie {
+    /// `base64url(JSON) "." base64url(HMAC(state key, base64url(JSON)))`: the method, the state,
+    /// `refresh` and the issue time are all authenticated.
+    fn encode(&self, seal: &CookieSeal) -> String {
+        let payload = B64.encode(serde_json::to_vec(self).expect("serialize login cookie"));
+        let tag = B64.encode(seal.key.sign(payload.as_bytes()));
+        format!("{payload}.{tag}")
+    }
+    fn decode(raw: &str, seal: &CookieSeal) -> Option<Self> {
+        let (payload, tag) = raw.split_once('.')?;
+        if !seal.key.verify(payload.as_bytes(), &B64.decode(tag).ok()?) {
+            return None;
+        }
+        let cookie: Self = serde_json::from_slice(&B64.decode(payload).ok()?).ok()?;
+        let fresh = cookie.iat <= seal.now.saturating_add(LOGIN_COOKIE_SKEW_SECS)
+            && seal.now.saturating_sub(cookie.iat) <= u64::from(LOGIN_COOKIE_MAX_AGE);
+        fresh.then_some(cookie)
     }
 }
 
 fn set_cookie(value: &str) -> String {
     format!(
-        "{LOGIN_COOKIE}={value}; HttpOnly; Secure; SameSite=Lax; Path=/auth/token; Max-Age={LOGIN_COOKIE_MAX_AGE}"
+        "{LOGIN_COOKIE}={value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={LOGIN_COOKIE_MAX_AGE}"
     )
 }
 
 fn clear_cookie() -> String {
-    format!("{LOGIN_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/auth/token; Max-Age=0")
+    format!("{LOGIN_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0")
 }
 
 fn read_cookie(req: &Request<Body>) -> Option<String> {
@@ -810,14 +915,18 @@ fn seam_credential_form(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<Fo
         let Some(cookie) = read_cookie(&req) else {
             return Err(Box::new(req));
         };
+        let app = handle.load();
+        let source = app.login_guard().source_of(
+            req.extensions().get::<ClientAddr>().map(|a| a.0.ip()),
+            req.headers(),
+        );
 
         let bytes = match axum::body::to_bytes(req.into_body(), 64 * 1024).await {
             Ok(bytes) => bytes,
             Err(_) => return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response()),
         };
         let form = parse_query(&String::from_utf8_lossy(&bytes));
-        let app = handle.load();
-        Ok(credential_submit(&app, &handle, cookie, form).await)
+        Ok(credential_submit(&app, &handle, cookie, form, source).await)
     })
 }
 

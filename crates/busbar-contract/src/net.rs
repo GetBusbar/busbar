@@ -885,6 +885,130 @@ pub fn url_authority(url: &str) -> Authority<'_> {
     }
 }
 
+/// AN IP NETWORK as an operator writes one in a list (`10.0.0.0/8`, `fd00::/8`, or a bare address,
+/// which is host-length). THE ONE CIDR READER: the destination guard's `advanced.allow_destinations`
+/// and the client-address reader's `advanced.trusted_proxies` both parse and match through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpNet {
+    addr: IpAddr,
+    len: u8,
+}
+
+/// Why an entry is not an [`IpNet`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpNetError {
+    /// Not an IP, and not `IP/prefix` with a prefix within the family's length.
+    NotNetwork,
+    /// `IP/prefix` with address bits set past the prefix length.
+    HostBitsSet,
+}
+
+impl IpNet {
+    /// Read `entry`: an IP, or `IP/prefix` (IPv6 may be bracketed). Trims, lowercases, drops one
+    /// trailing dot. `Ok(None)` when `entry` is not IP-shaped at all (a host name, for a list that
+    /// also takes names); `Err` when it is IP-shaped and wrong.
+    pub fn read(entry: &str) -> Result<Option<IpNet>, IpNetError> {
+        let e = entry.trim().trim_start_matches('[').trim_end_matches(']');
+        let e = e.strip_suffix('.').unwrap_or(e).to_ascii_lowercase();
+        if let Some((ip, len)) = e.split_once('/') {
+            let ip: IpAddr = ip
+                .trim_end_matches(']')
+                .parse()
+                .map_err(|_| IpNetError::NotNetwork)?;
+            let len: u8 = len.parse().map_err(|_| IpNetError::NotNetwork)?;
+            if len > Self::full(ip) {
+                return Err(IpNetError::NotNetwork);
+            }
+            if Self::masked(ip, len) != ip {
+                return Err(IpNetError::HostBitsSet);
+            }
+            return Ok(Some(IpNet { addr: ip, len }));
+        }
+        Ok(e.parse::<IpAddr>().ok().map(IpNet::host))
+    }
+
+    /// Read `entry` as a network, refusing anything that is not one.
+    pub fn parse(entry: &str) -> Result<IpNet, IpNetError> {
+        Self::read(entry)?.ok_or(IpNetError::NotNetwork)
+    }
+
+    /// The host-length network of `ip`.
+    #[must_use]
+    pub fn host(ip: IpAddr) -> IpNet {
+        IpNet {
+            addr: ip,
+            len: Self::full(ip),
+        }
+    }
+
+    /// The network address.
+    #[must_use]
+    pub fn addr(&self) -> IpAddr {
+        self.addr
+    }
+
+    /// The prefix length.
+    #[must_use]
+    pub fn prefix_len(&self) -> u8 {
+        self.len
+    }
+
+    /// Whether this network names one address (a bare IP, a /32 or a /128).
+    #[must_use]
+    pub fn is_host(&self) -> bool {
+        self.len == Self::full(self.addr)
+    }
+
+    /// Whether `addr` is inside this network. An IPv4 network also covers an IPv6 address that
+    /// embeds an IPv4 address inside it ([`embedded_ipv4`]: mapped, 6to4, Teredo, NAT64).
+    #[must_use]
+    pub fn covers(&self, addr: IpAddr) -> bool {
+        let canonical = match addr {
+            IpAddr::V6(v6) => embedded_ipv4(&v6).map_or(addr, IpAddr::V4),
+            v4 => v4,
+        };
+        match (self.addr, canonical, addr) {
+            (IpAddr::V4(n), IpAddr::V4(a), _) => prefix_eq(&n.octets(), &a.octets(), self.len),
+            (IpAddr::V6(n), _, IpAddr::V6(a)) => prefix_eq(&n.octets(), &a.octets(), self.len),
+            _ => false,
+        }
+    }
+
+    /// The host length of an address's family.
+    #[must_use]
+    pub fn full(ip: IpAddr) -> u8 {
+        if ip.is_ipv4() {
+            32
+        } else {
+            128
+        }
+    }
+
+    /// `ip` with every bit past `len` cleared.
+    #[must_use]
+    pub fn masked(ip: IpAddr, len: u8) -> IpAddr {
+        fn clear<const N: usize>(mut o: [u8; N], len: u8) -> [u8; N] {
+            for (i, b) in o.iter_mut().enumerate() {
+                let keep = len
+                    .saturating_sub(u8::try_from(i * 8).unwrap_or(u8::MAX))
+                    .min(8);
+                *b &= if keep == 0 { 0 } else { 0xff_u8 << (8 - keep) };
+            }
+            o
+        }
+        match ip {
+            IpAddr::V4(v4) => IpAddr::V4(Ipv4Addr::from(clear(v4.octets(), len))),
+            IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(clear(v6.octets(), len))),
+        }
+    }
+}
+
+fn prefix_eq(net: &[u8], addr: &[u8], len: u8) -> bool {
+    let (whole, rest) = (usize::from(len / 8), len % 8);
+    net[..whole] == addr[..whole]
+        && (rest == 0 || (net[whole] ^ addr[whole]) & (0xff_u8 << (8 - rest)) == 0)
+}
+
 #[cfg(test)]
 #[path = "tests/net_tests.rs"]
 mod net_tests;

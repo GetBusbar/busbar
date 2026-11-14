@@ -175,6 +175,7 @@ fn walk_secret_refs_with_boot_token<'a>(
     boot_token: Option<&crate::config::SecretRef>,
 ) -> Vec<(String, &'a crate::config::SecretRef)> {
     let RootCfg {
+        login_limits: _,
         tls,
         admin_tls,
         auth,
@@ -368,6 +369,8 @@ fn push_browser_login_refs<'a>(
         client_secret,
 
         client_id: _,
+        max_failures: _,
+        failure_window: _,
     } = login;
     if let Some(secret) = client_secret {
         refs.push((format!("{at}.browser_login.client_secret"), secret));

@@ -237,3 +237,20 @@ fn the_extension_carries_whole_seconds_as_ascii_decimal() {
         );
     }
 }
+
+#[test]
+fn a_reject_hint_round_trips_and_an_unknown_value_is_no_hint() {
+    use crate::auth_calls::RejectHint;
+    for hint in [RejectHint::AccountLocked, RejectHint::Throttled] {
+        assert_eq!(
+            super::reject_hint_of(&super::reject_hint_extensions(hint)),
+            Some(hint)
+        );
+    }
+    assert_eq!(
+        super::reject_hint_of(&extensions::encode(&[(super::EXT_REJECT_HINT, b"other")])),
+        None
+    );
+    assert_eq!(super::reject_hint_of(&retry_after_extensions(5)), None);
+    assert_eq!(super::reject_hint_of(&[]), None);
+}

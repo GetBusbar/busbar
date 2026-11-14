@@ -127,6 +127,19 @@ impl<'a> Claims<'a> {
     /// A lapsed claim may be replaced, but only while both old and new temporal
     /// conditions still hold in the same transaction as the replacement.
     pub(crate) async fn redeem(&self, token: &str, expires_at: u64) -> Result<Outcome, Error> {
+        self.redeem_as(token, expires_at, &[]).await
+    }
+
+    /// [`Self::redeem`] as ONE DISTINCT ATTEMPT: `attempt` (random per caller) joins the logical
+    /// identity, so two concurrent callers claiming the same token with the same expiry are two
+    /// attempts — one wins, the other sees it claimed — instead of one rediscovering the other's
+    /// custody and both believing they won. An empty `attempt` is exactly [`Self::redeem`].
+    pub(crate) async fn redeem_as(
+        &self,
+        token: &str,
+        expires_at: u64,
+        attempt: &[u8],
+    ) -> Result<Outcome, Error> {
         let at = self.address(token)?;
         let mut hash = Sha256::new();
         hash.update(b"busbar.claim-attempt.v1");
@@ -139,6 +152,10 @@ impl<'a> Claims<'a> {
             hash.update(part);
         }
         hash.update(expires_at.to_be_bytes());
+        if !attempt.is_empty() {
+            hash.update((attempt.len() as u64).to_be_bytes());
+            hash.update(attempt);
+        }
         let digest: [u8; 32] = hash.finalize().into();
         let operation = digest[..16].try_into().map_err(|_| Error::Invalid)?;
         for _ in 0..=self.store.limits().conflict_retries {
@@ -232,6 +249,108 @@ impl<'a> Claims<'a> {
                 expires_at,
             )? {
                 return Ok(outcome);
+            }
+        }
+        Err(Error::Contended)
+    }
+
+    /// Give a held claim back: delete it if it is still the value this scope wrote and still
+    /// live at the native clock. `Ok(true)` when it was deleted, `Ok(false)` when there was nothing
+    /// live to release (never held, lapsed, or already released). The delete carries an exact
+    /// predicate, so a concurrent re-claim of a lapsed slot is never released by mistake.
+    pub(crate) async fn release(&self, token: &str) -> Result<bool, Error> {
+        let at = self.address(token)?;
+        let mut nonce = [0u8; 16];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
+            .map_err(|_| Error::Invalid)?;
+        let mut hash = Sha256::new();
+        hash.update(b"busbar.claim-release.v1");
+        for part in [
+            self.owner.as_bytes(),
+            self.kind.as_bytes(),
+            token.as_bytes(),
+            &nonce[..],
+        ] {
+            hash.update((part.len() as u64).to_be_bytes());
+            hash.update(part);
+        }
+        let digest: [u8; 32] = hash.finalize().into();
+        let operation = digest[..16].try_into().map_err(|_| Error::Invalid)?;
+        for _ in 0..=self.store.limits().conflict_retries {
+            let permit = match self
+                .store
+                .claim_logical(
+                    LogicalId {
+                        namespace: OWNER.0,
+                        operation,
+                    },
+                    digest,
+                )
+                .map_err(Error::Access)?
+            {
+                LogicalClaim::Prepare(permit) => permit,
+                LogicalClaim::Retained(_) | LogicalClaim::Busy => return Err(Error::Contended),
+            };
+            let observed = self
+                .store
+                .backend()
+                .read(Arc::new(Read {
+                    dataset: self.store.info().dataset,
+                    addresses: vec![at.clone()],
+                    time: None,
+                }))
+                .await
+                .map_err(Error::Backend)?;
+            let ReadResult::Values {
+                observed_at,
+                mut values,
+            } = observed
+            else {
+                return Err(Error::Corrupt);
+            };
+            if observed_at.authority != self.store.info().clock_authority || values.len() != 1 {
+                return Err(Error::Corrupt);
+            }
+            let Some(value) = values.pop().ok_or(Error::Corrupt)? else {
+                return Ok(false);
+            };
+            let bytes = value.expose(&crate::seal::lend());
+            if bytes.len() != 9 || bytes[0] != 1 {
+                return Err(Error::Corrupt);
+            }
+            let expiry = u64::from_be_bytes(bytes[1..].try_into().map_err(|_| Error::Corrupt)?);
+            if expiry < observed_at.unix_seconds {
+                return Ok(false);
+            }
+            let candidate = PreparedCandidate::new(Candidate {
+                id: self.store.next_id().map_err(Error::Access)?,
+                codec: CANDIDATE_VERSION,
+                predicates: vec![Predicate {
+                    address: at.clone(),
+                    expected: ExpectedValue::Exact(value),
+                }],
+                mutations: vec![Mutation::Delete(at.clone())],
+                time: Some(TimeGuard {
+                    not_before: Some(observed_at.unix_seconds),
+                    before: None,
+                }),
+                result: Secret::new(vec![1]),
+            })
+            .map_err(|_| Error::Invalid)?;
+            let submission = permit.submit(candidate).await.map_err(Error::Access)?;
+            match submission.result {
+                SubmitResult::Decided(decision) => match decision.as_ref() {
+                    Decision::Applied(_) => return Ok(true),
+                    Decision::ConditionConflict => continue,
+                    Decision::TimeGuardFailed { .. } => return Ok(false),
+                    Decision::ExpiredUnknown | Decision::OpIdConflict => {
+                        return Err(Error::Contended)
+                    }
+                },
+                SubmitResult::NoEffect(failure) => return Err(Error::Backend(failure)),
+                SubmitResult::Uncertain | SubmitResult::Reconcile | SubmitResult::Busy => {
+                    return Err(Error::Contended)
+                }
             }
         }
         Err(Error::Contended)

@@ -8,6 +8,7 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
+        login_limits: Default::default(),
         plane_defs: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),

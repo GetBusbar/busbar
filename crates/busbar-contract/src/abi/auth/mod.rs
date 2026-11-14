@@ -408,6 +408,40 @@ pub const EXT_SCOPE: &str = "scope";
 /// `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`.
 pub const EXT_RETRY_AFTER: &str = "retry_after";
 
+/// `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_BAD_CREDENTIAL`], why the credential was
+/// declined — [`REJECT_HINT_ACCOUNT_LOCKED`] or [`REJECT_HINT_THROTTLED`], as ASCII. Additive (no
+/// mechanism bump): a host that does not read it sees a plain decline. The host stops forwarding
+/// attempts for the account for its failure window and never shows the hint to the client.
+pub const EXT_REJECT_HINT: &str = "reject_hint";
+/// [`EXT_REJECT_HINT`]: the directory reports the account locked.
+pub const REJECT_HINT_ACCOUNT_LOCKED: &str = "account_locked";
+/// [`EXT_REJECT_HINT`]: the plugin's own attempt limiter refused the attempt.
+pub const REJECT_HINT_THROTTLED: &str = "throttled";
+
+/// The reply extensions that state `hint` under [`EXT_REJECT_HINT`].
+#[must_use]
+pub fn reject_hint_extensions(hint: crate::auth_calls::RejectHint) -> Vec<u8> {
+    let value = match hint {
+        crate::auth_calls::RejectHint::AccountLocked => REJECT_HINT_ACCOUNT_LOCKED,
+        crate::auth_calls::RejectHint::Throttled => REJECT_HINT_THROTTLED,
+    };
+    crate::abi::mechanism::extensions::encode(&[(EXT_REJECT_HINT, value.as_bytes())])
+}
+
+/// The hint reply `extensions` state under [`EXT_REJECT_HINT`]; an unknown value is no hint.
+#[must_use]
+pub fn reject_hint_of(extensions: &[u8]) -> Option<crate::auth_calls::RejectHint> {
+    match crate::abi::mechanism::extensions::get(extensions, EXT_REJECT_HINT)? {
+        v if v == REJECT_HINT_ACCOUNT_LOCKED.as_bytes() => {
+            Some(crate::auth_calls::RejectHint::AccountLocked)
+        }
+        v if v == REJECT_HINT_THROTTLED.as_bytes() => {
+            Some(crate::auth_calls::RejectHint::Throttled)
+        }
+        _ => None,
+    }
+}
+
 /// The delay an IdP's `Retry-After` header value asks for, in whole seconds from `now_unix` (Unix
 #[must_use]
 pub fn retry_after_secs(header_value: &[u8], now_unix: u64) -> Option<u64> {

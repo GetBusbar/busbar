@@ -457,6 +457,9 @@ pub struct RootCfg {
     pub allow_all_metadata: bool,
     /// The `advanced` destination-guard keys, as written ([`RootCfg::destinations`] adds the rest).
     pub guard: Destinations,
+    /// The credential sign-in attempt limiter's resolved policy (`auth.login_limits`, the
+    /// providers' `browser_login` overrides, `advanced.trusted_proxies`/`forwarded_header`).
+    pub login_limits: crate::auth::login_limits::LoginLimitsPolicy,
     /// Fully-resolved operational limits ("NEVER CODED CAPS"), projected from the `limits:` /
     /// `observability:` / `governance:` / `metrics:` / `health:` / `routing:` config sections. Every
     /// value defaults to its historical hardcoded const, so an all-default config is unchanged. Read
@@ -512,8 +515,9 @@ pub use busbar_kernel::config::auth::{
 
 pub use busbar_kernel::config::auth::{
     AuthCfg, AuthChainEntry, AuthDeployCfg, AuthMethodCfg, AuthMethods, AuthPolicyCfg, BindingMode,
-    BrowserLoginCfg, IdentityProviderCfg, IdentityProviders, MintCeilingCfg, RoleBindingCfg,
-    RoleBindings, VerbGrant, ALL_ADMIN_VERBS, DEFAULT_MAX_ADMIN_SCOPE, KEYS_MODULE,
+    BrowserLoginCfg, GlobalLimitCfg, IdentityProviderCfg, IdentityProviders, LoginLimitCfg,
+    LoginLimitsCfg, MintCeilingCfg, RoleBindingCfg, RoleBindings, SourceLimitCfg, VerbGrant,
+    ALL_ADMIN_VERBS, DEFAULT_MAX_ADMIN_SCOPE, KEYS_MODULE,
 };
 
 pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -1931,6 +1935,16 @@ pub fn resolve(
         |a| a.admin_auth.iter().map(|e| e.name.clone()).collect(),
     );
 
+    let login_limits = crate::auth::login_limits::policy::resolve(
+        deploy.auth.as_ref().map(|a| &a.login_limits),
+        &deploy.identity_providers,
+        &deploy.advanced,
+    )
+    .unwrap_or_else(|refusals| {
+        errors.extend(refusals);
+        Default::default()
+    });
+
     let endpoint_block = deploy.endpoint.0.as_ref();
 
     let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
@@ -2023,6 +2037,7 @@ pub fn resolve(
                 allow: deploy.advanced.allow_destinations.clone(),
                 ..Destinations::default()
             },
+            login_limits,
 
             limits: LimitsResolved::from_sections(
                 &deploy.limits,

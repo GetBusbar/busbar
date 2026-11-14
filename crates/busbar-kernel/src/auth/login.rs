@@ -34,6 +34,11 @@ pub(crate) struct LoginMethod {
     /// build. Read by `credential_submit` to gate the credential POST to `Credential` methods only
     /// (a redirect method never completes via the form POST).
     pub(crate) login_kind: busbar_contract::auth::LoginKind,
+    /// The credential form this method last declared (`begin_login`'s `Prompt`), kept server-side
+    /// so a submission is canonicalised against what the plugin asked for, never against what the
+    /// browser (or a forged cookie) sent. Lives on this generation's method, so a reload or REFRESH
+    /// drops it.
+    pub(crate) form: Arc<std::sync::RwLock<Option<busbar_contract::auth::LoginForm>>>,
 }
 
 /// The resolved hosted-login map — insertion-ordered (config order = button order), keyed by the
@@ -180,13 +185,46 @@ async fn door_login_call(
     calls: Arc<dyn AuthCalls>,
     step: LoginStep,
 ) -> LoginOutcome {
+    match door_login_judged(method, op, calls, step).await.0 {
+        LoginJudged::Plugin(outcome) => outcome,
+        LoginJudged::NotRun | LoginJudged::Faulted => LoginOutcome::Reject,
+    }
+}
+
+/// What one login step came to, as only the kernel can tell it: the plugin was NEVER ENTERED (no
+/// offload permit inside the wait, or no such method), it FAULTED, or it answered. Callers that
+/// only render pages fold the first two into `Reject`; the attempt limiter must not, because it
+/// refunds an attempt the directory never judged and keeps one it may have.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoginJudged {
+    /// Core knows the plugin was never entered.
+    NotRun,
+    /// The plugin broke its contract (a caught panic); its answer is discarded.
+    Faulted,
+    /// The plugin's own answer.
+    Plugin(LoginOutcome),
+}
+
+async fn door_login_judged(
+    method: &str,
+    op: &'static str,
+    calls: Arc<dyn AuthCalls>,
+    step: LoginStep,
+) -> (LoginJudged, Option<busbar_contract::auth_calls::RejectHint>) {
     let Some(permit) = login_permit(method, op).await else {
-        return LoginOutcome::Reject;
+        return (LoginJudged::NotRun, None);
     };
     let mut call = submit_door(&*calls, step);
     let outcome = (&mut call).await;
     drop(permit);
-    finish_door_login(method, op, call.faulted(), outcome)
+    if call.faulted() {
+        let _ = finish_door_login(method, op, true, outcome);
+        return (LoginJudged::Faulted, None);
+    }
+    let hint = matches!(outcome, LoginOutcome::Reject)
+        .then(|| call.reject_hint())
+        .flatten();
+    (LoginJudged::Plugin(outcome), hint)
 }
 
 fn finish_door_login(
@@ -334,6 +372,7 @@ impl LoginMethods {
                     inbound_style,
                     has_button,
                     login_kind,
+                    form: Arc::default(),
                 },
             );
         }
@@ -420,6 +459,72 @@ pub async fn login_step(app: &App, method: &str, step: LoginStep) -> LoginOutcom
         LoginStep::Complete(_) => "complete_login",
     };
     door_login_call(method, op, calls, step).await
+}
+
+/// One login step, told apart as [`LoginJudged`], with the plugin's reject hint when it declined.
+pub async fn login_step_judged(
+    app: &App,
+    method: &str,
+    step: LoginStep,
+) -> (LoginJudged, Option<busbar_contract::auth_calls::RejectHint>) {
+    let Some(calls) = app
+        .login_methods
+        .methods
+        .get(method)
+        .map(|m| m.module.clone())
+    else {
+        return (LoginJudged::NotRun, None);
+    };
+    let op = match step {
+        LoginStep::Begin(_) => "begin_login",
+        LoginStep::Complete(_) => "complete_login",
+    };
+    door_login_judged(method, op, calls, step).await
+}
+
+/// Keep the credential form `method` just declared (its `begin_login` answered `Prompt`).
+pub fn remember_login_form(app: &App, method: &str, form: &busbar_contract::auth::LoginForm) {
+    if let Some(m) = app.login_methods.methods.get(method) {
+        *m.form.write().unwrap_or_else(|e| e.into_inner()) = Some(form.clone());
+    }
+}
+
+/// The credential form `method` declared, from this generation's cache or, on a miss, from one
+/// `begin_login` (a forged-cookie submission may arrive before any page was rendered).
+pub(crate) async fn declared_login_form(
+    app: &App,
+    method: &str,
+) -> Option<busbar_contract::auth::LoginForm> {
+    let cached = app
+        .login_methods
+        .methods
+        .get(method)?
+        .form
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if cached.is_some() {
+        return cached;
+    }
+    let random = |n: usize| {
+        let mut buf = vec![0u8; n];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut buf).ok()?;
+        Some(hex::encode(buf))
+    };
+    let begin = BeginLogin {
+        redirect_uri: format!("{}/auth/token", app.public_url.as_deref().unwrap_or("")),
+        state: random(24)?,
+        code_challenge: random(32)?,
+        nonce: None,
+        scopes: Vec::new(),
+    };
+    match login_step(app, method, LoginStep::Begin(begin)).await {
+        LoginOutcome::Prompt(form) => {
+            remember_login_form(app, method, &form);
+            Some(form)
+        }
+        _ => None,
+    }
 }
 
 /// What [`issue_self_key`] answered: the key, or why none was issued (each its own page).

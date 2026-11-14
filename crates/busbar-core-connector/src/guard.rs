@@ -4,7 +4,7 @@
 //! THE DESTINATION GUARD: the one check every outbound connection asks, whatever dials it. It is
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use busbar_contract::abi::host::conn::connector;
@@ -13,7 +13,7 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::net::{
     embedded_ipv4, host_ip, ip_is_cloud_metadata, ip_is_internal, is_alternate_ipv4_encoding,
-    is_link_local_v6, judged_host, METADATA_HOSTS,
+    is_link_local_v6, judged_host, IpNet, IpNetError, METADATA_HOSTS,
 };
 use busbar_kernel::config::Destinations;
 
@@ -132,8 +132,8 @@ enum Entry {
     Host(String),
     /// A `*.domain` wildcard, held as `.domain`: names under it, on a label boundary.
     Under(String),
-    /// An IP network: the address and its prefix length (a bare IP is host-length).
-    Net(IpAddr, u8),
+    /// An IP network (a bare IP is host-length): the shared [`IpNet`] reader and matcher.
+    Net(IpNet),
 }
 
 impl Entry {
@@ -146,20 +146,15 @@ impl Entry {
     }
 
     fn covers(&self, addr: IpAddr) -> bool {
-        let Entry::Net(net, len) = self else {
+        let Entry::Net(net) = self else {
             return false;
         };
-
-        match (*net, canonical(addr), addr) {
-            (IpAddr::V4(n), IpAddr::V4(a), _) => prefix_eq(&n.octets(), &a.octets(), *len),
-            (IpAddr::V6(n), _, IpAddr::V6(a)) => prefix_eq(&n.octets(), &a.octets(), *len),
-            _ => false,
-        }
+        net.covers(addr)
     }
 
     /// Whether this entry NAMES `addr` itself: a bare IP, or a /32 or /128, equal to it (in any
     fn pins(&self, addr: IpAddr) -> bool {
-        matches!(self, Entry::Net(net, len) if *len == full(*net)) && self.covers(addr)
+        matches!(self, Entry::Net(net) if net.is_host()) && self.covers(addr)
     }
 }
 
@@ -169,12 +164,6 @@ fn canonical(addr: IpAddr) -> IpAddr {
         IpAddr::V6(v6) => embedded_ipv4(&v6).map_or(addr, IpAddr::V4),
         v4 => v4,
     }
-}
-
-fn prefix_eq(net: &[u8], addr: &[u8], len: u8) -> bool {
-    let (whole, rest) = (usize::from(len / 8), len % 8);
-    net[..whole] == addr[..whole]
-        && (rest == 0 || (net[whole] ^ addr[whole]) & (0xff_u8 << (8 - rest)) == 0)
 }
 
 /// THE ONE MAPPING every name the guard compares goes through, a target's and a configured
@@ -188,15 +177,6 @@ fn fold(entry: &str) -> String {
     h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase()
 }
 
-/// The host length of an address's family.
-fn full(ip: IpAddr) -> u8 {
-    if ip.is_ipv4() {
-        32
-    } else {
-        128
-    }
-}
-
 /// A 1.5.5 list entry (`allow_metadata_hosts`, `blocked_metadata_hosts`), read as 1.5.5 read it:
 fn legacy(entry: &str) -> Option<Entry> {
     let e = norm(entry.trim())?;
@@ -204,7 +184,7 @@ fn legacy(entry: &str) -> Option<Entry> {
         return None;
     }
     Some(match host_ip(&e) {
-        Some(ip) => Entry::Net(ip, full(ip)),
+        Some(ip) => Entry::Net(IpNet::host(ip)),
         None => Entry::Host(e),
     })
 }
@@ -232,44 +212,22 @@ fn strict(i: usize, entry: &str) -> Result<Entry, String> {
     };
     let e = fold(entry.trim());
     let e = e.as_str();
-    if let Some((ip, len)) = e.split_once('/') {
-        let ip: IpAddr = ip.trim_end_matches(']').parse().map_err(|_| bad())?;
-        let len: u8 = len.parse().map_err(|_| bad())?;
-        if len > full(ip) {
-            return Err(bad());
-        }
-        if masked(ip, len) != ip {
+    match IpNet::read(e) {
+        Ok(Some(net)) => return Ok(Entry::Net(net)),
+        Ok(None) => {}
+        Err(IpNetError::HostBitsSet) => {
             return Err(format!(
                 "{ALLOW_KEY}[{i}]: `{shown}` sets address bits past its prefix length; write the \
                  network address"
-            ));
+            ))
         }
-        return Ok(Entry::Net(ip, len));
-    }
-    if let Ok(ip) = e.parse::<IpAddr>() {
-        return Ok(Entry::Net(ip, full(ip)));
+        Err(IpNetError::NotNetwork) if e.contains('/') => return Err(bad()),
+        Err(IpNetError::NotNetwork) => {}
     }
     match e.strip_prefix("*.") {
         Some(domain) if is_name(domain) => Ok(Entry::Under(format!(".{domain}"))),
         None if is_name(e) => Ok(Entry::Host(e.to_owned())),
         _ => Err(bad()),
-    }
-}
-
-/// `ip` with every bit past `len` cleared.
-fn masked(ip: IpAddr, len: u8) -> IpAddr {
-    fn clear<const N: usize>(mut o: [u8; N], len: u8) -> [u8; N] {
-        for (i, b) in o.iter_mut().enumerate() {
-            let keep = len
-                .saturating_sub(u8::try_from(i * 8).unwrap_or(u8::MAX))
-                .min(8);
-            *b &= if keep == 0 { 0 } else { 0xff_u8 << (8 - keep) };
-        }
-        o
-    }
-    match ip {
-        IpAddr::V4(v4) => IpAddr::V4(Ipv4Addr::from(clear(v4.octets(), len))),
-        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(clear(v6.octets(), len))),
     }
 }
 

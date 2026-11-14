@@ -1378,6 +1378,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         role_bindings: RoleBindings::new(),
         key_ttl: None,
         policy: Default::default(),
+        login_limits: Default::default(),
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);

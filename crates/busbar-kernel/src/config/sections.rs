@@ -191,6 +191,15 @@ pub struct AdvancedCfg {
     /// wildcard (names under it, never the apex), an IP, or a CIDR. Default empty. BOOT-TIME.
     #[serde(default)]
     pub allow_destinations: Vec<String>,
+    /// The ingresses and load balancers that may state a client's address for it (an IP or a
+    /// CIDR each, read by the destination guard's CIDR reader). Their `forwarded_header` is
+    /// honoured; nobody else's is. Default empty: the socket peer is the client. BOOT-TIME.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+    /// The one forwarding header read from a trusted proxy: `x-forwarded-for` (default) or
+    /// `forwarded`. BOOT-TIME.
+    #[serde(default)]
+    pub forwarded_header: Option<String>,
 }
 
 pub const DEFAULT_BLOCK_PRIVATE_ADDRESSES: bool = true;
@@ -258,6 +267,8 @@ impl Default for AdvancedCfg {
             response_headers: ResponseHeadersCfg::default(),
             block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
             allow_destinations: Vec::new(),
+            trusted_proxies: Vec::new(),
+            forwarded_header: None,
         }
     }
 }
