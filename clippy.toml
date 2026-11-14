@@ -1,0 +1,3 @@
+disallowed-methods = [
+    { path = "busbar_core_admin::config::validate_public_url", reason = "call door_steps::offline_root_rules so boot/apply and --validate run the same rules" },
+]

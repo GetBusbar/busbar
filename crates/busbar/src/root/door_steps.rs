@@ -2177,11 +2177,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
-        kernel_sections(cfg)?;
-        if let Some(url) = cfg.public_url.as_deref() {
-            busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)
-                .map_err(|errors| errors.join("\n"))?;
-        }
+        offline_root_rules(cfg).map_err(|e| e.join("\n"))?;
         let anchors = self
             .owned_anchors
             .lock()
@@ -2207,6 +2203,20 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             guard.destinations_applied(destinations);
         }
     }
+}
+
+/// The composition root's rules that read only the resolved config: no I/O, no loaded plugin
+/// state. Boot/apply (`Rules::check`) and `--validate` both run exactly this, so they agree.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the single shared root rule; boot/apply and --validate reach validate_public_url only through here"
+)]
+pub fn offline_root_rules(cfg: &busbar_kernel::config::RootCfg) -> Result<(), Vec<String>> {
+    kernel_sections(cfg).map_err(|e| vec![e])?;
+    if let Some(url) = cfg.public_url.as_deref() {
+        busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)?;
+    }
+    Ok(())
 }
 
 /// Project the kernel-owned configuration without passing JSON's arbitrary-precision
