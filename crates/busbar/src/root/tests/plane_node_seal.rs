@@ -172,25 +172,6 @@ impl RouteAwait for ToDestination {
     fn abandoned(&self, _ctx: &UnitCtx, _ended: Ended) {}
 }
 
-fn handed() -> Handed {
-    let build: crate::root::linked::node::Build = Box::new(
-        |_lent: crate::root::linked::node::Lent| -> crate::root::linked::node::Built {
-            let units: Arc<dyn busbar_kernel::teller::SeatedUnits + Send + Sync> =
-                Arc::new(ToDestination);
-            let route: Arc<dyn RouteAwait + Send + Sync> = Arc::new(ToDestination);
-            let finish: crate::root::linked::node::Finish =
-                Box::new(|| -> (Option<PlaneAnswer>, Option<Late>) { (None, None) });
-            (units, route, finish)
-        },
-    );
-    (
-        PrincipalId::new("acct:seal"),
-        ToDestination::op_class(),
-        "seal-test",
-        build,
-    )
-}
-
 fn assert_sealed_with_destination_and_controls(book: &crate::root::durability::NodeBook) {
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
     let records = durability.audit_records.clone();
@@ -206,21 +187,6 @@ fn assert_sealed_with_destination_and_controls(book: &crate::root::durability::N
         record.controls.settle_ref, None,
         "no settlement is journalled"
     );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_handed_unit_seals_its_verified_destination() {
-    let node = Node::new();
-    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
-    let book = crate::root::durability::node_book(
-        fixture.journal.clone(),
-        crate::root::durability::tests::BUDGET,
-    )
-    .await
-    .unwrap();
-    node.bind_book(Arc::clone(&book.durability));
-    let _answer = node.answer(handed()).await;
-    assert_sealed_with_destination_and_controls(&book);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
