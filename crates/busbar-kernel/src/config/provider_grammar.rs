@@ -249,7 +249,7 @@ mod actual_plane_legacy_grammar {
     fn the_actual_exported_plane_descriptor_keeps_legacy_capability_refusals() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../testing/config/provider-keys-llm.json"
+            "/src/config/tests/fixtures/provider-keys-llm.json"
         )))
         .unwrap();
         let descriptor = busbar_contract::provider_keys::decode(

@@ -41,7 +41,7 @@ fn the_host_seam_holds_the_shared_floor_and_every_shared_verdict() {
         .spawn(|| {
             let path = concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../testing/plane-copies/json-depth.json"
+                "/../busbar-contract/tests/fixtures/json-depth.json"
             );
             let doc: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))

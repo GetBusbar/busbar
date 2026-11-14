@@ -132,7 +132,7 @@ fn shipped_config_artifacts_validate() {
 
     for shipped in [
         "config.yaml",
-        "examples/clean-config-1.5.0.yaml",
+        "dist/default/tests/fixtures/clean-config-1.5.0.yaml",
         "docker/config.yaml",
     ] {
         let path = root.join(shipped);

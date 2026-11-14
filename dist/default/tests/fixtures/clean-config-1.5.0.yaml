@@ -10,7 +10,7 @@
 #   - numeric literals carry no underscore separators (YAML ints are plain digits).
 #
 # Validate with:
-#   BUSBAR_CONFIG=examples/clean-config-1.5.0.yaml busbar --validate
+#   BUSBAR_CONFIG=dist/default/tests/fixtures/clean-config-1.5.0.yaml busbar --validate
 
 # ── transport ──
 listen: "0.0.0.0:8080"
