@@ -115,7 +115,7 @@ pub(super) fn key<I: InFrame>(instance: &Instance, slot: u32, input: &I) -> Opti
 pub(super) fn completed() -> Crossed {
     Crossed {
         retirement: Some(busbar_contract::plane_calls::Retirement::UnitCompleted),
-        ..Crossed::host(Outcome::Refused)
+        ..Crossed::refused("its unit already completed")
     }
 }
 
@@ -658,10 +658,10 @@ pub(super) fn cancel_orphan(mut orphan: Orphan) {
 pub(super) fn fault_orphan_replies(orphan: &mut Orphan) {
     for (_, entry) in &mut orphan.entries {
         if let Some(current) = &entry.current {
-            current.meta.reply.settle(Outcome::Fault, false);
+            current.meta.reply.settle(Outcome::Fault, "", false);
         }
         for (meta, _) in &entry.queue {
-            meta.reply.settle(Outcome::Fault, false);
+            meta.reply.settle(Outcome::Fault, "", false);
         }
         for waiter in std::mem::take(&mut entry.unit_waiters) {
             waiter.finish(None);
