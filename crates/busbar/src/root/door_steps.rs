@@ -1088,11 +1088,14 @@ impl<'s> DoorSteps<'s> {
 
         let mut routed = routed;
         let mut visited: Vec<String> = Vec::new();
-        let (grant, pool, lanes) = loop {
+        let (grant, pool, lane) = loop {
+            // Before governance admits: a refusal here has charged no request and no fee, on the
+            // first pool and on every downgrade target.
+            let lane = opened_lane(self.facts.plane.lane_prefix(), routed.as_ref())?;
             // The first admission reads the plan `prepare_admission` built; a downgrade
             // re-route builds the pool, lanes and estimate for its new pool, and its admission
             // resolves the chain itself.
-            let (pool, lanes, estimate, chain) = match planned.take() {
+            let (pool, _, estimate, chain) = match planned.take() {
                 Some(plan) => plan,
                 None => {
                     let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
@@ -1547,13 +1550,7 @@ impl DriverSteps for DoorSteps<'_> {
                 .ticket_instance
                 .as_ref()
                 .ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
-            let lane = self
-                .lock()
-                .routed
-                .as_ref()
-                .and_then(|(_, members)| members.first())
-                .map(|member| plane_lane(self.facts.plane.lane_prefix(), member))
-                .unwrap_or_default();
+            let lane = opened_lane(self.facts.plane.lane_prefix(), self.lock().routed.as_ref())?;
             match spent.adopt(
                 money,
                 ctx,
@@ -1605,13 +1602,7 @@ impl DriverSteps for DoorSteps<'_> {
                 .money
                 .validate_parent(&parent.token, key)
                 .map_err(Refusal::new)?;
-            let lane = self
-                .lock()
-                .routed
-                .as_ref()
-                .and_then(|(_, members)| members.first())
-                .map(|member| plane_lane(self.facts.plane.lane_prefix(), member))
-                .unwrap_or_default();
+            let lane = opened_lane(self.facts.plane.lane_prefix(), self.lock().routed.as_ref())?;
             let prepared = parent.cell.accrue_child_after(principal, admit, || {
                 parent.money.open_child(
                     &parent.token,
