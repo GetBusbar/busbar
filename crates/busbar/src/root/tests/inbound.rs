@@ -930,4 +930,14 @@ async fn models_plane_qualifier_lists_the_fallback_catalog() {
         busbar_kernel::endpoints::catalog_names(&app, &scoped_to_nothing, "").is_empty(),
         "an explicit empty scope still lists nothing"
     );
+    assert_eq!(
+        busbar_kernel::plane_driver::dispatch::plane_of_qualifier(""),
+        fallback,
+        "the models plane qualifier names the fallback plane"
+    );
+    assert_eq!(
+        busbar_kernel::plane_driver::dispatch::plane_of_qualifier("x"),
+        "x",
+        "a real qualifier names its own plane"
+    );
 }
