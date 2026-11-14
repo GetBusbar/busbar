@@ -2361,35 +2361,54 @@ fn durable_segments(
     bucket_id: &str,
     rows: Vec<busbar_contract::records::ModelTokens>,
 ) -> RecordStoreResult<Vec<ModelCell>> {
+    let mut dropped = 0usize;
     #[expect(
         clippy::disallowed_methods,
         reason = "config: a cell is rebuilt from its durable row only for operator usage views, corrections and recovery"
     )]
     let cells = rows
         .into_iter()
-        .map(|m| {
-            Ok(ModelCell {
-                model: m.model.into(),
-                era: RawRateEra::legacy(0),
-                cur: m
-                    .usage_units
-                    .into_iter()
-                    .map(|(unit, n)| {
-                        #[expect(clippy::disallowed_methods, reason = "error: the refusal text is built only when a durable row is invalid")]
-                        let count = Count::from_stored(n, m.scale)
-                            .map_err(|e| RecordStoreError(e.to_string()))?;
-                        if count.is_negative() {
-                            return Err(RecordStoreError("negative durable usage total".into()));
-                        }
-                        Ok((unit, count))
-                    })
-                    .collect::<RecordStoreResult<_>>()?,
-                flushed: BTreeMap::new(),
-                flushed_era: BTreeMap::new(),
-            })
+        .map(|m| -> RecordStoreResult<Option<ModelCell>> {
+            let cur = m
+                .usage_units
+                .into_iter()
+                .map(|(unit, n)| {
+                    #[expect(clippy::disallowed_methods, reason = "error: the refusal text is built only when a durable row is invalid")]
+                    let count = Count::from_stored(n, m.scale)
+                        .map_err(|e| RecordStoreError(e.to_string()))?;
+                    if count.is_negative() {
+                        return Err(RecordStoreError("negative durable usage total".into()));
+                    }
+                    Ok((unit, count))
+                })
+                .collect::<RecordStoreResult<_>>()?;
+            Ok(ModelCell::new(
+                m.model.into(),
+                RawRateEra::legacy(0),
+                cur,
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ))
         })
-        .collect();
-    cells
+        .filter_map(|row| match row {
+            Ok(None) => {
+                dropped += 1;
+                None
+            }
+            Ok(Some(row)) => Some(Ok(row)),
+            Err(e) => Some(Err(e)),
+        })
+        .collect::<RecordStoreResult<Vec<_>>>()?;
+    if dropped != 0 {
+        // A Store written by a pre-fix 1.6.0 rc heals here: the row carries no count and no
+        // flushed baseline, so it owes no money and creates no correction debt (UPG-H2).
+        tracing::warn!(
+            bucket = bucket_id,
+            dropped,
+            "usage ledger load: dropped {dropped} unnamed-lane rows with no counts"
+        );
+    }
+    Ok(cells)
 }
 
 #[path = "money_view.rs"]

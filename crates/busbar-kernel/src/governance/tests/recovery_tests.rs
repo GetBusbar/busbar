@@ -17,6 +17,8 @@ pub(in crate::governance) struct Journal {
     adoption_attempts: Mutex<Vec<(RecoveryResolution, Vec<RecoveryEvent>)>>,
     confirmed_adoptions: Mutex<ConfirmedAdoptions>,
     lose_adoption_reply: AtomicBool,
+    pub(in crate::governance) persists: std::sync::atomic::AtomicUsize,
+    pub(in crate::governance) persisted_ops: Mutex<Vec<([u8; 16], u64)>>,
 }
 #[async_trait::async_trait]
 impl RecoverySink for Journal {
@@ -24,6 +26,11 @@ impl RecoverySink for Journal {
         Ok(self.selected.lock().unwrap().clone())
     }
     async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.persists.fetch_add(1, Ordering::Relaxed);
+        self.persisted_ops
+            .lock()
+            .unwrap()
+            .push((event.operation_id, event.revision));
         if self
             .foreign
             .lock()
@@ -259,11 +266,22 @@ async fn ambiguous_selection_retains_exact_candidate_until_confirmed() {
     assert_eq!(book.selected(event.operation_id), Some(event.clone()));
     book.keep(&event).await.unwrap();
     sink.fail_after_write.store(true, Ordering::Relaxed);
-    assert!(
-        book.keep(&event).await.is_err(),
-        "cached selected events still require Store authority confirmation"
+    let persisted = sink.persists.load(Ordering::Relaxed);
+    book.keep(&event).await.unwrap();
+    assert_eq!(
+        sink.persists.load(Ordering::Relaxed),
+        persisted,
+        "an already selected event with nothing pending is not re-persisted"
     );
-    assert_eq!(sink.selected.lock().unwrap().as_slice(), &[event]);
+    assert_eq!(
+        sink.selected.lock().unwrap().as_slice(),
+        std::slice::from_ref(&event)
+    );
+    sink.fail_after_write.store(false, Ordering::Relaxed);
+    let next = successor(&event, RecoveryState::Applied);
+    book.keep(&next).await.unwrap();
+    assert_eq!(sink.persists.load(Ordering::Relaxed), persisted + 1);
+    assert_eq!(book.selected(event.operation_id), Some(next));
 }
 
 #[tokio::test]
@@ -1544,4 +1562,115 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
         assert!(gov.recovery_event(child.operation_id).is_none());
         assert!(sink.adoption_attempts.lock().unwrap().is_empty());
     }
+}
+
+async fn settled_parent_with_handoffs(
+    store: &Arc<crate::persistence::facade::CoreStore>,
+    sink: &Arc<Journal>,
+    children: usize,
+    settle: bool,
+) -> (super::super::GovState, RecoveryEvent) {
+    use super::super::GovState;
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(sink.clone()).await.unwrap();
+    gov.resume_raw_recovery().await.unwrap();
+    let intent = raw_intent(&gov, 1).await;
+    store
+        .ledger()
+        .add_usage_batch_deduped(
+            busbar_contract::records::OpId(intent.operation_id),
+            &[(
+                "recovery-bucket",
+                0,
+                super::super::UsageDelta {
+                    requests: 1,
+                    ..Default::default()
+                },
+            )],
+        )
+        .await
+        .unwrap();
+    let mut custody: super::super::raw_recovery::UsageCustody =
+        serde_json::from_slice(&intent.payload).unwrap();
+    custody.plain = Default::default();
+    for index in 0..children {
+        let child = GovState::usage_recovery_child(
+            &format!("child-bucket-{index}"),
+            0,
+            super::super::ExactUsageDelta {
+                requests: 7,
+                ..Default::default()
+            },
+            super::super::ExactUsageDelta::default(),
+        )
+        .unwrap()
+        .unwrap();
+        custody.handoffs.push(child);
+    }
+    let applied = gov
+        .new_recovery_event(
+            intent.operation_id,
+            intent.kind,
+            intent.body_fingerprint,
+            RecoveryState::Applied,
+            intent.first_sent_at_ms,
+            serde_json::to_vec(&custody).unwrap(),
+        )
+        .unwrap();
+    gov.keep_recovery_event(&applied).await.unwrap();
+    if settle {
+        // The first pass selects and drives every child.
+        gov.resume_raw_recovery().await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
+    }
+    (gov, applied)
+}
+
+#[tokio::test]
+async fn selected_parent_with_handoffs_is_not_repersisted() {
+    let store = crate::real_store::core().await;
+    let sink = Arc::new(Journal::default());
+    let (gov, parent) = settled_parent_with_handoffs(&store, &sink, 2, true).await;
+    assert!(gov.recovery_event(parent.operation_id).is_some());
+    let settled = sink.persists.load(Ordering::Relaxed);
+    for _ in 0..100 {
+        gov.resume_raw_recovery().await.unwrap();
+    }
+    assert_eq!(
+        sink.persists.load(Ordering::Relaxed) - settled,
+        0,
+        "100 recovery ticks over a settled parent must not re-persist it"
+    );
+}
+
+#[tokio::test]
+async fn new_child_still_selected_after_fast_exit() {
+    let store = crate::real_store::core().await;
+    let sink = Arc::new(Journal::default());
+    let (gov, parent) = settled_parent_with_handoffs(&store, &sink, 1, false).await;
+    let custody: super::super::raw_recovery::UsageCustody =
+        serde_json::from_slice(&parent.payload).unwrap();
+    let child = custody.handoffs[0].clone();
+    assert!(gov.recovery_event(child.operation_id).is_none());
+    sink.persisted_ops.lock().unwrap().clear();
+    gov.resume_raw_recovery().await.unwrap();
+    let selected = gov.recovery_event(child.operation_id).unwrap();
+    assert_eq!(selected.body_fingerprint, child.body_fingerprint);
+    let ops = sink.persisted_ops.lock().unwrap().clone();
+    assert!(
+        ops.iter().any(|(op, _)| *op == child.operation_id),
+        "the new child is selected through persist"
+    );
+    // The parent may advance (Applied -> Settled is a new revision and a
+    // real write); what must not happen is persisting the revision that
+    // is already selected.
+    assert_eq!(
+        ops.iter()
+            .filter(|(op, revision)| *op == parent.operation_id && *revision == parent.revision)
+            .count(),
+        0,
+        "the already selected parent revision is not persisted again"
+    );
 }
