@@ -2948,7 +2948,7 @@ impl HostServices for KernelServices {
                 return Ran::Now(Stored::refused(NO_TTL));
             }
             let Some(pool) = self.pool() else {
-                return Ran::Now(Stored::refused(NO_POOL));
+                return Ran::Now(failed(NO_POOL));
             };
             let Some(expires_ms) = (self.wall_ms)().checked_add(ttl_ms) else {
                 return Ran::Now(Stored::refused(EXPIRY_OVERFLOW));
@@ -2974,7 +2974,7 @@ impl HostServices for KernelServices {
                 if !claims.contains_key(&claim_key)
                     && claims.len() >= crate::host_records::QUEUE_CAP
                 {
-                    return Ran::Now(Stored::refused(QUEUE_FULL));
+                    return Ran::Now(failed(QUEUE_FULL));
                 }
                 let attempt = claims
                     .entry(claim_key.clone())
