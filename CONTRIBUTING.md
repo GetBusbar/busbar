@@ -1,9 +1,7 @@
 # Contributing to Busbar
 
-Build on current `dev`; its source is the current architecture. Follow the owner's
-current change and publication instructions. [CoreFix.md](CoreFix.md) is the proposed
-forward redesign, not a description of already implemented behavior. GitHub Actions
-is retired; GitHub is the public code mirror.
+By contributing, you agree your contributions are licensed under the project's
+[Apache-2.0](LICENSE) license.
 
 ## Ground rules
 
