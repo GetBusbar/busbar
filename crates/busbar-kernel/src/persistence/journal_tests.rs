@@ -1297,3 +1297,60 @@ async fn verified_original_prefix_survives_append_without_granting_stale_selecti
         Err(Error::Corrupt)
     ));
 }
+
+/// WASTE-CORE-LIFECYCLE W1 steps 1-2: the runtime owner answers its verified head and any frame's
+/// ordinal without a replay, for live appends and for a reopened journal alike, and a located
+/// frame is one point read.
+#[tokio::test]
+async fn runtime_locates_frames_without_replay_live_and_reopened() {
+    let backend = Arc::new(Backend::default());
+    let store = Arc::new(attach(backend.clone(), 4).await);
+    let budget = BufferBudget {
+        records: 4,
+        bytes: 4096,
+    };
+    let owner = RuntimeJournal::open(store.clone(), 7, budget)
+        .await
+        .unwrap();
+    for body in 1..=3u8 {
+        let run = owner
+            .stage_run(&[busbar_kernel_wal::Entry::new(
+                RecordClass::Transaction,
+                vec![body],
+            )])
+            .unwrap();
+        owner.confirm(&run).await.unwrap();
+    }
+    let before = replays_on_this_thread();
+    let proof = owner.verified_head().await.unwrap();
+    let journal = StoreJournal::new(&store, 7).unwrap();
+    for sequence in 1..=3u64 {
+        let ordinal = owner.locate(&proof, sequence).unwrap();
+        assert_eq!(
+            ordinal, sequence,
+            "an unbridged journal's ordinal is its sequence"
+        );
+        let record = journal
+            .read_verified_record_at(&proof, sequence, ordinal)
+            .await
+            .unwrap();
+        assert_eq!(record.node_seq, sequence);
+    }
+    assert_eq!(owner.locate(&proof, 4), Err(RuntimeError::Invalid));
+    assert_eq!(owner.locate(&proof, 0), Err(RuntimeError::Invalid));
+    assert!(
+        journal.read_verified_record_at(&proof, 2, 3).await.is_err(),
+        "a wrong ordinal fails closed"
+    );
+    assert_eq!(
+        replays_on_this_thread() - before,
+        0,
+        "verified head, locate and point reads replay nothing"
+    );
+    drop(owner);
+    let reopened = RuntimeJournal::open(store, 7, budget).await.unwrap();
+    let proof = reopened.verified_head().await.unwrap();
+    for sequence in 1..=3u64 {
+        assert_eq!(reopened.locate(&proof, sequence).unwrap(), sequence);
+    }
+}
