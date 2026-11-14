@@ -4,17 +4,27 @@
 use super::*;
 use testing::exclusive;
 
-fn fold<R>(plugin: &str, kind: &str, envelope: &Envelope<R>) {
-    testing::observing().fold(plugin, kind, envelope);
+fn fold<R>(plugin: &str, kind: &'static str, envelope: &Envelope<R>) {
+    let owned = Envelope {
+        result: (),
+        metrics: envelope.metrics.clone(),
+        diagnostics: envelope.diagnostics.clone(),
+    };
+    testing::observing().fold(&std::sync::Arc::from(plugin), kind, owned);
 }
 
 fn fold_entries(
     plugin: &str,
-    kind: &str,
+    kind: &'static str,
     metrics: &[serde_json::Value],
     diagnostics: &[serde_json::Value],
 ) {
-    testing::observing().fold_entries(plugin, kind, metrics, diagnostics);
+    testing::observing().fold_entries(
+        &std::sync::Arc::from(plugin),
+        kind,
+        metrics.to_vec(),
+        diagnostics.to_vec(),
+    );
 }
 
 #[test]

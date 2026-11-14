@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use foldhash::{HashMap, HashSet};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,9 +65,6 @@ impl std::fmt::Debug for FramingContext {
 }
 
 impl FramingContext {
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
     pub fn new(
         owner: u64,
         listener: u64,
@@ -107,9 +104,6 @@ impl FramingContext {
         }))
     }
 
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
     pub fn adopt(
         owner: u64,
         source: Arc<dyn FramingScope>,
@@ -578,25 +572,29 @@ impl FramingScope for FramingContext {
             if failed {
                 operations.cancelled.insert(ticket);
             }
-            let streams: Vec<_> = operations
+            let owned = operations
                 .owners
                 .extract_if(|_, owner| *owner == ticket)
-                .map(|(stream, _)| stream)
-                .collect();
+                .map(|(stream, _)| stream);
             if failed {
                 let mut ended = self
                     .ended_streams
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
                 let mut loans = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
-                streams
-                    .into_iter()
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a failed operation ends the streams it owned"
+                )]
+                let retired: Vec<_> = owned
                     .map(|stream| {
                         ended.insert(stream);
                         (stream, loans.remove(&stream))
                     })
-                    .collect::<Vec<_>>()
+                    .collect();
+                retired
             } else {
+                owned.for_each(drop);
                 Vec::new()
             }
         };

@@ -27,8 +27,10 @@ use std::io;
 use std::path::Path;
 
 #[path = "durable_documents.rs"]
-// This is the existing native filesystem owner boundary; its safe API never exposes handles.
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "the native filesystem owner boundary; its safe API never exposes handles"
+)]
 pub(crate) mod documents;
 pub use busbar_contract::persistence::archive::spool;
 pub use spool::{SpoolReader, SpoolWriter};
@@ -110,25 +112,20 @@ pub fn remove(path: &Path) -> io::Result<()> {
     sync_holding_dir(path)
 }
 
+/// Create `path` and each missing ancestor, outermost first, syncing each new directory's holder.
 pub fn create_dir_all(path: &Path) -> io::Result<()> {
-    let mut missing: Vec<&Path> = Vec::new();
-    let mut cur = Some(path);
-    while let Some(p) = cur {
-        if p.as_os_str().is_empty() || p.exists() {
-            break;
-        }
-        missing.push(p);
-        cur = p.parent();
+    if path.as_os_str().is_empty() || path.exists() {
+        return Ok(());
     }
-    for dir in missing.iter().rev() {
-        match std::fs::create_dir(dir) {
-            Ok(()) => sync_holding_dir(dir)?,
+    if let Some(parent) = path.parent() {
+        create_dir_all(parent)?;
+    }
+    match std::fs::create_dir(path) {
+        Ok(()) => sync_holding_dir(path),
 
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
-        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
     }
-    Ok(())
 }
 
 pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()> {
@@ -144,13 +141,20 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
             "durable::write: path has no file name",
         )
     })?;
-    let mut tmp_name = std::ffi::OsString::from(".");
+    // `.<name>.<pid>-<seq>.tmp`, written straight into the one name buffer.
+    let mut tmp_name = std::ffi::OsString::with_capacity(file_name.len() + 32);
+    tmp_name.push(".");
     tmp_name.push(file_name);
-    tmp_name.push(format!(
-        ".{}-{}.tmp",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+    {
+        use std::fmt::Write as _;
+        write!(
+            tmp_name,
+            ".{}-{}.tmp",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        )
+        .expect("writing to an OsString cannot fail");
+    }
     let tmp = parent.join(tmp_name);
 
     #[cfg(test)]

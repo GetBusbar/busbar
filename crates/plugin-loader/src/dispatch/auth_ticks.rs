@@ -14,25 +14,33 @@ pub async fn ticks(plugin: &Plugin<Auth>, dispatcher: &Dispatcher, worker: u32) 
         return;
     };
     let _recycled = Recycled { dispatcher, driver };
-    let mut at = 0;
+    let mut at = None;
     loop {
-        let now = super::now_ns();
-        if at > now {
-            tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
+        if let Some(at) = at {
+            // The schedule names an instant on the dispatch clock: wait for it without a reading.
+            tokio::time::sleep_until(tokio::time::Instant::from_std(super::instant_at(at))).await;
         }
+        match tick(plugin, dispatcher, driver).await {
+            Some(next) => at = Some(next),
+            None => return,
+        }
+    }
+}
 
-        let done = dispatcher.tick_copy(plugin, driver, super::now_ns()).await;
-        match (done.outcome, done.frame.map(|f| f.out.next_tick_ns)) {
-            (Outcome::Ready | Outcome::Pending, Some(next)) if next != 0 => at = next,
-            (Outcome::Ready | Outcome::Pending, _) => return,
-            (outcome, _) => {
-                tracing::warn!(
-                    instance = plugin.name(),
-                    ?outcome,
-                    "auth tick failed: the refresh schedule for this instance has stopped"
-                );
-                return;
-            }
+/// One scheduled tick: the op reads the dispatch clock once, at its entry, and answers the next
+/// tick's instant, or `None` when the schedule has stopped.
+async fn tick(plugin: &Plugin<Auth>, dispatcher: &Dispatcher, driver: Ticket) -> Option<u64> {
+    let done = dispatcher.tick_copy(plugin, driver, super::now_ns()).await;
+    match (done.outcome, done.frame.map(|f| f.out.next_tick_ns)) {
+        (Outcome::Ready | Outcome::Pending, Some(next)) if next != 0 => Some(next),
+        (Outcome::Ready | Outcome::Pending, _) => None,
+        (outcome, _) => {
+            tracing::warn!(
+                instance = plugin.name(),
+                ?outcome,
+                "auth tick failed: the refresh schedule for this instance has stopped"
+            );
+            None
         }
     }
 }

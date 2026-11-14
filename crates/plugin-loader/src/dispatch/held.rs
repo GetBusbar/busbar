@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use arc_swap::ArcSwap;
@@ -53,7 +53,12 @@ impl Held {
     }
 
     fn publish(&self, all: &HashMap<Ticket, Cycle>) {
-        self.drivers.store(Arc::new(all.keys().copied().collect()));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a driver ticket's start or stop republishes the lock-free snapshot; no service call does"
+        )]
+        let drivers: HashSet<Ticket> = all.keys().copied().collect();
+        self.drivers.store(Arc::new(drivers));
     }
 
     pub(crate) fn track(&self, driver: Ticket) {
@@ -75,6 +80,10 @@ impl Held {
     pub(crate) fn untrack_worker(&self, worker: u32) {
         let mut all = self.lock();
         let before = all.len();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a wedged worker's replacement forgets every driver ticket it held"
+        )]
         all.retain(|t, _| decode(t.slot).0 != worker);
         if all.len() != before {
             self.publish(&all);

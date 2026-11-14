@@ -23,7 +23,7 @@ use std::path::Path;
     )
 )]
 pub mod auth_axis;
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -44,7 +44,7 @@ pub mod auth_door;
 
 pub mod boot;
 
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -97,7 +97,7 @@ pub mod durable;
     )
 )]
 pub mod export_axis;
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -116,7 +116,7 @@ pub mod export_axis;
 )]
 pub mod export_door;
 pub mod fetch;
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -151,7 +151,7 @@ mod ffi_thread;
     )
 )]
 pub mod highwater;
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -210,7 +210,6 @@ pub mod registry;
 pub mod release_crypto;
 pub mod release_trust;
 
-#[allow(unsafe_code)]
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -251,7 +250,7 @@ pub mod settings_schema;
 pub mod sign;
 #[allow(unsafe_code)]
 mod stage;
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "crosses the plugin C ABI")]
 // busbar:request-path
 #[cfg_attr(
     not(test),

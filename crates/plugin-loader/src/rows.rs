@@ -12,7 +12,12 @@ use crate::PluginRegistry;
 
 fn row(p: &LoadablePlugin) -> Row {
     let m = &p.manifest;
-    Row {
+    // busbar:expect(bp::clone_alloc, reason = "config: a registry row is an owned snapshot for config validation and the admin listing")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a registry row is an owned snapshot for config validation and the admin listing"
+    )]
+    let row = Row {
         file: p.file.clone(),
         key: p.key().to_string(),
         name: m.name.clone(),
@@ -38,10 +43,12 @@ fn row(p: &LoadablePlugin) -> Row {
         needs_prompt: m.needs.prompt,
         needs_user: m.needs.user,
         settings_schema: p.settings_schema.clone(),
-    }
+    };
+    row
 }
 
 fn skipped(s: &SkippedPlugin) -> Skipped {
+    // busbar:expect(bp::clone_alloc, reason = "config: a skipped row is an owned snapshot for config validation and the admin listing")
     Skipped {
         file: s.file.clone(),
         name: s.manifest.name.clone(),
@@ -57,9 +64,9 @@ impl PluginRows for PluginRegistry {
     }
 
     fn archive_sha256(&self, name_or_alias: &str) -> Option<String> {
-        PluginRegistry::resolve(self, name_or_alias)?
-            .archive_sha256
-            .clone()
+        let plugin = PluginRegistry::resolve(self, name_or_alias)?;
+        // busbar:expect(bp::clone_alloc, reason = "config: the archive digest is read when config names a plugin")
+        plugin.archive_sha256.clone()
     }
 
     fn unresolved_reason(&self, name_or_alias: &str) -> Option<Skipped> {
@@ -67,15 +74,30 @@ impl PluginRows for PluginRegistry {
     }
 
     fn loadable(&self) -> Vec<Row> {
-        PluginRegistry::loadable(self).iter().map(row).collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the registry's rows, listed for config validation and the admin listing"
+        )]
+        let rows: Vec<Row> = PluginRegistry::loadable(self).iter().map(row).collect();
+        rows
     }
 
     fn linked(&self) -> Vec<Row> {
-        PluginRegistry::linked(self).iter().map(row).collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the registry's rows, listed for config validation and the admin listing"
+        )]
+        let rows: Vec<Row> = PluginRegistry::linked(self).iter().map(row).collect();
+        rows
     }
 
     fn skipped(&self) -> Vec<Skipped> {
-        PluginRegistry::skipped(self).iter().map(skipped).collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the registry's rows, listed for config validation and the admin listing"
+        )]
+        let rows: Vec<Skipped> = PluginRegistry::skipped(self).iter().map(skipped).collect();
+        rows
     }
 
     fn store_door(

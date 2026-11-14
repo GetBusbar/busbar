@@ -25,6 +25,29 @@ impl Exchange {
         }
     }
 }
+/// A completion's exchange, borrowed: compared against the kept one without a copy.
+#[derive(Clone, Copy)]
+enum ExchangeRef<'a> {
+    Commit(&'a Request),
+    Observe(&'a Observation),
+}
+impl ExchangeRef<'_> {
+    fn capability(self) -> Capability {
+        match self {
+            Self::Commit(r) => r.capability,
+            Self::Observe(r) => r.capability,
+        }
+    }
+}
+impl Exchange {
+    fn is(&self, other: ExchangeRef<'_>) -> bool {
+        match (self, other) {
+            (Self::Commit(kept), ExchangeRef::Commit(r)) => **kept == *r,
+            (Self::Observe(kept), ExchangeRef::Observe(r)) => kept == r,
+            _ => false,
+        }
+    }
+}
 type Input = (Capability, Option<Arc<[u8]>>);
 
 #[derive(Debug)]
@@ -71,14 +94,9 @@ impl ServiceStore {
             return Err(());
         }
         let mut map = self.lock(ticket);
-        let held = map.entry(ticket).or_insert_with(|| Held {
-            epoch: self.epochs.fetch_add(1, Ordering::Relaxed) + 1,
-            entries: HashMap::new(),
-            inspections: HashMap::new(),
-            conditionals: HashMap::new(),
-            conditional_units: HashMap::new(),
-            retirement: HashMap::new(),
-        });
+        let held = map
+            .entry(ticket)
+            .or_insert_with(|| Held::fresh(self.epochs.fetch_add(1, Ordering::Relaxed) + 1));
         if held
             .conditional_units
             .get(&caller)
@@ -193,7 +211,7 @@ impl ServiceStore {
         &self,
         caller: usize,
         unit: Option<u64>,
-        request: Exchange,
+        request: ExchangeRef<'_>,
         receipt: Arc<[u8]>,
         receipt_kind: super::super::conditional::ReceiptKind,
         advance: bool,
@@ -209,7 +227,7 @@ impl ServiceStore {
         if (k.cancelled && !matches!(k.request, Exchange::Commit(_)))
             || k.finished
             || k.unit != unit
-            || k.request != request
+            || !k.request.is(request)
             || k.receipt.is_some()
         {
             return false;
@@ -237,7 +255,7 @@ impl ServiceStore {
         self.exchange_complete(
             caller,
             unit,
-            Exchange::Commit(zeroize::Zeroizing::new(request.clone())),
+            ExchangeRef::Commit(request),
             receipt,
             match &result.decision {
                 Ok(busbar_contract::host_records::conditional::Decision::Applied) => {
@@ -265,7 +283,7 @@ impl ServiceStore {
         self.exchange_complete(
             caller,
             unit,
-            Exchange::Observe(request.clone()),
+            ExchangeRef::Observe(request),
             receipt,
             match &result.result {
                 Ok(_) => super::super::conditional::ReceiptKind::Observed,
@@ -419,6 +437,7 @@ impl ServiceStore {
     }
 
     pub(crate) fn wake_settlement_ready(&self, caller: usize) {
+        // busbar:expect(bp::state_scan, reason = "error: runs only when a conditional exchange is cancelled, to wake its owed settlement")
         let owner = self.shards.iter().find_map(|shard| {
             shard
                 .lock()
@@ -513,30 +532,22 @@ impl ServiceStore {
         for shard in &self.shards {
             let removed = {
                 let mut map = shard.lock().unwrap_or_else(|e| e.into_inner());
+                // Taken out under the lock, dropped after it.
+                // busbar:expect(bp::fresh_buffer, reason = "boot: an instance's close or revocation tears down its conditional exchanges once")
                 let mut removed = Vec::new();
                 for h in map.values_mut() {
                     h.conditional_units.remove(&caller);
-                    let keys: Vec<_> = h
-                        .conditionals
-                        .keys()
-                        .filter(|(owner, _)| *owner == caller)
-                        .copied()
-                        .collect();
-                    for key in keys {
-                        if let Some(kept) = h.conditionals.remove(&key) {
-                            removed.push(kept);
-                        }
-                    }
+                    removed.extend(
+                        h.conditionals
+                            .extract_if(|(owner, _), _| *owner == caller)
+                            .map(|(_, kept)| kept),
+                    );
                 }
-                let empty: Vec<_> = map
-                    .iter()
-                    .filter(|(_, h)| h.empty())
-                    .map(|(ticket, _)| *ticket)
-                    .collect();
-                let owners: Vec<_> = empty
-                    .into_iter()
-                    .filter_map(|ticket| map.remove(&ticket))
-                    .collect();
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: an instance's close or revocation tears down its conditional exchanges once"
+                )]
+                let owners: Vec<_> = map.extract_if(|_, h| h.empty()).map(|(_, h)| h).collect();
                 (removed, owners)
             };
             drop(removed);
