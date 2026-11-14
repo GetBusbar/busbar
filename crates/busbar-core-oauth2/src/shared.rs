@@ -50,10 +50,6 @@ fn atomic_schema(name: &str) -> String {
     format!("{}.atomic.v1", kind(name))
 }
 
-fn live_body(body: &[u8]) -> Vec<u8> {
-    body.to_vec()
-}
-
 fn authority_body(value: &[u8]) -> Result<Option<&[u8]>, StorageError> {
     match value.split_first() {
         Some((b'-', nonce)) if nonce.len() == 32 => Ok(None),
@@ -98,19 +94,29 @@ fn secs_of(t: SystemTime) -> u64 {
 }
 
 fn failed(what: &str, f: impl std::fmt::Debug) -> StorageError {
-    StorageError::new(format!("oauth_as store: {what}: {f:?}"))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: names the store operation that failed"
+    )]
+    let message = format!("oauth_as store: {what}: {f:?}");
+    StorageError::new(message)
 }
 
-fn decode_failed(what: &str, e: serde_json::Error) -> StorageError {
-    StorageError::new(format!("oauth_as store: {what} did not decode: {e}"))
+fn decode_failed(what: &str, e: &serde_json::Error) -> StorageError {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: names the store record that did not decode"
+    )]
+    let message = format!("oauth_as store: {what} did not decode: {e}");
+    StorageError::new(message)
 }
 
 fn encode<T: Serialize>(what: &str, value: &T) -> Result<Vec<u8>, StorageError> {
-    serde_json::to_vec(value).map_err(|e| decode_failed(what, e))
+    serde_json::to_vec(value).map_err(|e| decode_failed(what, &e))
 }
 
 fn decode<T: DeserializeOwned>(what: &str, body: &[u8]) -> Result<T, StorageError> {
-    serde_json::from_slice(body).map_err(|e| decode_failed(what, e))
+    serde_json::from_slice(body).map_err(|e| decode_failed(what, &e))
 }
 
 fn user_code(d: &DeviceGrant) -> (String, String) {
@@ -201,6 +207,16 @@ struct Cell<T> {
     /// The cell's epoch, picked by the write that created it.
     #[serde(default)]
     e: String,
+}
+
+/// A [`Cell`] as it is written: the same fields in the same order, its id and epoch lent.
+#[derive(Serialize)]
+struct CellOut<'a, T> {
+    v: u64,
+    b: T,
+    at: u64,
+    id: &'a str,
+    e: &'a str,
 }
 
 enum Swap<R> {
@@ -307,43 +323,41 @@ impl Shared {
                 "oauth_as store: logical cell exceeds byte budget",
             ));
         }
+        // The candidate is this call's own: its parts move into the store's request, uncopied.
+        let mut request = request;
+        let owned: &mut Request = Arc::make_mut(&mut request);
         let request = scoped::Request {
-            op_id: request.op_id.0,
-            predicates: request
+            op_id: owned.op_id.0,
+            predicates: owned
                 .predicates
-                .iter()
+                .drain(..)
                 .map(|p| scoped::Predicate {
-                    schema: p.schema.clone(),
-                    key: p.key.clone(),
-                    expected: match &p.expected {
+                    schema: p.schema,
+                    key: p.key,
+                    expected: match p.expected {
                         Expected::Absent => scoped::Expected::Absent,
-                        Expected::Bytes(bytes) => {
-                            scoped::Expected::Exact(Secret::new(bytes.clone()))
-                        }
+                        Expected::Bytes(bytes) => scoped::Expected::Exact(Secret::new(bytes)),
                     },
                 })
                 .collect(),
-            mutations: request
+            mutations: owned
                 .mutations
-                .iter()
+                .drain(..)
                 .map(|m| match m {
                     Mutation::Put { schema, key, value } => scoped::Mutation::Put {
-                        schema: schema.clone(),
-                        key: key.clone(),
-                        value: Secret::new(value.clone()),
+                        schema,
+                        key,
+                        value: Secret::new(value),
                     },
-                    Mutation::Delete { schema, key } => scoped::Mutation::Delete {
-                        schema: schema.clone(),
-                        key: key.clone(),
-                    },
+                    Mutation::Delete { schema, key } => scoped::Mutation::Delete { schema, key },
                     Mutation::DeleteRange {
                         schema,
                         prefix,
                         exact_key_length,
                     } => scoped::Mutation::DeleteRange {
-                        schema: schema.clone(),
-                        prefix: prefix.clone(),
-                        exact_key_length: *exact_key_length,
+                        schema,
+                        prefix,
+                        exact_key_length,
                     },
                 })
                 .collect(),
@@ -447,6 +461,7 @@ impl Shared {
         request: &mut Request,
         bucket: &Bucket,
     ) -> Result<(), StorageError> {
+        let now = now_secs();
         let mut indexes = BTreeMap::new();
         for (ix, keys) in [
             ("tok", bucket.tokens.keys().collect::<Vec<_>>()),
@@ -470,14 +485,15 @@ impl Shared {
         }
         for ((ix, id), ()) in indexes {
             let row = IndexRow {
-                client: bucket.id.clone(),
-                key: id.clone(),
-                at: now_secs(),
+                client: bucket.id.as_str(),
+                key: id.as_str(),
+                at: now,
             };
+            let value = encode("index", &row)?;
             request.mutations.push(Mutation::Put {
                 schema: atomic_schema(&format!("ix.{ix}")),
                 key: id.into_bytes(),
-                value: live_body(&encode("index", &row)?),
+                value,
             });
         }
         let mut subjects = BTreeMap::new();
@@ -503,9 +519,8 @@ impl Shared {
             cell.v = cell.v.checked_add(1).ok_or_else(|| {
                 StorageError::new("oauth_as store: subject index version exhausted")
             })?;
-            cell.at = now_secs();
+            cell.at = now;
             cell.id.clone_from(&id);
-            let now = now_secs();
             if cell
                 .b
                 .clients
@@ -525,7 +540,7 @@ impl Shared {
             request.mutations.push(Mutation::Put {
                 schema,
                 key: id.into_bytes(),
-                value: live_body(&encode(SUBJECT_INDEX, &cell)?),
+                value: encode(SUBJECT_INDEX, &cell)?,
             });
         }
         let mut codes = BTreeMap::new();
@@ -571,16 +586,16 @@ impl Shared {
             if cell.b.as_deref() != Some(owner.as_str()) {
                 continue;
             }
-            let value = if now_secs().saturating_sub(cell.at) > RETIRE_AFTER_SECS {
+            let value = if now.saturating_sub(cell.at) > RETIRE_AFTER_SECS {
                 format!("-{}", nonce()?).into_bytes()
             } else {
                 cell.v = cell.v.checked_add(1).ok_or_else(|| {
                     StorageError::new("oauth_as store: user-code index version exhausted")
                 })?;
                 cell.b = None;
-                cell.at = now_secs();
+                cell.at = now;
                 cell.id.clone_from(&id);
-                live_body(&encode("uc", &cell)?)
+                encode("uc", &cell)?
             };
             let schema = atomic_schema("uc");
             request.predicates.push(Predicate {
@@ -618,7 +633,7 @@ impl Shared {
             cell.v = cell.v.checked_add(1).ok_or_else(|| {
                 StorageError::new("oauth_as store: user-code index version exhausted")
             })?;
-            cell.at = now_secs();
+            cell.at = now;
             cell.id.clone_from(&id);
             cell.b = Some(owner);
             let schema = atomic_schema("uc");
@@ -630,7 +645,7 @@ impl Shared {
             request.mutations.push(Mutation::Put {
                 schema,
                 key: id.into_bytes(),
-                value: live_body(&encode("uc", &cell)?),
+                value: encode("uc", &cell)?,
             });
         }
         Ok(())
@@ -664,16 +679,18 @@ impl Shared {
 
     async fn get_body(&self, name: &str, id: &str) -> Result<Option<Vec<u8>>, StorageError> {
         if atomic_kind(name) {
-            return self
-                .authority(name, id)
-                .await?
-                .map(|v| authority_body(&v).map(|b| b.map(<[u8]>::to_vec)))
-                .transpose()
-                .map(Option::flatten);
+            // A live authoritative body is the whole record: hand the read back, uncopied.
+            return match self.authority(name, id).await? {
+                Some(v) => {
+                    let live = authority_body(&v)?.is_some();
+                    Ok(live.then_some(v))
+                }
+                None => Ok(None),
+            };
         }
-        self.settle(&Self::schema(name), Some(id.as_bytes()))
-            .await?;
-        self.read_record(&Self::schema(name), id.as_bytes()).await
+        let schema = Self::schema(name);
+        self.settle(&schema, Some(id.as_bytes())).await?;
+        self.read_record(&schema, id.as_bytes()).await
     }
 
     async fn get<T: DeserializeOwned>(
@@ -687,22 +704,22 @@ impl Shared {
             .transpose()
     }
 
-    async fn put_body(&self, name: &str, id: &str, body: &[u8]) -> Result<(), StorageError> {
+    async fn put_body(&self, name: &str, id: &str, body: Vec<u8>) -> Result<(), StorageError> {
         if atomic_kind(name) {
             return Err(StorageError::new(
                 "oauth_as store: authoritative records require an exact candidate",
             ));
         }
-        self.settle(&Self::schema(name), Some(id.as_bytes()))
-            .await?;
+        let schema = Self::schema(name);
+        self.settle(&schema, Some(id.as_bytes())).await?;
         self.submit(Arc::new(Zeroizing::new(Request {
             version: busbar_contract::host_records::conditional::VERSION,
             op_id: busbar_kernel::door::op_id(),
             predicates: vec![],
             mutations: vec![Mutation::Put {
-                schema: Self::schema(name),
+                schema,
                 key: id.as_bytes().to_vec(),
-                value: body.to_vec(),
+                value: body,
             }],
         })))
         .await
@@ -710,7 +727,7 @@ impl Shared {
     }
 
     async fn put<T: Serialize>(&self, name: &str, id: &str, value: &T) -> Result<(), StorageError> {
-        self.put_body(name, id, &encode(name, value)?).await
+        self.put_body(name, id, encode(name, value)?).await
     }
 
     async fn list<T: DeserializeOwned>(&self, name: &str) -> Result<Vec<T>, StorageError> {
@@ -750,14 +767,14 @@ impl Shared {
                 "oauth_as store: authoritative records retire through CAS",
             ));
         }
-        self.settle(&Self::schema(name), Some(id.as_bytes()))
-            .await?;
+        let schema = Self::schema(name);
+        self.settle(&schema, Some(id.as_bytes())).await?;
         self.submit(Arc::new(Zeroizing::new(Request {
             version: busbar_contract::host_records::conditional::VERSION,
             op_id: busbar_kernel::door::op_id(),
             predicates: vec![],
             mutations: vec![Mutation::Delete {
-                schema: Self::schema(name),
+                schema,
                 key: id.as_bytes().to_vec(),
             }],
         })))
@@ -889,6 +906,7 @@ impl Shared {
         T: Serialize + DeserializeOwned + Default,
     {
         let schema = atomic_schema(kind_name);
+        let now = now_secs();
         for attempt in 0..SWAP_ATTEMPTS {
             let family_guard = if let Some(family) = family {
                 let family_id = digest(family);
@@ -927,7 +945,7 @@ impl Shared {
                 Swap::Keep(r) => return Ok(Some(r)),
                 Swap::Write(r) => (r, false),
                 Swap::Retire(r, changed) => {
-                    if v != 0 && now_secs().saturating_sub(at) > RETIRE_AFTER_SECS {
+                    if v != 0 && now.saturating_sub(at) > RETIRE_AFTER_SECS {
                         (r, true)
                     } else if changed && v != 0 {
                         (r, false)
@@ -944,14 +962,14 @@ impl Shared {
             let body = if retire {
                 format!("-{}", nonce()?).into_bytes()
             } else {
-                let cell = Cell {
+                let cell = CellOut {
                     v: next,
                     b: &value,
-                    at: now_secs(),
-                    id: id.to_string(),
-                    e: epoch,
+                    at: now,
+                    id,
+                    e: &epoch,
                 };
-                live_body(&encode(kind_name, &cell)?)
+                encode(kind_name, &cell)?
             };
             let mut candidate = Self::candidate(&schema, id, raw, body);
             let request = Arc::make_mut(&mut candidate);
@@ -988,7 +1006,10 @@ impl Shared {
         mut f: impl FnMut(&mut Bucket, u64) -> Result<Swap<R>, StorageError>,
     ) -> Result<R, StorageError> {
         self.cas_cell("bucket", &digest(client_id), |b: &mut Bucket, at| {
-            b.id = client_id.to_string();
+            if b.id != client_id {
+                b.id.clear();
+                b.id.push_str(client_id);
+            }
             f(b, at)
         })
         .await
@@ -1005,7 +1026,10 @@ impl Shared {
             &digest(client_id),
             family,
             |b: &mut Bucket, at| {
-                b.id = client_id.to_string();
+                if b.id != client_id {
+                    b.id.clear();
+                    b.id.push_str(client_id);
+                }
                 f(b, at)
             },
         )
@@ -1015,19 +1039,14 @@ impl Shared {
     async fn index(&self, ix: &str, key: &str, client_id: &str) -> Result<(), StorageError> {
         let id = digest(key);
         let row = IndexRow {
-            client: client_id.to_string(),
-            key: id.clone(),
+            client: client_id,
+            key: id.as_str(),
             at: now_secs(),
         };
         let name = format!("ix.{ix}");
         for _ in 0..SWAP_ATTEMPTS {
             let raw = self.authority(&name, &id).await?;
-            let candidate = Self::candidate(
-                &atomic_schema(&name),
-                &id,
-                raw,
-                live_body(&encode(&name, &row)?),
-            );
+            let candidate = Self::candidate(&atomic_schema(&name), &id, raw, encode(&name, &row)?);
             if self.submit(candidate).await? == Decision::Applied {
                 return Ok(());
             }
@@ -1105,6 +1124,7 @@ impl Shared {
         window: RevocationWindow,
     ) -> Result<u64, StorageError> {
         let id = digest(family_id);
+        let now = now_secs();
         for attempt in 0..SWAP_ATTEMPTS {
             let raw = self.authority("family", &id).await?;
             let cell: Option<Cell<FamilyBar>> = raw
@@ -1125,16 +1145,12 @@ impl Shared {
                 .v
                 .checked_add(1)
                 .ok_or_else(|| StorageError::new("oauth_as store: family version exhausted"))?;
-            cell.at = now_secs();
+            cell.at = now;
             cell.id.clone_from(&id);
             cell.b.id.clone_from(&id);
             Times::merge(&mut cell.b.times, window);
-            let mut request = Self::candidate(
-                &atomic_schema("family"),
-                &id,
-                raw,
-                live_body(&encode("family", &cell)?),
-            );
+            let mut request =
+                Self::candidate(&atomic_schema("family"), &id, raw, encode("family", &cell)?);
             let request_body = Arc::make_mut(&mut request);
 
             let index = self.authority("ix.fam", &id).await?;
@@ -1179,12 +1195,12 @@ impl Shared {
                         bucket.v = bucket.v.checked_add(1).ok_or_else(|| {
                             StorageError::new("oauth_as store: bucket version exhausted")
                         })?;
-                        bucket.at = now_secs();
+                        bucket.at = now;
                         bucket.id.clone_from(&bucket_id);
                         request_body.mutations.push(Mutation::Put {
                             schema: atomic_schema("bucket"),
                             key: bucket_id.into_bytes(),
-                            value: live_body(&encode("bucket", &bucket)?),
+                            value: encode("bucket", &bucket)?,
                         });
                         self.bucket_indexes(request_body, &bucket.b).await?;
                     }
@@ -1271,10 +1287,10 @@ impl Shared {
         let row = StakeRow {
             approve,
             until: now_secs() + ttl.as_secs(),
-            id: row_id.clone(),
+            id: row_id,
             nonce: nonce()?,
         };
-        self.put("stake", &row_id, &row).await
+        self.put("stake", &row.id, &row).await
     }
 
     async fn stake_row(&self, id: &str, key: &str) -> Result<Option<StakeRow>, StorageError> {
@@ -1351,7 +1367,7 @@ impl Shared {
                 &atomic_schema("key"),
                 "signing",
                 None,
-                live_body(body.as_bytes()),
+                body.into_bytes(),
             ))
             .await
             .map_err(|e| e.0)?
@@ -1413,9 +1429,9 @@ struct Indexed {
 /// One credential's index row: the client it was minted for, the credential's digest (the row's
 /// id) and when the row was written.
 #[derive(Serialize, Deserialize)]
-struct IndexRow {
-    client: String,
-    key: String,
+struct IndexRow<S = String> {
+    client: S,
+    key: S,
     at: u64,
 }
 
@@ -1507,7 +1523,7 @@ impl Storage for SharedStorage {
     }
 
     async fn put_client(&self, client: Client) -> Result<(), StorageError> {
-        let id = client.client_id.as_str().to_string();
+        let id = client.client_id.as_str();
         self.shared
             .update(&id, |b, _| {
                 b.client = Some(client.clone());
@@ -1521,7 +1537,7 @@ impl Storage for SharedStorage {
         expected: &Client,
         updated: Client,
     ) -> Result<bool, StorageError> {
-        let id = updated.client_id.as_str().to_string();
+        let id = updated.client_id.as_str();
         self.shared
             .update(&id, |b, _| {
                 if b.client.as_ref() != Some(expected) {
@@ -1565,7 +1581,7 @@ impl Storage for SharedStorage {
         let s = &self.shared;
         let normalized = normalize_user_code(&grant.user_code);
         s.hold_user_code(&normalized, &grant.device_code).await?;
-        let client = grant.client_id.as_str().to_string();
+        let client = grant.client_id.as_str();
         s.index("dev", &grant.device_code, &client).await?;
         s.update(&client, |b, _| {
             b.devices.insert(grant.device_code.clone(), grant.clone());
@@ -1646,7 +1662,7 @@ impl Storage for SharedStorage {
         &self,
         record: AuthorizationCodeRecord,
     ) -> Result<(), StorageError> {
-        let client = record.client_id.as_str().to_string();
+        let client = record.client_id.as_str();
         self.shared.index("code", &record.code, &client).await?;
         self.shared
             .update(&client, |b, _| {
@@ -1689,7 +1705,7 @@ impl Storage for SharedStorage {
         &self,
         record: PushedAuthorizationRequest,
     ) -> Result<WriteOutcome, StorageError> {
-        let client = record.client_id.as_str().to_string();
+        let client = record.client_id.as_str();
         self.shared
             .index("par", &record.request_uri, &client)
             .await?;
@@ -1794,7 +1810,7 @@ impl Storage for SharedStorage {
         next: Option<&RefreshTokenRecord>,
     ) -> Result<bool, StorageError> {
         let s = &self.shared;
-        let client = expected.client_id.as_str().to_string();
+        let client = expected.client_id.as_str();
         if s.family_barred(Some(&expected.family_id)).await? {
             return Ok(false);
         }
@@ -1861,7 +1877,7 @@ impl Storage for SharedStorage {
 
     async fn put_consent(&self, record: ConsentRecord) -> Result<(), StorageError> {
         let s = &self.shared;
-        let client = record.client_id.as_str().to_string();
+        let client = record.client_id.as_str();
         s.index("cons", &record.consent_id, &client).await?;
         s.index_subject(&record.subject, &client).await?;
         s.update(&client, |b, _| {
@@ -1878,7 +1894,7 @@ impl Storage for SharedStorage {
         updated: ConsentRecord,
     ) -> Result<bool, StorageError> {
         let s = &self.shared;
-        let client = updated.client_id.as_str().to_string();
+        let client = updated.client_id.as_str();
         s.index("cons", &updated.consent_id, &client).await?;
         s.index_subject(&updated.subject, &client).await?;
         s.update(&client, |b, _| {
@@ -1971,13 +1987,10 @@ impl Storage for SharedStorage {
                     .consents
                     .remove(consent_id)
                     .expect("the peek above read the same bucket");
-                let cid = consent.client_id.clone();
-                let subject: String = consent.subject.to_string();
+                let cid = consent.client_id;
+                let subject = consent.subject.into_string();
                 let mut slot = b.consent_barriers.get(&subject).copied();
                 Times::merge(&mut slot, window);
-                if let Some(t) = slot {
-                    b.consent_barriers.insert(subject.clone(), t);
-                }
                 let before = b.records();
                 let of_grant = |client: &ClientId, s: Option<&str>| *client == cid && s == Some(subject.as_str());
                 b.tokens
@@ -1991,6 +2004,9 @@ impl Storage for SharedStorage {
                         && matches!(&d.state, DeviceGrantState::Approved { subject: s } if *s == subject);
                     !gone
                 });
+                if let Some(t) = slot {
+                    b.consent_barriers.insert(subject, t);
+                }
                 Ok(Swap::Write((before - b.records()) as u64))
             })
             .await?;
@@ -2022,13 +2038,14 @@ impl Storage for SharedStorage {
         }
 
         let mut removed = 0u64;
+        let now_s = secs_of(now);
         let cells = s.list::<Cell<Bucket>>("bucket").await?;
         for mut cell in cells.into_iter().filter(|cell| !cell.b.id.is_empty()) {
             let acts = match sweep_bucket(&mut cell.b, cell.at, now) {
                 Swap::Keep(_) => false,
                 Swap::Write(_) => true,
                 Swap::Retire(_, changed) => {
-                    changed || now_secs().saturating_sub(cell.at) > RETIRE_AFTER_SECS
+                    changed || now_s.saturating_sub(cell.at) > RETIRE_AFTER_SECS
                 }
             };
             if !acts {
@@ -2053,7 +2070,6 @@ impl Storage for SharedStorage {
                 tracing::warn!(error = %e, "oauth_as: lapsed family barriers were not swept this tick")
             }
         }
-        let now_s = secs_of(now);
         let replays = s.sweep_rows::<ReplayRow>("replay", now_s, LOST_REPLAY, |r| (r.until, &r.id));
         match replays.await {
             Ok(n) => removed += n,
@@ -2273,6 +2289,7 @@ impl Shared {
         id: &str,
         gone: &BTreeMap<String, Indexed>,
     ) -> Result<(), StorageError> {
+        let now = now_secs();
         for attempt in 0..SWAP_ATTEMPTS {
             let raw = self.authority(SUBJECT_INDEX, id).await?;
             let cell: Option<Cell<SubjectIndex>> = raw
@@ -2325,7 +2342,7 @@ impl Shared {
                 });
             }
             let retired =
-                cell.b.clients.is_empty() && now_secs().saturating_sub(cell.at) > RETIRE_AFTER_SECS;
+                cell.b.clients.is_empty() && now.saturating_sub(cell.at) > RETIRE_AFTER_SECS;
             if !changed && !retired {
                 return Ok(());
             }
@@ -2335,9 +2352,10 @@ impl Shared {
                 cell.v = cell.v.checked_add(1).ok_or_else(|| {
                     StorageError::new("oauth_as store: subject index version exhausted")
                 })?;
-                cell.at = now_secs();
-                cell.id = id.to_string();
-                live_body(&encode(SUBJECT_INDEX, &cell)?)
+                cell.at = now;
+                cell.id.clear();
+                cell.id.push_str(id);
+                encode(SUBJECT_INDEX, &cell)?
             };
             let mut request = Self::candidate(&atomic_schema(SUBJECT_INDEX), id, raw, value);
             Arc::make_mut(&mut request).predicates.extend(guards);

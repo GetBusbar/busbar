@@ -61,6 +61,10 @@ pub const fn upstream_encoding() -> UpstreamEncoding {
 /// Write busbar's own `accept-encoding` choice ([`upstream_encoding`]) onto an upstream head that
 pub fn apply_upstream_encoding(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
     if let Some(value) = upstream_encoding().accept_encoding() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the upstream encoding is a build-time choice, and 1.6.0's adds no field"
+        )]
         fields.push((b"accept-encoding".to_vec(), value.as_bytes().to_vec()));
     }
 }
@@ -71,28 +75,43 @@ pub const CONTROL_PREFIX: &str = "x-busbar-";
 /// Whether the client field `name` is a per-connection mechanic the upstream request re-derives: a
 #[must_use]
 pub fn re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
-    let lower: std::borrow::Cow<'_, str> = if name.bytes().any(|b| b.is_ascii_uppercase()) {
-        name.to_ascii_lowercase().into()
-    } else {
-        name.into()
-    };
-    RE_DERIVED.contains(&&*lower)
-        || busbar_contract::abi::transport::fields::hop_by_hop(&lower, nominated)
+    use busbar_contract::abi::transport::fields::{hop_by_hop, HOP_BY_HOP};
+    // Both lists are lower-case, so a case-blind match is the lower-cased name's exact one; the
+    // nominated names are already compared case-blind.
+    RE_DERIVED
+        .iter()
+        .chain(HOP_BY_HOP)
+        .any(|known| known.eq_ignore_ascii_case(name))
+        || hop_by_hop(name, nominated)
 }
 
 /// Drop from the head a plane hands the kernel what the host drops from a client's:
 pub fn strip_re_derived(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
-    let nominated: Vec<Vec<u8>> = fields
-        .iter()
-        .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
-        .map(|(_, v)| v.clone())
-        .collect();
-    fields.retain(|(n, _)| {
-        !std::str::from_utf8(n).is_ok_and(|n| {
-            re_derived(n, nominated.iter().map(Vec::as_slice))
-                || n.to_ascii_lowercase().starts_with(CONTROL_PREFIX)
-        })
-    });
+    // Every `connection` field is itself hop-by-hop and goes; move them behind the rest, keeping
+    // the rest in order, so their values can name what else goes while the rest is compacted.
+    let mut kept = 0;
+    for at in 0..fields.len() {
+        if !fields[at].0.eq_ignore_ascii_case(b"connection") {
+            fields.swap(kept, at);
+            kept += 1;
+        }
+    }
+    let (head, connection) = fields.split_at_mut(kept);
+    let nominated = || connection.iter().map(|(_, v)| v.as_slice());
+    let mut write = 0;
+    for at in 0..head.len() {
+        let dropped = std::str::from_utf8(&head[at].0).is_ok_and(|n| {
+            re_derived(n, nominated())
+                || n.as_bytes()
+                    .get(..CONTROL_PREFIX.len())
+                    .is_some_and(|p| p.eq_ignore_ascii_case(CONTROL_PREFIX.as_bytes()))
+        });
+        if !dropped {
+            head.swap(write, at);
+            write += 1;
+        }
+    }
+    fields.truncate(write);
 }
 
 #[cfg(test)]

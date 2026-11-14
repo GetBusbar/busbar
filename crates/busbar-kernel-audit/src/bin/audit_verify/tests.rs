@@ -157,7 +157,7 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
     };
     record.hash = AuditChain::digest_of(&record);
     record.signature = Some(signer().sign_digest(&record.hash));
-    record.key_id = Some(signer().key_id().to_owned());
+    record.key_id = Some(signer().key_id().into());
     let records = vec![record];
     let chain = AuditChain::resume(&records);
     let range = serde_json::from_str(&busbar_kernel_audit::expose::range_body(

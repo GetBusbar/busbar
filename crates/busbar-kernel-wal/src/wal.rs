@@ -3,10 +3,11 @@
 
 //! The log itself: the thing a unit waits on before it dials, and again before it ends.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::io;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
+use foldhash::{HashMap, HashSet};
 
 use crate::backend::{DirectoryFactory, MemoryFactory, SegmentFactory};
 use crate::record::{Record, FRAME_BYTES};
@@ -43,6 +44,28 @@ pub struct BatchAck {
     pub durable_end: u64,
     /// Whether this commit also re-wrote a batch that a poisoned segment had lost.
     pub replayed_lost_batch: bool,
+}
+
+/// What [`Wal::forget_owed`] gave up on: how many records, and the oldest and newest identity.
+/// Both identities are `(0, 0)` when nothing was owed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Forgotten {
+    /// How many records were given up on.
+    pub count: usize,
+    /// The identity of the oldest one.
+    pub first: (u64, u64),
+    /// The identity of the newest one.
+    pub last: (u64, u64),
+}
+
+/// How one staged commit ended.
+enum Committed {
+    /// Written (and shipped, in memory-buffered mode): how many appended, the segment, its end.
+    Ack(usize, u64, u64),
+    /// Durability was lost; what the log still owes is in `lost_batch`.
+    Lost,
+    /// The segment was full and the log rolled; `lost_batch` holds the commit to write again.
+    Rolled,
 }
 
 /// Why a log could not be opened.
@@ -107,6 +130,14 @@ pub struct Wal {
     quarantined: Vec<Quarantine>,
     /// The segment after a poisoned one, opened the moment the poison happened so that its
     next_segment: Option<Segment>,
+    /// Reused per-commit scratch: the identities a batch has already staged.
+    staged: HashSet<(u64, u64)>,
+    /// Reused per-commit scratch: the records a commit writes.
+    batch_scratch: Vec<Record>,
+    /// Reused per-commit scratch: the records a commit offers the shipper.
+    offered_scratch: Vec<Record>,
+    /// Reused scratch for the identity ceilings a quarantine is marked up to.
+    ceilings: Vec<u64>,
 }
 
 impl std::fmt::Debug for Wal {
@@ -161,7 +192,7 @@ impl Wal {
                 match self.segment.append_batch(chunk) {
                     Ok(_) => break,
                     Err(SegmentError::Full) if self.segment.write_offset() > 0 => self.roll()?,
-                    Err(e) => return Err(io::Error::other(e.to_string())),
+                    Err(e) => return Err(io::Error::other(e)),
                 }
             }
             for record in chunk {
@@ -216,8 +247,8 @@ impl Wal {
             mode,
             segment,
             ceiling,
-            high_water: HashMap::new(),
-            gaps: HashSet::new(),
+            high_water: HashMap::default(),
+            gaps: HashSet::default(),
             gap_order: VecDeque::new(),
             lost_batch: Vec::new(),
             owed_to_store: Vec::new(),
@@ -227,6 +258,10 @@ impl Wal {
             segments_used,
             quarantined: Vec::new(),
             next_segment: None,
+            staged: HashSet::default(),
+            batch_scratch: Vec::new(),
+            offered_scratch: Vec::new(),
+            ceilings: Vec::new(),
         };
         for record in &recovered.records {
             wal.mark_written(record.node, record.node_seq);
@@ -255,20 +290,19 @@ impl Wal {
             }
         }
         let reach = quarantine.identities.len() as u64;
-        let ceilings: Vec<u64> = quarantine
-            .unverified
-            .iter()
-            .map(|(node, _)| {
-                self.high_water
-                    .get(node)
-                    .copied()
-                    .unwrap_or(0)
-                    .saturating_add(reach)
-            })
-            .collect();
-        for (&(node, node_seq), ceiling) in quarantine.unverified.iter().zip(ceilings) {
+        let mut ceilings = std::mem::take(&mut self.ceilings);
+        ceilings.clear();
+        ceilings.extend(quarantine.unverified.iter().map(|(node, _)| {
+            self.high_water
+                .get(node)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(reach)
+        }));
+        for (&(node, node_seq), &ceiling) in quarantine.unverified.iter().zip(&ceilings) {
             self.mark_written(node, u64::min(node_seq, ceiling));
         }
+        self.ceilings = ceilings;
         self.quarantined.push(quarantine);
     }
 
@@ -307,10 +341,13 @@ impl Wal {
         self.store_owed_from.is_some()
     }
 
-    /// Give up on the `count` oldest records the log still owes, and hand them back.
-    pub fn forget_owed(&mut self, count: usize) -> Vec<Record> {
+    /// Give up on the `count` oldest records the log still owes, and say what went.
+    pub fn forget_owed(&mut self, count: usize) -> Forgotten {
         let count = usize::min(count, self.lost_batch.len());
-        self.lost_batch.drain(0..count).collect()
+        let mut gone = self.lost_batch.drain(0..count);
+        let first = gone.next().map_or((0, 0), |r| r.identity());
+        let last = gone.next_back().map_or(first, |r| r.identity());
+        Forgotten { count, first, last }
     }
 
     /// How many segments have been used, poisoned ones included.
@@ -387,13 +424,15 @@ impl Wal {
 
         let owed = std::mem::take(&mut self.lost_batch);
 
-        let mut batch: Vec<Record> = Vec::with_capacity(owed.len() + records.len());
-        let mut offered: Vec<Record> = Vec::with_capacity(owed.len() + records.len());
+        let mut batch = std::mem::take(&mut self.batch_scratch);
+        let mut offered = std::mem::take(&mut self.offered_scratch);
+        batch.clear();
+        offered.clear();
+        self.staged.clear();
         let mut already_present = 0usize;
-        let mut staged: HashSet<(u64, u64)> = HashSet::new();
         for record in owed.iter().chain(records.iter()) {
             let id = record.identity();
-            if !staged.insert(id) {
+            if !self.staged.insert(id) {
                 already_present += 1;
                 continue;
             }
@@ -405,70 +444,97 @@ impl Wal {
             batch.push(record.clone());
         }
 
+        let outcome = self.commit_staged(owed, records, &batch, &mut offered);
+        self.park_scratch(batch, offered);
+        match outcome {
+            Committed::Ack(appended, segment, durable_end) => Ok(BatchAck {
+                appended,
+                already_present,
+                segment,
+                durable_end,
+                replayed_lost_batch: replaying,
+            }),
+            Committed::Lost => Err(DurabilityLost::observed(token, at)),
+            Committed::Rolled => {
+                let carried = std::mem::take(&mut self.lost_batch);
+                self.append_batch(token, at, &carried)
+            }
+        }
+    }
+
+    /// Commit what [`Wal::append_batch`] staged: `batch` to write, `offered` to ship. A failure keeps
+    /// what the log still owes in `lost_batch`; `offered` is left empty when it moved there.
+    fn commit_staged(
+        &mut self,
+        owed: Vec<Record>,
+        records: &[Record],
+        batch: &[Record],
+        offered: &mut Vec<Record>,
+    ) -> Committed {
         if batch.is_empty() {
             if self.mode == Mode::MemoryBuffered && !offered.is_empty() {
-                if let Err(_e) = self.shipper.ship(&offered) {
-                    self.lost_batch = offered;
-                    return Err(DurabilityLost::observed(token, at));
+                if let Err(_e) = self.shipper.ship(offered) {
+                    std::mem::swap(&mut self.lost_batch, offered);
+                    return Committed::Lost;
                 }
             } else if self.mode == Mode::OnDisk {
                 let at = (self.segment.index(), self.segment.write_offset());
                 self.offer_store_debt(&[], at);
             }
-            return Ok(BatchAck {
-                appended: 0,
-                already_present,
-                segment: self.segment.index(),
-                durable_end: self.segment.write_offset(),
-                replayed_lost_batch: replaying,
-            });
+            return Committed::Ack(0, self.segment.index(), self.segment.write_offset());
         }
 
-        match self.segment.append_batch(&batch) {
+        match self.segment.append_batch(batch) {
             Ok(end) => {
-                for record in &batch {
+                for record in batch {
                     self.mark_written(record.node, record.node_seq);
                 }
                 if self.mode == Mode::MemoryBuffered {
-                    if let Err(_e) = self.shipper.ship(&offered) {
-                        self.lost_batch = offered;
-                        return Err(DurabilityLost::observed(token, at));
+                    if let Err(_e) = self.shipper.ship(offered) {
+                        std::mem::swap(&mut self.lost_batch, offered);
+                        return Committed::Lost;
                     }
                 } else {
                     let frames: u64 = batch.iter().map(|r| r.frame_count() as u64).sum();
                     let start = end - frames * FRAME_BYTES as u64;
-                    self.offer_store_debt(&batch, (self.segment.index(), start));
+                    self.offer_store_debt(batch, (self.segment.index(), start));
                 }
-                Ok(BatchAck {
-                    appended: batch.len(),
-                    already_present,
-                    segment: self.segment.index(),
-                    durable_end: end,
-                    replayed_lost_batch: replaying,
-                })
+                Committed::Ack(batch.len(), self.segment.index(), end)
             }
             Err(SegmentError::Full) => {
-                self.lost_batch = owed.into_iter().chain(records.iter().cloned()).collect();
+                let mut lost = owed;
+                lost.extend_from_slice(records);
+                self.lost_batch = lost;
                 if self.segment.write_offset() == 0 || self.roll().is_err() {
-                    return Err(DurabilityLost::observed(token, at));
+                    return Committed::Lost;
                 }
-                let carried = std::mem::take(&mut self.lost_batch);
-                self.append_batch(token, at, &carried)
+                Committed::Rolled
             }
             Err(_poisoned_or_io) => {
-                self.lost_batch = owed.into_iter().chain(records.iter().cloned()).collect();
+                let mut lost = owed;
+                lost.extend_from_slice(records);
+                self.lost_batch = lost;
 
                 if self.next_segment.is_none() {
                     self.next_segment = self.open_next().ok();
                 }
-                Err(DurabilityLost::observed(token, at))
+                Committed::Lost
             }
         }
     }
 
+    /// Hand the per-commit scratch back, emptied, for the next commit to reuse.
+    fn park_scratch(&mut self, mut batch: Vec<Record>, mut offered: Vec<Record>) {
+        batch.clear();
+        offered.clear();
+        self.batch_scratch = batch;
+        self.offered_scratch = offered;
+    }
+
     /// Read every record the log holds, OLDEST SEGMENT FIRST, verifying as it goes.
     pub fn read_back(&self) -> io::Result<Recovered> {
-        let mut seen: HashSet<(u64, u64)> = HashSet::new();
+        let mut seen: HashSet<(u64, u64)> = HashSet::default();
+        // busbar:expect(bp::fresh_buffer, reason = "boot: read_back replays the whole log once, at open or recovery, never per request")
         let mut records = Vec::new();
         for index in 0..self.segment.index() {
             let Some(backend) = self.factory.existing(index)? else {
@@ -585,6 +651,7 @@ fn open_tail(
     clock: Clock,
 ) -> Result<(Segment, Recovered, Vec<Quarantine>, u64), OpenError> {
     let mut index = factory.highest_index()?.unwrap_or(0);
+    // busbar:expect(bp::fresh_buffer, reason = "boot: what recovery set aside while the log opens")
     let mut quarantined = Vec::new();
 
     let mut newest: Option<Segment> = None;
@@ -617,6 +684,7 @@ fn quarantine_below(
     tail: &Recovered,
     mut quarantined: Vec<Quarantine>,
 ) -> Result<Vec<Quarantine>, OpenError> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: one entry per segment, built once while the log opens")
     let mut kept: Vec<KeptSegment> = Vec::new();
     for index in 0..tail_index {
         let Some(backend) = factory.existing(index)? else {
@@ -632,7 +700,7 @@ fn quarantine_below(
     if let (Some(first), Some(last)) = (tail.records.first(), tail.records.last()) {
         kept.push((tail_index, first.identity(), last.identity()));
     }
-    quarantined.sort_by_key(|q| (q.segment, q.offset));
+    quarantined.sort_unstable_by_key(|q| (q.segment, q.offset));
     for q in &mut quarantined {
         if q.before.is_none() {
             q.before = kept

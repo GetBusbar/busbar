@@ -46,6 +46,7 @@ impl Member {
     /// A member with only the two things every member has.
     #[must_use]
     pub fn new(destination: DestinationId, name: impl Into<String>, weight: u32) -> Self {
+        // busbar:expect(bp::into_alloc, reason = "config: a member is built once, when the pool configuration is loaded")
         Self {
             destination,
             name: name.into(),
@@ -125,6 +126,7 @@ impl Pool {
     /// A pool of these members with every default.
     #[must_use]
     pub fn new(name: impl Into<String>, members: Vec<Member>) -> Self {
+        // busbar:expect(bp::into_alloc, reason = "config: a pool is built once, when the pool configuration is loaded")
         Self {
             name: name.into(),
             members,

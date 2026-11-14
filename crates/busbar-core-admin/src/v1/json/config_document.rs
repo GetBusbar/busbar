@@ -214,7 +214,7 @@ pub(super) async fn put(
             let base_group_names = cfg.groups.keys().cloned().collect();
             busbar_kernel::config::overlay::merge_into(&mut cfg, doc.clone());
             let overlay = (!loaded.config_locked).then(|| store.clone());
-            let (mut next, rotate, limits) = busbar_kernel::build_app_from_config(
+            let (mut next, rotate, limits) = Box::pin(busbar_kernel::build_app_from_config(
                 cfg,
                 loaded.deploy.plugins.clone(),
                 overlay,
@@ -223,7 +223,7 @@ pub(super) async fn put(
                 (Some(config_path), Some(loaded.providers_path)),
                 Some(&snapshot),
                 &snapshot.root_rules,
-            ).await.map_err(|_| AdminError::Validation("patched configuration failed runtime validation".into()))?;
+            )).await.map_err(|_| AdminError::Validation("patched configuration failed runtime validation".into()))?;
             busbar_kernel::config::readback::ConfiguredView::capture_documents(
                 &mut next, &loaded.deploy, &loaded.defs,
             );

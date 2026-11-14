@@ -38,19 +38,26 @@ pub fn least_bad(
     token: &Pass<Route>,
 ) -> Option<(Member, Permit)> {
     let now = ports.clock.now_secs();
-    let mut ranked: Vec<&Member> = members
-        .iter()
-        .filter(|m| m.weight != 0 && ports.breaker.admissible(m.destination))
-        .collect();
-    ranked.sort_by_key(|m| {
-        ports
-            .breaker
-            .cooldown_remaining(&pool.name, m.destination, now, token)
-    });
-    ranked.into_iter().find_map(|m| {
-        ports
-            .capacity
-            .try_acquire(m.destination)
-            .map(|p| ((*m).clone(), p))
-    })
+    // The members in order of soonest cooldown, ties in configured order: each round takes the
+    // least `(cooldown, position)` past the last one tried, so nothing is collected or sorted.
+    let mut tried: Option<(u64, usize)> = None;
+    loop {
+        let (rank, member) = members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.weight != 0 && ports.breaker.admissible(m.destination))
+            .map(|(position, m)| {
+                let cooldown =
+                    ports
+                        .breaker
+                        .cooldown_remaining(&pool.name, m.destination, now, token);
+                ((cooldown, position), m)
+            })
+            .filter(|(rank, _)| tried.is_none_or(|last| *rank > last))
+            .min_by_key(|(rank, _)| *rank)?;
+        if let Some(permit) = ports.capacity.try_acquire(member.destination) {
+            return Some((member.clone(), permit));
+        }
+        tried = Some(rank);
+    }
 }

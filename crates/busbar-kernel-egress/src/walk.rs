@@ -209,8 +209,9 @@ impl Walk {
         shape: Option<&dyn Shape>,
         token: &Pass<Route>,
     ) -> Step {
+        let now = ports.clock.now_secs();
         loop {
-            if self.ctx.expired(ports.clock.now_secs()) {
+            if self.ctx.expired(now) {
                 return Step::Shed(Shed::request_timeout());
             }
             match self.phase.clone() {
@@ -265,13 +266,7 @@ impl Walk {
                         OnExhausted::FallbackPool(target) => {
                             if self.ctx.is_pool_visited(target) || !ports.pools.contains_key(target)
                             {
-                                let secs = retry_after_secs(
-                                    ports.breaker,
-                                    &[],
-                                    target,
-                                    ports.clock.now_secs(),
-                                    token,
-                                );
+                                let secs = retry_after_secs(ports.breaker, &[], target, now, token);
                                 return Step::Shed(Shed::overloaded(secs));
                             }
                             self.ctx.mark_pool_visited(target);
@@ -443,6 +438,7 @@ impl Walk {
         let Some(pool) = ports.pools.get(&wait.pool) else {
             return Err(pool_shed(ports, &wait.pool, &[], token));
         };
+        // busbar:expect(bp::fresh_buffer, reason = "error: the queue terminal; every member of the pool is exhausted")
         let mut waiting: Vec<DestinationId> = Vec::new();
         for (destination, reason) in self.ctx.excluded_reasons() {
             if matches!(reason, Unavailable::AtCapacity { .. }) && !waiting.contains(destination) {
@@ -491,6 +487,7 @@ impl<'p> Parked<'p> {
             if self.waiting.is_empty() {
                 break None;
             }
+            // busbar:expect(bp::clock_repeat, reason = "error: the queue terminal waits out an exhausted pool and re-reads the clock after each wake")
             let spent = ports.clock.now_millis().saturating_sub(self.started);
             let left = self
                 .bound_ms
@@ -503,19 +500,15 @@ impl<'p> Parked<'p> {
             let Ok(Some((destination, permit))) = raced else {
                 break None;
             };
-            match ports
-                .breaker
-                .try_admit(&pool.name, destination, ports.clock.now_secs())
-            {
+            // busbar:expect(bp::clock_repeat, reason = "error: the queue terminal waits out an exhausted pool and re-reads the clock after each wake")
+            let now = ports.clock.now_secs();
+            match ports.breaker.try_admit(&pool.name, destination, now) {
                 Ok(admit) => {
                     let Some(member) = members.iter().find(|m| m.destination == destination) else {
                         if let Some(epoch) = admit.probe_epoch {
-                            ports.breaker.release_probe(
-                                &pool.name,
-                                destination,
-                                epoch,
-                                ports.clock.now_secs(),
-                            );
+                            ports
+                                .breaker
+                                .release_probe(&pool.name, destination, epoch, now);
                         }
                         break None;
                     };
@@ -523,6 +516,10 @@ impl<'p> Parked<'p> {
                 }
                 Err(_) => {
                     drop(permit);
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: the queue terminal drops a member the breaker refused while every member is exhausted"
+                    )]
                     self.waiting.retain(|d| *d != destination);
                 }
             }

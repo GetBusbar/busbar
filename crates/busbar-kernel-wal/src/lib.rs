@@ -51,7 +51,7 @@ pub use recover::{
 };
 pub use segment::{Segment, SegmentError, GROWTH_STEP_BYTES, SEGMENT_BYTES};
 pub use ship::{NullShipper, ShipError, Shipper};
-pub use wal::{BatchAck, Clock, Mode, OpenError, Wal};
+pub use wal::{BatchAck, Clock, Forgotten, Mode, OpenError, Wal};
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]
