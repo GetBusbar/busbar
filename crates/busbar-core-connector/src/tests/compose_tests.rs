@@ -593,6 +593,84 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
     });
 }
 
+/// A DIALLED REFUSAL OF A KIND THE CONNECTOR DOES NOT EXPLAIN keeps the security stack's words
+/// exactly (design mcp-issuer §4): the far end's certificate chains to a trusted root but names
+/// another host, and the cause is rustls's own `NotValidForName` text, with nothing added.
+#[test]
+fn a_dialled_refusal_of_an_unexplained_kind_is_the_stacks_words_exactly() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
+    crate::tls::install_crypto_provider();
+    let (ca, leaf, key) = localhost_cert();
+    worker().block_on(async move {
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = l.accept().await {
+                let _ = acceptor.accept(s).await;
+            }
+        });
+        let config = Arc::new(
+            crate::tls::client::build_client_config(
+                &busbar_contract::transport::trust::EgressTrust {
+                    extra_anchors: vec![ca],
+                    ..Default::default()
+                },
+            )
+            .expect("the private CA is trusted"),
+        );
+        let stack = tokio_rustls::TlsConnector::from(Arc::clone(&config))
+            .connect(
+                rustls_pki_types::ServerName::try_from("elsewhere.test").unwrap(),
+                tokio::net::TcpStream::connect(&far).await.unwrap(),
+            )
+            .await
+            .expect_err("the certificate names localhost, not elsewhere.test");
+        let stack = stack
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<rustls::Error>())
+            .expect("the stack's own error")
+            .clone();
+        assert!(
+            matches!(
+                stack,
+                rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::NotValidForNameContext { .. }
+                )
+            ),
+            "{stack:?}"
+        );
+
+        let door = Arc::new(TestDoor::new(
+            "sec",
+            &["sec"],
+            &[],
+            Knobs {
+                secure_name: Some("elsewhere.test"),
+                ..Knobs::default()
+            },
+        ));
+        let mut d = dial(&far);
+        d.tls = Some(config);
+        let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
+        assert!(matches!(next(&mut c).await, Err(Failure::Refused(_))));
+        assert_eq!(
+            c.cause(),
+            Some(&ConnCause {
+                stage: CAUSE_SECURITY,
+                text: stack.to_string()
+            })
+        );
+    });
+}
+
 /// The connection's own layer, STARTTLS response injection: a raw
 #[test]
 fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fails() {

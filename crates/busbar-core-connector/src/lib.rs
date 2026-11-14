@@ -4415,6 +4415,10 @@ mod settled_dial_error_tests;
 mod trust_from_tests;
 
 #[cfg(test)]
+#[path = "tests/explain_tests.rs"]
+mod explain_tests;
+
+#[cfg(test)]
 #[path = "tests/upgrade_tests.rs"]
 mod upgrade_tests;
 
