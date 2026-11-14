@@ -246,3 +246,30 @@ async fn a_stale_unit_is_still_refused_foreign_at_hand_in() {
     });
     assert_eq!(refused, Err(UNIT_FOREIGN));
 }
+
+#[tokio::test]
+async fn an_admitted_hand_in_scans_for_stripped_credentials_once() {
+    let seen = Arc::default();
+    let reader = probe("reader", AuthPoints::HEAD_BODY, Verified::Pass, &seen);
+    let head = probe("head", AuthPoints::HEAD, Verified::Pass, &seen);
+    let body = probe(
+        "body",
+        AuthPoints::HEAD_BODY,
+        identity("body", "credential"),
+        &seen,
+    );
+    let k = mixed(reader, &[head, body]);
+    let answer = two_points(&k, &seen).await;
+    assert_eq!(answer.flow, FLOW_CONTINUE);
+    let handed = signed_head().stripped(&answer.strips).unwrap();
+
+    let scope = Scope::open();
+    let (flow, _) = k.hand_in(MESSAGES, MESSAGES, answer.unit, handed);
+
+    assert_eq!(flow, FLOW_CONTINUE, "today's verdict is unchanged");
+    assert_eq!(
+        scope.count(Derive::StripScan),
+        1,
+        "core strips its own original once; the handed head equal to it carries nothing stripped"
+    );
+}
