@@ -88,6 +88,7 @@ crate-type = ["cdylib"]
 ring = { workspace = true }
 arc-swap = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
+time = { workspace = true, features = ["macros", "parsing"] }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 libloading = { workspace = true }

@@ -23,23 +23,9 @@ use busbar_kernel::config::{SecretRef, TlsCfg};
 #[path = "../src/tests/support.rs"]
 mod support;
 
-/// The calendar date `days` from today (UTC), as the certificate's validity wants it.
-fn days_from_now(days: i64) -> (i32, u8, u8) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock is after 1970")
-        .as_secs();
-
-    let z = i64::try_from(now / 86_400).expect("a day count") + days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = u8::try_from(doy - (153 * mp + 2) / 5 + 1).expect("a day");
-    let m = u8::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).expect("a month");
-    let y = i32::try_from(yoe + era * 400 + i64::from(m <= 2)).expect("a year");
-    (y, m, d)
+/// The instant `days` from now (UTC), as the certificate's validity wants it.
+fn days_from_now(days: i64) -> time::OffsetDateTime {
+    time::OffsetDateTime::now_utc() + time::Duration::days(days)
 }
 
 fn main() {
@@ -53,9 +39,8 @@ fn main() {
 
     let mut params =
         rcgen::CertificateParams::new(vec!["localhost".to_owned()]).expect("cert params");
-    let ((y0, m0, d0), (y1, m1, d1)) = (days_from_now(-1), days_from_now(89));
-    params.not_before = rcgen::date_time_ymd(y0, m0, d0);
-    params.not_after = rcgen::date_time_ymd(y1, m1, d1);
+    params.not_before = days_from_now(-1);
+    params.not_after = days_from_now(89);
     params.crl_distribution_points = vec![rcgen::CrlDistributionPoint {
         uris: vec!["http://localhost/subject.crl".to_owned()],
     }];

@@ -104,6 +104,9 @@ smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
 sonic-rs = "0.5"
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
+# Calendar dates and RFC 3339 (busbar-contract `civil`, release-document times); already linked
+# through rcgen and x509-parser. Members pick their own features.
+time = { version = "0.3.49", default-features = false }
 # No `xattr`: the loader unpacks in memory.
 tar = { version = "0.4", default-features = false }
 # Called directly (busbar-kernel `mallctl`); default features off adds nothing tikv-jemallocator
