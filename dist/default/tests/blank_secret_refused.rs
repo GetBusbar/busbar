@@ -84,9 +84,12 @@ fn assert_blank_refusal(output: &str, module: &str, value: &str) {
         !output.contains("is unset") && !output.contains("after trimming"),
         "refused as blank, not by another check: {output}"
     );
-    let shown = value.trim_matches(' ');
-    if !shown.is_empty() {
-        assert!(!output.contains(shown), "no value bytes: {output}");
+    for echoed in [
+        format!("{value:?}"),
+        format!("'{value}'"),
+        format!("`{value}`"),
+    ] {
+        assert!(!output.contains(&echoed), "no value echoed: {output}");
     }
 }
 
@@ -99,7 +102,7 @@ fn validate_refuses_a_whitespace_only_env_secret() {
         !ok,
         "a whitespace-only env secret must not validate: {output}"
     );
-    assert_blank_refusal(&output, "env", "   ");
+    assert_blank_refusal(&output, "busbar-secret-env", "   ");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -115,7 +118,7 @@ fn validate_refuses_a_blank_file_secret() {
             !ok,
             "a blank file secret ({content:?}) must not validate: {output}"
         );
-        assert_blank_refusal(&output, "file", content);
+        assert_blank_refusal(&output, "busbar-secret-file", content);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -163,7 +166,9 @@ fn boot_refuses_a_whitespace_only_env_secret_before_binding() {
         "nothing binds: {all}"
     );
     assert!(
-        stderr.contains("provider 'mock' api_key (secret module 'env') did not resolve"),
+        stderr.contains(
+            "provider 'mock' api_key (secret module 'busbar-secret-env') did not resolve"
+        ),
         "names the provider and the module: {stderr}"
     );
     assert!(

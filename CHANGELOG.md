@@ -276,10 +276,21 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   set-but-mis-encoded variable is now named as an encoding problem rather than a missing one. A
   `file:` source that is not a regular file (a directory, a device node, or a fifo that would
   otherwise block until a writer appeared) is refused by name instead of surfacing a bare errno.
-  Credentials resolve byte-for-byte as before and are never trimmed: surrounding whitespace,
-  trailing newlines, a whitespace-only value and non-UTF-8 binary secrets resolve as they did, an
-  empty one is still refused, and a `file:` secret mounted as a symlink (how Kubernetes projects
-  one) still resolves.
+  Credentials with content resolve byte-for-byte, except that text secrets have trailing CR/LF
+  trimmed: surrounding whitespace and non-UTF-8 binary secrets resolve as they did, and a `file:`
+  secret mounted as a symlink (how Kubernetes projects one) still resolves.
+
+- **A blank secret resolved and was used as the credential.** A secret whose value was empty or
+  only whitespace (spaces, tabs, CR/LF, vertical tab, form feed, and Unicode spaces such as NBSP),
+  such as an `env:` variable holding three spaces or a `file:` containing only a newline, resolved
+  and was used as an upstream bearer token, a webhook or HMAC signing key, or an auth secret. The
+  kernel now refuses it fail-closed, from every source (env, file, vault and `kind: secret`
+  plugins), for every reference-resolved setting (secret fields, reference-capable plugin settings
+  and spawn-env secret references), at boot, on refresh or rotation, and in `busbar validate`. The
+  error names the config field and the secret module, never the value. The refusal text for an
+  empty value from vault or a `kind: secret` plugin changes from `... to an EMPTY value; a secret
+  must be non-empty` to `... resolved to an EMPTY or whitespace-only (BLANK) value; a secret must
+  have content`. The admin-token refusal text is unchanged.
 
 - **A plugin's settings schema could hang the packaging tool.** `busbar-plugin-pack`'s `$ref`/`allOf`
   resolver had a cycle guard and no depth bound, and the walk that calls it advances its own depth
