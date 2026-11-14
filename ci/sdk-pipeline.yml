@@ -34,7 +34,7 @@ sdk-generation-and-tests:
                'node --test tests/package-smoke.mjs'],
               ['src', 'openapi.json', 'package.json', 'package-lock.json']),
           'GetBusbar/busbar-go': (
-              'golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437',
+              'golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0',
               ['go generate ./...', 'go build ./...', 'go vet ./...', 'go test ./...'],
               ['client.gen.go', 'openapi.json', 'go.mod', 'go.sum']),
           'GetBusbar/busbar-python': (

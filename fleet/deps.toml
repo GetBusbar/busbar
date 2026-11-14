@@ -71,7 +71,7 @@ repos = ["busbar-store-valkey"]
 reason = "TESTS ONLY: the upstream Valkey client the valkey store's live tests verify what landed with, independently of the store (the plugin crate's live tests add the `tls-rustls` feature to verify the store's TLS through the host's connector; tests only). Never in the shipped image: the store speaks RESP itself over the host's connector (busbar-store-valkey#19), and [net-ban] refuses redis in the shipped closure."
 
 [plugin-deps.rusqlite]
-version = "0.41"
+version = "0.42"
 features = ["bundled"]
 repos = ["busbar-store-sqlite"]
 reason = "the SQLite store's engine, with SQLite compiled in (libsqlite3-sys bundled, on the C allow-list below)."
@@ -206,6 +206,6 @@ carriers = []
 [c-deps]
 allow = [
     { crate = "ring", version = "0.17", features = [], reason = "the one crypto backend (accepted, §Libraries)" },
-    { crate = "libsqlite3-sys", version = "=0.39.1", features = ["bundled"], reason = "SQLite compiled in for the sqlite store (SQLite 3.54.1 fixes RUSTSEC-2026-0459, bundled + pinned)" },
+    { crate = "libsqlite3-sys", version = "=0.40.0", features = ["bundled"], reason = "SQLite compiled in for the sqlite store (rusqlite 0.42's line, bundling SQLite 3.54.1, which fixes RUSTSEC-2026-0459; bundled + pinned)" },
     { crate = "libz-sys", version = "=1.1.29", features = ["static"], reason = "zlib compiled in for the mysql store's compression (ARCHITECT 2026-10-01, bundled + pinned)" },
 ]
