@@ -114,7 +114,7 @@ fn a_closed_span_reaches_an_otlp_collector_through_either_door() {
     let tarball = common::plugins::signed(&common::plugins::key(0x5a), manifest, &lib);
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
 
-    if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
+    if !LINKED_TRANSPORTS.iter().any(|(key, ..)| *key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
         });

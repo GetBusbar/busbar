@@ -97,7 +97,7 @@ fn said(out: &Output) -> String {
 }
 
 fn drop_in_wire(dir: &Path) {
-    if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
+    if !LINKED_TRANSPORTS.iter().any(|(key, ..)| *key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
         });
