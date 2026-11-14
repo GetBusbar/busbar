@@ -394,13 +394,6 @@ pub struct CheckoutIn {
     pub _reserved: u32,
 }
 
-/// [`CheckinIn::disposition`]: return the stream to the pool as is.
-pub const CHECKIN_REUSE: u32 = 0;
-/// [`CheckinIn::disposition`]: return it after the plugin kind's reset op.
-pub const CHECKIN_RESET: u32 = 1;
-/// [`CheckinIn::disposition`]: close it; it is not fit for reuse.
-pub const CHECKIN_DROP: u32 = 2;
-
 /// [`service::CHECKIN`]'s `in`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

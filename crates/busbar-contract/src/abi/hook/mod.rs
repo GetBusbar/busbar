@@ -285,24 +285,6 @@ pub struct Ops {
 
 /// One requested/reported signal, in push (insertion) order: a signal bag in fixed layout.
 pub mod signal {
-    /// The model the request asked for.
-    pub const REQUESTED_MODEL: u32 = 0;
-    /// The request's total text size, in characters.
-    pub const REQUEST_TOTAL_CHARS: u32 = 1;
-    /// How many messages the request carries.
-    pub const REQUEST_MESSAGE_COUNT: u32 = 2;
-    /// How many tools the request declares.
-    pub const REQUEST_TOOL_COUNT: u32 = 3;
-    /// The request's system text size, in characters.
-    pub const REQUEST_SYSTEM_CHARS: u32 = 4;
-    /// The candidate's circuit-breaker state.
-    pub const CANDIDATE_BREAKER_STATE: u32 = 5;
-    /// The candidate's error rate.
-    pub const CANDIDATE_ERROR_RATE: u32 = 6;
-    /// The candidate's p95 latency, milliseconds.
-    pub const CANDIDATE_LATENCY_P95_MS: u32 = 7;
-    /// The pool's routing policy.
-    pub const ROUTING_POLICY: u32 = 8;
     /// The response's output tokens.
     pub const RESPONSE_TOKENS_OUT: u32 = 9;
 }
@@ -999,8 +981,6 @@ impl Tail {
 pub mod cancel {
     /// The pending op was aborted before it produced a verdict/response; `on_error` runs as
     pub const ABORTED: u32 = 0;
-    /// The op had already completed when the cancel arrived (a race with the deadline); its
-    pub const RACED_TO_COMPLETION: u32 = 1;
 }
 
 // THE SDK's VIEW OF THE HOOK TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated next to
