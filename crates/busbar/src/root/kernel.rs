@@ -223,12 +223,6 @@ impl RootHistory {
         self.store.get().is_some()
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub fn pending_refusal(&self) -> Option<String> {
-        self.card_store().and_then(|s| s.pending_refusal())
-    }
-
     pub fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
         match self.card_store() {
             Some(_) => {
