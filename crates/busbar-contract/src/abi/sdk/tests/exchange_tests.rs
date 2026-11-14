@@ -1591,3 +1591,80 @@ type Connector<'a> = crate::abi::sdk::conn::Connector<'a, FixtureKind>;
 type Op<'a> = crate::abi::sdk::exchange::Op<'a, FixtureKind>;
 
 type FixtureKind = crate::plugin::markers::PlaneKind;
+
+/// W7: an exchange built and dropped before it reads a reply (a refused dial, a cancelled op, a
+/// send that never got to its read) allocates no 16 KiB read buffer and so wipes none on drop.
+#[test]
+fn an_exchange_that_never_reads_allocates_no_read_buffer() {
+    let request = Request {
+        method: b"POST".to_vec(),
+        target: b"/v1/logs".to_vec(),
+        fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+        body: b"{}".to_vec(),
+        timeout_ms: 0,
+    };
+    let probe = crate::alloc_counter::AllocationLifetimeProbe::start_exact_size(READ_CHUNK);
+    let exchange = Exchange::request(request).expect("a valid request");
+    drop(exchange);
+    assert_eq!(
+        probe.finish().allocations,
+        0,
+        "no read buffer before the first read"
+    );
+}
+
+/// W7: a prepared head frames the same bytes, sealed lines and spans as `request_sealed` for the
+/// same request, with sealed fields first, between and after the plain ones.
+#[test]
+fn a_prepared_head_frames_what_request_sealed_frames() {
+    use crate::abi::sdk::cred::Cred;
+    let key = || Cred::captured(zeroize::Zeroizing::new(b"tok-1".to_vec()));
+    for at in [0usize, 1, 2, 9] {
+        let direct = Exchange::request_sealed(
+            post(),
+            vec![
+                (at, b"x-api-key".to_vec(), key().field()),
+                (0, b"authorization".to_vec(), key().field()),
+            ],
+        )
+        .expect("a valid request");
+        let prepared = PreparedRequest::new(
+            post(),
+            vec![(at, b"x-api-key".to_vec()), (0, b"authorization".to_vec())],
+        )
+        .expect("a valid head");
+        let sent = Exchange::prepared(
+            &prepared,
+            vec![key().field(), key().field()],
+            post().body.clone(),
+        )
+        .expect("a valid send");
+        assert_eq!(sent.head_bytes(), direct.head_bytes(), "sealed at {at}");
+        assert_eq!(
+            sent.framed_fields(),
+            direct.framed_fields(),
+            "sealed at {at}"
+        );
+    }
+}
+
+/// W7: a prepared head refuses what `request_sealed` refuses, once, when it is prepared; a send
+/// refuses a sealed value that would split the head, and a count that does not match.
+#[test]
+fn a_prepared_head_refuses_at_preparation() {
+    use crate::abi::sdk::cred::Cred;
+    let mut split = post();
+    split.fields = vec![(b"x-a".to_vec(), b"1\r\nx-b: 2".to_vec())];
+    assert!(matches!(
+        PreparedRequest::new(split, Vec::new()),
+        Err(ConnFailure::Refused(t)) if t.contains("line break")
+    ));
+    let prepared =
+        PreparedRequest::new(post(), vec![(0, b"x-api-key".to_vec())]).expect("a valid head");
+    let bad = Cred::captured(zeroize::Zeroizing::new(b"tok\r\nx".to_vec()));
+    assert!(matches!(
+        Exchange::prepared(&prepared, vec![bad.field()], Vec::new()),
+        Err(ConnFailure::Refused(t)) if t.contains("x-api-key") && !t.contains("tok")
+    ));
+    assert!(Exchange::prepared(&prepared, Vec::new(), Vec::new()).is_err());
+}
