@@ -372,11 +372,10 @@ impl BreakerCell {
             let jitter_range = (duration / 10).max(1);
             let time_seed = now_time as u128;
             let cell_id = self as *const _ as *const () as usize as u128;
-            let mut seed = fnv::FnvHasher::default();
-            for part in [time_seed, cell_id, streak as u128] {
-                std::hash::Hasher::write(&mut seed, &part.to_le_bytes());
-            }
-            let jitter_seed = u128::from(std::hash::Hasher::finish(&seed));
+            let jitter_seed = u128::from(std::hash::BuildHasher::hash_one(
+                &foldhash::fast::FixedState::default(),
+                (time_seed, cell_id, streak),
+            ));
 
             let span = 2 * jitter_range as u128 + 1;
             let unbiased = (jitter_seed % span) as i64;

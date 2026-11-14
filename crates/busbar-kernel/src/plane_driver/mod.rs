@@ -700,7 +700,7 @@ pub struct Decoded {
 
 #[must_use]
 pub fn sticky_hash(key: &[u8]) -> u64 {
-    crate::store::fnv1a_bytes(key)
+    crate::store::key_hash_bytes(key)
 }
 
 pub trait DriverSteps {
