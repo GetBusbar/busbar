@@ -155,6 +155,7 @@ impl EntryId {
             .map(Self::parse_hex)
     }
 
+    #[cfg(test)]
     /// The separator between an id and the model name in a pseudo-model key.
     pub const SEPARATOR: char = '\u{1f}';
 
@@ -176,6 +177,7 @@ impl EntryId {
         unhex(text).map(EntryId)
     }
 
+    #[cfg(test)]
     /// Split a pseudo-model key into its entry id and the model name after the separator (empty
     pub fn split_pseudo(key: &str) -> Option<(EntryId, &str)> {
         let (id, model) = key.split_once(Self::SEPARATOR)?;
@@ -548,6 +550,7 @@ impl History {
             .map(|entry| (entry.id(), &entry.card))
     }
 
+    #[cfg(test)]
     /// The card of the entry whose id is `id`, voided or not: a count posted under an entry keeps
     pub fn card_of(&self, id: &EntryId) -> Option<&RateCard> {
         let key = self.index.ids.get(id)?;

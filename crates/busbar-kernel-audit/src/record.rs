@@ -5,6 +5,9 @@
 
 use busbar_contract::caps::{Abort, Origin, Outcome, ReasonCode, StepName, UnitKey};
 
+#[cfg(any(test, feature = "test-support"))]
+mod test_support;
+
 /// Whose activity this is.
 ///
 /// A resolved principal appears as its principal IDENTIFIER — the key id the governance store
@@ -417,11 +420,6 @@ impl AuditChain {
     #[must_use]
     pub fn node(&self) -> u64 {
         self.node
-    }
-
-    /// Which key this chain signs with, by identifier. `None` on a node that seals unsigned.
-    pub fn signing_key_id(&self) -> Option<&str> {
-        self.signer.as_ref().map(|k| k.key_id())
     }
 
     /// The public half of the key this chain signs with, for the key-set read.

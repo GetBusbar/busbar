@@ -198,24 +198,9 @@ impl LedgerEntry {
         self
     }
 
-    /// Add one class's count from a whole-unit integer — the shape both books hold today.
-    pub fn with_whole(mut self, class: impl Into<String>, count: u64) -> LedgerEntry {
-        self.counts.insert(
-            class.into(),
-            Count::from_micros(i128::from(count) * MONEY_SCALE_FACTOR),
-        );
-        self
-    }
-
     /// Set the number of flat fees this row carries, from a whole-unit request count.
     pub fn with_fee_count(mut self, fee_count: u64) -> LedgerEntry {
         self.fee_count = Count::from_micros(i128::from(fee_count) * MONEY_SCALE_FACTOR);
-        self
-    }
-
-    /// Set the tier multiplier in basis points.
-    pub fn with_tier(mut self, tier_bp: u32) -> LedgerEntry {
-        self.tier_bp = tier_bp;
         self
     }
 }

@@ -11,6 +11,10 @@ license = "Apache-2.0"
 name = "busbar_kernel_egress"
 path = "src/lib.rs"
 
+[features]
+# Dev-dependencies only; never a shipped build.
+test-support = []
+
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }

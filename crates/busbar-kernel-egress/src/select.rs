@@ -12,6 +12,9 @@ use busbar_contract::caps::{Pass, Route};
 use crate::pool::Member;
 use crate::ports::{Admit, Breaker, Capacity, DestinationId, Permit, Unavailable};
 
+#[cfg(any(test, feature = "test-support"))]
+mod test_support;
+
 /// The request's own state across the whole walk: the deadline, everything it has already tried,
 /// the pools it has already been through, and why the last pick found nothing.
 #[derive(Debug, Clone)]
@@ -62,12 +65,6 @@ impl RequestCtx {
     #[must_use]
     pub fn expired(&self, now_secs: u64) -> bool {
         now_secs >= self.deadline_secs
-    }
-
-    /// How many whole seconds are left of the walk's deadline.
-    #[must_use]
-    pub fn remaining_secs(&self, now_secs: u64) -> u64 {
-        self.deadline_secs.saturating_sub(now_secs)
     }
 
     /// How many milliseconds are left of the walk's deadline.
@@ -226,12 +223,6 @@ impl<'a> ProbeGuard<'a> {
     pub fn take_epoch(&mut self) -> u64 {
         self.armed = false;
         self.epoch
-    }
-
-    /// Whether the guard would still release on drop.
-    #[must_use]
-    pub fn is_armed(&self) -> bool {
-        self.armed
     }
 }
 
