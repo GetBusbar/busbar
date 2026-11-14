@@ -37,6 +37,8 @@ crc32fast = "1"
 dimpl = { version = "=0.7.4", default-features = false }
 # 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# FAST-MAPS: the fast map hasher (already locked through hashbrown); `std` gives the HashMap aliases.
+foldhash = "0.2"
 futures = "0.3"
 hex = "0.4.3"
 http = "1"
