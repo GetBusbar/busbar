@@ -5467,7 +5467,7 @@ BB_ASSERT(sizeof(bb_plane_ProjectIn) == 240, "bb_plane_ProjectIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ProjectIn) == 8, "bb_plane_ProjectIn: alignment");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, head) == 0, "bb_plane_ProjectIn.head: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, claim) == 96, "bb_plane_ProjectIn.claim: offset");
-BB_ASSERT(offsetof(bb_plane_ProjectIn, _reserved) == 100, "bb_plane_ProjectIn._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_ProjectIn, flags) == 100, "bb_plane_ProjectIn.flags: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, target) == 104, "bb_plane_ProjectIn.target: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, fields) == 120, "bb_plane_ProjectIn.fields: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, fields_len) == 128, "bb_plane_ProjectIn.fields_len: offset");
