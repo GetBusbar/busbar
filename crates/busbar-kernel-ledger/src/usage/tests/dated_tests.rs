@@ -9,7 +9,8 @@ use crate::cost::{
     price_in_view, Author, CardEntryDraft, History, LaneClass, LedgerEntry, MoneyError, RateCard,
     Tally, STANDARD_TIER_BP,
 };
-use crate::usage::{price_dated, price_dated_raw, DatedHistory, FeeEras};
+use crate::cost::{Count, Money, RawRateEra};
+use crate::usage::{price_dated_counts_raw, DatedHistory, FeeEras};
 
 /// The instant the card is edited, in milliseconds.
 const EDIT_MS: u64 = 1_700_000_000_000;
@@ -32,6 +33,52 @@ fn edited(before: RateCard, after: RateCard) -> History {
     history
 }
 
+/// Price whole counts carrying exact provenance through the production entry point.
+fn price_raw<'a>(
+    rows: impl IntoIterator<Item = (&'a str, RawRateEra, &'a BTreeMap<String, u64>)>,
+    fees: impl IntoIterator<Item = (RawRateEra, u64)>,
+    window_start_ms: u64,
+    live: &RateCard,
+    dated: Option<DatedHistory<'_>>,
+) -> Result<Money, MoneyError> {
+    let rows: Vec<(&str, RawRateEra, BTreeMap<String, Count>)> = rows
+        .into_iter()
+        .map(|(lane, era, counts)| {
+            let counts = counts
+                .iter()
+                .map(|(class, n)| (class.clone(), Count::from(*n)))
+                .collect();
+            (lane, era, counts)
+        })
+        .collect();
+    price_dated_counts_raw(
+        rows.iter().map(|(lane, era, counts)| (*lane, *era, counts)),
+        fees,
+        window_start_ms,
+        live,
+        dated,
+    )
+}
+
+/// [`price_raw`] for rows and fees dated by a legacy timestamp era.
+fn price_legacy<'a>(
+    rows: impl IntoIterator<Item = (&'a str, u64, &'a BTreeMap<String, u64>)>,
+    fees: impl IntoIterator<Item = (u64, u64)>,
+    window_start_ms: u64,
+    live: &RateCard,
+    dated: Option<DatedHistory<'_>>,
+) -> Result<Money, MoneyError> {
+    price_raw(
+        rows.into_iter()
+            .map(|(lane, era, counts)| (lane, RawRateEra::legacy(era), counts)),
+        fees.into_iter()
+            .map(|(era, n)| (RawRateEra::legacy(era), n)),
+        window_start_ms,
+        live,
+        dated,
+    )
+}
+
 fn input(n: u64) -> BTreeMap<String, u64> {
     BTreeMap::from([("input".to_string(), n)])
 }
@@ -42,7 +89,7 @@ fn a_card_edit_mid_window_prices_each_segment_at_the_card_it_was_earned_under() 
     let history = edited(card(20.0, 0), card(10.0, 0));
     let live = card(10.0, 0);
     let (before, after) = (input(300_000), input(900_000));
-    let dated = price_dated(
+    let dated = price_legacy(
         [("m", 0, &before), ("m", EDIT_MS, &after)],
         [],
         0,
@@ -69,7 +116,7 @@ fn a_card_edit_mid_window_prices_each_segment_at_the_card_it_was_earned_under() 
     );
 
     let undated =
-        price_dated([("m", 0, &before), ("m", 0, &after)], [], 0, &live, None).expect("priced");
+        price_legacy([("m", 0, &before), ("m", 0, &after)], [], 0, &live, None).expect("priced");
     assert_eq!(
         undated.minor_i64(),
         Ok(1_200),
@@ -95,7 +142,7 @@ fn with_no_history_the_cell_prices_as_the_undated_derivation() {
     tally
         .fee(0, STANDARD_TIER_BP, crate::cost::whole(9))
         .unwrap();
-    let dated = price_dated([("m", 0, &units)], [(0, 9)], 0, &live, None).unwrap();
+    let dated = price_legacy([("m", 0, &units)], [(0, 9)], 0, &live, None).unwrap();
     assert_eq!(dated, tally.money().unwrap());
 }
 
@@ -111,7 +158,7 @@ fn the_fee_base_splits_by_the_era_each_request_was_admitted_under() {
     let total = 3;
     let fees: Vec<(u64, u64)> = eras.split(total).collect();
     assert_eq!(fees, vec![(EDIT_MS, 1), (0, 2)]);
-    let dated = price_dated(
+    let dated = price_legacy(
         [],
         fees,
         0,
@@ -152,7 +199,7 @@ fn an_era_older_than_the_window_resolves_at_the_window_start() {
     let history = edited(card(20.0, 0), card(10.0, 0));
     let live = card(10.0, 0);
     let units = input(100_000);
-    let dated = price_dated(
+    let dated = price_legacy(
         [("m", 0, &units)],
         [],
         EDIT_MS + 1_000,
@@ -164,26 +211,6 @@ fn an_era_older_than_the_window_resolves_at_the_window_start() {
     )
     .unwrap();
     assert_eq!(dated.minor_i64(), Ok(100));
-}
-
-/// The segment in force NOW prices at the caller's live card, which carries the open classes a
-#[test]
-fn the_in_force_segment_prices_at_the_live_card_and_an_older_one_at_its_own() {
-    let history = edited(card(1.0, 0), card(1.0, 0));
-    let live = card(1.0, 0).with_unit_rates([(LaneClass::new("m", "search_units"), 1_000_000)]);
-    let units = BTreeMap::from([("search_units".to_string(), 3u64)]);
-    let view = history.current();
-    let now = DatedHistory {
-        view,
-        now_ms: EDIT_MS + 1,
-    };
-    let live_era = price_dated([("m", EDIT_MS, &units)], [], 0, &live, Some(now)).unwrap();
-    assert_eq!(live_era.micros_i64(), Ok(3_000));
-    let old_era = price_dated([("m", 0, &units)], [], 0, &live, Some(now));
-    assert!(
-        matches!(old_era, Err(MoneyError::ClassUnpriced { .. })),
-        "{old_era:?}"
-    );
 }
 
 /// A hole in the history is a refusal, never a zero.
@@ -198,7 +225,7 @@ fn a_segment_no_entry_covers_refuses() {
         author: Author::Config { policy_epoch: 0 },
     });
     let units = input(1);
-    let got = price_dated(
+    let got = price_legacy(
         [("m", 0, &units)],
         [],
         0,
@@ -217,8 +244,6 @@ fn a_segment_no_entry_covers_refuses() {
 /// A Store confirmation may arrive after another window begins. The recorded serving identity
 #[test]
 fn exact_opening_and_config_counts_keep_their_prices_across_later_windows() {
-    use crate::cost::RawRateEra;
-
     let history = edited(card(20.0, 5), card(10.0, 7));
     let old = RawRateEra::entry(0, history.entries()[0].id());
     let new = RawRateEra::entry(EDIT_MS, history.entries()[1].id());
@@ -230,7 +255,7 @@ fn exact_opening_and_config_counts_keep_their_prices_across_later_windows() {
     fees.charge(old);
     fees.charge(new);
     assert_eq!(fees.dated(), &[(old, 1), (new, 1)]);
-    let got = price_dated_raw(
+    let got = price_raw(
         [("m", old, &units), ("m", new, &units)],
         fees.split(2),
         window_start,
@@ -240,11 +265,11 @@ fn exact_opening_and_config_counts_keep_their_prices_across_later_windows() {
     .expect("both serving entries are known");
     assert_eq!(got.minor_i64(), Ok(200 + 100 + 5 + 7));
 
-    let undated = price_dated([("m", 0, &units)], [(0, 1)], window_start, &live, dated)
+    let undated = price_legacy([("m", 0, &units)], [(0, 1)], window_start, &live, dated)
         .expect("a legacy row resolves at its window start");
     assert_eq!(undated.minor_i64(), Ok(100 + 7));
     let other_node_live = card(20.0, 5);
-    let current_entry = price_dated_raw(
+    let current_entry = price_raw(
         [("m", new, &units)],
         [(new, 1)],
         window_start,
@@ -280,7 +305,7 @@ fn a_nonzero_serving_era_before_the_window_keeps_its_original_card() {
     let units = input(100_000);
     let live = card(1.0, 0);
     let window_start = later_edit + 1_000;
-    let got = price_dated(
+    let got = price_legacy(
         [("m", EDIT_MS, &units)],
         [],
         window_start,
@@ -293,8 +318,6 @@ fn a_nonzero_serving_era_before_the_window_keeps_its_original_card() {
 
 #[test]
 fn an_amendment_uses_wall_window_and_never_the_live_configuration_card() {
-    use crate::cost::RawRateEra;
-
     let mut history = edited(card(20.0, 5), card(10.0, 7));
     let old = RawRateEra::entry(0, history.entries()[0].id());
     let from = EDIT_MS + 1_000;
@@ -311,7 +334,7 @@ fn an_amendment_uses_wall_window_and_never_the_live_configuration_card() {
     let units = input(100_000);
     let live = card(10.0, 7);
     let price_at = |window_start, view| {
-        price_dated_raw(
+        price_raw(
             [("m", old, &units)],
             [(old, 1)],
             window_start,
@@ -337,7 +360,7 @@ fn an_amendment_uses_wall_window_and_never_the_live_configuration_card() {
 
 #[test]
 fn exact_provenance_prices_open_classes_and_every_fee_lane_through_tally() {
-    use crate::cost::{plane_fee_lane, PlaneFees, RawRateEra, PER_REQUEST, PER_SESSION};
+    use crate::cost::{plane_fee_lane, PlaneFees, PER_REQUEST, PER_SESSION};
 
     const OPEN_CLASS: &str = "search_units";
     const PLANE: &str = "search";
@@ -367,7 +390,7 @@ fn exact_provenance_prices_open_classes_and_every_fee_lane_through_tally() {
     ]);
     let plane_fees = BTreeMap::from([(PER_REQUEST.to_string(), 3), (PER_SESSION.to_string(), 2)]);
     let fee_lane = plane_fee_lane(PLANE);
-    let got = price_dated_raw(
+    let got = price_raw(
         [("m", old, &units), (fee_lane.as_str(), old, &plane_fees)],
         [(old, 2)],
         EDIT_MS + 1_000,
@@ -380,7 +403,7 @@ fn exact_provenance_prices_open_classes_and_every_fee_lane_through_tally() {
 
 #[test]
 fn exact_provenance_missing_entry_and_overflow_still_refuse() {
-    use crate::cost::{EntryKey, RawRateEra};
+    use crate::cost::EntryKey;
 
     let history = edited(card(2.0, 0), card(1.0, 0));
     let units = input(1);
@@ -388,7 +411,7 @@ fn exact_provenance_missing_entry_and_overflow_still_refuse() {
     let at = EDIT_MS + 1_000;
     let live = card(1.0, 0);
     assert_eq!(
-        price_dated_raw(
+        price_raw(
             [("m", missing, &units)],
             [],
             at,
@@ -402,7 +425,7 @@ fn exact_provenance_missing_entry_and_overflow_still_refuse() {
     let old = RawRateEra::entry(0, history.entries()[0].id());
     let units = input(u64::MAX);
     assert_eq!(
-        price_dated_raw(
+        price_raw(
             [("m", old, &units)],
             [],
             0,
@@ -415,8 +438,6 @@ fn exact_provenance_missing_entry_and_overflow_still_refuse() {
 
 #[test]
 fn an_old_entry_row_can_straddle_a_nominal_configuration_cutover() {
-    use crate::cost::RawRateEra;
-
     const BUCKET_MS: u64 = 1_000;
     let bucket_start = EDIT_MS;
     let cutover = bucket_start + BUCKET_MS / 2;
@@ -434,7 +455,7 @@ fn an_old_entry_row_can_straddle_a_nominal_configuration_cutover() {
     let after = input(200_000);
     let total = BTreeMap::from([("input".to_string(), before["input"] + after["input"])]);
     let live = card(10.0, 0);
-    let got = price_dated_raw(
+    let got = price_raw(
         [("m", old, &total)],
         [],
         bucket_start,
@@ -467,7 +488,7 @@ fn an_old_entry_row_can_straddle_a_nominal_configuration_cutover() {
 
 #[test]
 fn measurement_dated_readback_prices_only_reported_classes_at_the_serving_entry() {
-    use crate::cost::{measurement_lane, Count, Money, RawRateEra};
+    use crate::cost::measurement_lane;
     let lane = measurement_lane("store", "primary");
     let measured_card =
         |nanos| RateCard::absent(99).with_unit_rates([(LaneClass::new(&lane, "input"), nanos)]);

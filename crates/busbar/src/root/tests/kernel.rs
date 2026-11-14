@@ -177,6 +177,35 @@ fn the_card_an_apply_builds_carries_its_configured_fee_at_the_one_scale() {
     );
 }
 
+/// Price whole counts dated by a legacy timestamp era through the production entry point.
+fn price_legacy<'a>(
+    rows: impl IntoIterator<Item = (&'a str, u64, &'a std::collections::BTreeMap<String, u64>)>,
+    fees: impl IntoIterator<Item = (u64, u64)>,
+    window_start_ms: u64,
+    live: &busbar_kernel_ledger::cost::RateCard,
+    dated: Option<busbar_kernel_ledger::usage::DatedHistory<'_>>,
+) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
+    use busbar_kernel_ledger::cost::{Count, RawRateEra};
+    let rows: Vec<(&str, RawRateEra, std::collections::BTreeMap<String, Count>)> = rows
+        .into_iter()
+        .map(|(lane, era, counts)| {
+            let counts = counts
+                .iter()
+                .map(|(class, n)| (class.clone(), Count::from(*n)))
+                .collect();
+            (lane, RawRateEra::legacy(era), counts)
+        })
+        .collect();
+    busbar_kernel_ledger::usage::price_dated_counts_raw(
+        rows.iter().map(|(lane, era, counts)| (*lane, *era, counts)),
+        fees.into_iter()
+            .map(|(era, n)| (RawRateEra::legacy(era), n)),
+        window_start_ms,
+        live,
+        dated,
+    )
+}
+
 #[test]
 fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither() {
     let zero = busbar_contract::billing::RawTierRates {
@@ -205,7 +234,7 @@ fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither(
 
     let earned_before = std::collections::BTreeMap::from([("search_units".to_string(), 1_000_000)]);
     let earned_after = std::collections::BTreeMap::from([("search_units".to_string(), 2_000_000)]);
-    let priced = busbar_kernel_ledger::usage::price_dated(
+    let priced = price_legacy(
         [
             ("rerank", 0, &earned_before),
             ("rerank", 2_000, &earned_after),
@@ -251,7 +280,7 @@ fn a_fee_edit_mid_window_prices_each_era_at_the_plane_fee_in_force() {
     let lane = plane_fee_lane("tp");
     let two = std::collections::BTreeMap::from([(PER_REQUEST.to_string(), 2)]);
     let one = std::collections::BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
-    let priced = busbar_kernel_ledger::usage::price_dated(
+    let priced = price_legacy(
         [(lane.as_str(), 0, &two), (lane.as_str(), 2_000, &one)],
         [],
         0,
