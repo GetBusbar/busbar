@@ -69,6 +69,10 @@ impl Subject for Memory {
     async fn retained(&self) -> u64 {
         conformance::resident_bytes()
     }
+    /// The memory product reads no host clock (`clock.now`): it is opened with no host. Its own
+    /// OS reads (`v4.rs` receipt aging and its dataset clock) are R7's to refuse, and the aging
+    /// goes with STORE-TRANSACTIONS N8.
+    async fn jump(&self, _: std::time::Duration) {}
     /// Allocator and page noise; 1M receipts are about 274 MiB (STORE-TRANSACTIONS §1).
     fn noise(&self) -> u64 {
         32 * 1024 * 1024

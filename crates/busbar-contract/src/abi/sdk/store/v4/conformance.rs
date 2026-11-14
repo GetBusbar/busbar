@@ -7,11 +7,14 @@
 //!
 //! - [`state_does_not_grow_over_commits`]: [`COMMITS`] commits leave the store holding what it
 //!   held after the first [`WARM`].
-//! - [`nothing_changes_after_clock_jump`]: a [`JUMP`] of every clock the store's code reads
-//!   ([`crate::abi::sdk::store::clock`]) changes nothing it holds or answers.
+//! - [`nothing_changes_after_clock_jump`]: a [`JUMP`] of the host clock the store's code reads
+//!   ([`Subject::jump`]) changes nothing it holds or answers.
 //!
 //! The subject counts what the store holds from outside the store's code, so the cases catch the
-//! behaviour in any spelling: Rust, SQL or Lua.
+//! behaviour in any spelling: Rust, SQL or Lua. A store takes time only from the host's clock
+//! (`clock.now`, CLOCK-INSTANT-BRIDGE; an OS read is R7's to refuse), so the subject's jump of
+//! that clock reaches every clock its code reads. A server's own clock (SQL `now()`, a Valkey
+//! `TIME`) is the server's and out of reach.
 //!
 //! ```ignore
 //! #[test]
@@ -23,7 +26,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::abi::sdk::store::clock;
 use crate::persistence::{
     control, Address, AttemptId, Candidate, Decision, ExpectedValue, Mutation, PersistenceBackend,
     Predicate, PreparedCandidate, Read, ReadResult, CANDIDATE_VERSION,
@@ -62,6 +64,9 @@ pub trait Subject: Send + Sync {
     /// rows or keys across every table it owns (data, control, receipts, slots), or resident
     /// bytes ([`resident_bytes`]) for a store that lives in this process.
     async fn retained(&self) -> u64;
+    /// Move the host clock this store's code reads (`clock.now`, wall and monotonic) forward by
+    /// `by`. A store whose code reads no host clock has nothing to move.
+    async fn jump(&self, by: Duration);
     /// How far `retained` moves between two observations of equal content (allocator or page
     /// noise). A row count has none.
     fn noise(&self) -> u64 {
@@ -116,12 +121,7 @@ pub async fn nothing_changes_after_clock_jump<S: Subject + ?Sized>(subject: &S) 
     let held = values(CASE, &*store).await;
     let retained = subject.retained().await;
 
-    let before = clock::monotonic();
-    clock::jump(JUMP);
-    assert!(
-        clock::monotonic().saturating_duration_since(before) >= JUMP,
-        "{CASE}: the SDK store clock did not jump"
-    );
+    subject.jump(JUMP).await;
     if let Err(failure) = store.clock(store.info().dataset).await {
         panic!("{CASE}: the clock after the jump answered {failure:?}");
     }

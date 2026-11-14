@@ -3,7 +3,7 @@
 
 //! The LR-118 cases over a store that keeps nothing per commit (passes both) and their two
 //! negative controls: a store that keeps a receipt per commit must fail the growth case, and a
-//! store that sweeps 24 h old receipts by the SDK clock must fail the clock case.
+//! store that sweeps 24 h old receipts by its host clock must fail the clock case.
 
 use super::*;
 use crate::persistence::{
@@ -11,8 +11,8 @@ use crate::persistence::{
 };
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Keeps {
@@ -20,20 +20,23 @@ enum Keeps {
     Nothing,
     /// A receipt per commit, never collected.
     Receipts,
-    /// A receipt per commit, swept once 24 h old by the SDK store clock.
+    /// A receipt per commit, swept once 24 h old by the host clock.
     SweptReceipts,
 }
 
 struct Mock {
     keeps: Keeps,
+    /// The host clock this store reads, in seconds; the subject's jump moves it.
+    host_secs: AtomicU64,
     rows: Mutex<BTreeMap<Address, Secret<Vec<u8>>>>,
-    receipts: Mutex<Vec<Instant>>,
+    receipts: Mutex<Vec<u64>>,
 }
 
 impl Mock {
     fn new(keeps: Keeps) -> Arc<Self> {
         Arc::new(Self {
             keeps,
+            host_secs: AtomicU64::new(1),
             rows: Mutex::new(BTreeMap::new()),
             receipts: Mutex::new(Vec::new()),
         })
@@ -56,7 +59,7 @@ impl PersistenceBackend for Mock {
             Ok(ReadResult::Values {
                 observed_at: ClockObservation {
                     authority: [3; 16],
-                    unix_seconds: 1,
+                    unix_seconds: self.host_secs.load(Ordering::Relaxed),
                 },
                 values: request
                     .addresses
@@ -77,11 +80,10 @@ impl PersistenceBackend for Mock {
                     rows.insert(address.clone(), value.clone());
                 }
             }
-            let now = clock::monotonic();
+            let now = self.host_secs.load(Ordering::Relaxed);
             let mut receipts = self.receipts.lock().unwrap();
             if self.keeps == Keeps::SweptReceipts {
-                let day = Duration::from_secs(24 * 60 * 60);
-                receipts.retain(|at| now.saturating_duration_since(*at) < day);
+                receipts.retain(|at| now.saturating_sub(*at) < 24 * 60 * 60);
             }
             if self.keeps != Keeps::Nothing {
                 receipts.push(now);
@@ -93,7 +95,7 @@ impl PersistenceBackend for Mock {
         Box::pin(async {
             Ok(ClockObservation {
                 authority: [3; 16],
-                unix_seconds: 1,
+                unix_seconds: self.host_secs.load(Ordering::Relaxed),
             })
         })
     }
@@ -110,6 +112,9 @@ impl Subject for Counted {
         let rows = self.0.rows.lock().unwrap().len();
         let receipts = self.0.receipts.lock().unwrap().len();
         u64::try_from(rows + receipts).unwrap()
+    }
+    async fn jump(&self, by: Duration) {
+        self.0.host_secs.fetch_add(by.as_secs(), Ordering::Relaxed);
     }
 }
 
