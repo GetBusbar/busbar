@@ -285,7 +285,7 @@
       "alias": "a2a",
       "image": "libbusbar_plane_a2a_plugin.so",
       "declares": "plane-a2a/declares.json",
-      "lock_sha256": "aaae95b00d63f6341b0261459b1765d5da286c9dfeef4d11ddb943f9710d1fb3"
+      "lock_sha256": "ec3a3fa64293566b931d3f8ece583cf68a212fa006a0bc8b9c145ca0f101e886"
     },
     {
       "repo": "busbar-plane-decisions",
