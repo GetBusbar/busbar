@@ -44,15 +44,12 @@ busbar-default::bin/busbar root::door_steps::tests::kernel_sections_preserve_num
 busbar-default::bin/busbar root::door_steps::tests::kernel_sections_refuse_unrepresentable_provider_numbers_before_application	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::inbound_tests::close_tests::retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_lock	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::linked::tests::the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::listener::framed::empty_response_tests::bodyful_rendered_refusal_states_its_length	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::registry::tests::a_linked_transport_row_logs_to_its_own_plugin_log_file	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::money_tests::datagram_opening_tests::a_host_head_wait_timeout_retires_real_custody_and_a_ready_plane_response_transfers_it	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::money_tests::datagram_opening_tests::abandoning_an_unjoined_opening_drops_its_pairing_outside_the_state_mutex	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::money_tests::datagram_opening_tests::abandonment_during_a_join_retires_the_late_pair_without_holding_the_state_lock	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::money_tests::datagram_opening_tests::dropping_an_admitted_datagram_opener_before_response_transfer_ends_its_session	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::money_tests::datagram_opening_tests::dropping_the_datagram_opener_before_admission_retires_its_opening	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::serve::money_tests::neutral_ingress_tests::inbound_audit::pre_flight_refusal_render_has_no_trailing_refuse	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::serve::money_tests::neutral_ingress_tests::inbound_audit::unmetered_completion_states_its_length	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_a2a_door::a_submission_whose_task_the_store_refuses_answers_the_engines_503	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_a2a_door::a2a_actual_parity::actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_a2a_door::each_registration_presents_its_own_certificate_and_not_another_registrations	CDT-KNOWN-RED	stable
