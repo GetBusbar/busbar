@@ -290,7 +290,7 @@ pub fn enter_door(door_fn: RawDoorFn) -> *const Door {
 
 pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
-    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
+    let lib = crate::stage::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` outlives every use of it.
     let door = match unsafe { lib.get::<RawDoorFn>(DOOR_SYMBOL).map(|s| *s) } {
         Ok(door) => door,
@@ -306,7 +306,7 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
 
 pub fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
-    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
+    let lib = crate::stage::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` outlives every use of it.
     let door = match unsafe { lib.get::<RawDoorFn>(DOOR_SYMBOL).map(|s| *s) } {
         Ok(door) => door,
@@ -659,7 +659,7 @@ impl Drop for Lib {
         let staged = self.1.take();
         if let Some(lib) = self.0.take() {
             reap(Box::new(move || {
-                crate::dlclose_on_worker(lib);
+                crate::stage::dlclose_on_worker(lib);
                 drop(staged);
             }));
         }
@@ -736,7 +736,7 @@ pub fn load_dropped<K: Kind>(
 ) -> Result<Plugin<K>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
     check_facts::<K>(stated)?;
-    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
+    let lib = crate::stage::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     bind_library::<K>(Lib(Some(lib), None), stated, bind)
 }
 

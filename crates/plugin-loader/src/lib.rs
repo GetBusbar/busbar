@@ -3,7 +3,6 @@
 
 #![deny(unsafe_code)]
 
-use libloading::Library;
 use std::path::Path;
 
 pub mod auth_axis;
@@ -86,7 +85,7 @@ pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry, LinkedEntry,
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
-pub use stage::{install_native_load_guard, sweep_dead_staging, NativeLoadGuard};
+pub use stage::{install_native_load_guard, keep_door, sweep_dead_staging, NativeLoadGuard};
 
 /// Run plugin lifecycle work synchronously on the loader's permanent worker pool.
 ///
@@ -124,32 +123,9 @@ pub fn intern_name(name: &str) -> &'static str {
     leaked
 }
 
-#[allow(unsafe_code)]
-pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
-    // SAFETY (unchanged from the direct call this replaces): loading an operator-placed library runs
-    // its init code, which is the same trust as compiling it in. Callers apply the trust gate first.
-    match ffi_thread::on_plugin_thread(|| {
-        ffi_thread::debug_assert_permanent("dlopen");
-        unsafe { Library::new(path) }
-    }) {
-        Ok(r) => r.map_err(|e| e.to_string()),
-
-        Err(_) => Err("the library's initializer panicked while loading".to_string()),
-    }
-}
-
-pub(crate) fn dlclose_on_worker(lib: Library) {
-    #[cfg(test)]
-    UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    let _ = ffi_thread::on_plugin_thread(move || {
-        ffi_thread::debug_assert_permanent("dlclose");
-        drop(lib);
-    });
-}
-
 #[cfg(test)]
 thread_local! {
-    /// TEST-ONLY: how many library unloads THIS THREAD has routed through [`dlclose_on_worker`]. An
+    /// TEST-ONLY: how many library unloads THIS THREAD has routed through [`stage::dlclose_on_worker`]. An
     /// unload that happens by an implicit field/local drop instead runs the image's `.fini_array` on
     /// whatever thread dropped it, and a caller thread that later retires is the crash `ffi_thread`
     /// documents — a property no assertion on a returned value can see. Counting the routed unloads
