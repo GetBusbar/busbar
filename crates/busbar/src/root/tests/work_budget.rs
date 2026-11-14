@@ -5,7 +5,8 @@
 //!
 //! One openai -> openai request, buffered and streamed, through the real node path: the linked
 //! LLM plane, the native store plugin behind the loader, and a fake upstream. Counts the work it
-//! does, not how long it takes, and fails when any count is above `perf/work-budget.toml`.
+//! does, not how long it takes, and fails when any count is above `perf/work-budget.toml`. An item
+//! with no entry there is measured and printed (`WORK-COUNT section=<s> <item>=<n>`), not enforced.
 //!
 //! Counted: heap allocations (the test build's counting global allocator), plugin crossings (at
 //! the loader boundary, `busbar_contract::work_count::Work::Crossing`, so the gate keeps working
@@ -24,11 +25,23 @@ const WARM: usize = 1;
 /// Requests counted; each count is the lowest of these.
 const RUNS: usize = 3;
 
-/// One section of the budget file: `name = number` lines under `[section]`.
-fn budget(section: &str) -> Tally {
+/// The counted items, in the order they are reported, with their names in the budget file.
+const ITEMS: [&str; 3] = ["allocations", "plugin_crossings", "store_round_trips"];
+
+fn item(work: Tally, name: &str) -> u64 {
+    match name {
+        "allocations" => work.allocations,
+        "plugin_crossings" => work.crossings,
+        "store_round_trips" => work.store_round_trips,
+        other => unreachable!("not a counted item: {other}"),
+    }
+}
+
+/// One section of the budget file: `name = number` lines under `[section]`. An item with no line
+/// has no budget yet: it is measured and reported, not enforced.
+fn budget(section: &str) -> [Option<u64>; 3] {
     let mut current = "";
-    let mut out = Tally::default();
-    let mut seen = 0;
+    let mut out = [None; 3];
     for line in BUDGET.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -48,18 +61,17 @@ fn budget(section: &str) -> Tally {
             .trim()
             .parse()
             .unwrap_or_else(|_| panic!("perf/work-budget.toml: `{line}` is not a whole number"));
-        match key.trim() {
-            "allocations" => out.allocations = value,
-            "plugin_crossings" => out.crossings = value,
-            "store_round_trips" => out.store_round_trips = value,
-            other => panic!("perf/work-budget.toml: unknown count `{other}` in [{section}]"),
-        }
-        seen += 1;
+        let at = ITEMS
+            .iter()
+            .position(|name| *name == key.trim())
+            .unwrap_or_else(|| {
+                panic!("perf/work-budget.toml: unknown count `{key}` in [{section}]")
+            });
+        assert!(
+            out[at].replace(value).is_none(),
+            "perf/work-budget.toml: `{key}` named twice in [{section}]"
+        );
     }
-    assert_eq!(
-        seen, 3,
-        "perf/work-budget.toml: [{section}] must name allocations, plugin_crossings and store_round_trips"
-    );
     out
 }
 
@@ -115,42 +127,29 @@ async fn measure(fixture: Fixture) -> Tally {
 
 fn gate(section: &str, fixture: Fixture, measured: Tally) {
     let budget = budget(section);
-    let rows = [
-        ("allocations", measured.allocations, budget.allocations),
-        ("plugin_crossings", measured.crossings, budget.crossings),
-        (
-            "store_round_trips",
-            measured.store_round_trips,
-            budget.store_round_trips,
-        ),
-    ];
-    let report = rows
-        .iter()
-        .map(|(name, got, max)| format!("  {name} = {got} (budget {max})"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    println!("work-budget [{section}] {fixture:?}:\n{report}");
-    let over: Vec<&str> = rows
-        .iter()
-        .filter(|(_, got, max)| got > max)
-        .map(|(name, _, _)| *name)
-        .collect();
+    let mut over = Vec::new();
+    for (name, max) in ITEMS.iter().zip(budget) {
+        let got = item(measured, name);
+        // Fixed, greppable: one line per item, read to write the first budget.
+        println!("WORK-COUNT section={section} {name}={got}");
+        match max {
+            None => println!(
+                "work-budget [{section}] {fixture:?}: {name} has no budget yet; measured, not \
+                 enforced (add `{name} = {got}` to perf/work-budget.toml)"
+            ),
+            Some(max) if got > max => over.push(format!("{name} = {got} (budget {max})")),
+            Some(max) if got < max => println!(
+                "work-budget [{section}] {fixture:?}: {name} = {got} fell below its budget {max}; \
+                 lower perf/work-budget.toml to it in this change (budgets only ratchet down)"
+            ),
+            Some(_) => {}
+        }
+    }
     assert!(
         over.is_empty(),
-        "[{section}] per-request work went UP in {over:?}; remove the work, never raise \
-         perf/work-budget.toml:\n{report}"
+        "[{section}] {fixture:?}: per-request work went UP; remove the work, never raise \
+         perf/work-budget.toml: {over:?}"
     );
-    let under: Vec<&str> = rows
-        .iter()
-        .filter(|(_, got, max)| got < max)
-        .map(|(name, _, _)| *name)
-        .collect();
-    if !under.is_empty() {
-        println!(
-            "work-budget [{section}]: {under:?} fell below budget; lower perf/work-budget.toml to the \
-             measured numbers in this change (budgets only ratchet down)"
-        );
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
