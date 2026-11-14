@@ -83,7 +83,8 @@ fn one() -> usize {
     1
 }
 
-/// A setup step, run in order after boot.
+/// A setup step. `rsa_service_account` steps run first, before boot (the config and env may
+/// need what they save); every other step runs in order after boot.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
@@ -258,8 +259,8 @@ fn m_prefix() -> String {
     "m-".into()
 }
 
-/// Names of the suites and the scenarios each runs.
 impl Scenario {
+    /// The setup steps, parsed.
     pub fn steps(&self) -> Result<Vec<Step>, String> {
         self.setup
             .iter()
@@ -268,6 +269,7 @@ impl Scenario {
     }
 }
 
+/// Names of the suites and the scenarios each runs.
 pub type Suites = BTreeMap<String, Vec<String>>;
 
 pub fn scenarios_dir() -> PathBuf {
@@ -379,8 +381,10 @@ pub fn expand_matrix(m: &LlmMatrix) -> Result<Vec<CaseSpec>, String> {
                         if tools {
                             name.push_str(" tools");
                         }
-                        if pad > 0 {
+                        if pad > 0 && pad.is_multiple_of(1024) {
                             name.push_str(&format!(" {}KiB", pad / 1024));
+                        } else if pad > 0 {
+                            name.push_str(&format!(" {pad}B"));
                         }
                         if m.proto == Proto::H2c {
                             name.push_str(" h2c");

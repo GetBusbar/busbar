@@ -167,7 +167,6 @@ fn ceiling(
         measure: Duration::from_secs_f64(seconds),
         timeout: Duration::from_secs(10),
         h2_streams: 64,
-        sample_every: 0,
     };
     let (out, _) = rt.block_on(driver::run(plan));
     report::DriverCeiling {

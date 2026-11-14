@@ -42,7 +42,7 @@ throughput windows.
 | module | what |
 |---|---|
 | `driver` | HTTP/1.1 keep-alive and h2c clients; closed loop (N in flight) and open loop (fixed rate, latency from the scheduled start, no coordinated omission); warmup; HDR histograms; per-second windows; errors by status |
-| `mock` | one hyper server (h1 + h2c) on its own runtime: the six LLM dialects whole/streamed/tool-call (shapes of the oracle mock that `tests/upgrade` vendors), MCP server, A2A agent (JWS-signed card), OAuth/OIDC IdP token endpoint, Vault KV v2, OTLP and webhook sinks, webrequest sidecar, decisions (jev/nanojev), streams session mint |
+| `mock` | one hyper server (h1 + h2c, plaintext and TLS listeners) on its own runtime: the six LLM dialects whole/streamed/tool-call (shapes of the oracle mock that `tests/upgrade` vendors), MCP server, A2A agent (JWS-signed card), OAuth/OIDC IdP token endpoint, Vault KV v2, OTLP and webhook sinks, webrequest sidecar, decisions (jev/nanojev), streams session mint |
 | `gateway` | boots the binary (work dir, `config.yaml`, `providers.yaml`, `signing.key`, admin token), waits for `/healthz`; the shape of the upgrade harness's `Gateway::boot`, to be replaced by it when that lands |
 | `procstat` | process CPU time and RSS on Linux (`/proc`) and macOS (`proc_pidinfo`) |
 | `scenario` | the data files: `scenarios/*.yaml` (config + setup + cases, or an `llm_matrix`), `scenarios/suites.yaml` |
@@ -73,8 +73,10 @@ llm_matrix:                # generated LLM cases: ingress x egress x stream x pa
 
 ## Known gaps
 
-- Inbound OIDC/JWT (`busbar-auth-oidc`) needs an `https` JWKS; the mock is plaintext, so the auth
-  scenario covers OAuth client credentials and JWT bearer on the egress side instead.
+- Inbound OIDC/JWT (`busbar-auth-oidc`) is not loaded. The mock does serve its far ends over TLS too
+  (`{MOCK_TLS}`, a self-signed leaf pinned by `{MOCK_SPKI}`), but its IdP publishes an empty JWKS
+  and signs no ID tokens, so the auth scenario covers OAuth client credentials and JWT bearer on the
+  egress side instead.
 - `request-log-webhook` only dials `https` public hosts: `export-webhook` (suite `full`) measures the sink on the request path but nothing is delivered to the mock.
 - `stub-plugins` is the core floor (open auth, memory store, no hooks/exports, instant upstream,
   plus `/healthz`): core's neutral stub plane refuses every data op today.

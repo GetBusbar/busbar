@@ -17,7 +17,7 @@
 //! | `/__echo` | a trivial echo (the driver's self-test) |
 //! | `/__hammer/stats` | per-far-end request counters |
 //!
-//! There is no artificial delay unless [`MockConfig::delay`] or [`MockConfig::chunk_interval`]
+//! There is no artificial delay unless [`MockConfig::delay_us`] or [`MockConfig::chunk_interval_us`]
 //! says so. Every body is prepared at start.
 
 pub mod llm;
@@ -64,7 +64,6 @@ impl Default for MockConfig {
 
 /// The far ends the counters distinguish.
 #[derive(Debug, Clone, Copy)]
-#[repr(usize)]
 pub enum Role {
     Llm,
     Mcp,
@@ -80,24 +79,25 @@ pub enum Role {
     Other,
 }
 
-const ROLES: [&str; 12] = [
-    "llm",
-    "mcp",
-    "a2a",
-    "idp",
-    "vault",
-    "otlp",
-    "webhook",
-    "sidecar",
-    "decisions",
-    "streams",
-    "echo",
-    "other",
+/// Every role with its counter name (one table; a role's counter slot is its discriminant).
+const ROLES: [(Role, &str); 12] = [
+    (Role::Llm, "llm"),
+    (Role::Mcp, "mcp"),
+    (Role::A2a, "a2a"),
+    (Role::Idp, "idp"),
+    (Role::Vault, "vault"),
+    (Role::Otlp, "otlp"),
+    (Role::Webhook, "webhook"),
+    (Role::Sidecar, "sidecar"),
+    (Role::Decisions, "decisions"),
+    (Role::Streams, "streams"),
+    (Role::Echo, "echo"),
+    (Role::Other, "other"),
 ];
 
 #[derive(Default)]
 pub struct Stats {
-    counts: [AtomicU64; 12],
+    counts: [AtomicU64; ROLES.len()],
     /// The last request no far end answered (method and path), for diagnosis.
     unknown: std::sync::Mutex<Option<String>>,
 }
@@ -108,8 +108,11 @@ impl Stats {
     }
     pub fn snapshot(&self) -> Value {
         let mut m = serde_json::Map::new();
-        for (i, r) in ROLES.iter().enumerate() {
-            m.insert((*r).into(), json!(self.counts[i].load(Ordering::Relaxed)));
+        for (r, name) in ROLES {
+            m.insert(
+                name.into(),
+                json!(self.counts[r as usize].load(Ordering::Relaxed)),
+            );
         }
         if let Some(u) = self.unknown.lock().unwrap().clone() {
             m.insert("unknown_last".into(), json!(u));

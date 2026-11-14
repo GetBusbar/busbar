@@ -82,9 +82,6 @@ pub struct Plan {
     pub timeout: Duration,
     /// h2c: in-flight streams per connection.
     pub h2_streams: usize,
-    /// Every n-th response body is collected (for the error report); a request with
-    /// `expect_contains` has every body collected and checked.
-    pub sample_every: u64,
 }
 
 impl Plan {
@@ -109,8 +106,6 @@ pub struct Outcome {
     /// Successful completions per one-second window of the measured phase.
     pub windows: Vec<u64>,
     pub measured: Duration,
-    pub bytes_in: u64,
-    pub chunks_in: u64,
     /// Bodies checked against `expect_contains` in the measured window, and those that missed.
     pub body_total: u64,
     pub body_miss: u64,
@@ -125,8 +120,6 @@ impl Outcome {
             errors: BTreeMap::new(),
             windows: vec![0; windows],
             measured: Duration::ZERO,
-            bytes_in: 0,
-            chunks_in: 0,
             body_total: 0,
             body_miss: 0,
         }
@@ -144,8 +137,6 @@ impl Outcome {
                 *slot += u64::from(*w);
             }
         }
-        self.bytes_in += o.bytes_in;
-        self.chunks_in += o.chunks_in;
         self.body_total += o.body_total;
         self.body_miss += o.body_miss;
     }
@@ -170,8 +161,6 @@ struct Local {
     ok: u64,
     errors: BTreeMap<String, u64>,
     windows: Vec<u32>,
-    bytes_in: u64,
-    chunks_in: u64,
     body_total: u64,
     body_miss: u64,
 }
@@ -184,8 +173,6 @@ impl Local {
             ok: 0,
             errors: BTreeMap::new(),
             windows: vec![0; windows],
-            bytes_in: 0,
-            chunks_in: 0,
             body_total: 0,
             body_miss: 0,
         }
@@ -299,8 +286,6 @@ impl Sender {
 struct Exchange {
     status: u16,
     first_byte: Option<Instant>,
-    bytes: u64,
-    chunks: u64,
     body: Option<Vec<u8>>,
 }
 
@@ -328,8 +313,6 @@ async fn exchange(
     let mut out = Exchange {
         status,
         first_byte: None,
-        bytes: 0,
-        chunks: 0,
         // A wrong status keeps its body for the error report.
         body: (collect || status != p.expect_status).then(Vec::new),
     };
@@ -339,8 +322,6 @@ async fn exchange(
             if out.first_byte.is_none() {
                 out.first_byte = Some(Instant::now());
             }
-            out.bytes += d.len() as u64;
-            out.chunks += 1;
             if let Some(b) = out.body.as_mut() {
                 if b.len() < 4 << 20 {
                     b.extend_from_slice(d);
@@ -434,8 +415,6 @@ impl Ctx {
                         .first_byte
                         .record((fb.saturating_duration_since(started)).as_nanos().max(1) as u64);
                 }
-                local.bytes_in += x.bytes;
-                local.chunks_in += x.chunks;
                 let w = (done - ms).as_secs() as usize;
                 if let Some(slot) = local.windows.get_mut(w.min(self.windows - 1)) {
                     *slot += 1;
@@ -476,8 +455,7 @@ async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>) -> Local {
         }
         let seq = ctx.seq.fetch_add(1, Ordering::Relaxed);
         let p = &ctx.reqs[(seq % n) as usize];
-        let collect = p.expect_contains.is_some()
-            || (ctx.plan.sample_every > 0 && seq.is_multiple_of(ctx.plan.sample_every));
+        let collect = p.expect_contains.is_some();
         if sender.is_none() {
             match connect(ctx.plan.addr, ctx.plan.proto).await {
                 Ok(s) => sender = Some(s),

@@ -509,7 +509,6 @@ fn plan(
         measure: Duration::from_secs_f64(measure),
         timeout: Duration::from_secs(30),
         h2_streams: 64,
-        sample_every: 97,
     }
 }
 
