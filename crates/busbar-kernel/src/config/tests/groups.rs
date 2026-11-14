@@ -111,3 +111,66 @@ fn the_four_frozen_metrics_still_parse() {
         assert_eq!(parsed.amount, 7);
     }
 }
+
+/// A minimal valid value for each `LIMIT_KEYS` entry. A key missing here fails the guard below.
+fn minimal_value(key: &str) -> &'static str {
+    match key {
+        "per" => "day",
+        "pool" | "downgrade_to" => "p",
+        "on_exhaust" => "block",
+        "admission" => "exact",
+        "on_exhaustion" => "finish-unit",
+        k if LimitMetric::from_key(k).is_some() => "1",
+        other => panic!("no minimal value for limit key `{other}`; add one"),
+    }
+}
+
+#[test]
+fn limit_tables_agree() {
+    for m in LimitMetric::ALL {
+        assert!(
+            LIMIT_KEYS.contains(&m.as_str()),
+            "metric `{}` is missing from LIMIT_KEYS",
+            m.as_str()
+        );
+    }
+    for key in LIMIT_KEYS {
+        let yaml = format!("{{ {key}: {} }}", minimal_value(key));
+        if let Err(e) = serde_yaml::from_str::<LimitCfg>(&yaml) {
+            let e = e.to_string();
+            assert!(
+                !e.contains("unknown field"),
+                "LIMIT_KEYS lists `{key}` but the parser refuses it as unknown: {e}"
+            );
+        }
+    }
+    let got = refusal("{ requests: 1, per: day, bogus: 1 }");
+    for key in LIMIT_KEYS {
+        assert!(
+            got.contains(&format!("`{key}`")),
+            "BOOT-P29 omits `{key}`: {got}"
+        );
+    }
+}
+
+#[test]
+fn every_metric_is_in_all() {
+    // Exhaustive on purpose (no `_`): a new metric fails to compile here until placed in ALL.
+    fn idx(m: LimitMetric) -> usize {
+        match m {
+            LimitMetric::Requests => 0,
+            LimitMetric::Tokens => 1,
+            LimitMetric::Budget => 2,
+            LimitMetric::Concurrent => 3,
+            LimitMetric::TokensInput => 4,
+            LimitMetric::TokensOutput => 5,
+            LimitMetric::TokensCacheRead => 6,
+            LimitMetric::TokensCacheWrite => 7,
+        }
+    }
+    assert_eq!(LimitMetric::ALL.len(), 8);
+    for m in LimitMetric::ALL {
+        assert_eq!(LimitMetric::ALL[idx(m)], m);
+        assert_eq!(LimitMetric::from_key(m.as_str()), Some(m));
+    }
+}
