@@ -182,6 +182,7 @@ impl DoorPools {
 
     #[must_use]
     pub fn resolve(&self, class: u8, named: Option<&[u8]>) -> Option<Routed> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::EntryResolve);
         let name = std::str::from_utf8(named?).ok()?;
         match class {
             ROUTE_POOL => self
@@ -259,7 +260,7 @@ impl DoorPools {
             return true;
         }
 
-        if class == ROUTE_DIRECT && !self.entries.iter().any(|e| e == name) {
+        if class == ROUTE_DIRECT && !self.has_entry(name) {
             return true;
         }
         let fallback = (class == ROUTE_POOL)
@@ -272,6 +273,12 @@ impl DoorPools {
 }
 
 impl DoorPools {
+    /// Whether `name` is one of this section's entries: a re-scan by name (SP-V1 counts it).
+    fn has_entry(&self, name: &str) -> bool {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::EntryResolve);
+        self.entries.iter().any(|e| e == name)
+    }
+
     #[must_use]
     pub fn granted_to(
         &self,

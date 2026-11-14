@@ -4793,3 +4793,6 @@ fn settings_only_validation_requires_the_auth_declaration_capability() {
 
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(door_steps);
+
+#[path = "door_steps_entry_once.rs"]
+mod entry_once;
