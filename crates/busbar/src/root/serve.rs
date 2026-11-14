@@ -7549,6 +7549,10 @@ impl<C: SessionCaller> CallerEnd for ClosingCaller<C> {
         self.inner.head(status, fields);
     }
 
+    fn head_whole(&self, status: u32, fields: HeadFields, len: usize) {
+        self.inner.head_whole(status, fields, len);
+    }
+
     async fn write(&self, bytes: &[u8]) -> bool {
         tokio::select! {
             biased;
