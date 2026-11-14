@@ -294,7 +294,7 @@ impl GovState {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "config: one accrual names its targets, lane, era, units, clock, mode and commit hook"
+        reason = "each argument is one input of the accrual; bundling them would add a struct per request"
     )]
     pub(super) fn accrue_count_targets<T: CountTarget>(
         &self,
