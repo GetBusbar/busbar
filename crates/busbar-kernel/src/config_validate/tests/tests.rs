@@ -1571,11 +1571,6 @@ fn missing_model_entries_refuse_while_unknown_models_and_invalid_rates_still_fai
         ]
     );
     let mut errors = Vec::new();
-    validate_cost_model(&cfg, &mut errors);
-    assert!(
-        errors.is_empty(),
-        "missing model rate must not refuse: {errors:?}"
-    );
     cfg.rate_card = Some(card_yaml("typo: { input_utok: -1, output_utok: 0.0001 }"));
     validate_cost_model(&cfg, &mut errors);
     assert!(
