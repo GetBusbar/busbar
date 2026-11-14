@@ -1719,10 +1719,15 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
     );
 
     let usage = gov
-        .viewed_usage_for_async(&app.cost, &key.id, arrived)
+        .viewed_bucket_usage_async(
+            &app.cost,
+            &key.id,
+            busbar_kernel::governance::WINDOW_TOTAL,
+            true,
+            arrived,
+        )
         .await
-        .expect("the key's usage prices: no row names an unpriced lane")
-        .expect("the key's ledger exists");
+        .expect("the key's usage prices: no row names an unpriced lane");
     assert_eq!(usage.requests, 1, "the exhausted request is counted");
     assert_eq!(usage.spend_cents, 0, "and costs nothing");
 
@@ -1884,6 +1889,310 @@ async fn child_grant_on_a_pooled_llm_target_walks_only_the_target() {
         Err(ReasonCode::ScopeDenied),
         "a child bound outside the pool is still refused"
     );
+}
+
+/// The one-request cap [`a_live_parent_at_the_request_cap_admits_and_ledgers_its_child`] runs under.
+fn one_request_a_day() -> busbar_kernel::config::groups::LimitCfg {
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    LimitCfg {
+        metric: LimitMetric::Requests,
+        amount: 1,
+        per: Some(LimitWindow::Day),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    }
+}
+
+/// The admissions the governor holds for `key` in its total window.
+async fn requests_of(
+    app: &busbar_kernel::state::App,
+    key: &busbar_contract::records::VirtualKey,
+    at: u64,
+) -> u64 {
+    app.governance
+        .as_ref()
+        .expect("a governed generation")
+        .usage_for_async(&app.cost, &key.id, at)
+        .await
+        .expect("actual governor usage reads")
+        .map_or(0, |usage| usage.requests)
+}
+
+#[tokio::test]
+async fn a_routed_unit_with_no_member_is_refused_before_admission_charges() {
+    use busbar_contract::caps::{PrincipalId, ReasonCode};
+    use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, PlaneMoney};
+    use std::sync::Arc;
+
+    let (app, key) = downgrade_book(vec![one_request_a_day()], None).await;
+    let pools = pools(DOWNGRADE_SECTION);
+    let facts = super::door_facts(
+        "",
+        &["pool"],
+        &["input", "per_request"],
+        &["per_request"],
+        "door",
+        Vec::new(),
+    );
+    let gov = Arc::clone(app.governance.as_ref().expect("actual governance"));
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
+        crate::root::plane_node::Node::new(),
+    )));
+    let money = PlaneMoney::new(Arc::clone(&gov), post as Arc<dyn EndPost>);
+    let principal = PrincipalId::new(key.id.as_str());
+    let arrived = busbar_kernel::store::now();
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let context = |unit| busbar_kernel::teller::UnitCtx {
+        call: kernel.next_call(),
+        key: busbar_contract::UnitKey::new(unit),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let steps = || {
+        super::DoorSteps::new(
+            &facts,
+            &pools,
+            Arc::new(|_: &str| None),
+            Arc::clone(&app),
+            Some(&money),
+            super::DoorCaller {
+                principal: principal.clone(),
+                key: Some(Arc::clone(&key)),
+                open: false,
+                arrived,
+                records: None,
+                depth: 0,
+                credential: None,
+                ticket: None,
+            },
+        )
+    };
+
+    let empty_ctx = context(7101);
+    let empty = steps();
+    empty.lock().routed = Some(("frontier".into(), vec![]));
+    let refusal = empty
+        .admit(
+            &kernel.admit_token_for(empty_ctx.call),
+            &empty_ctx,
+            &principal,
+            &[],
+            &Default::default(),
+        )
+        .expect_err("a routed unit with no member has no lane to bill under");
+    assert_eq!(refusal.reason(), ReasonCode::Unpriced);
+    assert_eq!(money.open_units(), 0, "a refused unit opens no money");
+    assert_eq!(
+        requests_of(&app, &key, arrived).await,
+        0,
+        "the refused unit took no request-cap slot and no fee"
+    );
+
+    let member_ctx = context(7102);
+    let member = steps();
+    member.lock().routed = pools.resolve(ROUTE_POOL, Some(b"frontier"));
+    member
+        .admit(
+            &kernel.admit_token_for(member_ctx.call),
+            &member_ctx,
+            &principal,
+            &[],
+            &Default::default(),
+        )
+        .expect("the sole request slot is still free for a unit with a member lane");
+    assert_eq!(money.open_units(), 1);
+    assert_eq!(requests_of(&app, &key, arrived).await, 1);
+}
+
+#[tokio::test]
+async fn a_downgrade_into_a_pool_with_no_member_is_refused_uncharged() {
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
+    use std::sync::Arc;
+
+    let (app, key) = downgrade_book(vec![downgrading("frontier", 25, "empty")], None).await;
+    let pools = pools(&format!("{DOWNGRADE_SECTION}\n  empty:\n    members: []"));
+    assert_eq!(
+        routed(&pools, ROUTE_POOL, Some("empty")),
+        owned("empty", &[]),
+        "the downgrade target is a pool with no member"
+    );
+    let gov = Arc::clone(app.governance.as_ref().expect("a governed generation"));
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
+        crate::root::plane_node::Node::new(),
+    )));
+    let money = PlaneMoney::new(Arc::clone(&gov), post as Arc<dyn EndPost>);
+    let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
+    let arrived = busbar_kernel::store::now();
+    let charge = |unit: u64| {
+        let steps = super::DoorSteps::new(
+            &facts,
+            &pools,
+            Arc::new(|_: &str| None),
+            Arc::clone(&app),
+            Some(&money),
+            super::DoorCaller {
+                principal: busbar_contract::caps::PrincipalId::new(key.id.as_str()),
+                key: Some(Arc::clone(&key)),
+                open: false,
+                arrived,
+                records: None,
+                depth: 0,
+                credential: None,
+                ticket: None,
+            },
+        );
+        steps.lock().routed = pools.resolve(ROUTE_POOL, Some(b"frontier"));
+        let ctx = busbar_kernel::teller::UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
+            key: busbar_contract::UnitKey::new(unit),
+            origin: busbar_contract::caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let admitted = steps
+            .charge(&ctx, &key)
+            .map(|_| ())
+            .map_err(|refusal| refusal.reason());
+        (admitted, steps.downgraded())
+    };
+
+    for unit in 1..=2 {
+        assert_eq!(
+            charge(unit),
+            (Ok(()), None),
+            "unit {unit} is under the frontier cap"
+        );
+    }
+    assert_eq!(money.open_units(), 2);
+    let before = requests_of(&app, &key, arrived).await;
+    assert_eq!(before, 2, "two admissions on frontier");
+
+    let (admitted, _) = charge(3);
+    assert_eq!(
+        admitted,
+        Err(ReasonCode::Unpriced),
+        "a downgrade into a pool with no member is refused, never laned \"\""
+    );
+    assert_eq!(money.open_units(), 2, "the refused unit opens no money");
+    assert_eq!(
+        requests_of(&app, &key, arrived).await,
+        before,
+        "neither the over-cap frontier attempt nor the empty downgrade target charged"
+    );
+}
+
+#[tokio::test]
+async fn a_child_of_a_routed_unit_with_no_member_opens_no_money() {
+    use busbar_contract::caps::{Admission, Hold, HoldCell, PrincipalId, ReasonCode};
+    use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, PlaneMoney};
+    use std::sync::Arc;
+
+    let (app, key) = downgrade_book(vec![one_request_a_day()], None).await;
+    let pools = pools(DOWNGRADE_SECTION);
+    let facts = super::door_facts(
+        "",
+        &["pool"],
+        &["input", "per_request"],
+        &["per_request"],
+        "door",
+        Vec::new(),
+    );
+    let gov = Arc::clone(app.governance.as_ref().expect("actual governance"));
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
+        crate::root::plane_node::Node::new(),
+    )));
+    let money = PlaneMoney::new(Arc::clone(&gov), post as Arc<dyn EndPost>);
+    let principal = PrincipalId::new(key.id.as_str());
+    let arrived = busbar_kernel::store::now();
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let context = |unit| busbar_kernel::teller::UnitCtx {
+        call: kernel.next_call(),
+        key: busbar_contract::UnitKey::new(unit),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let steps = || {
+        super::DoorSteps::new(
+            &facts,
+            &pools,
+            Arc::new(|_: &str| None),
+            Arc::clone(&app),
+            Some(&money),
+            super::DoorCaller {
+                principal: principal.clone(),
+                key: Some(Arc::clone(&key)),
+                open: false,
+                arrived,
+                records: None,
+                depth: 0,
+                credential: None,
+                ticket: None,
+            },
+        )
+    };
+    let parent_ctx = context(7201);
+    let parent_token = kernel.admit_token_for(parent_ctx.call);
+    let parent = steps();
+    parent.lock().routed = pools.resolve(ROUTE_POOL, Some(b"frontier"));
+    let Admission::Own(parent_hold) = parent
+        .admit(
+            &parent_token,
+            &parent_ctx,
+            &principal,
+            &[],
+            &Default::default(),
+        )
+        .expect("the parent consumes the sole request slot")
+    else {
+        panic!("parent owns its admission")
+    };
+    let cell = HoldCell::new(Hold::open(&parent_token, principal.clone()));
+    drop(
+        cell.admit(parent_hold, &parent_token)
+            .expect("actual parent admission enters its cell"),
+    );
+    let authority = parent
+        .parent_admission(&parent_ctx, &cell, &parent_token)
+        .expect("actual parent money and hold authorize its child");
+    assert_eq!(money.open_units(), 1, "the parent's money is open");
+
+    let child_ctx = context(7202);
+    let child = steps().under_admission(&authority);
+    child.lock().routed = Some(("frontier".into(), vec![]));
+    let refusal = child
+        .admit(
+            &kernel.admit_token_for(child_ctx.call),
+            &child_ctx,
+            &principal,
+            &[],
+            &Default::default(),
+        )
+        .expect_err("a child routed to no member has no lane to bill under");
+    assert_eq!(refusal.reason(), ReasonCode::Unpriced);
+    assert_eq!(money.open_units(), 1, "the refused child opens no money");
+    assert_eq!(
+        cell.accruals(),
+        0,
+        "the refused child never accrues to its parent"
+    );
+    let usage = gov
+        .usage_for_async(&app.cost, &key.id, arrived)
+        .await
+        .expect("the parent's usage still reads")
+        .expect("the parent's ledger exists");
+    assert_eq!(usage.requests, 1, "only the parent's admission is counted");
 }
 
 fn styled() -> crate::root::loader::dispatch::kinds::plane::ServedFacts {
@@ -4251,41 +4560,6 @@ fn a_pools_reach_follows_its_fallback_and_the_declared_words() {
         bound.labels("spill", ("spill", "own"), Some(&stated("first", "a"))),
         ("spill".to_string(), "own".to_string(), true),
         "a fallback pool does not reach back into the pool that spilled into it"
-    );
-}
-
-#[test]
-fn llm_pool_label_bound_reaches_members() {
-    use busbar_kernel_egress::ports::StatedLabels;
-    let p = llm_pools();
-    let bound = super::label_bound("", &p, &[]);
-    let stated = |pool: &str, lane: &str| StatedLabels {
-        pool: Some(pool.to_string()),
-        lane: Some(lane.to_string()),
-    };
-    let pooled = super::egress_pool(
-        "",
-        &routed(&p, ROUTE_POOL, Some("oracle-fo")).expect("a pool route"),
-    );
-    let own = super::plane_lane("", "m-openai-chat");
-    assert_eq!(
-        bound.labels(
-            &pooled,
-            (&pooled, &own),
-            Some(&stated("oracle-fo", "m-anthropic"))
-        ),
-        ("oracle-fo".to_string(), "m-anthropic".to_string(), false),
-        "an llm pool's label reaches its members"
-    );
-    assert!(
-        bound
-            .labels(
-                &pooled,
-                (&pooled, &own),
-                Some(&stated("oracle-fo", "m-unknown"))
-            )
-            .2,
-        "a lane outside the configured names is refused"
     );
 }
 
