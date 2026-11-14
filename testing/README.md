@@ -124,7 +124,7 @@ is what `scripts/verify-1.6.0-done.sh` runs. `--write` regenerates the JSON and
 `qa/DESIGN-BINDINGS.md`, keeping hand-added checks.
 
 Existence only: the gate never executes a referenced test. A slower tier can run the mapped kinds
-later: `test` refs with `cargo test`, `oracle-cell` / `oracle-family` refs through
-`shadow-oracle/record.sh` + `replay.sh` against the pinned 1.5.5 golden, `gate` / `lint` refs by
+later: `test` refs with `cargo test`, `oracle-cell` / `oracle-family` refs through the
+upgrade tests against the 1.5.5 baseline, `gate` / `lint` refs by
 running the script (its `--selftest` first). `qa/DESIGN-BINDINGS.md` lists the unmapped bindings
 with the check that would prove each one, and the bindings a green test currently contradicts.
