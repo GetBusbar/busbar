@@ -126,7 +126,7 @@ pub fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'stat
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
     guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
         eprintln!("busbar: config errors:\n  - {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     })
 }
 
@@ -175,12 +175,12 @@ pub fn boot(
     );
     let connector = built.unwrap_or_else(|refusal| {
         eprintln!("busbar: the connector did not build: {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     });
 
     install(connector).unwrap_or_else(|_| {
         eprintln!("busbar: a second connector was built; the process has one");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     })
 }
 
@@ -237,7 +237,7 @@ fn io_reactor() -> tokio::runtime::Handle {
             .build()
             .unwrap_or_else(|e| {
                 eprintln!("busbar: the connector's I/O runtime did not build: {e}");
-                std::process::exit(2);
+                crate::root::exit::exit(2);
             });
         let handle = rt.handle().clone();
         std::thread::Builder::new()
@@ -245,7 +245,7 @@ fn io_reactor() -> tokio::runtime::Handle {
             .spawn(move || rt.block_on(std::future::pending::<()>()))
             .unwrap_or_else(|e| {
                 eprintln!("busbar: the connector's I/O thread did not start: {e}");
-                std::process::exit(2);
+                crate::root::exit::exit(2);
             });
         handle
     })

@@ -10,7 +10,8 @@
 //! backwards transitions in this namespace; an absent control record is never an
 //! implicit grant. Dataset initialization requires a separately proven empty
 //! logical dataset (records and receipts), not merely an absent key in an
-//! existing dataset. Physical backend identity metadata grants no execution authority.
+//! existing dataset; records in [`IMPORT_NAMESPACE`] are excepted ([`counts_toward_empty`]).
+//! Physical backend identity metadata grants no execution authority.
 
 use super::{
     Candidate, DatasetId, ExpectedValue, Failure, Mutation, NamespaceId, CANDIDATE_VERSION,
@@ -27,6 +28,18 @@ pub const DATASET_KEY: &[u8] = b"d";
 /// these records but must never mutate them directly. Each committed candidate
 /// advances every mutated namespace once, atomically with its effects and receipt.
 pub const GENERATION_NAMESPACE: NamespaceId = NamespaceId(*b"busbar.scan.v1\0\0");
+
+/// The 1.5.5 import namespace (MIGRATE-ON-BOOT's `IMPORT_NS`). A store's migrate writes it
+/// with its own driver before admission, so it holds no receipt; core consumes it after Register.
+pub const IMPORT_NAMESPACE: NamespaceId = NamespaceId(*b"busbar.import.r0");
+
+/// Whether a record in `namespace` makes a dataset non-empty for Initialize's emptiness proof.
+/// Every namespace counts except the reserved import set R = {[`IMPORT_NAMESPACE`]}; receipts
+/// always count.
+#[must_use]
+pub fn counts_toward_empty(namespace: NamespaceId) -> bool {
+    namespace != IMPORT_NAMESPACE
+}
 
 /// Known control keys; an unrecognized key is not an extensible grant format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,8 +112,9 @@ pub fn replacement(
 /// additional records cannot use either reserved adapter namespace.
 ///
 /// The adapter must additionally prove, under the same native atomic guard, that
-/// the canonical dataset has no records, receipts or previous authority. Legacy
-/// or partially initialized data is never fresh. Receipt lookup still comes first.
+/// the canonical dataset has no records (none counted by [`counts_toward_empty`]), receipts or
+/// previous authority. Legacy or partially initialized data is never fresh. Receipt lookup
+/// still comes first.
 #[must_use]
 pub fn initialization<O>(candidate: &Candidate<O>, dataset: DatasetId) -> bool {
     if candidate.codec != CANDIDATE_VERSION
@@ -652,5 +666,17 @@ mod tests {
         .encode()
         .is_none());
         assert_eq!(&writer_key([7; 16])[1..], &[7; 16]);
+    }
+
+    #[test]
+    fn only_import_records_are_excepted_from_the_emptiness_proof() {
+        assert!(!counts_toward_empty(IMPORT_NAMESPACE));
+        assert_eq!(&IMPORT_NAMESPACE.0, b"busbar.import.r0");
+        for namespace in [NAMESPACE, GENERATION_NAMESPACE, NamespaceId([0; 16])] {
+            assert!(counts_toward_empty(namespace), "{namespace:?}");
+        }
+        let mut near = IMPORT_NAMESPACE;
+        near.0[15] ^= 1;
+        assert!(counts_toward_empty(near));
     }
 }

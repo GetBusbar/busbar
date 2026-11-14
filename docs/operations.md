@@ -340,6 +340,44 @@ So: for a gateway without group limits, scale out freely behind an LB. With limi
 either accept the per-node cap semantics over a shared store, or keep enforcement on
 one instance and scale the box, not the count.
 
+### First start with several replicas
+
+On an empty shared store (postgres, mysql or valkey), one replica performs the dataset's
+first start while the others wait. A waiting process binds **no listener**, so `/healthz`
+does not answer until it is admitted. It logs, on its first wait and every 10 s after:
+
+```text
+waiting on first start of this dataset by writer <id>: last change <n> s ago, takeover in <m> s if it stays unchanged. ...
+```
+
+It is admitted as soon as the owner publishes. If the owner's progress (its birth record,
+writer row and, during a 1.5.5 import, core's import progress row) stays unchanged for the
+stall window, 90 s plus 35 s per plane the owner already completed, one waiter takes the
+first start over (logged as `BUSBAR-9014`) and finishes it.
+
+The window lives in memory, so **killing a waiter early resets its wait**; if every replica
+is killed early, a crashed first-start owner is never replaced. Give each replica a startup
+budget of at least **200 + 105 x P seconds**, where P is the number of conditional-records
+planes configured: on Kubernetes a `startupProbe` whose `failureThreshold x periodSeconds`
+covers it (the README example ships 10 s x 100 = 1000 s, enough for P <= 7), or a
+systemd/VM supervisor start timeout. Liveness and readiness probes start only after the
+startup probe succeeds.
+
+Only crashes, SIGKILL and hangs need this budget. A replica that refuses boot cleanly, or
+receives SIGTERM/SIGINT (a probe kill or pod deletion, inside
+`terminationGracePeriodSeconds`) while it owns the first start, retires its own writer on the
+way out (`BUSBAR-9017`), and the next start takes over at once.
+
+**The 1.5.5 upgrade boot.** The first boot of 1.6.0 over a 1.5.5 dataset adds M, all
+migration time before the listener binds: each store's data step, any pre-admission check,
+and the import of 1.5.5 records. M grows with the 1.5.5 audit and usage history; raise the
+startup budget by M for that boot (measure it on a copy). A store's data step (and a
+pre-admission check) is one transaction that a kill rolls back, so it restarts from zero:
+the budget must cover each of them whole, or the upgrade never completes. Only the record
+import resumes: a probe that fires during it sends SIGTERM, the owner hands over on exit, and
+the next process resumes from the records left, so during the import a short budget slows the
+upgrade and loses nothing.
+
 ## Metrics to watch
 
 All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: with no `module: prometheus` instance under `export:` busbar records nothing and does not mount the endpoint. Its `settings.buffer_seconds` (required when you opt in) sets how many seconds of observations are retained. Quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.
