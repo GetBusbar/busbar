@@ -16,7 +16,7 @@ fn read_request(source: Arc<owned::Read>) -> ReadRequest {
     ReadRequest {
         source: sdk::Read::new(source, limits().descriptor_bytes).unwrap(),
         items: Vec::new(),
-        bytes: zeroize::Zeroizing::new(Vec::new()),
+        bytes: WipedBytes::default(),
     }
 }
 fn ready<O: OutFrame>(mut out: O) -> O {
@@ -870,7 +870,7 @@ fn commit_keeps_exact_candidate_on_growth_and_rejects_changed_receipt_bytes() {
     let mut request = CommitRequest {
         source: sdk::Commit::new(&candidate, limits().descriptor_bytes).unwrap(),
         original: candidate,
-        bytes: zeroize::Zeroizing::new(Vec::new()),
+        bytes: WipedBytes::default(),
     };
     let before = request.frame().input.candidate;
     request.grow(0, 3, limits()).unwrap();
