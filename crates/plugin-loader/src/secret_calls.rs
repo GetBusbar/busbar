@@ -20,12 +20,15 @@ use busbar_contract::abi::secret::{
 use busbar_contract::config_time::{ConfigScope, RESOLVE_OFF_CONFIG_TIME};
 use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::redacted::Secret as SecretValue;
-use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
+use busbar_contract::secret::{
+    RelendCause, RelendRefused, SecretAxis, SecretCalls, SecretRefused, SecretRelent,
+};
 use busbar_contract::secret_ref::SecretRef;
 
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::lifecycle::{self, blob, open_frame, AnswerLease};
+use crate::dispatch::Called;
 use crate::dispatch::{
     in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
     EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
@@ -84,10 +87,118 @@ pub struct LoadedSecret {
     dispatcher: Arc<Dispatcher>,
     next_worker: AtomicU32,
     disk: Disk,
+    relending: Option<Relending>,
 }
 
 struct Opened {
-    plugin: Plugin<Secret>,
+    plugin: Arc<Plugin<Secret>>,
+    /// The instance's tick driver (`dispatch::ticks`), stopped before the instance closes.
+    schedule: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+/// What a re-lend needs to re-resolve an instance's own references and, for a plugin with no
+/// `refresh`, open its successor: the BUILD'S OWN candidate (never the global dropped set, which a
+/// later admission replaces), the settings as written and the references the Statement lends.
+struct RelendSpec {
+    module: String,
+    label: String,
+    settings: busbar_contract::plugin_settings::Settings,
+    keys: Vec<String>,
+    sugars: busbar_contract::secret_ref::Sugars,
+    candidate: Candidate,
+    loader: Loader,
+}
+
+/// One instance's re-lend state: its spec, the fingerprint of what it was lent (never the
+/// material; no `Debug`) and the generation its next `refresh` opens.
+struct Relending {
+    spec: Arc<RelendSpec>,
+    fingerprint: Mutex<[u8; 32]>,
+    generation: std::sync::atomic::AtomicU64,
+}
+
+/// How the rows load and place one candidate's instance: copyable function pointers, so a re-lend
+/// can open a successor long after the rows that opened the first one moved on.
+#[derive(Clone, Copy)]
+struct Loader {
+    dispatcher: fn() -> Arc<Dispatcher>,
+    conns: fn() -> Option<AdmissionAuthority>,
+    logs: Option<fn() -> PluginLogConfig>,
+    disk_run: Option<DiskRun>,
+}
+
+impl Loader {
+    fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
+        let sink: Arc<dyn EnvelopeSink> = match self.logs {
+            Some(logs) => Arc::new(
+                logs()
+                    .sink(label, KindCode::Secret, Arc::new(NoSink))
+                    .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))?,
+            ),
+            None => Arc::new(NoSink),
+        };
+        let bind = Bind {
+            instance: Arc::from(label),
+            max_inflight_cap: MAX_INFLIGHT_CAP,
+            sink,
+            dispatcher: (self.dispatcher)().adopter(),
+
+            conns: ConnTable::serving((self.conns)()),
+        };
+        match &c.origin {
+            Origin::Linked(row) => load_linked::<Secret>(row, bind),
+            Origin::Dropped { file, bytes } => {
+                load_dropped_bytes::<Secret>(bytes, file, &c.stated, bind)
+            }
+        }
+        .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))
+    }
+
+    fn placed(&self, c: &Candidate, opened: LoadedSecret) -> LoadedSecret {
+        if c.disk {
+            opened.reading_disk(self.disk_run)
+        } else {
+            opened
+        }
+    }
+}
+
+fn lent_fingerprint<S: busbar_contract::plugin::KernelSeal + ?Sized>(
+    secrets: &[SecretValue<Vec<u8>>],
+    seal: &S,
+) -> [u8; 32] {
+    busbar_contract::redacted::fingerprint(secrets.iter().map(|s| s.expose(seal).as_slice()))
+}
+
+impl RelendSpec {
+    /// Open an instance of the build's own candidate over `settings` and the lent `secrets`, ready
+    /// to re-lend.
+    fn open(
+        self: &Arc<Self>,
+        settings: &[u8],
+        secrets: &[SecretValue<Vec<u8>>],
+    ) -> Result<LoadedSecret, String> {
+        let dispatcher = (self.loader.dispatcher)();
+        let fingerprint = {
+            let seal = dispatcher
+                .seal()
+                .ok_or("secret module opening requires the host settings seal")?;
+            lent_fingerprint(secrets, seal)
+        };
+        let opened = LoadedSecret::open(
+            self.loader.load(&self.candidate, &self.label)?,
+            Arc::clone(&dispatcher),
+            settings,
+            secrets,
+        )?;
+        let mut opened = self.loader.placed(&self.candidate, opened);
+        opened.relending = Some(Relending {
+            spec: Arc::clone(self),
+            fingerprint: Mutex::new(fingerprint),
+            generation: std::sync::atomic::AtomicU64::new(1),
+        });
+        Ok(opened)
+    }
 }
 
 impl std::fmt::Debug for LoadedSecret {
@@ -210,41 +321,108 @@ fn answer_text(error: Option<&[u8]>, fallback: String) -> String {
         .unwrap_or(fallback)
 }
 
+/// What an OPEN crossing borrows, owned for as long as the dispatcher may still read it (a PENDING
+/// open is resumed later, and an open that outlives its wait is finished or cancelled by the
+/// dispatcher, never against freed memory).
+struct OpenLent {
+    settings: zeroize::Zeroizing<Vec<u8>>,
+    _secrets: Vec<zeroize::Zeroizing<Vec<u8>>>,
+    blobs: Vec<Blob>,
+}
+
+// SAFETY: every blob pointer borrows an immutable allocation this value owns.
+unsafe impl Send for OpenLent {}
+// SAFETY: as above; nothing in it is mutated after construction.
+unsafe impl Sync for OpenLent {}
+
 impl LoadedSecret {
+    /// OPEN an instance through the dispatcher, as every other op on it crosses: a PENDING open
+    /// (a plugin that authenticates before it is ready) is resumed by the dispatcher until it
+    /// answers READY or the wait ends.
     pub fn open(
         plugin: Plugin<Secret>,
         dispatcher: Arc<Dispatcher>,
         settings: &[u8],
         secrets: &[SecretValue<Vec<u8>>],
     ) -> Result<Self, String> {
-        let lent: Vec<Blob> = match (secrets.is_empty(), dispatcher.seal()) {
-            (true, _) => Vec::new(),
-            (false, Some(seal)) => secrets
-                .iter()
-                .map(|s| blob(s.expose(seal), BLOB_OCTETS, BLOB_SECRET))
-                .collect(),
-            (false, None) => {
-                return Err(format!(
-                    "plugin '{}' open failed: its secret material is revealed only on a \
-                     dispatcher the host lent its seal",
-                    plugin.name()
-                ));
-            }
+        let owned: Vec<zeroize::Zeroizing<Vec<u8>>> =
+            match (secrets.is_empty(), dispatcher.seal()) {
+                (true, _) => Vec::new(),
+                (false, Some(seal)) => secrets
+                    .iter()
+                    .map(|s| zeroize::Zeroizing::new(s.expose(seal).clone()))
+                    .collect(),
+                (false, None) => {
+                    return Err(format!(
+                        "plugin '{}' open failed: its secret material is revealed only on a \
+                         dispatcher the host lent its seal",
+                        plugin.name()
+                    ));
+                }
+            };
+        let blobs = owned
+            .iter()
+            .map(|s| blob(s, BLOB_OCTETS, BLOB_SECRET))
+            .collect();
+        let lent = Arc::new(OpenLent {
+            settings: zeroize::Zeroizing::new(settings.to_vec()),
+            _secrets: owned,
+            blobs,
+        });
+        let mut f = open_frame(blob(&lent.settings, BLOB_JSON, 0));
+        if !lent.blobs.is_empty() {
+            f.input.secrets = lent.blobs.as_ptr();
+            f.input.secrets_len = lent.blobs.len();
+        }
+        let Some(ticket) = dispatcher.mint(0) else {
+            return Err(format!(
+                "plugin '{}' open failed: no ticket to open it on",
+                plugin.name()
+            ));
         };
-        let mut f = open_frame(blob(settings, BLOB_JSON, 0));
-        f.input.secrets = lent.as_ptr();
-        f.input.secrets_len = lent.len();
-        let c = plugin.call(life::OPEN, &mut f);
-        let opened = AnswerLease::new(&plugin, c.lease);
-        if c.outcome != Outcome::Ready {
-            return Err(c.open_failure(plugin.name()));
+        let deadline = now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64);
+        let done = dispatcher
+            .submit_lent(
+                &plugin,
+                ticket,
+                life::OPEN,
+                f,
+                DeadlineClass::Call,
+                deadline,
+                lent as crate::dispatch::Lent,
+            )
+            .wait(WAIT);
+        dispatcher.recycle(ticket);
+        let Some(done) = done else {
+            return Err(format!(
+                "secret module '{}' did not complete its open within {} s",
+                plugin.name(),
+                WAIT.as_secs()
+            ));
+        };
+        let opened = AnswerLease::new(&plugin, done.lease);
+        if done.outcome != Outcome::Ready || done.detached || done.disposition.is_some() {
+            let called = Called {
+                outcome: done.outcome,
+                error: done.error,
+                lease: 0,
+                recall: None,
+            };
+            return Err(called.open_failure(plugin.name()));
         }
         drop(opened);
+        let plugin = Arc::new(plugin);
+        let schedule =
+            crate::dispatch::ticks::spawn(Arc::clone(&plugin), Arc::clone(&dispatcher), 0);
         Ok(Self {
-            opened: Arc::new(Opened { plugin }),
+            opened: Arc::new(Opened {
+                plugin,
+                schedule: Mutex::new(schedule),
+            }),
             dispatcher,
             next_worker: AtomicU32::new(0),
             disk: Disk::No,
+            relending: None,
         })
     }
 
@@ -343,12 +521,122 @@ impl Opened {
 
 impl Drop for Opened {
     fn drop(&mut self) {
+        if let Some(schedule) = self
+            .schedule
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            schedule.abort();
+        }
         lifecycle::close(&self.plugin);
     }
 }
 
+impl LoadedSecret {
+    /// `refresh` this instance with `settings` and the lent `secrets`, under its next generation.
+    fn refresh_in_place(
+        &self,
+        relending: &Relending,
+        settings: &[u8],
+        secrets: &[SecretValue<Vec<u8>>],
+    ) -> Called {
+        let blobs: Vec<Blob> = match self.dispatcher.seal() {
+            Some(seal) => secrets
+                .iter()
+                .map(|s| blob(s.expose(seal), BLOB_OCTETS, BLOB_SECRET))
+                .collect(),
+            None => Vec::new(),
+        };
+        let generation = relending
+            .generation
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let mut f = Frame::new(
+            busbar_contract::abi::mechanism::lifecycle::RefreshIn {
+                head: in_head(),
+                generation,
+                settings: blob(settings, BLOB_JSON, 0),
+                secrets: if blobs.is_empty() {
+                    std::ptr::null()
+                } else {
+                    blobs.as_ptr()
+                },
+                secrets_len: blobs.len(),
+            },
+            out_head(),
+        );
+        self.opened.plugin.call(life::REFRESH, &mut f)
+    }
+}
+
+
 impl SecretCalls for LoadedSecret {
+    fn relends(&self) -> bool {
+        self.relending.is_some()
+    }
+
+    fn relend(
+        &self,
+        resolve: &dyn Fn(&SecretRef) -> Result<SecretValue<Vec<u8>>, String>,
+    ) -> Result<SecretRelent, RelendRefused> {
+        let Some(relending) = &self.relending else {
+            return Ok(SecretRelent::Unchanged);
+        };
+        let spec = &relending.spec;
+        let refused = |cause, text| RelendRefused { cause, text };
+        let (remaining, secrets) = spec
+            .settings
+            .lend_references(&spec.keys, &spec.sugars, &spec.module, resolve)
+            .map_err(|text| refused(RelendCause::Unresolvable, text))?;
+        let Some(seal) = self.dispatcher.seal() else {
+            return Err(refused(
+                RelendCause::Unresolvable,
+                "re-lending requires the host settings seal".into(),
+            ));
+        };
+        let fingerprint = lent_fingerprint(&secrets, seal);
+        let unchanged = busbar_contract::redacted::constant_time_eq(
+            &*relending
+                .fingerprint
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            &fingerprint,
+        );
+        if unchanged {
+            return Ok(SecretRelent::Unchanged);
+        }
+        let encoded = remaining
+            .encode()
+            .map_err(|e| refused(RelendCause::Unresolvable, e.to_string()))?;
+        let bytes = encoded.expose(seal);
+        let called = self.refresh_in_place(relending, bytes, &secrets);
+        let _lease = AnswerLease::new(&self.opened.plugin, called.lease);
+        match called.outcome {
+            Outcome::Ready => {
+                *relending
+                    .fingerprint
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = fingerprint;
+                Ok(SecretRelent::Refreshed)
+            }
+            Outcome::Refused
+                if called.error.as_deref()
+                    == Some(busbar_contract::abi::sdk::life::NOT_REFRESHED.as_bytes()) =>
+            {
+                spec.open(bytes, &secrets)
+                    .map(|opened| SecretRelent::Reopened(Arc::new(opened)))
+                    .map_err(|text| refused(RelendCause::ReopenFailed, text))
+            }
+            outcome => Err(refused(
+                RelendCause::Refused,
+                lifecycle::why(outcome, called.error),
+            )),
+        }
+    }
+
     fn resolve(&self, settings: &[u8]) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
+
         let name = self.name();
         if !matches!(self.disk, Disk::No) {
             return Err(refused(
@@ -521,12 +809,17 @@ impl SecretRows {
         Ok(self)
     }
 
-    fn placed(&self, c: &Candidate, opened: LoadedSecret) -> LoadedSecret {
-        if c.disk {
-            opened.reading_disk(self.disk_run)
-        } else {
-            opened
+    fn loader(&self) -> Loader {
+        Loader {
+            dispatcher: self.dispatcher,
+            conns: self.conns,
+            logs: self.logs,
+            disk_run: self.disk_run,
         }
+    }
+
+    fn placed(&self, c: &Candidate, opened: LoadedSecret) -> LoadedSecret {
+        self.loader().placed(c, opened)
     }
 
     #[must_use]
@@ -679,29 +972,7 @@ impl SecretRows {
     }
 
     fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
-        let sink: Arc<dyn EnvelopeSink> = match self.logs {
-            Some(logs) => Arc::new(
-                logs()
-                    .sink(label, KindCode::Secret, Arc::new(NoSink))
-                    .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))?,
-            ),
-            None => Arc::new(NoSink),
-        };
-        let bind = Bind {
-            instance: Arc::from(label),
-            max_inflight_cap: MAX_INFLIGHT_CAP,
-            sink,
-            dispatcher: (self.dispatcher)().adopter(),
-
-            conns: ConnTable::serving((self.conns)()),
-        };
-        match &c.origin {
-            Origin::Linked(row) => load_linked::<Secret>(row, bind),
-            Origin::Dropped { file, bytes } => {
-                load_dropped_bytes::<Secret>(bytes, file, &c.stated, bind)
-            }
-        }
-        .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))
+        self.loader().load(c, label)
     }
 
     fn secret_refs(c: &Candidate) -> Result<Vec<String>, String> {
@@ -785,28 +1056,44 @@ impl SecretAxis for SecretRows {
             .find(module)
             .ok_or_else(|| format!("no secret module answers to '{module}'"))?;
         let keys = Self::secret_refs(&c)?;
-        let (bytes, secrets) = match settings {
-            Some(settings) => {
-                let (remaining, secrets) =
-                    settings.lend_references(&keys, &self.sugars(), module, resolve)?;
-                (
-                    remaining.encode().map_err(|error| error.to_string())?,
-                    secrets,
-                )
-            }
-            None => (SecretValue::default(), Vec::new()),
-        };
         let dispatcher = (self.dispatcher)();
         let seal = dispatcher
             .seal()
             .ok_or("secret module opening requires the host settings seal")?;
-        let opened = LoadedSecret::open(
-            self.load(&c, &Self::label(module))?,
-            (self.dispatcher)(),
-            bytes.expose(seal),
-            &secrets,
-        )?;
-        Ok(Arc::new(self.placed(&c, opened)))
+        let Some(settings) = settings.filter(|_| !keys.is_empty()) else {
+            let bytes = match settings {
+                Some(settings) => {
+                    let (remaining, _) =
+                        settings.lend_references(&keys, &self.sugars(), module, resolve)?;
+                    remaining.encode().map_err(|error| error.to_string())?
+                }
+                None => SecretValue::default(),
+            };
+            let opened = LoadedSecret::open(
+                self.load(&c, &Self::label(module))?,
+                Arc::clone(&dispatcher),
+                bytes.expose(seal),
+                &[],
+            )?;
+            return Ok(Arc::new(self.placed(&c, opened)));
+        };
+        // The instance lends its own references: keep what re-lending them needs, pinned to THIS
+        // candidate (never the global dropped set a later admission replaces), so a rotated
+        // credential reaches the plugin without a reload.
+        let spec = Arc::new(RelendSpec {
+            module: module.to_string(),
+            label: Self::label(module),
+            settings: settings.clone(),
+            keys,
+            sugars: self.sugars(),
+            candidate: c,
+            loader: self.loader(),
+        });
+        let (remaining, secrets) =
+            spec.settings
+                .lend_references(&spec.keys, &spec.sugars, module, resolve)?;
+        let bytes = remaining.encode().map_err(|error| error.to_string())?;
+        Ok(Arc::new(spec.open(bytes.expose(seal), &secrets)?))
     }
 }
 
@@ -817,3 +1104,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/secret_disk_tests.rs"]
 mod disk_tests;
+
+#[cfg(test)]
+#[path = "tests/secret_relend_tests.rs"]
+mod relend_tests;

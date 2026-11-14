@@ -6,8 +6,11 @@
 
 pub use busbar_contract::secret_ref::SecretRef;
 
+/// Cheap to clone: a clone shares the one plugin resolver (and the instances it opened), so a
+/// re-lend poll re-resolves through exactly what the build resolved through.
+#[derive(Clone)]
 pub struct SecretResolver {
-    plugin: Option<ScopedPluginResolveFn>,
+    plugin: Option<std::sync::Arc<ScopedPluginResolve>>,
 }
 
 pub(crate) type PluginResolveFn = Box<
@@ -18,15 +21,15 @@ pub type Held = busbar_contract::redacted::Secret<Vec<u8>>;
 
 pub type HeldText = busbar_contract::redacted::Secret<String>;
 
-pub(crate) type ScopedPluginResolveFn = Box<
-    dyn Fn(
-            &str,
-            &busbar_contract::plugin_settings::Settings,
-            Option<&busbar_contract::config_time::ConfigScope>,
-        ) -> Result<Held, SecretRefused>
-        + Send
-        + Sync,
->;
+pub(crate) type ScopedPluginResolve = dyn Fn(
+        &str,
+        &busbar_contract::plugin_settings::Settings,
+        Option<&busbar_contract::config_time::ConfigScope>,
+    ) -> Result<Held, SecretRefused>
+    + Send
+    + Sync;
+
+pub(crate) type ScopedPluginResolveFn = Box<ScopedPluginResolve>;
 
 pub use busbar_contract::secret::SecretRefused;
 
@@ -41,7 +44,7 @@ impl SecretResolver {
 
     pub fn with_plugin(plugin: PluginResolveFn) -> Self {
         Self {
-            plugin: Some(Box::new(
+            plugin: Some(std::sync::Arc::new(
                 move |module: &str,
                       settings: &busbar_contract::plugin_settings::Settings,
                       _: Option<&busbar_contract::config_time::ConfigScope>| {
@@ -55,7 +58,7 @@ impl SecretResolver {
 
     pub(crate) fn with_scoped_plugin(plugin: ScopedPluginResolveFn) -> Self {
         Self {
-            plugin: Some(plugin),
+            plugin: Some(std::sync::Arc::from(plugin)),
         }
     }
 
@@ -285,6 +288,22 @@ pub(crate) fn is_linked_secret(module: &str) -> bool {
 
 pub(crate) fn sugars() -> busbar_contract::secret_ref::Sugars {
     axis().map(|a| a.sugars()).unwrap_or_default()
+}
+
+/// THE ONE TEXT-AND-BYTES RULE for a credential the host re-resolves on a lease: resolve with the
+/// typed refusal kind, apply the text rule ([`SecretResolver::resolve_string`]'s: UTF-8, trailing
+/// `\r`/`\n` trimmed, an empty value refused as `INVALID`) and hand back the text's bytes. A build
+/// and every later refresh of the same reference go through this one function, so a value read
+/// twice unchanged is the same bytes twice (a file ending in a newline never looks rotated).
+pub fn resolve_text_refusing(
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+    secret: &SecretRef,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<Held, SecretRefused> {
+    let bytes = resolver.resolve_refusing(secret, Some(scope))?;
+    SecretResolver::text_of(secret, bytes)
+        .map(busbar_contract::redacted::Secret::into_bytes)
+        .map_err(|text| refusal(busbar_contract::abi::secret::ERROR_KIND_INVALID, text))
 }
 
 pub fn resolve_linked_string(secret: &SecretRef) -> Result<HeldText, String> {

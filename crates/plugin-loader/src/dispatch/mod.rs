@@ -22,7 +22,7 @@ pub(crate) mod access;
 pub mod answer;
 pub mod auth_handle;
 pub mod auth_outbound;
-pub mod auth_ticks;
+pub mod ticks;
 pub(crate) mod call;
 pub(crate) mod completion_retirement;
 pub(crate) mod conditional;

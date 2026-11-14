@@ -17,6 +17,7 @@ use busbar_contract::abi::sdk::Out;
 
 use super::*;
 use crate::auth_door::{AuthInstance, AuthSink};
+use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{load_linked, Budgets, ConnTable, DispatchConfig, LinkedRow};
 
 const GAP_NS: u64 = 10_000_000;

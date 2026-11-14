@@ -1071,18 +1071,153 @@ pub(crate) fn build_secret_resolver(
     ))
 }
 
-/// THE SECRET PLUGINS A RESOLVER OPENED, one handle per plugin (audit kernel-K1 #6).
+/// THE SECRET PLUGINS A RESOLVER OPENED, one SOURCE per plugin (audit kernel-K1 #6).
 ///
-/// The map's lock is held to find or open a plugin's handle and released before the plugin is asked
-/// to `resolve`: one slow or hung secret source (a remote vault) stalls only the resolutions it
-/// answers, never another module's, and never a second caller of its own that already holds the
-/// handle.
+/// The map's lock is held only to find or insert a source, never across an open or a resolve: one
+/// slow or hung secret source (a remote vault) stalls only the resolutions it answers, never
+/// another module's, and never a second caller of its own that already holds the handle. Two first
+/// resolutions racing to open one module may both open; the loser's instance is dropped (closed)
+/// outside the lock.
 #[derive(Default)]
-pub(crate) struct OpenedSecrets(
-    std::sync::Mutex<
-        std::collections::BTreeMap<String, Arc<dyn busbar_contract::secret::SecretCalls>>,
-    >,
-);
+pub(crate) struct OpenedSecrets(std::sync::Mutex<std::collections::BTreeMap<String, Arc<Source>>>);
+
+/// ONE OPENED SECRET SOURCE: the instance every resolution through it clones (lock-free), swapped
+/// whole when a re-lend opens a successor. An instance opened with its own lent references is
+/// polled by the host refresher every [`RELEND_EVERY`] ± 10 %: a rotated credential (a
+/// workload-identity token file) reaches the plugin's `refresh`, or a successor instance, with no
+/// reload; a refusal keeps the running instance (BUSBAR-8028).
+pub(crate) struct Source {
+    key: String,
+    calls: arc_swap::ArcSwap<Arc<dyn busbar_contract::secret::SecretCalls>>,
+    relending: std::sync::Mutex<RelendStreak>,
+    report: &'static dyn crate::refresh::Report,
+}
+
+/// How often a source's own references are re-read.
+pub(crate) const RELEND_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A re-lend poll's rate limit, per source or auth instance.
+#[derive(Default)]
+pub(crate) struct RelendStreak {
+    failures: u32,
+    reported: Option<std::time::Instant>,
+}
+
+impl RelendStreak {
+    /// Report BUSBAR-8028 for a re-lend `refused` on the instance `label`: the first failure, then
+    /// at most once a minute; audited `plugin.credential.rotate` degraded alongside.
+    pub(crate) fn failed(
+        &mut self,
+        report: &dyn crate::refresh::Report,
+        label: &str,
+        refused: &busbar_contract::secret::RelendRefused,
+        now: std::time::Instant,
+    ) {
+        use busbar_contract::secret::RelendCause;
+        self.failures = self.failures.saturating_add(1);
+        let due = self
+            .reported
+            .is_none_or(|at| now.saturating_duration_since(at) >= std::time::Duration::from_secs(60));
+        if !due || crate::refresh::stopping() {
+            return;
+        }
+        self.reported = Some(now);
+        let level = match refused.cause {
+            RelendCause::Unresolvable => tracing::Level::WARN,
+            RelendCause::Refused | RelendCause::ReopenFailed => tracing::Level::ERROR,
+        };
+        report.diag(
+            &crate::diagnostics::PLUGIN_CREDENTIAL_ROTATION_FAILED,
+            level,
+            "a plugin instance's own credential changed and could not be applied: the running \
+             instance and what it holds are kept, and the change is retried on the next poll",
+            &[
+                ("instance", label.to_string()),
+                ("cause", refused.cause.as_str().to_string()),
+                ("error", refused.text.clone()),
+                ("failures", self.failures.to_string()),
+            ],
+        );
+        report.audit(
+            RELEND_ACTION,
+            &format!("plugin:{label}"),
+            crate::audit_ring::OUTCOME_DEGRADED,
+        );
+    }
+
+    /// The rotated credential was applied (`how`: refreshed in place or re-opened).
+    pub(crate) fn applied(&mut self, report: &dyn crate::refresh::Report, label: &str, how: &str) {
+        report.info(
+            "a plugin instance took its rotated credential",
+            &[
+                ("instance", label.to_string()),
+                ("applied", how.to_string()),
+                ("failures", self.failures.to_string()),
+            ],
+        );
+        report.audit(
+            RELEND_ACTION,
+            &format!("plugin:{label}"),
+            crate::audit_ring::OUTCOME_APPLIED,
+        );
+        *self = Self::default();
+    }
+}
+
+/// The audit action a re-lend writes.
+pub(crate) const RELEND_ACTION: &str = "plugin.credential.rotate";
+
+impl Source {
+    fn new(
+        key: &str,
+        calls: Arc<dyn busbar_contract::secret::SecretCalls>,
+        report: &'static dyn crate::refresh::Report,
+    ) -> Self {
+        Self {
+            key: key.to_string(),
+            calls: arc_swap::ArcSwap::from_pointee(calls),
+            relending: std::sync::Mutex::new(RelendStreak::default()),
+            report,
+        }
+    }
+
+    /// The instance a resolution uses now.
+    pub(crate) fn calls(&self) -> Arc<dyn busbar_contract::secret::SecretCalls> {
+        Arc::clone(&self.calls.load())
+    }
+
+    /// One re-lend poll at `now`: re-read this source's own references and apply a change.
+    pub(crate) fn relend_now(&self, now: std::time::Instant) {
+        use busbar_contract::secret::SecretRelent;
+        let Ok(mut streak) = self.relending.try_lock() else {
+            return;
+        };
+        let current = self.calls();
+        let linked = config::secret::SecretResolver::builtins_only();
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let relent = current.relend(&|r| linked.resolve_at_config(r, &scope));
+        if crate::refresh::stopping() {
+            return;
+        }
+        let label = format!("secrets.{}", self.key);
+        match relent {
+            Ok(SecretRelent::Unchanged) => {}
+            Ok(SecretRelent::Refreshed) => streak.applied(self.report, &label, "refreshed"),
+            Ok(SecretRelent::Reopened(successor)) => {
+                self.calls.store(Arc::new(successor));
+                streak.applied(self.report, &label, "reopened");
+            }
+            Err(refused) => streak.failed(self.report, &label, &refused, now),
+        }
+    }
+}
+
+impl crate::refresh::Refreshable for Source {
+    fn refresh(&self, now: std::time::Instant) -> std::time::Instant {
+        self.relend_now(now);
+        now + crate::retry::spread(RELEND_EVERY, 0.1, crate::retry::unit())
+    }
+}
 
 impl OpenedSecrets {
     fn calls(
@@ -1090,13 +1225,43 @@ impl OpenedSecrets {
         key: &str,
         open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
     ) -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String> {
-        let mut opened = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(calls) = opened.get(key) {
-            return Ok(Arc::clone(calls));
+        if let Some(source) = self.source(key) {
+            return Ok(source.calls());
         }
-        let calls = open()?;
-        opened.insert(key.to_string(), Arc::clone(&calls));
+        let opened = open()?;
+        let (calls, lost) = {
+            let mut sources = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            match sources.get(key) {
+                Some(source) => (source.calls(), Some(opened)),
+                None => {
+                    let source = Arc::new(Source::new(
+                        key,
+                        Arc::clone(&opened),
+                        &crate::refresh::HOST_REPORT,
+                    ));
+                    if opened.relends() {
+                        crate::refresh::keep(
+                            Arc::downgrade(&source) as std::sync::Weak<dyn crate::refresh::Refreshable>,
+                            std::time::Instant::now()
+                                + crate::retry::spread(RELEND_EVERY, 0.1, crate::retry::unit()),
+                        );
+                    }
+                    sources.insert(key.to_string(), source);
+                    (opened, None)
+                }
+            }
+        };
+        drop(lost);
         Ok(calls)
+    }
+
+    /// The source opened for `key`, if one is.
+    pub(crate) fn source(&self, key: &str) -> Option<Arc<Source>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .cloned()
     }
 
     pub(crate) fn resolve(
@@ -1170,6 +1335,10 @@ pub fn plugin_fetch_status_refusal(url: &str, code: u32) -> Option<String> {
 #[cfg(test)]
 #[path = "tests/opened_secrets_tests.rs"]
 mod opened_secrets_tests;
+
+#[cfg(test)]
+#[path = "tests/secret_sources_tests.rs"]
+mod secret_sources_tests;
 
 #[cfg(test)]
 #[path = "tests/store_row_tests.rs"]

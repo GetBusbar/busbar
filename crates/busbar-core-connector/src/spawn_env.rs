@@ -171,101 +171,33 @@ impl SpawnEnv {
     }
 }
 
-/// THE HOST'S ENVIRONMENT REFRESHER, as the host's credential refresher keeps a served credential:
+/// THE HOST'S ENVIRONMENT REFRESHER: the host's one refresher (`busbar_kernel::refresh`), the same
+/// bounded pool that keeps every served credential, renewing each held environment once a
+/// [`SPAWN_ENV_LEASE`]. Its threads that cannot start stop the process (exit 2).
 mod refresher {
     use super::{SpawnEnv, SPAWN_ENV_LEASE};
-    use std::sync::{Arc, Condvar, Mutex, Once, PoisonError, Weak};
+    use std::sync::{Arc, Weak};
     use std::time::Instant;
 
-    struct Kept {
-        env: Weak<SpawnEnv>,
-        due: Instant,
-    }
-
-    struct Book {
-        kept: Mutex<Vec<Kept>>,
-        woken: Condvar,
-    }
-
-    static BOOK: Book = Book {
-        kept: Mutex::new(Vec::new()),
-        woken: Condvar::new(),
-    };
-
-    /// The process's one book, its thread started the first time it is reached. A thread the
-    fn book() -> &'static Book {
-        static STARTED: Once = Once::new();
-        STARTED.call_once(|| {
-            let _ = std::thread::Builder::new()
-                .name("busbar-spawn-env-refresh".into())
-                .spawn(|| run(&BOOK));
-        });
-        &BOOK
+    impl busbar_kernel::refresh::Refreshable for SpawnEnv {
+        fn refresh(&self, now: Instant) -> Instant {
+            SpawnEnv::refresh(self);
+            now + SPAWN_ENV_LEASE
+        }
     }
 
     /// Keep `env`, first due one lease from now (its load has just resolved it).
     pub(super) fn keep(env: &Arc<SpawnEnv>) {
-        let book = book();
-        book.kept
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Kept {
-                env: Arc::downgrade(env),
-                due: Instant::now() + SPAWN_ENV_LEASE,
-            });
-        book.woken.notify_one();
+        busbar_kernel::refresh::keep(
+            Arc::downgrade(env) as Weak<dyn busbar_kernel::refresh::Refreshable>,
+            Instant::now() + SPAWN_ENV_LEASE,
+        );
     }
 
-    /// The thread: refresh every held environment that is due, forget every one dropped, sleep to
-    fn run(book: &'static Book) {
-        let mut kept = book.kept.lock().unwrap_or_else(PoisonError::into_inner);
-        loop {
-            let now = Instant::now();
-            kept.retain(|k| k.env.strong_count() > 0);
-            let mut due = Vec::new();
-            for k in kept.iter_mut().filter(|k| k.due <= now) {
-                if let Some(env) = k.env.upgrade() {
-                    k.due = now + SPAWN_ENV_LEASE;
-                    due.push(env);
-                }
-            }
-            if !due.is_empty() {
-                drop(kept);
-                for env in due {
-                    env.refresh();
-                }
-                kept = book.kept.lock().unwrap_or_else(PoisonError::into_inner);
-                continue;
-            }
-            let next = kept.iter().map(|k| k.due).min();
-            kept = match next {
-                Some(at) => {
-                    book.woken
-                        .wait_timeout(kept, at.saturating_duration_since(now))
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .0
-                }
-                None => book
-                    .woken
-                    .wait(kept)
-                    .unwrap_or_else(PoisonError::into_inner),
-            };
-        }
-    }
-
-    /// Refresh every live held environment NOW, on the calling thread (a cell that rotates a
+    /// Refresh every live held item NOW, on the calling thread (a cell that rotates a reference).
     #[cfg(test)]
     pub(crate) fn refresh_all() {
-        let live: Vec<Arc<SpawnEnv>> = book()
-            .kept
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .filter_map(|k| k.env.upgrade())
-            .collect();
-        for env in live {
-            env.refresh();
-        }
+        busbar_kernel::refresh::process().refresh_all_now();
     }
 }
 

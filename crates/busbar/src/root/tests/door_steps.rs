@@ -2758,7 +2758,10 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
             "{err}"
         );
     }
-    let (_, per) = super::upstream_credential(
+    // OWNER-SIGNED 2026-11-12 (revocation rule): a source that answers not-found (or
+    // permission-denied) is re-read once; the same answer twice drops the credential at once, with
+    // BUSBAR-8027 (cause revoked-at-source) and an audit REJECTED. Outages keep it (T-A1).
+    let (binding, mut per) = super::upstream_credential(
         "planner",
         &registration(&path, ""),
         &reach,
@@ -2766,6 +2769,11 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
     )
     .expect("it binds")
     .expect("a binding");
+    drop(binding);
+    let report = lease::Captured::leak();
+    std::sync::Arc::get_mut(&mut per)
+        .expect("the test holds the only binding")
+        .report = report;
     use busbar_contract::auth_calls::PerRequestHandle as _;
     let first = per
         .handle_now()
@@ -2776,7 +2784,20 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
         Some(first),
         "a hop before the next refresh presents what the last refresh left"
     );
-    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    assert!(
+        matches!(per.refresh(&scope), super::Attempt::Confirming { .. }),
+        "the first not-found is re-read before anything is dropped"
+    );
+    assert_eq!(
+        per.handle_now(),
+        Some(first),
+        "kept until the re-read confirms it"
+    );
+    assert!(
+        matches!(per.refresh(&scope), super::Attempt::Dropped { .. }),
+        "the same answer twice drops it"
+    );
     for _ in 0..8 {
         assert_eq!(
             per.handle_now(),
@@ -2784,11 +2805,29 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
             "gone: nothing is presented, hop after hop"
         );
     }
+    let lapsed = report.coded(8027);
+    assert_eq!(lapsed.len(), 1, "one 8027 for one revocation: {lapsed:?}");
+    assert_eq!(lapsed[0].level, tracing::Level::ERROR);
+    assert_eq!(lapsed[0].field("cause"), Some("revoked-at-source"));
+    assert_eq!(lapsed[0].field("member"), Some("planner"), "it names the member");
+    assert_eq!(
+        report.audits(),
+        vec![
+            ("upstream_credential.refresh".to_string(), "member:planner".to_string(), "degraded"),
+            ("upstream_credential.refresh".to_string(), "member:planner".to_string(), "rejected"),
+        ]
+    );
     std::fs::write(&path, "tok").expect("put it back");
-    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
-    assert!(
-        per.handle_now().is_some(),
+    assert_eq!(per.refresh(&scope), super::Attempt::Renewed);
+    assert_eq!(
+        per.handle_now(),
+        Some(first),
         "a refresh that finds it back serves it again"
+    );
+    assert_eq!(
+        report.audits().last().map(|a| a.2),
+        Some("applied"),
+        "and the recovery is audited"
     );
     let _ = std::fs::remove_file(&path);
 }
@@ -2944,36 +2983,53 @@ fn per_hop_over(
 ) -> super::PerHop {
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
-    let secret = source_path(path.display().to_string());
-    let value = secrets
-        .resolve_string_at_config(
-            &secret,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .expect("it resolves while the binding is built");
+    per_hop_on(
+        "planner",
+        source_path(path.display().to_string()),
+        auth,
+        secrets,
+        std::time::Duration::from_secs(60),
+        &busbar_kernel::refresh::HOST_REPORT,
+    )
+}
+
+/// A member's credential bound as `upstream_credential` binds one: resolved now through `secrets`
+/// with the build's own text rule, opened once through `auth`, on `lease`, reporting to `report`.
+fn per_hop_on(
+    member: &str,
+    secret: busbar_contract::secret_ref::SecretRef,
+    auth: std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+    secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
+    lease: std::time::Duration,
+    report: &'static dyn busbar_kernel::refresh::Report,
+) -> super::PerHop {
+    let minted = std::time::Instant::now();
+    let value = busbar_kernel::config::secret::resolve_text_refusing(
+        secrets.as_ref(),
+        &secret,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect("it resolves while the binding is built");
     let seal = busbar_kernel::seal::lend();
     let value = value.expose(&seal);
-    let settings = serde_json::json!({});
-    let handle = {
-        use busbar_contract::auth_calls::OutboundAuth as _;
-        auth.open_outbound("bearer", value.as_bytes(), &settings)
-            .expect("it opens")
-    };
-    super::PerHop {
-        secret,
-        secrets,
-        auth: auth as std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
-        style: "bearer",
-        header: None,
-        lease: std::time::Duration::from_secs(60),
-        held: arc_swap::ArcSwapOption::from_pointee(super::Held {
-            digest: busbar_contract::abi::sdk::digest::sha256(value.as_bytes()),
-            handle,
-            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(60),
-        }),
-        refreshing: std::sync::Mutex::new(()),
-        lapsed: std::sync::atomic::AtomicBool::new(false),
-    }
+    let handle = auth
+        .open_outbound("bearer", value, &serde_json::json!({}))
+        .expect("it opens");
+    super::PerHop::new(
+        super::Lent {
+            member: member.to_string(),
+            secret,
+            secrets,
+            auth,
+            style: "bearer",
+            header: None,
+            lease,
+        },
+        busbar_kernel::refresh::fingerprint([value.as_slice()]),
+        handle,
+        minted,
+        report,
+    )
 }
 
 fn bearer_auth() -> std::sync::Arc<CountingOpens> {
@@ -3287,7 +3343,7 @@ fn an_open_runs_under_no_lock_a_hop_waits_on() {
         entered: entered_tx,
     });
     let mut per = per_hop(&path, std::sync::Arc::clone(&counting));
-    per.auth = std::sync::Arc::clone(&parked)
+    per.lent.auth = std::sync::Arc::clone(&parked)
         as std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>;
     let per = std::sync::Arc::new(per);
     let first = per.handle_now().expect("it resolved at build");
@@ -4793,3 +4849,6 @@ fn settings_only_validation_requires_the_auth_declaration_capability() {
 
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(door_steps);
+
+#[path = "door_steps_lease.rs"]
+mod lease;
