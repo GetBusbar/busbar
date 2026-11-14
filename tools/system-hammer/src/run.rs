@@ -951,7 +951,7 @@ fn merged_errors(load: &Outcome, probe: &Outcome) -> BTreeMap<String, u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
+    use sonic_rs::{JsonValueTrait as _, Value};
 
     /// codeaudit r1 error-handling-5: a failed system RNG fill must never be discarded, or the
     /// admin token degrades to `hammer-admin-` plus 32 zeros.
@@ -974,7 +974,7 @@ mod tests {
     /// thread failed, skipped/failed case) is absent from the report, not a real-looking 0.0.
     #[test]
     fn unmeasured_cpu_is_absent_not_zero() {
-        let v = serde_json::to_value(CaseResult::default()).unwrap();
+        let v = sonic_rs::to_value(CaseResult::default()).unwrap();
         assert!(v.get("cpu_us_per_req").is_none(), "{v}");
         assert!(v.get("hammer_cpu_us_per_req").is_none(), "{v}");
     }
@@ -1098,7 +1098,7 @@ mod tests {
         UnparsedPublicKey::new(&ED25519, kp.public_key().as_ref())
             .verify(&body, &e.decode(sig).unwrap())
             .expect("re-signed with the deployment signing key over the new claims");
-        let v: Value = serde_json::from_slice(&body).unwrap();
+        let v: Value = sonic_rs::from_slice(&body).unwrap();
         assert_eq!(v["a"], "http://a/mcp");
         assert_eq!(v["g"], "grp");
         assert_eq!(v["sub"], "k1");

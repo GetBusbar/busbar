@@ -1873,7 +1873,7 @@ pub fn resolve(
                 None => {
                     let mut names: Vec<&str> =
                         resolved_providers.keys().map(String::as_str).collect();
-                    names.sort_unstable();
+                    names.sort();
                     errors.push(
                         coded::config_provider_reference_unknown(format!(
                         "{path} names '{provider_name}', which is not defined in the top-level \

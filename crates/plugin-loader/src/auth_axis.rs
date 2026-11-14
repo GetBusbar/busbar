@@ -263,7 +263,7 @@ impl AuthRows {
             row.manifest.alias.clone(),
         ];
         names.extend(stated_aliases(row));
-        names.sort_unstable();
+        names.sort();
         names.dedup();
         Some(busbar_contract::auth_calls::InboundStyle {
             module: row.manifest.name.clone(),
