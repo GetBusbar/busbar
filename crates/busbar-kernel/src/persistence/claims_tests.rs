@@ -532,3 +532,126 @@ async fn registered_scopes_rotate_and_retain_cancelled_pages_without_store_cycle
         "maintenance must not own an Arc back to its attachment"
     );
 }
+
+fn scans(backend: &Backend) -> usize {
+    backend.0.lock().unwrap().scans
+}
+
+/// Advance the local monotonic clock and the store clock together.
+async fn tick(backend: &Backend, seconds: u64) {
+    tokio::time::advance(std::time::Duration::from_secs(seconds)).await;
+    backend.0.lock().unwrap().now += seconds;
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_claim_scope_rests_after_complete_pass() {
+    let (backend, store) = fixture(20, 4096).await;
+    store.register_claim_scope("owner", "idle").unwrap();
+    for _ in 0..120 {
+        store.sweep_claim_scope().await.unwrap();
+        tick(&backend, 1).await;
+    }
+    assert!(
+        scans(&backend) <= 3,
+        "an empty scope rests between passes: {} scans in 120 s",
+        scans(&backend)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn rest_honours_earliest_expiry() {
+    let (backend, store) = fixture(20, 4096).await;
+    let claims = Claims::authorized(&store, "owner", "kind");
+    let soon = insert(&backend, &claims, "soon", 103);
+    let later = insert(&backend, &claims, "later", 130);
+    store.register_claim_scope("owner", "kind").unwrap();
+    assert_eq!(
+        store.sweep_claim_scope().await.unwrap(),
+        Some(SweepOutcome::Page {
+            scanned: 2,
+            deleted: 0,
+            complete: true
+        })
+    );
+    assert_eq!(scans(&backend), 1);
+    for _ in 0..3 {
+        tick(&backend, 1).await;
+        assert_eq!(store.sweep_claim_scope().await.unwrap(), None);
+    }
+    assert_eq!(scans(&backend), 1, "no scan before the earliest expiry");
+    tick(&backend, 1).await;
+    assert_eq!(
+        store.sweep_claim_scope().await.unwrap(),
+        Some(SweepOutcome::Page {
+            scanned: 2,
+            deleted: 1,
+            complete: true
+        })
+    );
+    assert_eq!(scans(&backend), 2);
+    assert!(!backend.0.lock().unwrap().rows.contains_key(&soon));
+    assert!(backend.0.lock().unwrap().rows.contains_key(&later));
+    for _ in 0..26 {
+        tick(&backend, 1).await;
+        assert_eq!(store.sweep_claim_scope().await.unwrap(), None);
+    }
+    assert_eq!(
+        scans(&backend),
+        2,
+        "the next pass waits for the +30 s expiry"
+    );
+    tick(&backend, 1).await;
+    store.sweep_claim_scope().await.unwrap();
+    assert_eq!(scans(&backend), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn late_sweep_never_redeems_lapsed_claim() {
+    let (backend, store) = fixture(20, 4096).await;
+    let claims = Claims::authorized(&store, "owner", "kind");
+    store.register_claim_scope("owner", "kind").unwrap();
+    assert_eq!(
+        store.sweep_claim_scope().await.unwrap(),
+        Some(SweepOutcome::Complete)
+    );
+    // The scope rests; a claim lapsing in 2 s is written into it.
+    assert_eq!(claims.redeem("token", 102).await.unwrap(), Outcome::Claimed);
+    tick(&backend, 5).await;
+    assert_eq!(store.sweep_claim_scope().await.unwrap(), None);
+    assert_eq!(scans(&backend), 1);
+    assert_eq!(
+        claims.redeem("lapsed", 102).await.unwrap(),
+        Outcome::Expired,
+        "redeem enforces lapse by its own TimeGuard, whatever the sweep timing"
+    );
+    let address = claims.address("token").unwrap();
+    for _ in 0..55 {
+        tick(&backend, 1).await;
+        store.sweep_claim_scope().await.unwrap();
+    }
+    assert!(
+        !backend.0.lock().unwrap().rows.contains_key(&address),
+        "the lapsed row is deleted within the maximum rest"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn rest_is_not_store_time() {
+    let (backend, store) = fixture(20, 4096).await;
+    backend.0.lock().unwrap().now = 1_000_000_000;
+    let claims = Claims::authorized(&store, "owner", "kind");
+    insert(&backend, &claims, "far", 1_000_000_000 + 1_000_000);
+    store.register_claim_scope("owner", "kind").unwrap();
+    store.sweep_claim_scope().await.unwrap();
+    assert_eq!(scans(&backend), 1);
+    tick(&backend, 59).await;
+    assert_eq!(store.sweep_claim_scope().await.unwrap(), None);
+    assert_eq!(scans(&backend), 1);
+    tick(&backend, 1).await;
+    store.sweep_claim_scope().await.unwrap();
+    assert_eq!(
+        scans(&backend),
+        2,
+        "the rest is capped by the maximum, not by store seconds"
+    );
+}
