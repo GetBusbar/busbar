@@ -109,21 +109,25 @@ fn accepted_over(pipe: &Arc<Pipe>, tls: Option<Arc<rustls::ServerConfig>>) -> Co
 
 /// An accepted TLS line over a pipe, and the rustls client on its far end.
 fn accepted_tls() -> (Connection, Arc<Pipe>, rustls::ClientConnection) {
-    crate::tls::install_crypto_provider();
     let ca = crate::test_support::private_ca();
     let anchor = crate::test_support::certs_from_pem(&ca.ca_pem).remove(0);
-    let server = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![ca.leaf_der.into()],
-            rustls_pki_types::PrivateKeyDer::try_from(ca.key_der).unwrap(),
-        )
-        .unwrap();
+    let server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![ca.leaf_der.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(ca.key_der).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
     let mut roots = rustls::RootCertStore::empty();
     roots.add(anchor.into()).unwrap();
-    let client = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let client = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::client_config(|b| {
+            Ok(b.with_root_certificates(roots).with_no_client_auth())
+        })
+        .unwrap(),
+    );
     let client = rustls::ClientConnection::new(
         Arc::new(client),
         rustls_pki_types::ServerName::try_from("localhost").unwrap(),

@@ -145,12 +145,7 @@ fn work(inner: &Inner) {
             inner.woken.notify_all();
             continue;
         }
-        let next = book
-            .kept
-            .iter()
-            .filter(|k| !k.running)
-            .map(|k| k.due)
-            .min();
+        let next = book.kept.iter().filter(|k| !k.running).map(|k| k.due).min();
         book = match next {
             Some(at) if !stopping() => {
                 inner
@@ -159,11 +154,13 @@ fn work(inner: &Inner) {
                     .unwrap_or_else(PoisonError::into_inner)
                     .0
             }
-            _ => inner
-                .woken
-                .wait_timeout(book, Duration::from_secs(60))
-                .unwrap_or_else(PoisonError::into_inner)
-                .0,
+            _ => {
+                inner
+                    .woken
+                    .wait_timeout(book, Duration::from_secs(60))
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
+            }
         };
     }
 }

@@ -63,122 +63,6 @@ fn imported_address(operation: &[u8; 16]) -> Address {
     };
     out
 }
-pub fn applied_disposition_authorizes(address: &Address) -> bool {
-    address.namespace == IMPORTED.0
-        && address.key.len() == 16
-        && address.key.iter().any(|byte| *byte != 0)
-}
-fn validate_original(event: &RecoveryEvent) -> Result<(), RecoveryError> {
-    let checked = match event.kind {
-        RecoveryKind::Usage => GovState::legacy_usage_values(event).map(|_| ()),
-        RecoveryKind::Metering => GovState::legacy_metering_values(event).map(|_| ()),
-        RecoveryKind::Correction => GovState::legacy_correction_fingerprint(event).map(|_| ()),
-    };
-    checked.map_err(|e| invalid_from(&e))
-}
-impl Disposition {
-    fn checked(proof: AppliedProof) -> Result<Self, RecoveryError> {
-        proof.initial.follows(None)?;
-        let initial = &proof.initial;
-        let selected = &proof.selected;
-        if initial.operation_id == [0; 16]
-            || initial.operation_id != selected.operation_id
-            || initial.kind != selected.kind
-            || initial.body_fingerprint != selected.body_fingerprint
-            || initial.first_sent_at_ms != selected.first_sent_at_ms
-            || (selected.revision == 0 && selected != initial)
-            || (selected.revision > 0 && selected.previous_event.is_none())
-            || !matches!(
-                selected.state,
-                RecoveryState::Intent
-                    | RecoveryState::Applied
-                    | RecoveryState::LandedUnknown
-                    | RecoveryState::VerdictLanded
-            )
-        {
-            return Err(invalid(
-                "imported Applied decision differs from original custody",
-            ));
-        }
-        validate_original(initial)?;
-        validate_original(selected)?;
-        let head: Head =
-            serde_json::from_slice(&proof.original_head).map_err(|e| invalid_from(&e))?;
-        if head.version != 1
-            || head.node == 0
-            || head.sequence == 0
-            || head.revision != selected.revision
-            || head.event_digest != selected.fingerprint()?
-        {
-            return Err(invalid(
-                "imported Applied decision names another selected head",
-            ));
-        }
-        let evidence = &proof.evidence;
-        if evidence.source_dataset == [0; 16]
-            || evidence.source_snapshot == [0; 16]
-            || evidence.upgrade == [0; 16]
-            || [
-                evidence.source_content_digest,
-                evidence.source_schema_digest,
-                evidence.fence_enforcement,
-                evidence.route,
-                evidence.receipt_evidence,
-                evidence.historical_body_digest,
-                evidence.recovery_closure_digest,
-            ]
-            .contains(&[0; 32])
-        {
-            return Err(invalid(
-                "imported Applied decision lacks checked source/fence/receipt facts",
-            ));
-        }
-        let mut hash = Sha256::new();
-        hash.update(b"busbar.recovery.imported-applied/1\0");
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: legacy recovery import runs only during startup upgrade adoption"
-        )]
-        hash.update(serde_json::to_vec(&proof).map_err(|e| invalid_from(&e))?);
-        Ok(Self {
-            version: 1,
-            proof,
-            digest: hash.finalize().into(),
-        })
-    }
-    fn decode(address: &Address, bytes: &[u8]) -> Result<Self, RecoveryError> {
-        let value: Self = serde_json::from_slice(bytes).map_err(|e| invalid_from(&e))?;
-        let checked = Self::checked(value.proof.clone())?;
-        if value != checked
-            || !applied_disposition_authorizes(address)
-            || address.key != value.proof.initial.operation_id
-        {
-            return Err(invalid("invalid imported Applied disposition"));
-        }
-        Ok(value)
-    }
-    fn resolution(&self, selected: &RecoveryEvent) -> RecoveryResolution {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: legacy recovery import runs only during startup upgrade adoption"
-        )]
-        let out = RecoveryResolution {
-            operation_id: selected.operation_id,
-            body_fingerprint: selected.body_fingerprint,
-            expected_revision: selected.revision,
-            verdict: RecoveryVerdict::Landed,
-            sender_quiesced: true,
-            backend_quiesced: true,
-            actor: "core migration".into(),
-            reason: format!(
-                "verified frozen Applied receipt {}",
-                hex::encode(self.digest)
-            ),
-        };
-        out
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChildDescriptor {
@@ -217,24 +101,6 @@ impl StoreRecovery {
     /// retains the original native attempt; the next call retries it before
     /// obtaining another clock observation. Competing processes always read
     /// the winning immutable descriptor rather than retaining their proposal.
-    async fn imported_context(
-        &self,
-        disposition: &Disposition,
-        disposition_raw: &Secret<Vec<u8>>,
-    ) -> Result<(ChildDescriptor, Predicate), RecoveryError> {
-        let operation = disposition.proof.initial.operation_id;
-        // busbar:expect(bp::clone_alloc, reason = "boot: legacy recovery import runs only during startup upgrade adoption")
-        self.context_for(
-            disposition.digest,
-            operation,
-            &Secret::new(disposition.proof.original_head.clone()),
-            &[Predicate {
-                address: imported_address(&operation),
-                expected: ExpectedValue::Exact(disposition_raw.clone()),
-            }],
-        )
-        .await
-    }
     async fn context_for(
         &self,
         provenance: [u8; 32],
@@ -350,7 +216,7 @@ impl StoreRecovery {
         ))
     }
 
-    pub(super) async fn adopt_imported(&self) -> Result<(), RecoveryError> {
+    pub(super) async fn adopt_pending(&self) -> Result<(), RecoveryError> {
         #[expect(
             clippy::disallowed_methods,
             reason = "boot: legacy recovery import runs only during startup upgrade adoption"
@@ -389,37 +255,7 @@ impl StoreRecovery {
                 .await?
                 .pop()
                 .flatten()
-            else {
-                continue;
-            };
-            let disposition = Disposition::decode(&imported, raw.expose(&crate::seal::lend()))?;
-            let original: Head = serde_json::from_slice(&disposition.proof.original_head)
-                .map_err(|e| invalid_from(&e))?;
-            if tip != original {
-                // A previous real adoption is reusable only through actual
-                // selected ancestry, never from fabricated quiescence facts.
-                let resolution = disposition.resolution(&disposition.proof.selected);
-                let mut history = History::new(&self.store);
-                let mut attested = false;
-                let selection = history
-                    .selection(&operation, &tip, |_, candidate| {
-                        attested |= candidate.adoption.as_ref().is_some_and(|proof| {
-                            proof.foreign_head == original && proof.matches(&resolution)
-                        });
-                        Ok(())
-                    })
-                    .await?;
-                history.finish().await?;
-                if !attested || selection.initial != disposition.proof.initial {
-                    return Err(invalid(
-                        "migrated Applied head lacks its selected adoption ancestry",
-                    ));
-                }
-                continue;
-            }
-            let selection = self.selection(&operation, &tip).await?;
-            if selection.initial != disposition.proof.initial
-                || selection.selected != disposition.proof.selected
+                .is_some()
             {
                 return Err(RecoveryError::Invalid(
                     "store carries a recovery disposition written by an unreleased 1.6.0-dev \
@@ -594,41 +430,4 @@ impl StoreRecovery {
         }
         Ok(())
     }
-}
-
-/// Emit BOTH the unchanged original selected head and its immutable disposition
-/// in one migration candidate. This never writes a native operation receipt or
-/// claims that an unsent remainder/authorized child is already settled.
-type ImportRows = Vec<(Address, Secret<Vec<u8>>)>;
-pub fn applied_disposition_rows(
-    initial: &RecoveryEvent,
-    selected: &RecoveryEvent,
-    original_head: &[u8],
-    evidence: &AppliedImportEvidence,
-) -> Result<ImportRows, RecoveryError> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: legacy recovery import runs only during startup upgrade adoption"
-    )]
-    let disposition = Disposition::checked(AppliedProof {
-        initial: initial.clone(),
-        selected: selected.clone(),
-        original_head: original_head.to_vec(),
-        evidence: evidence.clone(),
-    })?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: legacy recovery import runs only during startup upgrade adoption"
-    )]
-    let out = Ok(vec![
-        (
-            super::address(&selected.operation_id),
-            Secret::new(original_head.to_vec()),
-        ),
-        (
-            imported_address(&selected.operation_id),
-            Secret::new(serde_json::to_vec(&disposition).map_err(|e| invalid_from(&e))?),
-        ),
-    ]);
-    out
 }

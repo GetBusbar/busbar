@@ -4,7 +4,7 @@
 use super::*;
 
 fn advanced(yaml: &str) -> Result<crate::config::AdvancedCfg, String> {
-    serde_yaml::from_str(yaml).map_err(|e| e.to_string())
+    busbar_contract::yaml::from_str(yaml).map_err(|e| e.to_string())
 }
 
 #[test]
@@ -47,12 +47,19 @@ fn a_secret_store_reference_never_feeds_the_trust_store() {
 
 #[test]
 fn there_is_no_key_that_skips_verification() {
-    for key in ["insecure", "skip_verify", "verify", "danger_accept_invalid_certs"] {
-        let err = advanced(&format!("tls:\n  {key}: true\n"))
-            .expect_err("no key disables verification");
+    for key in [
+        "insecure",
+        "skip_verify",
+        "verify",
+        "danger_accept_invalid_certs",
+    ] {
+        let err =
+            advanced(&format!("tls:\n  {key}: true\n")).expect_err("no key disables verification");
         assert!(err.contains("unknown field"), "{key}: {err}");
-        let err = advanced(&format!("tls:\n  destinations:\n    - {{ match: a.example, {key}: true }}\n"))
-            .expect_err("no destination key disables verification");
+        let err = advanced(&format!(
+            "tls:\n  destinations:\n    - {{ match: a.example, {key}: true }}\n"
+        ))
+        .expect_err("no destination key disables verification");
         assert!(err.contains("unknown field"), "{key}: {err}");
     }
 }
@@ -66,8 +73,10 @@ fn an_unknown_roots_value_is_refused() {
 #[test]
 fn the_resolved_config_carries_the_store_as_written() {
     let mut deploy = crate::config::tests::base_deploy();
-    deploy.advanced = advanced("tls:\n  roots: none\n  destinations:\n    - { match: db.internal, plaintext: true }\n")
-        .expect("parses");
+    deploy.advanced = advanced(
+        "tls:\n  roots: none\n  destinations:\n    - { match: db.internal, plaintext: true }\n",
+    )
+    .expect("parses");
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new()).expect("resolve");
     assert_eq!(cfg.outbound_tls.roots, TlsRoots::None);
     assert_eq!(cfg.outbound_tls.plaintext_hosts(), ["db.internal"]);

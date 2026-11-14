@@ -177,8 +177,14 @@ impl AdmittedRefusal {
                 let present = request.client_token().is_some()
                     || (app.oauth_as.is_some()
                         && dpop::dpop_credential(request.original_headers()).is_some());
-                (if present { challenge::ChallengeError::InvalidToken } else { challenge::ChallengeError::Absent },
-                 "Authentication is required for this resource.")
+                (
+                    if present {
+                        challenge::ChallengeError::InvalidToken
+                    } else {
+                        challenge::ChallengeError::Absent
+                    },
+                    "Authentication is required for this resource.",
+                )
             }
         };
         Some(challenge::render(

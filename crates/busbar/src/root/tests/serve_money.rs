@@ -936,7 +936,10 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         upgrades: Vec::new(),
     };
     let mut sections = BTreeMap::new();
-    sections.insert("test_plane", serde_yaml::from_str("m: {}").expect("yaml"));
+    sections.insert(
+        "test_plane",
+        busbar_contract::yaml::from_str("m: {}").expect("yaml"),
+    );
     let doors = [(instance.to_string(), plane)];
     let served = compose_served_checked(
         Some(Arc::clone(&gov)),

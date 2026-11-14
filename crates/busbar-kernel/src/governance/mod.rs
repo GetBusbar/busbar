@@ -1740,10 +1740,7 @@ trait IntoStoreResult<T> {
 impl<T> IntoStoreResult<T> for Result<T, busbar_contract::crypto::RngError> {
     fn store(self) -> RecordStoreResult<T> {
         self.map_err(|e| {
-            rendered_error(
-                RecordStoreError,
-                format_args!("OS CSPRNG unavailable: {e}"),
-            )
+            rendered_error(RecordStoreError, format_args!("OS CSPRNG unavailable: {e}"))
         })
     }
 }

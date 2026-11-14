@@ -8,13 +8,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::hashing::Sha256;
 use busbar_contract::persistence::{
     control, witness, Address, AttemptId, Candidate, DatasetId, Decision, ExpectedValue, Failure,
     Mutation, NamespaceId, PersistenceBackend, Predicate, PreparedCandidate, Read, ReadResult,
     CANDIDATE_VERSION, MAX_SLOTS,
 };
 use busbar_contract::Secret;
-use crate::hashing::Sha256;
 use tokio::time::Instant;
 
 use super::{

@@ -371,21 +371,21 @@ impl LoadedSecret {
         settings: &[u8],
         secrets: &[SecretValue<Vec<u8>>],
     ) -> Result<Self, String> {
-        let owned: Vec<zeroize::Zeroizing<Vec<u8>>> =
-            match (secrets.is_empty(), dispatcher.seal()) {
-                (true, _) => Vec::new(),
-                (false, Some(seal)) => secrets
-                    .iter()
-                    .map(|s| zeroize::Zeroizing::new(s.expose(seal).clone()))
-                    .collect(),
-                (false, None) => {
-                    return Err(format!(
-                        "plugin '{}' open failed: its secret material is revealed only on a \
+        let owned: Vec<zeroize::Zeroizing<Vec<u8>>> = match (secrets.is_empty(), dispatcher.seal())
+        {
+            (true, _) => Vec::new(),
+            (false, Some(seal)) => secrets
+                .iter()
+                .map(|s| zeroize::Zeroizing::new(s.expose(seal).clone()))
+                .collect(),
+            (false, None) => {
+                return Err(format!(
+                    "plugin '{}' open failed: its secret material is revealed only on a \
                          dispatcher the host lent its seal",
-                        plugin.name()
-                    ));
-                }
-            };
+                    plugin.name()
+                ));
+            }
+        };
         let blobs = owned
             .iter()
             .map(|s| blob(s, BLOB_OCTETS, BLOB_SECRET))
@@ -601,7 +601,6 @@ impl LoadedSecret {
     }
 }
 
-
 impl SecretCalls for LoadedSecret {
     fn relends(&self) -> bool {
         self.relending.is_some()
@@ -667,7 +666,6 @@ impl SecretCalls for LoadedSecret {
     }
 
     fn resolve(&self, settings: &[u8]) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
-
         let name = self.name();
         if !matches!(self.disk, Disk::No) {
             return Err(refused_fmt(

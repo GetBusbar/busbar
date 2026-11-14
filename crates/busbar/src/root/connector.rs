@@ -178,8 +178,7 @@ pub fn install_trust_store(cfg: &RootCfg, report: bool) {
     if let Ok(rt) = tokio::runtime::Handle::try_current() {
         let swept = Arc::clone(&store);
         rt.spawn(async move {
-            let mut every =
-                tokio::time::interval(busbar_core_connector::tls::store::SWEEP_EVERY);
+            let mut every = tokio::time::interval(busbar_core_connector::tls::store::SWEEP_EVERY);
             every.tick().await;
             loop {
                 every.tick().await;

@@ -1035,8 +1035,6 @@ oauth-as = { version = "1.1", default-features = false, features = [
 # the `otlp` sink (GetBusbar/busbar-export-otlp) posts with the proto's publisher's types, never with the
 # sink's own encoder. Not in any shipped build.
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
-# DER minting on ring only. `pem` (and its base64 0.23) is a test-only need: the members whose tests
-# write PEM add the feature on their dev/test-support declaration.
 # `rmcp` (MCP's protocol-vocabulary crate) is STRUCK: its one member, `busbar-mcp`, is deleted (P3
 # DEL-MCP, ARCHITECT 2026-10-05), and `workspace-deps:no-orphans` refuses a pin nothing inherits.
 # The C header generator's parser (busbar-contract tests/abi_header). `span-locations` is harmless.

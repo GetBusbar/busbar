@@ -239,11 +239,11 @@ impl PinnedKeyVerifier {
     /// root store, as `advanced.tls.roots: none` with no anchor gives): a refusal, never a panic.
     pub(crate) fn try_new(roots: rustls::RootCertStore, pins: &[[u8; 32]]) -> Result<Self, String> {
         let inner = crypto_tls::server_verifier(Arc::new(roots)).map_err(|e| {
-                format!(
-                    "{}: no verifier can be built for this pinned destination: {e}",
-                    busbar_kernel::diagnostics::CONFIG_TLS_TRUST_EMPTY.banner()
-                )
-            })?;
+            format!(
+                "{}: no verifier can be built for this pinned destination: {e}",
+                busbar_kernel::diagnostics::CONFIG_TLS_TRUST_EMPTY.banner()
+            )
+        })?;
         Ok(Self {
             inner,
             pins: pins.iter().copied().collect(),

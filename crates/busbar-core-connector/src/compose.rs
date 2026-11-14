@@ -282,7 +282,8 @@ pub const CLEAR_WINDOW_BYTES: usize = 64;
 
 /// The refusal of a cleartext write past the negotiation window on a connection that must be
 /// secured before it carries anything else.
-pub const CLEAR_WINDOW_REFUSED: &str = "BUSBAR-3141: plaintext is not admitted to this destination: \
+pub const CLEAR_WINDOW_REFUSED: &str =
+    "BUSBAR-3141: plaintext is not admitted to this destination: \
      it is neither loopback nor an exact advanced.tls.destinations entry with plaintext: true, so \
      the connection must be secured before it carries application bytes";
 
@@ -740,9 +741,48 @@ impl std::fmt::Debug for Planned {
 
 impl Planned {
     /// The target names a host, the entry's `locate`, and the authority it named names one too.
-    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, mut dial: Dial) -> Result<Self, Failure> {
+    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, dial: Dial) -> Result<Self, Failure> {
+        Self::locate_carried(door, via, dial, None)
+    }
+
+    /// [`Planned::locate`], with the entry's answer already `carried` for this dial's target
+    /// (the one the attempt's head was completed with): the target was parsed and the entry
+    /// asked once, so neither repeats. `None` locates as [`Planned::locate`] does.
+    pub fn locate_carried(
+        door: Arc<dyn FramerDoor>,
+        via: Via,
+        dial: Dial,
+        carried: Option<framer::Located>,
+    ) -> Result<Self, Failure> {
+        let located = match carried {
+            Some(located) => located,
+            None => {
+                endpoint::named(&dial.target).map_err(refused)?;
+                framer::locate(door.as_ref(), &dial.target).map_err(refused)?
+            }
+        };
+        Self::checked(door, via, dial, located)
+    }
+
+    /// [`Planned::locate`] with the entry's answer already in hand (a declared target's kept
+    /// place, located by this very entry at deadline 0): the same checks, the same head.
+    pub fn located(
+        door: Arc<dyn FramerDoor>,
+        via: Via,
+        dial: Dial,
+        located: framer::Located,
+    ) -> Result<Self, Failure> {
         endpoint::named(&dial.target).map_err(refused)?;
-        let mut located = framer::locate(door.as_ref(), &dial.target).map_err(refused)?;
+        Self::checked(door, via, dial, located)
+    }
+
+    /// The located authority names a host, and the dial's opening is completed from the answer.
+    fn checked(
+        door: Arc<dyn FramerDoor>,
+        via: Via,
+        mut dial: Dial,
+        mut located: framer::Located,
+    ) -> Result<Self, Failure> {
         endpoint::named(&located.authority).map_err(refused)?;
         complete_opening(&mut dial, &mut located);
         Ok(Self {
@@ -913,7 +953,8 @@ impl Planned {
                 host.trim_start_matches('[').trim_end_matches(']'),
             )
             .map(|name| name.to_owned())
-            .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")))?;
+            .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")))
+            .map_err(target)?;
             Some(rustls::Connection::Client(unbounded(
                 rustls::ClientConnection::new(Arc::new(config), name)
                     .map_err(failed)
@@ -970,6 +1011,16 @@ fn offered_host(located: &framer::Located) -> &str {
             .rsplit_once(':')
             .map_or(located.authority.as_str(), |(h, _)| h)
     })
+}
+
+/// WHICH HOP OF A PROXIED DIAL FAILED: the target's own setup (its connection security), or the
+/// dial to the proxy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hop {
+    /// The target: its connection-security setup failed before any connect.
+    Target,
+    /// The proxy: the dial to it failed.
+    Proxy,
 }
 
 /// A dial's remaining addresses ([`Connection::fallback`]) and the carrier that dials them.
@@ -1083,6 +1134,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            failed_at_proxy: false,
             clear_window: None,
             fallback: None,
             alpn_offer: Vec::new(),
@@ -1142,6 +1194,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            failed_at_proxy: false,
             clear_window: None,
             fallback: None,
             alpn_offer: Vec::new(),
@@ -1306,6 +1359,7 @@ impl Connection {
             opening_owed: false,
             unfed: VecDeque::new(),
             tunnel: None,
+            failed_at_proxy: false,
             clear_window: None,
             fallback: None,
             alpn_offer,

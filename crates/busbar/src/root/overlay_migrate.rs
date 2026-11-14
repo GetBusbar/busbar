@@ -117,16 +117,16 @@ pub(crate) enum LegacySelection {
 
 pub(crate) fn legacy_selection(
     config_path: &Path,
-    document: &serde_yaml::Value,
+    document: &busbar_contract::yaml::Value,
     env: Option<&Path>,
 ) -> LegacySelection {
-    let management = &document["config"];
-    if management["locked"].as_bool() == Some(true) {
+    let management = document.at("config");
+    if management.at("locked").as_bool() == Some(true) {
         return LegacySelection::None;
     }
     let parent = config_path.parent().unwrap_or_else(|| Path::new("."));
     match management.get("overlay") {
-        None | Some(serde_yaml::Value::Null) => match env {
+        None | Some(busbar_contract::yaml::Value::Null) => match env {
             Some(path) => LegacySelection::File {
                 path: path.to_path_buf(),
                 by: SelectedBy::Env,
@@ -136,8 +136,10 @@ pub(crate) fn legacy_selection(
                 by: SelectedBy::Default,
             },
         },
-        Some(serde_yaml::Value::Mapping(_)) => {
-            match management["overlay"]["file"]
+        Some(busbar_contract::yaml::Value::Map(_)) => {
+            match management
+                .at("overlay")
+                .at("file")
                 .as_str()
                 .filter(|file| !file.is_empty())
             {
@@ -165,10 +167,10 @@ fn source_path(old_config: &Path, raw: &str, env: Option<&Path>) -> Result<PathB
     match legacy_selection(old_config, &value, env) {
         LegacySelection::File { path, .. } => Ok(path),
         LegacySelection::None => {
-            let management = &value["config"];
-            Err(if management["locked"].as_bool() == Some(true) {
+            let management = value.at("config");
+            Err(if management.at("locked").as_bool() == Some(true) {
                 "the old deployment was locked and did not consume an overlay"
-            } else if management["overlay"].is_mapping() {
+            } else if management.at("overlay").is_mapping() {
                 "old config.overlay.file is missing or invalid"
             } else {
                 "old config.overlay does not select a file backend"
@@ -193,11 +195,11 @@ impl Legacy {
         detection: &str,
         env: Option<&Path>,
     ) -> Result<Self, String> {
-        let document: serde_yaml::Value = serde_yaml::from_str(detection)
+        let document: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(detection)
             .map_err(|_| "the authored deployment is not valid YAML")?;
         let selection = legacy_selection(config_path, &document, env);
         let locked_leftover =
-            (document["config"]["locked"].as_bool() == Some(true)).then(|| match env {
+            (document.at("config").at("locked").as_bool() == Some(true)).then(|| match env {
                 Some(path) => (path.to_path_buf(), SelectedBy::Env),
                 None => (
                     config_path
@@ -680,7 +682,8 @@ mod tests {
                 file("/deployment/busbar-overlay.json", SelectedBy::Default),
             ),
         ] {
-            let document: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            let document: busbar_contract::yaml::Value =
+                busbar_contract::yaml::from_str(yaml).unwrap();
             assert_eq!(legacy_selection(config, &document, env), expected, "{yaml}");
         }
         let locked = Legacy::capture(config, "config: {locked: true}", None).unwrap();

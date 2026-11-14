@@ -422,8 +422,6 @@ mod member_tests;
 mod operation_tests;
 pub mod plugin_routes;
 
-pub mod profile;
-
 // busbar:request-path
 #[cfg_attr(
     not(test),
