@@ -188,10 +188,10 @@ impl SecureVec {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl SecureVec {
     /// The whole zero-initialised extent, consumed prefix and tail included (tests only).
-    pub(crate) fn allocation(&self) -> &[u8] {
+    pub fn allocation(&self) -> &[u8] {
         &self.v
     }
 }

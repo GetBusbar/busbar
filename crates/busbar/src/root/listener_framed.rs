@@ -13,6 +13,7 @@ use busbar_contract::abi::transport::{
 use busbar_core_connector::framer::{
     self, Established, FramerDoor, Framing, Got, GuestLines, Head, Yielded,
 };
+use busbar_core_connector::secure_vec::SecureVec;
 use bytes::Bytes;
 use foldhash::{HashMap, HashSet};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -27,6 +28,9 @@ pub use fixture::{data_framer, DATA_SCHEME};
 const READ_CHUNK: usize = 16 * 1024;
 
 const WRITE_ROOM: usize = 256 * 1024;
+
+/// The capacity a drained reply buffer keeps; above it, a drained buffer gives its memory back.
+const OUT_KEEP: usize = 64 * 1024;
 
 pub const FIRST_BYTE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -514,7 +518,8 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     /// The connection's socket peer, stamped on every operator request it carries.
     peer: Option<std::net::SocketAddr>,
 
-    out: VecDeque<u8>,
+    /// Reply bytes for the peer: one contiguous run whose written prefix is wiped (T7b).
+    out: SecureVec,
 
     read_done: bool,
 
@@ -684,7 +689,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             let y = framing.finish(reason);
             let staged = self.staged.take().is_some();
             if !self.prewire && !staged {
-                self.out.extend(y.wire.iter().copied());
+                absorb_wire(&mut self.out, &mut self.failed, &y.wire);
             }
         }
         while !self.out.is_empty() && !self.failed {
@@ -902,7 +907,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
 
     fn flush(&mut self, cx: &mut Context<'_>) -> bool {
         let mut moved = false;
-        while !self.out.is_empty() {
+        while !self.out.is_empty() && !self.failed {
             match self.write_some(cx) {
                 Poll::Ready(true) => moved = true,
                 Poll::Ready(false) => return true,
@@ -916,19 +921,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     }
 
     fn write_some(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
-        let (front, _) = self.out.as_slices();
-        match Pin::new(&mut self.io).poll_write(cx, front) {
-            Poll::Ready(Ok(0)) | Poll::Ready(Err(_)) => {
-                self.failed = true;
-                self.out.clear();
-                Poll::Ready(false)
-            }
-            Poll::Ready(Ok(n)) => {
-                self.out.drain(..n);
-                Poll::Ready(true)
-            }
-            Poll::Pending => Poll::Pending,
-        }
+        write_some(&mut self.out, &mut self.failed, Pin::new(&mut self.io), cx)
     }
 
     fn timer(&mut self, cx: &mut Context<'_>) -> bool {
@@ -2026,6 +2019,53 @@ async fn refuse_data(
         );
     }
 }
+
+/// Queue a framer's reply wire. A buffer that cannot grow fails the connection: `failed` is set,
+/// one WARN is logged, and what was queued is wiped, so no partial reply is ever written (the
+/// peer sees a reset, never a truncated reply that looks complete).
+fn absorb_wire(out: &mut SecureVec, failed: &mut bool, wire: &[u8]) {
+    if *failed {
+        return;
+    }
+    if let Err(e) = out.extend(wire) {
+        tracing::warn!(
+            target: "busbar::listener",
+            error = %e,
+            "reply buffer allocation failed; connection closed"
+        );
+        *failed = true;
+        out.clear();
+    }
+}
+
+/// One write of the reply buffer's contiguous run; what the peer took is wiped. `false` = the
+/// connection failed.
+fn write_some<W: AsyncWrite + Unpin>(
+    out: &mut SecureVec,
+    failed: &mut bool,
+    io: Pin<&mut W>,
+    cx: &mut Context<'_>,
+) -> Poll<bool> {
+    match io.poll_write(cx, out.as_slice()) {
+        Poll::Ready(Ok(0)) | Poll::Ready(Err(_)) => {
+            *failed = true;
+            out.clear();
+            Poll::Ready(false)
+        }
+        Poll::Ready(Ok(n)) => {
+            out.consume(n);
+            if out.is_empty() {
+                out.shrink_when_empty(OUT_KEEP);
+            }
+            Poll::Ready(true)
+        }
+        Poll::Pending => Poll::Pending,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/listener_out_tests.rs"]
+mod out_tests;
 
 #[path = "listener_operator.rs"]
 mod operator;
