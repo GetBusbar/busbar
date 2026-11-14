@@ -251,7 +251,7 @@ const TICKET_SIGNING_ROTATED: &str = "ticket_signing_rotated";
 /// native record. Prepare and redeem take it by reference and never verify it again.
 pub(crate) struct VerifiedTicket {
     prefix: String,
-    credential: zeroize::Zeroizing<String>,
+    credential: busbar_contract::secure::SecureString,
     id: String,
     claims: super::signing::TokenClaims,
     material: Arc<SigningMaterial>,
@@ -984,13 +984,15 @@ impl GovState {
             &id,
             prefix,
         );
-        let mut identity = VerifiedTicketIdentity {
+        let identity = VerifiedTicketIdentity {
             id,
             principal: key,
             expires_at: exp,
             store: core.clone(),
             prefix: prefix.into(),
-            credential: zeroize::Zeroizing::new(format!("{prefix}{body}")),
+            credential: busbar_contract::secure::SecureString::from_args(format_args!(
+                "{prefix}{body}"
+            )),
         };
         if let Err(why) = bind(&identity) {
             let cleanup = Request {
@@ -1047,7 +1049,7 @@ impl GovState {
             }
             return Err(why);
         }
-        Ok((std::mem::take(&mut *identity.credential), exp))
+        Ok((identity.credential.into_string(), exp))
     }
     /// Verify a door ticket's signature and parse its claims: the one place a ticket is verified
     /// (SP-AU3). The key it names must stand now. Every later check reads the result through
@@ -1076,7 +1078,7 @@ impl GovState {
         Some((
             VerifiedTicket {
                 prefix: prefix.into(),
-                credential: zeroize::Zeroizing::new(credential.into()),
+                credential: busbar_contract::secure::SecureString::from(credential),
                 id,
                 claims,
                 material,

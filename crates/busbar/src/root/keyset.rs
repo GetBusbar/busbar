@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::secure::{SecureArray, SecureString};
 use busbar_kernel::persistence::boot_identity::BootIdentity;
-use zeroize::Zeroizing;
 
 use busbar_contract::caps::{DurableWrite, Grant, StepName};
 use busbar_kernel::registry::{bootstrap, BootstrapVerdict};
@@ -98,10 +98,10 @@ pub fn bootstrap_fingerprint(body: &[u8]) -> Option<[u8; 32]> {
     BodyReader::new(body).bytes()?.try_into().ok()
 }
 
-fn mint_seed_hex() -> Result<Zeroizing<String>, KeysetError> {
-    let mut seed = Zeroizing::new([0u8; 32]);
-    busbar_contract::crypto::fill(seed.as_mut()).map_err(|_| KeysetError::NoEntropy)?;
-    Ok(Zeroizing::new(hex::encode(*seed)))
+fn mint_seed_hex() -> Result<SecureString, KeysetError> {
+    let mut seed = SecureArray::<32>::zeroed();
+    busbar_contract::crypto::fill(&mut seed[..]).map_err(|_| KeysetError::NoEntropy)?;
+    Ok(SecureString::from(hex::encode(&seed[..])))
 }
 
 async fn sealed_fingerprint(durability: &Durability) -> Result<Option<[u8; 32]>, KeysetError> {
@@ -167,7 +167,7 @@ pub async fn bind(
         .stored_keyset()
         .await
         .map_err(KeysetError::Store)?
-        .map(Zeroizing::new);
+        .map(SecureString::from);
     let held = held
         .map(|seed| {
             AuditSigningKey::from_hex_seed(&seed)
@@ -191,7 +191,7 @@ pub async fn bind(
                 Some(key) => key,
                 None => {
                     let offered = mint_seed_hex()?;
-                    let seed = Zeroizing::new(
+                    let seed = SecureString::from(
                         identity
                             .keep_keyset(&offered)
                             .await

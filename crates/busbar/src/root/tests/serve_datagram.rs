@@ -223,7 +223,7 @@ pub(crate) mod peer {
     }
 
     /// Exercise the real transport door; fixtures never construct plugin internals.
-    pub(crate) fn offer_description() -> zeroize::Zeroizing<Vec<u8>> {
+    pub(crate) fn offer_description() -> busbar_contract::secure::SecureVec {
         let (_framing, yielded) = DatagramFraming::dial(
             super::real::loaded(),
             Arc::new(SessionCert::mint().unwrap()),
@@ -233,7 +233,7 @@ pub(crate) mod peer {
             0,
         )
         .expect("the real WebRTC door offers a data channel");
-        zeroize::Zeroizing::new(description(&yielded))
+        busbar_contract::secure::SecureVec::from(description(&yielded))
     }
 
     // The WebRTC ABI assigns media line n stream 2^32 + n; this is a fixture's

@@ -45,7 +45,8 @@ use crate::abi::mechanism::call::{
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
 use crate::redacted::{OwnerSeal, Secret};
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use crate::secure::{SecureString, SecureVec};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Public scope of host-held outbound custody. Connection identity carries no authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -638,12 +639,12 @@ impl<K: KindMarker> Services<K> {
     {
         let mut size = TICKET_FIRST_BYTES;
         for _ in 0..2 {
-            let mut buf = Zeroizing::new(vec![0_u8; size]);
+            let mut buf = SecureVec::zeroed(size);
             let input = TicketMintIn {
                 head: head::<TicketMintIn>(op::TICKET_MINT, handle),
                 ttl_secs,
                 record: blob(record, BLOB_OCTETS),
-                into: bufs(buf.as_mut_slice(), &mut []),
+                into: bufs(&mut buf[..], &mut []),
             };
             if check_ticket_mint_in(&input).is_err() {
                 return Poll::Ready(Err(ServiceError::Declined(Outcome::Refused).into()));
@@ -1279,7 +1280,7 @@ impl<K: KindMarker> Services<K> {
     {
         let mut sizes = (SECRET_FIRST_BYTES, 1_usize);
         for _ in 0..2 {
-            let mut buf = Zeroizing::new(vec![0_u8; sizes.0]);
+            let mut buf = SecureVec::zeroed(sizes.0);
             let mut spans = vec![
                 ItemSpan {
                     key: Span { offset: 0, len: 0 },
@@ -1291,7 +1292,7 @@ impl<K: KindMarker> Services<K> {
                 head: head::<RecordsSecretIn>(op::RECORDS_SECRET, handle),
                 kind: text(kind),
                 id: text(id),
-                into: bufs(buf.as_mut_slice(), spans.as_mut_slice()),
+                into: bufs(&mut buf[..], spans.as_mut_slice()),
             };
             let crossed = self.cross(
                 op::RECORDS_SECRET,
@@ -1319,7 +1320,7 @@ impl<K: KindMarker> Services<K> {
                 .get(..out.items as usize)
                 .and_then(<[ItemSpan]>::first)
                 .and_then(|s| present(&buf[..out.len as usize], s.value))
-                .map(|b| Zeroizing::new(b.to_vec()));
+                .map(SecureVec::from);
             return Poll::Ready(secret.ok_or(ServiceError::Broken).map(|secret| {
                 CredentialSecret {
                     secret,
@@ -2073,7 +2074,7 @@ impl<K: KindMarker> Services<K> {
         let fields = view_fields(request);
         let (mut cap, mut spans_cap) = (AUTH_CALL_BYTES, AUTH_CALL_SPANS);
         for _ in 0..2 {
-            let mut buf = Zeroizing::new(vec![0u8; cap]);
+            let mut buf = SecureVec::zeroed(cap);
             let mut spans = vec![
                 FieldSpan {
                     name: Span { offset: 0, len: 0 },
@@ -2537,7 +2538,7 @@ pub struct Signature<'b> {
 
 /// What `records.secret` answered: a credential's secret, in a holder the plugin owns that wipes
 pub struct CredentialSecret {
-    secret: Zeroizing<Vec<u8>>,
+    secret: SecureVec,
     live: bool,
 }
 
@@ -2690,9 +2691,9 @@ mod snapshot {
                 };
                 sample.name = text(laid, s.name)??;
                 for l in list::<ScrapeLabel>(laid, s.labels, s.labels_len)? {
-                    let mut key = zeroize::Zeroizing::new(text(laid, l.key)??);
+                    let key = SecureString::from(text(laid, l.key)??);
                     let value = text(laid, l.value)??;
-                    sample.labels.push((std::mem::take(&mut *key), value));
+                    sample.labels.push((key.into_string(), value));
                 }
                 sample.value = text(laid, s.value)??;
                 family.samples.push(sample);

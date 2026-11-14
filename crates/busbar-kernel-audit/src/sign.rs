@@ -125,8 +125,8 @@ fn from_hex_exact<const N: usize>(text: &str) -> Result<[u8; N], KeyError> {
     if text.bytes().any(|c| c.is_ascii_uppercase()) {
         return Err(KeyError::NotHex);
     }
-    let mut out = zeroize::Zeroizing::new([0u8; N]);
-    hex::decode_to_slice(text, &mut *out).map_err(|_| KeyError::NotHex)?;
+    let mut out = busbar_contract::secure::SecureArray::<N>::zeroed();
+    hex::decode_to_slice(text, &mut out[..]).map_err(|_| KeyError::NotHex)?;
     Ok(*out)
 }
 

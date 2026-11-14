@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::auth_calls::FieldsRequest;
+use busbar_contract::secure::SecureVec;
 use busbar_contract::services::Stored;
 use busbar_contract::Secret;
-use zeroize::Zeroizing;
 
 thread_local! {
     static WATCH: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
@@ -125,7 +125,7 @@ fn the_live_payload_observer_distinguishes_plain_and_zeroized_buffers() {
     watch(&plain);
     drop(plain);
     assert_eq!(WIPED.with(Cell::get), Some(false));
-    let wiped = Zeroizing::new(b"wiped-initialized-control".to_vec());
+    let wiped = SecureVec::from(b"wiped-initialized-control".to_vec());
     watch(&wiped);
     drop(wiped);
     assert_eq!(WIPED.with(Cell::get), Some(true));

@@ -18,6 +18,7 @@ use busbar_contract::abi::{
     plane::{self, OnPieceOut},
     sdk::plane::observation as wire,
 };
+use busbar_contract::secure::SecureVec;
 use std::sync::atomic::Ordering;
 
 const KEYS: &[&str] = &[
@@ -31,7 +32,7 @@ const KEYS: &[&str] = &[
 pub(crate) struct Input {
     input: *mut InHead,
     original: Blob,
-    _bytes: zeroize::Zeroizing<Vec<u8>>,
+    _bytes: SecureVec,
 }
 
 impl Drop for Input {
@@ -137,7 +138,7 @@ pub(crate) unsafe fn prepare(
     else {
         return Ok(None);
     };
-    let supplied = zeroize::Zeroizing::new(supplied);
+    let supplied = SecureVec::from(supplied);
     let original = head.extensions;
     if original.len > HARD_MAX_BYTES as usize || (original.len != 0 && original.fmt != BLOB_OCTETS)
     {
@@ -150,7 +151,7 @@ pub(crate) unsafe fn prepare(
     let bytes = if prior.is_empty() {
         supplied
     } else {
-        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(length));
+        let mut bytes = SecureVec::with_capacity(length).map_err(|_| ())?;
         bytes.extend_from_slice(prior);
         bytes.extend_from_slice(&supplied);
         bytes

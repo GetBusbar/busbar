@@ -4,6 +4,7 @@ use crate::{archive_source::Grouping, legacy::group::LogicalGroup};
 use busbar_contract::persistence::{
     axis::OpenedBackend, lifecycle::*, BackendInfo, DatasetId, Durability,
 };
+use busbar_contract::secure::SecureVec;
 use std::{
     io::{ErrorKind, SeekFrom},
     sync::{
@@ -11,11 +12,10 @@ use std::{
         Mutex,
     },
 };
-use zeroize::Zeroizing;
 
-struct MemoryWriter(Zeroizing<Vec<u8>>);
+struct MemoryWriter(SecureVec);
 struct MemoryReader {
-    bytes: Zeroizing<Vec<u8>>,
+    bytes: SecureVec,
     position: u64,
 }
 impl Write for MemoryWriter {
@@ -63,7 +63,7 @@ impl Seek for MemoryReader {
 struct Factory;
 impl SpoolFactory for Factory {
     fn create(&self) -> io::Result<Box<dyn SourceSpool>> {
-        Ok(Box::new(MemoryWriter(Zeroizing::new(Vec::new()))))
+        Ok(Box::new(MemoryWriter(SecureVec::new())))
     }
 }
 fn source() -> SourceIdentity {

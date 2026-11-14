@@ -9,7 +9,11 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::task::Poll;
 
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
+
+use crate::secure::SecureVec;
+
+pub use super::wipe::ResponseHead;
 
 use crate::abi::host::conn::connector::{
     ReplyPiece, RequestPiece, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD, REQUEST_BODY,
@@ -123,14 +127,14 @@ impl Zeroize for ExchangeResponse {
 )]
 pub struct ProtectedResponse {
     /// Public status, reason and fields; its body is always empty when returned by the exchange.
-    pub head: Zeroizing<ExchangeResponse>,
+    pub head: ResponseHead,
     /// Protected response bytes, consumed by credential recipes such as `select_json`.
     pub body: super::cred::Held<Vec<u8>>,
 }
 
 impl From<ExchangeResponse> for ProtectedResponse {
     fn from(reply: ExchangeResponse) -> Self {
-        let mut head = Zeroizing::new(reply);
+        let mut head = ResponseHead::new(reply);
         let body = super::cred::Held::new(std::mem::take(&mut head.body));
         Self { head, body }
     }
@@ -166,14 +170,14 @@ impl Zeroize for Ack {
 enum Sending {
     Framed {
         /// The head's method, target and field block, one after another.
-        head: Zeroizing<Vec<u8>>,
+        head: SecureVec,
         head_piece: Box<RequestPiece>,
-        body: Zeroizing<Vec<u8>>,
+        body: SecureVec,
         body_piece: Box<RequestPiece>,
         end_piece: Box<RequestPiece>,
         timeout_ms: u64,
     },
-    Raw(Zeroizing<Vec<u8>>),
+    Raw(SecureVec),
 }
 
 impl std::fmt::Debug for Sending {
@@ -220,7 +224,7 @@ impl std::fmt::Debug for Exchange {
 #[derive(Clone)]
 pub struct PreparedRequest {
     /// The method, the target, then each plain field's framed line, one after another.
-    head: Zeroizing<Vec<u8>>,
+    head: SecureVec,
     method: usize,
     target: usize,
     /// Where each plain field's line ends in `head`, in order.
@@ -245,7 +249,6 @@ impl PreparedRequest {
     /// is ignored) and the sealed field names, refusing exactly what [`Exchange::request_sealed`]
     /// refuses for them.
     pub fn new(request: Request, sealed: Vec<(usize, Vec<u8>)>) -> Result<Self, ConnFailure> {
-        let request = Zeroizing::new(request);
         for (_, name) in &sealed {
             if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
                 return Err(ConnFailure::Refused(format!(
@@ -276,7 +279,7 @@ impl PreparedRequest {
                 name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len()
             })
             .sum();
-        let mut head = Zeroizing::new(Vec::with_capacity(m + t + block));
+        let mut head = SecureVec::from(Vec::with_capacity(m + t + block));
         head.extend_from_slice(&request.method);
         head.extend_from_slice(&request.target);
         let mut lines = Vec::with_capacity(request.fields.len());
@@ -287,13 +290,16 @@ impl PreparedRequest {
             head.extend_from_slice(fields::LINE_END);
             lines.push(head.len());
         }
+        let timeout_ms = request.timeout_ms;
+        // The request wipes itself as it drops, now that its head is framed.
+        drop(request);
         Ok(Self {
             head,
             method: m,
             target: t,
             lines,
             sealed,
-            timeout_ms: request.timeout_ms,
+            timeout_ms,
         })
     }
 }
@@ -305,7 +311,7 @@ pub struct Exchange {
     /// on drop every byte a read may have written.
     buf: ReadBuf,
     slot: Box<ReplyPiece>,
-    reply: Zeroizing<ExchangeResponse>,
+    reply: ResponseHead,
     code: u32,
     /// The reply's head (or the transport's ack) was received: `code` is its status
     head_seen: bool,
@@ -423,7 +429,7 @@ impl Exchange {
             sending,
             buf: ReadBuf::default(),
             slot: Box::default(),
-            reply: Zeroizing::default(),
+            reply: ResponseHead::default(),
             code: 0,
             head_seen: false,
             applied: 0,
@@ -617,18 +623,17 @@ impl Exchange {
 
     /// [`Exchange::request_sealed`] whose body is `body` (a form with sealed values,
     pub fn request_with(
-        request: Request,
+        mut request: Request,
         sealed: Vec<SealedField>,
         body: Option<crate::abi::sdk::cred::SealedWrite>,
     ) -> Result<Self, ConnFailure> {
-        let mut request = Zeroizing::new(request);
         let secure_required = sealed.iter().any(|(_, _, s)| s.secure_required())
             || body
                 .as_ref()
                 .is_some_and(crate::abi::sdk::cred::SealedWrite::secure_required);
         if let Some(mut b) = body {
             request.body.zeroize();
-            request.body = std::mem::take(&mut *b.buf);
+            request.body = std::mem::take(&mut b.buf).into_vec();
         }
         for (_, name, _) in &sealed {
             if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
@@ -701,7 +706,7 @@ impl Exchange {
                 &[name, fields::SEPARATOR, value, fields::LINE_END],
             );
         }
-        let mut head = Zeroizing::new(vec![0_u8; m + t + block]);
+        let mut head = SecureVec::zeroed(m + t + block);
         let mut len = 0;
         fill(
             &mut head,
@@ -738,11 +743,13 @@ impl Exchange {
         let mut ex = Self::over(Sending::Framed {
             head,
             head_piece,
-            body: Zeroizing::new(std::mem::take(&mut request.body)),
+            body: SecureVec::from(std::mem::take(&mut request.body)),
             body_piece: piece(REQUEST_BODY),
             end_piece: piece(REQUEST_END),
             timeout_ms: request.timeout_ms,
         });
+        // What is left of the request wipes itself as it drops.
+        drop(request);
         ex.sealed_lines = sealed_lines;
         ex.secure_required = secure_required;
         Ok(ex)
@@ -758,7 +765,7 @@ impl Exchange {
         sealed: Vec<crate::abi::sdk::cred::Seal>,
         body: Vec<u8>,
     ) -> Result<Self, ConnFailure> {
-        let body = Zeroizing::new(body);
+        let body = SecureVec::from(body);
         if sealed.len() != prepared.sealed.len() {
             return Err(ConnFailure::Refused(format!(
                 "the prepared request names {} sealed fields and was given {}",
@@ -786,7 +793,7 @@ impl Exchange {
             })
             .sum();
         let block_at = prepared.method + prepared.target;
-        let mut head = Zeroizing::new(Vec::with_capacity(prepared.head.len() + sealed_bytes));
+        let mut head = SecureVec::from(Vec::with_capacity(prepared.head.len() + sealed_bytes));
         head.extend_from_slice(&prepared.head[..block_at]);
         let mut sealed_lines = Vec::new();
         let mut index = 0;
@@ -836,7 +843,7 @@ impl Exchange {
     /// An exchange sending `bytes` as they are, over any transport ([`send_and_ack`]).
     #[must_use]
     pub fn send(bytes: Vec<u8>) -> Self {
-        Self::over(Sending::Raw(Zeroizing::new(bytes)))
+        Self::over(Sending::Raw(SecureVec::from(bytes)))
     }
 
     /// THE FIELDS THIS EXCHANGE FRAMES, read back off the head it sends: `(name, value)`, in
@@ -1320,7 +1327,7 @@ pub struct Inspection {
 /// An operation failure with the reply head received before the failure, when one arrived.
 pub struct ExchangeFailure {
     cause: OpFailure,
-    head: Option<Zeroizing<ExchangeResponse>>,
+    head: Option<ResponseHead>,
 }
 
 impl ExchangeFailure {
@@ -1705,7 +1712,7 @@ impl<'a, K: KindMarker> Op<'a, K> {
             Poll::Ready(Ok(reply)) => Poll::Ready(Ok(reply)),
             Poll::Ready(Err(cause)) => {
                 let head = state.head_status().map(|status| {
-                    Zeroizing::new(ExchangeResponse {
+                    ResponseHead::new(ExchangeResponse {
                         status,
                         reason: state.reply.reason.take(),
                         fields: std::mem::take(&mut state.reply.fields),

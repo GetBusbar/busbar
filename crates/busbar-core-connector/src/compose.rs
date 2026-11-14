@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroize as _;
 
 use busbar_contract::abi::host::conn::connector::{
     CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
@@ -297,7 +297,7 @@ pub const CLEAR_WINDOW_REFUSED: &str =
 /// One write held back until the framing takes it: its stream, bytes, whether they end the
 struct Early {
     stream: u64,
-    bytes: Zeroizing<Vec<u8>>,
+    bytes: SecureVec,
     end: bool,
     text: bool,
     body_len: Option<u64>,
@@ -379,7 +379,7 @@ impl Early {
     fn of(stream: u64, bytes: &[u8], end: bool, text: bool) -> Self {
         Self {
             stream,
-            bytes: Zeroizing::new(bytes.to_vec()),
+            bytes: SecureVec::from(bytes),
             end,
             text,
             body_len: None,
@@ -391,7 +391,7 @@ impl Early {
 /// A dial's first message as it goes to the wire: the entry's encoding of it (wiped on drop), or,
 /// over a carrier carried as itself, the body as the caller handed it.
 enum Message {
-    Encoded(Zeroizing<Vec<u8>>),
+    Encoded(SecureVec),
     Body(Bytes),
 }
 
@@ -1541,11 +1541,14 @@ impl Connection {
         opening: Option<Opening>,
         (method, target): HeadWords,
     ) -> Result<Option<Message>, Failure> {
-        let target = Zeroizing::new(target);
+        let target = SecureVec::from(target);
         let Some((fields, body)) = opening else {
             return Ok(None);
         };
-        let fields = Zeroizing::new(fields);
+        let fields: Vec<(String, SecureVec)> = fields
+            .into_iter()
+            .map(|(name, value)| (name, SecureVec::from(value)))
+            .collect();
         if fields.is_empty() && body.is_empty() && method.is_empty() && target.is_empty() {
             return Ok(None);
         }
@@ -1562,7 +1565,7 @@ impl Connection {
         lent.extend(fields.iter().map(|(n, v)| (n.as_str(), v.as_slice())));
         let encoded =
             framer::encode_head(door.as_ref(), &method, &target, &lent, &body).map_err(refused)?;
-        Ok(Some(Message::Encoded(Zeroizing::new(encoded))))
+        Ok(Some(Message::Encoded(SecureVec::from(encoded))))
     }
 
     /// The length of the body a DIALLED request opens with, for the framer's emit of its head
@@ -2674,7 +2677,7 @@ impl Connection {
 
     /// Take what the framer answered: its wire bytes to the socket (through TLS), its pieces to
     fn absorb(&mut self, mut y: Yielded) -> Result<(), Failure> {
-        let mut wire = Zeroizing::new(std::mem::take(&mut y.wire));
+        let mut wire = SecureVec::from(std::mem::take(&mut y.wire));
         if !wire.is_empty() {
             let spliced = self.tls.is_some() && self.seals.pending();
             if spliced {

@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::task::Poll;
 
-use zeroize::Zeroizing;
+use crate::secure::SecureVec;
 
 use crate::abi::auth::{
     AuthPoint, AuthPoints, AuthTail, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, OpenOutboundIn,
@@ -226,7 +226,7 @@ struct Staged {
 pub struct FieldsWriter<'a> {
     bytes: HostBuf<'a, u8>,
     spans: HostBuf<'a, FieldSpan>,
-    staged: Zeroizing<Vec<u8>>,
+    staged: SecureVec,
     fields: Vec<Staged>,
     secure: bool,
     sealed_supported: bool,
@@ -247,7 +247,7 @@ impl<'a> FieldsWriter<'a> {
         Self {
             bytes: input.field_buf(),
             spans: input.fields(),
-            staged: Zeroizing::new(Vec::new()),
+            staged: SecureVec::new(),
             fields: Vec::new(),
             secure: false,
             sealed_supported: extensions::get(
@@ -304,7 +304,7 @@ impl<'a> FieldsWriter<'a> {
 
     /// Append `b` to the staging bytes. Growing moves them into a new allocation and drops the old
     fn stage(&mut self, b: &[u8]) {
-        crate::secure::append(&mut self.staged, b);
+        self.staged.extend_from_slice(b);
     }
 
     /// WRITE the staged fields into the host's buffers and answer READY, or, when they do not fit,

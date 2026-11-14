@@ -382,9 +382,9 @@ type Building = BTreeMap<(u8, SnapshotName), BTreeMap<Key, Series>>;
 
 fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>, String)>) {
     let name = SnapshotName(key.name().to_owned());
-    let labels = zeroize::Zeroizing::new(labels_of(key));
+    let mut labels = labels_of(key);
     let samples = lines.into_iter().map(|(suffix, quantile, value)| {
-        let mut sample_labels = (*labels).clone();
+        let mut sample_labels = labels.clone();
         sample_labels.extend(quantile.map(|q| (QUANTILE_LABEL.to_string(), q)));
         Sample {
             // One exact allocation (LINT-RULES LR-117).
@@ -397,10 +397,11 @@ fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>
     series.insert(
         key.clone(),
         Series {
-            labels: (*labels).clone(),
+            labels: labels.clone(),
             samples: samples.collect(),
         },
     );
+    zeroize::Zeroize::zeroize(&mut labels);
 }
 
 impl Source {

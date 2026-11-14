@@ -11,9 +11,10 @@ pub mod spool;
 
 use super::{legacy_row, source_fence::CaptureFence};
 use crate::crypto::Sha256;
+use crate::secure::SecureVec;
 use crate::Secret;
 use std::io::{Read, Seek, SeekFrom, Write};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 /// Initial archive envelope version; independent of the source physical schema.
 pub const VERSION: u32 = 1;
@@ -621,8 +622,8 @@ pub struct ArchiveRow<O = crate::redacted::Kernel> {
 }
 struct RowBuffers {
     table: u32,
-    key: Zeroizing<Vec<u8>>,
-    value: Zeroizing<Vec<u8>>,
+    key: SecureVec,
+    value: SecureVec,
 }
 
 impl<R: Read + Seek> VerifiedArchive<R> {
@@ -673,15 +674,11 @@ impl<R: Read + Seek> VerifiedArchive<R> {
     }
     /// Seek and revalidate one original frame before copying protected cells.
     pub fn read_row(&mut self, ordinal: u64) -> Result<ArchiveRow, Error> {
-        let RowBuffers {
-            table,
-            mut key,
-            mut value,
-        } = self.read_row_buffers(ordinal)?;
+        let RowBuffers { table, key, value } = self.read_row_buffers(ordinal)?;
         Ok(ArchiveRow {
             table,
-            native_key: Secret::new(std::mem::take(&mut *key)),
-            value: Secret::new(std::mem::take(&mut *value)),
+            native_key: Secret::new(key.into_vec()),
+            value: Secret::new(value.into_vec()),
         })
     }
     /// Revalidate an original frame into the reading owner's wiping custody.
@@ -690,15 +687,11 @@ impl<R: Read + Seek> VerifiedArchive<R> {
         &mut self,
         ordinal: u64,
     ) -> Result<ArchiveRow<O>, Error> {
-        let RowBuffers {
-            table,
-            mut key,
-            mut value,
-        } = self.read_row_buffers(ordinal)?;
+        let RowBuffers { table, key, value } = self.read_row_buffers(ordinal)?;
         Ok(ArchiveRow {
             table,
-            native_key: Secret::held(std::mem::take(&mut *key)),
-            value: Secret::held(std::mem::take(&mut *value)),
+            native_key: Secret::held(key.into_vec()),
+            value: Secret::held(value.into_vec()),
         })
     }
     fn read_row_buffers(&mut self, ordinal: u64) -> Result<RowBuffers, Error> {
@@ -715,17 +708,16 @@ impl<R: Read + Seek> VerifiedArchive<R> {
             .try_reserve_exact(entry.length)
             .map_err(|_| Error::Allocation)?;
         bytes.resize(entry.length, 0);
-        let mut bytes = Zeroizing::new(bytes);
+        let mut bytes = SecureVec::from(bytes);
         self.source.read_exact(&mut bytes).map_err(io)?;
         if digest(&bytes) != entry.hash {
             return Err(Error::Integrity);
         }
         let (table, key, value) = row_parts(&bytes, &self.header)?;
-        let copy = |src: &[u8]| -> Result<Zeroizing<Vec<u8>>, Error> {
-            let mut out = Zeroizing::new(Vec::new());
-            out.try_reserve_exact(src.len())
-                .map_err(|_| Error::Allocation)?;
-            crate::secure::append(&mut out, src);
+        let copy = |src: &[u8]| -> Result<SecureVec, Error> {
+            // Exact size, allocated once: the copy never grows.
+            let mut out = SecureVec::with_capacity(src.len()).map_err(|_| Error::Allocation)?;
+            out.extend_from_slice(src);
             Ok(out)
         };
         Ok(RowBuffers {
@@ -745,7 +737,7 @@ fn get<R: Read>(
     count: &mut u64,
     length: usize,
     limits: Limits,
-) -> Result<Zeroizing<Vec<u8>>, Error> {
+) -> Result<SecureVec, Error> {
     let next = count.checked_add(length as u64).ok_or(Error::Budget)?;
     if next > limits.total_bytes || length > limits.frame_bytes.max(41) {
         return Err(Error::Budget);
@@ -756,7 +748,7 @@ fn get<R: Read>(
         .try_reserve_exact(length)
         .map_err(|_| Error::Allocation)?;
     bytes.resize(length, 0);
-    let mut bytes = Zeroizing::new(bytes);
+    let mut bytes = SecureVec::from(bytes);
     source.read_exact(&mut bytes).map_err(io)?;
     hash.update(&bytes);
     *count = next;

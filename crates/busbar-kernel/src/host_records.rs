@@ -284,8 +284,8 @@ impl std::fmt::Debug for ConditionalOwed {
 #[derive(Debug)]
 pub(crate) struct ConditionalWrite {
     pub instance: Arc<str>,
-    pub request: zeroize::Zeroizing<conditional::Request>,
-    pub chains: zeroize::Zeroizing<Vec<crate::host_chains::ConditionalChain>>,
+    pub request: conditional::Request,
+    pub chains: Vec<crate::host_chains::ConditionalChain>,
     pub owed: ConditionalOwed,
     _unit: Option<Arc<crate::host_units::UnitRecord>>,
     prepared: bool,
@@ -298,8 +298,8 @@ pub(crate) struct ConditionalWrite {
 impl ConditionalWrite {
     pub(crate) fn new(
         instance: Arc<str>,
-        request: zeroize::Zeroizing<conditional::Request>,
-        chains: zeroize::Zeroizing<Vec<crate::host_chains::ConditionalChain>>,
+        request: conditional::Request,
+        chains: Vec<crate::host_chains::ConditionalChain>,
         owed: ConditionalOwed,
         unit: Option<Arc<crate::host_units::UnitRecord>>,
     ) -> Self {
@@ -627,7 +627,7 @@ impl ConditionalWrite {
             // Discovery may await between chains. Publish the complete plan to
             // retained queue custody only after every chain has been prepared;
             // cancellation cannot append a second copy to a partial request.
-            let mut request = zeroize::Zeroizing::new((*self.request).clone());
+            let mut request = self.request.clone();
             // busbar:expect(bp::fresh_buffer, reason = "config: a conditional write's chain positions are prepared once, on the write-behind flusher")
             let mut positions = Vec::new();
             for chain in self.chains.iter() {

@@ -34,13 +34,13 @@ impl UserinfoBasic {
         }
         let user = user.expose(&seal);
         let pass = pass.as_ref().map(|p| p.expose(&seal));
-        let mut plain = zeroize::Zeroizing::new(Vec::with_capacity(
+        let mut plain = busbar_contract::secure::SecureVec::from(Vec::with_capacity(
             user.len() + 1 + pass.map_or(0, |p| p.len()),
         ));
-        busbar_contract::secure::append(&mut plain, user.as_bytes());
-        busbar_contract::secure::append(&mut plain, b":");
+        plain.extend_from_slice(user.as_bytes());
+        plain.extend_from_slice(b":");
         if let Some(pass) = pass {
-            busbar_contract::secure::append(&mut plain, pass.as_bytes());
+            plain.extend_from_slice(pass.as_bytes());
         }
         Some(Self(Arc::new(Secret::new(basic_value(&plain)))))
     }

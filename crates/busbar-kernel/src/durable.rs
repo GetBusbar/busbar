@@ -19,7 +19,7 @@ pub struct DurableOpts {
 /// Opaque platform metadata is protected checkpoint material, never a public manifest.
 pub enum DocumentInspection {
     Original {
-        metadata: zeroize::Zeroizing<Vec<u8>>,
+        metadata: busbar_contract::secure::SecureVec,
         read_only: bool,
     },
     Converted,

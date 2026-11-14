@@ -20,7 +20,6 @@ use oauth_as::store::{RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
 
 pub(crate) const LABEL: &str = "\u{1}oauth_as\u{1}";
 
@@ -299,7 +298,7 @@ impl Shared {
         }
     }
 
-    async fn submit(&self, request: Arc<Zeroizing<Request>>) -> Result<Decision, StorageError> {
+    async fn submit(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
         let oversized = request.mutations.iter().any(|mutation| matches!(mutation,
             Mutation::Put {schema,value,..} if schema.ends_with(".atomic.v1") && value.len()>MAX_LOGICAL_CELL_BYTES
         )) || request.predicates.iter().any(|predicate| matches!(&predicate.expected,
@@ -426,8 +425,8 @@ impl Shared {
         id: &str,
         expected: Option<Vec<u8>>,
         value: Vec<u8>,
-    ) -> Arc<Zeroizing<Request>> {
-        Arc::new(Zeroizing::new(Request {
+    ) -> Arc<Request> {
+        Arc::new(Request {
             version: busbar_contract::host_records::conditional::VERSION,
             op_id: busbar_kernel::door::op_id(),
             predicates: vec![Predicate {
@@ -440,7 +439,7 @@ impl Shared {
                 key: id.as_bytes().to_vec(),
                 value,
             }],
-        }))
+        })
     }
 
     async fn bucket_indexes(
@@ -699,7 +698,7 @@ impl Shared {
         }
         let schema = Self::schema(name);
         self.settle(&schema, Some(id.as_bytes())).await?;
-        self.submit(Arc::new(Zeroizing::new(Request {
+        self.submit(Arc::new(Request {
             version: busbar_contract::host_records::conditional::VERSION,
             op_id: busbar_kernel::door::op_id(),
             predicates: vec![],
@@ -708,7 +707,7 @@ impl Shared {
                 key: id.as_bytes().to_vec(),
                 value: body,
             }],
-        })))
+        }))
         .await
         .map(drop)
     }
@@ -756,7 +755,7 @@ impl Shared {
         }
         let schema = Self::schema(name);
         self.settle(&schema, Some(id.as_bytes())).await?;
-        self.submit(Arc::new(Zeroizing::new(Request {
+        self.submit(Arc::new(Request {
             version: busbar_contract::host_records::conditional::VERSION,
             op_id: busbar_kernel::door::op_id(),
             predicates: vec![],
@@ -764,7 +763,7 @@ impl Shared {
                 schema,
                 key: id.as_bytes().to_vec(),
             }],
-        })))
+        }))
         .await
         .map(drop)
     }

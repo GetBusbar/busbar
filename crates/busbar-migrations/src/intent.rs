@@ -781,7 +781,7 @@ impl StoreIntent {
         head[152..160].copy_from_slice(&header.original.execution_epoch.to_le_bytes());
         bytes.extend(&head).map_err(|_| Error::Bounds)?;
         bytes.extend(snapshot).map_err(|_| Error::Bounds)?;
-        Ok(Secret::new(std::mem::take(&mut *bytes.into_zeroizing())))
+        Ok(Secret::new(bytes.into_vec()))
     }
 
     fn decode(

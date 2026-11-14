@@ -3,9 +3,10 @@
 
 //! A CONFIGURED URL'S CREDENTIAL, KEPT TO ITS ONE USE: the pieces the export and hook sinks that
 
+use crate::secure::{SecureString, SecureVec};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 /// What a cut part reads as.
 const CUT: &str = "***";
@@ -59,11 +60,11 @@ pub fn basic_authorization(
     password: Option<&str>,
     read: Userinfo,
 ) -> Option<String> {
-    let username = Zeroizing::new(percent_decode(username.as_bytes()));
+    let username = SecureVec::from(percent_decode(username.as_bytes()));
     if username.contains(&b':') {
         return None;
     }
-    let password = password.map(|p| Zeroizing::new(percent_decode(p.as_bytes())));
+    let password = password.map(|p| SecureVec::from(percent_decode(p.as_bytes())));
     let password = match read {
         Userinfo::Octets => password,
         Userinfo::Utf8 => {
@@ -76,7 +77,7 @@ pub fn basic_authorization(
     }
 
     // One exact allocation (`concat`): the wiping buffer never grows (LINT-RULES LR-117).
-    let user_pass = Zeroizing::new(
+    let user_pass = SecureVec::from(
         [
             &username[..],
             b":",
@@ -86,7 +87,7 @@ pub fn basic_authorization(
     );
     #[cfg(test)]
     tests::watch_scratch(&user_pass);
-    let encoded = Zeroizing::new(STANDARD.encode(&*user_pass));
+    let encoded = SecureString::from(STANDARD.encode(&*user_pass));
     #[cfg(test)]
     tests::watch_scratch(encoded.as_bytes());
     #[expect(
@@ -163,7 +164,7 @@ pub fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
     let decoded: Vec<String> = parts
         .iter()
         .map(|p| {
-            let decoded = Zeroizing::new(percent_decode(p.as_bytes()));
+            let decoded = SecureVec::from(percent_decode(p.as_bytes()));
             String::from_utf8_lossy(&decoded).into_owned()
         })
         .collect();
@@ -174,32 +175,29 @@ pub fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
 /// `text` (a host's failure words, say, which may quote a URL or a setting) with each of `parts`
 #[must_use]
 pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
-    let mut parts = Zeroizing::new(parts);
+    // Each part wipes itself; the list's own block holds only pointers and lengths.
+    let mut held = Vec::with_capacity(parts.len());
+    for part in parts {
+        held.push(SecureString::from(part));
+    }
+    let mut parts = held;
     #[cfg(test)]
-    for part in &*parts {
+    for part in &parts {
         tests::watch_scratch(part.as_bytes());
     }
     if quoted {
-        // Exact capacity, so it never reallocates; the strings' own blocks never move, and the
-        // list is wiping again once it replaces `parts` (LINT-RULES LR-117).
+        // Exact capacity, so it never reallocates; the strings' own blocks never move, and each
+        // escaped form is built in custody (LINT-RULES LR-117).
         let mut expanded = Vec::with_capacity(parts.len() * 2);
         for part in parts.iter_mut() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a failure text, scrubbed once on its way to a diagnostic"
-            )]
-            let escaped = Zeroizing::new(format!("{part:?}"));
+            let escaped = SecureString::from_args(format_args!("{:?}", part.as_str()));
             #[cfg(test)]
             tests::watch_scratch(escaped.as_bytes());
             expanded.push(std::mem::take(part));
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: a failure text, scrubbed once on its way to a diagnostic"
-            )]
-            let inner = escaped[1..escaped.len() - 1].to_string();
+            let inner = SecureString::from(&escaped[1..escaped.len() - 1]);
             expanded.push(inner);
         }
-        parts = Zeroizing::new(expanded);
+        parts = expanded;
     }
     #[expect(
         clippy::disallowed_methods,
@@ -220,26 +218,22 @@ pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
             false
         }
     });
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "error: a failure text, scrubbed once on its way to a diagnostic"
-    )]
-    let mut out = Zeroizing::new(text.to_string());
+    let mut out = SecureString::from(text);
     #[cfg(test)]
     tests::watch_scratch(out.as_bytes());
-    for p in &*parts {
+    for p in &parts {
         if out.contains(p.as_str()) {
             #[expect(
                 clippy::disallowed_methods,
                 reason = "error: a failure text, scrubbed once on its way to a diagnostic"
             )]
             let cut = out.replace(p.as_str(), CUT);
-            out = Zeroizing::new(cut);
+            out = SecureString::from(cut);
             #[cfg(test)]
             tests::watch_scratch(out.as_bytes());
         }
     }
-    std::mem::take(&mut *out)
+    out.into_string()
 }
 
 #[cfg(test)]

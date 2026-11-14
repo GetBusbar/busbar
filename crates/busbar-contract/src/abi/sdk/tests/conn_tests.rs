@@ -412,8 +412,10 @@ fn a_sealed_framed_body_checks_security_before_sending_any_credential_bytes() {
         kind: REQUEST_BODY,
         ..RequestPiece::ZERO
     };
-    let required =
-        Cred::captured(zeroize::Zeroizing::new(b"CANARY-request-body".to_vec())).require_secure();
+    let required = Cred::captured(crate::secure::SecureVec::from(
+        b"CANARY-request-body".to_vec(),
+    ))
+    .require_secure();
     let refused = Poll::Ready(Err(ConnFailure::Refused(NOT_SECURE.into())));
 
     REQUEST_SECURITY.store(3, Ordering::SeqCst);
@@ -476,7 +478,7 @@ fn a_sealed_framed_body_checks_security_before_sending_any_credential_bytes() {
         refused
     );
     assert!(SEALED_REQUESTS.lock().unwrap().is_empty());
-    let free = Cred::captured(zeroize::Zeroizing::new(b"allowed-in-clear".to_vec()));
+    let free = Cred::captured(crate::secure::SecureVec::from(b"allowed-in-clear".to_vec()));
     assert_eq!(
         SealedWrite::message(free.field()).request(&mut missing.connector(TICKET), 7, &body),
         Poll::Ready(Ok(free.len()))

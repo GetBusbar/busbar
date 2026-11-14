@@ -7,10 +7,10 @@
 //! Templates retain the fill source selected at admission, without pretending to be a plugin.
 
 use crate::plugin_settings::Settings;
+use crate::secure::SecureString;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use zeroize::Zeroizing;
 
 pub mod context;
 
@@ -49,15 +49,13 @@ impl FillSource {
 #[serde(deny_unknown_fields)]
 pub struct TemplateReference {
     #[serde(deserialize_with = "template_text")]
-    text: Zeroizing<String>,
+    text: SecureString,
     source: FillSource,
 }
-fn template_text<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Zeroizing<String>, D::Error> {
+fn template_text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SecureString, D::Error> {
     let mut held = crate::plugin_settings::Tree::deserialize(deserializer)?;
     match &mut held.0 {
-        serde_json::Value::String(text) => Ok(Zeroizing::new(std::mem::take(text))),
+        serde_json::Value::String(text) => Ok(SecureString::from(std::mem::take(text))),
         _ => Err(de::Error::custom(
             "template text must be a string (value not echoed)",
         )),
@@ -127,7 +125,7 @@ impl SecretRef {
             .with_role(crate::abi::mechanism::door::SUGAR_ROLE_FILL)
             .ok_or("no admitted source declares the template fill role")?;
         Ok(Self::Template(TemplateReference {
-            text: Zeroizing::new(text.into()),
+            text: SecureString::from(text.into()),
             source: FillSource {
                 module: source.module().to_owned(),
                 setting: source.setting.clone(),
@@ -341,7 +339,7 @@ impl<'de> Deserialize<'de> for SecretRef {
                 let mut module: Option<String> = None;
                 let mut settings: Option<Settings> = None;
                 let mut template: Option<TemplateReference> = None;
-                while let Some(key) = map.next_key::<Zeroizing<String>>()? {
+                while let Some(key) = map.next_key::<SecureString>()? {
                     match key.as_str() {
                         // serde_json's exact-number transport: an inline numeric literal.
                         context::JSON_NUMBER_TOKEN => {

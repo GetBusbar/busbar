@@ -83,8 +83,8 @@ macro_rules! hyper_io {
             }
 
             /// Share bytes while retaining their wiping owner until the last view drops.
-            pub fn held_bytes(bytes: ::zeroize::Zeroizing<Vec<u8>>) -> Buf {
-                struct Held(::zeroize::Zeroizing<Vec<u8>>);
+            pub fn held_bytes(bytes: $crate::secure::SecureVec) -> Buf {
+                struct Held($crate::secure::SecureVec);
                 impl AsRef<[u8]> for Held {
                     fn as_ref(&self) -> &[u8] {
                         self.0.as_slice()
@@ -639,18 +639,18 @@ mod wiping_tests {
     #[test]
     fn shared_body_owner_wipes_growth_and_only_releases_the_last_view() {
         use crate::alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
-        use zeroize::Zeroizing;
         // SAFETY: registered buffer allocations stay exclusively owned on this thread through
         // growth and final view drop, and their registered prefixes remain initialized.
         let probe = unsafe { InitializedPayloadProbe::start().unwrap() };
-        let mut body = Zeroizing::new(Vec::with_capacity(1));
+        let mut body = Vec::with_capacity(1);
         hyper_io::extend_wiped(&mut body, b"a");
         // SAFETY: the initialized prefix starts at the owned allocation base.
         unsafe { watch_initialized_payload(&body) };
         hyper_io::extend_wiped(&mut body, b" private body");
         // SAFETY: this is the initialized prefix of the replacement allocation.
         unsafe { watch_initialized_payload(&body) };
-        let bytes = hyper_io::held_bytes(body);
+        // Adopted without a copy: the wiping owner keeps the watched allocation.
+        let bytes = hyper_io::held_bytes(crate::secure::SecureVec::from(body));
         let view = bytes.slice(2..);
         drop(bytes);
         assert_eq!(&view[..], b"private body");

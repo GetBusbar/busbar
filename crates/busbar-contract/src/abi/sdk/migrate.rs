@@ -32,8 +32,8 @@ use crate::plugin::KindMarker;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 
+use crate::secure::{SecureString, SecureVec};
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
 
 use crate::abi::mechanism::call::{AbiStr, OutHead, Outcome};
 use crate::abi::mechanism::lifecycle::ValidateIn;
@@ -370,8 +370,8 @@ impl CredentialMigration {
     ) -> Result<MigratedCredential, CredentialRefusal> {
         let path = match self.action {
             CredentialMigrationStep::Unchanged => None,
-            CredentialMigrationStep::UseFile => Some(zeroize::Zeroizing::new(
-                path.ok_or(CredentialRefusal)?.expose(seal).clone(),
+            CredentialMigrationStep::UseFile => Some(SecureString::from(
+                path.ok_or(CredentialRefusal)?.expose(seal).as_str(),
             )),
             CredentialMigrationStep::ReadFile => return Err(CredentialRefusal),
         };
@@ -384,7 +384,7 @@ impl CredentialMigration {
 /// fn inspect(answer: busbar_contract::abi::sdk::migrate::MigratedCredential) { let _ = answer.path; }
 /// ```
 pub struct MigratedCredential {
-    path: Option<zeroize::Zeroizing<String>>,
+    path: Option<SecureString>,
 }
 impl std::fmt::Debug for MigratedCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -497,12 +497,17 @@ impl<M: Migrate> RawSlot for Migrator<M> {
                 .and_then(|credential| {
                     M::migrate_credential(credential, &String::from_utf8_lossy(from))
                 })
-                .and_then(|answer| serde_json::to_vec(&answer).map_err(|_| CredentialRefusal));
+                .and_then(|answer| {
+                    // Encoded in custody: every growth on the way wipes the block it leaves.
+                    let mut bytes = SecureVec::new();
+                    serde_json::to_writer(&mut bytes, &answer).map_err(|_| CredentialRefusal)?;
+                    Ok(bytes)
+                });
             match result {
-                Ok(bytes) => (Outcome::Ready, Zeroizing::new(bytes)),
+                Ok(bytes) => (Outcome::Ready, bytes),
                 Err(_) => (
                     Outcome::Refused,
-                    Zeroizing::new(b"credential migration refused".to_vec()),
+                    SecureVec::from(b"credential migration refused".as_slice()),
                 ),
             }
         } else {
@@ -515,16 +520,17 @@ impl<M: Migrate> RawSlot for Migrator<M> {
                         M::migrate(section, &from)
                     };
                     match migrated.wire() {
-                        Ok(mut bytes) => {
-                            (Outcome::Ready, Zeroizing::new(std::mem::take(&mut bytes.0)))
-                        }
+                        Ok(mut bytes) => (
+                            Outcome::Ready,
+                            SecureVec::from(std::mem::take(&mut bytes.0)),
+                        ),
                         Err(e) => (
                             Outcome::Refused,
-                            Zeroizing::new(format!("migrate: {e}").into_bytes()),
+                            SecureString::from_args(format_args!("migrate: {e}")).into_bytes(),
                         ),
                     }
                 }
-                Err(e) => (Outcome::Refused, Zeroizing::new(e.into_bytes())),
+                Err(e) => (Outcome::Refused, SecureVec::from(e.into_bytes())),
             }
         };
 

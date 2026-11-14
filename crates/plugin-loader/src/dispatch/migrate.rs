@@ -6,6 +6,7 @@ use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot, ValidateIn};
 use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::abi::sdk::migrate::{read_answer, MigrationAnswer};
+use busbar_contract::secure::SecureVec;
 
 pub const ANSWER_CAP: usize = 4 * 1024 * 1024;
 
@@ -32,11 +33,12 @@ fn settings_migration(
     from: &str,
     references: bool,
 ) -> Result<Option<MigrationAnswer>, String> {
+    let mut section = SecureVec::new();
     #[expect(
         clippy::disallowed_methods,
         reason = "config: a cold settings migration"
     )]
-    let section = zeroize::Zeroizing::new(serde_json::to_vec(settings).map_err(|e| e.to_string())?);
+    serde_json::to_writer(&mut section, settings).map_err(|e| e.to_string())?;
     let Some((outcome, answer)) = call_migration(door, &section, BLOB_JSON, from, references)?
     else {
         return Ok(None);
@@ -99,7 +101,7 @@ fn complete_credential_migration(
     // This is the sole file operation admitted by this protocol: the exact original
     // credential-derived filename, anchored to process cwd. The owner cannot replace it.
     let cwd = std::env::current_dir().map_err(|_| refused())?;
-    let encoded = zeroize::Zeroizing::new(
+    let encoded = SecureVec::from(
         cwd.join(credential.expose(seal))
             .into_os_string()
             .into_encoded_bytes(),
@@ -139,23 +141,29 @@ fn read_credential_file(
         // A FIFO substituted after metadata must not block while being opened.
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let file = options.open(path)?;
+    let mut file = options.open(path)?;
     let held = file.metadata()?;
     if !held.is_file() || held.len() > ANSWER_CAP as u64 {
         return Err(refuse());
     }
-    let mut bytes = zeroize::Zeroizing::new(Vec::new());
-    file.take(ANSWER_CAP as u64 + 1).read_to_end(&mut bytes)?;
-    if bytes.len() > ANSWER_CAP {
+    let mut bytes = SecureVec::zeroed(ANSWER_CAP + 1);
+    let mut filled = 0;
+    while filled < bytes.len() {
+        match file.read(&mut bytes[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if filled > ANSWER_CAP {
         return Err(refuse());
     }
-    Ok(busbar_contract::Secret::new(std::mem::take(&mut *bytes)))
+    bytes.truncate(filled);
+    Ok(busbar_contract::Secret::new(bytes.into_vec()))
 }
 
-type MigrationWireAnswer = (
-    busbar_contract::abi::mechanism::call::Outcome,
-    zeroize::Zeroizing<Vec<u8>>,
-);
+type MigrationWireAnswer = (busbar_contract::abi::mechanism::call::Outcome, SecureVec);
 
 fn call_migration(
     door: RawDoorFn,
@@ -178,7 +186,7 @@ fn call_migration(
     let Some(op) = (unsafe { Door::read_migrate(p) }) else {
         return Ok(None);
     };
-    let mut answer = zeroize::Zeroizing::new(vec![0u8; ANSWER_CAP]);
+    let mut answer = SecureVec::zeroed(ANSWER_CAP);
     let mut head = super::in_head();
     head.size = size_of::<ValidateIn>() as u32;
     head.op = slot::MIGRATE;
@@ -249,11 +257,7 @@ fn call_migration(
         )]
         return Err("its migrate named an answer outside the host's buffer".to_string());
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a cold migration's answer outlives its lent buffer"
-    )]
-    let answer = zeroize::Zeroizing::new(bytes.to_vec());
+    let answer = SecureVec::from(bytes);
     Ok(Some((outcome, answer)))
 }
 
@@ -265,14 +269,9 @@ pub fn validate_migrated_door(door: RawDoorFn, settings: &serde_json::Value) -> 
     let admitted =
         super::load::validate_any(p).map_err(|_| "current migration plugin admission failed")?;
     let op = admitted.slots[slot::VALIDATE as usize];
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a cold migrated-settings check"
-    )]
-    let section = zeroize::Zeroizing::new(
-        serde_json::to_vec(settings).map_err(|_| "cannot encode migrated settings")?,
-    );
-    let mut answer = zeroize::Zeroizing::new(vec![0u8; ANSWER_CAP]);
+    let mut section = SecureVec::new();
+    serde_json::to_writer(&mut section, settings).map_err(|_| "cannot encode migrated settings")?;
+    let mut answer = SecureVec::zeroed(ANSWER_CAP);
     let mut head = super::in_head();
     head.size = size_of::<ValidateIn>() as u32;
     head.op = slot::VALIDATE;

@@ -42,7 +42,7 @@ pub fn command(args: impl Iterator<Item = String>) -> Result<Option<PathBuf>, &'
     Ok(input)
 }
 
-fn bounded_bytes(path: &Path) -> Result<Vec<u8>, String> {
+fn bounded_bytes(path: &Path) -> Result<busbar_contract::secure::SecureVec, String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|_| "cannot inspect overlay migration input")?;
     if !metadata.is_file() || metadata.len() > MAX_BYTES {
@@ -55,10 +55,19 @@ fn bounded_bytes(path: &Path) -> Result<Vec<u8>, String> {
     if !metadata.is_file() || metadata.len() > MAX_BYTES {
         return Err("overlay migration input changed or exceeds the size limit".into());
     }
-    let mut bytes = Vec::new();
-    file.take(MAX_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "cannot read overlay migration input")?;
+    let mut bytes = busbar_contract::secure::SecureVec::new();
+    let mut input = file.take(MAX_BYTES + 1);
+    loop {
+        let read = bytes
+            .read_into(64 * 1024, busbar_contract::secure::Tail::Wipe, |region| {
+                input.read(region)
+            })
+            .map_err(|_| "cannot read overlay migration input")?
+            .map_err(|_| "cannot read overlay migration input")?;
+        if read == 0 {
+            break;
+        }
+    }
     if bytes.len() as u64 > MAX_BYTES {
         return Err("overlay migration input exceeds the size limit".into());
     }
@@ -71,15 +80,16 @@ fn old_document(raw: &str) -> Result<busbar_contract::yaml::Value, String> {
     let document: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str(raw).map_err(|_| "old configuration is not valid YAML")?;
     if let Some(management) = document.get("config") {
-        let selector = zeroize::Zeroizing::new(
+        let selector = busbar_contract::secure::SecureString::from(
             busbar_contract::yaml::to_string(management)
                 .map_err(|_| "cannot encode old overlay selector")?,
         );
-        let _resolved_selector = zeroize::Zeroizing::new(config::interpolate_env(&selector)?);
+        let _resolved_selector =
+            busbar_contract::secure::SecureString::from(config::interpolate_env(&selector)?);
     }
     // Expand the original text, preserving quoted versus unquoted scalar semantics.
     // This document is used only for selection; the migrator receives the original text.
-    let expanded = zeroize::Zeroizing::new(config::interpolate_env_with(
+    let expanded = busbar_contract::secure::SecureString::from(config::interpolate_env_with(
         raw,
         config::EnvSubst::Lenient,
         &mut Vec::new(),
@@ -239,7 +249,7 @@ fn classify(path: &Path) -> FileState {
         Ok(_) => {}
     }
     let bytes = match bounded_bytes(path) {
-        Ok(bytes) => zeroize::Zeroizing::new(bytes),
+        Ok(bytes) => bytes,
         Err(error) => return FileState::Unreadable(error),
     };
     let mut overlay = match busbar_migrations::config::overlay_legacy::parse_legacy_overlay(&bytes)
@@ -474,7 +484,7 @@ pub fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), Str
         Err(_) => return Err("cannot inspect the old deployment's overlay".into()),
         Ok(_) => {}
     }
-    let bytes = zeroize::Zeroizing::new(bounded_bytes(&path)?);
+    let bytes = bounded_bytes(&path)?;
     let overlay = busbar_migrations::config::overlay_legacy::parse_legacy_overlay(&bytes)?;
     let Some(store) = overlay
         .get("root")
@@ -505,7 +515,7 @@ pub async fn run(
     core: &Arc<CoreStore>,
     locked: bool,
 ) -> Result<(), String> {
-    let old_bytes = zeroize::Zeroizing::new(bounded_bytes(old_config)?);
+    let old_bytes = bounded_bytes(old_config)?;
     let old_text = std::str::from_utf8(&old_bytes).map_err(|_| "old configuration is not UTF-8")?;
     let old_document = old_document(old_text)?;
     if old_document.at("config").at("locked").as_bool() == Some(true) {
@@ -532,8 +542,8 @@ pub async fn run(
             "overlay migration requires a Store instance that confirms durable persistence".into(),
         );
     }
-    let bytes = zeroize::Zeroizing::new(bounded_bytes(&path)?);
-    let current = zeroize::Zeroizing::new(bounded_bytes(current_config)?);
+    let bytes = bounded_bytes(&path)?;
+    let current = bounded_bytes(current_config)?;
     let current =
         std::str::from_utf8(&current).map_err(|_| "current configuration is not UTF-8")?;
     let host = super::config_migrate::RootHost::for_document(current, current_config);
@@ -573,11 +583,15 @@ pub async fn run(
     config::overlay::merge_into(&mut effective, doc.clone());
     busbar_kernel::config_validate::validate(&effective)
         .map_err(|_| "migrated effective configuration failed validation")?;
-    let mut source = zeroize::Zeroizing::new(Vec::new());
-    busbar_contract::secure::append(&mut source, b"busbar.overlay.source.1.5.5\0");
-    busbar_contract::secure::append(&mut source, &(old_bytes.len() as u64).to_be_bytes());
-    busbar_contract::secure::append(&mut source, &old_bytes);
-    busbar_contract::secure::append(&mut source, &bytes);
+    const SOURCE_TAG: &[u8] = b"busbar.overlay.source.1.5.5\0";
+    let mut source = busbar_contract::secure::SecureVec::with_capacity(
+        SOURCE_TAG.len() + 8 + old_bytes.len() + bytes.len(),
+    )
+    .map_err(|_| "cannot digest overlay migration source")?;
+    source.extend_from_slice(SOURCE_TAG);
+    source.extend_from_slice(&(old_bytes.len() as u64).to_be_bytes());
+    source.extend_from_slice(&old_bytes);
+    source.extend_from_slice(&bytes);
     let mut source_sha256 = [0; 32];
     hex::decode_to_slice(busbar_contract::sha256_hex(&source), &mut source_sha256)
         .map_err(|_| "cannot digest overlay migration source")?;
