@@ -20,7 +20,9 @@ use crate::guest::{GuestList, Line, LineAuth, Matched};
 use crate::state::App;
 
 mod derived;
+mod handin;
 pub(crate) use derived::Derived;
+use handin::handin_state_matches;
 
 pub const NO_LIST: &str = "the kernel holds no guest list for this listener at this generation";
 
@@ -121,40 +123,6 @@ impl Head {
             Some(query) => format!("{}?{query}", self.target),
             None => self.target.clone(),
         }
-    }
-
-    fn stripped(&self, strips: &[Strip]) -> Option<Self> {
-        use zeroize::Zeroize as _;
-        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
-        let mut head = self.duplicate();
-        head.fields.retain_mut(|(name, value)| {
-            let remove = strips.iter().any(|strip| {
-                strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name)
-            });
-            if remove {
-                value.zeroize();
-            }
-            !remove
-        });
-        let keys: Vec<&str> = strips
-            .iter()
-            .filter(|strip| strip.place == StripPlace::Query)
-            .map(|strip| strip.name.as_ref())
-            .collect();
-        if !keys.is_empty() {
-            if let Some(stripped) = head
-                .query
-                .as_deref()
-                .and_then(|query| crate::auth::without_query_keys_text(query, &keys))
-            {
-                let mut original =
-                    std::mem::replace(&mut head.query, (!stripped.is_empty()).then_some(stripped));
-                if let Some(query) = &mut original {
-                    query.zeroize();
-                }
-            }
-        }
-        Some(head)
     }
 
     fn is_empty(&self) -> bool {
@@ -485,13 +453,6 @@ pub struct ListenerScope {
 }
 
 impl Listener {
-    /// The plane admission for a unit's original head. Read it through [`Derived::admission`],
-    /// which resolves it once per unit (a refusal with no unit uses a record of its own).
-    fn admission(&self, head: &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
-        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::PlaneAdmission);
-        self.resolve_admission(head)
-    }
-
     /// The plane admission for a non-peer continuation call's own head. Earlier auth points'
     /// strips are already applied to it, and the admission matches header fields, so it is a
     /// different input from the unit's original and is resolved, not read from [`Derived`].
@@ -1303,32 +1264,6 @@ fn admits(line: &Line, h: &HandIn, u: &UnitState) -> bool {
     u.head.is_some() || !still_present(&u.strips, &h.head)
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "R23: owner of the stripped original compared with the handed head"
-)]
-fn handin_state_matches(
-    unit_line: u32,
-    generation: u64,
-    signed_pending: bool,
-    original: Option<&Head>,
-    strips: &[Strip],
-    h: &HandIn,
-) -> bool {
-    if unit_line != h.line || generation != h.generation || signed_pending {
-        return false;
-    }
-    if let Some(original) = original {
-        if !original
-            .stripped(strips)
-            .is_some_and(|original| same_request(&original, &h.head))
-        {
-            return false;
-        }
-    }
-    true
-}
-
 fn position_deadline_expired(deadline: Option<std::time::Instant>) -> bool {
     deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
 }
@@ -1525,14 +1460,6 @@ impl AsRef<[u8]> for FieldBytes {
     fn as_ref(&self) -> &[u8] {
         self.0.as_slice()
     }
-}
-
-/// An inbound unit's original head as an HTTP header map. A unit reads it through
-/// [`Derived::headers`], which builds it once; a refusal with no unit reads it through a
-/// [`Derived`] record of its own.
-pub(crate) fn header_map(head: &Head) -> axum::http::HeaderMap {
-    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::HeaderMap);
-    build_header_map(head)
 }
 
 /// The served (stripped) head converted back to HTTP for the operator adapter: a different input
@@ -2669,10 +2596,6 @@ impl Inbound {
                     Some(original) if first_request => {
                         derived.admission(&table.listener, original).is_none()
                     }
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "R23: head differs: a non-peer continuation call's own head, earlier strips applied"
-                    )]
                     _ => table.listener.admission_on(&head).is_none(),
                 };
                 let signed_reader = (unadmitted
@@ -3425,10 +3348,6 @@ impl Inbound {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "R23: test input differs: tests build stripped heads directly"
-)]
 #[path = "tests/inbound_owner_policies.rs"]
 mod owner_policies;
 
@@ -3437,10 +3356,6 @@ mod owner_policies;
 mod peer_owner_policies;
 
 #[cfg(test)]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "R23: test input differs: tests build stripped heads directly"
-)]
 #[path = "tests/inbound_handin_owner_policies.rs"]
 mod handin_owner_policies;
 
@@ -3449,9 +3364,5 @@ mod handin_owner_policies;
 mod signed_order_policies;
 
 #[cfg(test)]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "R23: test input differs: tests build stripped heads directly"
-)]
 #[path = "tests/inbound_reader_fallback.rs"]
 mod reader_fallback;

@@ -15,8 +15,13 @@
 //! the same head, or the handed head for a unit minted at hand-in, whose auth calls never ran).
 //! A non-peer continuation call resolves its admission on its own stripped head through
 //! [`Listener::admission_on`], which is not cached here because its input differs.
+//!
+//! LINT-RULES R23 (derive-once): the two derivations a unit caches here, [`header_map`] and
+//! [`Listener::admission`], are private to this module, so no other code can derive either fact
+//! a second time from the raw head; every reader goes through [`Derived`]. A reader with no
+//! unit takes a [`Derived`] of its own.
 
-use super::{header_map, Head, Listener};
+use super::{build_header_map, Head, Listener};
 use crate::plane_driver::dispatch::PlaneAdmission;
 use busbar_contract::redacted::Secret;
 use std::sync::OnceLock;
@@ -41,10 +46,6 @@ pub(crate) struct Derived {
 
 impl Derived {
     /// The plane admission (audience, resource metadata) for the unit's original head.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "R23: owner of the unit's plane admission"
-    )]
     pub(crate) fn admission(
         &self,
         listener: &Listener,
@@ -56,10 +57,6 @@ impl Derived {
     }
 
     /// The unit's original head as an HTTP header map; the one `header_map` build per unit.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "R23: owner of the unit's original-head HeaderMap"
-    )]
     pub(crate) fn headers(&self, original: &Head) -> &axum::http::HeaderMap {
         self.headers.get_or_init(|| header_map(original))
     }
@@ -94,4 +91,18 @@ impl Derived {
             .as_deref()
             .map(String::as_str)
     }
+}
+
+impl Listener {
+    /// The plane admission for a unit's original head: only [`Derived::admission`] resolves it.
+    fn admission(&self, head: &Head) -> Option<PlaneAdmission> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::PlaneAdmission);
+        self.resolve_admission(head)
+    }
+}
+
+/// An inbound unit's original head as an HTTP header map: only [`Derived::headers`] builds it.
+fn header_map(head: &Head) -> axum::http::HeaderMap {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::HeaderMap);
+    build_header_map(head)
 }
