@@ -54,21 +54,19 @@ fn read_envelope_checks_coherent_count_and_time_failure() {
 }
 
 #[test]
-fn commit_short_result_and_verdicts_are_distinct() {
+fn commit_verdicts_and_slot_constants_are_the_store_transaction_values() {
     let input = blank_in::<CommitIn>();
     let mut out = blank_out::<CommitOut>();
-    out.needed = 1024;
-    assert!(check::commit(Outcome::Failed, &input, &out).is_ok());
-    assert!(check::commit(Outcome::Ready, &input, &out).is_err());
-    out.needed = 0;
-    for code in COMMIT_APPLIED..=COMMIT_EXPIRED_UNKNOWN {
+    for code in COMMIT_APPLIED..=COMMIT_STALE {
         out.code = code;
         assert!(check::commit(Outcome::Ready, &input, &out).is_ok());
     }
     out.code = 0;
     assert!(check::commit(Outcome::Ready, &input, &out).is_err());
+    assert_eq!((COMMIT_FENCED, COMMIT_STALE), (5, 6));
+    assert_eq!(SLOT_SELF_FENCED, u32::MAX);
+    assert_eq!(MAX_SLOTS, 65_536);
 }
-
 #[test]
 fn scan_requires_explicit_continuation_and_stale_has_no_rows() {
     let input = blank_in::<ScanIn>();
