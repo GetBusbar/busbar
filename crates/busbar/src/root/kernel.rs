@@ -1327,6 +1327,7 @@ pub(crate) fn journalled_cards_at(
         .collect()
 }
 
+#[cfg(test)]
 fn journalled_amendment(body: &[u8]) -> Option<JournalledCard> {
     let amendment = crate::root::units_admin::amendment_from_body(body)?;
     let author = busbar_kernel_ledger::cost::Author::Amend {

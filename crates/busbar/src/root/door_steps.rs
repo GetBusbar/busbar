@@ -227,7 +227,6 @@ impl DoorPools {
         }
     }
 
-    #[must_use]
     /// The `pool` label a finished model request is counted under: the downgrade target, else
     /// the pool the arrival named, where either is configured here; else `unresolved`.
     #[must_use]
@@ -1829,7 +1828,7 @@ pub fn door_facts(
     let index: foldhash::HashMap<&str, u32> =
         classes.iter().zip(0u32..).map(|(c, i)| (*c, i)).collect();
     DoorFacts {
-        plane: plane.to_string(),
+        plane,
         scope_kind: scope_kinds.first().map(|k| (*k).to_string()),
         secondary_scopes: BTreeMap::new(),
         classes: classes.iter().map(|c| (*c).to_string()).collect(),
@@ -4236,7 +4235,14 @@ impl PerHop {
                 streak.confirming = Some(kind);
                 let due = next_due(self.lent.lease, Next::Confirm, expires_at, now, unit);
                 streak.due = Some(due);
-                self.warn_failed(streak, "resolve", kind, &refused.text, expires_at, now, due);
+                self.warn_failed(
+                    streak,
+                    ("resolve", kind),
+                    &refused.text,
+                    expires_at,
+                    now,
+                    due,
+                );
                 return (Attempt::Confirming { error_kind: kind }, due);
             }
         } else {
@@ -4251,7 +4257,14 @@ impl PerHop {
         );
         streak.due = Some(due);
         if !stopping {
-            self.warn_failed(streak, "resolve", kind, &refused.text, expires_at, now, due);
+            self.warn_failed(
+                streak,
+                ("resolve", kind),
+                &refused.text,
+                expires_at,
+                now,
+                due,
+            );
         }
         (Attempt::Failed { error_kind: kind }, due)
     }
@@ -4274,7 +4287,7 @@ impl PerHop {
             unit,
         );
         streak.due = Some(due);
-        self.warn_failed(streak, "reopen", 0, text, expires_at, now, due);
+        self.warn_failed(streak, ("reopen", 0), text, expires_at, now, due);
         (Attempt::Refused, due)
     }
 
@@ -4283,17 +4296,17 @@ impl PerHop {
     /// only the first member on a SOURCE reports at its level; the others report at debug and are
     /// counted into that source's next report. A `reopen` (the auth plugin refused the rotated
     /// value) is ERROR from the first.
-    #[allow(clippy::too_many_arguments)]
+    /// `failure` is the cause (`resolve` or `reopen`) and the error kind.
     fn warn_failed(
         &self,
         streak: &mut Streak,
-        cause: &'static str,
-        error_kind: u32,
+        failure: (&'static str, u32),
         text: &str,
         expires_at: Option<std::time::Instant>,
         now: std::time::Instant,
         due: std::time::Instant,
     ) {
+        let (cause, error_kind) = failure;
         static PER_SOURCE: std::sync::OnceLock<busbar_kernel::refresh::Throttle> =
             std::sync::OnceLock::new();
         const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);

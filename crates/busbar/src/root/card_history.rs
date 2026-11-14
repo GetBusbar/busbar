@@ -148,6 +148,7 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Result<Vec<StoredEntry>, Strin
     Ok(out)
 }
 
+#[cfg(test)]
 fn amended_fields(body: &[u8]) -> CardFields {
     let Some(amendment) = crate::root::units_admin::amendment_from_body(body) else {
         return CardFields::default();

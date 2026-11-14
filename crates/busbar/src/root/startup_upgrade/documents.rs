@@ -4,6 +4,7 @@
 //! Original authored bytes stay in custody across bootstrap and source-proven conversion.
 use busbar_contract::crypto::Sha256;
 use busbar_contract::secure::{SecureString, SecureVec};
+use busbar_contract::yaml::ValueExt as _;
 use busbar_kernel::{
     appbuild::{ConfigDocument, RootRules},
     config,
@@ -190,7 +191,10 @@ impl Documents {
                 detected_locked =
                     busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&detection)
                         .ok()
-                        .and_then(|doc| doc.get("config")?.get("locked")?.as_bool())
+                        .and_then(|doc| match doc.get("config")?.get("locked")? {
+                            busbar_contract::yaml::Value::Bool(locked) => Some(*locked),
+                            _ => None,
+                        })
                         .unwrap_or(false);
                 let host = crate::root::config_migrate::RootHost::for_startup_document(
                     &original,
@@ -283,7 +287,10 @@ impl Documents {
                 state.locked |= doc
                     .get("config")
                     .and_then(|c| c.get("locked"))
-                    .and_then(busbar_contract::yaml::Value::as_bool)
+                    .and_then(|locked| match locked {
+                        busbar_contract::yaml::Value::Bool(locked) => Some(*locked),
+                        _ => None,
+                    })
                     .unwrap_or(false);
             }
         }
