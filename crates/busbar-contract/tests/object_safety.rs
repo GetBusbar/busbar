@@ -18,7 +18,7 @@ impl Plugin for FixturePlane {
         Kind::Plane
     }
     fn abi(&self) -> AbiVersion {
-        AbiVersion(1)
+        AbiVersion::from_wire(1)
     }
 }
 
@@ -33,7 +33,7 @@ impl Plugin for FixtureTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        AbiVersion(1)
+        AbiVersion::from_wire(1)
     }
 }
 

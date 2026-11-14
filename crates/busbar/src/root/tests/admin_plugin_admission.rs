@@ -63,10 +63,7 @@ fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Man
         kind: "store".into(),
         version: version.into(),
         publisher: publisher.into(),
-        abi_version: *crate::root::loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
+        abi_version: crate::root::loader::supported_abi("store").expect("store abi"),
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -105,10 +102,7 @@ fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
     let lib = format!("junk library bytes for {name} (never dlopened)").into_bytes();
     let mut m = test_manifest(name, alias, "acme", "1.0.0");
     m.kind = kind.into();
-    m.abi_version = *crate::root::loader::supported_abi(kind)
-        .iter()
-        .max()
-        .unwrap_or(&1);
+    m.abi_version = crate::root::loader::supported_abi(kind).unwrap_or(1);
     unsigned_tarball(m, &lib)
 }
 
@@ -413,10 +407,7 @@ async fn inspect_previews_a_trusted_candidate_without_installing() {
     let dir = tmp_plugins_dir("inspect-ok");
     let mut m = test_manifest("acme-store-preview", "preview", "acme", "1.0.0");
     m.kind = "secret".into();
-    m.abi_version = *crate::root::loader::supported_abi("secret")
-        .iter()
-        .max()
-        .expect("secret abi");
+    m.abi_version = crate::root::loader::supported_abi("secret").expect("secret abi");
     m.settings_schema = Some(
         serde_json::json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",

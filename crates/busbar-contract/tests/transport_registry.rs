@@ -85,7 +85,7 @@ fn the_transport_kind_has_one_abi_generation() {
     assert_eq!(
         busbar_contract::transport::TRANSPORT_ABI,
         // Transport is a new kind since released v1.5.5.
-        busbar_contract::transport::AbiVersion(1)
+        busbar_contract::transport::AbiVersion::from_wire(1)
     );
 }
 
@@ -93,8 +93,10 @@ fn the_transport_kind_has_one_abi_generation() {
 #[test]
 fn the_transport_generation_is_the_abi_kind_version() {
     assert_eq!(
-        u32::from(busbar_contract::transport::TRANSPORT_ABI.0),
-        busbar_contract::abi::transport::ABI_VERSION
+        busbar_contract::transport::TRANSPORT_ABI,
+        busbar_contract::transport::AbiVersion::from_wire(
+            busbar_contract::abi::transport::ABI_VERSION
+        )
     );
     assert_eq!(
         busbar_contract::TRANSPORT_ABI,

@@ -49,11 +49,7 @@ fn packed_tarball_verifies_end_to_end() {
         kind: "store".into(),
         version: "1.0.0".into(),
         publisher: "acme".into(),
-        abi_version: busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .copied()
-            .max()
-            .unwrap(),
+        abi_version: busbar_plugin_loader::supported_abi("store").unwrap(),
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -382,11 +378,7 @@ fn packed_hook_needs_prompt_rw_is_signed() {
         kind: "hook".into(),
         version: "1.5.0".into(),
         publisher: "busbar".into(),
-        abi_version: busbar_plugin_loader::supported_abi("hook")
-            .iter()
-            .copied()
-            .max()
-            .unwrap(),
+        abi_version: busbar_plugin_loader::supported_abi("hook").unwrap(),
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -1183,11 +1175,7 @@ fn unsigned_first_party(name: &str, lib: &[u8]) -> Vec<u8> {
         kind: "store".into(),
         version: "1.6.0".into(),
         publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
-        abi_version: busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .copied()
-            .max()
-            .unwrap(),
+        abi_version: busbar_plugin_loader::supported_abi("store").unwrap(),
         sha256: busbar_plugin_loader::sign::sha256_hex(lib),
         ..Default::default()
     };

@@ -103,10 +103,10 @@ fn supported_abi_is_one_version_per_kind() {
         ("transport", abi::transport::ABI_VERSION, 1),
     ];
     for &(kind, version, number) in shipped {
-        assert_eq!(supported_abi(kind), &[version], "{kind}");
+        assert_eq!(supported_abi(kind), Some(version), "{kind}");
         assert_eq!(version, number, "{kind} ships at {number}");
     }
-    assert!(supported_abi("nonsense").is_empty());
+    assert_eq!(supported_abi("nonsense"), None);
 }
 
 #[test]
@@ -1005,7 +1005,7 @@ extern "C" fn unopened_door() -> *const busbar_contract::abi::mechanism::door::D
 fn renamed(kind: &str, name: &str, alias: &str, former: &[&str]) -> Manifest {
     let mut m = manifest(name, alias, "busbar");
     m.kind = kind.into();
-    m.abi_version = supported_abi(kind)[0];
+    m.abi_version = supported_abi(kind).unwrap();
     m.former_names = former.iter().map(|s| s.to_string()).collect();
     m
 }

@@ -92,7 +92,7 @@ __attribute__((constructor)) static void mark_loaded(void) {
             kind: "plane".into(),
             version: version.into(),
             publisher: "busbar".into(),
-            abi_version: crate::root::loader::supported_abi("plane")[0],
+            abi_version: crate::root::loader::supported_abi("plane").unwrap(),
             statement: Some(hex::encode(rendering)),
             ..Default::default()
         },
@@ -195,7 +195,7 @@ __attribute__((constructor)) static void mark_loaded(void) {
             kind: "secret".into(),
             version: "1.6.0".into(),
             publisher: "busbar".into(),
-            abi_version: crate::root::loader::supported_abi("secret")[0],
+            abi_version: crate::root::loader::supported_abi("secret").unwrap(),
             statement: Some(hex::encode(stated)),
             ..Default::default()
         },

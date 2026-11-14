@@ -320,7 +320,7 @@ pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
         kind: kind.into(),
         version: env!("CARGO_PKG_VERSION").into(),
         publisher: publisher.into(),
-        abi_version: supported_abi(kind).iter().copied().max().unwrap_or(0),
+        abi_version: supported_abi(kind).unwrap_or(0),
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),

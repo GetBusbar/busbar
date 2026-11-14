@@ -321,10 +321,7 @@ mod rollback_tests {
                     kind: "hook".into(),
                     version: "1.4.0".into(),
                     publisher: FIRST_PARTY_PUBLISHER.into(),
-                    abi_version: *crate::root::loader::supported_abi("hook")
-                        .iter()
-                        .max()
-                        .unwrap(),
+                    abi_version: crate::root::loader::supported_abi("hook").unwrap(),
                     ..Default::default()
                 },
                 lib,

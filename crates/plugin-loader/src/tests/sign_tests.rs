@@ -72,8 +72,8 @@ fn hook_needs_is_signed_and_defaults_to_none() {
     assert!(signature_ok(&signed, b"lib", &key.verifying_key()).is_ok());
 }
 
-fn abi(_kind: &str) -> &'static [u32] {
-    &[1]
+fn abi(_kind: &str) -> Option<u32> {
+    Some(1)
 }
 
 fn policy(
@@ -738,24 +738,28 @@ fn rejected_display_carries_the_reason() {
 }
 
 #[test]
-fn validate_structure_accepts_abi_version_at_either_end_of_the_supported_range() {
-    fn abi_1_to_3(_kind: &str) -> &'static [u32] {
-        &[1, 2, 3]
+fn validate_structure_accepts_only_the_one_abi_version_of_the_kind() {
+    // LINT-RULES R21: a binary loads exactly one version per kind, never a range.
+    fn abi_2(_kind: &str) -> Option<u32> {
+        Some(2)
     }
     let release = test_key(1);
     let artifact = b"lib bytes";
 
-    let mut floor = manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER);
-    floor.abi_version = 1;
-    let floor = sign(&release, floor, artifact);
-    validate_structure(&floor, artifact, &abi_1_to_3, HOST_IDENTITY)
-        .expect("abi_version at the floor of the supported range is accepted");
+    let mut exact = manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER);
+    exact.abi_version = 2;
+    let exact = sign(&release, exact, artifact);
+    validate_structure(&exact, artifact, &abi_2, HOST_IDENTITY)
+        .expect("the kind's one abi_version is accepted");
 
-    let mut max = manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER);
-    max.abi_version = 3;
-    let max = sign(&release, max, artifact);
-    validate_structure(&max, artifact, &abi_1_to_3, HOST_IDENTITY)
-        .expect("abi_version at the max of the supported range is accepted");
+    for other in [1, 3] {
+        let mut m = manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER);
+        m.abi_version = other;
+        let m = sign(&release, m, artifact);
+        let err = validate_structure(&m, artifact, &abi_2, HOST_IDENTITY)
+            .expect_err("a neighbouring abi_version is refused");
+        assert!(err.contains("it loads v2 only"), "{err}");
+    }
 }
 
 #[test]
