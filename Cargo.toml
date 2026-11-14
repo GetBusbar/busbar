@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
-# dist/default is its own workspace; the root crate depends on no plugin.
-exclude = ["dist/default", "tools/system-hammer"]
+# dist/default is its own workspace; the root crate depends on no plugin. busbar-crypto-backend is its
+# own lock root so a private build can [patch] a backend of the same name in.
+exclude = ["dist/default", "tools/system-hammer", "crates/busbar-crypto-backend"]
 members = [
     "crates/busbar",
     "crates/busbar-core-connector",
