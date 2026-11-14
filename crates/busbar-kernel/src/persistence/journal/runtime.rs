@@ -60,9 +60,18 @@ impl StagedRun {
     }
 }
 
+/// A group submitted to the store: the proof it was appended under and how
+/// many pending runs (from the front) it covers. Set only on the front entry
+/// and kept until the group resolves, so a retry after an uncertain outcome
+/// or a cancelled driver replays exactly the same records under the same
+/// proof (the store's logical claim is keyed by node, digest over both).
+struct Attempt {
+    proof: Arc<VerifiedHead>,
+    runs: usize,
+}
 struct PendingRun {
     run: Arc<StagedRun>,
-    proof: Option<Arc<VerifiedHead>>,
+    attempt: Option<Attempt>,
 }
 struct State {
     accepting: bool,
@@ -320,7 +329,7 @@ impl RuntimeJournal {
         });
         state.pending.push_back(PendingRun {
             run: run.clone(),
-            proof: None,
+            attempt: None,
         });
         state.reserved = head;
         state.next_ticket = next_ticket;
@@ -412,37 +421,87 @@ impl RuntimeJournal {
             .map_err(RuntimeError::from)
     }
 
+    /// The group the next append carries. A group that was submitted is pinned
+    /// on the front entry and returned unchanged until it resolves; otherwise
+    /// every contiguous pending run from the front joins, up to the store's
+    /// own per-append limits (a single run always fits: `stage_run` checks it).
+    fn take_group(
+        state: &mut State,
+        limits: crate::persistence::facade::Limits,
+    ) -> std::result::Result<(Arc<VerifiedHead>, Vec<Arc<StagedRun>>), RuntimeError> {
+        let verified = state.verified.clone();
+        let front = state.pending.front().ok_or(RuntimeError::Corrupt)?;
+        let (proof, runs) = match &front.attempt {
+            Some(attempt) => (attempt.proof.clone(), attempt.runs),
+            None => {
+                let (mut records, mut bytes, mut runs) = (0usize, 0usize, 0usize);
+                for pending in &state.pending {
+                    let next_records = records.saturating_add(pending.run.records.len());
+                    let next_bytes = bytes.saturating_add(pending.run.bytes);
+                    if runs > 0
+                        && (next_records > limits.scan_items || next_bytes > limits.scan_bytes)
+                    {
+                        break;
+                    }
+                    (records, bytes, runs) = (next_records, next_bytes, runs + 1);
+                }
+                (verified, runs)
+            }
+        };
+        if runs == 0 || runs > state.pending.len() {
+            return Err(RuntimeError::Corrupt);
+        }
+        let group = state
+            .pending
+            .iter()
+            .take(runs)
+            .map(|pending| pending.run.clone())
+            .collect();
+        state
+            .pending
+            .front_mut()
+            .ok_or(RuntimeError::Corrupt)?
+            .attempt = Some(Attempt {
+            proof: proof.clone(),
+            runs,
+        });
+        Ok((proof, group))
+    }
+
+    /// Group commit: each pass appends every run already pending (bounded by the
+    /// store limits) in one store append, so concurrent waiters share one round
+    /// trip instead of queueing one append each behind the driver lock.
     async fn drive_through(&self, target: u64) -> std::result::Result<(), RuntimeError> {
         let _driver = self.driving.lock().await;
+        let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
+        let limits = self.store.limits();
         loop {
-            let (run, proof) = {
-                let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+            let (proof, group) = {
+                let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
                 if let Some(error) = state.failed {
                     return Err(error);
                 }
                 if state.completed >= target {
                     return Ok(());
                 }
-                let pending = state.pending.front().ok_or(RuntimeError::Corrupt)?;
-                (
-                    pending.run.clone(),
-                    pending
-                        .proof
-                        .clone()
-                        .unwrap_or_else(|| state.verified.clone()),
-                )
+                Self::take_group(&mut state, limits)?
             };
-            let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
-            {
-                let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
-                state
-                    .pending
-                    .front_mut()
-                    .ok_or(RuntimeError::Corrupt)?
-                    .proof = Some(proof.clone());
-            }
+            // Runs chain from `state.reserved` in ticket order, so the group's
+            // records are one contiguous chain; concatenating the same pinned
+            // runs always yields the same bytes, hence the same claim digest.
+            let joined: Vec<Record>;
+            let records: &[Record] = match group.as_slice() {
+                [run] => run.records(),
+                runs => {
+                    joined = runs
+                        .iter()
+                        .flat_map(|run| run.records().iter().cloned())
+                        .collect();
+                    &joined
+                }
+            };
             let submission = journal
-                .append(&proof, run.records())
+                .append(&proof, records)
                 .await
                 .map_err(RuntimeError::from)?;
             let WriteResult::Submitted(submission) = submission else {
@@ -460,7 +519,7 @@ impl RuntimeJournal {
                     // old full proof and native H/O CAS establish its ancestry.
                     let mut head = proof.head;
                     let mut records_seal = proof.records_seal;
-                    for original in run.records() {
+                    for original in records {
                         let record = checked_record(self.node, &original.body, head)
                             .map_err(RuntimeError::from)?;
                         head = advance(head, &record).map_err(RuntimeError::from)?;
@@ -479,15 +538,17 @@ impl RuntimeJournal {
                         )),
                     });
                     let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
-                    let pending = state.pending.pop_front().ok_or(RuntimeError::Corrupt)?;
-                    if !Arc::ptr_eq(&pending.run, &run) {
-                        state.failed = Some(RuntimeError::Corrupt);
-                        return Err(RuntimeError::Corrupt);
+                    for run in &group {
+                        let pending = state.pending.pop_front().ok_or(RuntimeError::Corrupt)?;
+                        if !Arc::ptr_eq(&pending.run, run) {
+                            state.failed = Some(RuntimeError::Corrupt);
+                            return Err(RuntimeError::Corrupt);
+                        }
+                        state.completed = run.ticket;
+                        state.records -= run.records.len();
+                        state.bytes -= run.bytes;
                     }
-                    state.completed = run.ticket;
                     state.verified = verified;
-                    state.records -= run.records.len();
-                    state.bytes -= run.bytes;
                 }
                 super::super::commit::SubmitResult::Decided(_) => {
                     self.state.lock().map_err(|_| RuntimeError::Corrupt)?.failed =

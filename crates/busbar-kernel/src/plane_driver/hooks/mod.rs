@@ -1503,10 +1503,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         S: super::DriverSteps,
     {
         let mut ran = Vec::new();
-        let scope = crate::hook_child::Scope {
-            services: Arc::clone(&self.driver.services),
-            unit: self.lock().unit,
-        };
+        let scope =
+            crate::hook_child::Scope::new(Arc::clone(&self.driver.services), self.lock().unit);
         let stage = crate::hook_child::SCOPE
             .scope(scope, self.run_request_stage(token, &mut ran))
             .await;
