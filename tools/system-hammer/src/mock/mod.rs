@@ -29,7 +29,7 @@ use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use llm::{Bodies, Dialect};
-use serde_json::{json, Value};
+use sonic_rs::{json, JsonValueTrait as _, Value, ValueRef};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -65,7 +65,6 @@ impl Default for MockConfig {
 
 /// The far ends the counters distinguish.
 #[derive(Debug, Clone, Copy)]
-#[repr(usize)]
 pub enum Role {
     Llm,
     Mcp,
@@ -81,24 +80,25 @@ pub enum Role {
     Other,
 }
 
-const ROLES: [&str; 12] = [
-    "llm",
-    "mcp",
-    "a2a",
-    "idp",
-    "vault",
-    "otlp",
-    "webhook",
-    "sidecar",
-    "decisions",
-    "streams",
-    "echo",
-    "other",
+/// Every role with its counter name (one table; a role's counter slot is its discriminant).
+const ROLES: [(Role, &str); 12] = [
+    (Role::Llm, "llm"),
+    (Role::Mcp, "mcp"),
+    (Role::A2a, "a2a"),
+    (Role::Idp, "idp"),
+    (Role::Vault, "vault"),
+    (Role::Otlp, "otlp"),
+    (Role::Webhook, "webhook"),
+    (Role::Sidecar, "sidecar"),
+    (Role::Decisions, "decisions"),
+    (Role::Streams, "streams"),
+    (Role::Echo, "echo"),
+    (Role::Other, "other"),
 ];
 
 #[derive(Default)]
 pub struct Stats {
-    counts: [AtomicU64; 12],
+    counts: [AtomicU64; ROLES.len()],
     /// The last request no far end answered (method and path), for diagnosis.
     unknown: std::sync::Mutex<Option<String>>,
     /// Failed `accept()` calls (EMFILE, ENFILE, ...), each followed by a short backoff.
@@ -110,18 +110,18 @@ impl Stats {
         self.counts[r as usize].fetch_add(1, Ordering::Relaxed);
     }
     pub fn snapshot(&self) -> Value {
-        let mut m = serde_json::Map::new();
-        for (i, r) in ROLES.iter().enumerate() {
-            m.insert((*r).into(), json!(self.counts[i].load(Ordering::Relaxed)));
+        let mut m = sonic_rs::Object::new();
+        for (r, name) in ROLES {
+            m.insert(name, self.counts[r as usize].load(Ordering::Relaxed));
         }
         m.insert(
             "accept_errors".into(),
             json!(self.accept_errors.load(Ordering::Relaxed)),
         );
         if let Some(u) = self.unknown.lock().unwrap().clone() {
-            m.insert("unknown_last".into(), json!(u));
+            m.insert("unknown_last", u.as_str());
         }
-        Value::Object(m)
+        Value::from(m)
     }
 }
 
@@ -156,18 +156,18 @@ pub fn card_issuer_key() -> String {
 
 /// RFC 8785 canonical JSON for agent-card values.
 fn jcs(v: &Value) -> String {
-    match v {
-        Value::Object(m) => {
-            let mut keys: Vec<&String> = m.keys().collect();
-            keys.sort();
-            let parts: Vec<String> = keys
+    match v.as_ref() {
+        ValueRef::Object(m) => {
+            let mut pairs: Vec<(&str, &Value)> = m.iter().collect();
+            pairs.sort_by(|a, b| a.0.cmp(b.0));
+            let parts: Vec<String> = pairs
                 .iter()
-                .map(|k| format!("{}:{}", Value::String((*k).clone()), jcs(&m[*k])))
+                .map(|(k, x)| format!("{}:{}", Value::from(*k), jcs(x)))
                 .collect();
             format!("{{{}}}", parts.join(","))
         }
-        Value::Array(a) => format!("[{}]", a.iter().map(jcs).collect::<Vec<_>>().join(",")),
-        other => other.to_string(),
+        ValueRef::Array(a) => format!("[{}]", a.iter().map(jcs).collect::<Vec<_>>().join(",")),
+        _ => v.to_string(),
     }
 }
 
@@ -203,6 +203,10 @@ struct State {
     card: Bytes,
     stats: Arc<Stats>,
     mints: AtomicU64,
+    /// `http://127.0.0.1:<port>` of the plaintext listener and `https://...` of the TLS one: the
+    /// base a document names its own URLs under, by the listener that serves it.
+    base: String,
+    tls_base: String,
 }
 
 /// A running mock server.
@@ -229,6 +233,9 @@ impl Mock {
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         std_listener.set_nonblocking(true)?;
         let addr = std_listener.local_addr()?;
+        let tls_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        tls_listener.set_nonblocking(true)?;
+        let tls_addr = tls_listener.local_addr()?;
         let stats = Arc::new(Stats::default());
         let state = Arc::new(State {
             bodies: Bodies::build(cfg.reply_pad, cfg.stream_chunks),
@@ -236,10 +243,9 @@ impl Mock {
             cfg,
             stats: Arc::clone(&stats),
             mints: AtomicU64::new(0),
+            base: format!("http://{addr}"),
+            tls_base: format!("https://{tls_addr}"),
         });
-        let tls_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        tls_listener.set_nonblocking(true)?;
-        let tls_addr = tls_listener.local_addr()?;
         let (acceptor, spki_pin, cert_pem) = tls_acceptor()?;
         let st_tls = Arc::clone(&state);
         rt.spawn(async move {
@@ -250,7 +256,7 @@ impl Mock {
                     continue;
                 };
                 let _ = stream.set_nodelay(true);
-                tokio::spawn(serve(Arc::clone(&state), stream));
+                tokio::spawn(serve(Arc::clone(&state), stream, false));
             }
         });
         rt.spawn(async move {
@@ -264,7 +270,7 @@ impl Mock {
                 let (acceptor, st) = (acceptor.clone(), Arc::clone(&st_tls));
                 tokio::spawn(async move {
                     if let Ok(tls) = acceptor.accept(stream).await {
-                        serve(st, tls).await;
+                        serve(st, tls, true).await;
                     }
                 });
             }
@@ -284,13 +290,13 @@ impl Mock {
     }
 }
 
-async fn serve<IO>(st: Arc<State>, io: IO)
+async fn serve<IO>(st: Arc<State>, io: IO, tls: bool)
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let svc = hyper::service::service_fn(move |req| {
         let st = Arc::clone(&st);
-        async move { Ok::<_, Infallible>(handle(&st, req).await) }
+        async move { Ok::<_, Infallible>(handle(&st, req, tls).await) }
     });
     let mut b = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
     b.http2()
@@ -462,16 +468,17 @@ fn token_body(n: u64) -> Bytes {
 }
 
 fn rpc_id(body: &[u8]) -> (String, Value) {
-    let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let v: Value = sonic_rs::from_slice(body).unwrap_or_default();
     let m = v
         .get("method")
-        .and_then(Value::as_str)
+        .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
-    (m, v.get("id").cloned().unwrap_or(Value::Null))
+    (m, v.get("id").cloned().unwrap_or_default())
 }
 
-async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
+/// Answer `req`; `tls` says which listener it arrived on.
+async fn handle(st: &State, req: Request<Incoming>, tls: bool) -> Response<MockBody> {
     let method = req.method().clone();
     let mut path = req.uri().path().to_string();
     if path.contains('%') {

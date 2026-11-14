@@ -77,16 +77,13 @@ pub struct Plan {
     pub proto: Proto,
     pub reqs: Vec<Req>,
     pub shape: Shape,
-    /// Sends start at `start`; completions before `start + warmup` are not recorded.
+    /// Sends start at `start`; requests that start before `start + warmup` are not recorded.
     pub start: Instant,
     pub warmup: Duration,
     pub measure: Duration,
     pub timeout: Duration,
     /// h2c: in-flight streams per connection.
     pub h2_streams: usize,
-    /// Every n-th response body is collected (for the error report); a request with
-    /// `expect_contains` has every body collected and checked.
-    pub sample_every: u64,
 }
 
 impl Plan {
@@ -98,7 +95,8 @@ impl Plan {
     }
 }
 
-/// What a run measured (completions inside the measured window only).
+/// What a run measured: every request whose (scheduled) start is inside the measured window,
+/// however late it completes (no coordinated omission).
 #[derive(Debug)]
 pub struct Outcome {
     /// Request latency, nanoseconds (open loop: from the scheduled start).
@@ -108,11 +106,9 @@ pub struct Outcome {
     pub ok: u64,
     /// Failures by cause: `status 503`, `io`, `timeout`, `body`.
     pub errors: BTreeMap<String, u64>,
-    /// Successful completions per one-second window of the measured phase.
+    /// Successful requests per one-second window of the measured phase, by start.
     pub windows: Vec<u64>,
     pub measured: Duration,
-    pub bytes_in: u64,
-    pub chunks_in: u64,
     /// Bodies checked against `expect_contains` in the measured window, and those that missed.
     pub body_total: u64,
     pub body_miss: u64,
@@ -127,8 +123,6 @@ impl Outcome {
             errors: BTreeMap::new(),
             windows: vec![0; windows],
             measured: Duration::ZERO,
-            bytes_in: 0,
-            chunks_in: 0,
             body_total: 0,
             body_miss: 0,
         }
@@ -146,8 +140,6 @@ impl Outcome {
                 *slot += u64::from(*w);
             }
         }
-        self.bytes_in += o.bytes_in;
-        self.chunks_in += o.chunks_in;
         self.body_total += o.body_total;
         self.body_miss += o.body_miss;
     }
@@ -187,8 +179,6 @@ struct Local {
     ok: u64,
     errors: BTreeMap<String, u64>,
     windows: Vec<u32>,
-    bytes_in: u64,
-    chunks_in: u64,
     body_total: u64,
     body_miss: u64,
 }
@@ -201,8 +191,6 @@ impl Local {
             ok: 0,
             errors: BTreeMap::new(),
             windows: vec![0; windows],
-            bytes_in: 0,
-            chunks_in: 0,
             body_total: 0,
             body_miss: 0,
         }
@@ -222,7 +210,17 @@ struct Prepared {
     expect_contains: Option<Vec<u8>>,
 }
 
-fn prepare(plan: &Plan) -> Vec<Prepared> {
+/// A request path the driver sends as written: an absolute path with an optional query.
+pub fn check_path(path: &str) -> Result<(), String> {
+    if !path.starts_with('/') {
+        return Err(format!("bad path {path:?}: not an absolute path"));
+    }
+    http::uri::PathAndQuery::try_from(path)
+        .map(drop)
+        .map_err(|e| format!("bad path {path:?}: {e}"))
+}
+
+fn prepare(plan: &Plan) -> Result<Vec<Prepared>, String> {
     let authority = plan.addr.to_string();
     // The mix: each request repeated `weight` times, interleaved deterministically.
     let mut order: Vec<usize> = Vec::new();
@@ -236,13 +234,18 @@ fn prepare(plan: &Plan) -> Vec<Prepared> {
     }
     order
         .into_iter()
-        .map(|i| {
+        .map(|i| -> Result<Prepared, String> {
             let r = &plan.reqs[i];
-            let uri: Uri = match plan.proto {
-                Proto::H1 => r.path.parse(),
-                Proto::H2c => format!("http://{authority}{}", r.path).parse(),
+            check_path(&r.path)?;
+            // h1 sends the origin form (the authority goes in `host`); h2c the absolute form,
+            // whose authority becomes `:authority`.
+            let uri = match plan.proto {
+                Proto::H1 => Uri::builder(),
+                Proto::H2c => Uri::builder().scheme("http").authority(authority.as_str()),
             }
-            .unwrap_or_else(|_| Uri::from_static("/"));
+            .path_and_query(r.path.as_str())
+            .build()
+            .map_err(|e| format!("bad path {:?}: {e}", r.path))?;
             let mut headers = HeaderMap::new();
             if plan.proto == Proto::H1 {
                 headers.insert(
@@ -253,14 +256,14 @@ fn prepare(plan: &Plan) -> Vec<Prepared> {
             for (k, v) in &r.headers {
                 headers.append(k.clone(), v.clone());
             }
-            Prepared {
+            Ok(Prepared {
                 method: r.method.clone(),
                 uri,
                 headers,
                 body: r.body.clone(),
                 expect_status: r.expect_status,
                 expect_contains: r.expect_contains.clone(),
-            }
+            })
         })
         .collect()
 }
@@ -316,8 +319,6 @@ impl Sender {
 struct Exchange {
     status: u16,
     first_byte: Option<Instant>,
-    bytes: u64,
-    chunks: u64,
     body: Option<Vec<u8>>,
 }
 
@@ -345,8 +346,6 @@ async fn exchange(
     let mut out = Exchange {
         status,
         first_byte: None,
-        bytes: 0,
-        chunks: 0,
         // A wrong status keeps its body for the error report.
         body: (collect || status != p.expect_status).then(Vec::new),
     };
@@ -356,8 +355,6 @@ async fn exchange(
             if out.first_byte.is_none() {
                 out.first_byte = Some(Instant::now());
             }
-            out.bytes += d.len() as u64;
-            out.chunks += 1;
             if let Some(b) = out.body.as_mut() {
                 if b.len() < 4 << 20 {
                     b.extend_from_slice(d);
@@ -390,7 +387,7 @@ impl Ctx {
         p: &Prepared,
     ) -> bool {
         let ms = self.plan.measure_start();
-        let in_window = started >= ms && done <= self.plan.end();
+        let in_window = started >= ms && started < self.plan.end();
         let mut healthy = true;
         // `Some(hit)` when the body was checked against `expect_contains`.
         let mut checked: Option<bool> = None;
@@ -455,9 +452,7 @@ impl Ctx {
                         .first_byte
                         .record((fb.saturating_duration_since(started)).as_nanos().max(1) as u64);
                 }
-                local.bytes_in += x.bytes;
-                local.chunks_in += x.chunks;
-                let w = (done - ms).as_secs() as usize;
+                let w = (started - ms).as_secs() as usize;
                 if let Some(slot) = local.windows.get_mut(w.min(self.windows - 1)) {
                     *slot += 1;
                 }
@@ -491,7 +486,7 @@ async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>, group: usize) -> Loca
         } else {
             Instant::now()
         };
-        if started >= end || Instant::now() >= end {
+        if !sends(started, end) {
             break;
         }
         let seq = ctx.seq.fetch_add(1, Ordering::Relaxed);
@@ -544,6 +539,16 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
         Shape::Closed { concurrency } => (concurrency.max(1), 0.0),
         Shape::Open { rate, connections } => (connections.max(1), rate.max(0.001)),
     };
+    // A request the driver cannot send as written fails the run: never a substitute target.
+    let reqs = match prepare(&plan) {
+        Ok(r) => r,
+        Err(e) => {
+            let mut out = Outcome::new(windows);
+            out.errors.insert("bad path".into(), 1);
+            out.measured = plan.measure;
+            return (out, Some(e));
+        }
+    };
     let permits = matches!(plan.shape, Shape::Open { .. }).then(|| Arc::new(Semaphore::new(0)));
     let per_conn = plan.h2_streams.max(1);
     let groups = match plan.proto {
@@ -551,7 +556,7 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
         Proto::H2c => workers.div_ceil(per_conn),
     };
     let ctx = Arc::new(Ctx {
-        reqs: prepare(&plan),
+        reqs,
         windows,
         permits: permits.clone(),
         arrivals: AtomicU64::new(0),

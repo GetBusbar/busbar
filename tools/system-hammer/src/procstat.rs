@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-//! Process CPU time and resident set size of the gateway under test, on Linux and macOS.
+//! Process CPU time, resident set size and listening sockets of the gateway under test, on Linux
+//! and macOS.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -80,6 +81,77 @@ fn mach_ticks_to_ns(ticks: u64) -> u64 {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn read(_pid: u32) -> Option<Reading> {
     None
+}
+
+/// Whether process `pid` itself holds a listening TCP socket on `port` (the gateway's boot
+/// check that the listener answering is the child's, not whoever else got the port).
+#[cfg(target_os = "linux")]
+pub fn listens_on(pid: u32, port: u16) -> Result<bool, String> {
+    let fd_dir = format!("/proc/{pid}/fd");
+    let mut inodes = std::collections::HashSet::new();
+    for e in std::fs::read_dir(&fd_dir)
+        .map_err(|e| format!("{fd_dir}: {e}"))?
+        .flatten()
+    {
+        if let Ok(link) = std::fs::read_link(e.path()) {
+            if let Some(inode) = link
+                .to_str()
+                .and_then(|l| l.strip_prefix("socket:["))
+                .and_then(|l| l.strip_suffix(']'))
+            {
+                inodes.insert(inode.to_string());
+            }
+        }
+    }
+    for table in ["tcp", "tcp6"] {
+        let path = format!("/proc/{pid}/net/{table}");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines().skip(1) {
+            // `sl local_address rem_address st tx:rx tr:tm retrnsmt uid timeout inode ...`: the
+            // local address is `HEXADDR:HEXPORT`, state `0A` is LISTEN.
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let (Some(local), Some(st), Some(inode)) = (f.get(1), f.get(3), f.get(9)) else {
+                continue;
+            };
+            let lport = local
+                .rsplit(':')
+                .next()
+                .and_then(|p| u16::from_str_radix(p, 16).ok());
+            if *st == "0A" && lport == Some(port) && inodes.contains(*inode) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Whether process `pid` itself holds a listening TCP socket on `port` (the gateway's boot
+/// check that the listener answering is the child's, not whoever else got the port).
+#[cfg(target_os = "macos")]
+pub fn listens_on(pid: u32, port: u16) -> Result<bool, String> {
+    // `-a` ANDs the selections: this pid, a TCP socket on the port, in LISTEN; `-t` prints the
+    // matching pids only. No match is exit 1 with empty output.
+    let pid_s = pid.to_string();
+    let out = std::process::Command::new("lsof")
+        .args(["-nP", "-a", "-p", pid_s.as_str()])
+        .arg(format!("-iTCP:{port}"))
+        .args(["-sTCP:LISTEN", "-t"])
+        .output()
+        .map_err(|e| format!("lsof: {e}"))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() && !stderr.trim().is_empty() {
+        return Err(format!("lsof: {}", stderr.trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l.trim() == pid_s))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn listens_on(_pid: u32, _port: u16) -> Result<bool, String> {
+    Err("no listener ownership check on this OS".into())
 }
 
 /// CPU time of this process (the hammer: driver plus mocks), nanoseconds.

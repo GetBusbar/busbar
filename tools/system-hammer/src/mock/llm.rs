@@ -11,7 +11,7 @@
 //! frames.
 
 use bytes::Bytes;
-use serde_json::{json, Value};
+use sonic_rs::{json, Value};
 
 pub const IN_TOK: i64 = 11;
 pub const OUT_TOK: i64 = 7;
@@ -177,7 +177,7 @@ impl Dialect {
 }
 
 fn j(v: &Value) -> Vec<u8> {
-    serde_json::to_vec(v).expect("json")
+    sonic_rs::to_vec(v).expect("json")
 }
 
 fn tool_args() -> Value {
@@ -461,12 +461,23 @@ fn stream(d: Dialect, text: &str, chunks: usize) -> Vec<Bytes> {
     f
 }
 
-/// Split `text` into `n` non-empty pieces on char boundaries (fewer when it is shorter).
+/// Split `text` into exactly `n` non-empty pieces on char boundaries (as many as it has chars when
+/// it is shorter; one empty piece for an empty text). Piece lengths differ by at most one.
 fn split(text: &str, n: usize) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
-    let n = n.min(chars.len()).max(1);
-    let per = chars.len().div_ceil(n);
-    chars.chunks(per).map(|c| c.iter().collect()).collect()
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    let n = n.clamp(1, chars.len());
+    let (per, longer) = (chars.len() / n, chars.len() % n);
+    let mut out = Vec::with_capacity(n);
+    let mut at = 0;
+    for i in 0..n {
+        let len = per + usize::from(i < longer);
+        out.push(chars[at..at + len].iter().collect());
+        at += len;
+    }
+    out
 }
 
 /// Every prepared answer of one dialect.
@@ -528,6 +539,7 @@ pub fn memfind(hay: &[u8], needle: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn memfind_matches_driver_semantics() {
@@ -557,6 +569,16 @@ mod tests {
         let pieces = split("hammer-okxxxx", 4);
         assert_eq!(pieces.concat(), "hammer-okxxxx");
         assert_eq!(pieces.len(), 4);
+    }
+
+    /// `stream_chunks: 8` means eight content deltas, also when the text does not divide evenly.
+    #[test]
+    fn a_split_yields_exactly_the_asked_number_of_pieces() {
+        let pieces = split("hammer-ok", 8);
+        assert_eq!(pieces.len(), 8, "{pieces:?}");
+        assert_eq!(pieces.concat(), "hammer-ok");
+        assert!(pieces.iter().all(|p| !p.is_empty()), "{pieces:?}");
+        assert_eq!(split("ab", 8).len(), 2, "never more pieces than chars");
     }
 
     #[test]

@@ -19,7 +19,7 @@ mod run;
 mod scenario;
 
 use driver::{Plan, Proto, Req, Shape};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
@@ -110,7 +110,7 @@ fn parse() -> Result<Args, String> {
                 a.driver_threads = val()?.parse().map_err(|_| "--driver-threads N")?
             }
             "--mock-threads" => a.mock_threads = val()?.parse().map_err(|_| "--mock-threads N")?,
-            "--seconds" => a.seconds = val()?.parse().map_err(|_| "--seconds N")?,
+            "--seconds" => a.seconds = parse_seconds(&val()?)?,
             "--concurrency" => a.concurrency = val()?.parse().map_err(|_| "--concurrency N")?,
             "--proto" => {
                 a.proto = match val()?.as_str() {
@@ -127,6 +127,32 @@ fn parse() -> Result<Args, String> {
         }
     }
     Ok(a)
+}
+
+/// `--seconds N`: the selftest's measured window.
+fn parse_seconds(v: &str) -> Result<f64, String> {
+    let s: f64 = v.parse().map_err(|_| "--seconds N".to_string())?;
+    // Positive, finite and within `Duration` (which `from_secs_f64` would otherwise panic on).
+    if s > 0.0 && Duration::try_from_secs_f64(s).is_ok() {
+        Ok(s)
+    } else {
+        Err(format!("--seconds {v}: a positive number of seconds"))
+    }
+}
+
+/// Write the JSON and text reports under `out` as `<stem>.json` and `<stem>.txt`.
+fn write_report(
+    out: &Path,
+    stem: &str,
+    json: &str,
+    table: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let json_path = out.join(format!("{stem}.json"));
+    let txt_path = out.join(format!("{stem}.txt"));
+    std::fs::write(&json_path, json).map_err(|e| format!("{}: {e}", json_path.display()))?;
+    std::fs::write(&txt_path, table).map_err(|e| format!("{}: {e}", txt_path.display()))?;
+    Ok((json_path, txt_path))
 }
 
 fn driver_rt(threads: usize) -> tokio::runtime::Runtime {
@@ -167,7 +193,6 @@ fn ceiling(
         measure: Duration::from_secs_f64(seconds),
         timeout: Duration::from_secs(10),
         h2_streams: 64,
-        sample_every: 0,
     };
     let (out, _) = rt.block_on(driver::run(plan));
     report::DriverCeiling {
@@ -359,22 +384,53 @@ fn main() {
     };
     let table = report::table(&rep);
     print!("{table}");
-    let _ = std::fs::create_dir_all(&a.out);
     let stem = format!(
         "hammer-{}-{}-{}",
         rep.started_unix,
         report::stem_part(&rep.binary.version, 64),
         report::stem_part(&rep.binary.git_sha, 10)
     );
-    let json_path = a.out.join(format!("{stem}.json"));
-    let txt_path = a.out.join(format!("{stem}.txt"));
-    match serde_json::to_string_pretty(&rep) {
-        Ok(j) => {
-            let _ = std::fs::write(&json_path, j);
-            let _ = std::fs::write(&txt_path, &table);
-            eprintln!("report: {} and {}", json_path.display(), txt_path.display());
+    match sonic_rs::to_string_pretty(&rep) {
+        Ok(j) => match write_report(&a.out, &stem, &j, &table) {
+            Ok((json_path, txt_path)) => {
+                eprintln!("report: {} and {}", json_path.display(), txt_path.display())
+            }
+            Err(e) => {
+                eprintln!("report: {e}");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("report: {e}");
+            std::process::exit(1);
         }
-        Err(e) => eprintln!("report: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Duration::from_secs_f64` panics on these; the argument parser refuses them instead.
+    #[test]
+    fn seconds_that_are_not_a_positive_finite_duration_are_refused() {
+        for bad in ["-1", "NaN", "inf", "-inf", "0", "1e300"] {
+            assert!(parse_seconds(bad).is_err(), "{bad}");
+        }
+        assert_eq!(parse_seconds("2.5"), Ok(2.5));
+    }
+
+    /// A report that cannot be written is an error (and a non-zero exit), never "report: <path>".
+    #[test]
+    fn a_report_that_cannot_be_written_is_an_error() {
+        let base = std::env::temp_dir().join(format!("hammer-report-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        let r = write_report(&file.join("out"), "stem", "{}", "table");
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(r.is_err(), "{r:?}");
     }
 }
 
