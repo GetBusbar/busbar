@@ -890,6 +890,56 @@ mod counting {
             serve: Safe<Ready<ServeIn, ServeOut>>,
         },
     }
+
+    /// The counting DELIVER with 64 deliveries in flight, stating no carriage
+    /// fact: core treats it as carrying a batch line by line.
+    pub mod per_line {
+        use super::*;
+
+        const STATEMENT: Statement = Statement {
+            kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+            ..busbar_contract::abi::sdk::door::statement("waste-per-line-export", "0", 64)
+        };
+
+        busbar_contract::plugin_door! {
+            ops: busbar_contract::abi::export::Ops,
+            statement: STATEMENT,
+            lifecycle: life(Leaky),
+            kind_ops: {
+                deliver: Safe<Counts>,
+                scrape: Safe<Ready<ScrapeIn, ScrapeOut>>,
+                status: Safe<Ready<InHead, StatusOut>>,
+                check: Safe<Ready<CheckIn, CheckOut>>,
+                serve: Safe<Ready<ServeIn, ServeOut>>,
+            },
+        }
+    }
+
+    /// The counting DELIVER with 64 deliveries in flight, stating
+    /// `whole_batches`: it carries a DELIVER as one unit.
+    pub mod whole {
+        use super::*;
+
+        busbar_contract::statement_extensions!(EXTENSIONS: [("whole_batches", b"true")]);
+        const STATEMENT: Statement = Statement {
+            kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+            extensions: EXTENSIONS,
+            ..busbar_contract::abi::sdk::door::statement("waste-whole-export", "0", 64)
+        };
+
+        busbar_contract::plugin_door! {
+            ops: busbar_contract::abi::export::Ops,
+            statement: STATEMENT,
+            lifecycle: life(Leaky),
+            kind_ops: {
+                deliver: Safe<Counts>,
+                scrape: Safe<Ready<ScrapeIn, ScrapeOut>>,
+                status: Safe<Ready<InHead, StatusOut>>,
+                check: Safe<Ready<CheckIn, CheckOut>>,
+                serve: Safe<Ready<ServeIn, ServeOut>>,
+            },
+        }
+    }
 }
 
 const COUNTING_SHED: &str = "busbar_export_waste_counting_shed";
@@ -897,6 +947,13 @@ const COUNTING_SHED: &str = "busbar_export_waste_counting_shed";
 /// An opened counting sink with no flusher running yet, so a test can queue
 /// lines first and then run the flusher itself.
 fn counting_sink() -> (ExportInstance, Arc<Shared>) {
+    counting_sink_of(counting::door)
+}
+
+/// [`counting_sink`] over `door`, one of the counting doors.
+fn counting_sink_of(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> (ExportInstance, Arc<Shared>) {
     use std::sync::atomic::Ordering::SeqCst;
     counting::DELIVERS.store(0, SeqCst);
     counting::LINES.store(0, SeqCst);
@@ -905,7 +962,7 @@ fn counting_sink() -> (ExportInstance, Arc<Shared>) {
         busbar_contract::services::test_caller_binding(),
     ));
     let plugin = load_linked::<Export>(
-        &LinkedRow::of(counting::door).unwrap(),
+        &LinkedRow::of(door).unwrap(),
         Bind {
             instance: Arc::from("export.waste-counting"),
             max_inflight_cap: 64,
@@ -1007,4 +1064,90 @@ fn shed_folds_once_per_pass() {
         "1000 sheds are folded in {} observer folds",
         folds.len()
     );
+}
+
+/// Queues `count` lines on a fresh counting sink over `door`, runs the flusher
+/// until all are delivered, and returns (DELIVERs, lines delivered).
+fn delivers_for(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    count: usize,
+) -> (usize, usize) {
+    let (sink, shared) = counting_sink_of(door);
+    queue_lines(&sink, count);
+    flush_until(&shared, count);
+    drop(sink);
+    (
+        counting::DELIVERS.load(Ordering::SeqCst),
+        counting::LINES.load(Ordering::SeqCst),
+    )
+}
+
+#[test]
+fn export_batches_low_load() {
+    let guard = crate::observe::testing::exclusive();
+    crate::observe::testing::clear(&guard);
+    assert_eq!(
+        delivers_for(counting::whole::door, 50),
+        (1, 50),
+        "a whole-batch carrier takes 50 queued lines as one DELIVER, not one per free slot"
+    );
+    assert!(counting_shed_folds().is_empty());
+}
+
+#[test]
+fn export_batches_are_full_under_load() {
+    let guard = crate::observe::testing::exclusive();
+    crate::observe::testing::clear(&guard);
+    assert_eq!(
+        delivers_for(counting::whole::door, 1000),
+        (1000usize.div_ceil(MAX_BATCH_LINES), 1000),
+        "a whole-batch carrier takes 1000 queued lines in full batches"
+    );
+    assert!(counting_shed_folds().is_empty());
+}
+
+#[test]
+fn per_line_carriers_keep_dev_cut() {
+    let guard = crate::observe::testing::exclusive();
+    crate::observe::testing::clear(&guard);
+    // dev's cut with 64 free slots: `ceil(queued / room)` lines per DELIVER,
+    // room counting down from 64, so every free slot carries its share.
+    assert_eq!(delivers_for(counting::per_line::door, 50), (50, 50));
+    assert_eq!(delivers_for(counting::per_line::door, 1000), (64, 1000));
+    assert!(counting_shed_folds().is_empty());
+}
+
+/// Counts how often the flusher's waker is woken.
+struct CountWakes(std::sync::atomic::AtomicUsize);
+impl std::task::Wake for CountWakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_busy_flusher_is_not_woken_by_pushes_into_a_non_empty_queue() {
+    let guard = crate::observe::testing::exclusive();
+    crate::observe::testing::clear(&guard);
+    let (sink, shared) = counting_sink();
+    let wakes = Arc::new(CountWakes(std::sync::atomic::AtomicUsize::new(0)));
+    let waker = std::task::Waker::from(Arc::clone(&wakes));
+    *shared.flusher.lock().unwrap() = Some(waker.clone());
+    queue_lines(&sink, 1);
+    assert_eq!(
+        wakes.0.load(Ordering::SeqCst),
+        1,
+        "the first line into an empty queue wakes the flusher"
+    );
+    // The flusher stores its waker again each pass and leaves lines queued only
+    // when every slot is busy; a deliver completion wakes it then, not a push.
+    *shared.flusher.lock().unwrap() = Some(waker);
+    queue_lines(&sink, 999);
+    assert_eq!(
+        wakes.0.load(Ordering::SeqCst),
+        1,
+        "pushes into a non-empty queue do not wake the flusher"
+    );
+    assert!(shared.flusher.lock().unwrap().is_some());
+    assert_eq!(sink.queued(), 1000);
 }
