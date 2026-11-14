@@ -256,23 +256,22 @@ impl<T: Zeroize + AsRef<[u8]>, O> Eq for Secret<T, O> {}
 /// random source cannot key it.
 #[must_use]
 pub fn fingerprint<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8; 32] {
-    use sha2::Digest as _;
     static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
     let key = KEY.get_or_init(|| {
         let mut key = [0_u8; 32];
-        if getrandom::fill(&mut key).is_err() {
+        if crate::crypto::fill(&mut key).is_err() {
             eprintln!("busbar: the OS random source did not answer; held material cannot be fingerprinted");
             std::process::exit(2);
         }
         key
     });
-    let mut hash = sha2::Sha256::new();
+    let mut hash = crate::crypto::Sha256::new();
     hash.update(key);
     for part in parts {
-        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(&(part.len() as u64).to_be_bytes());
         hash.update(part);
     }
-    hash.finalize().into()
+    hash.finish()
 }
 
 /// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much

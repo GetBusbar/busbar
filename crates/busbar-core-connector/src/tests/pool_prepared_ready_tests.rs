@@ -170,8 +170,8 @@ fn server(cert: &Cert) -> Arc<rustls::ServerConfig> {
 /// `leaf`'s fingerprint as the connector states it (`ConnFacts::peer_cert`, RFC 5929
 /// `tls-server-end-point`).
 fn fingerprint(leaf: &[u8]) -> String {
-    ring::digest::digest(crate::tls::client::end_point_digest(leaf), leaf)
-        .as_ref()
+    crate::tls::client::end_point_digest(leaf)
+        .digest(leaf)
         .iter()
         .fold(String::new(), |mut hex, b| {
             let _ = write!(hex, "{b:02x}");

@@ -76,12 +76,7 @@ fn next_counter(counter: &std::sync::atomic::AtomicU64) -> u64 {
 fn boot_node() -> u64 {
     for _ in 0..8 {
         let mut b = [0u8; 8];
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the node identity is drawn from OS entropy once per process"
-        )]
-        let filled = getrandom::fill(&mut b);
-        if filled.is_ok() {
+        if busbar_contract::crypto::fill(&mut b).is_ok() {
             let n = u64::from_le_bytes(b);
             if n != 0 {
                 return n;

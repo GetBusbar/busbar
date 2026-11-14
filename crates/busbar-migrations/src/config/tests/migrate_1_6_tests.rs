@@ -49,12 +49,22 @@ fn the_retired_metadata_carve_outs_are_removed_and_each_entry_is_named() {
     )
     .expect("migrates");
     let d = doc(&out.yaml);
-    assert!(d["security"].get("allow_metadata_hosts").is_none(), "{}", out.yaml);
-    assert!(d["security"].get("allow_all_metadata").is_none(), "{}", out.yaml);
+    assert!(
+        d["security"].get("allow_metadata_hosts").is_none(),
+        "{}",
+        out.yaml
+    );
+    assert!(
+        d["security"].get("allow_all_metadata").is_none(),
+        "{}",
+        out.yaml
+    );
     assert_eq!(d["security"]["blocked_metadata_hosts"][0], "10.9.9.9");
     for provider in ["gemini", "other"] {
         assert!(
-            d["providers"][provider].get("allow_metadata_hosts").is_none(),
+            d["providers"][provider]
+                .get("allow_metadata_hosts")
+                .is_none(),
             "{}",
             out.yaml
         );
@@ -66,8 +76,9 @@ fn the_retired_metadata_carve_outs_are_removed_and_each_entry_is_named() {
         ("providers.gemini.allow_metadata_hosts", "169.254.170.2"),
     ] {
         assert!(
-            out.warnings.iter().any(|w| w
-                .starts_with(&format!("BUSBAR-3411: {path}: removed entry '{entry}'"))),
+            out.warnings
+                .iter()
+                .any(|w| w.starts_with(&format!("BUSBAR-3411: {path}: removed entry '{entry}'"))),
             "{path} {entry}: {:?}",
             out.warnings
         );
@@ -231,7 +242,9 @@ fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() 
         "{report}"
     );
     assert!(
-        report.contains("BUSBAR-3410: tools.other.allow_private: removed; 'already.internal' is already listed"),
+        report.contains(
+            "BUSBAR-3410: tools.other.allow_private: removed; 'already.internal' is already listed"
+        ),
         "{report}"
     );
     assert!(
@@ -239,10 +252,9 @@ fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() 
         "{report}"
     );
     assert!(
-        out.warnings
-            .iter()
-            .any(|w| w.starts_with("BUSBAR-3410: agents.planner: `http://[fd00::7]:8080/a2a` is plaintext")
-                && w.contains("refused at GA; use https")),
+        out.warnings.iter().any(|w| w
+            .starts_with("BUSBAR-3410: agents.planner: `http://[fd00::7]:8080/a2a` is plaintext")
+            && w.contains("refused at GA; use https")),
         "{:?}",
         out.warnings
     );
@@ -274,9 +286,9 @@ fn allow_private_never_lists_a_metadata_host() {
     for name in ["imds", "gce"] {
         assert!(d["agents"][name].get("allow_private").is_none());
         assert!(
-            out.warnings.iter().any(|w| w
-                .starts_with(&format!("BUSBAR-3410: agents.{name}.allow_private: removed; "))
-                && w.contains("cloud-metadata")),
+            out.warnings.iter().any(|w| w.starts_with(&format!(
+                "BUSBAR-3410: agents.{name}.allow_private: removed; "
+            )) && w.contains("cloud-metadata")),
             "{name}: {:?}",
             out.warnings
         );

@@ -2635,11 +2635,8 @@ pub async fn initialize_ephemeral_with_record_bootstrap(
         return Err("fresh principal baseline changed before record bootstrap".into());
     }
     let mut epoch = [0u8; 16];
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
-    )]
-    getrandom::fill(&mut epoch).map_err(|_| "fresh record bootstrap entropy unavailable")?;
+    busbar_contract::crypto::fill(&mut epoch)
+        .map_err(|_| "fresh record bootstrap entropy unavailable")?;
     // busbar:expect(bp::into_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     Ok(crate::host_record_bootstrap::ColdRecordReceipt {
         version: 1,

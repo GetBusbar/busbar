@@ -43,9 +43,14 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
         .map(Arc::unwrap_or_clone)
         .map_err(refused);
     }
-    let verifier = pinned_verifier(trust).map_err(refused)?;
+    let roots = trust_roots(trust)?;
+    let verifier = pinned_verifier(trust, &roots)?;
     match &trust.client_identity {
-        None => Ok(wants_client_cert(trust)?.with_no_client_auth()),
+        None => crypto_tls::client_config(|builder| {
+            Ok(wants_client_cert(builder, roots, verifier).with_no_client_auth())
+        })
+        .map(Arc::unwrap_or_clone)
+        .map_err(refused),
         Some(identity) => {
             #[expect(
                 clippy::disallowed_methods,
@@ -68,10 +73,16 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
                 .cloned()
                 .map(rustls_pki_types::CertificateDer::from)
                 .collect();
-            wants_client_cert(trust)?
-                .with_client_auth_cert(chain, key)
-                .map_err(|e| BadClientIdentity(format!("certificate chain: {e}")))?;
-            Ok(config)
+            crypto_tls::client_config(|builder| {
+                wants_client_cert(builder, roots, verifier).with_client_auth_cert(chain, key)
+            })
+            .map(Arc::unwrap_or_clone)
+            .map_err(|e| match e {
+                crypto_tls::TlsError::Rustls(e) => {
+                    BadClientIdentity(format!("certificate chain: {e}"))
+                }
+                other => refused(other),
+            })
         }
     }
 }
@@ -121,33 +132,43 @@ pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     Ok(owned)
 }
 
-/// The verifier half of the client config, before the client-auth choice: platform roots plus any
-fn wants_client_cert(
-    trust: &EgressTrust,
-) -> Result<
-    rustls::ConfigBuilder<rustls::ClientConfig, rustls::client::WantsClientCert>,
-    BadClientIdentity,
-> {
+/// Platform roots plus any extra anchors `trust` names; an anchor rustls cannot use is refused.
+fn trust_roots(trust: &EgressTrust) -> Result<rustls::RootCertStore, BadClientIdentity> {
     let mut roots = webpki_roots_store();
     for der in &trust.extra_anchors {
         roots
             .add(rustls_pki_types::CertificateDer::from(der.clone()))
             .map_err(|e| BadClientIdentity(format!("a trust anchor is not usable: {e}")))?;
     }
-    roots
+    Ok(roots)
 }
 
 /// The pinning verifier `trust` asks for (`None` when it pins no key), built through the backend
 /// ahead of the config so the config closure cannot fail on it.
-fn pinned_verifier(trust: &EgressTrust) -> Result<Option<PinnedKeyVerifier>, crypto_tls::TlsError> {
+fn pinned_verifier(
+    trust: &EgressTrust,
+    roots: &rustls::RootCertStore,
+) -> Result<Option<PinnedKeyVerifier>, BadClientIdentity> {
     if trust.pinned_public_keys.is_empty() {
-        Ok(builder.with_root_certificates(roots))
-    } else {
-        let verifier =
-            PinnedKeyVerifier::try_new(roots, &trust.pinned_public_keys).map_err(BadClientIdentity)?;
-        Ok(builder
+        return Ok(None);
+    }
+    PinnedKeyVerifier::try_new(roots.clone(), &trust.pinned_public_keys)
+        .map(Some)
+        .map_err(BadClientIdentity)
+}
+
+/// The verifier half of the client config, before the client-auth choice: `roots`, or the pinning
+/// verifier over them when the destination pins a key.
+fn wants_client_cert(
+    builder: crypto_tls::ClientBuilder,
+    roots: rustls::RootCertStore,
+    pinned: Option<PinnedKeyVerifier>,
+) -> rustls::ConfigBuilder<rustls::ClientConfig, rustls::client::WantsClientCert> {
+    match pinned {
+        None => builder.with_root_certificates(roots),
+        Some(verifier) => builder
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(verifier)))
+            .with_custom_certificate_verifier(Arc::new(verifier)),
     }
 }
 
@@ -217,9 +238,7 @@ impl PinnedKeyVerifier {
     /// The verifier over `roots` holding the peer to `pins`, or why it cannot be built (an empty
     /// root store, as `advanced.tls.roots: none` with no anchor gives): a refusal, never a panic.
     pub(crate) fn try_new(roots: rustls::RootCertStore, pins: &[[u8; 32]]) -> Result<Self, String> {
-        let inner = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
-            .build()
-            .map_err(|e| {
+        let inner = crypto_tls::server_verifier(Arc::new(roots)).map_err(|e| {
                 format!(
                     "{}: no verifier can be built for this pinned destination: {e}",
                     busbar_kernel::diagnostics::CONFIG_TLS_TRUST_EMPTY.banner()
@@ -227,7 +246,7 @@ impl PinnedKeyVerifier {
             })?;
         Ok(Self {
             inner,
-            pins: pins.to_vec(),
+            pins: pins.iter().copied().collect(),
         })
     }
 }
@@ -251,8 +270,8 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
         let key_info = subject_public_key_info(end_entity.as_ref()).ok_or_else(|| {
             rustls::Error::General("peer certificate carries no readable key".into())
         })?;
-        let digest = ::ring::digest::digest(&::ring::digest::SHA256, key_info);
-        if <[u8; 32]>::try_from(digest.as_ref()).is_ok_and(|d| self.pins.contains(&d)) {
+        let digest = busbar_contract::crypto::sha256(key_info);
+        if self.pins.contains(&digest) {
             Ok(verified)
         } else {
             Err(rustls::Error::General(

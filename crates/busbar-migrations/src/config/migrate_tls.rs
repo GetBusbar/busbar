@@ -169,8 +169,7 @@ fn merge_anchor(
 fn fingerprint(anchor: &Value) -> Option<String> {
     let pem = anchor.as_str()?;
     let der = first_der(pem)?;
-    use sha2::Digest as _;
-    Some(hex::encode(sha2::Sha256::digest(&der)))
+    Some(hex::encode(busbar_contract::crypto::sha256(&der)))
 }
 
 fn first_der(pem: &str) -> Option<Vec<u8>> {
@@ -266,7 +265,10 @@ fn plugin_block(
         .filter_map(|k| settings.get(key(k)).and_then(url_host))
         .collect();
     if hosts.is_empty() {
-        hosts = default_hosts(&module).iter().map(|h| (*h).to_owned()).collect();
+        hosts = default_hosts(&module)
+            .iter()
+            .map(|h| (*h).to_owned())
+            .collect();
     }
     hosts.dedup();
     if !ca.is_string() {
@@ -364,13 +366,17 @@ fn postgres_url(url: &mut Value, plaintext: &mut Vec<(String, String)>, ledger: 
         return;
     }
     let host = url_host(url).unwrap_or_default();
-    let (base, query) = text.split_once('?').map_or((text.as_str(), ""), |(b, q)| (b, q));
+    let (base, query) = text
+        .split_once('?')
+        .map_or((text.as_str(), ""), |(b, q)| (b, q));
     let mut params: Vec<(String, String)> = query
         .split('&')
         .filter(|p| !p.is_empty())
         .map(|p| {
             p.split_once('=')
-                .map_or((p.to_owned(), String::new()), |(k, v)| (k.to_owned(), v.to_owned()))
+                .map_or((p.to_owned(), String::new()), |(k, v)| {
+                    (k.to_owned(), v.to_owned())
+                })
         })
         .collect();
     let mode = params

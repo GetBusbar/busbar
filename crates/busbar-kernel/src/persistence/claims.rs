@@ -262,7 +262,7 @@ impl<'a> Claims<'a> {
     pub(crate) async fn release(&self, token: &str) -> Result<bool, Error> {
         let at = self.address(token)?;
         let mut nonce = [0u8; 16];
-        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
+        busbar_contract::crypto::fill(&mut nonce)
             .map_err(|_| Error::Invalid)?;
         let mut hash = Sha256::new();
         hash.update(b"busbar.claim-release.v1");

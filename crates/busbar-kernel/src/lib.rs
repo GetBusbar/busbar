@@ -50,6 +50,7 @@ pub mod canary;
 pub mod door;
 pub mod grammar;
 pub mod guest;
+pub(crate) mod hashing;
 // busbar:request-path
 #[cfg_attr(
     not(test),

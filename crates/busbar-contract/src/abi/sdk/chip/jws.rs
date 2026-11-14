@@ -24,7 +24,7 @@ fn signing_key(der: &[u8]) -> Result<crypto::rsa::SigningKey, ()> {
 impl Cred {
     /// Whether the credential is a supported PKCS #8 RSA private key.
     pub fn rsa_pkcs8_check(&self) -> Result<(), String> {
-        let checked = rsa::Key::from_pkcs8(self.wire()).map(drop);
+        let checked = signing_key(self.wire()).map(drop);
         #[expect(
             clippy::disallowed_methods,
             reason = "error: a configured key that is not one, refused once as its settings are checked"

@@ -61,7 +61,7 @@ pub(crate) async fn reserve(
     let claims = Claims::authorized(store, OWNER, KIND);
     let expires_at = now.checked_add(limit.window_secs).ok_or(StoreUnavailable)?;
     let mut attempt = [0u8; 16];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut attempt)
+    busbar_contract::crypto::fill(&mut attempt)
         .map_err(|_| StoreUnavailable)?;
     for slot in 0..limit.max {
         match claims

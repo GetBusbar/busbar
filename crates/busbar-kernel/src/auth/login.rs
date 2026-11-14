@@ -588,7 +588,7 @@ pub(crate) async fn declared_login_form(
     }
     let random = |n: usize| {
         let mut buf = vec![0u8; n];
-        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut buf).ok()?;
+        busbar_contract::crypto::fill(&mut buf).ok()?;
         Some(hex::encode(buf))
     };
     let begin = BeginLogin {

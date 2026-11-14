@@ -1501,7 +1501,12 @@ impl<K: KindMarker> Services<K> {
             result: &mut result,
             into: bufs(buf, spans),
         };
-        let crossed = self.cross(op::DIRECTORY_GET, |t| t.directory_get, &input, check_directory_get);
+        let crossed = self.cross(
+            op::DIRECTORY_GET,
+            |t| t.directory_get,
+            &input,
+            check_directory_get,
+        );
         directory_rows(crossed, &result, buf, spans)
     }
 
@@ -1663,7 +1668,8 @@ impl<K: KindMarker> Services<K> {
             .iter()
             .map(|m| text(m))
             .collect();
-        let flags = u32::from(write.document.is_some()) * crate::abi::host::directory::APPLY_DOCUMENT
+        let flags = u32::from(write.document.is_some())
+            * crate::abi::host::directory::APPLY_DOCUMENT
             | u32::from(write.indexes.is_some()) * crate::abi::host::directory::APPLY_INDEXES
             | u32::from(write.state.is_some()) * crate::abi::host::directory::APPLY_STATE
             | u32::from(write.members_replace.is_some())
