@@ -35,7 +35,7 @@ pub fn arm(store: &CoreStore) {
 /// Exit with `code`, handing an unpublished first start over first.
 pub fn exit(code: i32) -> ! {
     if let Some(first_start) = FIRST_START.get() {
-        report(retire_on_exit(first_start.clone()));
+        hand_over(first_start);
     }
     #[expect(
         clippy::disallowed_methods,
@@ -48,12 +48,13 @@ pub fn exit(code: i32) -> ! {
 /// and a console close exit through [`exit`] (status 143), so an armed owner hands over. Send on
 /// the returned handoff (or drop it) once the listener's handler is installed.
 pub fn exit_on_signal() -> tokio::sync::oneshot::Sender<()> {
-    exit_on(crate::shutdown_signal(), exit)
+    exit_on(crate::shutdown_signal(), |code| exit(code))
 }
 
-fn exit_on<S>(signal: S, leave: fn(i32) -> !) -> tokio::sync::oneshot::Sender<()>
+fn exit_on<S, L>(signal: S, leave: L) -> tokio::sync::oneshot::Sender<()>
 where
     S: Future<Output = ()> + Send + 'static,
+    L: FnOnce(i32) + Send + 'static,
 {
     let (handoff, released) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
@@ -64,6 +65,11 @@ where
         }
     });
     handoff
+}
+
+/// Retire `first_start`'s writer (bounded) and report the outcome on this thread.
+fn hand_over(first_start: &Arc<FirstStart>) {
+    report(first_start, retire_on_exit(first_start.clone()));
 }
 
 /// What the hand-over did, or why it did not finish.
@@ -103,11 +109,8 @@ fn retire_on_exit(first_start: Arc<FirstStart>) -> Outcome {
 }
 
 /// Emitted on the exiting thread, outside any runtime, after the helper joined.
-fn report(outcome: Outcome) {
-    let writer = FIRST_START
-        .get()
-        .map(|first_start| writer_hex(&first_start.owner()))
-        .unwrap_or_default();
+fn report(first_start: &FirstStart, outcome: Outcome) {
+    let writer = writer_hex(&first_start.owner());
     match outcome {
         Outcome::Done(Abandoned::Retired) => tracing::info!(
             diag = %FIRST_START_EXIT_RETIRED.banner(),
@@ -132,3 +135,7 @@ fn failed(writer: &str, reason: &str) {
         READY_STEP.as_secs(),
     );
 }
+
+#[cfg(test)]
+#[path = "tests/exit.rs"]
+mod tests;
