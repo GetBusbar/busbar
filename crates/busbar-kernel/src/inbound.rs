@@ -19,6 +19,9 @@ use busbar_contract::redacted::Secret;
 use crate::guest::{GuestList, Line, LineAuth, Matched};
 use crate::state::App;
 
+mod derived;
+pub(crate) use derived::Derived;
+
 pub const NO_LIST: &str = "the kernel holds no guest list for this listener at this generation";
 
 pub const NO_LINE: &str = "the handle names no line of this listener's list";
@@ -461,7 +464,25 @@ pub struct ListenerScope {
 }
 
 impl Listener {
+    /// The plane admission for a unit's original head. Read it through [`Derived::admission`],
+    /// which resolves it once per unit; a refusal with no unit resolves it here directly.
     fn admission(&self, head: &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::PlaneAdmission);
+        self.resolve_admission(head)
+    }
+
+    /// The plane admission for a non-peer continuation call's own head. Earlier auth points'
+    /// strips are already applied to it, and the admission matches header fields, so it is a
+    /// different input from the unit's original and is resolved, not read from [`Derived`].
+    fn admission_on(&self, head: &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AdmissionOnHead);
+        self.resolve_admission(head)
+    }
+
+    fn resolve_admission(
+        &self,
+        head: &Head,
+    ) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
         self.scope.as_ref().map_or_else(
             || self.app.planes.admission_for(&head.target).cloned(),
             |scope| (scope.admission)(&self.app, head),
@@ -564,6 +585,8 @@ pub(crate) struct AdmittedRequest {
     pub(crate) signed: bool,
     pub(crate) original: Head,
     handed: Head,
+    /// What the unit derived from `original`, carried from its auth calls (SP-A1 / SP-AU1).
+    derived: Arc<Derived>,
     pub(crate) strips: Vec<Strip>,
     replay: Option<Arc<ReplayAdmission>>,
     deadline: Option<std::time::Instant>,
@@ -769,8 +792,22 @@ impl RequestAdmission {
         self.inner.table.listener.body_limit
     }
 
-    pub(crate) fn plane_admission(&self) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
-        self.inner.table.listener.admission(&self.inner.original)
+    pub(crate) fn plane_admission(&self) -> Option<&crate::plane_driver::dispatch::PlaneAdmission> {
+        self.inner
+            .derived
+            .admission(&self.inner.table.listener, &self.inner.original)
+    }
+
+    /// The original (unstripped) head as an HTTP header map, built once per unit.
+    pub(crate) fn original_headers(&self) -> &axum::http::HeaderMap {
+        self.inner.derived.headers(&self.inner.original)
+    }
+
+    /// The client token the original head carries (carriers only), read once per unit.
+    pub(crate) fn client_token(&self) -> Option<&str> {
+        self.inner
+            .derived
+            .client_token(&self.inner.table.listener.app, &self.inner.original)
     }
 
     pub fn app(&self) -> Arc<App> {
@@ -955,6 +992,8 @@ struct UnitState {
     binding: RequestBinding,
     secret: [u64; 2],
     head: Option<Head>,
+    /// What this unit derived from `head`; moves with it into the claimed request.
+    derived: Arc<Derived>,
 
     handed_head: Option<Head>,
     claimed: bool,
@@ -1004,6 +1043,7 @@ impl UnitState {
             binding,
             secret,
             head: None,
+            derived: Arc::default(),
             handed_head: None,
             claimed: false,
             deadline: None,
@@ -1411,7 +1451,9 @@ struct Position {
 enum Judging<'a> {
     Nothing,
 
-    Keys(&'a Head, Option<SignedAnswer>),
+    /// Judge the keys arm on the unit's original head, reading what the unit already derived
+    /// from it.
+    Keys(&'a Head, &'a Derived, Option<SignedAnswer>),
 
     Answer(VerifyAnswer),
 }
@@ -1433,7 +1475,21 @@ impl AsRef<[u8]> for FieldBytes {
     }
 }
 
+/// An inbound unit's original head as an HTTP header map. A unit reads it through
+/// [`Derived::headers`], which builds it once; a refusal with no unit builds it here directly.
 pub(crate) fn header_map(head: &Head) -> axum::http::HeaderMap {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::HeaderMap);
+    build_header_map(head)
+}
+
+/// The served (stripped) head converted back to HTTP for the operator adapter: a different input
+/// from the unit's original, so it is not the unit's [`Derived`] map.
+pub(crate) fn served_header_map(head: &Head) -> axum::http::HeaderMap {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ServedHeaderMap);
+    build_header_map(head)
+}
+
+fn build_header_map(head: &Head) -> axum::http::HeaderMap {
     let mut headers = axum::http::HeaderMap::new();
     for (n, v) in &head.fields {
         if let (Ok(n), Ok(v)) = (
@@ -1463,7 +1519,7 @@ fn ordered(names: &[String]) -> Vec<String> {
 fn signed_then_keys(
     app: &App,
     gov: Option<&crate::governance::GovState>,
-    head: &Head,
+    candidate: Option<&Secret<String>>,
     signed: Option<SignedAnswer>,
     now: u64,
     expected_aud: Option<&str>,
@@ -1514,7 +1570,7 @@ fn signed_then_keys(
             Verified::Overloaded => return (Judged::Overloaded, None, named, None),
         }
     }
-    let (judged, identity, strips, resolved) = keys_judged(app, gov, head, now, expected_aud);
+    let (judged, identity, strips, resolved) = keys_judged(app, gov, candidate, now, expected_aud);
     named.extend(strips);
     (judged, identity, named, resolved)
 }
@@ -1522,7 +1578,7 @@ fn signed_then_keys(
 fn keys_judged(
     app: &App,
     gov: Option<&crate::governance::GovState>,
-    head: &Head,
+    candidate: Option<&Secret<String>>,
     now: u64,
     expected_aud: Option<&str>,
 ) -> (
@@ -1532,17 +1588,13 @@ fn keys_judged(
     Option<Arc<crate::governance::VirtualKey>>,
 ) {
     let carriers = app.auth.carriers();
-    let headers = header_map(head);
-    let candidate = crate::auth::inbound_candidate(app, &headers);
     let strips = carriers
         .iter()
         .map(|c| Strip::field(c.as_str().to_string()))
         .collect();
     match crate::auth::keys_arm_verdict(
         gov,
-        candidate
-            .as_ref()
-            .map(|candidate| candidate.expose(&crate::seal::lend()).as_str()),
+        candidate.map(|candidate| candidate.expose(&crate::seal::lend()).as_str()),
         now,
         expected_aud,
     ) {
@@ -2089,6 +2141,7 @@ impl Inbound {
                 signed: unit.signed,
                 original: unit.head.as_ref().unwrap_or(handed).clone(),
                 handed: handed.clone(),
+                derived: Arc::clone(&unit.derived),
                 strips: unit.strips.clone(),
                 replay: unit.replay.clone(),
                 deadline: unit.deadline,
@@ -2516,12 +2569,17 @@ impl Inbound {
         let deadline = call.deadline;
         let (head, conn) = (call.head, call.conn);
         Ok(async move {
-            let original = (!peer)
-                .then(|| me.with_state(target, |u| u.head.clone()).flatten())
-                .flatten();
-            let candidate = original.as_ref().and_then(|head| {
-                crate::auth::inbound_candidate(&table.listener.app, &header_map(head))
-            });
+            let (original, derived) = me
+                .with_state(target, |u| {
+                    (
+                        (!peer).then(|| u.head.clone()).flatten(),
+                        Arc::clone(&u.derived),
+                    )
+                })
+                .unwrap_or_default();
+            let candidate = original
+                .as_ref()
+                .and_then(|head| derived.candidate(&table.listener.app, head));
             let mut resume_head_after_reader = false;
 
             let unfinished = me
@@ -2537,21 +2595,28 @@ impl Inbound {
                 let prefix = method
                     .as_ref()
                     .and_then(|method| table.doors.door_ticket(&head.target, method));
-                let token = candidate
-                    .as_ref()
-                    .map(|c| c.expose(&crate::seal::lend()).as_str());
+                let token = candidate.map(|c| c.expose(&crate::seal::lend()).as_str());
                 let keys = positions
                     .iter()
                     .find(|p| matches!(p.kind, PositionKind::Keys));
-                let signed_reader = (table.listener.admission(&head).is_none()
+                // On the first request `call.head` is the original just recorded, so its
+                // admission is the unit's; a continuation call's head has earlier strips applied.
+                let unadmitted = match original.as_ref() {
+                    Some(original) if first_request => {
+                        derived.admission(&table.listener, original).is_none()
+                    }
+                    _ => table.listener.admission_on(&head).is_none(),
+                };
+                let signed_reader = (unadmitted
                     && (table.doors.signed_ingress(&head.target)
                         || (table.listener.signed_ingress)(&table.listener.app, &head.target)))
-                .then(|| {
-                    table
+                .then(|| match original.as_ref() {
+                    Some(original) => table
                         .listener
                         .app
                         .auth
-                        .signed_reader(&header_map(original.as_ref().unwrap_or(&head)))
+                        .signed_reader(derived.headers(original)),
+                    None => table.listener.app.auth.signed_reader(&header_map(&head)),
                 })
                 .flatten();
                 if let (Some(keys), Some((provider, calls, kinds))) = (keys, signed_reader) {
@@ -2600,6 +2665,7 @@ impl Inbound {
                                 let judging = match answer {
                                     Some(answer) => Judging::Keys(
                                         original.as_ref().unwrap_or(&head),
+                                        &derived,
                                         Some(SignedAnswer {
                                             faulted,
                                             answer: *answer,
@@ -2701,7 +2767,7 @@ impl Inbound {
                             target,
                             p.index,
                             &p.provider,
-                            Judging::Keys(original.as_ref().unwrap_or(&head), None),
+                            Judging::Keys(original.as_ref().unwrap_or(&head), &derived, None),
                             &table,
                         );
                         continue;
@@ -2742,7 +2808,7 @@ impl Inbound {
                     } else {
                         None
                     },
-                    candidate.as_ref(),
+                    candidate,
                 );
                 let mut verifying = calls.verify(req);
                 let answer = until_deadline(deadline, &mut verifying).await;
@@ -2801,28 +2867,25 @@ impl Inbound {
     ) {
         let gov = table.listener.app.governance.as_deref();
         let now = crate::store::now();
-        let signed_identity = matches!(&judging, Judging::Keys(_, Some(signed))
+        let signed_identity = matches!(&judging, Judging::Keys(_, _, Some(signed))
             if !signed.faulted && matches!(&signed.answer.verified, Verified::Identity(_)));
         let replay_provider = match &judging {
-            Judging::Keys(_, Some(signed)) => signed.provider.as_str(),
+            Judging::Keys(_, _, Some(signed)) => signed.provider.as_str(),
             _ => provider,
         }
         .to_owned();
         let (judged, identity, strips, resolved) = match judging {
             Judging::Nothing => (Judged::Denied, None, Vec::new(), None),
-            Judging::Keys(head, signed) => {
-                let admission = table.listener.admission(head);
-                signed_then_keys(
-                    &table.listener.app,
-                    gov,
-                    head,
-                    signed,
-                    now,
-                    admission
-                        .as_ref()
-                        .map(|admission| admission.audience.as_str()),
-                )
-            }
+            Judging::Keys(head, derived, signed) => signed_then_keys(
+                &table.listener.app,
+                gov,
+                derived.candidate(&table.listener.app, head),
+                signed,
+                now,
+                derived
+                    .admission(&table.listener, head)
+                    .map(|admission| admission.audience.as_str()),
+            ),
             Judging::Answer(a) => {
                 let (judged, identity) = match a.verified {
                     Verified::Identity(id) => (Judged::Identity, Some(id)),
