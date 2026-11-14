@@ -28,7 +28,6 @@ pub mod import_target;
 #[allow(dead_code)]
 pub mod journal;
 pub(crate) mod keys;
-pub mod objects;
 pub mod observations;
 pub(crate) mod partition;
 pub mod recovery_api;

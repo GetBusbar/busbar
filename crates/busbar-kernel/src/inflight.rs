@@ -10,8 +10,6 @@ use busbar_contract::caps::{
     StepName, UnitKey,
 };
 
-use busbar_contract::Framing;
-
 use crate::pump::{Direction, StreamId};
 use crate::slice::LeaseCell;
 use crate::teller::Kernel;
@@ -625,68 +623,6 @@ impl Sessions {
     fn shard(&self, id: SessionId) -> &Mutex<HashMap<SessionId, Arc<SessionSlot>>> {
         let index = (id.get() as usize) & (SHARDS - 1);
         &self.shards[index]
-    }
-}
-
-/// Why a session is being hard-closed.
-///
-/// The list is closed and short on purpose. Everything else — a bad credential on an unbound
-/// session, a refused unit, a decode the plane discarded — renders and the session continues,
-/// because "wrong credential, try again on this connection" is a normal thing for a client to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HardClose {
-    /// A provider-origin unit was refused at the in-flight cap, or at the door for a money reason.
-    ProviderRefusedForMoney,
-    /// A frame could not be decoded on a stream transport, where the stream is now out of step.
-    DecodeFailedOnStream,
-    /// A plane call panicked, so the session's plane state is poisoned.
-    PlanePanic,
-    /// A bound session's cached principal failed its re-check.
-    BoundPrincipalFailed,
-    /// A credential was taken from an unbound session.
-    SessionUnbound,
-    /// The connection presenting the session-layer binding did not match the handoff fact.
-    HandoffMismatch,
-    /// The principal was revoked.
-    Revoked,
-}
-
-pub fn hard_closes(
-    origin: OriginKind,
-    step: StepName,
-    reason: ReasonCode,
-    framing: Framing,
-    binding: Binding,
-) -> Option<HardClose> {
-    let money_reason = matches!(
-        reason,
-        ReasonCode::OverBudget
-            | ReasonCode::GroupFrozen
-            | ReasonCode::Unpriced
-            | ReasonCode::OverdraftCeiling
-            | ReasonCode::StaleSlice
-            | ReasonCode::DurabilityUnavailable
-    );
-    match (origin, step, reason) {
-        (OriginKind::Provider, _, ReasonCode::InFlightCap) => {
-            Some(HardClose::ProviderRefusedForMoney)
-        }
-        (OriginKind::Provider, StepName::Admit, _) if money_reason => {
-            Some(HardClose::ProviderRefusedForMoney)
-        }
-        (_, _, ReasonCode::PlanePanic) => Some(HardClose::PlanePanic),
-        (_, _, ReasonCode::SessionUnbound) => Some(HardClose::SessionUnbound),
-        (_, _, ReasonCode::Revoked) => Some(HardClose::Revoked),
-
-        (_, _, ReasonCode::HandoffMismatch) => Some(HardClose::HandoffMismatch),
-        (_, StepName::Decode, ReasonCode::DecodeFailed) if framing == Framing::Stream => {
-            Some(HardClose::DecodeFailedOnStream)
-        }
-
-        (_, StepName::Authenticate, ReasonCode::Unauthenticated) if binding == Binding::Bound => {
-            Some(HardClose::BoundPrincipalFailed)
-        }
-        _ => None,
     }
 }
 
