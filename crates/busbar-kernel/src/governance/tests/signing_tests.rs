@@ -253,13 +253,15 @@ fn subkey_derived_once_per_key_and_domain() {
     let before = derivations();
 
     let old = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
-    let old_vk = SigningKey::from_bytes(&old.derived_subkey_seed(DOMAIN)).verifying_key();
+    let old_vk = SigningKey::from_seed(&old.derived_subkey_seed(DOMAIN))
+        .unwrap()
+        .verifying_key();
     let old_spki = old.subkey_key_info_base64(DOMAIN);
     for i in 0u32..1_000 {
         let input = i.to_le_bytes();
-        let sig = Signature::from_bytes(&old.sign_with_subkey(DOMAIN, &input));
+        let sig = &old.sign_with_subkey(DOMAIN, &input);
         assert!(
-            old_vk.verify(&input, &sig).is_ok(),
+            old_vk.verify_strict(&input, sig).is_ok(),
             "signature {i} verifies"
         );
     }
@@ -271,25 +273,24 @@ fn subkey_derived_once_per_key_and_domain() {
         old_spki, new_spki,
         "key material changed under the same kid"
     );
-    let new_vk = SigningKey::from_bytes(&new.derived_subkey_seed(DOMAIN)).verifying_key();
+    let new_vk = SigningKey::from_seed(&new.derived_subkey_seed(DOMAIN))
+        .unwrap()
+        .verifying_key();
     for i in 0u32..1_000 {
         let input = i.to_le_bytes();
-        let sig = Signature::from_bytes(&new.sign_with_subkey(DOMAIN, &input));
+        let sig = &new.sign_with_subkey(DOMAIN, &input);
         assert!(
-            new_vk.verify(&input, &sig).is_ok(),
+            new_vk.verify_strict(&input, sig).is_ok(),
             "signature {i} verifies"
         );
         assert!(
-            old_vk.verify(&input, &sig).is_err(),
+            old_vk.verify_strict(&input, sig).is_err(),
             "not under the old key"
         );
     }
     // The cached key signs exactly as a fresh derivation does.
-    let fresh = SigningKey::from_bytes(&new.derived_subkey_seed(DOMAIN));
-    assert_eq!(
-        new.sign_with_subkey(DOMAIN, b"x"),
-        fresh.sign(b"x").to_bytes()
-    );
+    let fresh = SigningKey::from_seed(&new.derived_subkey_seed(DOMAIN)).unwrap();
+    assert_eq!(new.sign_with_subkey(DOMAIN, b"x"), fresh.sign(b"x"));
 
     assert_eq!(
         derivations() - before,
@@ -304,15 +305,17 @@ fn subkey_derived_once_per_key_and_domain() {
 fn concurrent_subkey_cache_holds_one_entry_per_domain() {
     const DOMAIN: &str = "agents/card-signing/v1";
     let s = std::sync::Arc::new(TokenSigner::from_secret_bytes(&[3u8; 32], DEFAULT_KID));
-    let vk = SigningKey::from_bytes(&s.derived_subkey_seed(DOMAIN)).verifying_key();
+    let vk = SigningKey::from_seed(&s.derived_subkey_seed(DOMAIN))
+        .unwrap()
+        .verifying_key();
     let threads: Vec<_> = (0..8u32)
         .map(|t| {
             let s = std::sync::Arc::clone(&s);
             std::thread::spawn(move || {
                 for i in 0..1_000u32 {
                     let input = [t.to_le_bytes(), i.to_le_bytes()].concat();
-                    let sig = Signature::from_bytes(&s.sign_with_subkey(DOMAIN, &input));
-                    assert!(vk.verify(&input, &sig).is_ok());
+                    let sig = &s.sign_with_subkey(DOMAIN, &input);
+                    assert!(vk.verify_strict(&input, sig).is_ok());
                 }
             })
         })

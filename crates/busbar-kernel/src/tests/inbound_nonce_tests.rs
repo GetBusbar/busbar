@@ -183,6 +183,7 @@ fn host(mac: UnitMac) -> Arc<Inbound> {
         export_defs: Default::default(),
         admin: Default::default(),
         admin_chain: Default::default(),
+        auth_instances: Default::default(),
         admin_modules,
         public_url: Default::default(),
         oauth_as: Default::default(),
@@ -394,13 +395,13 @@ async fn unit_nonces_distinct_across_inbounds() {
                 };
                 for _ in 0..MINTS {
                     inbound
-                        .mint(OWNER, GEN, 0, &[], binding, Arc::clone(&table))
+                        .mint(OWNER, GEN, 0, &Arc::from([]), binding, Arc::clone(&table))
                         .unwrap();
                 }
             });
         }
     });
-    let mut all = HashSet::new();
+    let mut all = foldhash::HashSet::default();
     for (_, seen) in &hosts {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), MINTS);

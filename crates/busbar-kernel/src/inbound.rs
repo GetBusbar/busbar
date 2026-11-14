@@ -3019,7 +3019,7 @@ impl Inbound {
             reason = "config: busbar-contract owns this per-request auth exchange; borrowing it needs a contract change (reported)"
         )]
         let replay_provider = match &judging {
-            Judging::Keys(_, _, Some(signed)) => signed.provider.as_str(),
+            Judging::Keys(_, _, Some(signed)) => &*signed.provider,
             _ => provider,
         }
         .to_owned();

@@ -295,7 +295,7 @@ fn session_own_is_retained_until_completion_cancellation_or_invalid_finish() {
             meter: &meter,
             taps: None,
         };
-        let opened = super::block_on(open_unit(&kernel, &fixture, &ctx, run()));
+        let opened = futures::executor::block_on(open_unit(&kernel, &fixture, &ctx, run()));
         let SessionOpen::Admitted { own: Some(own), .. } = opened else {
             panic!("actual Own session did not retain terminal custody");
         };
@@ -397,7 +397,7 @@ fn screened_session_refuses_before_admission_or_carrier_routing() {
         &kernel.admit_token_for(ctx.call),
         principal(),
     ));
-    let opened = super::block_on(open_unit_screened(
+    let opened = futures::executor::block_on(open_unit_screened(
         &kernel,
         &fixture,
         &ctx,

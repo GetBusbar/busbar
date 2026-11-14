@@ -249,9 +249,7 @@ pub fn load_config_from_disk_compacting_document_patches(
     let normalized_config =
         rules.normalize_document(ConfigDocument::Deployment, config_path, &raw_config)?;
     let interpolated_config = config::interpolate_env_with(
-        normalized_config
-            .as_deref()
-            .map_or(raw_config.as_str(), String::as_str),
+        normalized_config.as_deref().unwrap_or(raw_config.as_str()),
         env_mode,
         &mut unset_env_vars,
     )
@@ -340,7 +338,7 @@ pub fn load_config_from_disk_compacting_document_patches(
     let interpolated_providers = config::interpolate_env_with(
         normalized_providers
             .as_deref()
-            .map_or(raw_providers.as_str(), String::as_str),
+            .unwrap_or(raw_providers.as_str()),
         env_mode,
         &mut unset_env_vars,
     )

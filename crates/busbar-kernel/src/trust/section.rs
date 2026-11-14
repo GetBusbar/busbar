@@ -82,7 +82,7 @@ fn read_entry(
     };
     let map = entry.as_mapping();
     if map
-        .and_then(|m| m.get(RETIRED_PRIVATE_REACH_KEY))
+        .and_then(|m| m.get_key(RETIRED_PRIVATE_REACH_KEY))
         .is_some_and(|v| !v.is_null())
     {
         return Err(private_reach_retired(at, RETIRED_PRIVATE_REACH_KEY));

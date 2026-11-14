@@ -86,6 +86,7 @@ fn unit(n: u64, unit: u64, targets: &[(&str, u64)], units: &[(&str, Count)]) -> 
         terminal: None,
         audit: None,
         measurement: None,
+        unread: None,
     }
 }
 

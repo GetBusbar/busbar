@@ -1244,8 +1244,9 @@ impl busbar_contract::persistence::PersistenceBackend for CountingReads {
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
-        self.actual.commit(candidate)
+        self.actual.commit(candidate, key)
     }
     fn clock(
         &self,

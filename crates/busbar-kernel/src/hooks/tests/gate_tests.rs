@@ -2329,12 +2329,14 @@ impl busbar_contract::hook_calls::HookCalls for Rejecting {
     ) -> busbar_contract::hook_calls::Pending<
         busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::DecideOut>,
     > {
-        let (outcome, out) =
-            frame.answer_decide(&busbar_contract::abi::sdk::hook::Verdict::Reject {
-                status: Some(403),
-                message: self.message.clone(),
-            });
+        let message = self.message.clone();
         Box::pin(async move {
+            // `DecideOut` carries raw pointers (not `Send`), so it is built inside the future.
+            let (outcome, out) =
+                frame.answer_decide(&busbar_contract::abi::sdk::hook::Verdict::Reject {
+                    status: Some(403),
+                    message,
+                });
             busbar_contract::hook_calls::Answered::Answer {
                 outcome,
                 out,
@@ -2350,12 +2352,14 @@ impl busbar_contract::hook_calls::HookCalls for Rejecting {
     ) -> busbar_contract::hook_calls::Pending<
         busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::TransformOut>,
     > {
-        let (outcome, out) =
-            frame.answer_transform(&busbar_contract::abi::sdk::hook::RewriteVerdict::Reject {
-                status: Some(403),
-                message: self.message.clone(),
-            });
+        let message = self.message.clone();
         Box::pin(async move {
+            // `TransformOut` carries raw pointers (not `Send`), so it is built inside the future.
+            let (outcome, out) =
+                frame.answer_transform(&busbar_contract::abi::sdk::hook::RewriteVerdict::Reject {
+                    status: Some(403),
+                    message,
+                });
             busbar_contract::hook_calls::Answered::Answer {
                 outcome,
                 out,

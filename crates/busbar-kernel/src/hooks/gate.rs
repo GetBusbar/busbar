@@ -77,22 +77,25 @@ struct ClearedPiece {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Clearance(u64);
 
-/// FNV-1a fed by `write!`, so a key's text is hashed as it is formatted and never materialized.
-struct Fnv1a(u64);
+/// The kernel's in-memory key hasher (`store::key_hash_bytes`: foldhash, fixed seed) fed by `write!`,
+/// so a key's text is hashed as it is formatted and never materialized.
+struct KeyHasher(foldhash::fast::FoldHasher<'static>);
 
-impl std::fmt::Write for Fnv1a {
+impl std::fmt::Write for KeyHasher {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         self.bytes(s.as_bytes());
         Ok(())
     }
 }
 
-impl Fnv1a {
+impl KeyHasher {
+    fn new() -> Self {
+        use std::hash::BuildHasher as _;
+        Self(foldhash::fast::FixedState::with_seed(0).build_hasher())
+    }
+
     fn bytes(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 ^= u64::from(byte);
-            self.0 = self.0.wrapping_mul(busbar_kernel::store::FNV1A_PRIME);
-        }
+        std::hash::Hasher::write(&mut self.0, bytes);
     }
 }
 
@@ -105,7 +108,7 @@ impl IncrementalScan<'_> {
         hook_generation: u64,
     ) -> crate::session::SessionKey {
         use std::fmt::Write as _;
-        let mut hash = Fnv1a(busbar_kernel::store::FNV1A_OFFSET_BASIS);
+        let mut hash = KeyHasher::new();
         let _ = write!(
             hash,
             "g={hook_generation}\u{1f}p{}={principal_id}\u{1f}s{}=",
@@ -113,7 +116,7 @@ impl IncrementalScan<'_> {
             sid.len()
         );
         hash.bytes(sid);
-        crate::session::SessionKey(hash.0)
+        crate::session::SessionKey(std::hash::Hasher::finish(&hash.0))
     }
 
     fn piece_key(&self, clearance: Clearance, digest: &str) -> crate::session::SessionKey {

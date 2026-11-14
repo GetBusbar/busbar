@@ -144,7 +144,6 @@ impl VerifiedHead {
             bytes[16..32].try_into().ok()?,
         ))
     }
-    #[cfg(test)]
     pub(crate) fn sequence(&self) -> u64 {
         self.head.sequence
     }

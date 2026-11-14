@@ -90,6 +90,7 @@ fn laneless_unit(cm: &CostModel, key: &VirtualKey, now: u64, id: u8) -> UnitChec
         terminal: None,
         audit: None,
         measurement: None,
+        unread: None,
     }
 }
 

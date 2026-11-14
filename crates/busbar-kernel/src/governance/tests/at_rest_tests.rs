@@ -45,7 +45,7 @@ fn a_sealed_secret_opens_only_for_its_row_and_its_key() {
     );
     assert!(!sealed.contains("wJalrXUtnFEMI"));
     assert_eq!(
-        open(Some(&k), &m, &sealed).as_deref().map(String::as_str),
+        open(Some(&k), &m, &sealed).as_deref(),
         Some("wJalrXUtnFEMI/K7MDENG")
     );
 
@@ -68,12 +68,7 @@ fn a_sealed_secret_opens_only_for_its_row_and_its_key() {
 #[test]
 fn a_row_written_before_1_6_0_still_opens_and_an_unknown_scheme_does_not() {
     let m = meta("cred_a", "AKIA1");
-    assert_eq!(
-        open(None, &m, "v1:plain:legacy")
-            .as_deref()
-            .map(String::as_str),
-        Some("legacy")
-    );
+    assert_eq!(open(None, &m, "v1:plain:legacy").as_deref(), Some("legacy"));
     assert!(is_plain("v1:plain:legacy"));
     assert!(open(Some(&keys(7, None)), &m, "v2:other:x").is_none());
     assert!(open(Some(&keys(7, None)), &m, "legacy").is_none());
@@ -109,9 +104,7 @@ fn the_previous_key_still_opens_a_row_it_sealed() {
     let m = meta("cred_a", "AKIA1");
     let sealed = a.seal(&m, b"wJalrXUtnFEMI/K7MDENG").unwrap();
     assert_eq!(
-        open(Some(&keys(2, Some(1))), &m, &sealed)
-            .as_deref()
-            .map(String::as_str),
+        open(Some(&keys(2, Some(1))), &m, &sealed).as_deref(),
         Some("wJalrXUtnFEMI/K7MDENG")
     );
 
