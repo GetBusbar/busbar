@@ -3,6 +3,7 @@
 
 //! The protections over core's own production source that a customer depends on: money is
 
+mod boot_advice;
 mod config;
 mod count_gate;
 mod credential_typecheck;

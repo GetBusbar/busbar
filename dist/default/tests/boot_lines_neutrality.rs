@@ -92,6 +92,34 @@ pools:
     .unwrap();
 }
 
+fn write_heterogeneous_configs(dir: &Path, data_port: u16, admin_port: u16, extra: &str) {
+    write_configs(dir, data_port, admin_port);
+    std::fs::write(
+        dir.join("providers.yaml"),
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\nmock-oa:\n  protocol: openai\n  base_url: \"http://127.0.0.1:9\"\n",
+    )
+    .unwrap();
+    let config = dir.join("config.yaml");
+    let text = read_to_string(&config)
+        .replace(
+            "  mock:\n    api_key: { env: MOCK_KEY }\n",
+            "  mock:\n    api_key: { env: MOCK_KEY }\n  mock-oa:\n    api_key: { env: MOCK_KEY }\n",
+        )
+        .replace(
+            "  test-model:\n    provider: mock\n",
+            "  test-model:\n    provider: mock\n  oa-model:\n    provider: mock-oa\n",
+        )
+        .replace(
+            "      - model: test-model\n    on_exhausted: least_bad\n",
+            "      - model: test-model\n      - model: oa-model\n    on_exhausted: least_bad\n",
+        );
+    assert!(
+        text.contains("mock-oa:") && text.contains("- model: oa-model"),
+        "the heterogeneous fixture took: {text}"
+    );
+    std::fs::write(&config, format!("{text}{extra}")).unwrap();
+}
+
 fn blank_volatile(line: &str) -> String {
     let mut out = String::new();
 
@@ -350,6 +378,175 @@ fn allow_all_metadata_boot_line_is_the_warn() {
         "the allow_all_metadata boot line is the documented WARN; log:\n{log_text}"
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const HETEROGENEOUS: &str = "heterogeneous pool";
+
+fn boot_heterogeneous_until_listening(dir: &Path) -> String {
+    let log_path = dir.join("out.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let log_err = log.try_clone().unwrap();
+    let mut child = Command::new(common::boot::exe())
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env("MOCK_KEY", "x")
+        .env("BUSBAR_ADMIN_TOKEN", "boot-lines-test-admin-token")
+        .env("RUST_LOG", "info")
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("spawn busbar");
+    let booted = wait_for(Duration::from_secs(30), || {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            panic!(
+                "busbar exited before listening (status {status:?}); log:\n{}",
+                read_to_string(&log_path)
+            );
+        }
+        common::boot::log_shows_data_and_admin_listening(&read_to_string(&log_path))
+    });
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(child.id().to_string())
+        .status();
+    if !wait_for(Duration::from_secs(60), || {
+        child.try_wait().expect("try_wait").is_some()
+    }) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let log_text = read_to_string(&log_path);
+    assert!(booted, "busbar did not reach 'listening'; log:\n{log_text}");
+    log_text
+}
+
+fn boot_heterogeneous_until_refused(dir: &Path, env: &[(&str, &str)]) -> String {
+    let mut command = Command::new(common::boot::exe());
+    command
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env("MOCK_KEY", "x")
+        .env("BUSBAR_ADMIN_TOKEN", "boot-lines-test-admin-token")
+        .env("RUST_LOG", "info");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let out = command.output().expect("run busbar");
+    let log_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "busbar must refuse this config; log:\n{log_text}"
+    );
+    log_text
+}
+
+/// The 0-based index of the first line holding `needle`, every line ANSI-stripped.
+fn line_of(log_text: &str, needle: &str) -> Option<usize> {
+    log_text
+        .lines()
+        .map(strip_ansi)
+        .position(|l| l.contains(needle))
+}
+
+fn heterogeneous_lines(log_text: &str) -> usize {
+    log_text
+        .lines()
+        .map(strip_ansi)
+        .filter(|l| l.contains(HETEROGENEOUS))
+        .count()
+}
+
+#[test]
+fn heterogeneous_pool_warning_is_printed_once_in_the_1_5_5_slot() {
+    let dir = fixture_dir();
+    let data_port = free_port();
+    let admin_port = free_port();
+    write_heterogeneous_configs(&dir, data_port, admin_port, "");
+
+    let log_text = boot_heterogeneous_until_listening(&dir);
+    let lines: Vec<String> = log_text
+        .lines()
+        .map(strip_ansi)
+        .filter(|l| l.contains("INFO") || l.contains("WARN") || l.contains("ERROR"))
+        .filter(|l| {
+            l.contains("metadata protection") || l.contains(HETEROGENEOUS) || l.contains("plugins:")
+        })
+        .map(|l| blank_volatile(&l))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            "<TS>  INFO metadata protection: 11 hosts blocked (--print-metadata-blocklist to view)"
+                .to_string(),
+            "<TS>  WARN heterogeneous pool: cross-protocol failover translates via the IR and may not preserve all provider features pool=op protocols=anthropic+openai"
+                .to_string(),
+            "<TS>  INFO plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"
+                .to_string(),
+        ],
+        "the boot narrates each advisory once, in the 1.5.5 slot; log:\n{log_text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn heterogeneous_pool_warning_survives_a_gate_refusal() {
+    let dir = fixture_dir();
+    let data_port = free_port();
+    let admin_port = free_port();
+    write_heterogeneous_configs(
+        &dir,
+        data_port,
+        admin_port,
+        "  bad:\n    members:\n      - model: nope\n",
+    );
+
+    let log_text = boot_heterogeneous_until_refused(&dir, &[]);
+    assert_eq!(
+        heterogeneous_lines(&log_text),
+        1,
+        "a gate refusal keeps exactly one copy of the advisories; log:\n{log_text}"
+    );
+    let warned = line_of(&log_text, HETEROGENEOUS).expect("the advisory is printed");
+    let refused = line_of(&log_text, "effective configuration errors")
+        .unwrap_or_else(|| panic!("the gate names its refusal; log:\n{log_text}"));
+    assert!(
+        warned < refused,
+        "the advisory comes before the gate refusal; log:\n{log_text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn heterogeneous_pool_warning_is_printed_once_before_a_tls_refusal() {
+    let dir = fixture_dir();
+    let data_port = free_port();
+    let admin_port = free_port();
+    write_heterogeneous_configs(
+        &dir,
+        data_port,
+        admin_port,
+        "tls:\n  cert: {env: BB_T3_CERT}\n  key: {env: BB_T3_KEY}\n",
+    );
+
+    let log_text =
+        boot_heterogeneous_until_refused(&dir, &[("BB_T3_CERT", "junk"), ("BB_T3_KEY", "junk")]);
+    assert_eq!(
+        heterogeneous_lines(&log_text),
+        1,
+        "a refusal after export open keeps exactly one copy of the advisories; log:\n{log_text}"
+    );
+    let warned = line_of(&log_text, HETEROGENEOUS).expect("the advisory is printed");
+    let refused = line_of(&log_text, "TLS configuration error")
+        .unwrap_or_else(|| panic!("the TLS bind names its refusal; log:\n{log_text}"));
+    assert!(
+        warned < refused,
+        "the advisory comes before the TLS refusal; log:\n{log_text}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
