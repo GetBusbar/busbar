@@ -56,7 +56,7 @@ use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
     Bytes, ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, HeadDefaults, InstanceId,
-    LocatedTarget, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket, NO_TICKET,
+    LocatedTarget, NeedId, OpenDesc, OwnedHead, Piece, PieceKind, PollConns, Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
@@ -252,8 +252,12 @@ fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
         })
 }
 
-/// The opening's fields, copied out of the borrowed head an opener lent.
-fn copied_fields(fields: &[(&str, &[u8])]) -> Vec<(String, Vec<u8>)> {
+/// The opening's fields: the head the opener built and moved in ([`Conns::open_owned`]), kept as
+/// it is; else a copy of the borrowed head an opener lent.
+fn opening_fields(fields: &[(&str, &[u8])], owned: Option<OwnedHead>) -> Vec<(String, Vec<u8>)> {
+    if let Some(owned) = owned {
+        return owned.into_fields();
+    }
     busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::OutboundHead);
     fields
         .iter()
@@ -2431,7 +2435,7 @@ impl DeclaredConns for Connector {
             require_secure,
             Some(dial_timeout_ms),
             false,
-            None,
+            (None, None),
         )
     }
 
@@ -2442,7 +2446,15 @@ impl DeclaredConns for Connector {
         desc: &OpenDesc<'_>,
         dial_timeout_ms: u64,
     ) -> Result<ConnId, ConnError> {
-        self.open_timed(caller, need, desc, false, Some(dial_timeout_ms), true, None)
+        self.open_timed(
+            caller,
+            need,
+            desc,
+            false,
+            Some(dial_timeout_ms),
+            true,
+            (None, None),
+        )
     }
 
     fn commit_request(
@@ -2517,7 +2529,7 @@ impl DeclaredConns for Connector {
                     alpn: declared.alpn,
                     open_timeout: held.open_timeout,
                     anchors: None,
-                    opening: Some((copied_fields(desc.fields), desc.body.clone())),
+                    opening: Some((opening_fields(desc.fields, None), desc.body.clone())),
                     head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
                 },
             )
@@ -2993,7 +3005,7 @@ impl Connector {
             false,
             require_secure,
             false,
-            None,
+            (None, None),
         )?;
         let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began)?;
         Ok(held.dialling(dialled))
@@ -3017,7 +3029,7 @@ impl Connector {
         poolable: bool,
         require_secure: bool,
         prepare: bool,
-        located: Option<&LocatedTarget>,
+        (located, owned): (Option<&LocatedTarget>, Option<OwnedHead>),
     ) -> Result<Held, ConnError> {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
         // The answer the attempt's head was completed with, when it was located for this very
@@ -3037,7 +3049,7 @@ impl Connector {
             tls: tls.or_else(|| self.tls.clone()),
             alpn,
             open_timeout,
-            opening: (!prepare).then(|| (copied_fields(desc.fields), desc.body.clone())),
+            opening: (!prepare).then(|| (opening_fields(desc.fields, owned), desc.body.clone())),
             head_words: if prepare {
                 (Vec::new(), Vec::new())
             } else {
@@ -3206,7 +3218,7 @@ impl Connector {
         require_secure: bool,
         dial_timeout_ms: Option<u64>,
         prepare: bool,
-        located: Option<&LocatedTarget>,
+        (located, owned): (Option<&LocatedTarget>, Option<OwnedHead>),
     ) -> Result<ConnId, ConnError> {
         let started = std::time::Instant::now();
         self.slab.check_need(caller, need)?;
@@ -3232,7 +3244,15 @@ impl Connector {
             .lock()
             .expect("authority held")
             .contains(&caller);
-        if request_head_is_refused(caller, need, desc, authority_held) {
+        // The head the opener built and moved in, where it did: every check below reads it as the
+        // borrowed fields an opener lending it would have passed, and the dial keeps it uncopied.
+        let lent = owned.as_ref().map(OwnedHead::view);
+        let viewed = lent.as_deref().map(|fields| OpenDesc {
+            fields,
+            ..desc.clone()
+        });
+        let read = viewed.as_ref().unwrap_or(desc);
+        if request_head_is_refused(caller, need, read, authority_held) {
             return Err(ConnError::Refused);
         }
 
@@ -3254,7 +3274,7 @@ impl Connector {
             .cloned()
             .ok_or(ConnError::Refused)?;
         if members.is_none()
-            && desc
+            && read
                 .fields
                 .iter()
                 .any(|(name, _)| program::is_expected_field(name))
@@ -3270,7 +3290,7 @@ impl Connector {
             if require_secure {
                 return Err(ConnError::AuthRefused);
             }
-            let expected = program::Expected::of(desc.fields)?;
+            let expected = program::Expected::of(read.fields)?;
             let member = members
                 .get(program::member_of(desc.target))
                 .map(|declaration| declaration.member())
@@ -3297,7 +3317,7 @@ impl Connector {
                 tls: None,
                 alpn,
                 open_timeout,
-                opening: Some((copied_fields(desc.fields), desc.body.clone())),
+                opening: Some((opening_fields(desc.fields, owned), desc.body.clone())),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
             let via = Via {
@@ -3328,7 +3348,7 @@ impl Connector {
             let held = self.open_dialled(
                 caller,
                 need,
-                desc,
+                read,
                 &door,
                 target,
                 open_timeout,
@@ -3356,7 +3376,7 @@ impl Connector {
                 tls: None,
                 alpn,
                 open_timeout,
-                opening: Some((copied_fields(desc.fields), desc.body.clone())),
+                opening: Some((opening_fields(desc.fields, owned), desc.body.clone())),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
             let (framer, via) = self.ride_on(&door).ok_or(ConnError::Refused)?;
@@ -3382,7 +3402,7 @@ impl Connector {
             !prepare,
             require_secure,
             prepare,
-            located,
+            (located, owned),
         )?;
         if prepare {
             *held.prepared.lock().expect("prepared") =
@@ -3423,7 +3443,15 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
         require_secure: bool,
     ) -> Result<ConnId, ConnError> {
-        self.open_timed(caller, need, desc, require_secure, None, false, None)
+        self.open_timed(
+            caller,
+            need,
+            desc,
+            require_secure,
+            None,
+            false,
+            (None, None),
+        )
     }
 
     fn open_located(
@@ -3434,7 +3462,35 @@ impl Conns for Connector {
         require_secure: bool,
         located: Option<&LocatedTarget>,
     ) -> Result<ConnId, ConnError> {
-        self.open_timed(caller, need, desc, require_secure, None, false, located)
+        self.open_timed(
+            caller,
+            need,
+            desc,
+            require_secure,
+            None,
+            false,
+            (located, None),
+        )
+    }
+
+    fn open_owned(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        head: OwnedHead,
+        require_secure: bool,
+        located: Option<&LocatedTarget>,
+    ) -> Result<ConnId, ConnError> {
+        self.open_timed(
+            caller,
+            need,
+            desc,
+            require_secure,
+            None,
+            false,
+            (located, Some(head)),
+        )
     }
 
     /// A write is taken whole, short, or (no room under
