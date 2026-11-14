@@ -27,6 +27,12 @@ pub(crate) struct Backend {
     pub(crate) lose_reply: AtomicBool,
     pub(crate) hang: AtomicBool,
     lose_call: std::sync::atomic::AtomicUsize,
+    /// Full PRICES snapshot passes (first scan page of the namespace).
+    prices_scans: std::sync::atomic::AtomicUsize,
+    /// Reads that probe a namespace generation (guards_hold).
+    generation_reads: std::sync::atomic::AtomicUsize,
+    /// Fail this many generation probes with Unavailable.
+    fail_generation_reads: std::sync::atomic::AtomicUsize,
 }
 impl PersistenceBackend for Backend {
     fn info(&self) -> BackendInfo {
@@ -40,6 +46,20 @@ impl PersistenceBackend for Backend {
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
+            if request
+                .addresses
+                .iter()
+                .any(|at| at.namespace == control::GENERATION_NAMESPACE.0)
+            {
+                self.generation_reads.fetch_add(1, Ordering::SeqCst);
+                if self
+                    .fail_generation_reads
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_ok()
+                {
+                    return Err(Failure::Unavailable);
+                }
+            }
             let state = self.state.lock().unwrap();
             Ok(ReadResult::Values {
                 observed_at: ClockObservation {
@@ -88,6 +108,9 @@ impl PersistenceBackend for Backend {
         request: Arc<busbar_contract::persistence::Scan>,
     ) -> Call<'_, busbar_contract::persistence::Page> {
         Box::pin(async move {
+            if request.namespace == PRICES && request.after.is_none() {
+                self.prices_scans.fetch_add(1, Ordering::SeqCst);
+            }
             let state = self.state.lock().unwrap();
             let generation = state
                 .generations
@@ -903,4 +926,110 @@ async fn runtime_boot_keeps_unknown_original_across_an_interrupted_wait() {
     assert_eq!(book.entries().len(), 1);
     assert!(book.pending().is_none());
     book.stop_background().await.unwrap();
+}
+
+fn counts(backend: &Backend) -> (usize, usize) {
+    (
+        backend.prices_scans.load(Ordering::SeqCst),
+        backend.generation_reads.load(Ordering::SeqCst),
+    )
+}
+
+async fn foreign_future_entry(store: &CoreStore, time: u64, base: EntryKey) -> EntryKey {
+    let mut future = entry(time, Some(base));
+    future.card.per_request_fee = time % 1000 + 3;
+    let key = future.key;
+    applied(
+        &store.prices(),
+        store.prices().prepare(future, false).await.unwrap(),
+    )
+    .await;
+    key
+}
+
+#[tokio::test]
+async fn price_rescan_without_change_does_not_scan() {
+    let backend = Arc::new(Backend::default());
+    let (store, book) = runtime_book(backend.clone()).await;
+    let base = book.own().unwrap().0;
+    let start = crate::store::now_ms() + 60_000;
+    for offset in 0..50 {
+        foreign_future_entry(&store, start + offset, base).await;
+    }
+    assert!(book.rescan(None).await.unwrap());
+    let (scans, probes) = counts(&backend);
+    for _ in 0..20 {
+        assert!(!book.rescan(None).await.unwrap());
+    }
+    let (scans_after, probes_after) = counts(&backend);
+    assert_eq!(
+        scans_after - scans,
+        0,
+        "an unchanged PRICES namespace is never rescanned"
+    );
+    assert_eq!(probes_after - probes, 20, "one generation probe per rescan");
+}
+
+#[tokio::test]
+async fn foreign_void_triggers_rescan() {
+    let backend = Arc::new(Backend::default());
+    let (store, book) = runtime_book(backend.clone()).await;
+    let base = book.own().unwrap().0;
+    let time = crate::store::now_ms() + 60_000;
+    let key = foreign_future_entry(&store, time, base).await;
+    book.rescan(None).await.unwrap();
+    assert!(!book.rescan(None).await.unwrap());
+    let record = VoidRecord {
+        voided: key.hex(),
+        voider: 7,
+        at_ms: crate::store::now_ms(),
+        actor: "foreign operator".into(),
+        why: "void".into(),
+    };
+    applied(
+        &store.prices(),
+        store
+            .prices()
+            .void(record, crate::store::now_ms())
+            .await
+            .unwrap(),
+    )
+    .await;
+    let (scans, _) = counts(&backend);
+    assert!(
+        book.rescan(None).await.unwrap(),
+        "a foreign void is published"
+    );
+    assert_eq!(counts(&backend).0 - scans, 1, "exactly one full scan");
+    assert_ne!(
+        book.history()
+            .unwrap()
+            .current()
+            .entry_at(time)
+            .unwrap()
+            .key(),
+        key
+    );
+    let (scans, _) = counts(&backend);
+    assert!(!book.rescan(None).await.unwrap());
+    assert_eq!(counts(&backend).0 - scans, 0);
+}
+
+#[tokio::test]
+async fn guard_error_falls_back_to_scan() {
+    let backend = Arc::new(Backend::default());
+    let (store, book) = runtime_book(backend.clone()).await;
+    let base = book.own().unwrap().0;
+    foreign_future_entry(&store, crate::store::now_ms() + 60_000, base).await;
+    book.rescan(None).await.unwrap();
+    let (scans, _) = counts(&backend);
+    assert!(!book.rescan(None).await.unwrap());
+    assert_eq!(counts(&backend).0 - scans, 0);
+    backend.fail_generation_reads.store(1, Ordering::SeqCst);
+    assert!(!book.rescan(None).await.unwrap());
+    assert_eq!(
+        counts(&backend).0 - scans,
+        1,
+        "a failed probe never assumes unchanged; it runs the full scan"
+    );
 }
