@@ -2232,7 +2232,7 @@ async fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
             None::<Arc<dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync>>,
-            Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
+            Arc::new(busbar_kernel::ratelimit::MutationLimiter::new()),
         );
         let answer = verbs
             .execute(
@@ -2262,7 +2262,7 @@ async fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
             a_ledger_request("/api/v1/admin/adjust"),
         ),
         None::<Arc<dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync>>,
-        Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
+        Arc::new(busbar_kernel::ratelimit::MutationLimiter::new()),
     );
     assert!(verbs
         .execute(

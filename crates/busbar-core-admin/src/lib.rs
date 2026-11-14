@@ -14,7 +14,6 @@ pub mod governance;
 pub mod idempotency;
 
 pub mod planeverbs;
-pub mod rate;
 mod recovery;
 pub mod refusal;
 

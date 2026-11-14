@@ -8,8 +8,8 @@ use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_kernel::persistence::recovery_api::Store;
 use std::sync::Mutex;
 
-fn node_limiter() -> std::sync::Arc<crate::rate::MutationLimiter> {
-    std::sync::Arc::new(crate::rate::MutationLimiter::new())
+fn node_limiter() -> std::sync::Arc<busbar_kernel::ratelimit::MutationLimiter> {
+    std::sync::Arc::new(busbar_kernel::ratelimit::MutationLimiter::new())
 }
 
 fn make_verbs<G: Governance>(gov: G) -> Verbs<G, RecordingStore> {
@@ -213,8 +213,8 @@ async fn a_new_verb_admitted_by_its_scope_reaches_governance() {
 
 #[tokio::test]
 async fn amend_rate_history_is_a_full_scope_new_verb() {
-    use crate::rate::MutationClass;
     use crate::verb::NEW_VERBS;
+    use busbar_kernel::ratelimit::MutationClass;
 
     assert!(NEW_VERBS.contains(&KernelVerb::AmendRateHistory));
     assert_eq!(
@@ -222,7 +222,7 @@ async fn amend_rate_history_is_a_full_scope_new_verb() {
         VerbScope::Full
     );
     assert_eq!(
-        MutationClass::for_verb(KernelVerb::AmendRateHistory),
+        super::class_of(KernelVerb::AmendRateHistory),
         MutationClass::Crud
     );
 
@@ -349,7 +349,7 @@ async fn rate_limit_is_enforced_across_execute_calls() {
         )
     };
     let admin = admin();
-    let budget = crate::rate::MutationClass::Crud.limit();
+    let budget = busbar_kernel::ratelimit::MutationClass::Crud.limit();
     for i in 0..budget {
         approve_trust(&per_request(), &admin)
             .await
@@ -363,7 +363,7 @@ async fn rate_limit_is_enforced_across_execute_calls() {
 async fn a_legacy_mutation_is_not_counted_a_second_time_here() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
-    let budget = crate::rate::MutationClass::Config.limit();
+    let budget = busbar_kernel::ratelimit::MutationClass::Config.limit();
     for i in 0..=budget {
         verbs
             .execute(
@@ -475,15 +475,15 @@ async fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
 async fn a_ledger_view_never_spends_a_mutation_slot() {
     for verb in crate::verb::LEDGER_VERBS {
         assert_eq!(
-            crate::rate::MutationClass::for_verb(*verb),
-            crate::rate::MutationClass::Forbidden,
+            super::class_of(*verb),
+            busbar_kernel::ratelimit::MutationClass::Forbidden,
             "{verb:?} is classified as a mutation"
         );
     }
 
     assert_ne!(
-        crate::rate::MutationClass::for_verb(KernelVerb::Adjust),
-        crate::rate::MutationClass::Forbidden
+        super::class_of(KernelVerb::Adjust),
+        busbar_kernel::ratelimit::MutationClass::Forbidden
     );
 }
 
@@ -573,15 +573,15 @@ async fn an_audit_chain_read_requires_what_the_legacy_audit_read_requires() {
 async fn an_audit_chain_read_never_spends_a_mutation_slot() {
     for verb in crate::verb::AUDIT_VERBS {
         assert_eq!(
-            crate::rate::MutationClass::for_verb(*verb),
-            crate::rate::MutationClass::Forbidden,
+            super::class_of(*verb),
+            busbar_kernel::ratelimit::MutationClass::Forbidden,
             "{verb:?} is classified as a mutation"
         );
     }
 
     assert_ne!(
-        crate::rate::MutationClass::for_verb(KernelVerb::Adjust),
-        crate::rate::MutationClass::Forbidden
+        super::class_of(KernelVerb::Adjust),
+        busbar_kernel::ratelimit::MutationClass::Forbidden
     );
 }
 
@@ -839,4 +839,39 @@ async fn a_new_verb_budget_recovers_after_a_corrected_forward_clock_step() {
         });
     }
     assert!(trust_at(t + 60).await.is_err());
+}
+
+#[test]
+fn the_two_read_only_new_verbs_never_spend_a_mutation_slot() {
+    use busbar_kernel::ratelimit::MutationClass;
+    let verbs = make_verbs(FakeGovernance::new());
+    for verb in [KernelVerb::Verify, KernelVerb::PlaneFacts] {
+        for i in 0..=MutationClass::Crud.limit() {
+            assert!(
+                matches!(
+                    verbs.admit(verb, "alice", VerbScope::Full, 0),
+                    Ok(MutationClass::Forbidden)
+                ),
+                "{verb:?} is a read and must never draw the mutation budget (attempt {i})"
+            );
+        }
+    }
+    assert_eq!(super::class_of(KernelVerb::Adjust), MutationClass::Crud);
+}
+
+#[test]
+fn every_named_surface_is_never_rate_limited_as_a_mutation() {
+    use busbar_kernel::ratelimit::MutationClass;
+    let verbs = make_verbs(FakeGovernance::new());
+    for verb in crate::verb::NAMED_SURFACES {
+        for _ in 0..=MutationClass::Crud.limit() {
+            assert!(
+                matches!(
+                    verbs.admit(*verb, "alice", VerbScope::Full, 0),
+                    Ok(MutationClass::Forbidden)
+                ),
+                "{verb:?} is a named surface and must never be rate-limited as a mutation"
+            );
+        }
+    }
 }

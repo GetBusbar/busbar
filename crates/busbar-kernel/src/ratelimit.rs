@@ -7,7 +7,7 @@ pub const MUTATION_RATE_WINDOW_SECS: u64 = 60;
 
 /// The mutation classes with distinct budgets. `Config` = apply/rollback (the blast-radius class);
 /// `Crud` = everything else that mutates (hooks, keys).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MutationClass {
     Config,
     Crud,
@@ -24,7 +24,7 @@ pub enum MutationClass {
 }
 
 impl MutationClass {
-    fn limit(self) -> u32 {
+    pub fn limit(self) -> u32 {
         match self {
             MutationClass::Config => 10,
             MutationClass::Crud => 60,
@@ -100,8 +100,7 @@ pub enum RateCheck {
 }
 
 impl RateCheck {
-    #[cfg(test)]
-    fn admitted(&self) -> bool {
+    pub fn admitted(&self) -> bool {
         matches!(self, RateCheck::Admitted)
     }
 }
@@ -114,7 +113,7 @@ struct LimiterState {
     windows: HashMap<(String, MutationClass), Window>,
 }
 
-pub(crate) struct MutationLimiter {
+pub struct MutationLimiter {
     state: std::sync::Mutex<LimiterState>,
 }
 
@@ -173,6 +172,12 @@ impl MutationLimiter {
         }
         entry.1 += 1;
         RateCheck::Admitted
+    }
+}
+
+impl Default for MutationLimiter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
