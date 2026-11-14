@@ -31,6 +31,7 @@ pub mod proxy_route;
 pub mod publication;
 pub mod registry;
 pub(crate) mod seal;
+pub mod secure_vec;
 pub mod socket;
 pub mod spawn_env;
 /// The TLS test kit (far ends, the recording TLS fixture server, a private test CA) for this crate's

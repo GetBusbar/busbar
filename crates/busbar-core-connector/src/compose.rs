@@ -23,6 +23,7 @@ use crate::carrier::{Carried, Dest, DialFailure};
 use crate::endpoint;
 use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
 use crate::hostio::HostIo;
+use crate::secure_vec::SecureVec;
 
 /// How much one socket read takes.
 const READ_CHUNK: usize = 16 * 1024;
@@ -38,6 +39,9 @@ pub const EXCHANGE_STREAM: u64 = 1;
 
 /// THE WRITE BUFFER CAP: the most bytes one connection holds on a caller's behalf and not yet on the
 pub const WRITE_BUFFER_BYTES: usize = 256 * 1024;
+
+/// The capacity a drained `out` keeps; above it, a drained buffer gives its memory back.
+const OUT_KEEP: usize = 64 * 1024;
 
 /// THE RECEIVE BUFFER CAP: the most bytes the far end sent that one connection holds read off its
 pub const RECEIVE_BUFFER_BYTES: usize = 1024 * 1024;
@@ -172,8 +176,9 @@ pub struct Connection {
     framing: Option<Framing>,
     established: Established,
     phase: Phase,
-    /// Bytes for the carrier (ciphertext under TLS).
-    out: VecDeque<u8>,
+    /// Bytes for the carrier (ciphertext under TLS). A [`SecureVec`]: one contiguous run, and
+    /// what the carrier took is wiped (request heads carry the injected `Authorization`).
+    out: SecureVec,
     /// Where a frame of the carrier's own wire ends in what was queued for it, as counts of every
     ends: VecDeque<(u64, bool)>,
     /// Every byte ever queued for the carrier.
@@ -745,7 +750,7 @@ impl Connection {
             framing: None,
             established,
             phase: Phase::Connecting,
-            out: VecDeque::new(),
+            out: SecureVec::new(),
             ends: VecDeque::new(),
             queued: 0,
             unflushed: false,
@@ -842,7 +847,7 @@ impl Connection {
             framing: None,
             established,
             phase: Phase::Connecting,
-            out: VecDeque::new(),
+            out: SecureVec::new(),
             ends: VecDeque::new(),
             queued: 0,
             unflushed: false,
@@ -949,7 +954,7 @@ impl Connection {
             framing: None,
             established,
             phase: Phase::Handshaking,
-            out: VecDeque::new(),
+            out: SecureVec::new(),
             ends: VecDeque::new(),
             queued: 0,
             unflushed: false,
@@ -1199,18 +1204,27 @@ impl Connection {
                 tls.writer().write_all(bytes).map_err(failed)?;
                 self.tls_out()?;
             }
-            None => self.queue(bytes, end),
+            None => self.queue(bytes, end)?,
         }
         Ok(())
     }
 
-    /// Queue `bytes` for the carrier; `end` = they end a frame of the carrier's own wire.
-    fn queue(&mut self, bytes: &[u8], end: bool) {
-        self.out.extend(bytes);
+    /// Queue `bytes` for the carrier; `end` = they end a frame of the carrier's own wire. A buffer
+    /// that cannot grow fails this connection (`write buffer`), never another.
+    fn queue(&mut self, bytes: &[u8], end: bool) -> Result<(), Failure> {
+        if let Err(e) = self.out.extend(bytes) {
+            tracing::warn!(
+                dest = %self.target,
+                error = %e,
+                "connector write buffer allocation failed; connection closed"
+            );
+            return Err(Failure::Refused("write buffer".into()));
+        }
         self.queued += bytes.len() as u64;
         if end {
             self.ends.push_back((self.queued, bytes.is_empty()));
         }
+        Ok(())
     }
 }
 
@@ -1559,7 +1573,7 @@ impl Connection {
                         t.asked = true;
                         t.deadline = Some(Instant::now() + crate::proxy::CONNECT_HANDSHAKE);
                         let request = std::mem::take(&mut t.request);
-                        self.queue(&request, false);
+                        self.queue(&request, false)?;
                         moved |= self.flush(cx)?;
                     } else {
                         self.connected()?;
@@ -1655,7 +1669,7 @@ impl Connection {
             if self.out.is_empty() && self.ends.is_empty() {
                 return Ok(moved);
             }
-            let (a, _) = self.out.as_slices();
+            let a = self.out.as_slice();
 
             let (a, end) = match self.ends.front() {
                 Some(&(at, _)) => {
@@ -1675,7 +1689,10 @@ impl Connection {
                     if end && n == a.len() {
                         self.ends.pop_front();
                     }
-                    self.out.drain(..n);
+                    self.out.consume(n);
+                    if self.out.is_empty() {
+                        self.out.shrink_when_empty(OUT_KEEP);
+                    }
                     self.flushed += n as u64;
                     self.unflushed = true;
                     moved = true;
@@ -2086,7 +2103,7 @@ impl Connection {
                     written?;
                     self.tls_out()?;
                 }
-                None => self.queue(&wire, false),
+                None => self.queue(&wire, false)?,
             }
             wire.zeroize();
         }
@@ -2136,7 +2153,7 @@ impl Connection {
             while tls.wants_write() {
                 tls.write_tls(&mut bytes).map_err(failed)?;
             }
-            self.queue(&bytes, false);
+            self.queue(&bytes, false)?;
         }
         Ok(())
     }
@@ -2165,3 +2182,7 @@ impl Connection {
 #[cfg(test)]
 #[path = "tests/compose_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/compose_out_tests.rs"]
+mod out_tests;
