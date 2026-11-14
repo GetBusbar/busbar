@@ -109,8 +109,6 @@ busbar-default::bin/busbar root::serve::plane_streaming::session_door::an_offer_
 busbar-default::bin/busbar root::serve::plane_streaming::session_door::every_session_door_mint_served_or_refused_seals_one_record_on_one_chain	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_streaming::session_door::physical_core_consent_uses_admin_auth_without_opening_data_auth	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::serve_datagram::raw_udp_ingress_tests::raw_output_credit_readiness_drops_before_acceptance_and_resumes_without_replay	CDT-KNOWN-RED	flaky
-busbar-default::bin/busbar root::serve::source_env::config_validation::test_validate_rejects_empty_canonical_builtin_secret_ref	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::serve::source_file::test_validate_rejects_empty_canonical_file_secret_ref	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::actual_store_compatibility_replay_preserves_the_resolved_verdict	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route	CDT-KNOWN-RED	stable
 busbar-default::boot_lines_neutrality boot_lines_match_1_5_5_shape	CDT-KNOWN-RED	stable
