@@ -24,11 +24,11 @@ pub(crate) use derived::Derived;
 
 pub const NO_LIST: &str = "the kernel holds no guest list for this listener at this generation";
 
-pub const NO_LINE: &str = "the handle names no line of this listener's list";
+pub(crate) const NO_LINE: &str = "the handle names no line of this listener's list";
 
 pub const LINE_OPEN: &str = "the line's auth is none: it has no auth to call";
 
-pub const POINT_UNNEEDED: &str = "the line's auth needs no call at this point";
+pub(crate) const POINT_UNNEEDED: &str = "the line's auth needs no call at this point";
 
 pub const PEER_BYTES: &str = "a peer-point call presents no unit, no request and no body";
 
@@ -46,7 +46,7 @@ pub const UNIT_UNMINTED: &str = "the kernel could not mint the request's unit";
 pub const CONN_MISMATCH: &str =
     "the call names another connection than the one its framing's calls named";
 
-pub const CAUSE_UNKNOWN: &str = "the refusal names no cause the kernel answers";
+pub(crate) const CAUSE_UNKNOWN: &str = "the refusal names no cause the kernel answers";
 
 pub const IDS_REFUSED: &str =
     "a line's handle id is 0, carries the binding bit, repeats, or the ids do not cover the lines";

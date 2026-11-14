@@ -269,7 +269,7 @@ pub fn validate_plane_section(
 
 const UPSTREAM_CREDENTIALS: &str = "upstream_credentials";
 
-pub fn refuse_forwarded_caller_credential(
+pub(crate) fn refuse_forwarded_caller_credential(
     value: &serde_yaml::Value,
     refusal: Option<&str>,
 ) -> Result<(), String> {
@@ -328,7 +328,7 @@ pub fn validate_plane_entry(
     Ok(())
 }
 
-pub fn judge_entry_timeout(at: &str, entry: &serde_yaml::Value) -> Result<(), String> {
+pub(crate) fn judge_entry_timeout(at: &str, entry: &serde_yaml::Value) -> Result<(), String> {
     use busbar_contract::section::{entry_timeout_ms, ENTRY_TIMEOUT_KEY};
     let Some(written) = entry
         .as_mapping()

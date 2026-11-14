@@ -76,7 +76,7 @@ impl ApiError {
         }
     }
 
-    pub const NOT_FOUND_SUBJECT: &'static str = "resource";
+    pub(crate) const NOT_FOUND_SUBJECT: &'static str = "resource";
 }
 
 pub fn error_envelope(status: u16, code: &str, message: &str) -> Response {

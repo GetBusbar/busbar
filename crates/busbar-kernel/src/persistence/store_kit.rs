@@ -100,7 +100,7 @@ pub async fn k1_first_start_publication<F: Fixture>(fixture: &F) {
 }
 
 /// K2: an empty dataset refuses a Startup that may not initialize, and stays empty.
-pub async fn k2_empty_refuses_without_initialize<F: Fixture>(fixture: &F) {
+pub(crate) async fn k2_empty_refuses_without_initialize<F: Fixture>(fixture: &F) {
     const CASE: &str = "k2_empty_refuses_without_initialize";
     let dataset = fixture.fresh().await;
     let h = fixture.open(&dataset).await;

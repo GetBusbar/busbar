@@ -106,7 +106,7 @@ const NO_PROXY_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
 
 impl ProxyEnvValues {
     /// Uppercase read before lowercase, empty values treated as unset — hyper-util
-    pub fn from_process_env() -> Result<Self, String> {
+    pub(crate) fn from_process_env() -> Result<Self, String> {
         Self::from_lookup(|key| std::env::var_os(key))
     }
 

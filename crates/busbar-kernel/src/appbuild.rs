@@ -162,7 +162,7 @@ pub fn load_config_from_disk_judged(
 
 /// Compose the durable document layer before the same parser boot uses. The Store anchor is
 /// selected from the base configuration before calling this for a persisted patch.
-pub fn load_config_from_disk_with_document_patch(
+pub(crate) fn load_config_from_disk_with_document_patch(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
     safe_mode: bool,

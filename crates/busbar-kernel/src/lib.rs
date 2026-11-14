@@ -106,7 +106,7 @@ pub trait Clock: Send + Sync {
 
 /// A clock a test drives by hand.
 #[derive(Debug, Default)]
-pub struct ManualClock {
+pub(crate) struct ManualClock {
     now: std::sync::atomic::AtomicU64,
 }
 

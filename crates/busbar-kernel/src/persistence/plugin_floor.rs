@@ -416,7 +416,7 @@ impl AdmissionProof {
     pub fn dataset(&self) -> busbar_contract::persistence::DatasetId {
         self.dataset
     }
-    pub fn scope_generations(&self) -> [u64; 2] {
+    pub(crate) fn scope_generations(&self) -> [u64; 2] {
         self.scope_generations
     }
     pub fn check(

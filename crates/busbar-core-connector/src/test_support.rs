@@ -17,7 +17,7 @@ mod adoption;
 pub use adoption::observe_adoption;
 
 /// A real held datagram upstream for composition-root tests. Its exchange, writer, reader and
-pub struct DatagramSession(crate::dialled::Dialled);
+pub(crate) struct DatagramSession(crate::dialled::Dialled);
 
 impl DatagramSession {
     /// Hold a begun association until its exchange settles it and attaches its actual leg.

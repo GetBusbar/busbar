@@ -39,13 +39,13 @@ pub fn private_directory(path: &Path) -> Result<(), Error> {
 
 /// Open a regular private control file without following a final symlink or
 /// reparse point, then validate ownership and permissions on that descriptor.
-pub fn open_private_file(path: &Path) -> Result<std::fs::File, Error> {
+pub(crate) fn open_private_file(path: &Path) -> Result<std::fs::File, Error> {
     platform::open_private_file(path)
 }
 
 /// Owns both the helper and its OS process tree. Drop stops the tree; normal
 /// completion additionally awaits the leader and, on Windows, an empty Job.
-pub struct ContainedChild {
+pub(crate) struct ContainedChild {
     // Rust drops fields in declaration order: stop the tree before Child's
     // kill-on-drop guard hands the leader to Tokio's orphan reaper.
     job: platform::Job,
@@ -76,23 +76,23 @@ impl ContainedChild {
     }
 
     /// Take the configured stdin pipe, without exposing process ownership.
-    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+    pub(crate) fn take_stdin(&mut self) -> Option<ChildStdin> {
         self.child.stdin.take()
     }
 
     /// Take the configured stdout pipe, without exposing process ownership.
-    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+    pub(crate) fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.child.stdout.take()
     }
 
     /// Observe exit without reaping a Unix PID or relinquishing a Windows handle.
-    pub fn has_exited(&self) -> Result<bool, Error> {
+    pub(crate) fn has_exited(&self) -> Result<bool, Error> {
         self.job.exited(&self.child)
     }
 
     /// Stop every member before reaping the leader. Windows also verifies that
     /// the Job has no active descendants before releasing its kill-on-close handle.
-    pub async fn terminate_and_reap(&mut self) -> Result<ExitStatus, Error> {
+    pub(crate) async fn terminate_and_reap(&mut self) -> Result<ExitStatus, Error> {
         let stopped = self.job.stop();
         self.job.before_reap();
         let _ = self.child.start_kill();

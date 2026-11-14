@@ -29,7 +29,7 @@ pub const SCHEMA: RecordSchemaId = RecordSchemaId::new("busbar.principal-transit
 const HEAD: &[u8] = b"head";
 const MAX_PLAN_BYTES: usize = 256 * 1024;
 /// Opaque, plugin-authored metadata on its existing settings-schema document.
-pub const FORMAT_ANNOTATION: &str = "x-busbar-principal-format";
+pub(crate) const FORMAT_ANNOTATION: &str = "x-busbar-principal-format";
 pub const DOMAIN_ANNOTATION: &str = "x-busbar-principal-domain-fields";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

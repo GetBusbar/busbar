@@ -280,7 +280,7 @@ pub fn checked_header(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])>
 
 /// Whether `frame` was WRITTEN WHOLE: the write that made it reached its last byte.
 #[must_use]
-pub fn written_whole(frame: &[u8; FRAME_BYTES]) -> bool {
+pub(crate) fn written_whole(frame: &[u8; FRAME_BYTES]) -> bool {
     frame[END_MARK_OFFSET] != 0
 }
 

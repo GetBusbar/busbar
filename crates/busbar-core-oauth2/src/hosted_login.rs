@@ -573,10 +573,10 @@ fn provider_unavailable(method: &str, retry_after_secs: Option<u64>) -> Response
 
 pub const PROVIDER_RETRY_AFTER_SECS: u64 = 5;
 
-pub const PROVIDER_RETRY_AFTER_MAX_SECS: u64 = 3600;
+pub(crate) const PROVIDER_RETRY_AFTER_MAX_SECS: u64 = 3600;
 
 #[must_use]
-pub fn provider_retry_after(stated: Option<u64>) -> u64 {
+pub(crate) fn provider_retry_after(stated: Option<u64>) -> u64 {
     stated.map_or(PROVIDER_RETRY_AFTER_SECS, |s| {
         s.clamp(1, PROVIDER_RETRY_AFTER_MAX_SECS)
     })

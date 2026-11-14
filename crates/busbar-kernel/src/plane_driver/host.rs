@@ -22,7 +22,7 @@ impl EngineHostImpl {
     }
 
     #[must_use]
-    pub fn from_handle(handle: Arc<crate::state::AppHandle>) -> Self {
+    pub(crate) fn from_handle(handle: Arc<crate::state::AppHandle>) -> Self {
         EngineHostImpl { app: handle.load() }
     }
 }

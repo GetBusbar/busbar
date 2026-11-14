@@ -353,7 +353,7 @@ pub fn derive_spend_micros_row_classes_at_card<C: Copy + Into<Count>>(
     metered_row(cost, model, b, classes).spend_micros_in_view(arrived_ms, view)
 }
 
-pub fn derive_spend_micros_row_classes_at_entry<C: Copy + Into<Count>>(
+pub(crate) fn derive_spend_micros_row_classes_at_entry<C: Copy + Into<Count>>(
     seq: busbar_kernel::cost::EntryKey,
     card: &busbar_kernel::cost::RateCard,
     cost: &busbar_kernel::cost::CostModel,

@@ -27,7 +27,7 @@ const READ_CHUNK: usize = 16 * 1024;
 
 const WRITE_ROOM: usize = 256 * 1024;
 
-pub const FIRST_BYTE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const FIRST_BYTE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 const BODY_LIMIT_REFUSAL: u32 =
     busbar_kernel::plane_driver::class_status(busbar_contract::abi::plane::RefusalClass::TooLarge);

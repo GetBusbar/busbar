@@ -134,7 +134,7 @@ pub struct RootHistory {
 
 /// Why the boot's rebuild of the dated history refused the boot.
 #[derive(Debug)]
-pub enum CardBootError {
+pub(crate) enum CardBootError {
     /// The journal could not make one of the boot's cards durable.
     Lost(busbar_contract::caps::DurabilityLost),
     /// The store would not read the history back or take the opening entry.
@@ -1477,7 +1477,7 @@ impl ProductionUnits {
 
     #[allow(clippy::too_many_arguments)]
     #[must_use]
-    pub fn new_sharing(
+    pub(crate) fn new_sharing(
         kernel: &busbar_kernel::teller::Kernel,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,

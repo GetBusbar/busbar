@@ -41,7 +41,7 @@ impl ScratchPad {
     }
 
     #[must_use]
-    pub fn with_ceiling(ceiling: usize) -> Self {
+    pub(crate) fn with_ceiling(ceiling: usize) -> Self {
         let bump = Bump::with_capacity(SCRATCH_START_BYTES);
         let start_capacity = bump.allocated_bytes();
         ScratchPad {

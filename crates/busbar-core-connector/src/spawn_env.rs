@@ -22,7 +22,7 @@ pub fn linked_spawn_secret(
 }
 
 /// How often a held environment is re-resolved, off the request path: the refresher's lease.
-pub const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
+pub(crate) const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
 
 /// What a program's spawn hands its child now: every reference's value, name and value in the
 pub struct Resolved(Result<Vec<(String, Secret<String>)>, String>);

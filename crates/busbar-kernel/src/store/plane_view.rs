@@ -5,11 +5,11 @@ use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 
 pub const KIND_AUDIT: &str = "audit";
 
-pub const KIND_RESIDUAL: &str = "usage_residual";
+pub(crate) const KIND_RESIDUAL: &str = "usage_residual";
 
 pub const KIND_DEMOTION: &str = "demotion";
 
-pub const KIND_TRUST_DECISION: &str = "trust_decision";
+pub(crate) const KIND_TRUST_DECISION: &str = "trust_decision";
 
 pub const KERNEL_RECORD_KINDS: &[&str] = &[
     KIND_AUDIT,

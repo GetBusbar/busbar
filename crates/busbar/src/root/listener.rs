@@ -157,7 +157,7 @@ impl AcceptBackoff {
     }
 }
 
-pub const REQUEST_WIRE: &str = busbar_core_admin::admin_codec::claims::TRANSPORT;
+pub(crate) const REQUEST_WIRE: &str = busbar_core_admin::admin_codec::claims::TRANSPORT;
 
 #[cfg(any(test, not(unix)))]
 pub struct SocketAdmits {

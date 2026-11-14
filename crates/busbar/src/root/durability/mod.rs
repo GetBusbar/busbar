@@ -306,7 +306,7 @@ pub struct ClaimStamp {
 
 /// An idempotency claim a unit took.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaimTaken {
+pub(crate) struct ClaimTaken {
     /// The claim — the idempotency key.
     pub claim: String,
     /// The balance.
@@ -395,7 +395,7 @@ fn open_claims(records: &[JournalRecord]) -> (Vec<ClaimTaken>, u64) {
     (open, incarnation)
 }
 
-pub fn audit_body(record: &AuditRecord) -> Result<Vec<u8>, busbar_kernel_audit::FieldTooLong> {
+pub(crate) fn audit_body(record: &AuditRecord) -> Result<Vec<u8>, busbar_kernel_audit::FieldTooLong> {
     journal_body(record)
 }
 

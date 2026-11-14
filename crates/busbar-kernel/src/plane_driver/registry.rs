@@ -304,7 +304,7 @@ pub struct BuildCtx<'a> {
         Option<&'a std::collections::HashMap<String, crate::config::providers::ResolvedProvider>>,
 }
 
-pub type BootHook = fn(&dyn PlaneBootCtx) -> Result<(), String>;
+pub(crate) type BootHook = fn(&dyn PlaneBootCtx) -> Result<(), String>;
 
 /// BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side and handed to the A2A [`PlaneDecl::start`]
 /// hook as PUBLIC values ONLY — the `kid` and the base64 Ed25519 SPKI an operator hands a counterparty
@@ -369,7 +369,7 @@ macro_rules! plane_behaviour {
 }
 
 #[cfg(feature = "openapi-schema")]
-pub type OpenapiSchemasHook = fn(
+pub(crate) type OpenapiSchemasHook = fn(
     &PlaneDecl,
     &mut schemars::SchemaGenerator,
     &mut schemars::SchemaGenerator,
@@ -377,7 +377,7 @@ pub type OpenapiSchemasHook = fn(
 );
 
 #[cfg(not(feature = "openapi-schema"))]
-pub type OpenapiSchemasHook = fn(&PlaneDecl, std::convert::Infallible);
+pub(crate) type OpenapiSchemasHook = fn(&PlaneDecl, std::convert::Infallible);
 
 #[cfg(feature = "openapi-schema")]
 pub(crate) const fn stated_schemas_hook() -> Option<OpenapiSchemasHook> {

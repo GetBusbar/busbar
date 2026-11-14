@@ -235,7 +235,7 @@ pub fn claims_overlap(left: &Claim, right: &Claim) -> bool {
 }
 
 #[must_use]
-pub fn schemes_compatible(left: &Claim, right: &Claim) -> bool {
+pub(crate) fn schemes_compatible(left: &Claim, right: &Claim) -> bool {
     let (Some(mine), Some(theirs)) = (left.scheme, right.scheme) else {
         return true;
     };

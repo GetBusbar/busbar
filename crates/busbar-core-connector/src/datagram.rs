@@ -2292,7 +2292,7 @@ impl PortAssociations {
 
     /// Wait for this association's emission turn without accepting or copying a busy write.
     #[allow(clippy::too_many_arguments)]
-    pub async fn emit_ready(
+    pub(crate) async fn emit_ready(
         &self,
         id: u64,
         stream: u64,

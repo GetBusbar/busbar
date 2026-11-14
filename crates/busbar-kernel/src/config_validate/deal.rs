@@ -5,7 +5,7 @@ use busbar_contract::plugin::Kind;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
-pub const RESERVED_SUB_KEYS: [&str; 9] = [
+pub(crate) const RESERVED_SUB_KEYS: [&str; 9] = [
     "breaker",
     "on_exhausted",
     "gates",

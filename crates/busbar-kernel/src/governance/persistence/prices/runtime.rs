@@ -17,8 +17,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
-pub const CARD_ALARMS_TOTAL: &str = "busbar_card_history_alarms_total";
+pub(crate) const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
+pub(crate) const CARD_ALARMS_TOTAL: &str = "busbar_card_history_alarms_total";
 const SKEW_MS: u64 = 5 * 60 * 1000;
 fn now_ms() -> u64 {
     crate::store::now_ms()
@@ -288,7 +288,7 @@ impl CardStore {
             .map(|(key, _)| *key)
             .or_else(|| state.voiding.keys().next().copied())
     }
-    pub fn pending_refusal(&self) -> Option<String> {
+    pub(crate) fn pending_refusal(&self) -> Option<String> {
         self.pending().map(|key|format!("rate-card entry {key} is pending native Store confirmation or generation commit; previous confirmed prices remain active"))
     }
     pub fn own(&self) -> Option<(EntryKey, CardFields)> {

@@ -112,10 +112,10 @@ pub fn default_probe_timeout_secs() -> u64 {
     DEFAULT_PROBE_TIMEOUT_SECS
 }
 
-pub fn default_migration_index_bytes() -> usize {
+pub(crate) fn default_migration_index_bytes() -> usize {
     256 * 1024 * 1024
 }
-pub fn default_migration_value_bytes() -> usize {
+pub(crate) fn default_migration_value_bytes() -> usize {
     64 * 1024 * 1024
 }
 
@@ -422,7 +422,7 @@ impl LimitsResolved {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn with_request_body_max_bytes(request_body_max_bytes: usize) -> Self {
+    pub(crate) fn with_request_body_max_bytes(request_body_max_bytes: usize) -> Self {
         Self {
             request_body_max_bytes,
             ..Self::default()
@@ -484,7 +484,7 @@ pub fn install(resolved: &LimitsResolved) {
 /// [`publish`]; this is the test fixtures' one write (the kernel testkit's `InstallGuard`, and the
 /// guard's own restore-on-drop tests), which must be able to put the slot back exactly as it found it.
 #[doc(hidden)]
-pub fn swap_installed(slot: Option<LimitsResolved>) -> Option<LimitsResolved> {
+pub(crate) fn swap_installed(slot: Option<LimitsResolved>) -> Option<LimitsResolved> {
     let mut installed = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
     mirror_derived_caps(slot.as_ref());
     std::mem::replace(&mut *installed, slot)

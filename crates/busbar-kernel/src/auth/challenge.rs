@@ -40,7 +40,7 @@ impl ChallengeError {
     }
 }
 
-pub fn www_authenticate(
+pub(crate) fn www_authenticate(
     error: ChallengeError,
     resource_metadata: &str,
     description: Option<&str>,

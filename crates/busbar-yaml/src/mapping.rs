@@ -123,7 +123,7 @@ impl Mapping {
     /// last element of the map and popping it off. This perturbs the position
     /// of what used to be the last element!
     #[inline]
-    pub fn swap_remove_entry<I: Index>(&mut self, index: I) -> Option<(Value, Value)> {
+    pub(crate) fn swap_remove_entry<I: Index>(&mut self, index: I) -> Option<(Value, Value)> {
         index.swap_remove_entry_from(self)
     }
 
@@ -143,7 +143,7 @@ impl Mapping {
     /// elements that follow it, preserving their relative order. This perturbs
     /// the index of all of those elements!
     #[inline]
-    pub fn shift_remove_entry<I: Index>(&mut self, index: I) -> Option<(Value, Value)> {
+    pub(crate) fn shift_remove_entry<I: Index>(&mut self, index: I) -> Option<(Value, Value)> {
         index.shift_remove_entry_from(self)
     }
 
@@ -758,7 +758,7 @@ impl<'a> VacantEntry<'a> {
 
     /// Takes ownership of the key, leaving the entry vacant.
     #[inline]
-    pub fn into_key(self) -> Value {
+    pub(crate) fn into_key(self) -> Value {
         self.vacant.into_key()
     }
 
