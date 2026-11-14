@@ -359,29 +359,9 @@ async fn a_dropped_chain_scans_empty_in_the_store() {
     );
 }
 
-/// The position claim token the retired claim-based chain append took under
-/// [`crate::host_records::CLAIM_KIND`]; the live append must never meet one.
-fn position_token(
-    instance: &str,
-    schema: RecordSchemaId,
-    scope: &str,
-    life: u64,
-    record: &crate::audit::stream_registry::StreamRecord,
-) -> String {
-    use crate::audit::ChainedRecord as _;
-    let mut framed = Vec::new();
-    for field in [instance, schema.as_str(), scope, record.prev_hash()] {
-        framed.extend_from_slice(&(field.len() as u64).to_be_bytes());
-        framed.extend_from_slice(field.as_bytes());
-    }
-    framed.extend_from_slice(&life.to_be_bytes());
-    framed.extend_from_slice(&record.seq().to_be_bytes());
-    busbar_contract::redacted::sha256_hex(&framed)
-}
-
 #[tokio::test]
 async fn a_chain_dropped_and_begun_again_never_meets_its_old_claims() {
-    use crate::host_chains::{decode, life_key, ChainFraming, CHAIN_LIFE_SCHEMA};
+    use crate::host_chains::{decode, life_key, position_token, ChainFraming, CHAIN_LIFE_SCHEMA};
     let (s, store) = rig().await;
     let framing = ChainFraming::of(&RecordChain {
         kind: 0,

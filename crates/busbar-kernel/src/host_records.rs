@@ -6,16 +6,46 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use busbar_contract::host_records::conditional;
+use busbar_contract::host_records::RecordFailure;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError};
 
-/// A read-only record snapshot, keyed by instance-scoped record key.
 pub trait RecordRows: Send + Sync {
+    fn supports_record_transaction(&self) -> bool {
+        false
+    }
+
+    fn record_transaction(
+        &self,
+        _request: &conditional::Request,
+    ) -> Result<conditional::Decision, RecordFailure> {
+        Err(RecordFailure::Refused(
+            "record transactions are unsupported".into(),
+        ))
+    }
+
+    fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), StoreError>;
+
     fn record_get(
         &self,
         schema: RecordSchemaId,
         key: &[u8],
     ) -> Result<Option<RecordBytes>, StoreError>;
+
+    fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
+
+    fn claim(&self, kind: &str, token: &str, expires_at: u64, now: u64)
+        -> Result<bool, StoreError>;
 }
 
 pub const CLAIM_KIND: &str = "busbar.record-claim";
@@ -204,6 +234,8 @@ pub(crate) struct ConditionalWrite {
     pub owed: ConditionalOwed,
     _unit: Option<Arc<crate::host_units::UnitRecord>>,
     prepared: bool,
+    submitted: Option<std::time::Instant>,
+    uncertain: bool,
     positions: Vec<crate::host_chains::ConditionalPosition>,
     native_pending: Option<crate::persistence::facade::PendingId>,
 }
@@ -223,8 +255,69 @@ impl ConditionalWrite {
             owed,
             _unit: unit,
             prepared: false,
+            submitted: None,
+            uncertain: false,
             positions: Vec::new(),
             native_pending: None,
+        }
+    }
+
+    fn attempt(
+        mut self,
+        rows: &dyn RecordRows,
+        book: &crate::host_chains::ChainBook,
+    ) -> Option<Self> {
+        if !self.prepared {
+            for chain in self.chains.iter() {
+                match chain.prepare(rows, &self.instance, &mut self.request, book) {
+                    Ok(position) => self.positions.push(position),
+                    Err(why) => {
+                        self.owed.answer(Err(ConditionalFailure::Refused(why)));
+                        return None;
+                    }
+                }
+            }
+            if self.request.encode_held().is_err() {
+                self.owed.answer(Err(ConditionalFailure::Refused(
+                    "invalid record transaction",
+                )));
+                return None;
+            }
+            self.prepared = true;
+        }
+        let first = *self.submitted.get_or_insert_with(std::time::Instant::now);
+        if first.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS {
+            if let Some(acked) = self.owed.acked.take() {
+                acked(ConditionalResult {
+                    correlation: self.owed.correlation,
+                    decision: Err(ConditionalFailure::Indeterminate),
+                });
+            }
+            return Some(self);
+        }
+        match rows.record_transaction(&self.request) {
+            Ok(decision) => {
+                for position in &self.positions {
+                    book.conditional_settled(position, decision);
+                }
+                self.owed.answer(Ok(decision));
+                None
+            }
+            Err(RecordFailure::Conflict) => {
+                self.owed.answer(Err(ConditionalFailure::OpIdConflict));
+                None
+            }
+            Err(RecordFailure::Refused(_)) if self.uncertain => Some(self),
+            Err(RecordFailure::Refused(_)) => {
+                self.owed
+                    .answer(Err(ConditionalFailure::Refused(WRITE_FAILED)));
+                None
+            }
+            Err(RecordFailure::Failed(_) | RecordFailure::Fault(_)) => {
+                self.uncertain = true;
+                Some(self)
+            }
+            Err(RecordFailure::Overloaded) => Some(self),
         }
     }
 }
@@ -517,6 +610,7 @@ impl std::fmt::Debug for NativeWrite {
 
 #[derive(Debug)]
 enum QueuedWrite {
+    Ordinary(Write),
     Conditional(ConditionalWrite),
     Native(NativeWrite),
 }
@@ -560,6 +654,15 @@ impl Drop for AsyncBatch {
 impl WriteBehind {
     fn lock(&self) -> MutexGuard<'_, Queue> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn push_with(&self, make: impl FnOnce() -> Write) -> Option<bool> {
+        let mut q = self.lock();
+        if q.writes.len() + q.in_flight >= QUEUE_CAP {
+            return None;
+        }
+        q.writes.push(QueuedWrite::Ordinary(make()));
+        Some(!std::mem::replace(&mut q.flushing, true))
     }
 
     pub(crate) fn push_native_with(&self, make: impl FnOnce() -> Write) -> Option<bool> {
@@ -645,6 +748,18 @@ impl WriteBehind {
                 unresolved: Vec::new(),
             };
             while !held.batch.is_empty() {
+                if matches!(held.batch.front(), Some(QueuedWrite::Ordinary(_))) {
+                    if let Some(QueuedWrite::Ordinary(write)) = held.batch.pop_front() {
+                        held.batch.push_front(QueuedWrite::Native(NativeWrite {
+                            write,
+                            request: None,
+                            pending: None,
+                            positions: Vec::new(),
+                            private: false,
+                            conflicts: 0,
+                        }));
+                    }
+                }
                 match held.batch.front_mut() {
                     Some(QueuedWrite::Native(write)) => {
                         let result = write.attempt(store, chains).await;
@@ -676,7 +791,7 @@ impl WriteBehind {
                             break;
                         }
                     }
-                    None => break,
+                    _ => unreachable!("ordinary writes converted before crossing"),
                 }
             }
             let retry = !held.unresolved.is_empty();
@@ -692,6 +807,72 @@ impl WriteBehind {
             }
             held.count = 0;
             if retry {
+                return;
+            }
+        }
+    }
+
+    pub fn flush(
+        &self,
+        pending: &PendingRecords,
+        rows: &dyn RecordRows,
+        chains: &crate::host_chains::ChainBook,
+    ) {
+        loop {
+            let mut unresolved = Vec::new();
+            let batch = {
+                let mut q = self.lock();
+                let n = q.writes.len().min(BATCH_CAP);
+                let batch: Vec<QueuedWrite> = q.writes.drain(..n).collect();
+                q.in_flight += batch.len();
+                if batch.is_empty() {
+                    q.flushing = false;
+                    return;
+                }
+                batch
+            };
+            let batch_len = batch.len();
+            for queued in batch {
+                let w = match queued {
+                    QueuedWrite::Ordinary(w) => w,
+                    QueuedWrite::Native(w) => {
+                        unresolved.push(QueuedWrite::Native(w));
+                        continue;
+                    }
+                    QueuedWrite::Conditional(w) => {
+                        if let Some(write) = w.attempt(rows, chains) {
+                            unresolved.push(QueuedWrite::Conditional(write));
+                        }
+                        continue;
+                    }
+                };
+                if let Some(framing) = w.chain {
+                    let scope = String::from_utf8_lossy(&w.key);
+                    let took = if w.value.as_slice().is_empty() {
+                        chains.drop_chain(rows, &w.instance, w.schema, &scope)
+                    } else {
+                        chains.append(
+                            rows,
+                            &w.instance,
+                            w.schema,
+                            &scope,
+                            w.value.as_slice(),
+                            framing,
+                        )
+                    };
+                    w.owed.answer(took);
+                    continue;
+                }
+                let key = record_key(&w.instance, &w.key);
+                let took = rows.record_put(w.schema, &key, &w.value);
+                pending.acked(&w.instance, w.schema.as_str(), &w.key, w.seq);
+                w.owed.answer(took.map_err(|_| WRITE_FAILED));
+            }
+            let mut q = self.lock();
+            q.in_flight -= batch_len;
+            if !unresolved.is_empty() {
+                q.writes.append(&mut unresolved);
+                q.flushing = false;
                 return;
             }
         }
