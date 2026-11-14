@@ -60,12 +60,18 @@ criteria = "safe-to-deploy"
 version = "1.1.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.annotate-snippets]]
+version = "0.12.18"
+criteria = "safe-to-deploy"
+notes = "Diagnostic rendering under serde-saphyr (busbar's YAML reader through busbar_contract::yaml, which replaced serde_yaml/unsafe-libyaml); no imported audit from the trusted registries covers it."
+
+[[exemptions.anstyle]]
+version = "1.0.14"
+criteria = "safe-to-deploy"
+notes = "ANSI style constants under annotate-snippets (serde-saphyr's error rendering); no imported audit from the trusted registries covers it."
+
 [[exemptions.arc-swap]]
 version = "1.9.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.arraydeque]]
-version = "0.5.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.arrayvec]]
@@ -84,10 +90,6 @@ criteria = "safe-to-deploy"
 version = "1.5.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.aws-lc-rs]]
-version = "1.19.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.axum]]
 version = "0.8.9"
 criteria = "safe-to-deploy"
@@ -100,14 +102,14 @@ criteria = "safe-to-deploy"
 version = "0.23.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.base64ct]]
+version = "1.8.3"
+criteria = "safe-to-deploy"
+notes = "spki's optional constant-time Base64 (not enabled in busbar's build; cargo-vet resolves all features); no imported audit from the trusted registries covers it."
+
 [[exemptions.blake3]]
 version = "1.8.7"
 criteria = "safe-to-deploy"
-
-[[exemptions.block-buffer]]
-version = "0.12.1"
-criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.borrow-or-share]]
 version = "0.2.4"
@@ -121,30 +123,27 @@ criteria = "safe-to-deploy"
 version = "1.12.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.bytes-utils]]
+version = "0.1.4"
+criteria = "safe-to-deploy"
+notes = "Byte-string helpers under sseer, busbar-contract's SSE line parser (DEPENDENCY-LADDER C17); no imported audit from the trusted registries covers it."
+
 [[exemptions.cc]]
 version = "1.2.62"
 criteria = "safe-to-deploy"
 
-[[exemptions.cmov]]
-version = "0.5.4"
+[[exemptions.ciborium]]
+version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
+notes = "busbar-contract's CBOR codec; the imported google audit of 0.2.2 is safe-to-run only, and it ships."
 
 [[exemptions.const-oid]]
-version = "0.10.2"
+version = "0.10.3"
 criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
-
-[[exemptions.constant_time_eq]]
-version = "0.4.2"
-criteria = "safe-to-deploy"
+notes = "OID constants under x509-cert/der (previously exempted at 0.10.2 for the ed25519-dalek 3 line); no imported audit from the trusted registries covers this version."
 
 [[exemptions.core_affinity]]
 version = "0.8.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.core_detect]]
-version = "1.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.cpufeatures]]
@@ -163,41 +162,19 @@ criteria = "safe-to-deploy"
 version = "0.8.21"
 criteria = "safe-to-deploy"
 
-[[exemptions.crypto-common]]
-version = "0.1.7"
-criteria = "safe-to-deploy"
-
-[[exemptions.crypto-common]]
-version = "0.2.2"
-criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
-
-[[exemptions.ctutils]]
-version = "0.4.8"
-criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
-
-[[exemptions.curve25519-dalek]]
-version = "5.0.0"
-criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
-
-[[exemptions.curve25519-dalek-derive]]
-version = "0.1.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.data-encoding]]
 version = "2.11.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.digest]]
-version = "0.10.7"
+[[exemptions.der]]
+version = "0.8.3"
 criteria = "safe-to-deploy"
+notes = "RustCrypto DER codec under x509-cert (CA certificate decoding); no imported audit from the trusted registries covers it."
 
-[[exemptions.digest]]
-version = "0.11.3"
+[[exemptions.der_derive]]
+version = "0.8.0"
 criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
+notes = "Proc-macro derives for der (x509-cert's ASN.1 types); no imported audit from the trusted registries covers it."
 
 [[exemptions.dimpl]]
 version = "0.7.4"
@@ -211,22 +188,13 @@ criteria = "safe-to-deploy"
 version = "1.0.20"
 criteria = "safe-to-deploy"
 
-[[exemptions.ed25519]]
-version = "3.0.0"
+[[exemptions.either]]
+version = "1.19.0"
 criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
-
-[[exemptions.ed25519-dalek]]
-version = "3.0.0"
-criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
+notes = "Under bytes-utils (sseer); the trusted registries audit either only up to 1.16.0 (google, mozilla)."
 
 [[exemptions.email_address]]
 version = "0.2.9"
-criteria = "safe-to-deploy"
-
-[[exemptions.encoding_rs]]
-version = "0.8.44"
 criteria = "safe-to-deploy"
 
 [[exemptions.encoding_rs_io]]
@@ -235,10 +203,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.fancy-regex]]
 version = "0.19.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.fastrand]]
-version = "2.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.faststr]]
@@ -252,6 +216,11 @@ criteria = "safe-to-deploy"
 [[exemptions.find-msvc-tools]]
 version = "0.1.9"
 criteria = "safe-to-deploy"
+
+[[exemptions.flagset]]
+version = "0.4.7"
+criteria = "safe-to-deploy"
+notes = "Bit-flag sets under der (x509-cert's KeyUsage); no imported audit from the trusted registries covers it."
 
 [[exemptions.flate2]]
 version = "1.1.10"
@@ -277,10 +246,6 @@ criteria = "safe-to-deploy"
 version = "0.8.8"
 criteria = "safe-to-deploy"
 
-[[exemptions.generic-array]]
-version = "0.14.7"
-criteria = "safe-to-deploy"
-
 [[exemptions.getrandom]]
 version = "0.2.17"
 criteria = "safe-to-deploy"
@@ -296,6 +261,11 @@ criteria = "safe-to-deploy"
 [[exemptions.h2]]
 version = "0.4.18"
 criteria = "safe-to-deploy"
+
+[[exemptions.half]]
+version = "2.7.1"
+criteria = "safe-to-deploy"
+notes = "f16 support under ciborium-ll (busbar-contract's CBOR codec); no imported audit from the trusted registries covers it."
 
 [[exemptions.hashbrown]]
 version = "0.15.5"
@@ -320,11 +290,6 @@ criteria = "safe-to-deploy"
 [[exemptions.httparse]]
 version = "1.10.1"
 criteria = "safe-to-deploy"
-
-[[exemptions.hybrid-array]]
-version = "0.4.15"
-criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.hyper]]
 version = "1.11.1"
@@ -434,10 +399,6 @@ criteria = "safe-to-deploy"
 version = "1.2.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.multiversion_no_op]]
-version = "1.0.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.munge]]
 version = "0.4.7"
 criteria = "safe-to-deploy"
@@ -475,17 +436,9 @@ version = "1.17.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.oauth-as]]
-version = "1.0.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.oauth-as]]
 version = "1.1.0"
 criteria = "safe-to-deploy"
 notes = "CryptoProvider release (decision 228), used with default-features = false and busbar's FacadeCrypto. Exempted, not audited: a 1.0.1 -> 1.1.0 delta review is outstanding."
-
-[[exemptions.oid-registry]]
-version = "0.8.1"
-criteria = "safe-to-deploy"
 
 [[exemptions.once_cell]]
 version = "1.21.4"
@@ -560,12 +513,12 @@ version = "0.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rand]]
-version = "0.10.2"
+version = "0.9.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.rand]]
-version = "0.9.5"
-criteria = "safe-to-deploy"
+version = "0.10.2"
+criteria = "safe-to-run"
 
 [[exemptions.rand_xoshiro]]
 version = "0.7.0"
@@ -635,10 +588,6 @@ criteria = "safe-to-deploy"
 version = "2.1.2"
 criteria = "safe-to-run"
 
-[[exemptions.rusticata-macros]]
-version = "4.1.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.rustls]]
 version = "0.23.46"
 criteria = "safe-to-deploy"
@@ -703,19 +652,9 @@ criteria = "safe-to-deploy"
 version = "0.7.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.sha2]]
-version = "0.11.1"
-criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
-
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
 criteria = "safe-to-deploy"
-
-[[exemptions.signature]]
-version = "3.0.0"
-criteria = "safe-to-deploy"
-notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.simd-adler32]]
 version = "0.3.10"
@@ -749,6 +688,11 @@ criteria = "safe-to-deploy"
 version = "0.1.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.spki]]
+version = "0.8.1"
+criteria = "safe-to-deploy"
+notes = "SubjectPublicKeyInfo types under x509-cert (decoding only, no fingerprint/digest features); no imported audit from the trusted registries covers it."
+
 [[exemptions.strum]]
 version = "0.28.0"
 criteria = "safe-to-deploy"
@@ -770,12 +714,18 @@ version = "0.4.46"
 criteria = "safe-to-deploy"
 
 [[exemptions.thiserror]]
-version = "2.0.18"
+version = "2.0.21"
 criteria = "safe-to-deploy"
+notes = "Patch bump of the exempted 2.0.18 (dtolnay; derive-only error types under asn1-rs, sonic-rs, tungstenite, x509-parser); no imported audit from the trusted registries covers 2.0.21."
 
 [[exemptions.thiserror-impl]]
 version = "2.0.18"
 criteria = "safe-to-deploy"
+
+[[exemptions.thiserror-impl]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+notes = "The proc-macro half of thiserror 2.0.21 (exempted beside it); no imported audit from the trusted registries covers this version."
 
 [[exemptions.thread_local]]
 version = "1.1.10"
@@ -844,10 +794,6 @@ criteria = "safe-to-deploy"
 [[exemptions.tungstenite]]
 version = "0.29.0"
 criteria = "safe-to-run"
-
-[[exemptions.typenum]]
-version = "1.20.1"
-criteria = "safe-to-deploy"
 
 [[exemptions.unicode-general-category]]
 version = "1.1.0"
@@ -976,6 +922,11 @@ criteria = "safe-to-deploy"
 [[exemptions.windows_x86_64_msvc]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
+
+[[exemptions.x509-cert]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = "RustCrypto X.509 decoding (no crypto features) for the trust store's CA checks in busbar-core-connector and busbar-migrations; replaces x509-parser there (deny.toml keeps x509-parser rcgen-only) and drops the nom 7 duplicate. No imported audit from the trusted registries covers it."
 
 [[exemptions.x509-parser]]
 version = "0.18.1"

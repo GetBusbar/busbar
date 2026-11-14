@@ -94,7 +94,9 @@ quote = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 webpki-roots = "1"
-x509-parser = { version = "0.18", default-features = false }
+# Reading a CA certificate's basicConstraints, keyUsage and validity (core-connector trust store,
+# migrations); parsing only, no crypto features (x509-parser stays rcgen-only, deny.toml [bans]).
+x509-cert = { version = "0.3", default-features = false }
 rustls-pki-types = { version = "1", default-features = false, features = ["std"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -116,7 +118,7 @@ sseer = { version = "0.3.1", default-features = false }
 subtle = { version = "2.6", default-features = false }
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # Calendar dates and RFC 3339 (busbar-contract `civil`, release-document times); already linked
-# through rcgen and x509-parser. Members pick their own features.
+# through rcgen. Members pick their own features.
 time = { version = "0.3.49", default-features = false }
 # No `xattr`: the loader unpacks in memory.
 tar = { version = "0.4", default-features = false }
