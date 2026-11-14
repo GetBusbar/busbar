@@ -1,6 +1,6 @@
 # `busbar-oracle record --filter` records ZERO cells for every pattern
 
-**Status:** CLOSED 2026-09-22. Fixed in `GetBusbar/busbar-release` at `89718d8`
+**Status:** CLOSED 2026-09-22. Fixed in the oracle engine repository at `89718d8`
 (`fix/oracle-recorder-residual-gaps`), pinned by `oracle-rust.pin`, plus the `--out` fix in
 `bin/oracle` committed alongside this file.
 
