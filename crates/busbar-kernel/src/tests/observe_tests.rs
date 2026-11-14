@@ -837,6 +837,18 @@ impl ObservationSink for Output<'_> {
             "plugin exceeded its metric cardinality budget; further new series or label sets from it \
              are refused (established ones keep reporting)");
     }
+    fn text_cut(
+        &self,
+        field: busbar_contract::hook_wire::reply::TextField,
+        cap: usize,
+        count: u32,
+        max_sanitised: usize,
+    ) {
+        TEXT_CUTS.with(|cuts| {
+            cuts.borrow_mut()
+                .push((self.0.to_string(), field, cap, count, max_sanitised));
+        });
+    }
 }
 
 fn labels_for(
@@ -877,4 +889,112 @@ fn cloned_observation_owner_shares_budget_and_another_owner_does_not() {
     assert!(super::admits_cardinality(&other, "owner_over_budget", 0));
     super::forget_cardinality(&first);
     super::forget_cardinality(&other);
+}
+
+type TextCutCall = (
+    String,
+    busbar_contract::hook_wire::reply::TextField,
+    usize,
+    u32,
+    usize,
+);
+
+thread_local! {
+    /// Every `text_cut` the test sink received on this thread, in order.
+    static TEXT_CUTS: std::cell::RefCell<Vec<TextCutCall>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn take_text_cuts() -> Vec<TextCutCall> {
+    TEXT_CUTS.with(|cuts| std::mem::take(&mut *cuts.borrow_mut()))
+}
+
+#[test]
+fn a_plugin_replys_cuts_reach_the_sink_once_per_field() {
+    // T2: one #[test] for every tracing case.
+    use busbar_contract::hook_wire::reply::TextField;
+    let plugin = "acme-store-t2";
+    forget_cardinality(plugin);
+    let d = *crate::diagnostics::REGISTRY
+        .iter()
+        .find(|d| d.severity == crate::diagnostics::Severity::Actionable)
+        .expect("an actionable code");
+    let metrics: Vec<serde_json::Value> = (0..64)
+        .map(|i| {
+            let labels: serde_json::Map<String, serde_json::Value> = (0..8)
+                .map(|l| (format!("l{l}"), serde_json::Value::from("v".repeat(100))))
+                .collect();
+            serde_json::json!({
+                "name": format!("t2_cut_{i}_total"), "type": "counter", "value": 1,
+                "help": "h".repeat(300), "label": "b".repeat(100), "unit": "u".repeat(30),
+                "labels": labels,
+            })
+        })
+        .collect();
+    let diagnostics: Vec<serde_json::Value> = (0..16)
+        .map(|_| {
+            let mut diag = busbar_contract::abi::mechanism::observe::PluginDiagnostic::warn(
+                format!("BUSBAR-{}", d.code),
+                "m".repeat(400),
+            );
+            for f in 0..8 {
+                diag = diag.field(format!("f{f}"), "w".repeat(100));
+            }
+            serde_json::to_value(diag).unwrap()
+        })
+        .collect();
+    let mut expected = vec![
+        (
+            plugin.to_string(),
+            TextField::DiagMessage,
+            MAX_DIAG_MESSAGE_CHARS,
+            16,
+            400,
+        ),
+        (
+            plugin.to_string(),
+            TextField::DiagField,
+            MAX_DIAG_FIELD_CHARS,
+            128,
+            100,
+        ),
+        (plugin.to_string(), TextField::MetricHelp, 200, 64, 300),
+        (plugin.to_string(), TextField::MetricLabel, 64, 64, 100),
+        (plugin.to_string(), TextField::MetricUnit, 16, 64, 30),
+        (
+            plugin.to_string(),
+            TextField::MetricLabelValue,
+            64,
+            512,
+            100,
+        ),
+    ];
+    expected.sort();
+
+    let ((), seen) = crate::hooks::text_cut::text_cut_tests::probe(|| {
+        take_text_cuts();
+        OBSERVER.observe(&TEST_GRANTS, plugin, "store", &metrics, &diagnostics);
+    });
+    let mut first = take_text_cuts();
+    first.sort();
+    assert_eq!(
+        first, expected,
+        "one text_cut per field, summed over the reply"
+    );
+
+    // (a) the values themselves are today's: the 300-char message, 64-char field values.
+    let log = seen.lines().join("\n");
+    assert!(log.contains(&"m".repeat(MAX_DIAG_MESSAGE_CHARS)), "{log}");
+    assert!(
+        !log.contains(&"m".repeat(MAX_DIAG_MESSAGE_CHARS + 1)),
+        "{log}"
+    );
+    assert!(log.contains(&format!("f0={}", "w".repeat(MAX_DIAG_FIELD_CHARS))));
+    assert!(!log.contains(&"w".repeat(MAX_DIAG_FIELD_CHARS + 1)));
+
+    // (c) the same reply again gives the same calls.
+    OBSERVER.observe(&TEST_GRANTS, plugin, "store", &metrics, &diagnostics);
+    let mut again = take_text_cuts();
+    again.sort();
+    assert_eq!(again, expected);
+    forget_cardinality(plugin);
 }

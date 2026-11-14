@@ -37,6 +37,15 @@ pub trait ObservationSink {
         canonical: bool,
     );
     fn cardinality(&self, series: &str, max_series: usize, max_label_sets: usize);
+    /// `count` values of `field` this plugin sent were over `cap` and were cut; the longest was
+    /// `max_sanitised` chars after sanitising. Required: a sink cannot drop the fact silently.
+    fn text_cut(
+        &self,
+        field: busbar_contract::hook_wire::reply::TextField,
+        cap: usize,
+        count: u32,
+        max_sanitised: usize,
+    );
 }
 
 const RESERVED_PREFIX: &str = "busbar_";
@@ -294,9 +303,9 @@ fn fold_diagnostics(
 
 const MAX_PLUGIN_DIAGNOSTICS: usize = 16;
 
-const MAX_DIAG_MESSAGE_CHARS: usize = 300;
+pub(crate) const MAX_DIAG_MESSAGE_CHARS: usize = 300;
 
-const MAX_DIAG_FIELD_CHARS: usize = 64;
+pub(crate) const MAX_DIAG_FIELD_CHARS: usize = 64;
 
 const MAX_DIAG_FIELDS: usize = 8;
 
