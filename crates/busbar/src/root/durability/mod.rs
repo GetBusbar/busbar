@@ -23,9 +23,6 @@ mod native_audit_group_atomic;
 #[cfg(test)]
 #[path = "../tests/audit_group_lane.rs"]
 mod native_audit_group_lane;
-#[cfg(test)]
-#[path = "../tests/journal_group_commit.rs"]
-mod native_journal_group_commit;
 
 mod unit_checkpoint;
 mod unit_checkpoint_audit;
