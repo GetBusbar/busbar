@@ -482,7 +482,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         return Err(errors.join("\n  - "));
     }
     let _ = SINKS.set(opened);
-
+    super::traces::sinks_fixed();
     tracing::callsite::rebuild_interest_cache();
     Ok(())
 }
