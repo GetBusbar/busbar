@@ -3,12 +3,14 @@
 
 //! A LINE: one composed connection as the exchanges riding it hold it.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cell::Cell;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 
 use busbar_contract::conn::ConnCause;
+use foldhash::{HashMap, HashSet};
 
 use crate::compose::{
     Connection, Failure, HeadWords, Opening, EXCHANGE_STREAM, RECEIVE_BUFFER_BYTES,
@@ -17,6 +19,15 @@ use crate::framer::{Established, Got};
 
 /// The key an accepted connection's one holder reads under: every stream.
 pub(crate) const EVERY: u64 = u64::MAX;
+
+thread_local! {
+    /// The calling thread's reused list of wakers a fan-out wakes once its lock is let go.
+    static WAKING: Cell<Vec<Arc<Waker>>> = const { Cell::new(Vec::new()) };
+    /// The calling thread's reused list of pieces one read took off a connection.
+    static READ: Cell<Vec<Got>> = const { Cell::new(Vec::new()) };
+    /// The calling thread's reused list of the streams one read parked a piece for.
+    static PARKED_FOR: Cell<Vec<u64>> = const { Cell::new(Vec::new()) };
+}
 
 /// The holders still waiting on a line, woken together.
 #[derive(Default)]
@@ -56,16 +67,13 @@ impl Wake for FanOut {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        let all: Vec<Arc<Waker>> = self
-            .waiting
-            .lock()
-            .expect("waiters")
-            .values()
-            .cloned()
-            .collect();
-        for w in all {
+        // The thread's reused list: a wake that re-enters a fan-out gets a list of its own.
+        let mut all = WAKING.take();
+        all.extend(self.waiting.lock().expect("waiters").values().cloned());
+        for w in all.drain(..) {
             w.wake_by_ref();
         }
+        WAKING.set(all);
     }
 }
 
@@ -116,8 +124,9 @@ struct State {
     closing: bool,
     /// What the connection said of itself when it was last at home.
     seen: Seen,
-    /// Exchanges opened while the connection was out, in order: its owner opens them on the way
-    opening: VecDeque<(u64, HeldOpening)>,
+    /// Exchanges opened while the connection was out, in order (`None`: its holder left before it was
+    /// opened): its owner opens them on the way
+    opening: VecDeque<(u64, Option<HeldOpening>)>,
     /// An exchange whose open was handed to the owner and failed: its holder's next read answers
     refused: HashMap<u64, Failure>,
     /// The holders that found the connection out, woken when it is back.
@@ -232,16 +241,18 @@ impl Line {
         let first = if dialled { EXCHANGE_STREAM } else { EVERY };
         let mut seen = Seen::default();
         seen.refresh(&conn);
+        let mut held = HashSet::default();
+        held.insert(first);
         Arc::new(Self {
             state: Mutex::new(State {
                 conn: Some(conn),
                 closing: false,
                 seen,
                 opening: VecDeque::new(),
-                refused: HashMap::new(),
+                refused: HashMap::default(),
                 missed: Vec::new(),
-                parked: HashMap::new(),
-                held: HashSet::from([first]),
+                parked: HashMap::default(),
+                held,
                 next: EXCHANGE_STREAM + 1,
             }),
             fan: Arc::new(FanOut::default()),
@@ -289,7 +300,6 @@ impl Line {
 
     /// Bring the connection `taken` back to the line: what was handed to its owner meanwhile is
     fn bring_back(&self, taken: &mut Taken<'_>, settle: impl FnOnce(&mut State)) {
-        let mut discarded: Vec<Failure> = Vec::new();
         let mut s = self.state();
         settle(&mut s);
         loop {
@@ -317,6 +327,10 @@ impl Line {
             }
 
             let (stream, held) = s.opening.pop_front().expect("an opening waits");
+            let Some(held) = held else {
+                // Its holder left before it was opened.
+                continue;
+            };
             drop(s);
             let waker = self.fan_waker();
             let mut cx = Context::from_waker(&waker);
@@ -331,7 +345,10 @@ impl Line {
                 if s.held.contains(&stream) {
                     s.refused.insert(stream, failure);
                 } else {
-                    discarded.push(failure);
+                    // Its holder left: the failure is let go with no lock held.
+                    drop(s);
+                    drop(failure);
+                    s = self.state();
                 }
             }
         }
@@ -421,7 +438,7 @@ impl Line {
             return Err(Failure::Closed);
         }
         if s.conn.is_none() {
-            s.opening.push_back((stream, held));
+            s.opening.push_back((stream, Some(held)));
             return Ok(());
         }
         match self.turn(
@@ -471,7 +488,7 @@ impl Line {
             return Err((stream, Failure::Closed));
         }
         if s.conn.is_none() {
-            s.opening.push_back((stream, held));
+            s.opening.push_back((stream, Some(held)));
             return Ok(stream);
         }
         match self.turn(
@@ -515,15 +532,16 @@ impl Line {
         };
         let parked = s.parked_bytes();
         let waker = self.fan_waker();
-        let mut waiting = Vec::new();
+        let mut waiting = PARKED_FOR.take();
         let mut dropped = false;
+        let read = READ.take();
         let turn = self.turn(
             s,
             Some(missed),
             |conn| {
                 let mut cx = Context::from_waker(&waker);
                 let mut parked = parked;
-                let mut read = Vec::new();
+                let mut read = read;
                 loop {
                     conn.set_receive_held(parked);
                     if parked >= RECEIVE_BUFFER_BYTES {
@@ -557,14 +575,18 @@ impl Line {
             },
         );
 
-        for key in waiting {
+        for key in waiting.drain(..) {
             self.fan.wake_one(key);
         }
+        PARKED_FOR.set(waiting);
         if dropped {
             self.fan.wake_by_ref();
         }
         match turn {
-            Turn::Ran((end, _)) => Turn::Ran(end),
+            Turn::Ran((end, read)) => {
+                READ.set(read);
+                Turn::Ran(end)
+            }
             Turn::Out => Turn::Out,
             Turn::Closed => Turn::Closed,
         }
@@ -771,11 +793,12 @@ impl Line {
         let retired = {
             let mut s = self.state();
             s.held.remove(&stream);
+            // Its queued opening, if any, is taken out where it stands: the queue keeps its order.
             let opening = s
                 .opening
-                .iter()
-                .position(|(queued, _)| *queued == stream)
-                .and_then(|at| s.opening.remove(at));
+                .iter_mut()
+                .find(|(queued, held)| *queued == stream && held.is_some())
+                .and_then(|(_, held)| held.take());
             (opening, s.refused.remove(&stream), s.parked.remove(&stream))
         };
         let unparked = retired.2.as_ref().is_some_and(|q| !q.is_empty());

@@ -16,7 +16,7 @@ const OWNER: busbar_contract::conn::InstanceId = busbar_contract::conn::Instance
 
 /// The selected proxy's `host:port` for a target, or `None` for the direct arm.
 fn selected(config: &Arc<ProxyChoice>, https: bool, host: &str) -> Option<String> {
-    config.select(https, host).map(|p| p.endpoint())
+    config.select(https, host).map(|p| p.endpoint().to_owned())
 }
 
 /// The pure value bag, as the environment would fill it.

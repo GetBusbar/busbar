@@ -32,7 +32,10 @@ struct Observed<F> {
 
 impl<F: Fn(&str)> Observed<F> {
     // This test-support boundary reads the connector's scoped ABI loan before forwarding it.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "this test-support boundary reads the scoped ABI loan"
+    )]
     fn observe(&self, call: &Call<'_>) {
         let Call::Adopt(input, _) = call else {
             return;

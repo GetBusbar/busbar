@@ -32,6 +32,7 @@ rcgen = { workspace = true }
 webpki = { workspace = true }
 zeroize = { workspace = true }
 crc32fast = { workspace = true }
+foldhash = { workspace = true }
 
 tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }

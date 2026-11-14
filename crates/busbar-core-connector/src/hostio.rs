@@ -3,12 +3,13 @@
 
 //! THE HOST'S I/O, `io.*` (`busbar_contract::abi::host::io`; `BUSBAR-1.6.0.md` THE DESIGN §5: "No
 
-use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::task::{Context, Poll, Waker};
+
+use foldhash::HashMap;
 
 use arc_swap::ArcSwapOption;
 use busbar_contract::abi::host::io::{DIR_BOTH, DIR_READ, DIR_WRITE};
@@ -174,7 +175,14 @@ impl Table {
         self.segments
             .get(seg)
             .ok_or_else(IoRefusal::unknown)?
-            .get_or_init(|| (0..FIRST << seg).map(|_| ArcSwapOption::empty()).collect())[at]
+            .get_or_init(|| {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: each table segment is allocated once in the process's life, the first time the table grows into it"
+                )]
+                let segment = (0..FIRST << seg).map(|_| ArcSwapOption::empty()).collect();
+                segment
+            })[at]
             .store(Some(Arc::new(Entry { id, owner, kind })));
         free.live += 1;
         Ok(id)
@@ -196,7 +204,9 @@ impl Table {
     /// Release every handle `owner` holds, as [`Table::release`] releases one: each names nothing
     fn reap(&self, owner: u64) -> Vec<Arc<Entry>> {
         let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        // busbar:expect(bp::fresh_buffer, reason = "config: an owner's handles are reaped only when the owner (a plugin instance) is unloaded")
         let mut gone = Vec::new();
+        // busbar:expect(bp::state_scan, reason = "config: an owner's handles are reaped only when the owner (a plugin instance) is unloaded")
         for slot in self
             .segments
             .iter()
@@ -234,7 +244,12 @@ impl std::fmt::Debug for HostIo {
 }
 
 fn failed(e: &io::Error) -> IoRefusal {
-    IoRefusal::Failed(e.to_string())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failed or refused I/O op is answered with its sentence"
+    )]
+    let sentence = e.to_string();
+    IoRefusal::Failed(sentence)
 }
 
 /// What a non-blocking attempt answered: progress, nothing yet (wait), or the error.
@@ -413,6 +428,10 @@ impl HostIo {
     fn connect(addr: &str) -> Result<Sock, OpenFailure> {
         #[cfg(unix)]
         if let Some(path) = socket::unix_path(addr) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a failed or refused I/O op is answered with its sentence"
+            )]
             return socket::connect_unix(path)
                 .map(Sock::Unix)
                 .map_err(|e| match e.kind() {
@@ -428,14 +447,23 @@ impl HostIo {
                 "Unix-domain targets are unavailable on Windows".into(),
             ));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a failed or refused I/O op is answered with its sentence"
+        )]
         let at: SocketAddr = addr.parse().map_err(|_| {
             OpenFailure::Refused(format!(
                 "`{addr}` is not an address the connector dials without resolving a name"
             ))
         })?;
-        socket::connect(at)
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a failed or refused I/O op is answered with its sentence"
+        )]
+        let connected = socket::connect(at)
             .map(Sock::Tcp)
-            .map_err(|e| OpenFailure::Failed(e.to_string()))
+            .map_err(|e| OpenFailure::Failed(e.to_string()));
+        connected
     }
 }
 
@@ -524,6 +552,10 @@ impl IoHost for HostIo {
                 return Err(IoRefusal::Failed(text));
             }
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a failed or refused I/O op is answered with its sentence"
+        )]
         let sock = reactor::register(sock).map_err(|e| {
             self.record(ticket, None, Some(OpenFailure::Failed(e.to_string())));
             failed(&e)
@@ -559,7 +591,12 @@ impl IoHost for HostIo {
         let sock = reactor::register(l).map_err(|e| failed_bind("register", &e))?;
         let id = self.handles.make(owner, Kind::Listener(sock))?;
         self.record(ticket, Some(id), None);
-        Ok((id, local.to_string()))
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a listener is bound at boot or at a config commit; its address is spelled once"
+        )]
+        let local = local.to_string();
+        Ok((id, local))
     }
 
     fn accept(
@@ -780,6 +817,10 @@ impl IoHost for HostIo {
         }
 
         let held = held.now();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a failed or refused I/O op is answered with its sentence"
+        )]
         let resolved = held
             .env()
             .map_err(|why| IoRefusal::Refused(why.to_owned()))?;
@@ -872,12 +913,9 @@ pub(crate) struct LookupPlace(&'static AtomicUsize);
 
 impl LookupPlace {
     /// Takes a place if fewer than `cap` are taken.
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
     pub(crate) fn take(cap: usize, in_flight: &'static AtomicUsize) -> Option<Self> {
         in_flight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < cap).then_some(n + 1)
             })
             .ok()
