@@ -16,6 +16,16 @@ struct RequestFamily {
     producer_duration: [HistogramSlot; OUTCOMES.len()],
 }
 
+/// The banked slots for one mounted plane and declared dialect, at the fixed unresolved pool label
+/// mounted ingress observes: `busbar_plane_requests_total` (per outcome),
+/// `busbar_plane_request_duration_seconds`, and the response-ready phase histogram.
+#[derive(Clone, Copy)]
+struct MountedFamily {
+    requests: [CounterSlot; OUTCOMES.len()],
+    duration: HistogramSlot,
+    phase: [HistogramSlot; OUTCOMES.len()],
+}
+
 /// The banked slots for one `(pool label, lane)` pair on the upstream walk:
 /// attempts, per-disposition failures, and breaker trips.
 #[derive(Clone, Copy)]
@@ -50,7 +60,8 @@ pub(crate) struct AppSlots {
     lane: HashMap<Box<str>, HashMap<usize, LaneFamily>>,
     /// engine pool label → failover-reason slots, indexed by position in [`REASONS`].
     failover: HashMap<Box<str>, [CounterSlot; REASONS.len()]>,
-    mounted_duration: HashMap<&'static str, Box<[[HistogramSlot; OUTCOMES.len()]]>>,
+    /// mounted plane key → families, indexed by position in that plane's declared dialects.
+    mounted: HashMap<&'static str, Box<[MountedFamily]>>,
 }
 
 impl AppSlots {
@@ -61,7 +72,8 @@ impl AppSlots {
         plane: &'static str,
     ) -> AppSlots {
         use crate::snapshot::{
-            BREAKER_TRIPS_TOTAL, FAILOVERS_TOTAL, REQUESTS_TOTAL, REQUEST_DURATION_SECONDS,
+            BREAKER_TRIPS_TOTAL, FAILOVERS_TOTAL, PLANE_REQUESTS_TOTAL,
+            PLANE_REQUEST_DURATION_SECONDS, REQUESTS_TOTAL, REQUEST_DURATION_SECONDS,
             UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL,
         };
 
@@ -172,18 +184,33 @@ impl AppSlots {
         let mounted_duration = crate::plane_driver::dispatch::plane_keys()
             .filter(|key| !crate::plane_driver::dispatch::is_fallback(key))
             .map(|key| {
-                let slots = declared_dialects(key)
+                let families = declared_dialects(key)
                     .iter()
-                    .map(|protocol| {
-                        phase_duration_slot(key, RESPONSE_READY, protocol, POOL_LABEL_UNRESOLVED)
+                    .map(|proto| MountedFamily {
+                        requests: std::array::from_fn(|oi| {
+                            counter_slot(
+                                PLANE_REQUESTS_TOTAL,
+                                &[
+                                    ("plane", key),
+                                    ("ingress_protocol", proto),
+                                    ("pool", pool),
+                                    ("outcome", OUTCOMES[oi]),
+                                ],
+                            )
+                        }),
+                        duration: histogram_slot(
+                            PLANE_REQUEST_DURATION_SECONDS,
+                            &[("plane", key), ("ingress_protocol", proto), ("pool", pool)],
+                        ),
+                        phase: phase_duration_slot(key, RESPONSE_READY, proto, pool),
                     })
                     .collect();
-                (key, slots)
+                (key, families)
             })
             .collect();
 
         AppSlots {
-            mounted_duration,
+            mounted,
             banked_plane: plane,
             request,
             lane: lane_map,
@@ -204,6 +231,21 @@ impl AppSlots {
             .iter()
             .position(|p| *p == ingress_protocol)?;
         self.request.get(pool).map(|fams| &fams[proto_idx])
+    }
+
+    fn mounted_family(
+        &self,
+        plane: &str,
+        ingress_protocol: &str,
+        pool: &str,
+    ) -> Option<&MountedFamily> {
+        if pool != POOL_LABEL_UNRESOLVED {
+            return None;
+        }
+        let proto_idx = declared_dialects(plane)
+            .iter()
+            .position(|p| *p == ingress_protocol)?;
+        self.mounted.get(plane)?.get(proto_idx)
     }
 
     fn lane_family(&self, pool_label: &str, lane_idx: usize) -> Option<&LaneFamily> {
@@ -230,26 +272,29 @@ fn request_finished_in(
     outcome: &'static str,
     seconds: f64,
 ) {
+    let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
     if !crate::plane_driver::dispatch::is_fallback(plane) {
+        let fam = slots.mounted_family(plane, ingress_protocol, pool);
         if crate::snapshot::retaining() {
-            let slot = (pool == POOL_LABEL_UNRESOLVED)
-                .then(|| slots.mounted_duration.get(plane))
-                .flatten()
-                .and_then(|slots| {
-                    declared_dialects(plane)
-                        .iter()
-                        .position(|p| *p == ingress_protocol)
-                        .map(|i| slots[i])
-                });
-            record_phase_duration(slot, outcome, seconds);
+            record_phase_duration(fam.map(|fam| fam.phase), outcome, seconds);
         }
-        crate::snapshot::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
-        crate::snapshot::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
+        match (fam, outcome_idx) {
+            (Some(fam), Some(oi)) if fam.requests[oi].is_valid() => fam.requests[oi].incr(),
+            _ => crate::snapshot::incr_plane_requests_total(plane, ingress_protocol, pool, outcome),
+        }
+        match fam {
+            Some(fam) if fam.duration.is_valid() => fam.duration.record(seconds),
+            _ => crate::snapshot::record_plane_request_duration(
+                plane,
+                ingress_protocol,
+                pool,
+                seconds,
+            ),
+        }
         return;
     }
 
     let fam = slots.request_family(plane, ingress_protocol, pool);
-    let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
     match (fam, outcome_idx) {
         (Some(fam), Some(oi)) if fam.requests[oi].is_valid() => fam.requests[oi].incr(),
         _ => crate::snapshot::incr_requests_total(ingress_protocol, pool, outcome),
