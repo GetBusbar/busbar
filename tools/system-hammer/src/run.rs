@@ -245,16 +245,20 @@ fn log_ready(
     needle: &str,
     count: usize,
 ) -> Result<bool, String> {
-    Ok(logs
-        .map(|o| {
-            let all = format!(
-                "{}{}",
-                String::from_utf8_lossy(&o.stdout),
-                String::from_utf8_lossy(&o.stderr)
-            );
-            all.matches(needle).count() >= count
-        })
-        .unwrap_or(false))
+    let o = logs.map_err(|e| format!("docker logs: {e}"))?;
+    if !o.status.success() {
+        return Err(format!(
+            "docker logs ({}): {}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr).trim()
+        ));
+    }
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    Ok(all.matches(needle).count() >= count)
 }
 
 fn stage_plugins(s: &Scenario, env: &Env, work: &Path) -> Result<(), String> {
@@ -605,8 +609,13 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
         Ok(m) => m,
         Err(e) => return vec![failed(s, "-", format!("mock: {e}"))],
     };
-    let listen: SocketAddr = ([127, 0, 0, 1], gateway::free_port()).into();
-    let admin: SocketAddr = ([127, 0, 0, 1], gateway::free_port()).into();
+    // listen, admin, FREE_PORT_A, FREE_PORT_B: held until the gateway is spawned.
+    let ports = match gateway::Ports::reserve(4) {
+        Ok(p) => p,
+        Err(e) => return vec![failed(s, "-", e)],
+    };
+    let listen: SocketAddr = ([127, 0, 0, 1], ports.ports[0]).into();
+    let admin: SocketAddr = ([127, 0, 0, 1], ports.ports[1]).into();
     let signing = match gateway::signing_key(&env.bin) {
         Ok(k) => k,
         Err(e) => return vec![failed(s, "-", e)],
@@ -630,8 +639,8 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
     vars.insert("CARD_ISSUER_KEY".into(), mock::card_issuer_key());
     vars.insert("MCP_SCHEMA_HASH".into(), mock::MCP_PING_SCHEMA_HASH.into());
     vars.insert("ADMIN_TOKEN".into(), token.clone());
-    vars.insert("FREE_PORT_A".into(), gateway::free_port().to_string());
-    vars.insert("FREE_PORT_B".into(), gateway::free_port().to_string());
+    vars.insert("FREE_PORT_A".into(), ports.ports[2].to_string());
+    vars.insert("FREE_PORT_B".into(), ports.ports[3].to_string());
 
     // Steps that must run before boot (a service account the config's env needs).
     let steps = match s.steps() {
@@ -669,6 +678,7 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
     for (k, v) in &s.env {
         genv.push((k.clone(), scenario::fill(v, &vars)));
     }
+    ports.release();
     let mut gw = match Gateway::boot(BootSpec {
         bin: &env.bin,
         work: work.clone(),

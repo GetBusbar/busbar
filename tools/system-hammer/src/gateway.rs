@@ -14,12 +14,35 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// A free loopback port (bound and released; the gateway binds it right after).
-pub fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(0)
+/// Loopback ports for the gateway's listeners, held bound until it is about to bind them: all
+/// reserved at once, so they are distinct, and no other `bind(0)` on the host is handed one
+/// while they are held. Whatever takes a port after [`Ports::release`] is caught by
+/// [`Gateway::boot`], which only accepts a `/healthz` answer from a listener its child owns.
+pub struct Ports {
+    held: Vec<TcpListener>,
+    pub ports: Vec<u16>,
+}
+
+impl Ports {
+    pub fn reserve(n: usize) -> Result<Ports, String> {
+        let mut held = Vec::with_capacity(n);
+        let mut ports = Vec::with_capacity(n);
+        for _ in 0..n {
+            let l = TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| format!("reserve a loopback port: {e}"))?;
+            let a = l
+                .local_addr()
+                .map_err(|e| format!("reserve a loopback port: {e}"))?;
+            ports.push(a.port());
+            held.push(l);
+        }
+        Ok(Ports { held, ports })
+    }
+
+    /// Let the ports go, right before the gateway binds them.
+    pub fn release(self) {
+        drop(self.held);
+    }
 }
 
 /// The binary's version line, e.g. `(1, 6, 0)`.
@@ -119,8 +142,23 @@ impl Gateway {
             }
             if let Ok(r) = call(gw.listen, "GET", "/healthz", &[], b"") {
                 if r.status == 200 {
-                    gw.boot = started.elapsed();
-                    return Ok(gw);
+                    // Only the child's own listener counts: if another process holds the port
+                    // (it was taken, or the child failed to bind it), every case would load
+                    // that process instead.
+                    let owned = crate::procstat::listens_on(gw.pid, gw.listen.port());
+                    if owned == Ok(true) {
+                        gw.boot = started.elapsed();
+                        return Ok(gw);
+                    }
+                    gw.stop();
+                    return Err(match owned {
+                        Ok(_) => format!(
+                            "{} answers /healthz, but busbar (pid {}) does not listen on it: \
+                             the port is held by another process",
+                            gw.listen, gw.pid
+                        ),
+                        Err(e) => format!("who listens on {}: {e}", gw.listen),
+                    });
                 }
             }
             if Instant::now() > deadline {

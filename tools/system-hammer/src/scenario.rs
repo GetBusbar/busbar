@@ -291,6 +291,18 @@ pub fn load(dir: &Path, name: &str) -> Result<Scenario, String> {
     let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
     let s: Scenario = serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", p.display()))?;
     s.steps().map_err(|e| format!("{}: {e}", p.display()))?;
+    // Every request path is checked here, before anything boots (placeholders survive the check;
+    // `to_req` checks the filled path again).
+    for c in &s.cases {
+        let bg = c.background.iter().flat_map(|b| &b.requests);
+        for r in c.requests.iter().chain(&c.direct).chain(bg) {
+            crate::driver::check_path(&r.path)
+                .map_err(|e| format!("{}: case {}: {e}", p.display(), c.name))?;
+        }
+    }
+    for m in &s.llm_matrix {
+        expand_matrix(m).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
     Ok(s)
 }
 
@@ -340,9 +352,11 @@ pub fn to_req(r: &ReqSpec, vars: &BTreeMap<String, String>) -> Result<Req, Strin
             HeaderValue::from_str(&fill(val, &v)).map_err(|e| format!("header {k}: {e}"))?;
         headers.push((name, value));
     }
+    let path = fill(&r.path, &v);
+    crate::driver::check_path(&path)?;
     Ok(Req {
         method,
-        path: fill(&r.path, &v),
+        path,
         headers,
         body: Bytes::from(fill(&r.body, &v)),
         expect_status: r.expect,
@@ -372,6 +386,13 @@ pub fn expand_matrix(m: &LlmMatrix) -> Result<Vec<CaseSpec>, String> {
             let de = Dialect::parse(eg).ok_or(format!("llm_matrix: unknown dialect {eg}"))?;
             for &stream in &m.stream {
                 for &tools in &m.tools {
+                    if stream && tools {
+                        // The mock streams text only: such a cell would not test tool calls.
+                        return Err(format!(
+                            "llm_matrix: {ing}>{eg} stream with tools: the mock has no streamed \
+                             tool-call body"
+                        ));
+                    }
                     for &pad in &m.pad {
                         let model = format!("{}{}", m.model_prefix, eg);
                         let mut name = format!("{ing}>{eg}");
