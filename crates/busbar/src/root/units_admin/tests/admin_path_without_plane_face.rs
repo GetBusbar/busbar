@@ -35,52 +35,16 @@ const THE_OPERATORS_CREDENTIAL: &str = "admin-token";
 
 struct ADirectoryThatMintedIt;
 
-impl crate::root::auth_bindings::VirtualKeyDirectory for ADirectoryThatMintedIt {
-    fn verify(
-        &self,
-        credential: &str,
-        _now: u64,
-        _expected_aud: Option<&str>,
-    ) -> Option<crate::root::auth_bindings::KeyFacts> {
-        (credential == THE_OPERATORS_CREDENTIAL).then(|| crate::root::auth_bindings::KeyFacts {
-            id: "key-admin-1".to_string(),
-            name: "the operator credential these cells present".to_string(),
-        })
-    }
-
-    fn revoked(&self, _credential: &str) -> bool {
+impl busbar_kernel_identity::RevocationView for ADirectoryThatMintedIt {
+    fn is_revoked(&self, _credential: &str) -> bool {
         false
     }
 }
 
-struct IdentifiesTheOperator;
-
-impl busbar_kernel_identity::module::AuthModule for IdentifiesTheOperator {
-    fn name(&self) -> &'static str {
-        "identifies-the-operator"
-    }
-
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some(THE_OPERATORS_CREDENTIAL) => {
-                busbar_kernel_identity::module::AuthOutcome::Identify(
-                    busbar_kernel_identity::principal::Principal::from_id(
-                        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID.to_owned(),
-                    ),
-                )
-            }
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
-}
-
-fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
-    busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-the-operator".to_string(),
-            module: Box::new(IdentifiesTheOperator),
-        }],
-        false,
+fn a_door_that_identifies_the_operator() -> crate::root::units_admin::AdminDoorFn {
+    crate::root::units_admin::door_identifying(
+        THE_OPERATORS_CREDENTIAL,
+        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
     )
 }
 
@@ -1172,25 +1136,6 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
         served_op_classes: &[],
         caller_credential_refusal: None,
     };
-
-struct IdentifiesATenant;
-
-impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
-    fn name(&self) -> &'static str {
-        "identifies-a-tenant"
-    }
-
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some(THE_OPERATORS_CREDENTIAL) => {
-                busbar_kernel_identity::module::AuthOutcome::Identify(
-                    busbar_kernel_identity::principal::Principal::from_id("a-tenant".to_owned()),
-                )
-            }
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
-}
 
 async fn a_q71_node(
     door: crate::root::units_admin::AdminDoorFn,
