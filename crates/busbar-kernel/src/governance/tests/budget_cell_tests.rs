@@ -221,3 +221,30 @@ fn durable_usage_hydration_refuses_negative_dated_totals() {
     };
     assert!(durable_cell(Default::default(), era, 0).is_err());
 }
+
+/// LINT-RULES R35 `row-from-no-counts` (LR-129): a lane row in a budget cell is a hit on that
+/// lane, and every money read prices every row. So `accrue_raw` itself, the one way counts enter a
+/// cell, creates a row only from a non-zero count; a zero-only report (an exhausted pool unit's
+/// checkpoint names lane `""` with no counts) adds nothing, on the cell and on an open correction
+/// branch alike, whichever caller reaches it.
+#[test]
+fn a_zero_only_accrual_creates_no_lane_row() {
+    use std::collections::BTreeMap;
+    let era = RawRateEra::legacy(0);
+    let mut cell = BudgetCell::fresh(0);
+    cell.accrue_raw("", era, &BTreeMap::new()).unwrap();
+    cell.accrue_raw("m", era, &BTreeMap::from([("input".into(), Count::ZERO)]))
+        .unwrap();
+    assert!(
+        cell.models.is_empty(),
+        "no counts, no row: {:?}",
+        cell.models.iter().map(|m| &*m.model).collect::<Vec<_>>()
+    );
+
+    cell.accrue_raw("m", era, &BTreeMap::from([("input".into(), Count::ONE)]))
+        .unwrap();
+    cell.accrue_raw("m", era, &BTreeMap::from([("input".into(), Count::ZERO)]))
+        .unwrap();
+    assert_eq!(cell.models.len(), 1, "a counted lane keeps its one row");
+    assert_eq!(cell.models[0].cur["input"], Count::ONE);
+}
