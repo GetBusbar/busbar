@@ -222,3 +222,97 @@ fn a_named_map_root_matches_on_a_segment_boundary_only() {
         );
     }
 }
+
+/// Today's limiter, kept as the reference: two retains per check.
+struct Reference {
+    latest_window: u64,
+    behind_since: Option<u64>,
+    windows: std::collections::HashMap<(String, MutationClass), Window>,
+}
+
+impl Reference {
+    fn check(&mut self, principal: &str, class: MutationClass, now: u64) -> RateCheck {
+        let arrived_in = now - (now % MUTATION_RATE_WINDOW_SECS);
+        if arrived_in.saturating_add(MUTATION_RATE_WINDOW_SECS) < self.latest_window {
+            let since = self.behind_since.map_or(now, |since| since.min(now));
+            if now - since >= MUTATION_RATE_WINDOW_SECS {
+                self.latest_window = arrived_in;
+                self.behind_since = None;
+                self.windows.retain(|_, (w, _, _)| *w <= arrived_in);
+            } else {
+                self.behind_since = Some(since);
+            }
+        } else {
+            self.behind_since = None;
+        }
+        let window = arrived_in.max(self.latest_window);
+        self.latest_window = window;
+        self.windows.retain(|_, (w, _, _)| *w >= window);
+        let entry = self
+            .windows
+            .entry((principal.to_string(), class))
+            .or_insert((window, 0, 0));
+        if entry.1 >= class.limit() {
+            entry.2 += 1;
+            return RateCheck::Denied {
+                first_in_window: entry.2 == 1,
+            };
+        }
+        entry.1 += 1;
+        RateCheck::Admitted
+    }
+}
+
+#[test]
+fn ratelimit_verdicts_unchanged() {
+    let limiter = MutationLimiter::new();
+    let mut reference = Reference {
+        latest_window: 0,
+        behind_since: None,
+        windows: std::collections::HashMap::new(),
+    };
+    let classes = [
+        MutationClass::Config,
+        MutationClass::Crud,
+        MutationClass::PluginInspect,
+        MutationClass::Forbidden,
+    ];
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut now = 1_000_000u64;
+    for _ in 0..100_000 {
+        let r = next();
+        now = match r % 100 {
+            0 => now.saturating_sub(next() % 400),
+            1..=3 => now + next() % 120,
+            _ => now + next() % 2,
+        };
+        let principal = format!("p{}", next() % 40);
+        let class = classes[(next() % 4) as usize];
+        assert_eq!(
+            limiter.check(&principal, class, now),
+            reference.check(&principal, class, now),
+            "{principal} at {now}"
+        );
+    }
+}
+
+#[test]
+fn ratelimit_check_constant() {
+    let cost = |n: u64| {
+        let limiter = MutationLimiter::new();
+        let t = 1_000_020;
+        for i in 0..n {
+            let _ = limiter.check(&format!("p{i}"), MutationClass::Crud, t);
+        }
+        let before = limiter.state.lock().unwrap().windows.visits();
+        let _ = limiter.check("p0", MutationClass::Crud, t);
+        limiter.state.lock().unwrap().windows.visits() - before
+    };
+    assert_eq!(cost(10), cost(100_000));
+}
