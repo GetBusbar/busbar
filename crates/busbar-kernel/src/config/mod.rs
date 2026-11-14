@@ -1977,14 +1977,19 @@ pub fn resolve(
             .ok()
     });
 
-    let mut endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
+    let mut endpoint_resources: std::collections::HashMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    > = lowered_endpoint
         .map(|resource| (endpoint_section, resource))
         .into_iter()
         .collect();
 
     for (&section, value) in deploy.plane_raw.iter().filter(|(_, v)| !v.is_null()) {
         plane_sections.insert(section);
-        endpoint_resources.insert(section, std::sync::Arc::new((section, value.clone())));
+        let raw: std::sync::Arc<dyn std::any::Any + Send + Sync> =
+            std::sync::Arc::new((section, value.clone()));
+        endpoint_resources.insert(section, raw);
     }
 
     let oauth_as = deploy

@@ -86,6 +86,7 @@ impl<'a> StoreJournal<'a> {
             // The live owner appends contiguous originals only.
             historical: false,
             records_seal: prior.records_seal,
+            ahead: Default::default(),
         };
         while replay.next().await?.is_some() {}
         if replay.finish()?.records_seal != current.records_seal {
@@ -448,7 +449,7 @@ impl<'a> StoreJournal<'a> {
         selection: Selection,
         guards: &[Predicate],
     ) -> Result<WriteResult> {
-        self.change_selection(proof, records, selection, false, guards)
+        self.change_selection_at(proof, records, None, selection, false, guards)
             .await
     }
 
