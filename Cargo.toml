@@ -49,7 +49,6 @@ http-body = "1"
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", default-features = false, features = [
-    "client-legacy",
     "http1",
     "http2",
     "server-auto",
