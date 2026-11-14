@@ -110,6 +110,10 @@ impl UnitCheckpointEvidence {
     ) -> RecordStoreResult<Option<AuditRecord>> {
         self.journal.flush().await.map_err(error)?;
         let journal = StoreJournal::new(&self.store, self.node).map_err(error)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "once per terminal unit, without the driver (A27c §8b bounds it)"
+        )]
         let mut replay = journal.historical_replay().await.map_err(error)?;
         let mut found = None;
         while let Some(original) = replay.next().await.map_err(error)? {
@@ -294,6 +298,10 @@ impl StoreUnitCheckpoints {
                 .read_located_record(proof, head.sequence, ordinal)
                 .await
                 .map_err(error)?,
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "cold fallback: record before the last chain discontinuity"
+            )]
             None => journal
                 .read_verified_record(proof, head.sequence)
                 .await
