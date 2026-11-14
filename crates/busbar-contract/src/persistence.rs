@@ -222,7 +222,7 @@ impl<O> Candidate<O> {
     /// This does not authorize execution or establish resource admission. The host
     /// checks its allocation budget before constructing wire arrays; the backend
     /// checks epoch admission and predicates atomically with its slot row.
-    pub fn validate(&self) -> Result<(), InvalidCandidate> {
+    pub(crate) fn validate(&self) -> Result<(), InvalidCandidate> {
         use InvalidCandidate as E;
 
         if self.codec != CANDIDATE_VERSION {

@@ -14,11 +14,11 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use busbar_contract::auth::BeginLogin;
-use busbar_contract::auth_calls::{
-    AuthAxis, AuthCalls, IssuedShape, LoginCall, LoginCallback, LoginPresentation,
-    VerifyAnswer, VerifyRequest, Verifying,
-};
 use busbar_contract::auth::LoginKind;
+use busbar_contract::auth_calls::{
+    AuthAxis, AuthCalls, IssuedShape, LoginCall, LoginCallback, LoginPresentation, VerifyAnswer,
+    VerifyRequest, Verifying,
+};
 use busbar_contract::plugin_settings::ResolvedSettings;
 use busbar_contract::secret::{AuthRelent, RelendCause, RelendRefused};
 
@@ -177,6 +177,14 @@ impl AuthCalls for RelendingAuth {
 
     fn relend(&self, settings: &ResolvedSettings) -> Result<AuthRelent, String> {
         self.now().relend(settings)
+    }
+
+    fn answering(&self) -> bool {
+        self.now().answering()
+    }
+
+    fn reusable(&self) -> bool {
+        self.now().reusable()
     }
 
     fn login_presentation(&self) -> Option<LoginPresentation> {

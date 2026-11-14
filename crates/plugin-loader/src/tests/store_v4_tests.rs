@@ -927,8 +927,7 @@ fn commit_frames_carry_the_key_and_answers_carry_no_result_bytes() {
             .unwrap();
     let mut request = CommitRequest {
         source: sdk::Commit::new(&candidate, limits().descriptor_bytes).unwrap(),
-        original: candidate,
-        bytes: WipedBytes::default(),
+        key,
     };
     assert!(
         request.grow(0, 3, limits()).is_err(),

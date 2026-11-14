@@ -251,12 +251,10 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     // non-NULL kind tail is `'static` plugin data of its stated size.
     let tail: PlaneTail =
         unsafe { crate::dispatch::plugin::kind_tail(st, "a plane", PLANE_TAIL_FROZEN) }?;
-    check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    check_tail(&tail).map_err(broke)?;
     refuse_retired_trust_roles(&tail)?;
-    check_tail_trust_keys(&tail)
-        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    check_tail_fee_units(&tail)
-        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    check_tail_trust_keys(&tail).map_err(broke)?;
+    check_tail_fee_units(&tail).map_err(broke)?;
     let admin_routes = listed(tail.admin_routes, tail.admin_routes_len);
     plane::check::check_admin_routes(&admin_routes).map_err(broke)?;
 
