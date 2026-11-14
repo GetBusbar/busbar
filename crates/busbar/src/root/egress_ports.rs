@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use busbar_core_connector::framer::now_ns;
+use foldhash::HashMap;
 
 use busbar_kernel_egress::ports::{
     BoxFut, Capacity, Clock, DestinationId, Permit, PermitHandle, StatedLabels, Telemetry,
@@ -14,18 +16,22 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// THE NODE'S CLOCK, as the walk reads it: the wall clock's whole seconds for every deadline, a
 /// monotonic millisecond reading from the clock's own start for the waits, and the runtime's timer
-/// for its one sleep.
+/// for its one sleep. Both readings are the host's shared clocks (the store vocabulary's wall
+/// seconds and the framer's monotonic nanoseconds).
 #[derive(Debug, Clone, Copy)]
 pub struct NodeClock {
-    origin: Instant,
+    /// The host monotonic reading (`framer::now_ns`) this clock started at.
+    origin: u64,
 }
 
 impl NodeClock {
     #[must_use]
     pub fn new() -> Self {
-        NodeClock {
-            origin: Instant::now(),
-        }
+        NodeClock { origin: now_ns() }
+    }
+
+    fn since_origin(&self) -> std::time::Duration {
+        std::time::Duration::from_nanos(now_ns().saturating_sub(self.origin))
     }
 }
 
@@ -37,17 +43,15 @@ impl Default for NodeClock {
 
 impl Clock for NodeClock {
     fn now_secs(&self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
+        busbar_kernel::store::now()
     }
 
     fn now_millis(&self) -> u128 {
-        self.origin.elapsed().as_millis()
+        self.since_origin().as_millis()
     }
 
     fn now_micros(&self) -> u128 {
-        self.origin.elapsed().as_micros()
+        self.since_origin().as_micros()
     }
 
     fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
@@ -80,12 +84,15 @@ impl PermitHandle for Slot {
 impl MemberPermits {
     #[must_use]
     pub fn new(limits: impl IntoIterator<Item = (DestinationId, usize)>) -> Self {
-        MemberPermits {
-            limits: limits
-                .into_iter()
-                .map(|(d, n)| (d, Arc::new(Semaphore::new(n))))
-                .collect(),
-        }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the members' permits are built once per configured walk"
+        )]
+        let limits = limits
+            .into_iter()
+            .map(|(d, n)| (d, Arc::new(Semaphore::new(n))))
+            .collect();
+        MemberPermits { limits }
     }
 
     #[must_use]
@@ -125,6 +132,10 @@ impl Capacity for MemberPermits {
                 dyn Future<Output = Result<OwnedSemaphorePermit, tokio::sync::AcquireError>> + Send,
             >,
         >;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the waits are gathered only when every candidate member is at its concurrency limit"
+        )]
         let mut waits: Vec<(DestinationId, Wait)> = destinations
             .iter()
             .filter_map(|d| {
@@ -180,9 +191,14 @@ pub struct LabelBound {
 impl LabelBound {
     #[must_use]
     pub fn new(vocabulary: impl IntoIterator<Item = String>) -> Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane's lane vocabulary is gathered once per generation"
+        )]
+        let vocabulary = vocabulary.into_iter().collect();
         LabelBound {
-            reach: HashMap::new(),
-            vocabulary: vocabulary.into_iter().collect(),
+            reach: HashMap::default(),
+            vocabulary,
         }
     }
 
@@ -193,35 +209,48 @@ impl LabelBound {
         pool_words: impl IntoIterator<Item = String>,
         entries: impl IntoIterator<Item = String>,
     ) -> Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a walk's reachable words are gathered once per generation"
+        )]
         let entries: BTreeSet<String> = entries.into_iter().collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a walk's reachable words are gathered once per generation"
+        )]
         let pools = pool_words
             .into_iter()
             .chain(entries.iter().cloned())
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a walk's reachable words are keyed once per generation"
+        )]
         self.reach.insert(walked.to_string(), (pools, entries));
         self
     }
 
     #[must_use]
-    pub fn labels(
+    pub fn labels<'a>(
         &self,
         walked: &str,
-        own: (&str, &str),
-        stated: Option<&StatedLabels>,
-    ) -> (String, String, bool) {
+        own: (&'a str, &'a str),
+        stated: Option<&'a StatedLabels>,
+    ) -> (&'a str, &'a str, bool) {
         let Some(stated) = stated else {
-            return (own.0.to_string(), own.1.to_string(), false);
+            return (own.0, own.1, false);
         };
         let reach = self.reach.get(walked);
         let mut refused = false;
-        let mut take = |word: &Option<String>, ok: &dyn Fn(&str) -> bool, own: &str| match word {
-            Some(w) if ok(w) => w.clone(),
-            Some(_) => {
-                refused = true;
-                own.to_string()
-            }
-            None => own.to_string(),
-        };
+        let mut take =
+            |word: &'a Option<String>, ok: &dyn Fn(&str) -> bool, own: &'a str| match word {
+                Some(w) if ok(w) => w.as_str(),
+                Some(_) => {
+                    refused = true;
+                    own
+                }
+                None => own,
+            };
         let pool = take(
             &stated.pool,
             &|w| reach.is_some_and(|(pools, _)| pools.contains(w)),
@@ -241,9 +270,14 @@ impl LabelBound {
 impl WalkTelemetry {
     #[must_use]
     pub fn new(names: impl IntoIterator<Item = (DestinationId, String)>) -> Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the members' lane names are gathered once per configured walk"
+        )]
+        let names = names.into_iter().collect();
         WalkTelemetry {
-            names: names.into_iter().collect(),
-            depths: Mutex::new(HashMap::new()),
+            names,
+            depths: Mutex::new(HashMap::default()),
             bound: LabelBound::default(),
         }
     }
@@ -255,12 +289,12 @@ impl WalkTelemetry {
     }
 
     #[must_use]
-    pub fn labels(
-        &self,
-        pool: &str,
+    pub fn labels<'a>(
+        &'a self,
+        pool: &'a str,
         destination: DestinationId,
-        stated: Option<&StatedLabels>,
-    ) -> (String, String) {
+        stated: Option<&'a StatedLabels>,
+    ) -> (&'a str, &'a str) {
         let (pool, lane, refused) = self
             .bound
             .labels(pool, (pool, self.lane(destination)), stated);
@@ -302,7 +336,7 @@ impl Telemetry for WalkTelemetry {
         stated: Option<&StatedLabels>,
     ) {
         let (pool, lane) = self.labels(pool, destination, stated);
-        busbar_kernel::telemetry::upstream_attempt_on(&pool, &lane);
+        busbar_kernel::telemetry::upstream_attempt_on(pool, lane);
     }
 
     fn upstream_failure_stated(
@@ -313,7 +347,7 @@ impl Telemetry for WalkTelemetry {
         stated: Option<&StatedLabels>,
     ) {
         let (pool, lane) = self.labels(pool, destination, stated);
-        busbar_kernel::telemetry::upstream_failure_on(&pool, &lane, disposition);
+        busbar_kernel::telemetry::upstream_failure_on(pool, lane, disposition);
     }
 
     fn failover(&self, pool: &str, reason: &'static str) {
@@ -330,9 +364,18 @@ impl Telemetry for WalkTelemetry {
                 .depths
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let depth = depths.entry(pool.to_string()).or_insert(0);
-            *depth = depth.saturating_add(delta).max(0);
-            *depth
+            if let Some(depth) = depths.get_mut(pool) {
+                *depth = depth.saturating_add(delta).max(0);
+                *depth
+            } else {
+                let depth = 0_i64.saturating_add(delta).max(0);
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: a configured pool's depth cell is keyed once, on its first queued wait"
+                )]
+                depths.insert(pool.to_string(), depth);
+                depth
+            }
         };
         busbar_kernel::telemetry::pool_queued_on(pool, depth);
     }

@@ -677,7 +677,7 @@ async fn run(
     // Cold configuration, migration and recovery explicitly run without billable measurements.
     // Keep the scope on the actual future: synchronous Secret resolution and every resumed
     // native Store/Transport call inherit it before the durable measurement runtime exists.
-    let bootstrap = root::measurements::maintenance(async {
+    let bootstrap = Box::pin(root::measurements::maintenance(async {
         let _connector = root::connector::boot(
             LINKED_TRANSPORT_DOORS,
             &root::policy::client_settings(&base_cfg.limits),
@@ -992,7 +992,7 @@ async fn run(
             base_group_names,
             fresh_record_bootstrap,
         ))
-    })
+    }))
     .await;
     let Some((
         mut upgrade,

@@ -5,6 +5,7 @@
 use super::*;
 use axum::body::Body as AxumBody;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Uri, Version};
+use bytes::BytesMut;
 use http_body::{Body as _, Frame};
 
 impl http_body::Body for InboundBody {
@@ -75,8 +76,13 @@ pub(super) fn request(
         .filter(|a| !a.is_empty());
     let uri = match authority {
         Some(a) if !headers.contains_key(axum::http::header::HOST) => {
-            let scheme = if secured { "https" } else { "http" };
-            Uri::try_from(format!("{scheme}://{a}{target}")).ok()?
+            let scheme: &[u8] = if secured { b"https://" } else { b"http://" };
+            // The URI owns its bytes: spell them once, exactly sized, and hand them over uncopied.
+            let mut spelled = BytesMut::with_capacity(scheme.len() + a.len() + target.len());
+            spelled.extend_from_slice(scheme);
+            spelled.extend_from_slice(a.as_bytes());
+            spelled.extend_from_slice(target.as_bytes());
+            Uri::from_maybe_shared(spelled.freeze()).ok()?
         }
         _ => Uri::try_from(target).ok()?,
     };
@@ -140,7 +146,7 @@ pub(super) fn head_block(status: u16, headers: &HeaderMap, exact: Option<u64>) -
     {
         block.extend_from_slice(b"content-length");
         block.extend_from_slice(fields::SEPARATOR);
-        block.extend_from_slice(len.to_string().as_bytes());
+        let _ = std::io::Write::write_fmt(&mut block, format_args!("{len}"));
         block.extend_from_slice(fields::LINE_END);
     }
     block

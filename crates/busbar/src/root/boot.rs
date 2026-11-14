@@ -1535,10 +1535,10 @@ impl BookPreparation {
             tokio::select! {
                 biased;
                 _ = stop.wait_for(|stopping| *stopping) => Err("startup stopped during boot book preparation".to_owned()),
-                result = super::measurements::maintenance(self.run(app, store)) => result,
+                result = Box::pin(super::measurements::maintenance(self.run(app, store))) => result,
             }
         } else {
-            super::measurements::maintenance(self.run(app, store)).await
+            Box::pin(super::measurements::maintenance(self.run(app, store))).await
         };
         match result {
             Ok(book) => Ok((book, self.node_lease_task.take())),
@@ -1694,11 +1694,13 @@ pub async fn book(
     app: &busbar_kernel::state::App,
     store: &str,
 ) -> Result<super::durability::NodeBook, BookFailure> {
-    BookPreparation::new(app)
-        .map_err(BookFailure::unstarted)?
-        .finish(app, store)
-        .await
-        .map(|(book, _)| book)
+    Box::pin(
+        BookPreparation::new(app)
+            .map_err(BookFailure::unstarted)?
+            .finish(app, store),
+    )
+    .await
+    .map(|(book, _)| book)
 }
 
 /// Start the existing lease watcher before boot recovery, then transfer that
@@ -1711,7 +1713,7 @@ pub async fn book_with_lease_watch(
 ) -> Result<WatchedBook, BookFailure> {
     let mut preparation = BookPreparation::new(app).map_err(BookFailure::unstarted)?;
     preparation.lease_watch = Some(LeaseWatch { stop, failure });
-    preparation.finish(app, store).await
+    Box::pin(preparation.finish(app, store)).await
 }
 
 #[cfg(test)]

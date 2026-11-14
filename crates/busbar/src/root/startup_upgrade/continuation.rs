@@ -121,7 +121,7 @@ impl std::error::Error for PreparationFailure {}
 pub async fn prepare(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
     // The retained future may be polled by a task other than its creator. Scope its execution,
     // including appbuild's Secret/Store work before BookPreparation installs measurement custody.
-    crate::root::measurements::maintenance(prepare_inner(input)).await
+    Box::pin(crate::root::measurements::maintenance(prepare_inner(input))).await
 }
 
 async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
@@ -176,7 +176,7 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
         return Err(failed.refused(config::store_required()));
     };
     let store_module = store.module.clone();
-    let (mut app, rotation, limits) = match appbuild::build_app_from_config_with_store(
+    let (mut app, rotation, limits) = match Box::pin(appbuild::build_app_from_config_with_store(
         config,
         plugins,
         overlay.clone(),
@@ -187,7 +187,7 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
         &rules,
         Some(core.clone()),
         true,
-    )
+    ))
     .await
     {
         Ok(built) => built,
@@ -204,8 +204,13 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
     let app = Arc::new(app);
     failed.app = Some(app.clone());
     failed.limits = Some(limits);
-    match crate::root::boot::book_with_lease_watch(&app, &store_module, shutdown_rx, shutdown_tx)
-        .await
+    match Box::pin(crate::root::boot::book_with_lease_watch(
+        &app,
+        &store_module,
+        shutdown_rx,
+        shutdown_tx,
+    ))
+    .await
     {
         Ok((book, node_lease_task)) => {
             failed.book = Some(book);
@@ -403,8 +408,11 @@ impl StartupContinuation {
             state.validating = Some(Box::pin(async move {
                 let mut candidate = candidate.lock().await;
                 loop {
-                    match crate::root::measurements::maintenance(validate(&mut candidate, &binding))
-                        .await
+                    match Box::pin(crate::root::measurements::maintenance(validate(
+                        &mut candidate,
+                        &binding,
+                    )))
+                    .await
                     {
                         Err(ValidationError::Retryable(_)) => {
                             // The same validator and serving candidate retain custody while

@@ -182,6 +182,8 @@ busbar-transport-webrtc = { workspace = true, optional = true }
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
 arc-swap = { workspace = true }
+# The shared fast-hash aliases (foldhash::HashMap / HashSet) the bad-pattern rules point at.
+foldhash = { workspace = true }
 # Behind `root-admin` only. The root-driven admin surface wraps the router the operations are already
 # mounted on and calls it as the tower service it is, so the inner surface answers exactly as it did
 # and no status, header or byte is re-derived on the way out.
@@ -1045,6 +1047,7 @@ busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-stre
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
 busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "e6280e69ee50b098824fbbe64d991b06d1cba80f" }
 arc-swap = "1"
+foldhash = "0.2"
 async-trait = "0.1"
 axum = "0.8"
 # 0.22, the line axum, pbjson and oauth-as already ship: one base64 in the binary.
