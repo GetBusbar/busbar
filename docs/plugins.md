@@ -645,7 +645,7 @@ get code executed, and a compromised or replayed plugin must not load.
    built-in `env:` / `file:` secret references. Authorized native grammar/check callbacks may run;
    dropped callbacks require the exact operator archive pin described above. It does not download plugins, open a Store,
    recover its admin config overlay, or prove plugin `open`/readiness or backend reachability.
-   Boot recovers the overlay from the base Store (unless config is locked or safe mode skips
+   Boot recovers the overlay from the base Store (unless config is locked or `--ignore-overlay` skips
    recovery), validates the resulting effective configuration, and opens its dependencies. A
    successful offline validation therefore does not guarantee that the plugin half of boot succeeds.
 

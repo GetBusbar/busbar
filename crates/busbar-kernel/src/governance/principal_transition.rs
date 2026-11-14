@@ -1233,7 +1233,7 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
     Ok(head)
 }
 
-/// Early anchor-store fence, including safe mode, before effective config is recovered.
+/// Early anchor-store fence, including --ignore-overlay, before effective config is recovered.
 fn guard_rows(
     rows: &dyn RecordRows,
     store_sha256: &str,

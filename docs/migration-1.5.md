@@ -492,7 +492,7 @@ One-time migration removes the old selector while preserving `config.locked` and
 state separately. A read-only config directory has no effect on Store persistence. Set `config.locked: true` to refuse runtime
 mutations, or use a Store with the required atomic conditional-record support. Failed Store
 persistence refuses the mutation before generation publication; failed overlay recovery refuses
-boot unless explicitly quarantined with `--safe-mode`. See [current operations](operations.md#config-mutability-locked--overlay).
+boot unless explicitly ignored (left untouched) with `--ignore-overlay`. See [current operations](operations.md#config-mutability-locked--overlay).
 
 1.5.3 also moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
 config mutability explicit and **durable by default**. The file-overlay examples below describe

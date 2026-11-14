@@ -248,10 +248,10 @@ impl NativeOverlay {
             OverlayReadState::Absent => Ok(None),
             OverlayReadState::Loaded(doc) => Ok(Some(*doc)),
             OverlayReadState::Unreadable => Err(
-                "config overlay in Store is unreadable; use --safe-mode to quarantine it".into(),
+                "config overlay in Store is unreadable; use --ignore-overlay to boot on base config without it".into(),
             ),
             OverlayReadState::VersionTooNew(version) => Err(format!(
-                "config overlay version {version} is newer than this binary; use --safe-mode to quarantine it"
+                "config overlay version {version} is newer than this binary; use --ignore-overlay to boot on base config without it"
             )),
         }
     }

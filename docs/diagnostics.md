@@ -2000,16 +2000,16 @@ A budget flush tick could not persist one or more group-budget buckets to the st
 
 **What to do:** Investigate the governance store if the failure count stays non-zero across ticks — a transient store hiccup self-heals on the next flush. Spend is retained and re-tried, so budgets are not lost, only delayed.
 
-<a id="safe-mode-overlay-quarantined"></a>
-### BUSBAR-8012 — SAFE MODE: config overlay not merged (running on base config.yaml alone)
+<a id="overlay-ignored"></a>
+### BUSBAR-8012 — IGNORE OVERLAY: config overlay not merged (running on base config alone)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
-- **Slug:** `safe-mode-overlay-quarantined`
+- **Slug:** `overlay-ignored`
 
-busbar was booted with `--safe-mode`, so the persisted config overlay (API-registered hooks) was NOT merged and busbar is running on the operator-owned base config.yaml alone. This is the intentional escape hatch for an applied hook that harms traffic and re-applies itself every boot. The overlay file is untouched, not deleted.
+busbar was booted with `--ignore-overlay`, so the persisted config overlay (API-registered hooks) was NOT merged and busbar is running on the operator-owned base config.yaml/providers.yaml alone. This is the intentional escape hatch for an applied hook that harms traffic and re-applies itself every boot. The overlay in the Store is untouched, not deleted. `GET /api/v1/admin/info` reports `overlay_ignored: true`.
 
-**What to do:** This is an operator-requested state. Repair or remove the offending overlay entry, then boot WITHOUT `--safe-mode` to re-apply the overlay. Until then, API-registered hooks are not in effect.
+**What to do:** Operator-requested state. Repair or remove the offending overlay entry, then boot WITHOUT `--ignore-overlay`. An admin reload, apply or config write in this process re-merges the Store overlay and persists to it.
 
 <a id="provider-api-key-unresolved"></a>
 ### BUSBAR-8013 — Provider api_key did not resolve (degraded to an empty key) — RETIRED, see BUSBAR-8020 *(retired)*

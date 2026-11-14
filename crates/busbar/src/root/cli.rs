@@ -4,7 +4,7 @@
 use busbar_kernel::{config, config_validate, diagnostics};
 use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG};
 
-use crate::{build_info_line, safe_mode_requested};
+use crate::{build_info_line, ignore_overlay_requested};
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_FAILURE: i32 = 1;
@@ -90,7 +90,7 @@ ENVIRONMENT:
     RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:
-    --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
+    --ignore-overlay    boot on base config.yaml alone (the Store overlay is left untouched)
 ";
 
 const HELP_ENDPOINTS_HEAD: &str = "
@@ -222,6 +222,11 @@ fn ordinary_cli_flags() -> Option<i32> {
             return Some(EXIT_USAGE);
         }
     }
+    const REMOVED_SAFE_MODE: &str = "--safe-mode";
+    if supplied.iter().any(|a| a == REMOVED_SAFE_MODE) {
+        eprintln!("busbar: unrecognized argument '{REMOVED_SAFE_MODE}'. Try 'busbar --help'.");
+        return Some(EXIT_USAGE);
+    }
     let mut args = supplied.into_iter();
 
     let command = loop {
@@ -230,7 +235,7 @@ fn ordinary_cli_flags() -> Option<i32> {
             Some(OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS) => {
                 args.next();
             }
-            Some(crate::OPTION_SAFE_MODE) => {}
+            Some(crate::OPTION_IGNORE_OVERLAY) => {}
             Some(a)
                 if a.starts_with(OPTION_CONFIG_ASSIGNMENT)
                     || a.starts_with(OPTION_PROVIDERS_ASSIGNMENT) => {}
@@ -304,12 +309,12 @@ fn ordinary_cli_flags() -> Option<i32> {
 pub(crate) fn validate_config_command() -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
-    let safe_mode = safe_mode_requested(std::env::args());
+    let ignore_overlay = ignore_overlay_requested(std::env::args());
 
     let mut loaded = match load_config_from_disk(
         &config_path,
         providers_override.as_deref(),
-        safe_mode,
+        ignore_overlay,
         config::EnvSubst::Lenient,
     ) {
         Ok(l) => l,

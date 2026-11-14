@@ -1209,6 +1209,7 @@ each dialect translates, field by field, is listed in the generated
 - 1.6.0 Changed: a streamed chat request whose `stream_options` is not a JSON object (a string, number, boolean or array) is refused with a 400 naming the field. 1.5.5 forwarded it to the upstream unchanged.
 - 1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.
 - 1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.
+- `--safe-mode` is renamed `--ignore-overlay` (no alias; `--safe-mode` is refused anywhere on the command line); `GET /api/v1/admin/info` reports `overlay_ignored: true` when the process was booted with it.
 
 ### Fixed
 
