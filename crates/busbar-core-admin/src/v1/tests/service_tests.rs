@@ -436,6 +436,27 @@ fn catalog_hit_reads_no_archive_bytes() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Path confinement: an archive-named symlink planted in the plugins dir points outside it. The
+/// fingerprint must neither stat nor read its target, so the dir fingerprints as if empty.
+#[cfg(unix)]
+#[test]
+fn catalog_fingerprint_never_follows_an_archive_name_that_links_outside() {
+    let dir = tmp_plugins_dir("fingerprint-symlink-escape");
+    let outside = tmp_plugins_dir("fingerprint-symlink-target");
+    std::fs::write(outside.join("secret"), b"secret").unwrap();
+    let fingerprint =
+        || plugins_dir_fingerprint(&dir, &|name| name.ends_with(".tar.gz"), 1024).unwrap();
+    let empty = fingerprint();
+    std::os::unix::fs::symlink(outside.join("secret"), dir.join("evil.tar.gz")).unwrap();
+    assert_eq!(
+        fingerprint(),
+        empty,
+        "a symlinked archive name is not an archive the plugins dir holds"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::remove_dir_all(outside).unwrap();
+}
+
 #[test]
 fn validate_plugin_filename_rejects_each_escape_form_independently() {
     assert!(

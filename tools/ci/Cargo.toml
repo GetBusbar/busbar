@@ -2,19 +2,25 @@
 name = "busbar-ci"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.98"
 publish = false
+description = "Busbar CI controller (security-scans, native bootstrap, retention, native-qualify, architecture). Not a product crate."
+license = "Apache-2.0"
 
-# This controller is not a product crate and must never enter the shipping graph.
+# CI tooling is its own workspace with its own lockfile: the root product
+# workspace, cargo deny/vet and the architecture checks never include it, and
+# it must never enter the shipping graph.
 [workspace]
 
-# Native bootstrap modules are std-only: building on a fresh one-use worker
-# needs no registry, network or vendored source.
+# Std-only: building it needs no registry, network or vendored source.
 [dependencies]
 
-[profile.dev]
-debug = 0
-# The controller hashes ~1.5 GB of pinned archives per job; unoptimized
-# SHA-256 runs ~10x slower than the few seconds optimization costs to build.
-opt-level = 3
+# Every job runs the static release binary pinned in controller.pin (or its
+# offline reproducible rebuild). The native controller hashes ~1.5 GB of pinned
+# archives per job, so it is always optimized. Unwinding is kept so cleanup
+# guards (subordinate id restoration, temporary roots) run even on a panic.
+[profile.release]
 codegen-units = 16
+debug = 0
 incremental = false
+strip = true

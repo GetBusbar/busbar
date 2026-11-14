@@ -34,6 +34,7 @@ pub mod civil;
 pub mod codec;
 pub mod config;
 pub mod config_time;
+pub mod confined_path;
 pub mod conn;
 pub mod count;
 pub mod dest;
