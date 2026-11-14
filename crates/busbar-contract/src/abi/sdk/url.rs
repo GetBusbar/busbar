@@ -74,14 +74,15 @@ pub fn basic_authorization(
         return None;
     }
 
-    let mut user_pass = Zeroizing::new(Vec::with_capacity(
-        username.len() + 1 + password.as_ref().map_or(0, |p| p.len()),
-    ));
-    user_pass.extend_from_slice(&username);
-    user_pass.push(b':');
-    if let Some(password) = &password {
-        user_pass.extend_from_slice(password);
-    }
+    // One exact allocation (`concat`): the wiping buffer never grows (LINT-RULES LR-117).
+    let user_pass = Zeroizing::new(
+        [
+            &username[..],
+            b":",
+            password.as_ref().map_or(&[][..], |p| &p[..]),
+        ]
+        .concat(),
+    );
     #[cfg(test)]
     tests::watch_scratch(&user_pass);
     let encoded = Zeroizing::new(STANDARD.encode(&*user_pass));
@@ -150,7 +151,9 @@ pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
         tests::watch_scratch(part.as_bytes());
     }
     if quoted {
-        let mut expanded = Zeroizing::new(Vec::with_capacity(parts.len() * 2));
+        // Exact capacity, so it never reallocates; the strings' own blocks never move, and the
+        // list is wiping again once it replaces `parts` (LINT-RULES LR-117).
+        let mut expanded = Vec::with_capacity(parts.len() * 2);
         for part in parts.iter_mut() {
             let escaped = Zeroizing::new(format!("{part:?}"));
             #[cfg(test)]
@@ -158,7 +161,7 @@ pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
             expanded.push(std::mem::take(part));
             expanded.push(escaped[1..escaped.len() - 1].to_string());
         }
-        parts = expanded;
+        parts = Zeroizing::new(expanded);
     }
     parts.retain(|p| !p.is_empty());
     parts.sort_by_key(|p| std::cmp::Reverse(p.len()));
