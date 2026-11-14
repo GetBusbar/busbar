@@ -14,8 +14,11 @@ impl GovState {
     ) -> RecordStoreResult<Vec<RecoveryEvent>> {
         let mut events = Vec::new();
         let mut cell = BudgetCell::default();
-        cell.accrue_raw(&snapshot.lane, snapshot.era(), &snapshot.units)
-            .map_err(|e| RecordStoreError(e.to_string()))?;
+        // No counts, no row: a row in the cell is a hit on its lane (#42).
+        if has_units(&snapshot.units) {
+            cell.accrue_raw(&snapshot.lane, snapshot.era(), &snapshot.units)
+                .map_err(|e| RecordStoreError(e.to_string()))?;
+        }
         let plain = ExactUsageDelta::of(&cell, false);
         let dated = ExactUsageDelta::of(&cell, true);
         for target in &snapshot.targets {
@@ -306,7 +309,11 @@ impl GovState {
             if cell.window_start < *window {
                 cell.roll(*window);
             }
-            cell.accrue_raw(lane, era, units)?;
+            // No counts, no row: a row in the cell is a hit on its lane (#42). An
+            // exhausted pool unit reports the empty lane with no counts.
+            if has_units(units) {
+                cell.accrue_raw(lane, era, units)?;
+            }
             fn finish(
                 cell: &mut BudgetCell,
                 lane: &str,
