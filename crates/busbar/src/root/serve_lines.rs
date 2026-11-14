@@ -9,26 +9,8 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use super::{DoorRequest, Served};
 
-pub fn line_carrier(
-    transports: &[crate::root::linked::LinkedTransport],
-) -> Result<Option<&'static str>, String> {
-    let mut lines = transports.iter().flat_map(|t| (t.lines)());
-    let one = lines.next();
-    match (one, lines.next()) {
-        (Some(one), Some(other)) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when two transports claim the first line"
-            )]
-            let refusal = format!(
-                "the linked transport claims `{one}` and `{other}` both open a session on their first \
-                 line, and the process's own stdin/stdout carries one"
-            );
-            Err(refusal)
-        }
-        (one, _) => Ok(one),
-    }
-}
+pub(crate) use crate::root::off_path::serve_lines::session;
+pub use crate::root::off_path::serve_lines::{env_credential, line_carrier};
 
 fn installed() -> &'static Result<Option<&'static str>, String> {
     static CARRIER: std::sync::OnceLock<Result<Option<&'static str>, String>> =
@@ -44,20 +26,6 @@ pub fn carrier() -> Option<&'static str> {
 #[must_use]
 pub fn refusal() -> Option<&'static str> {
     installed().as_ref().err().map(String::as_str)
-}
-
-#[must_use]
-pub fn env_credential(plane: &str, carrier: &str) -> String {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the credential's variable name is spelled once, when the stdio session opens"
-    )]
-    let name = format!(
-        "BUSBAR_{}_{}_CREDENTIAL",
-        plane.to_ascii_uppercase(),
-        carrier.to_ascii_uppercase()
-    );
-    name
 }
 
 #[must_use]
@@ -78,116 +46,6 @@ pub(crate) fn line_claim(served: &Served) -> Option<(usize, u32)> {
 
 pub fn refuse(plane: &str, carrier: &str, sentence: &str) {
     eprintln!("busbar: {plane} {carrier} serve refused to start: {sentence}");
-}
-
-pub(crate) async fn session(
-    app: Arc<busbar_kernel::state::App>,
-    plane: &str,
-    carrier: &str,
-    audience: Option<&str>,
-    credential: Option<&str>,
-) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
-    let env = env_credential(plane, carrier);
-
-    let Some(resource) = audience else {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when the plane states no audience"
-        )]
-        let refusal = format!(
-            "this deployment's `{plane}:` block states no canonical resource, so a {carrier} session \
-             has no audience to be bound to."
-        );
-        return Err(refusal);
-    };
-
-    if let Some(token) = credential {
-        use busbar_kernel::auth::audience::Binding;
-        match busbar_kernel::auth::audience::inspect_bearer(token, resource) {
-            Binding::Deferred | Binding::Bound => {}
-            Binding::Mismatch => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal text is spelled only when the credential's audience mismatches"
-                )]
-                let refusal = format!(
-                    "the credential in {env} carries an audience that does not identify this \
-                     resource. Request a token whose `resource` (RFC 8707) is this deployment's \
-                     `{plane}.canonical_uri`."
-                );
-                return Err(refusal);
-            }
-            Binding::Opaque => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal text is spelled only when the credential's audience is unreadable"
-                )]
-                let refusal = format!(
-                    "the credential in {env} carries no readable audience, so it cannot be shown \
-                     to have been issued for this resource. A busbar-signed key or a JWT access \
-                     token bound to `{plane}.canonical_uri` is required."
-                );
-                return Err(refusal);
-            }
-        }
-        if busbar_kernel::auth::dpop::refuse_bound_session(token, app.oauth_as.is_none()) {
-            return Err(format!(
-                "the credential in {env} is DPoP-bound (cnf.jkt), and a {carrier} session cannot \
-                 carry a DPoP proof (RFC 9449), so it is refused. Set {env} to an unbound token."
-            ));
-        }
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the stdio session is admitted once, when it opens"
-    )]
-    let admitted = busbar_kernel::auth::admit::admit_session(
-        app,
-        credential.map(str::to_string),
-        resource.to_string(),
-    );
-    let admitted = admitted.await;
-    match admitted {
-        Ok((_principal, gov)) => {
-            if !gov.is_governed() {
-                eprintln!(
-                    "[warn] {plane} {carrier} session is UNGOVERNED: no enforcement key is bound, so no \
-                     budget applies and audit rows attribute to `anonymous`. Configure \
-                     `auth.chain` and set {env} to bind the session to a key."
-                );
-            }
-            Ok(gov)
-        }
-        Err(busbar_kernel::auth::IdentityRefusal::Denied) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when the auth chain denies the session"
-            )]
-            let refusal = if credential.is_none() {
-                format!(
-                "this deployment's `auth.chain` is configured, so an unauthenticated {carrier} session \
-                 is refused exactly as an unauthenticated POST is. Set {env} to a credential the \
-                 chain admits (audience-bound to `{plane}.canonical_uri`)."
-                )
-            } else {
-                format!("the credential in {env} was refused by the auth chain.")
-            };
-            Err(refusal)
-        }
-        Err(busbar_kernel::auth::IdentityRefusal::NoGrant) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when the credential earns no key"
-            )]
-            let refusal = format!(
-            "the credential in {env} authenticated, but its roles earned no enforcement key under \
-             `role_bindings`, and an ungoverned admission would widen its access. The same request \
-             over HTTP answers `insufficient_scope`."
-            );
-            Err(refusal)
-        }
-    }
 }
 
 pub struct LineCaller<R> {
@@ -346,20 +204,19 @@ where
         );
         return 1;
     };
-    // busbar:expect(bp::clone_alloc, reason = "boot: the stdio session names its plane once, when it opens")
-    let instance = served.planes[plane].instance.clone();
+    let instance = served.planes[plane].instance.as_str();
     let target = served.planes[plane].snapshot.claims[claim as usize]
         .target
         .clone();
     let audience = served.planes[plane].snapshot.audience.clone();
     let kernel = Arc::clone(&served.planes[plane].kernel);
     let driver = Arc::clone(&served.planes[plane].driver);
-    let credential = std::env::var(env_credential(&instance, carrier))
+    let credential = std::env::var(env_credential(instance, carrier))
         .ok()
         .filter(|c| !c.is_empty());
     let gov = match session(
         app.load(),
-        &instance,
+        instance,
         carrier,
         audience.as_deref(),
         credential.as_deref(),
@@ -368,7 +225,7 @@ where
     {
         Ok(gov) => gov,
         Err(sentence) => {
-            refuse(&instance, carrier, &sentence);
+            refuse(instance, carrier, &sentence);
             return 1;
         }
     };
@@ -389,18 +246,7 @@ where
         busbar_kernel::auth::CallerCredential::adopted(busbar_contract::Secret::new(c.into_bytes()))
     });
     run_io(carrier, reader, writer, stop, move |caller| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the session's principal is spelled once, when the stdio session opens"
-        )]
-        let principal = gov.key().map_or_else(
-            || {
-                busbar_contract::auth::AuthPrincipal(None)
-                    .actor_id()
-                    .to_string()
-            },
-            |k| k.id.clone(),
-        );
+        let principal = crate::root::off_path::serve_lines::session_principal(&gov);
         let sink = Arc::clone(&caller);
         let session = std::num::NonZeroU64::new(
             driver
@@ -521,11 +367,7 @@ where
         while units.try_join_next().is_some() {}
     }
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the process lifecycle reads the clock once, when the stdio session ends, to bound its drain"
-    )]
-    let deadline = tokio::time::Instant::now() + busbar_kernel::detached::DETACHED_DRAIN_GRACE;
+    let deadline = crate::root::off_path::serve_lines::drain_deadline();
     let ended = if writer_ended {
         let ended = units.len();
         units.abort_all();

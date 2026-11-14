@@ -13,7 +13,7 @@ use busbar_kernel::audit::auditlog::{record_plugin_refusal, PluginRefusal};
 use crate::root::loader::observe::{first_party, first_party_series, BindRefusal, PluginObserver};
 
 /// Each plugin's observation owner and its shared name, keyed by that name.
-type Owners = HashMap<Arc<str>, (ObservationOwner, Arc<str>)>;
+pub(crate) type Owners = HashMap<Arc<str>, (ObservationOwner, Arc<str>)>;
 
 struct Observer {
     policy: KernelPluginObserver,
@@ -26,11 +26,7 @@ impl Observer {
         if let Some(known) = owners.get(plugin) {
             return known.clone();
         }
-        // busbar:expect(bp::into_alloc, reason = "config: a plugin's name is spelled once, on its first observation, then shared")
-        let name: Arc<str> = Arc::from(plugin);
-        let known = (ObservationOwner::default(), name.clone());
-        owners.insert(name, known.clone());
-        known
+        crate::root::cold::first_observed(&mut owners, plugin)
     }
 }
 
@@ -65,11 +61,7 @@ impl PluginObserver for Observer {
     fn refused(&self, kind: &str, instance: &str, refusal: BindRefusal<'_>) {
         match refusal {
             BindRefusal::Need { need, reason } => {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal code is spelled only when a plugin's bind is refused"
-                )]
-                let code = format!("need.{need}.{reason}");
+                let code = crate::root::cold::need_refusal_code(need, reason);
                 record_plugin_refusal(PluginRefusal::Need, kind, instance, &code);
             }
             BindRefusal::Open { code } => {
