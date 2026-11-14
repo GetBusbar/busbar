@@ -33,9 +33,8 @@ impl<T> PlainKind for &Probe<T> {}
 /// the type must not be `Clone` at all: a reintroduced per-open copy is caught here.
 #[test]
 fn declared_need_is_not_clone() {
-    struct Plain;
     let cloneable = &Probe::<String>(std::marker::PhantomData);
-    let plain = &Probe::<Plain>(std::marker::PhantomData);
+    let plain = &Probe::<std::sync::Mutex<()>>(std::marker::PhantomData);
     assert!(
         cloneable.is_clone() && !plain.is_clone(),
         "control: the probe tells a Clone type from one that is not"
