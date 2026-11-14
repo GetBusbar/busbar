@@ -13,11 +13,14 @@ use rustls::client::danger::HandshakeSignatureValid;
 use rustls::client::WebPkiServerVerifier;
 use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
 use rustls::server::danger::ClientCertVerifier;
-use rustls::server::{ClientCertVerifierBuilder, ProducesTickets, WebPkiClientVerifier};
+use rustls::server::{ClientCertVerifierBuilder, WebPkiClientVerifier};
 use rustls::{ClientConfig, ConfigBuilder, DigitallySignedStruct, RootCertStore, ServerConfig};
 use rustls_pki_types::{CertificateDer, SignatureVerificationAlgorithm};
 
 use crate::BACKEND;
+
+mod tickets;
+pub use tickets::{ListenerTickets, TICKET_MAX_AGE};
 
 /// The backend refused a TLS config or component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,11 +167,6 @@ pub fn verify_tls13_signature(
     dss: &DigitallySignedStruct,
 ) -> Result<HandshakeSignatureValid, rustls::Error> {
     rustls::crypto::verify_tls13_signature(message, cert, dss, &signature_algorithms())
-}
-
-/// A session-ticket producer (one per listener: one key domain each).
-pub fn ticketer() -> Result<Arc<dyn ProducesTickets>, TlsRefused> {
-    b::ticketer().map_err(refused)
 }
 
 /// The webpki certificate signature algorithms.
