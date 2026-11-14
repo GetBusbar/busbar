@@ -1189,6 +1189,7 @@ impl PlaneCalls for Double {
             .lock()
             .unwrap()
             .push((body.clone(), rewrite.clone()));
+        self.project_flags.lock().unwrap().push(input.flags);
         if (target == b"/faults-rewrite" && !rewrite.is_empty()) || target == b"/unparseable" {
             out.head.outcome = RawOutcome::of(Outcome::Fault);
             out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
@@ -2790,6 +2791,7 @@ impl busbar_kernel::plane_driver::HookBinder for GateFirst {
                     send_prompt: false,
                     send_user: false,
                     on_empty: busbar_kernel::config::PolicyOnError::Reject,
+                    content_blind: false,
                 },
             )],
             rewrites: Vec::new(),
