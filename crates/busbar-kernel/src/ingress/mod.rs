@@ -60,60 +60,6 @@ fn pool_scope_suffix(pool: &Option<String>) -> String {
     }
 }
 
-pub fn admit_check(
-    app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
-    proto: &str,
-    pool: &str,
-    charged_at: u64,
-) -> Result<(Option<crate::governance::AdmitGrant>, Option<String>), Box<Response>> {
-    let (Some(g), Some(key)) = (&app.governance, &gov.key) else {
-        return Ok((None, None));
-    };
-
-    let mut effective: Option<String> = None;
-    let mut visited: Vec<String> = Vec::new();
-    let blocked = loop {
-        let attempt_pool = effective.as_deref().unwrap_or(pool);
-        match g.try_admit(&app.cost, key, attempt_pool, charged_at) {
-            Ok(grant) => return Ok((Some(grant), effective)),
-            Err(crate::governance::LimitBlocked::Limit {
-                downgrade_to: Some(to),
-                group,
-                ..
-            }) if !visited.iter().any(|v| v == &to)
-                && visited.len() < app.engine_tables_view().pools().len()
-                && app
-                    .engine_tables_view()
-                    .pools()
-                    .iter()
-                    .any(|(n, _)| *n == to.as_str())
-                && pool_authorized(gov, &to, proto).is_none()
-                && fallback_pools_authorized(app, gov, &to, proto).is_none() =>
-            {
-                tracing::info!(key_id = %key.id, from = attempt_pool, to = %to, group = %group,
-                    "governance: budget exhausted; downgrading pool (on_exhaust: downgrade)");
-                visited.push(to.clone());
-                effective = Some(to);
-            }
-            Err(blocked) => break blocked,
-        }
-    };
-    {
-        tracing::info!(key_id = %key.id, blocked = ?blocked, "governance: limit bucket blocked admission");
-        let (status, kind, message, retry_after) = limit_refusal(proto, &blocked);
-        let mut resp = ingress_error(proto, status, kind, &message);
-
-        if let Some(retry) = retry_after {
-            if let Ok(hv) = axum::http::HeaderValue::from_str(&retry.to_string()) {
-                resp.headers_mut()
-                    .insert(axum::http::header::RETRY_AFTER, hv);
-            }
-        }
-        Err(Box::new(resp))
-    }
-}
-
 #[must_use]
 pub fn limit_refusal(
     proto: &str,
@@ -199,19 +145,6 @@ pub fn limit_refusal(
 }
 
 #[allow(private_interfaces)]
-pub fn governance_guard(
-    app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
-    proto: &'static str,
-    pool: &str,
-    started: Instant,
-    charged_at: u64,
-) -> Result<(Option<crate::governance::AdmitGrant>, Option<String>), Box<Response>> {
-    destination_guard(app, gov, proto, pool, started, charged_at)?;
-    admission_door(app, gov, proto, pool, started, charged_at)
-}
-
-#[allow(private_interfaces)]
 pub fn destination_guard(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
@@ -253,24 +186,6 @@ pub fn destination_guard(
         )));
     }
     Ok(())
-}
-
-#[allow(private_interfaces)]
-pub fn admission_door(
-    app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
-    proto: &'static str,
-    pool: &str,
-    started: Instant,
-    charged_at: u64,
-) -> Result<(Option<crate::governance::AdmitGrant>, Option<String>), Box<Response>> {
-    let label = pool_label(app, pool);
-    match admit_check(app, gov, proto, pool, charged_at) {
-        Err(resp) => Err(Box::new(finish_rejected(
-            app, gov, proto, label, started, charged_at, *resp,
-        ))),
-        Ok(admitted) => Ok(admitted),
-    }
 }
 
 pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
@@ -421,14 +336,6 @@ pub mod dispatch;
 pub mod observe;
 
 pub(crate) use dispatch::protocol_dispatch;
-
-#[must_use]
-pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
-    match model_not_found_message {
-        Some(shaped) => shaped.to_string(),
-        None => format!("The model '{model}' does not exist or you do not have access to it."),
-    }
-}
 
 #[cfg(test)]
 pub fn percent_decode(s: &str) -> String {

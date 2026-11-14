@@ -2201,35 +2201,6 @@ impl KernelServices {
             .unwrap_or_default()
     }
 
-    pub async fn purge_records_before(
-        &self,
-        instance: &str,
-        kind: &str,
-        before: u64,
-    ) -> Result<
-        (crate::host_records_async::HistoryOutcome, u64),
-        crate::host_records_async::HistoryError,
-    > {
-        use crate::host_records_async::{AsyncHistory, HistoryError};
-        if kind == crate::host_record_bootstrap::RECEIPT_SCHEMA.as_str()
-            || kind == crate::governance::principal_transition::SCHEMA.as_str()
-            || self.conditional_kind(instance, kind)
-        {
-            return Err(HistoryError::Unauthorized);
-        }
-        let store = self.persistence.get().ok_or(HistoryError::Access(
-            crate::persistence::facade::AccessError::Closed,
-        ))?;
-        let facts = self
-            .lock_instances()
-            .get(instance)
-            .cloned()
-            .ok_or(HistoryError::Unauthorized)?;
-        AsyncHistory::admitted(Arc::clone(store), instance, &facts)?
-            .purge(kind, before)
-            .await
-    }
-
     fn start_flush(&self, records: &Records, pool: &dyn Offload) {
         let unrun = Unrun(Some(Arc::clone(&self.batcher)));
         let pending = Arc::clone(&self.pending);
