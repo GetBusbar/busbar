@@ -454,37 +454,45 @@ fn plugins_dir_fingerprint(
     is_tarball: &dyn Fn(&str) -> bool,
     max_bytes: u64,
 ) -> std::io::Result<u64> {
+    use busbar_contract::confined_path::{ConfinedPathError, ConfinedRoot, TrustedPath};
     let mut entries = Vec::new();
-    match std::fs::read_dir(dir) {
-        Ok(rd) => {
-            for entry in rd {
-                let entry = entry?;
-                let name = entry.file_name();
-                let file = name.to_str().ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "non-UTF-8 plugin filename",
-                    )
-                })?;
-                if !is_tarball(file) {
-                    continue;
-                }
-                let meta = entry.path().metadata()?;
-                if !meta.is_file() {
-                    continue;
-                }
-                let identity = match archive_stat_key(&meta) {
-                    Some(stat) => stat,
-                    None => {
-                        let bytes = operations::read_archive_bounded(&entry.path(), max_bytes)?;
-                        format!("sha256:{}", busbar_contract::redacted::sha256_hex(&bytes))
-                    }
-                };
-                entries.push((name, identity));
+    // The plugins dir itself is operator configuration; every name listed in it is confined to
+    // it, so an archive-named link planted there is never stat'ed or read through.
+    let root = match ConfinedRoot::new(TrustedPath::internal(dir).as_path()) {
+        Ok(root) => Some(root),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(root) = root {
+        for entry in std::fs::read_dir(root.as_path())? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let file = name.to_str().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "non-UTF-8 plugin filename")
+            })?;
+            // `file_type` does not follow links: a link, dir or special file is not an archive.
+            if !is_tarball(file) || !entry.file_type()?.is_file() {
+                continue;
             }
+            // `DirEntry::metadata` does not follow links either (no stat of a link target).
+            let meta = entry.metadata()?;
+            if !meta.is_file() {
+                continue;
+            }
+            let identity = match archive_stat_key(&meta) {
+                Some(stat) => stat,
+                None => {
+                    let archive = match root.open(file) {
+                        Ok(archive) => archive,
+                        Err(ConfinedPathError::Symlink | ConfinedPathError::Escapes) => continue,
+                        Err(e) => return Err(e.into()),
+                    };
+                    let bytes = operations::read_bounded(archive, max_bytes)?;
+                    format!("sha256:{}", busbar_contract::redacted::sha256_hex(&bytes))
+                }
+            };
+            entries.push((name, identity));
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
     }
     entries.sort();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

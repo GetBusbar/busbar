@@ -94,6 +94,9 @@ pub fn verified_tool_metadata(
             Ok(n)
         }
     }
+    // Internal: the controller-chosen download path of the pinned tool archive. Its
+    // member names are only map keys here; nothing is extracted to disk.
+    let archive = crate::confined::Trusted::internal(archive).as_path();
     let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
     let mut reader = tar::Reader::new(Hashing {
         inner: std::io::BufReader::with_capacity(1 << 20, file),
@@ -196,6 +199,9 @@ impl ServiceRow {
 }
 
 pub fn service_metadata(archive: &Path, row: &ServiceRow) -> Result<Value> {
+    // Internal: the controller-chosen download path of a pinned service archive
+    // (`stage_services`). Member names are only index keys; nothing is extracted.
+    let archive = crate::confined::Trusted::internal(archive).as_path();
     let members = tar::index(archive)?;
     let member = |checksum: &str| -> Result<&(u64, tar::Entry)> {
         members
