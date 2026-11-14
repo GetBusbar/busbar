@@ -11,6 +11,7 @@ type Slot = Arc<OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>>;
 pub struct AppCredentials(Slot);
 
 impl AppCredentials {
+    #[cfg(test)]
     #[must_use]
     pub fn new(handle: Arc<busbar_kernel::state::AppHandle>) -> Self {
         let slot = OnceLock::new();
@@ -32,6 +33,7 @@ impl LateHandle {
         let _ = self.0.set(Arc::downgrade(&handle));
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn is_set(&self) -> bool {
         self.0.get().and_then(std::sync::Weak::upgrade).is_some()

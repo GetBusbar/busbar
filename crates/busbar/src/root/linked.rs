@@ -259,13 +259,14 @@ pub struct RootUnit {
 
     pub on_config: Option<fn(&busbar_kernel::config::limits::LimitsResolved)>,
 
+    #[cfg(test)]
     pub opens_book: bool,
 
+    #[cfg(any(test, distribution_root))]
     pub on_book: Option<fn(&BookCtx<'_>)>,
-
-    pub end_post: Option<fn() -> std::sync::Arc<dyn busbar_kernel::plane_driver::EndPost>>,
 }
 
+#[cfg(any(test, distribution_root))]
 pub struct BookCtx<'a> {
     pub book: &'a crate::root::durability::NodeBook,
 
@@ -680,6 +681,7 @@ pub fn declared_diagnostics(
     Ok(declared)
 }
 
+#[cfg(test)]
 pub fn linked_declared_diagnostics(
     linked: &Linked,
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],

@@ -1616,6 +1616,7 @@ async fn run(
         ));
     }
 
+    #[cfg(distribution_root)]
     if let Some(book) = &book {
         let app = app_handle.load();
         let ctx = root::linked::BookCtx { book, app: &app };
