@@ -5,10 +5,14 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_DEFAULT};
+use busbar_contract::abi::host::conn::connector::{
+    CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
+    DIRECTION_OUTBOUND, EGRESS_DEFAULT,
+};
 use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::conn::{
-    ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
+    ConnCause, ConnError, ConnId, DeclaredConns, InstanceId, NeedId, NeedRefusal, OpenDesc,
+    PieceKind, PollConns,
 };
 
 /// The connection table a download rides: whose needs, the need a secured URL rides and the one a
@@ -119,15 +123,20 @@ async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<
     let (need_id, scheme) = match url.split_once("://") {
         Some((scheme, _)) if secured => (table.secured_need, scheme.to_ascii_lowercase()),
         Some((scheme, _)) => (table.plain_need, scheme.to_ascii_lowercase()),
-        None => return Err(sending()),
+        None => return Err(sending("the URL names no scheme")),
     };
 
     table
         .declared
         .declare(table.owner, need_id, &need(&scheme), Some(url), None)
-        .map_err(|_| sending())?;
+        .map_err(|_| {
+            sending(
+                &refused(table.declared.refusal(table.owner, need_id))
+                    .unwrap_or_else(|| CONNECTOR_REFUSED.to_owned()),
+            )
+        })?;
     let path = busbar_contract::net::parse_url(url)
-        .map_err(|_| sending())?
+        .map_err(|e| sending(&format!("the URL is not one busbar can request: {e}")))?
         .path;
 
     let fields: [(&str, &[u8]); 1] = [("accept", b"*/*")];
@@ -144,15 +153,105 @@ async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<
                 ..OpenDesc::default()
             },
         )
-        .map_err(|_| sending())?;
+        .map_err(|e| {
+            sending(
+                &refused(table.declared.refusal(table.owner, need_id)).unwrap_or_else(|| match e {
+                    ConnError::Refused => CONNECTOR_REFUSED.to_owned(),
+                    other => format!("the connection could not be opened: {}", other.text()),
+                }),
+            )
+        })?;
     let held = Held { table, conn };
-    read_whole(&held, url, cap)
-        .await
-        .map_err(|e| e.unwrap_or_else(sending))
+    read_whole(&held, url, cap).await.map_err(|e| match e {
+        Early::Said(said) => said,
+        Early::Conn(e) => sending(
+            &refused(table.declared.conn_refusal(table.owner, conn))
+                .or_else(|| caused(table.declared.cause(table.owner, conn), url))
+                .unwrap_or_else(|| {
+                    format!(
+                        "the connection failed before the response head: {}",
+                        e.text()
+                    )
+                }),
+        ),
+        Early::BodyFirst => sending("the registry sent body bytes before a response head"),
+        Early::NoHead => sending("the connection ended before the registry sent a response head"),
+    })
+}
+
+/// What the connector's own checks answer when no reason was recorded.
+const CONNECTOR_REFUSED: &str = "the connector's own checks refused the target";
+
+/// The line's own failure, in words naming the stage at the registry (`None` = none recorded).
+fn caused(cause: Option<ConnCause>, url: &str) -> Option<String> {
+    let cause = cause?;
+    let text = scrub(&cause.text, url);
+    Some(match cause.stage {
+        CAUSE_CONNECT => format!("could not connect to the registry: {text}"),
+        CAUSE_SECURITY => format!("the TLS handshake with the registry failed: {text}"),
+        CAUSE_EXCHANGE => format!("the request to the registry failed: {text}"),
+        CAUSE_FRAMER => format!("the registry's response could not be read as HTTP: {text}"),
+        CAUSE_DEADLINE => "the download's deadline passed before the registry answered".to_owned(),
+        _ => return None,
+    })
+}
+
+/// THE SCRUB of dynamic cause text (an OS, TLS or framer error, or a far end's own bytes): the
+/// URL's userinfo, a non-empty query or fragment, and every control character are hidden, and the
+/// result is capped at [`SCRUB_CAP`] bytes on a character boundary.
+fn scrub(text: &str, url: &str) -> String {
+    const REDACTED: &str = "<redacted>";
+    let mut out = text.to_owned();
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if let Some((userinfo, _)) = authority.rsplit_once('@') {
+        if !userinfo.is_empty() {
+            out = out.replace(userinfo, REDACTED);
+        }
+    }
+    for mark in ['?', '#'] {
+        if let Some((_, tail)) = url.split_once(mark) {
+            let part = if mark == '?' {
+                tail.split('#').next().unwrap_or_default()
+            } else {
+                tail
+            };
+            if !part.is_empty() {
+                out = out.replace(part, REDACTED);
+            }
+        }
+    }
+    let mut out: String = out
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if out.len() > SCRUB_CAP {
+        let mut at = SCRUB_CAP;
+        while !out.is_char_boundary(at) {
+            at -= 1;
+        }
+        out.truncate(at);
+    }
+    out
+}
+
+/// The most bytes of scrubbed cause text a download error carries.
+const SCRUB_CAP: usize = 300;
+
+/// How a read ended before the answer was whole.
+enum Early {
+    /// Already said in full (a status, a cap, a mid-body failure).
+    Said(String),
+    /// The connection failed before the response head.
+    Conn(ConnError),
+    /// Body bytes came before any response head.
+    BodyFirst,
+    /// The connection completed with no response head.
+    NoHead,
 }
 
 /// The answer, read to its completion: the status judged on the head (a redirect refused, never
-async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, Option<String>> {
+async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, Early> {
     let (table, conn) = (held.table, held.conn);
     let mut buf = vec![0_u8; 16 * 1024];
     let mut status: Option<u32> = None;
@@ -163,7 +262,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
             std::future::poll_fn(|cx| table.conns.poll_read(table.owner, conn, cx, &mut buf)).await;
         let piece = match piece {
             Ok(p) => p,
-            Err(_) if status.is_none() => return Err(None),
+            Err(e) if status.is_none() => return Err(Early::Conn(e)),
             Err(_) => {
                 #[expect(
                     clippy::disallowed_methods,
@@ -183,7 +282,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
                 if let Some(refused) =
                     busbar_kernel::preflight::plugin_fetch_status_refusal(url, code)
                 {
-                    return Err(Some(refused));
+                    return Err(Early::Said(refused));
                 }
 
                 if let Some(len) = piece.declared_len {
@@ -206,7 +305,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
             }
             PieceKind::Body => {
                 if status.is_none() {
-                    return Err(None);
+                    return Err(Early::BodyFirst);
                 }
                 if body.len() + piece.len > cap {
                     #[expect(
@@ -223,7 +322,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
         }
     }
     if status.is_none() {
-        return Err(None);
+        return Err(Early::NoHead);
     }
     Ok(body)
 }

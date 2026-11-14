@@ -77,14 +77,14 @@ use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
     Bytes, ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, HeadDefaults, InstanceId,
-    NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket, NO_TICKET,
+    NeedId, NeedRefusal, OpenDesc, Piece, PieceKind, PollConns, Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
 
 use crate::compose::{
-    Connection, Dial, Failure, Planned, Via, DEFAULT_OPEN_TIMEOUT, EXCHANGE_STREAM,
+    Connection, Dial, Failure, Hop, Planned, Via, DEFAULT_OPEN_TIMEOUT, EXCHANGE_STREAM,
     WRITE_BUFFER_BYTES,
 };
 use crate::framer::FramerDoor;
@@ -315,6 +315,83 @@ fn pended_verdict(v: Verdict) -> ConnError {
     match v {
         DEST_UNRESOLVABLE | DEST_NO_ADDRESSES => ConnError::Fault,
         _ => ConnError::Refused,
+    }
+}
+
+/// THE REFUSAL TEXTS (host-only, [`NeedRefusal`]): static, naming no hop (the renderer names it)
+/// and only keys the operator can set.
+mod refusal_text {
+    /// The URL carries userinfo.
+    pub(crate) const CREDENTIALED: &str =
+        "the URL carries userinfo; busbar never sends credentials embedded in a URL";
+    /// No loaded transport serves the need's scheme.
+    pub(crate) const UNSERVED: &str = "busbar serves no transport for the URL's scheme";
+    /// The target is malformed or not located by its transport.
+    pub(crate) const UNLOCATED: &str = "the target is not a host busbar can dial";
+    /// The need names a target or trust the configuration does not provide.
+    pub(crate) const UNRESOLVED: &str =
+        "the need names a target or trust anchors the configuration does not provide";
+    /// The operator's trust anchors for the target could not be loaded.
+    pub(crate) const TRUST: &str =
+        "the trust anchors configured for the target could not be loaded";
+    /// Plaintext to a destination whose class asks for connection security.
+    pub(crate) const PLAINTEXT: &str = "plaintext is not admitted to this destination";
+    /// None of the above.
+    pub(crate) const CHECKS: &str = "the connector's own checks refused the target";
+}
+
+/// A guard verdict in words (never `guard::Refusal`'s Display: its catch-all and the operator's
+/// blocked list would be misnamed).
+const fn verdict_text(v: Verdict) -> &'static str {
+    use busbar_contract::abi::host::service::{
+        DEST_INTERNAL, DEST_METADATA, DEST_NO_HOST, DEST_OBFUSCATED, DEST_PLAINTEXT, DEST_SCHEME,
+    };
+    match v {
+        DEST_METADATA => {
+            "the destination guard refuses a cloud-metadata host or a host listed in \
+             security.blocked_metadata_hosts"
+        }
+        DEST_INTERNAL => {
+            "the destination guard refuses an internal or loopback address (list it in \
+             advanced.allow_destinations to allow it)"
+        }
+        DEST_OBFUSCATED => {
+            "the destination guard refuses an alternate IPv4 spelling; write the address in \
+             dotted-quad form"
+        }
+        DEST_NO_HOST => "the destination guard cannot judge the host, so it refuses it",
+        DEST_PLAINTEXT => refusal_text::PLAINTEXT,
+        DEST_SCHEME => "the destination guard does not admit the scheme",
+        DEST_UNRESOLVABLE => "the name did not resolve",
+        DEST_NO_ADDRESSES => "the name resolved to no addresses",
+        _ => refusal_text::CHECKS,
+    }
+}
+
+/// A guard verdict on the target (or, with `proxy`, the operator's egress proxy) as a reason: a
+/// name that did not resolve is the path, never policy.
+fn verdict_reason(v: Verdict, proxy: bool) -> NeedRefusal {
+    let text = verdict_text(v);
+    match (unresolved_here(v), proxy) {
+        (true, false) => NeedRefusal::Unreached(text.to_owned()),
+        (true, true) => NeedRefusal::ProxyUnreached(text.to_owned()),
+        (false, false) => NeedRefusal::Policy(text),
+        (false, true) => NeedRefusal::ProxyPolicy(text),
+    }
+}
+
+/// A dial's failure on the target (or, with `proxy`, the hop to the operator's egress proxy) as a
+/// reason: always the path, whatever the failure says.
+fn unreached(f: &Failure, proxy: bool) -> NeedRefusal {
+    let text = match f {
+        Failure::Refused(t) | Failure::Failed(t) => t.clone(),
+        Failure::Timeout => "the dial timed out".to_owned(),
+        Failure::Closed | Failure::Pending => "the connection closed during the dial".to_owned(),
+    };
+    if proxy {
+        NeedRefusal::ProxyUnreached(text)
+    } else {
+        NeedRefusal::Unreached(text)
     }
 }
 
@@ -732,6 +809,9 @@ struct Held {
     open_timeout: Duration,
     /// A held session's UPSTREAM LEG over a datagram framer's need ([`dialled`]): its exchange
     dialled: Option<dialled::Dialled>,
+    /// WHY THE CONNECTION FAILED BEFORE A LINE EXISTED (host-only, [`NeedRefusal`]): the first
+    /// terminal reason its judgement or dial met.
+    why: std::sync::OnceLock<NeedRefusal>,
 }
 
 /// The instant a request's `timeout_ms` (the plugin's own number, unclamped: `RequestPiece` and
@@ -908,7 +988,13 @@ impl Held {
             dial_due: Mutex::new(None),
             open_timeout: DEFAULT_OPEN_TIMEOUT,
             dialled: None,
+            why: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Hold `why` as the reason this connection failed before a line existed (the first wins).
+    fn refused(&self, why: NeedRefusal) {
+        let _ = self.why.set(why);
     }
 
     /// This connection carries a held session's upstream leg (`d`).
@@ -1013,8 +1099,9 @@ impl std::fmt::Debug for Held {
     }
 }
 
-/// A need as an instance declared it, whole, and the answer its declaration got.
-type Declared = (ReadNeed, Result<(), ConnError>);
+/// A need as an instance declared it, whole, the answer its declaration got, and why its latest
+/// `declare` or `open` failed before any connection existed (host-only, [`NeedRefusal`]).
+type Declared = (ReadNeed, Result<(), ConnError>, Option<NeedRefusal>);
 
 type TlsPolicy = (
     Arc<rustls::ClientConfig>,
@@ -1450,7 +1537,9 @@ impl Connector {
     #[must_use]
     pub fn declared_spec(&self, owner: InstanceId, need: NeedId) -> Option<ReadNeed> {
         let declared = self.declared.lock().expect("declared needs");
-        declared.get(&(owner, need)).map(|(spec, _)| spec.clone())
+        declared
+            .get(&(owner, need))
+            .map(|(spec, _, _)| spec.clone())
     }
 
     /// Record that `owner` declared `need` — the only needs it may open. A need declared without a
@@ -1619,31 +1708,33 @@ impl Connector {
         need: NeedId,
         target: &str,
         egress_class: u32,
-    ) -> Result<(), ConnError> {
+    ) -> Result<(), NeedRefusal> {
         let door = self
             .over
             .lock()
             .expect("needs")
             .get(&(owner, need))
             .map(|n| Arc::clone(&n.door))
-            .ok_or(ConnError::Refused)?;
-        endpoint::named(target).map_err(|_| ConnError::Refused)?;
-        let located = self.located(&door, target).ok_or(ConnError::Refused)?;
-        endpoint::named(&located.authority).map_err(|_| ConnError::Refused)?;
+            .ok_or(NeedRefusal::Policy(refusal_text::CHECKS))?;
+        let unlocated = |_| NeedRefusal::Policy(refusal_text::UNLOCATED);
+        endpoint::named(target).map_err(unlocated)?;
+        let located = self
+            .located(&door, target)
+            .ok_or(NeedRefusal::Policy(refusal_text::UNLOCATED))?;
+        endpoint::named(&located.authority).map_err(unlocated)?;
         if !scheme_admits(egress_class, located.secure) {
-            return Err(ConnError::Refused);
+            return Err(NeedRefusal::Policy(refusal_text::PLAINTEXT));
         }
         let judged_class = guard::judged_class(egress_class, true);
-        if self
+        if let Some(v) = self
             .judge
             .judge_target_static(busbar_kernel::host_services::Destination {
                 authority: &located.authority,
                 secure: located.secure,
                 egress_class: judged_class,
             })
-            .is_some()
         {
-            return Err(ConnError::Refused);
+            return Err(verdict_reason(v, false));
         }
         if socket::address_of(&located.authority).is_some() {
             match self.judge.judge_target_all(
@@ -2095,7 +2186,10 @@ impl Connector {
                     }
                     let proxy_addr = match proxy_judged {
                         None => return Ok(false),
-                        Some(Err(v)) => return Err(pended_verdict(v)),
+                        Some(Err(v)) => {
+                            held.refused(verdict_reason(v, true));
+                            return Err(pended_verdict(v));
+                        }
                         Some(Ok(at)) => at,
                     };
                     let planned = {
@@ -2120,7 +2214,10 @@ impl Connector {
             }
             let proxy_addr = match got {
                 Ok(at) => at,
-                Err(v) => return Err(held.fail(judging, pended_verdict(v))),
+                Err(v) => {
+                    held.refused(verdict_reason(v, true));
+                    return Err(held.fail(judging, pended_verdict(v)));
+                }
             };
             let spec = Arc::clone(&p.spec);
             let target_at = p.target_at;
@@ -2177,7 +2274,10 @@ impl Connector {
         let connect = proxy::connect_request(&self.connect_target(&planned, target_at), spec);
         let conn = planned
             .dial_through(proxy_addr, connect)
-            .map_err(|f| map(&f))?;
+            .map_err(|(hop, f)| {
+                held.refused(unreached(&f, hop == Hop::Proxy));
+                map(&f)
+            })?;
         self.ride(held, conn)?;
         self.replay_early(held, waker)
     }
@@ -2280,6 +2380,7 @@ impl Connector {
         judged_class: u32,
         within: &[IpAddr],
         reach: bool,
+        why: &mut Option<NeedRefusal>,
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
         let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
 
@@ -2366,7 +2467,10 @@ impl Connector {
                         proxied: Some(proxied),
                     }),
                 )),
-                Some(Err(_)) => Err(ConnError::Refused),
+                Some(Err(v)) => {
+                    *why = Some(verdict_reason(v, true));
+                    Err(ConnError::Refused)
+                }
                 Some(Ok(at)) => {
                     let connect = proxy::connect_request(
                         &self.connect_target(&planned, proxied.target_at),
@@ -2459,7 +2563,19 @@ impl Connector {
         if r.require_secure && !planned.secure() {
             return Err(ConnError::AuthRefused);
         }
-        match self.dial_judged(planned, r.egress_class, r.judged_class, &[], r.reach)? {
+        let mut why = None;
+        let dialled = self.dial_judged(
+            planned,
+            r.egress_class,
+            r.judged_class,
+            &[],
+            r.reach,
+            &mut why,
+        );
+        if let Some(why) = why {
+            held.refused(why);
+        }
+        match dialled? {
             (Some(conn), _) => {
                 self.ride(held, conn)?;
             }
@@ -2956,9 +3072,12 @@ impl DeclaredConns for Connector {
                     .map_err(|e| e.to_string())
             }),
         };
+        let untrusted = anchored.is_err();
+        let mut why = None;
         let answer = match anchored {
             Ok(_) if !outbound => {
                 if !spec.transport.is_empty() && !self.serves_scheme(&spec.transport) {
+                    why = Some(NeedRefusal::Policy(refusal_text::UNSERVED));
                     Err(ConnError::Refused)
                 } else {
                     self.slab.declare(owner, need);
@@ -2983,27 +3102,49 @@ impl DeclaredConns for Connector {
             }
             Ok(tls) if !(spec.transport.is_empty() || unresolved || credentialed) => self
                 .record(owner, need, &spec.transport, spec.egress_class, target, tls)
+                .inspect_err(|_| {
+                    why = Some(NeedRefusal::Policy(
+                        if self.serves_scheme(&spec.transport) {
+                            refusal_text::CHECKS
+                        } else {
+                            refusal_text::UNSERVED
+                        },
+                    ));
+                })
                 .and_then(|()| match target {
                     Some(pinned) => self
                         .admits_pinned(owner, need, pinned, spec.egress_class)
-                        .inspect_err(|_| self.set_need(owner, need, None)),
+                        .map_err(|refused| {
+                            self.set_need(owner, need, None);
+                            why = Some(refused);
+                            ConnError::Refused
+                        }),
                     None => Ok(()),
                 }),
             _ => {
                 self.set_need(owner, need, None);
+                why = Some(NeedRefusal::Policy(if credentialed {
+                    refusal_text::CREDENTIALED
+                } else if unresolved {
+                    refusal_text::UNRESOLVED
+                } else if untrusted {
+                    refusal_text::TRUST
+                } else {
+                    refusal_text::CHECKS
+                }));
                 Err(ConnError::Refused)
             }
         };
         self.declared
             .lock()
             .expect("declared needs")
-            .insert((owner, need), (spec.clone(), answer));
+            .insert((owner, need), (spec.clone(), answer, why));
         answer
     }
 
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
         let declared = self.declared.lock().expect("declared needs");
-        declared.get(&(owner, need)).map(|(_, answer)| *answer)
+        declared.get(&(owner, need)).map(|(_, answer, _)| *answer)
     }
 
     /// THE MID-STREAM UPGRADE: the connection, once dialled, is secured with the need's own client
@@ -3043,7 +3184,7 @@ impl DeclaredConns for Connector {
             let declared = self.declared.lock().expect("declared needs");
             let trust_from = declared
                 .get(&(caller, need))
-                .map(|(spec, _)| spec.trust_from.as_str());
+                .map(|(spec, _, _)| spec.trust_from.as_str());
             if trust.is_some_and(|t| Some(t) != trust_from) {
                 return Err(ConnError::Refused);
             }
@@ -3166,7 +3307,7 @@ impl DeclaredConns for Connector {
         self.declared
             .lock()
             .expect("declared needs")
-            .insert((owner, need), (spec.clone(), answer));
+            .insert((owner, need), (spec.clone(), answer, None));
         answer
     }
 
@@ -3174,6 +3315,32 @@ impl DeclaredConns for Connector {
         let (_, held) = self.slab.get(owner, conn).ok()?;
         let (line, _) = held.line()?;
         line.cause()
+    }
+
+    fn refusal(&self, owner: InstanceId, need: NeedId) -> Option<NeedRefusal> {
+        let declared = self.declared.lock().expect("declared needs");
+        declared
+            .get(&(owner, need))
+            .and_then(|(_, _, why)| why.clone())
+    }
+
+    fn conn_refusal(&self, owner: InstanceId, conn: ConnId) -> Option<NeedRefusal> {
+        let (_, held) = self.slab.get(owner, conn).ok()?;
+        if let Some(why) = held.why.get() {
+            return Some(why.clone());
+        }
+        let (line, _) = held.line()?;
+        if !line.failed_at_proxy() {
+            return None;
+        }
+        let text = match line.cause() {
+            Some(c) if c.stage == busbar_contract::abi::host::conn::connector::CAUSE_DEADLINE => {
+                "the deadline passed before the proxy opened the tunnel".to_owned()
+            }
+            Some(c) if !c.text.is_empty() => c.text,
+            _ => "the connection closed during the dial".to_owned(),
+        };
+        Some(NeedRefusal::ProxyUnreached(text))
     }
 
     fn bind_auth(
@@ -3233,7 +3400,7 @@ impl DeclaredConns for Connector {
         self.declared
             .lock()
             .expect("declared needs")
-            .insert((owner, need), (spec.clone(), answer));
+            .insert((owner, need), (spec.clone(), answer, None));
         answer
     }
 
@@ -3256,7 +3423,7 @@ impl DeclaredConns for Connector {
         self.declared
             .lock()
             .expect("declared needs")
-            .insert((owner, need), (spec.clone(), answer));
+            .insert((owner, need), (spec.clone(), answer, None));
         answer
     }
 
@@ -3385,6 +3552,7 @@ impl Connector {
             Option<Arc<rustls::ClientConfig>>,
         ),
         require_secure: bool,
+        why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
         if desc.unit == 0 {
             return Err(ConnError::Refused);
@@ -3444,6 +3612,7 @@ impl Connector {
             false,
             require_secure,
             false,
+            why,
         )?;
         let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began)?;
         Ok(held.dialling(dialled))
@@ -3470,6 +3639,7 @@ impl Connector {
         poolable: bool,
         require_secure: bool,
         prepare: bool,
+        why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
@@ -3634,7 +3804,7 @@ impl Connector {
             return Err(ConnError::AuthRefused);
         }
         let (conn, judging) =
-            self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
+            self.dial_judged(planned, egress_class, judged_class, desc.within, reach, why)?;
         let held = Held::over(None, judging, pooled)
             .bounded(now, desc.timeout_ms)
             .dial_bounded(now, open_timeout);
@@ -3646,6 +3816,8 @@ impl Connector {
 }
 
 impl Connector {
+    /// Open `desc` on `caller`'s `need`, holding why the open failed before any connection existed
+    /// as the need's refusal ([`DeclaredConns::refusal`]); an open that succeeds clears it.
     fn open_timed(
         &self,
         caller: InstanceId,
@@ -3662,7 +3834,7 @@ impl Connector {
             .lock()
             .expect("declared needs")
             .get(&(caller, need))
-            .map_or(0, |(spec, _)| spec.timeout_ms);
+            .map_or(0, |(spec, _, _)| spec.timeout_ms);
         let dial_timeout_ms = dial_timeout_ms.unwrap_or(desc.timeout_ms);
         let dial_timeout_ms = if dial_timeout_ms == 0 {
             declared_timeout_ms
@@ -3786,6 +3958,7 @@ impl Connector {
                 open_timeout,
                 (egress_class, declared_target, tls),
                 require_secure,
+                why,
             )?;
             return self.slab.insert(caller, need, held);
         }
@@ -3840,6 +4013,7 @@ impl Connector {
             !prepare,
             require_secure,
             prepare,
+            why,
         )?;
         if prepare {
             *held.prepared.lock().expect("prepared") =

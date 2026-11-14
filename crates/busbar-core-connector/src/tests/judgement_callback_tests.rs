@@ -350,3 +350,271 @@ fn a_proxy_judgement_can_reenter_the_same_connections_public_wait() {
     );
     assert_eq!(callbacks, vec![Err(ConnError::Pending)]);
 }
+
+/// A connector framing `frames` over `bytes` (`knobs` on the framer), its dials judged by `judge`
+/// and taken through `proxy`, with `OWNER`'s need `0` declared through the host's table.
+fn refusal_connector(
+    judge: impl Fn(&str, u32, crate::Judged) -> Option<Result<SocketAddr, u64>> + Send + Sync + 'static,
+    knobs: crate::support::Knobs,
+    proxy: Option<Arc<crate::proxy::ProxyChoice>>,
+) -> Arc<Connector> {
+    let c = Arc::new(
+        Connector::serving(
+            Transports::new(vec![
+                Entry {
+                    door: Arc::new(TestDoor::new("frames", &["frames"], &["bytes"], knobs)),
+                    alpn: Vec::new(),
+                },
+                Entry {
+                    door: Arc::new(TestDoor::identity("bytes")),
+                    alpn: Vec::new(),
+                },
+            ])
+            .unwrap(),
+            Arc::new(judge),
+            None,
+            Arc::new(|_, _| {}),
+        )
+        .proxying(proxy),
+    );
+    let spec = ReadNeed {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
+        transport: "frames".to_owned(),
+        auth: String::new(),
+        target_from: String::new(),
+        trust_from: String::new(),
+        details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+            fmt: 0,
+            flags: 0,
+            bytes: Vec::new(),
+        },
+        timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
+    };
+    DeclaredConns::declare(&*c, OWNER, NeedId(0), &spec, None, None).unwrap();
+    c
+}
+
+/// Read `id` until it fails (at most five seconds).
+fn read_until_failed(c: &Connector, id: ConnId) -> ConnError {
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut cx = Context::from_waker(Waker::noop());
+        if let Poll::Ready(Err(e)) = c.poll_read(OWNER, id, &mut cx, &mut [0; 64]) {
+            return e;
+        }
+        assert!(std::time::Instant::now() < until, "the connection failed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn shown(why: &busbar_contract::conn::NeedRefusal) -> String {
+    why.render(str::to_owned)
+}
+
+/// RED (F-013): THE PROXY HOP IS NAMED, NOT THE REGISTRY. (a) The operator's egress proxy's NAME
+/// does not resolve (a pended verdict): the egress proxy could not be reached. (b) The guard
+/// refuses the proxy at open: busbar refused the egress proxy. (c) With no proxy, a registry name
+/// that does not resolve is the path, never busbar's policy.
+#[test]
+fn a_refusal_names_the_hop_that_failed() {
+    let proxy = || {
+        Some(crate::proxy::test_config(
+            "proxy.corp.invalid",
+            3128,
+            None,
+            "",
+        ))
+    };
+    let open = |c: &Connector| {
+        c.open(
+            OWNER,
+            NeedId(0),
+            &OpenDesc {
+                target: "far.test:80",
+                ..Default::default()
+            },
+        )
+    };
+
+    let a = refusal_connector(
+        |dest: &str, _: u32, done: crate::Judged| {
+            if dest == "far.test:80" {
+                return Some(Err(DEST_UNRESOLVABLE));
+            }
+            std::thread::spawn(move || done(Err(DEST_UNRESOLVABLE)));
+            None
+        },
+        Default::default(),
+        proxy(),
+    );
+    let id = open(&a).expect("the proxy's judgement pends");
+    read_until_failed(&a, id);
+    let why = a.conn_refusal(OWNER, id).expect("the reason is held");
+    assert_eq!(
+        why,
+        busbar_contract::conn::NeedRefusal::ProxyUnreached("the name did not resolve".into())
+    );
+    assert_eq!(
+        shown(&why),
+        "could not connect to the egress proxy: the name did not resolve"
+    );
+
+    let b = refusal_connector(
+        |dest: &str, _: u32, _: crate::Judged| {
+            if dest == "far.test:80" {
+                return Some(Err(DEST_UNRESOLVABLE));
+            }
+            Some(Err(busbar_contract::abi::host::service::DEST_INTERNAL))
+        },
+        Default::default(),
+        proxy(),
+    );
+    assert!(open(&b).is_err());
+    assert_eq!(
+        b.refusal(OWNER, NeedId(0)).as_ref().map(shown).as_deref(),
+        Some(
+            "busbar refused the egress proxy: the destination guard refuses an internal or \
+             loopback address (list it in advanced.allow_destinations to allow it)"
+        )
+    );
+
+    let c = refusal_connector(
+        |_: &str, _: u32, _: crate::Judged| Some(Err(DEST_UNRESOLVABLE)),
+        Default::default(),
+        None,
+    );
+    assert!(open(&c).is_err());
+    let why = c.refusal(OWNER, NeedId(0)).expect("the reason is held");
+    assert_eq!(
+        why,
+        busbar_contract::conn::NeedRefusal::Unreached("the name did not resolve".into())
+    );
+    assert_eq!(
+        shown(&why),
+        "could not connect to the registry: the name did not resolve"
+    );
+}
+
+/// The reason `id` (opened on need `0`) failed, wherever the connector recorded it: per conn (read
+/// on the worker until the connection fails, at most five seconds), or per need when the kernel
+/// failed the connect synchronously.
+async fn reason_of(c: &Connector, opened: Result<ConnId, ConnError>) -> String {
+    match opened {
+        Ok(id) => {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let mut cx = Context::from_waker(Waker::noop());
+                    if let Poll::Ready(Err(_)) = c.poll_read(OWNER, id, &mut cx, &mut [0; 64]) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the connection failed");
+            shown(
+                &c.conn_refusal(OWNER, id)
+                    .expect("the conn's reason is held"),
+            )
+        }
+        Err(_) => shown(
+            &c.refusal(OWNER, NeedId(0))
+                .expect("the need's reason is held"),
+        ),
+    }
+}
+
+/// A proxy that reads one CONNECT head and answers `answer`: its address.
+fn answering_proxy(answer: &'static [u8]) -> SocketAddr {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let Ok((mut s, _)) = l.accept() else { return };
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") && s.read_exact(&mut byte).is_ok() {
+            head.push(byte[0]);
+        }
+        let _ = s.write_all(answer);
+        std::thread::sleep(Duration::from_secs(2));
+    });
+    at
+}
+
+/// RED (F-013): AN ASYNCHRONOUS PROXY-HOP FAILURE NAMES THE PROXY. (a) Nothing listens at the
+/// proxy. (b) The proxy answers CONNECT 407. (c) The registry asks for connection security and
+/// none is set: the target hop failed, never the proxy.
+#[test]
+fn an_asynchronous_proxy_hop_failure_names_the_proxy() {
+    let opened = |proxy_addr: SocketAddr, knobs: crate::support::Knobs, target| {
+        let c = refusal_connector(
+            move |dest: &str, _: u32, _: crate::Judged| {
+                if dest == proxy_addr.to_string() {
+                    Some(Ok(proxy_addr))
+                } else {
+                    Some(Ok("127.0.0.1:80".parse().unwrap()))
+                }
+            },
+            knobs,
+            Some(crate::proxy::test_config(
+                "127.0.0.1",
+                proxy_addr.port(),
+                None,
+                "",
+            )),
+        );
+        let id = c.open(
+            OWNER,
+            NeedId(0),
+            &OpenDesc {
+                target,
+                ..Default::default()
+            },
+        );
+        if let Ok(id) = id {
+            let _ = c.write(OWNER, id, b"x", true, false);
+        }
+        (c, id)
+    };
+
+    worker().block_on(async {
+        let dead: SocketAddr = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let (c, id) = opened(dead, Default::default(), "far.test:80");
+        let a = reason_of(&c, id).await;
+        let os = a
+            .strip_prefix("could not connect to the egress proxy: ")
+            .unwrap_or_else(|| panic!("the proxy is named: {a}"));
+        assert!(!os.is_empty(), "{a}");
+        assert!(!a.contains("registry"), "{a}");
+        assert!(!a.contains("reactor"), "the dial ran on a worker: {a}");
+
+        let proxy = answering_proxy(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
+        let (c, id) = opened(proxy, Default::default(), "far.test:80");
+        assert_eq!(
+            reason_of(&c, id).await,
+            "could not connect to the egress proxy: proxy refused CONNECT far.test:80: HTTP/1.1 \
+             407 Proxy Authentication Required"
+        );
+
+        let proxy = answering_proxy(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
+        let secured = crate::support::Knobs {
+            secure_name: Some("far.test"),
+            ..Default::default()
+        };
+        let (c, id) = opened(proxy, secured, "far.test:443");
+        assert!(id.is_err(), "the dial fails before any connect");
+        assert_eq!(
+            reason_of(&c, id).await,
+            "could not connect to the registry: the target asks for connection security and none \
+             is set"
+        );
+    });
+}
