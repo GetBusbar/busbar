@@ -662,6 +662,11 @@ plugins:
     # repo). Created by the fleet tool's `plugin new auth oauth`; busbar's in-tree crate moves in with its
     # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
     # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own minting copies are deleted). First release with the core version that pins it.
+    # A minted token's transport requirement comes from its configured endpoint, never a constant
+    # seal (UPG-H9, hammer oauth-mint-fault L1): `busbar-release plugin heal` renders this into the
+    # plugin's clippy.toml, so the ban survives every heal and a hand edit removing it is drift.
+    disallowed_methods:
+      - "busbar_contract::abi::sdk::cred::Cred::require_secure | derive it: require_secure_if(<configured endpoint is https>)"
     released: false
     pending_crate: true
   - repo: busbar-secret-c
