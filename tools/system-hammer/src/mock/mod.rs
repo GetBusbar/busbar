@@ -18,7 +18,8 @@
 //! | `/__hammer/stats` | per-far-end request counters |
 //!
 //! There is no artificial delay unless [`MockConfig::delay`] or [`MockConfig::chunk_interval`]
-//! says so. Every body is prepared at start.
+//! says so. Every body is prepared at start except the JSON-RPC id, the token mint counter and
+//! the stats snapshot, which are spliced or serialized per request.
 
 pub mod llm;
 
@@ -385,8 +386,59 @@ fn reply(status: u16, ctype: &'static str, body: Bytes) -> Response<MockBody> {
     r
 }
 
+/// The stats snapshot only: it is dynamic and excluded from the hit counters.
 fn json_reply(v: &Value) -> Response<MockBody> {
     reply(200, "application/json", Bytes::from(v.to_string()))
+}
+
+fn const_reply(body: &'static [u8]) -> Response<MockBody> {
+    reply(200, "application/json", Bytes::from_static(body))
+}
+
+// The far ends' bodies, fixed at compile time. The JSON-RPC results are spliced around the
+// request id by `rpc_body`; the token body around the mint counter by `token_body`.
+const MCP_INITIALIZE: &str = r#"{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"hammer-mcp","version":"1.0.0"}}"#;
+/// Its description is [`MCP_PING_DESCRIPTION`] (a test pins the two together).
+const MCP_TOOLS_LIST: &str = r#"{"tools":[{"name":"ping","description":"Returns the label it was given.","inputSchema":{"type":"object","properties":{"label":{"type":"string"}},"additionalProperties":false}}]}"#;
+const MCP_TOOLS_CALL: &str =
+    r#"{"content":[{"type":"text","text":"ping: hammer"}],"isError":false}"#;
+const EMPTY_OBJECT: &str = "{}";
+const A2A_SEND: &str = r#"{"task":{"id":"task-0001","contextId":"ctx-0001","status":{"state":"TASK_STATE_COMPLETED","timestamp":"2026-01-01T00:00:00Z"},"artifacts":[{"artifactId":"art-0001","parts":[{"text":"ping"}]}]}}"#;
+const JWKS: &[u8] = br#"{"keys":[]}"#;
+const OIDC_CONFIG: &[u8] = br#"{"issuer":"http://127.0.0.1","jwks_uri":"http://127.0.0.1/jwks","token_endpoint":"http://127.0.0.1/token"}"#;
+const VAULT_SECRET: &[u8] = br#"{"data":{"data":{"api_key":"hammer-vault-key","value":"hammer-vault-key"},"metadata":{"version":1}}}"#;
+const VAULT_HEALTH: &[u8] = br#"{"initialized":true,"sealed":false,"standby":false}"#;
+/// Its `input_tokens` is `IN_TOK_DEC` (a test pins the two together).
+const SYSTEMONE: &[u8] = br#"{"decision":"allow","model":"mock","usage":{"units":1,"input_tokens":4,"output_tokens":1}}"#;
+const EVALUATE: &[u8] = br#"{"result":"allow","execution":{"states":1}}"#;
+const CLIENT_SECRET: &[u8] = br#"{"value":"ek_hammer_0001","expires_at":4102444800}"#;
+
+/// A JSON-RPC 2.0 response: the request's `id` (already valid JSON) spliced around a fixed result.
+fn rpc_body(id: &Value, result: &str) -> Bytes {
+    Bytes::from(format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"result":{result}}}"#
+    ))
+}
+
+/// The MCP server's answer to `method`, or `None` for a notification (no id, no known method:
+/// answered 202 with no body).
+fn mcp_body(method: &str, id: &Value) -> Option<Bytes> {
+    let result = match method {
+        "initialize" => MCP_INITIALIZE,
+        "tools/list" => MCP_TOOLS_LIST,
+        "tools/call" => MCP_TOOLS_CALL,
+        "ping" => EMPTY_OBJECT,
+        _ if id.is_null() => return None,
+        _ => EMPTY_OBJECT,
+    };
+    Some(rpc_body(id, result))
+}
+
+/// The IdP's token response for the `n`th mint.
+fn token_body(n: u64) -> Bytes {
+    Bytes::from(format!(
+        r#"{{"access_token":"hammer-minted-{n}","token_type":"Bearer","expires_in":3600}}"#
+    ))
 }
 
 fn rpc_id(body: &[u8]) -> (String, Value) {
@@ -456,24 +508,10 @@ async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
         (Method::POST, "/mcp") => {
             st.stats.hit(Role::Mcp);
             let (m, id) = rpc_id(&body);
-            let result = match m.as_str() {
-                "initialize" => json!({"protocolVersion": "2025-06-18",
-                    "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": "hammer-mcp", "version": "1.0.0"}}),
-                "tools/list" => json!({"tools": [{"name": "ping",
-                    "description": MCP_PING_DESCRIPTION,
-                    "inputSchema": {"type": "object",
-                        "properties": {"label": {"type": "string"}},
-                        "additionalProperties": false}}]}),
-                "tools/call" => json!({"content": [{"type": "text", "text": "ping: hammer"}],
-                    "isError": false}),
-                "ping" => json!({}),
-                _ if id.is_null() => {
-                    return reply(202, "application/json", Bytes::new());
-                }
-                _ => json!({}),
-            };
-            json_reply(&json!({"jsonrpc": "2.0", "id": id, "result": result}))
+            match mcp_body(&m, &id) {
+                Some(b) => reply(200, "application/json", b),
+                None => reply(202, "application/json", Bytes::new()),
+            }
         }
         (Method::GET, "/.well-known/agent-card.json")
         | (Method::GET, "/.well-known/agent.json") => {
@@ -483,35 +521,28 @@ async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
         (Method::POST, "/") | (Method::POST, "/a2a") => {
             st.stats.hit(Role::A2a);
             let (_, id) = rpc_id(&body);
-            json_reply(&json!({"jsonrpc": "2.0", "id": id, "result": {"task": {
-                "id": "task-0001", "contextId": "ctx-0001",
-                "status": {"state": "TASK_STATE_COMPLETED", "timestamp": "2026-01-01T00:00:00Z"},
-                "artifacts": [{"artifactId": "art-0001", "parts": [{"text": "ping"}]}]}}}))
+            reply(200, "application/json", rpc_body(&id, A2A_SEND))
         }
         (Method::POST, "/token") => {
             st.stats.hit(Role::Idp);
             let n = st.mints.fetch_add(1, Ordering::Relaxed) + 1;
-            json_reply(&json!({"access_token": format!("hammer-minted-{n}"),
-                "token_type": "Bearer", "expires_in": 3600}))
+            reply(200, "application/json", token_body(n))
         }
         (Method::GET, "/jwks") => {
             st.stats.hit(Role::Idp);
-            json_reply(&json!({"keys": []}))
+            const_reply(JWKS)
         }
         (Method::GET, "/.well-known/openid-configuration") => {
             st.stats.hit(Role::Idp);
-            let base = "http://127.0.0.1";
-            json_reply(&json!({"issuer": base, "jwks_uri": format!("{base}/jwks"),
-                "token_endpoint": format!("{base}/token")}))
+            const_reply(OIDC_CONFIG)
         }
         (Method::GET, p) if p.starts_with("/v1/secret/") || p.starts_with("/v1/kv/") => {
             st.stats.hit(Role::Vault);
-            json_reply(&json!({"data": {"data": {"api_key": "hammer-vault-key",
-                "value": "hammer-vault-key"}, "metadata": {"version": 1}}}))
+            const_reply(VAULT_SECRET)
         }
         (Method::GET, "/v1/sys/health") => {
             st.stats.hit(Role::Vault);
-            json_reply(&json!({"initialized": true, "sealed": false, "standby": false}))
+            const_reply(VAULT_HEALTH)
         }
         (Method::POST, "/v1/traces")
         | (Method::POST, "/v1/metrics")
@@ -521,26 +552,23 @@ async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
         }
         (Method::POST, "/webhook") => {
             st.stats.hit(Role::Webhook);
-            json_reply(&json!({}))
+            const_reply(EMPTY_OBJECT.as_bytes())
         }
         (Method::POST, "/sidecar") => {
             st.stats.hit(Role::Sidecar);
-            json_reply(&json!({}))
+            const_reply(EMPTY_OBJECT.as_bytes())
         }
         (Method::POST, "/v1/systemone") => {
             st.stats.hit(Role::Decisions);
-            json_reply(
-                &json!({"decision": "allow", "model": "mock", "usage": {"units": 1,
-                "input_tokens": IN_TOK_DEC, "output_tokens": 1}}),
-            )
+            const_reply(SYSTEMONE)
         }
         (Method::POST, "/api/evaluate") => {
             st.stats.hit(Role::Decisions);
-            json_reply(&json!({"result": "allow", "execution": {"states": 1}}))
+            const_reply(EVALUATE)
         }
         (Method::POST, "/v1/realtime/client_secrets") => {
             st.stats.hit(Role::Streams);
-            json_reply(&json!({"value": "ek_hammer_0001", "expires_at": 4_102_444_800u64}))
+            const_reply(CLIENT_SECRET)
         }
         _ => {
             st.stats.hit(Role::Other);
@@ -556,6 +584,8 @@ async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
     }
 }
 
+/// The decisions provider's `input_tokens`, inlined in [`SYSTEMONE`]; a test pins the two together.
+#[cfg(test)]
 const IN_TOK_DEC: i64 = 4;
 
 #[cfg(test)]
@@ -567,6 +597,82 @@ mod tests {
         assert!(
             !h.contains("json!("),
             "handle() builds a JSON value per request"
+        );
+    }
+
+    fn parse(b: &[u8]) -> serde_json::Value {
+        serde_json::from_slice(b).expect("valid JSON")
+    }
+
+    #[test]
+    fn mcp_bodies_echo_the_id_around_valid_results() {
+        let id = serde_json::json!(7);
+        let v = parse(&super::mcp_body("tools/call", &id).unwrap());
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["result"]["content"][0]["text"], "ping: hammer");
+        assert_eq!(v["result"]["isError"], false);
+
+        let id = serde_json::json!("req-\"q\"");
+        let v = parse(&super::mcp_body("tools/list", &id).unwrap());
+        assert_eq!(v["id"], "req-\"q\"");
+        let tool = &v["result"]["tools"][0];
+        assert_eq!(tool["name"], "ping");
+        assert_eq!(tool["description"], super::MCP_PING_DESCRIPTION);
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+
+        let v = parse(&super::mcp_body("initialize", &serde_json::json!(1)).unwrap());
+        assert_eq!(v["result"]["serverInfo"]["name"], "hammer-mcp");
+        let v = parse(&super::mcp_body("ping", &serde_json::json!(2)).unwrap());
+        assert_eq!(v["result"], serde_json::json!({}));
+        let v = parse(&super::mcp_body("other", &serde_json::json!(3)).unwrap());
+        assert_eq!(v["result"], serde_json::json!({}));
+        assert!(super::mcp_body("notifications/initialized", &serde_json::Value::Null).is_none());
+    }
+
+    #[test]
+    fn a2a_body_echoes_the_id() {
+        let v = parse(&super::rpc_body(&serde_json::json!("a-1"), super::A2A_SEND));
+        assert_eq!(v["id"], "a-1");
+        assert_eq!(
+            v["result"]["task"]["status"]["state"],
+            "TASK_STATE_COMPLETED"
+        );
+        assert_eq!(
+            v["result"]["task"]["artifacts"][0]["parts"][0]["text"],
+            "ping"
+        );
+    }
+
+    #[test]
+    fn token_body_carries_the_mint_counter() {
+        let v = parse(&super::token_body(42));
+        assert_eq!(v["access_token"], "hammer-minted-42");
+        assert_eq!(v["token_type"], "Bearer");
+        assert_eq!(v["expires_in"], 3600);
+    }
+
+    #[test]
+    fn constant_bodies_are_valid_json() {
+        for b in [
+            super::JWKS,
+            super::OIDC_CONFIG,
+            super::VAULT_SECRET,
+            super::VAULT_HEALTH,
+            super::EMPTY_OBJECT.as_bytes(),
+            super::SYSTEMONE,
+            super::EVALUATE,
+            super::CLIENT_SECRET,
+        ] {
+            parse(b);
+        }
+        assert_eq!(
+            parse(super::SYSTEMONE)["usage"]["input_tokens"],
+            super::IN_TOK_DEC
+        );
+        assert_eq!(
+            parse(super::OIDC_CONFIG)["jwks_uri"],
+            "http://127.0.0.1/jwks"
         );
     }
 }
