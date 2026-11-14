@@ -1591,3 +1591,24 @@ type Connector<'a> = crate::abi::sdk::conn::Connector<'a, FixtureKind>;
 type Op<'a> = crate::abi::sdk::exchange::Op<'a, FixtureKind>;
 
 type FixtureKind = crate::plugin::markers::PlaneKind;
+
+/// W7: an exchange built and dropped before it reads a reply (a refused dial, a cancelled op, a
+/// send that never got to its read) allocates no 16 KiB read buffer and so wipes none on drop.
+#[test]
+fn an_exchange_that_never_reads_allocates_no_read_buffer() {
+    let request = Request {
+        method: b"POST".to_vec(),
+        target: b"/v1/logs".to_vec(),
+        fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+        body: b"{}".to_vec(),
+        timeout_ms: 0,
+    };
+    let probe = crate::alloc_counter::AllocationLifetimeProbe::start_exact_size(READ_CHUNK);
+    let exchange = Exchange::request(request).expect("a valid request");
+    drop(exchange);
+    assert_eq!(
+        probe.finish().allocations,
+        0,
+        "no read buffer before the first read"
+    );
+}
