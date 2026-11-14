@@ -1556,6 +1556,20 @@ impl GovState {
         )
     }
 
+    /// Admit a unit on the estimate and budget chain its admission already resolved
+    /// (SINGLE-PATH SP-AD1): neither is derived again. A `None` chain is resolved here.
+    pub fn try_admit_planned(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        estimate: Option<i64>,
+        chain: Option<&crate::cost::ChainPlan>,
+    ) -> Result<AdmitGrant, LimitBlocked> {
+        self.admit_checked(cost, key, pool, now, estimate, chain)
+    }
+
     fn admit_checked(
         &self,
         cost: &crate::cost::CostModel,
@@ -1812,6 +1826,7 @@ impl GovState {
             PER_REQUEST_ONE.get_or_init(|| BTreeMap::from([(PER_REQUEST.to_string(), Count::ONE)]));
         grant.charge.lane = (!plane.is_empty()).then(|| plane_fee_lane(plane));
         grant.charge.era = era;
+        grant.charge.chain = Some(chain.plan(carried));
         let plane_fee = grant.charge.lane.as_deref();
 
         for (bi, bucket) in buckets.iter().enumerate() {
