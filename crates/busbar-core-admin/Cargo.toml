@@ -29,6 +29,9 @@ default = []
 test-support = []
 openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
 
+[build-dependencies]
+flate2 = { workspace = true }
+
 [dev-dependencies]
 jsonschema = { workspace = true }
 http-body-util = { workspace = true }
