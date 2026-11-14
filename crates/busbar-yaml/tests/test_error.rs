@@ -1,12 +1,10 @@
-// serde_yaml_ng 0.10.0's own test suite (MIT; see this crate's NOTICE), run against busbar-yaml:
+// serde_yaml_ng 0.10.0's own test suite (MIT; see this crate's NOTICE), run against yaml_serde:
 // the same inputs must give the same values, the same output bytes and the same error texts.
 #![allow(clippy::zero_sized_map_values)]
 
 #[macro_use]
 mod common;
 
-use busbar_yaml::value::{Tag, TaggedValue};
-use busbar_yaml::{Deserializer, Value};
 #[cfg(not(miri))]
 use serde::de::{SeqAccess, Visitor};
 use serde::Deserialize;
@@ -16,12 +14,14 @@ use std::collections::BTreeMap;
 #[cfg(not(miri))]
 use std::fmt;
 use std::fmt::Debug;
+use yaml_serde::value::{Tag, TaggedValue};
+use yaml_serde::{Deserializer, Value};
 
 fn test_error<'de, T>(yaml: &'de str, expected: &str)
 where
     T: Deserialize<'de> + Debug,
 {
-    let result = busbar_yaml::from_str::<T>(yaml);
+    let result = yaml_serde::from_str::<T>(yaml);
     assert_eq!(expected, result.unwrap_err().to_string());
 
     let mut deserializer = Deserializer::from_str(yaml);
@@ -192,15 +192,15 @@ fn test_serialize_nested_enum() {
     let expected = "serializing nested enums in YAML is not supported yet";
 
     let e = Outer::Inner(Inner::Newtype(0));
-    let error = busbar_yaml::to_string(&e).unwrap_err();
+    let error = yaml_serde::to_string(&e).unwrap_err();
     assert_eq!(error.to_string(), expected);
 
     let e = Outer::Inner(Inner::Tuple(0, 0));
-    let error = busbar_yaml::to_string(&e).unwrap_err();
+    let error = yaml_serde::to_string(&e).unwrap_err();
     assert_eq!(error.to_string(), expected);
 
     let e = Outer::Inner(Inner::Struct { x: 0 });
-    let error = busbar_yaml::to_string(&e).unwrap_err();
+    let error = yaml_serde::to_string(&e).unwrap_err();
     assert_eq!(error.to_string(), expected);
 
     let e = Value::Tagged(Box::new(TaggedValue {
@@ -210,7 +210,7 @@ fn test_serialize_nested_enum() {
             value: Value::Null,
         })),
     }));
-    let error = busbar_yaml::to_string(&e).unwrap_err();
+    let error = yaml_serde::to_string(&e).unwrap_err();
     assert_eq!(error.to_string(), expected);
 }
 

@@ -1,4 +1,4 @@
-//! busbar-yaml reads the product's YAML exactly as serde_yaml_ng 0.10.0 (libyaml) did.
+//! yaml_serde reads the product's YAML exactly as serde_yaml_ng 0.10.0 (libyaml) did.
 //!
 //! `fixtures/serde_yaml_ng-0.10.0-config-surface.jsonl` was recorded with serde_yaml_ng 0.10.0 on
 //! unsafe-libyaml 0.2.11, the YAML stack busbar 1.5.5 and 1.6.0 shipped, before it was replaced.
@@ -24,11 +24,11 @@ fn digest(s: &str) -> String {
         .collect()
 }
 
-fn outcome(r: Result<busbar_yaml::Value, busbar_yaml::Error>) -> serde_json::Value {
+fn outcome(r: Result<yaml_serde::Value, yaml_serde::Error>) -> serde_json::Value {
     match r {
         Ok(v) => serde_json::json!({
             "value": digest(&format!("{v:?}")),
-            "yaml": match busbar_yaml::to_string(&v) {
+            "yaml": match yaml_serde::to_string(&v) {
                 Ok(y) => serde_json::Value::String(digest(&y)),
                 Err(e) => serde_json::json!({ "error": e.to_string() }),
             },
@@ -50,7 +50,7 @@ fn every_recorded_input_reads_as_serde_yaml_ng_0_10_read_it() {
         let record: serde_json::Value = serde_json::from_str(line).expect("a fixture record");
         let name = record["name"].as_str().expect("a name");
         let input = record["input"].as_str().expect("an input");
-        let whole = outcome(busbar_yaml::from_str::<busbar_yaml::Value>(input));
+        let whole = outcome(yaml_serde::from_str::<yaml_serde::Value>(input));
         if whole != record["whole"] {
             failures.push(format!(
                 "{name}: from_str: expected {} got {whole}",
@@ -61,11 +61,11 @@ fn every_recorded_input_reads_as_serde_yaml_ng_0_10_read_it() {
             refusals += 1;
         }
         let mut documents = Vec::new();
-        for (i, de) in busbar_yaml::Deserializer::from_str(input).enumerate() {
+        for (i, de) in yaml_serde::Deserializer::from_str(input).enumerate() {
             if i >= 64 {
                 break;
             }
-            let r = outcome(busbar_yaml::Value::deserialize(de));
+            let r = outcome(yaml_serde::Value::deserialize(de));
             let failed = r.get("error").is_some();
             documents.push(r);
             if failed {
