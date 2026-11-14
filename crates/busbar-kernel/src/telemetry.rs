@@ -882,6 +882,8 @@ fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
         }
     };
     let handle = desc.handle.get_or_init(|| mint_histogram(&desc));
+    #[cfg(test)]
+    bank_internals::REQUEST_THREAD_RECORDS.with(|n| n.set(n.get() + samples.len() as u64));
     for s in samples {
         handle.record(s);
     }
@@ -991,6 +993,11 @@ pub(crate) fn this_threads_bank() -> std::sync::Weak<dyn std::any::Any + Send + 
 #[cfg(test)]
 pub mod bank_internals {
     pub use super::HIST_DRAIN_THRESHOLD;
+
+    thread_local! {
+        /// Samples this thread handed to the recorder from inside `record` (the overflow replay).
+        pub static REQUEST_THREAD_RECORDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
 
     pub fn hist_chunk_materialized(slot: super::HistogramSlot) -> bool {
         let idx = slot.0 as usize;
