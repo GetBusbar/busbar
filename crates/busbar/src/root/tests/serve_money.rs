@@ -395,7 +395,7 @@ async fn governed_full(
     let mut sections = BTreeMap::new();
     sections.insert(
         "test_plane",
-        serde_yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
+        busbar_contract::yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
     );
     config.groups = groups;
 

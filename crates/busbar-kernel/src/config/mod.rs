@@ -99,7 +99,7 @@ struct Occurrence {
 ///    in the value outright — cheap, and gives a precise error for that shape.
 /// 2. A structural-equivalence check (this function, below): after interpolation, the SAME raw
 ///    template is interpolated a second time with every `${VAR}` replaced by a unique, YAML-inert
-///    placeholder token instead of its real value. Both results are parsed to `serde_yaml::Value`
+///    placeholder token instead of its real value. Both results are parsed to `busbar_contract::yaml::Value`
 ///    and their trees are compared for structural equivalence (same map keys, same sequence
 ///    lengths, same node kind, at every position — NOT scalar leaf values, which are expected and
 ///    allowed to differ in content and even inferred type). Any difference means a substituted
@@ -223,7 +223,7 @@ fn assert_interpolation_preserves_structure(
     real: &str,
     occurrences: &[Occurrence],
 ) -> Result<(), String> {
-    let real_value: serde_yaml::Value = match serde_yaml::from_str(real) {
+    let real_value: busbar_contract::yaml::Value = match busbar_contract::yaml::from_str(real) {
         Ok(v) => v,
         Err(error) => {
             let mut vars: Vec<&str> = occurrences.iter().map(|o| o.var_name.as_str()).collect();
@@ -242,16 +242,17 @@ fn assert_interpolation_preserves_structure(
     };
 
     let placeholder_text = splice_occurrences(template, occurrences, None);
-    let placeholder_value: serde_yaml::Value = match serde_yaml::from_str(&placeholder_text) {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(format!(
-                "could not verify that environment-variable interpolation preserves config \
+    let placeholder_value: busbar_contract::yaml::Value =
+        match busbar_contract::yaml::from_str(&placeholder_text) {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(format!(
+                    "could not verify that environment-variable interpolation preserves config \
                  structure (internal placeholder document failed to parse: {e}); refusing to \
                  proceed"
-            ));
-        }
-    };
+                ));
+            }
+        };
 
     if structural_shapes_match(&real_value, &placeholder_value, 0) {
         let vars: Vec<&str> = occurrences.iter().map(|o| o.var_name.as_str()).collect();
@@ -267,10 +268,11 @@ fn assert_interpolation_preserves_structure(
     let mut culprits: Vec<String> = Vec::new();
     for (i, occ) in occurrences.iter().enumerate() {
         let hybrid_text = splice_occurrences(template, occurrences, Some(i));
-        let matches = match serde_yaml::from_str::<serde_yaml::Value>(&hybrid_text) {
-            Ok(hybrid_value) => structural_shapes_match(&hybrid_value, &placeholder_value, 0),
-            Err(_) => false,
-        };
+        let matches =
+            match busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&hybrid_text) {
+                Ok(hybrid_value) => structural_shapes_match(&hybrid_value, &placeholder_value, 0),
+                Err(_) => false,
+            };
         if !matches && !culprits.contains(&occ.var_name) {
             culprits.push(occ.var_name.clone());
         }
@@ -299,13 +301,17 @@ fn assert_interpolation_preserves_structure(
 
 const MAX_STRUCTURAL_COMPARE_DEPTH: usize = 128;
 
-fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: usize) -> bool {
-    use serde_yaml::Value;
+fn structural_shapes_match(
+    a: &busbar_contract::yaml::Value,
+    b: &busbar_contract::yaml::Value,
+    depth: usize,
+) -> bool {
+    use busbar_contract::yaml::{MappingExt, Value};
     if depth > MAX_STRUCTURAL_COMPARE_DEPTH {
         return false;
     }
     match (a, b) {
-        (Value::Mapping(ma), Value::Mapping(mb)) => {
+        (Value::Map(ma), Value::Map(mb)) => {
             let mut ka: Vec<String> = ma.iter().map(|(k, _)| mapping_key_repr(k)).collect();
             let mut kb: Vec<String> = mb.iter().map(|(k, _)| mapping_key_repr(k)).collect();
             ka.sort();
@@ -314,32 +320,32 @@ fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: 
             if ka != kb {
                 return false;
             }
-            ma.iter().all(|(k, va)| match mb.get(k.clone()) {
+            ma.iter().all(|(k, va)| match mb.get_key(k) {
                 Some(vb) => structural_shapes_match(va, vb, depth + 1),
                 None => false,
             })
         }
-        (Value::Sequence(sa), Value::Sequence(sb)) => {
+        (Value::Array(sa), Value::Array(sb)) => {
             sa.len() == sb.len()
                 && sa
                     .iter()
                     .zip(sb.iter())
                     .all(|(va, vb)| structural_shapes_match(va, vb, depth + 1))
         }
-        (Value::Tagged(ta), Value::Tagged(tb)) => {
-            ta.tag == tb.tag && structural_shapes_match(&ta.value, &tb.value, depth + 1)
+        (Value::Tag(ta, va), Value::Tag(tb, vb)) => {
+            ta == tb && structural_shapes_match(va, vb, depth + 1)
         }
-        (Value::Mapping(_), _) | (_, Value::Mapping(_)) => false,
-        (Value::Sequence(_), _) | (_, Value::Sequence(_)) => false,
-        (Value::Tagged(_), _) | (_, Value::Tagged(_)) => false,
+        (Value::Map(_), _) | (_, Value::Map(_)) => false,
+        (Value::Array(_), _) | (_, Value::Array(_)) => false,
+        (Value::Tag(..), _) | (_, Value::Tag(..)) => false,
 
         _ => true,
     }
 }
 
-fn mapping_key_repr(key: &serde_yaml::Value) -> String {
+fn mapping_key_repr(key: &busbar_contract::yaml::Value) -> String {
     match key {
-        serde_yaml::Value::String(s) => s.clone(),
+        busbar_contract::yaml::Value::Text(s) => s.clone(),
         other => format!("{other:?}"),
     }
 }
@@ -891,8 +897,8 @@ pub struct DeployCfg {
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
-    #[serde(default)]
-    pub oauth_as: Option<serde_yaml::Value>,
+    #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
+    pub oauth_as: Option<busbar_contract::yaml::Value>,
     /// `credentials:` — how a recoverable credential is kept at rest ([`CredentialsCfg`]): the
     /// `at_rest` key it is sealed under, and the `previous` one a rotation still opens.
     #[serde(default, deserialize_with = "credentials::deserialize_section")]
@@ -976,12 +982,12 @@ pub struct DeployCfg {
     /// [`resolve`] hands each present one to its plane's `build` as its section-keyed resource. A
     /// section no registered plane declares is still refused as an unknown field.
     #[serde(skip)]
-    pub plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    pub plane_raw: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     /// Every declaring section its plane owns the grammar of ([`DeployCfg::declared`]), AS WRITTEN
     /// (card and fees stripped): the settings that plane's door opens with when it is served through
     /// its door, beside the parse its grammar made. See [`DeployCfg::door_sections`].
     #[serde(skip)]
-    pub declared_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    pub declared_raw: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     /// The durable store as `{ module, settings }`. Required: absent is refused at validation
     /// ([`store_required`], Q-STORE = (B)).
     #[serde(default)]
@@ -1036,7 +1042,9 @@ pub struct DeployCfg {
 
 impl DeployCfg {
     #[must_use]
-    pub fn door_sections(&self) -> std::collections::BTreeMap<&'static str, serde_yaml::Value> {
+    pub fn door_sections(
+        &self,
+    ) -> std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value> {
         self.plane_raw
             .iter()
             .chain(&self.declared_raw)
@@ -1681,15 +1689,17 @@ pub fn resolve(
         std::collections::BTreeMap<String, pools::CandidatePoolCfg>,
     > = std::collections::BTreeMap::new();
     for (&section, written) in &deploy.declared_raw {
-        let Some(stated) = written
-            .get(busbar_contract::section::RESERVED_POOLS_KEY)
-            .filter(|v| !v.is_null())
-        else {
+        let Some(stated) = busbar_contract::yaml::ValueExt::get(
+            written,
+            busbar_contract::section::RESERVED_POOLS_KEY,
+        )
+        .filter(|v| !v.is_null()) else {
             continue;
         };
-        match serde_yaml::from_value::<std::collections::BTreeMap<String, pools::CandidatePoolCfg>>(
-            stated.clone(),
-        ) {
+        match busbar_contract::yaml::from_value::<
+            std::collections::BTreeMap<String, pools::CandidatePoolCfg>,
+        >(stated.clone())
+        {
             Ok(stated) => {
                 plane_pools.insert(section, stated);
             }

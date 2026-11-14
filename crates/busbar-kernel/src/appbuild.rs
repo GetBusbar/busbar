@@ -261,7 +261,10 @@ pub fn load_config_from_disk_compacting_document_patches(
         admission.check_config(&interpolated_config)?;
     }
 
-    if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&interpolated_config) {
+    if let Ok(doc) =
+        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&interpolated_config)
+    {
+        use busbar_contract::yaml::{MappingExt as _, ValueExt as _};
         let markers = config::current_format::detect_legacy_markers(&doc);
         if !markers.is_empty() {
             return Err(format!(
@@ -288,7 +291,7 @@ pub fn load_config_from_disk_compacting_document_patches(
             .as_mapping()
             .into_iter()
             .flat_map(|m| m.keys())
-            .filter_map(serde_yaml::Value::as_str)
+            .filter_map(busbar_contract::yaml::Value::as_str)
             .collect();
         if let Some(refusal) = rules.unloaded_plane_refusal(&keys) {
             return Err(format!("config.yaml: {refusal}"));

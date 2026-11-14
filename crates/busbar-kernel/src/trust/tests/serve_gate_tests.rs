@@ -25,7 +25,8 @@ fn admitted(approved: Option<&str>) -> (TrustBook, Arc<str>) {
         Some(d) => format!("items: {{ t: {{ digest: \"{d}\" }} }}"),
         None => "items: { t: {} }".to_string(),
     };
-    let doc: serde_yaml::Value = serde_yaml::from_str(&written).expect("yaml");
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&written).expect("yaml");
     let entry = parse_entry("`section.cp`", &doc, KEYS).expect("the declared keys parse");
     let book = TrustBook::default();
     let inst: Arc<str> = Arc::from("inst");

@@ -269,10 +269,11 @@ pub(super) async fn run() {
             socket.write_all(response.as_bytes()).await.unwrap();
         }).await.expect("the real provider exchange finishes within its bound");
     });
-    let provider_cfg = serde_yaml::from_str::<busbar_kernel::config::ProviderCfg>(&format!(
-        "protocol: {dialect}\nbase_url: 'http://{address}'\napi_key: none\nerror_map: {{}}"
-    ))
-    .unwrap();
+    let provider_cfg =
+        busbar_contract::yaml::from_str::<busbar_kernel::config::ProviderCfg>(&format!(
+            "protocol: {dialect}\nbase_url: 'http://{address}'\napi_key: none\nerror_map: {{}}"
+        ))
+        .unwrap();
     let providers = crate::root::door_steps::provider_routes(
         &std::collections::HashMap::from([(
             "typesafe".into(),
@@ -307,7 +308,7 @@ pub(super) async fn run() {
     };
     let sections = BTreeMap::from([(
         "decisions",
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").unwrap(),
+        busbar_contract::yaml::from_str("models: {m: {provider: typesafe}}").unwrap(),
     )]);
     let mut served = super::super::compose_planes(
         &[("boot-audit-decisions".into(), Arc::new(plane))],

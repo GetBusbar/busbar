@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::plugin::Kind;
-use serde_yaml::{Mapping, Value};
+use busbar_contract::yaml::{self, prelude::*};
 
 #[path = "migrate_1_6.rs"]
 mod upgrade_1_6;
@@ -225,9 +225,8 @@ fn migrate_document(
     host: &dyn super::migrate_plugins::MigrateHost,
     source_specific: bool,
 ) -> Result<MigrateOutput, String> {
-    let doc: Value =
-        serde_yaml::from_str(raw).map_err(|e| format!("input is not valid YAML: {e}"))?;
-    let Value::Mapping(mut root) = doc else {
+    let doc: Value = yaml::from_str(raw).map_err(|e| format!("input is not valid YAML: {e}"))?;
+    let Value::Map(mut root) = doc else {
         return Err("input is not a YAML mapping (expected a busbar config document)".to_string());
     };
     let mut changes: Vec<String> = Vec::new();
@@ -290,7 +289,7 @@ fn migrate_document(
         upgrade_1_6::migrate_bootstrap(&mut root, &mut changes, &mut notices);
     }
 
-    let body = serde_yaml::to_string(&Value::Mapping(root))
+    let body = yaml::to_string(&Value::Map(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
 
     let mut yaml = String::new();
@@ -361,22 +360,30 @@ pub fn migrate_overlay_fragment(
     })
 }
 
-pub(super) fn take(m: &mut Mapping, k: &str) -> Option<Value> {
-    m.remove(Value::from(k))
+/// Remove `key` exactly as 1.5.5's `serde_yaml::Mapping::remove` did: a `swap_remove`, the last
+/// entry moving into the removed key's place, so a migrated document keeps 1.5.5's key order.
+pub(super) fn swap_remove_key(m: &mut Pairs, key: impl Index) -> Option<Value> {
+    let at = key.position(m.as_slice())?;
+    Some(m.swap_remove(at).1)
+}
+
+pub(super) fn take(m: &mut Pairs, k: &str) -> Option<Value> {
+    swap_remove_key(m, k)
 }
 
 fn migrate_tools_verify_ttl(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
-    let Some(Value::Mapping(tools)) = root.get_mut(Value::from(field::TOOLS)) else {
+    let Some(Value::Map(tools)) = root.get_key_mut(field::TOOLS) else {
         return;
     };
 
     let flat = rename_refresh_ttl(
         tools
             .iter_mut()
+            .map(|(id, def)| (&*id, def))
             .filter(|(id, _)| id.as_str() != Some(field::SERVERS)),
         field::TOOLS,
         warnings,
@@ -388,10 +395,14 @@ fn migrate_tools_verify_ttl(
                 .into(),
         );
     }
-    let Some(Value::Mapping(servers)) = tools.get_mut(Value::from(field::SERVERS)) else {
+    let Some(Value::Map(servers)) = tools.get_key_mut(field::SERVERS) else {
         return;
     };
-    if rename_refresh_ttl(servers.iter_mut(), "tools.servers", warnings) {
+    if rename_refresh_ttl(
+        servers.iter_mut().map(|(id, def)| (&*id, def)),
+        "tools.servers",
+        warnings,
+    ) {
         changes.push(
             "tools.servers.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
              refresh daemon; see the per-server WARNING for the semantics change)"
@@ -407,12 +418,12 @@ fn rename_refresh_ttl<'a>(
 ) -> bool {
     let mut renamed = false;
     for (id, def) in entries {
-        let Value::Mapping(def) = def else { continue };
-        let Some(value) = def.remove(Value::from(field::REFRESH_TTL)) else {
+        let Value::Map(def) = def else { continue };
+        let Some(value) = swap_remove_key(def, field::REFRESH_TTL) else {
             continue;
         };
         let shown = value.as_str().unwrap_or("<non-string>").to_string();
-        def.insert(field::VERIFY_TTL.into(), value);
+        def.insert_key(field::VERIFY_TTL, value);
         renamed = true;
         warnings.push(
             busbar_kernel::diagnostics::coded::migrate_refresh_ttl_meaning_changed(
@@ -425,21 +436,21 @@ fn rename_refresh_ttl<'a>(
     renamed
 }
 
-fn migrate_store_required(root: &mut Mapping, changes: &mut Vec<String>) {
+fn migrate_store_required(root: &mut Pairs, changes: &mut Vec<String>) {
     let key = Kind::Store.root();
     let module = crate::config::migrated_store_module();
-    match root.get_mut(Value::from(key)) {
+    match root.get_key_mut(key) {
         None => {
-            let mut store = Mapping::new();
-            store.insert(field::MODULE.into(), module.into());
-            root.insert(key.into(), Value::Mapping(store));
+            let mut store = Pairs::new();
+            store.insert_key(field::MODULE, module.into());
+            root.insert_key(key, Value::Map(store));
             changes.push(format!(
                 "{key}: inserted `{key}: {{module: {module}}}` (1.6.0 requires a `{key}:` block; \
                  a config without one ran on the in-memory store, which this keeps)"
             ));
         }
-        Some(Value::Mapping(store)) if !store.contains_key(Value::from(field::MODULE)) => {
-            store.insert(field::MODULE.into(), module.into());
+        Some(Value::Map(store)) if !store.contains_key(field::MODULE) => {
+            store.insert_key(field::MODULE, module.into());
             changes.push(format!(
                 "{key}.module: inserted `{module}` (1.6.0 requires the store to be named; a \
                  `{key}:` block without a module ran on the in-memory store, which this keeps)"
@@ -449,10 +460,10 @@ fn migrate_store_required(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-fn as_map(v: Value) -> Mapping {
+fn as_map(v: Value) -> Pairs {
     match v {
-        Value::Mapping(m) => m,
-        _ => Mapping::new(),
+        Value::Map(m) => m,
+        _ => Pairs::new(),
     }
 }
 
@@ -490,14 +501,14 @@ pub(super) enum Taken<T> {
 }
 
 pub(super) fn take_shaped(
-    m: &mut Mapping,
+    m: &mut Pairs,
     k: &str,
     want: &str,
     matches_shape: fn(&Value) -> bool,
     ctx: &str,
     todos: &mut Vec<String>,
 ) -> Taken<Value> {
-    let Some(found) = m.get(Value::from(k)) else {
+    let Some(found) = m.get_key(k) else {
         return Taken::Absent;
     };
     if !matches_shape(found) {
@@ -515,31 +526,26 @@ pub(super) fn take_shaped(
         return Taken::Malformed;
     }
 
-    Taken::Got(m.remove(Value::from(k)).expect("just found"))
+    Taken::Got(swap_remove_key(m, k).expect("just found"))
 }
 
 pub(super) fn take_mapping(
-    m: &mut Mapping,
+    m: &mut Pairs,
     k: &str,
     ctx: &str,
     todos: &mut Vec<String>,
-) -> Taken<Mapping> {
+) -> Taken<Pairs> {
     match take_shaped(m, k, "a mapping", |v| v.is_mapping(), ctx, todos) {
-        Taken::Got(Value::Mapping(mm)) => Taken::Got(mm),
+        Taken::Got(Value::Map(mm)) => Taken::Got(mm),
         Taken::Got(_) => unreachable!("shape was checked"),
         Taken::Absent => Taken::Absent,
         Taken::Malformed => Taken::Malformed,
     }
 }
 
-fn take_sequence(
-    m: &mut Mapping,
-    k: &str,
-    ctx: &str,
-    todos: &mut Vec<String>,
-) -> Taken<Vec<Value>> {
+fn take_sequence(m: &mut Pairs, k: &str, ctx: &str, todos: &mut Vec<String>) -> Taken<Vec<Value>> {
     match take_shaped(m, k, "a list", |v| v.is_sequence(), ctx, todos) {
-        Taken::Got(Value::Sequence(s)) => Taken::Got(s),
+        Taken::Got(Value::Array(s)) => Taken::Got(s),
         Taken::Got(_) => unreachable!("shape was checked"),
         Taken::Absent => Taken::Absent,
         Taken::Malformed => Taken::Malformed,
@@ -547,7 +553,7 @@ fn take_sequence(
 }
 
 pub(super) fn one_line(v: &Value) -> String {
-    let s = serde_yaml::to_string(v).unwrap_or_else(|_| "?".into());
+    let s = yaml::to_string(v).unwrap_or_else(|_| "?".into());
     let s = s.replace('\n', " ");
     let s = s.trim().to_string();
     if s.chars().count() > 60 {
@@ -559,8 +565,8 @@ pub(super) fn one_line(v: &Value) -> String {
 
 fn entry_module_name(v: &Value) -> Option<String> {
     match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Mapping(m) => m.keys().next().and_then(|k| k.as_str().map(str::to_string)),
+        Value::Text(s) => Some(s.clone()),
+        Value::Map(m) => m.keys().next().and_then(|k| k.as_str().map(str::to_string)),
         _ => None,
     }
 }
@@ -570,14 +576,14 @@ fn set_max_admin_scope(seq: &mut [Value], module: &str, scope: Value) -> bool {
         if entry_module_name(e).as_deref() != Some(module) {
             continue;
         }
-        if !matches!(e, Value::Mapping(_)) {
-            let mut outer = Mapping::new();
-            outer.insert(Value::from(module), Value::Mapping(Mapping::new()));
-            *e = Value::Mapping(outer);
+        if !matches!(e, Value::Map(_)) {
+            let mut outer = Pairs::new();
+            outer.insert_key(module, Value::Map(Pairs::new()));
+            *e = Value::Map(outer);
         }
-        if let Value::Mapping(m) = e {
-            if let Some(Value::Mapping(body)) = m.get_mut(Value::from(module)) {
-                body.insert(field::MAX_ADMIN_SCOPE.into(), scope);
+        if let Value::Map(m) = e {
+            if let Some(Value::Map(body)) = m.get_key_mut(module) {
+                body.insert_key(field::MAX_ADMIN_SCOPE, scope);
             }
         }
         return true;
@@ -585,18 +591,18 @@ fn set_max_admin_scope(seq: &mut [Value], module: &str, scope: Value) -> bool {
     false
 }
 
-fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
+fn migrate_dropped_scopes(root: &mut Pairs, warnings: &mut Vec<String>) {
     fn collapsed(v: &Value) -> bool {
         matches!(v.as_str(), Some("hooks-register") | Some("mint"))
     }
-    let Some(Value::Mapping(auth)) = root.get_mut(Value::from(field::AUTH)) else {
+    let Some(Value::Map(auth)) = root.get_key_mut(field::AUTH) else {
         return;
     };
 
     for list_key in [field::CHAIN, field::ADMIN_AUTH] {
-        if let Some(Value::Sequence(seq)) = auth.get_mut(Value::from(list_key)) {
+        if let Some(Value::Array(seq)) = auth.get_key_mut(list_key) {
             for entry in seq.iter_mut() {
-                let Value::Mapping(outer) = entry else {
+                let Value::Map(outer) = entry else {
                     continue;
                 };
                 let module = outer
@@ -604,8 +610,8 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
                     .next()
                     .and_then(|k| k.as_str().map(str::to_string));
                 let Some(module) = module else { continue };
-                if let Some(Value::Mapping(body)) = outer.get_mut(Value::from(module.as_str())) {
-                    if let Some(scope) = body.get_mut(Value::from(field::MAX_ADMIN_SCOPE)) {
+                if let Some(Value::Map(body)) = outer.get_key_mut(module.as_str()) {
+                    if let Some(scope) = body.get_key_mut(field::MAX_ADMIN_SCOPE) {
                         if collapsed(scope) {
                             let old = scope.as_str().unwrap_or("").to_string();
                             *scope = Value::from("full");
@@ -625,18 +631,18 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
         }
     }
 
-    if let Some(Value::Mapping(rb)) = auth.get_mut(Value::from(field::ROLE_BINDINGS)) {
+    if let Some(Value::Map(rb)) = auth.get_key_mut(field::ROLE_BINDINGS) {
         for (module_k, roles) in rb.iter_mut() {
             let module = module_k.as_str().unwrap_or("").to_string();
-            let Value::Mapping(roles) = roles else {
+            let Value::Map(roles) = roles else {
                 continue;
             };
             for (role_k, binding) in roles.iter_mut() {
                 let role = role_k.as_str().unwrap_or("").to_string();
-                let Value::Mapping(binding) = binding else {
+                let Value::Map(binding) = binding else {
                     continue;
                 };
-                if let Some(scope) = binding.get_mut(Value::from(field::ADMIN_SCOPE)) {
+                if let Some(scope) = binding.get_key_mut(field::ADMIN_SCOPE) {
                     if collapsed(scope) {
                         let old = scope.as_str().unwrap_or("").to_string();
                         *scope = Value::from("full");
@@ -654,9 +660,9 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
     }
 }
 
-fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    if root.contains_key(Value::from(field::ADMIN_AUTH))
-        && root.get(Value::from(field::AUTH)).is_some_and(|auth| {
+fn migrate_admin_auth(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+    if root.contains_key(field::ADMIN_AUTH)
+        && root.get_key(field::AUTH).is_some_and(|auth| {
             (!auth.is_null() && !auth.is_mapping())
                 || auth
                     .get(field::ADMIN_AUTH)
@@ -670,16 +676,14 @@ fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         return;
     };
     let names: Vec<Value> = match top {
-        Value::Sequence(s) => s,
+        Value::Array(s) => s,
         other => vec![other],
     };
-    let auth = root
-        .entry(field::AUTH.into())
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
+    let auth = root.entry_or_insert_with(field::AUTH, || Value::Map(Pairs::new()));
     if auth.is_null() {
-        *auth = Value::Mapping(Mapping::new());
+        *auth = Value::Map(Pairs::new());
     }
-    let Value::Mapping(auth) = auth else {
+    let Value::Map(auth) = auth else {
         return;
     };
     let mut list = take(auth, field::ADMIN_AUTH)
@@ -694,7 +698,7 @@ fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             None => list.push(name),
         }
     }
-    auth.insert(field::ADMIN_AUTH.into(), Value::Sequence(list));
+    auth.insert_key(field::ADMIN_AUTH, Value::Array(list));
     changes.push(
         "top-level admin_auth -> auth.admin_auth (1.5.0 nests the admin chain under auth)".into(),
     );
@@ -781,25 +785,25 @@ fn rescale_amount(amount: Value, divisor: u64) -> Value {
     }
 }
 
-fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+fn migrate_governance(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     let mut gov = match take_mapping(root, field::GOVERNANCE, "", todos) {
         Taken::Got(m) => m,
         Taken::Absent | Taken::Malformed => return,
     };
-    if gov.contains_key(Value::from(field::ADMIN_TOKEN))
-        && root.get(Value::from(field::AUTH)).is_some_and(|auth| {
+    if gov.contains_key(field::ADMIN_TOKEN)
+        && root.get_key(field::AUTH).is_some_and(|auth| {
             (!auth.is_null() && !auth.is_mapping())
                 || auth
                     .get(field::ADMIN_AUTH)
                     .is_some_and(|list| !list.is_sequence())
         })
     {
-        root.insert(field::GOVERNANCE.into(), Value::Mapping(gov));
+        root.insert_key(field::GOVERNANCE, Value::Map(gov));
         todos.push("governance.admin_token: could not merge into malformed auth or auth.admin_auth; governance and auth were left unchanged for manual migration".into());
         return;
     }
     if gov
-        .get(Value::from(field::BUDGET_GROUPS))
+        .get_key(field::BUDGET_GROUPS)
         .and_then(Value::as_mapping)
         .is_some_and(|groups| {
             groups.values().any(|group| {
@@ -814,7 +818,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             })
         })
     {
-        root.insert(field::GOVERNANCE.into(), Value::Mapping(gov));
+        root.insert_key(field::GOVERNANCE, Value::Map(gov));
         todos.push("governance.budget_groups: an entry is not a mapping or contains unrecognized fields; governance was left unchanged for manual migration".into());
         return;
     }
@@ -823,49 +827,49 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     let db_path = take(&mut gov, field::DB_PATH).and_then(|v| v.as_str().map(str::to_string));
     let module = stray_module.unwrap_or_else(|| legacy_store_text("gov14_module").into());
     {
-        let mut store = Mapping::new();
-        store.insert(field::MODULE.into(), module.clone().into());
-        let mut settings = Mapping::new();
+        let mut store = Pairs::new();
+        store.insert_key(field::MODULE, module.clone().into());
+        let mut settings = Pairs::new();
         match (module.as_str(), db_path) {
             (m, _) if m == crate::config::migrated_store_module() => {}
 
             (m, p) if m == legacy_store_text("gov14_module") => {
                 let p = p.unwrap_or_else(|| legacy_store_text("gov14_db_path").into());
-                settings.insert(field::DB_PATH.into(), p.into());
+                settings.insert_key(field::DB_PATH, p.into());
             }
             (_, Some(p)) => {
-                settings.insert(field::URL.into(), p.into());
+                settings.insert_key(field::URL, p.into());
             }
             (_, None) => {}
         }
         if let Some(busy) = take(&mut gov, legacy_store_text("gov14_busy_timeout_key")) {
-            settings.insert(field::BUSY_TIMEOUT_MS.into(), busy);
+            settings.insert_key(field::BUSY_TIMEOUT_MS, busy);
         }
         if !settings.is_empty() {
-            store.insert(field::SETTINGS.into(), Value::Mapping(settings));
+            store.insert_key(field::SETTINGS, Value::Map(settings));
         }
-        root.insert(Kind::Store.root().into(), Value::Mapping(store));
+        root.insert_key(Kind::Store.root(), Value::Map(store));
         changes.push(legacy_store_text("gov14_change").into());
     }
 
     if let Some(card) = take(&mut gov, field::RATE_CARD) {
-        root.insert(field::RATE_CARD.into(), card);
+        root.insert_key(field::RATE_CARD, card);
         changes.push("governance.rate_card -> top-level rate_card".into());
     }
     if let Some(fee) = take(&mut gov, field::PRICE_PER_REQUEST_CENTS) {
-        root.insert(field::PER_REQUEST_FEE.into(), fee);
+        root.insert_key(field::PER_REQUEST_FEE, fee);
         changes.push("governance.price_per_request_cents -> per_request_fee".into());
     }
     if let Some(p1k) = take(&mut gov, field::PRICE_PER_1K_TOKENS_CENTS) {
         let n = p1k.as_f64().unwrap_or(LEGACY_UNREADABLE_TOKEN_PRICE_CENTS);
         let per_tier = n * LEGACY_CENTS_PER_THOUSAND_TO_MICRO_UNITS_PER_TOKEN;
 
-        let existing_card = match root.remove(Value::from(field::RATE_CARD)) {
-            None => Some(Mapping::new()),
-            Some(Value::Mapping(m)) => Some(m),
+        let existing_card = match swap_remove_key(root, field::RATE_CARD) {
+            None => Some(Pairs::new()),
+            Some(Value::Map(m)) => Some(m),
             Some(other) => {
                 let shape = one_line(&other);
-                root.insert(field::RATE_CARD.into(), other);
+                root.insert_key(field::RATE_CARD, other);
                 todos.push(format!(
                     "rate_card: is not a mapping (`{shape}`) — it was left EXACTLY as written, so \
                      `governance.price_per_1k_tokens_cents` was NOT folded into it. Fix the block \
@@ -877,7 +881,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         };
         if let Some(mut card) = existing_card {
             let model_names: Vec<String> = root
-                .get(Value::from(field::MODELS))
+                .get_key(field::MODELS)
                 .and_then(|v| v.as_mapping())
                 .map(|m| {
                     m.keys()
@@ -886,20 +890,20 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
                 })
                 .unwrap_or_default();
             for m in &model_names {
-                if !card.contains_key(Value::from(m.as_str())) {
-                    let mut entry = Mapping::new();
+                if !card.contains_key(m.as_str()) {
+                    let mut entry = Pairs::new();
                     for tier in [
                         field::INPUT_UTOK,
                         field::OUTPUT_UTOK,
                         field::CACHE_READ_UTOK,
                         field::CACHE_WRITE_UTOK,
                     ] {
-                        entry.insert(tier.into(), per_tier.into());
+                        entry.insert_key(tier, per_tier.into());
                     }
-                    card.insert(m.as_str().into(), Value::Mapping(entry));
+                    card.insert_key(m.as_str(), Value::Map(entry));
                 }
             }
-            root.insert(field::RATE_CARD.into(), Value::Mapping(card));
+            root.insert_key(field::RATE_CARD, Value::Map(card));
             changes.push(
             "governance.price_per_1k_tokens_cents -> a rate_card entry per model (N cents/1k = \
              10N micro-units/token on every tier)"
@@ -914,13 +918,13 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     }
 
     if let Taken::Got(gm) = take_mapping(&mut gov, field::BUDGET_GROUPS, field::GOVERNANCE, todos) {
-        let mut out = Mapping::new();
+        let mut out = Pairs::new();
         {
             for (name, g) in gm {
                 let mut g = as_map(g);
-                let mut entry = Mapping::new();
+                let mut entry = Pairs::new();
                 if let Some(parent) = take(&mut g, field::PARENT) {
-                    entry.insert(field::PARENT.into(), parent);
+                    entry.insert_key(field::PARENT, parent);
                 }
                 let amount = take(&mut g, field::MAX_BUDGET_CENTS)
                     .unwrap_or(Value::from(LEGACY_ABSENT_BUDGET_CENTS));
@@ -931,68 +935,60 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
                             .as_str()
                             .into()
                     });
-                let mut limit = Mapping::new();
+                let mut limit = Pairs::new();
                 let ctx = format!("groups.{}", name.as_str().unwrap_or("?"));
                 let (window, divisor) = window_noun(&period, &ctx, todos);
-                limit.insert(field::BUDGET.into(), rescale_amount(amount, divisor));
-                limit.insert(field::PER.into(), window.into());
-                entry.insert(
-                    field::LIMITS.into(),
-                    Value::Sequence(vec![Value::Mapping(limit)]),
-                );
-                out.insert(name, Value::Mapping(entry));
+                limit.insert_key(field::BUDGET, rescale_amount(amount, divisor));
+                limit.insert_key(field::PER, window.into());
+                entry.insert_key(field::LIMITS, Value::Array(vec![Value::Map(limit)]));
+                out.insert_key(name, Value::Map(entry));
             }
         }
-        root.insert(field::GROUPS.into(), Value::Mapping(out));
+        root.insert_key(field::GROUPS, Value::Map(out));
         changes.push(
             "governance.budget_groups -> top-level groups (budget caps became generic limits)"
                 .into(),
         );
     }
-    let mut advanced = Mapping::new();
+    let mut advanced = Pairs::new();
     if let Some(v) = take(&mut gov, field::RATE_SWEEP_INTERVAL) {
-        advanced.insert(field::RATE_SWEEP_INTERVAL.into(), v);
+        advanced.insert_key(field::RATE_SWEEP_INTERVAL, v);
     }
     if let Some(v) = take(&mut gov, field::USAGE_FLUSH_INTERVAL_MS) {
-        advanced.insert(field::USAGE_FLUSH_INTERVAL_MS.into(), v);
+        advanced.insert_key(field::USAGE_FLUSH_INTERVAL_MS, v);
     }
     if !advanced.is_empty() {
-        root.insert(field::ADVANCED.into(), Value::Mapping(advanced));
+        root.insert_key(field::ADVANCED, Value::Map(advanced));
         changes.push("governance.rate_sweep_interval / usage_flush_interval_ms -> advanced".into());
     }
     if let Some(token) = take(&mut gov, field::ADMIN_TOKEN) {
         let operator = busbar_kernel::config::operator_provider();
-        let auth = root
-            .entry(field::AUTH.into())
-            .or_insert_with(|| Value::Mapping(Mapping::new()));
+        let auth = root.entry_or_insert_with(field::AUTH, || Value::Map(Pairs::new()));
         if auth.is_null() {
-            *auth = Value::Mapping(Mapping::new());
+            *auth = Value::Map(Pairs::new());
         }
-        if let Value::Mapping(auth) = auth {
+        if let Value::Map(auth) = auth {
             let secret_ref: Value = match token.as_str() {
                 Some(s) if s.starts_with("${") && s.ends_with('}') => {
                     let var = &s[2..s.len() - 1];
-                    let mut m = Mapping::new();
-                    m.insert(field::ENV.into(), var.into());
-                    Value::Mapping(m)
+                    let mut m = Pairs::new();
+                    m.insert_key(field::ENV, var.into());
+                    Value::Map(m)
                 }
                 _ => {
                     todos.push(busbar_kernel_identity::operator::literal_token_todo(
                         operator,
                     ));
-                    let mut m = Mapping::new();
-                    m.insert(field::ENV.into(), "BUSBAR_ADMIN_TOKEN".into());
-                    Value::Mapping(m)
+                    let mut m = Pairs::new();
+                    m.insert_key(field::ENV, "BUSBAR_ADMIN_TOKEN".into());
+                    Value::Map(m)
                 }
             };
-            let mut body = Mapping::new();
-            body.insert(field::TOKEN.into(), secret_ref);
-            let mut entry = Mapping::new();
-            entry.insert(operator.into(), Value::Mapping(body));
-            auth.insert(
-                field::ADMIN_AUTH.into(),
-                Value::Sequence(vec![Value::Mapping(entry)]),
-            );
+            let mut body = Pairs::new();
+            body.insert_key(field::TOKEN, secret_ref);
+            let mut entry = Pairs::new();
+            entry.insert_key(operator, Value::Map(body));
+            auth.insert_key(field::ADMIN_AUTH, Value::Array(vec![Value::Map(entry)]));
         }
         changes.push(busbar_kernel_identity::operator::migrated_token(operator));
     }
@@ -1009,23 +1005,20 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
 }
 
 fn migrate_auth(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
     let mut group_map = take(root, field::GROUP_MAP);
 
-    if !matches!(root.get(Value::from(field::AUTH)), Some(Value::Mapping(_))) && group_map.is_none()
-    {
+    if !matches!(root.get_key(field::AUTH), Some(Value::Map(_))) && group_map.is_none() {
         return;
     }
-    let Value::Mapping(auth) = root
-        .entry(field::AUTH.into())
-        .or_insert_with(|| Value::Mapping(Mapping::new()))
+    let Value::Map(auth) = root.entry_or_insert_with(field::AUTH, || Value::Map(Pairs::new()))
     else {
         if let Some(gm) = group_map {
-            root.insert(field::GROUP_MAP.into(), gm);
+            root.insert_key(field::GROUP_MAP, gm);
             todos.push(
                 "group_map: could not migrate to auth.role_bindings because `auth:` is present \
                  but is not a mapping (malformed 1.4.x config); group_map was left at the top \
@@ -1040,7 +1033,7 @@ fn migrate_auth(
         group_map = take(auth, field::GROUP_MAP);
     }
 
-    if let Some(Value::Sequence(chain)) = auth.get_mut(Value::from(field::CHAIN)) {
+    if let Some(Value::Array(chain)) = auth.get_key_mut(field::CHAIN) {
         let mut rewrote = false;
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut out: Vec<Value> = Vec::new();
@@ -1075,24 +1068,24 @@ fn migrate_auth(
     }
 
     let chain_uses_keys = matches!(
-        auth.get(Value::from(field::CHAIN)),
-        Some(Value::Sequence(c)) if c.iter().any(|e| {
+        auth.get_key(field::CHAIN),
+        Some(Value::Array(c)) if c.iter().any(|e| {
             e.as_str() == Some(busbar_kernel::config::KEYS_MODULE)
-                || e.as_mapping().is_some_and(|m| m.contains_key(Value::from(busbar_kernel::config::KEYS_MODULE)))
+                || e.as_mapping().is_some_and(|m| m.contains_key(busbar_kernel::config::KEYS_MODULE))
         })
     );
-    if chain_uses_keys && !auth.contains_key(Value::from(field::SIGNING_KEY)) {
+    if chain_uses_keys && !auth.contains_key(field::SIGNING_KEY) {
         todos.push(MISSING_SIGNING_KEY.into());
     }
 
-    if let Some(Value::Mapping(modules)) = take(auth, field::MODULES) {
+    if let Some(Value::Map(modules)) = take(auth, field::MODULES) {
         for (mod_name, caps) in modules {
             let mod_name = mod_name.as_str().unwrap_or("?").to_string();
             let caps = as_map(caps);
-            if let Some(scope) = caps.get(Value::from(field::MAX_ADMIN_SCOPE)).cloned() {
+            if let Some(scope) = caps.get_key(field::MAX_ADMIN_SCOPE).cloned() {
                 let mut applied = false;
                 for list in [field::CHAIN, field::ADMIN_AUTH] {
-                    if let Some(Value::Sequence(seq)) = auth.get_mut(Value::from(list)) {
+                    if let Some(Value::Array(seq)) = auth.get_key_mut(list) {
                         if set_max_admin_scope(seq, &mod_name, scope.clone()) {
                             applied = true;
                             break;
@@ -1111,7 +1104,7 @@ fn migrate_auth(
                     ));
                 }
             }
-            if caps.contains_key(Value::from(field::ALLOWED_GROUPS)) {
+            if caps.contains_key(field::ALLOWED_GROUPS) {
                 todos.push(format!(
                     "auth.modules.{mod_name}.allowed_groups: the per-module group-assertion \
                      allowlist was REMOVED in 1.5.0 (bindings are nested by module in \
@@ -1130,8 +1123,8 @@ fn migrate_auth(
     if let Some(mode) = take(auth, field::MODE).and_then(|v| v.as_str().map(str::to_string)) {
         match mode.as_str() {
             LEGACY_AUTH_MODE_PASSTHROUGH => {
-                auth.insert(
-                    field::UPSTREAM_CREDENTIALS.into(),
+                auth.insert_key(
+                    field::UPSTREAM_CREDENTIALS,
                     LEGACY_AUTH_MODE_PASSTHROUGH.into(),
                 );
                 changes.push(
@@ -1144,9 +1137,9 @@ fn migrate_auth(
                 );
             }
             other => {
-                auth.insert(
-                    field::CHAIN.into(),
-                    Value::Sequence(vec![busbar_kernel::config::KEYS_MODULE.into()]),
+                auth.insert_key(
+                    field::CHAIN,
+                    Value::Array(vec![busbar_kernel::config::KEYS_MODULE.into()]),
                 );
                 changes.push(format!(
                     "auth.mode: {other} -> auth.chain: [keys] (static tokens are removed; mint \
@@ -1174,15 +1167,13 @@ fn migrate_auth(
     };
 
     let chain_modules: Vec<String> = auth
-        .get(Value::from(field::CHAIN))
+        .get_key(field::CHAIN)
         .and_then(|v| v.as_sequence())
         .map(|seq| {
             seq.iter()
                 .filter_map(|e| match e {
-                    Value::String(s) => Some(s.clone()),
-                    Value::Mapping(m) => {
-                        m.keys().next().and_then(|k| k.as_str().map(str::to_string))
-                    }
+                    Value::Text(s) => Some(s.clone()),
+                    Value::Map(m) => m.keys().next().and_then(|k| k.as_str().map(str::to_string)),
                     _ => None,
                 })
                 .filter(|m| {
@@ -1206,8 +1197,8 @@ fn migrate_auth(
         }
     };
 
-    let Value::Mapping(gm) = gm else {
-        root.insert(field::GROUP_MAP.into(), gm);
+    let Value::Map(gm) = gm else {
+        root.insert_key(field::GROUP_MAP, gm);
         todos.push(
             "group_map: could not migrate to auth.role_bindings because `group_map:` itself is \
              not a mapping (malformed 1.4.x config); group_map was left at the top level \
@@ -1236,17 +1227,17 @@ fn migrate_auth(
             })
         })
     }) {
-        root.insert(field::GROUP_MAP.into(), Value::Mapping(gm));
+        root.insert_key(field::GROUP_MAP, Value::Map(gm));
         todos.push("group_map: a role is not a mapping or contains unrecognized fields; the group_map was left unchanged for manual migration".into());
         return;
     }
-    let mut bindings = Mapping::new();
-    let mut generated_groups: Mapping = Mapping::new();
+    let mut bindings = Pairs::new();
+    let mut generated_groups: Pairs = Pairs::new();
     {
         for (role, b) in gm {
             let role_name = role.as_str().unwrap_or("?").to_string();
             let mut b = as_map(b);
-            let mut binding = Mapping::new();
+            let mut binding = Pairs::new();
             if let Some(pools) = take(&mut b, field::ALLOWED_POOLS) {
                 if pools.as_sequence().is_some_and(|s| s.is_empty()) {
                     warnings.push(
@@ -1256,15 +1247,15 @@ fn migrate_auth(
                         .into(),
                     );
                 }
-                binding.insert(field::ALLOWED_POOLS.into(), pools);
+                binding.insert_key(field::ALLOWED_POOLS, pools);
             }
             if let Some(g) =
                 take(&mut b, field::BUDGET_GROUP).or_else(|| take(&mut b, field::GROUP))
             {
-                binding.insert(field::GROUP.into(), g);
+                binding.insert_key(field::GROUP, g);
             }
             if let Some(scope) = take(&mut b, field::ADMIN_SCOPE) {
-                binding.insert(field::ADMIN_SCOPE.into(), scope);
+                binding.insert_key(field::ADMIN_SCOPE, scope);
             }
 
             let rpm = take(&mut b, field::RPM_LIMIT);
@@ -1281,39 +1272,39 @@ fn migrate_auth(
                 let gname = format!("migrated-{role_name}");
                 let mut limits: Vec<Value> = Vec::new();
                 if let Some(r) = rpm {
-                    let mut l = Mapping::new();
-                    l.insert(field::REQUESTS.into(), r);
-                    l.insert(
-                        field::PER.into(),
+                    let mut l = Pairs::new();
+                    l.insert_key(field::REQUESTS, r);
+                    l.insert_key(
+                        field::PER,
                         busbar_kernel::config::groups::LimitWindow::Minute
                             .as_str()
                             .into(),
                     );
-                    limits.push(Value::Mapping(l));
+                    limits.push(Value::Map(l));
                 }
                 if let Some(t) = tpm {
-                    let mut l = Mapping::new();
-                    l.insert(field::TOKENS.into(), t);
-                    l.insert(
-                        field::PER.into(),
+                    let mut l = Pairs::new();
+                    l.insert_key(field::TOKENS, t);
+                    l.insert_key(
+                        field::PER,
                         busbar_kernel::config::groups::LimitWindow::Minute
                             .as_str()
                             .into(),
                     );
-                    limits.push(Value::Mapping(l));
+                    limits.push(Value::Map(l));
                 }
                 if let Some(bu) = budget {
-                    let mut l = Mapping::new();
+                    let mut l = Pairs::new();
                     let (window, divisor) = window_noun(&period, &format!("groups.{gname}"), todos);
-                    l.insert(field::BUDGET.into(), rescale_amount(bu, divisor));
-                    l.insert(field::PER.into(), window.into());
-                    limits.push(Value::Mapping(l));
+                    l.insert_key(field::BUDGET, rescale_amount(bu, divisor));
+                    l.insert_key(field::PER, window.into());
+                    limits.push(Value::Map(l));
                 }
-                let mut entry = Mapping::new();
-                entry.insert(field::LIMITS.into(), Value::Sequence(limits));
-                generated_groups.insert(gname.as_str().into(), Value::Mapping(entry));
-                if !binding.contains_key(Value::from(field::GROUP)) {
-                    binding.insert(field::GROUP.into(), gname.as_str().into());
+                let mut entry = Pairs::new();
+                entry.insert_key(field::LIMITS, Value::Array(limits));
+                generated_groups.insert_key(gname.as_str(), Value::Map(entry));
+                if !binding.contains_key(field::GROUP) {
+                    binding.insert_key(field::GROUP, gname.as_str().into());
                 }
                 todos.push(format!(
                     "groups.{gname}: generated from the old group_map role '{role_name}' inline \
@@ -1323,37 +1314,35 @@ fn migrate_auth(
                     "auth.group_map.{role_name} caps -> generated groups.{gname}"
                 ));
             }
-            bindings.insert(role, Value::Mapping(binding));
+            bindings.insert_key(role, Value::Map(binding));
         }
     }
-    let mut nested = Mapping::new();
-    nested.insert(module.as_str().into(), Value::Mapping(bindings));
-    auth.insert(field::ROLE_BINDINGS.into(), Value::Mapping(nested));
+    let mut nested = Pairs::new();
+    nested.insert_key(module.as_str(), Value::Map(bindings));
+    auth.insert_key(field::ROLE_BINDINGS, Value::Map(nested));
     changes.push(format!(
         "auth.group_map -> auth.role_bindings.{module} (nested by module)"
     ));
     if !generated_groups.is_empty() {
-        let groups = root
-            .entry(field::GROUPS.into())
-            .or_insert_with(|| Value::Mapping(Mapping::new()));
-        if let Value::Mapping(groups) = groups {
+        let groups = root.entry_or_insert_with(field::GROUPS, || Value::Map(Pairs::new()));
+        if let Value::Map(groups) = groups {
             for (k, v) in generated_groups {
-                groups.insert(k, v);
+                groups.insert_key(k, v);
             }
         }
     }
 }
 
-fn migrate_providers(root: &mut Mapping, changes: &mut Vec<String>) {
-    let Some(Value::Mapping(providers)) = root.get_mut(Value::from(Kind::Transport.root())) else {
+fn migrate_providers(root: &mut Pairs, changes: &mut Vec<String>) {
+    let Some(Value::Map(providers)) = root.get_key_mut(Kind::Transport.root()) else {
         return;
     };
     for (name, p) in providers.iter_mut() {
-        let Value::Mapping(p) = p else { continue };
+        let Value::Map(p) = p else { continue };
         if let Some(var) = take(p, field::API_KEY_ENV) {
-            let mut secret = Mapping::new();
-            secret.insert(field::ENV.into(), var);
-            p.insert(field::API_KEY.into(), Value::Mapping(secret));
+            let mut secret = Pairs::new();
+            secret.insert_key(field::ENV, var);
+            p.insert_key(field::API_KEY, Value::Map(secret));
             changes.push(format!(
                 "providers.{}.api_key_env -> api_key: {{ env: ... }}",
                 name.as_str().unwrap_or("?")
@@ -1369,41 +1358,37 @@ fn at_to_phase(at: &Value) -> Option<Value> {
         .find(|(o, _)| *o == s)
         .map(|(_, n)| *n)
         .unwrap_or(s);
-    Some(Value::Sequence(vec![Value::from(renamed)]))
+    Some(Value::Array(vec![Value::from(renamed)]))
 }
 
 fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Value {
     let m = entry.as_mapping().cloned().unwrap_or_default();
-    let mut def = Mapping::new();
-    let mut settings = as_map(
-        m.get(Value::from(field::SETTINGS))
-            .cloned()
-            .unwrap_or_default(),
-    );
+    let mut def = Pairs::new();
+    let mut settings = as_map(m.get_key(field::SETTINGS).cloned().unwrap_or(Value::Null));
     let url_transport = super::migration_table::text("hook_1x_url_transport");
     if let Some(url) = m
-        .get(Value::from(url_transport))
+        .get_key(url_transport)
         .filter(|_| !url_transport.is_empty())
         .and_then(|v| v.as_str())
     {
-        def.insert(field::MODULE.into(), url_transport.into());
-        settings.insert(field::URL.into(), url.into());
-    } else if let Some(path) = m.get(Value::from(field::SOCKET)).and_then(|v| v.as_str()) {
-        def.insert(field::MODULE.into(), field::SOCKET.into());
-        settings.insert(field::PATH.into(), path.into());
-    } else if let Some(module) = m.get(Value::from(field::MODULE)).and_then(|v| v.as_str()) {
-        def.insert(field::MODULE.into(), module.into());
-    } else if let Some(plugin) = m.get(Value::from(field::PLUGIN)).and_then(|v| v.as_str()) {
-        def.insert(field::MODULE.into(), plugin.into());
+        def.insert_key(field::MODULE, url_transport.into());
+        settings.insert_key(field::URL, url.into());
+    } else if let Some(path) = m.get_key(field::SOCKET).and_then(|v| v.as_str()) {
+        def.insert_key(field::MODULE, field::SOCKET.into());
+        settings.insert_key(field::PATH, path.into());
+    } else if let Some(module) = m.get_key(field::MODULE).and_then(|v| v.as_str()) {
+        def.insert_key(field::MODULE, module.into());
+    } else if let Some(plugin) = m.get_key(field::PLUGIN).and_then(|v| v.as_str()) {
+        def.insert_key(field::MODULE, plugin.into());
     } else {
         todos.push(format!(
             "hook '{name}': no module/socket/{url_transport}/plugin transport found; set `module:` \
              to a `kind: hook` plugin"
         ));
-        def.insert(field::MODULE.into(), url_transport.into());
+        def.insert_key(field::MODULE, url_transport.into());
     }
     if !settings.is_empty() {
-        def.insert(field::SETTINGS.into(), Value::Mapping(settings));
+        def.insert_key(field::SETTINGS, Value::Map(settings));
     }
     for k in [
         field::KIND,
@@ -1415,49 +1400,48 @@ fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Valu
         field::PRIORITY,
         field::GROUPS,
     ] {
-        if let Some(v) = m.get(Value::from(k)) {
-            def.insert(k.into(), v.clone());
+        if let Some(v) = m.get_key(k) {
+            def.insert_key(k, v.clone());
         }
     }
-    let phase = m.get(Value::from(field::PHASE));
+    let phase = m.get_key(field::PHASE);
     if let Some(phase) = phase.filter(|p| !p.as_sequence().is_some_and(Vec::is_empty)) {
-        def.insert(field::PHASE.into(), phase.clone());
-    } else if let Some(phase) = m.get(Value::from(field::AT)).and_then(at_to_phase) {
-        def.insert(field::PHASE.into(), phase);
+        def.insert_key(field::PHASE, phase.clone());
+    } else if let Some(phase) = m.get_key(field::AT).and_then(at_to_phase) {
+        def.insert_key(field::PHASE, phase);
     } else if let Some(phase) = phase {
-        def.insert(field::PHASE.into(), phase.clone());
-    } else if m.get(Value::from(field::KIND)).and_then(|v| v.as_str()) == Some(LEGACY_TAP_HOOK_KIND)
-    {
-        def.insert(
-            field::PHASE.into(),
-            Value::Sequence(vec![Value::from(
+        def.insert_key(field::PHASE, phase.clone());
+    } else if m.get_key(field::KIND).and_then(|v| v.as_str()) == Some(LEGACY_TAP_HOOK_KIND) {
+        def.insert_key(
+            field::PHASE,
+            Value::Array(vec![Value::from(
                 busbar_kernel::config::HookStage::Request.as_str(),
             )]),
         );
     }
-    if m.get(Value::from(field::DEFAULT)).and_then(|v| v.as_bool()) == Some(true) {
+    if m.get_key(field::DEFAULT).and_then(|v| v.as_bool()) == Some(true) {
         todos.push(format!(
             "hook '{name}': the retired `default: true` flag is gone; name the base ordering \
              strategy in each pool's `hooks:` list explicitly"
         ));
     }
-    if m.contains_key(Value::from(field::SIGNALS)) {
+    if m.contains_key(field::SIGNALS) {
         todos.push(format!(
             "hook '{name}': the `signals:` declaration did not carry over automatically; re-add it \
              under the named `hooks:` entry if the hook still needs it"
         ));
     }
-    Value::Mapping(def)
+    Value::Map(def)
 }
 
-fn uniq_def_name(defs: &Mapping, base: &str) -> String {
-    if !defs.contains_key(Value::from(base)) {
+fn uniq_def_name(defs: &Pairs, base: &str) -> String {
+    if !defs.contains_key(base) {
         return base.to_string();
     }
     let mut n = 2usize;
     loop {
         let candidate = format!("{base}-{n}");
-        if !defs.contains_key(Value::from(candidate.as_str())) {
+        if !defs.contains_key(candidate.as_str()) {
             return candidate;
         }
         n += 1;
@@ -1474,10 +1458,10 @@ fn uniq_def_name(defs: &Mapping, base: &str) -> String {
 ///     reference in that pool (with a todo).
 ///
 /// A config already in the new shape (a `hooks:` map of `module:` defs) passes through untouched.
-fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    let needs_all_pools = root.contains_key(Value::from(field::GLOBAL_HOOKS))
+fn migrate_hooks_block(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+    let needs_all_pools = root.contains_key(field::GLOBAL_HOOKS)
         || root
-            .get(Value::from(Kind::Hook.root()))
+            .get_key(Kind::Hook.root())
             .and_then(Value::as_mapping)
             .is_some_and(|hooks| {
                 hooks
@@ -1485,7 +1469,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
                     .any(|hook| hook.get(field::GLOBAL).and_then(Value::as_bool) == Some(true))
             });
     if needs_all_pools
-        && root.get(Value::from(field::POOLS)).is_some_and(|pools| {
+        && root.get_key(field::POOLS).is_some_and(|pools| {
             !pools.is_mapping()
                 || pools
                     .get(field::HOOKS)
@@ -1500,7 +1484,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
         Taken::Got(m) => Some(m),
         Taken::Absent | Taken::Malformed => None,
     };
-    let mut defs = Mapping::new();
+    let mut defs = Pairs::new();
     let mut all_pools: Vec<Value> = Vec::new();
 
     if let Some(src) = hooks_src {
@@ -1509,10 +1493,10 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
         } else {
             for (k, entry) in &src {
                 let Some(name) = k.as_str() else { continue };
-                defs.insert(k.clone(), hook_entry_to_def(name, entry, todos));
+                defs.insert_key(k.clone(), hook_entry_to_def(name, entry, todos));
                 if entry
                     .as_mapping()
-                    .and_then(|m| m.get(Value::from(field::GLOBAL)))
+                    .and_then(|m| m.get_key(field::GLOBAL))
                     .and_then(|v| v.as_bool())
                     == Some(true)
                 {
@@ -1532,7 +1516,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
     };
     for entry in global_hooks_src {
         match entry {
-            Value::String(name) => {
+            Value::Text(name) => {
                 if !all_pools.iter().any(|v| v.as_str() == Some(name.as_str())) {
                     all_pools.push(Value::from(name.as_str()));
                 }
@@ -1540,15 +1524,15 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
                     "global_hooks '{name}' -> pools.hooks all-pools attach (1.5.3)"
                 ));
             }
-            Value::Mapping(m) => {
+            Value::Map(m) => {
                 let base = m
-                    .get(Value::from(field::MODULE))
+                    .get_key(field::MODULE)
                     .and_then(|v| v.as_str())
                     .unwrap_or(UNNAMED_HOOK_STEM)
                     .to_string();
                 let nm = uniq_def_name(&defs, &base);
-                let def = hook_entry_to_def(&nm, &Value::Mapping(m), todos);
-                defs.insert(Value::from(nm.as_str()), def);
+                let def = hook_entry_to_def(&nm, &Value::Map(m), todos);
+                defs.insert_key(nm.as_str(), def);
                 all_pools.push(Value::from(nm.as_str()));
                 todos.push(format!(
                     "global_hooks inline instance lifted to a named hook '{nm}' + a pools.hooks \
@@ -1559,13 +1543,13 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
         }
     }
 
-    if let Some(Value::Mapping(pools)) = root.get_mut(Value::from(field::POOLS)) {
+    if let Some(Value::Map(pools)) = root.get_key_mut(field::POOLS) {
         let pool_names: Vec<Value> = pools.keys().cloned().collect();
         for pk in pool_names {
             if pk.as_str() == Some(field::HOOKS) {
                 continue;
             }
-            let Some(Value::Mapping(p)) = pools.get_mut(&pk) else {
+            let Some(Value::Map(p)) = pools.get_key_mut(&pk) else {
                 continue;
             };
             let pool_ctx = format!("pools.{}", pk.as_str().unwrap_or("?"));
@@ -1577,15 +1561,15 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
             let mut new_list: Vec<Value> = Vec::new();
             for entry in existing {
                 match entry {
-                    Value::Mapping(m) => {
+                    Value::Map(m) => {
                         let base = m
-                            .get(Value::from(field::MODULE))
+                            .get_key(field::MODULE)
                             .and_then(|v| v.as_str())
                             .unwrap_or(UNNAMED_HOOK_STEM)
                             .to_string();
                         let nm = uniq_def_name(&defs, &base);
-                        let def = hook_entry_to_def(&nm, &Value::Mapping(m), todos);
-                        defs.insert(Value::from(nm.as_str()), def);
+                        let def = hook_entry_to_def(&nm, &Value::Map(m), todos);
+                        defs.insert_key(nm.as_str(), def);
                         new_list.push(Value::from(nm.as_str()));
                         todos.push(format!(
                             "pools.{}.hooks inline instance lifted to a named hook '{nm}' + a \
@@ -1598,13 +1582,13 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
                 }
             }
             if !new_list.is_empty() {
-                p.insert(field::HOOKS.into(), Value::Sequence(new_list));
+                p.insert_key(field::HOOKS, Value::Array(new_list));
             }
         }
     }
 
     if !defs.is_empty() {
-        if root.contains_key(Value::from(Kind::Hook.root())) {
+        if root.contains_key(Kind::Hook.root()) {
             todos.push(format!(
                 "hooks: {} hook definition(s) lifted from `global_hooks:`/inline pool hooks could \
                  NOT be written, because the top-level `hooks:` key is present in a shape this \
@@ -1613,14 +1597,12 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
                 defs.len()
             ));
         } else {
-            root.insert(Kind::Hook.root().into(), Value::Mapping(defs));
+            root.insert_key(Kind::Hook.root(), Value::Map(defs));
         }
     }
     if !all_pools.is_empty() {
-        let pools = root
-            .entry(field::POOLS.into())
-            .or_insert_with(|| Value::Mapping(Mapping::new()));
-        if let Value::Mapping(pm) = pools {
+        let pools = root.entry_or_insert_with(field::POOLS, || Value::Map(Pairs::new()));
+        if let Value::Map(pm) = pools {
             let mut merged = match take_sequence(pm, field::HOOKS, field::POOLS, todos) {
                 Taken::Got(s) => s,
                 Taken::Absent => Vec::new(),
@@ -1642,7 +1624,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
                     merged.push(n);
                 }
             }
-            pm.insert(field::HOOKS.into(), Value::Sequence(merged));
+            pm.insert_key(field::HOOKS, Value::Array(merged));
         }
     }
 }
@@ -1676,16 +1658,16 @@ fn check_top_level_pool_plane(root: &Mapping, todos: &mut Vec<String>) {
     }
 }
 
-fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    let Some(Value::Mapping(pools)) = root.get_mut(Value::from(field::POOLS)) else {
+fn migrate_pools(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+    let Some(Value::Map(pools)) = root.get_key_mut(field::POOLS) else {
         return;
     };
     for (pname, p) in pools.iter_mut() {
         let pname = pname.as_str().unwrap_or("?").to_string();
-        let Value::Mapping(p) = p else { continue };
+        let Value::Map(p) = p else { continue };
 
         let policy = p
-            .get(Value::from(field::POLICY))
+            .get_key(field::POLICY)
             .and_then(|v| v.as_str())
             .map(str::to_string);
         if let Some(policy) = policy {
@@ -1694,12 +1676,12 @@ fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<
                 Taken::Got(mut list) => {
                     take(p, field::POLICY);
                     list.insert(0, policy.as_str().into());
-                    p.insert(field::HOOKS.into(), Value::Sequence(list));
+                    p.insert_key(field::HOOKS, Value::Array(list));
                     changes.push(format!("pools.{pname}.policy -> hooks: [{policy}, ...]"));
                 }
                 Taken::Absent => {
                     take(p, field::POLICY);
-                    p.insert(field::HOOKS.into(), Value::Sequence(vec![policy.as_str().into()]));
+                    p.insert_key(field::HOOKS, Value::Array(vec![policy.as_str().into()]));
                     changes.push(format!("pools.{pname}.policy -> hooks: [{policy}]"));
                 }
                 Taken::Malformed => todos.push(format!(
@@ -1709,11 +1691,11 @@ fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<
                 )),
             }
         }
-        if let Some(Value::Sequence(members)) = p.get_mut(Value::from(field::MEMBERS)) {
+        if let Some(Value::Array(members)) = p.get_key_mut(field::MEMBERS) {
             for mem in members.iter_mut() {
-                let Value::Mapping(mem) = mem else { continue };
+                let Value::Map(mem) = mem else { continue };
                 if let Some(target) = take(mem, field::TARGET) {
-                    mem.insert(field::MODEL.into(), target);
+                    mem.insert_key(field::MODEL, target);
                     changes.push(format!("pools.{pname}.members[].target -> model"));
                 }
                 if take(mem, field::COST_PER_MTOK).is_some() {
@@ -1728,29 +1710,29 @@ fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<
                 }
             }
         }
-        if let Some(Value::Mapping(breaker)) = p.get_mut(Value::from(field::BREAKER)) {
-            if let Some(Value::Mapping(trip)) = breaker.get_mut(Value::from(field::TRIP)) {
+        if let Some(Value::Map(breaker)) = p.get_key_mut(field::BREAKER) {
+            if let Some(Value::Map(trip)) = breaker.get_key_mut(field::TRIP) {
                 if let Some(v) = take(trip, field::WINDOW_S) {
-                    trip.insert(field::WINDOW_SECS.into(), v);
+                    trip.insert_key(field::WINDOW_SECS, v);
                     changes.push(format!(
                         "pools.{pname}.breaker.trip.window_s -> window_secs"
                     ));
                 }
                 if let Some(v) = take(trip, field::N) {
-                    trip.insert(field::CONSECUTIVE_N.into(), v);
+                    trip.insert_key(field::CONSECUTIVE_N, v);
                     changes.push(format!("pools.{pname}.breaker.trip.n -> consecutive_n"));
                 }
             }
         }
-        if let Some(Value::Mapping(failover)) = p.get_mut(Value::from(field::FAILOVER)) {
+        if let Some(Value::Map(failover)) = p.get_key_mut(field::FAILOVER) {
             if let Some(v) = take(failover, field::DEADLINE_SECS) {
-                failover.insert(field::TIMEOUT_SECS.into(), v);
+                failover.insert_key(field::TIMEOUT_SECS, v);
                 changes.push(format!(
                     "pools.{pname}.failover.deadline_secs -> timeout_secs"
                 ));
             }
             if let Some(v) = take(failover, field::CAP) {
-                failover.insert(field::MAX_HOPS.into(), v);
+                failover.insert_key(field::MAX_HOPS, v);
                 changes.push(format!("pools.{pname}.failover.cap -> max_hops"));
             }
         }
@@ -1760,17 +1742,17 @@ fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<
 
 fn migrate_on_exhausted(
     pname: &str,
-    p: &mut Mapping,
+    p: &mut Pairs,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
 ) {
-    let Some(oe) = p.get(Value::from(field::ON_EXHAUSTED)).cloned() else {
+    let Some(oe) = p.get_key(field::ON_EXHAUSTED).cloned() else {
         return;
     };
 
     let Some(action) = oe
         .as_mapping()
-        .and_then(|m| m.get(Value::from(field::ACTION)))
+        .and_then(|m| m.get_key(field::ACTION))
         .and_then(|v| v.as_str())
     else {
         return;
@@ -1785,9 +1767,9 @@ fn migrate_on_exhausted(
             ));
             Value::from(EXHAUSTED_REJECT)
         } else {
-            let mut fb = Mapping::new();
-            fb.insert(field::FALLBACK_POOL.into(), pool.into());
-            Value::Mapping(fb)
+            let mut fb = Pairs::new();
+            fb.insert_key(field::FALLBACK_POOL, pool.into());
+            Value::Map(fb)
         }
     } else {
         match action.as_str() {
@@ -1810,14 +1792,14 @@ fn migrate_on_exhausted(
             }
         }
     };
-    p.insert(field::ON_EXHAUSTED.into(), new_val);
+    p.insert_key(field::ON_EXHAUSTED, new_val);
     changes.push(format!(
         "pools.{pname}.on_exhausted: {{ action: {action} }} -> 1.5.0 bare keyword / {{ fallback_pool }}"
     ));
 }
 
-fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
-    let Some(Value::Mapping(obs)) = root.get_mut(Value::from(field::OBSERVABILITY)) else {
+fn migrate_observability(root: &mut Pairs, changes: &mut Vec<String>) {
+    let Some(Value::Map(obs)) = root.get_key_mut(field::OBSERVABILITY) else {
         return;
     };
     let (old, new) = (
@@ -1828,64 +1810,62 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
         return;
     }
     if let Some(v) = take(obs, old) {
-        obs.insert(new.into(), v);
+        obs.insert_key(new, v);
         changes.push(format!("observability.{old} -> {new}"));
     }
 }
 
-fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
-    fn export_mut(root: &mut Mapping) -> &mut Mapping {
-        let entry = root
-            .entry(Kind::Export.root().into())
-            .or_insert_with(|| Value::Mapping(Mapping::new()));
-        if !matches!(entry, Value::Mapping(_)) {
-            *entry = Value::Mapping(Mapping::new());
+fn migrate_observability_export(root: &mut Pairs, changes: &mut Vec<String>) {
+    fn export_mut(root: &mut Pairs) -> &mut Pairs {
+        let entry = root.entry_or_insert_with(Kind::Export.root(), || Value::Map(Pairs::new()));
+        if !matches!(entry, Value::Map(_)) {
+            *entry = Value::Map(Pairs::new());
         }
         match entry {
-            Value::Mapping(m) => m,
+            Value::Map(m) => m,
             _ => unreachable!("just normalized to a mapping"),
         }
     }
 
-    let mut log_settings = Mapping::new();
-    if let Some(Value::Mapping(obs)) = root.get_mut(Value::from(field::OBSERVABILITY)) {
+    let mut log_settings = Pairs::new();
+    if let Some(Value::Map(obs)) = root.get_key_mut(field::OBSERVABILITY) {
         for (old, leaf) in super::migration_table::pairs("observability_log_keys") {
             if let Some(v) = take(obs, old) {
-                log_settings.insert(leaf.into(), v);
+                log_settings.insert_key(leaf, v);
             }
         }
 
         if obs.is_empty() {
-            root.remove(Value::from(field::OBSERVABILITY));
+            swap_remove_key(root, field::OBSERVABILITY);
         }
     }
-    if log_settings.contains_key(Value::from(field::URL)) {
-        let mut body = Mapping::new();
-        body.insert(field::SETTINGS.into(), Value::Mapping(log_settings));
-        export_mut(root).insert(
-            super::migration_table::text("observability_log_type_key").into(),
-            Value::Mapping(body),
+    if log_settings.contains_key(field::URL) {
+        let mut body = Pairs::new();
+        body.insert_key(field::SETTINGS, Value::Map(log_settings));
+        export_mut(root).insert_key(
+            super::migration_table::text("observability_log_type_key"),
+            Value::Map(body),
         );
         changes.push(super::migration_table::text("observability_log_change").into());
     }
 
     let metrics_type_key = super::migration_table::text("metrics_type_key");
-    let removed_metrics = root.remove(Value::from(field::METRICS));
-    if let Some(Value::Mapping(mut metrics)) = removed_metrics {
-        let mut settings = Mapping::new();
+    let removed_metrics = swap_remove_key(root, field::METRICS);
+    if let Some(Value::Map(mut metrics)) = removed_metrics {
+        let mut settings = Pairs::new();
         if let Some(v) = take(&mut metrics, field::BUFFER_SECONDS) {
-            settings.insert(field::BUFFER_SECONDS.into(), v);
+            settings.insert_key(field::BUFFER_SECONDS, v);
         }
         if let Some(v) = take(&mut metrics, field::KEY_GAUGE_LIMIT) {
-            settings.insert(field::KEY_GAUGE_LIMIT.into(), v);
+            settings.insert_key(field::KEY_GAUGE_LIMIT, v);
         }
 
         for (k, v) in metrics {
-            settings.insert(k, v);
+            settings.insert_key(k, v);
         }
-        let mut body = Mapping::new();
-        body.insert(field::SETTINGS.into(), Value::Mapping(settings));
-        export_mut(root).insert(metrics_type_key.into(), Value::Mapping(body));
+        let mut body = Pairs::new();
+        body.insert_key(field::SETTINGS, Value::Map(settings));
+        export_mut(root).insert_key(metrics_type_key, Value::Map(body));
         changes.push(format!(
             "metrics: block -> export.{metrics_type_key}.settings (built-in exporter)"
         ));
@@ -1898,21 +1878,17 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-fn migrate_response_headers(
-    root: &mut Mapping,
-    changes: &mut Vec<String>,
-    todos: &mut Vec<String>,
-) {
+fn migrate_response_headers(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     if !matches!(
-        root.get(Value::from(field::OBSERVABILITY)),
-        Some(Value::Mapping(m)) if m.contains_key(Value::from(field::EMIT_SERVER_TIMING))
+        root.get_key(field::OBSERVABILITY),
+        Some(Value::Map(m)) if m.contains_key(field::EMIT_SERVER_TIMING)
     ) {
         return;
     }
 
     let mut advanced = match take_mapping(root, field::ADVANCED, "", todos) {
         Taken::Got(m) => m,
-        Taken::Absent => Mapping::new(),
+        Taken::Absent => Pairs::new(),
         Taken::Malformed => {
             todos.push(
                 "observability.emit_server_timing: could not be folded into \
@@ -1923,32 +1899,27 @@ fn migrate_response_headers(
             return;
         }
     };
-    let Some(Value::Mapping(obs)) = root.get_mut(Value::from(field::OBSERVABILITY)) else {
+    let Some(Value::Map(obs)) = root.get_key_mut(field::OBSERVABILITY) else {
         unreachable!("shape checked above");
     };
     let Some(v) = take(obs, field::EMIT_SERVER_TIMING) else {
         unreachable!("presence checked above");
     };
     let mut response_headers = as_map(
-        advanced
-            .remove(Value::from(field::RESPONSE_HEADERS))
-            .unwrap_or(Value::Mapping(Mapping::new())),
+        swap_remove_key(&mut advanced, field::RESPONSE_HEADERS).unwrap_or(Value::Map(Pairs::new())),
     );
-    response_headers.insert(field::SERVER_TIMING.into(), v);
-    advanced.insert(
-        field::RESPONSE_HEADERS.into(),
-        Value::Mapping(response_headers),
-    );
-    root.insert(field::ADVANCED.into(), Value::Mapping(advanced));
+    response_headers.insert_key(field::SERVER_TIMING, v);
+    advanced.insert_key(field::RESPONSE_HEADERS, Value::Map(response_headers));
+    root.insert_key(field::ADVANCED, Value::Map(advanced));
     changes
         .push("observability.emit_server_timing -> advanced.response_headers.server_timing".into());
 }
 
-fn migrate_hook_stages(root: &mut Mapping, changes: &mut Vec<String>) {
+fn migrate_hook_stages(root: &mut Pairs, changes: &mut Vec<String>) {
     fn rewrite_list(list: &mut [Value], location: &str, changes: &mut Vec<String>) {
         for entry in list {
-            let Value::Mapping(m) = entry else { continue };
-            let Some(old) = m.get(Value::from(field::AT)).and_then(|v| v.as_str()) else {
+            let Value::Map(m) = entry else { continue };
+            let Some(old) = m.get_key(field::AT).and_then(|v| v.as_str()) else {
                 continue;
             };
             if let Some((_, new)) = crate::config::retired::RENAMED_HOOK_STAGES
@@ -1956,17 +1927,17 @@ fn migrate_hook_stages(root: &mut Mapping, changes: &mut Vec<String>) {
                 .find(|(o, _)| *o == old)
             {
                 changes.push(format!("{location}: hook stage `at: {old}` -> `at: {new}`"));
-                m.insert(field::AT.into(), Value::from(*new));
+                m.insert_key(field::AT, Value::from(*new));
             }
         }
     }
-    if let Some(Value::Sequence(globals)) = root.get_mut(Value::from(field::GLOBAL_HOOKS)) {
+    if let Some(Value::Array(globals)) = root.get_key_mut(field::GLOBAL_HOOKS) {
         rewrite_list(globals, field::GLOBAL_HOOKS, changes);
     }
-    if let Some(Value::Mapping(pools)) = root.get_mut(Value::from(field::POOLS)) {
+    if let Some(Value::Map(pools)) = root.get_key_mut(field::POOLS) {
         for (pname, p) in pools.iter_mut() {
-            let Value::Mapping(p) = p else { continue };
-            let Some(Value::Sequence(hooks)) = p.get_mut(Value::from(field::HOOKS)) else {
+            let Value::Map(p) = p else { continue };
+            let Some(Value::Array(hooks)) = p.get_key_mut(field::HOOKS) else {
                 continue;
             };
             let loc = format!("pools.{}.hooks", pname.as_str().unwrap_or("?"));
@@ -1987,17 +1958,17 @@ fn migrate_hook_stages(root: &mut Mapping, changes: &mut Vec<String>) {
 /// [`hook_entry_to_def`] (which performs the same conversion when LIFTING a legacy registry/inline
 /// hook); this pass catches a `hooks:` map that was ALREADY the named-def shape yet still carried a
 /// retired key, which `migrate_hooks_block` passes through untouched.
-fn migrate_hook_def_keys(root: &mut Mapping, changes: &mut Vec<String>) {
-    let Some(Value::Mapping(hooks)) = root.get_mut(Value::from(Kind::Hook.root())) else {
+fn migrate_hook_def_keys(root: &mut Pairs, changes: &mut Vec<String>) {
+    let Some(Value::Map(hooks)) = root.get_key_mut(Kind::Hook.root()) else {
         return;
     };
     for (name, entry) in hooks.iter_mut() {
-        let Value::Mapping(def) = entry else { continue };
+        let Value::Map(def) = entry else { continue };
         let hook_name = name.as_str().unwrap_or("?").to_string();
 
         if let Some(plugin) = take(def, field::PLUGIN) {
-            if !def.contains_key(Value::from(field::MODULE)) {
-                def.insert(field::MODULE.into(), plugin);
+            if !def.contains_key(field::MODULE) {
+                def.insert_key(field::MODULE, plugin);
                 changes.push(format!("hooks.{hook_name}: `plugin:` -> `module:` (1.6.0)"));
             } else {
                 changes.push(format!(
@@ -2008,7 +1979,7 @@ fn migrate_hook_def_keys(root: &mut Mapping, changes: &mut Vec<String>) {
 
         if let Some(at) = take(def, field::AT) {
             let phase_present = def
-                .get(Value::from(field::PHASE))
+                .get_key(field::PHASE)
                 .and_then(|v| v.as_sequence())
                 .is_some_and(|s| !s.is_empty());
             if phase_present {
@@ -2016,7 +1987,7 @@ fn migrate_hook_def_keys(root: &mut Mapping, changes: &mut Vec<String>) {
                     "hooks.{hook_name}: retired `at:` dropped (`phase:` already set, 1.6.0)"
                 ));
             } else if let Some(phase) = at_to_phase(&at) {
-                def.insert(field::PHASE.into(), phase);
+                def.insert_key(field::PHASE, phase);
                 changes.push(format!(
                     "hooks.{hook_name}: single-stage `at: {}` -> `phase:` list (1.6.0)",
                     at.as_str().unwrap_or("?")
@@ -2026,13 +1997,13 @@ fn migrate_hook_def_keys(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-fn migrate_admin_require_mtls(root: &mut Mapping, changes: &mut Vec<String>) {
+fn migrate_admin_require_mtls(root: &mut Pairs, changes: &mut Vec<String>) {
     let Some(old) = take(root, field::ADMIN_INSECURE) else {
         return;
     };
 
     let insecure = old.as_bool().unwrap_or(false);
-    root.insert(field::ADMIN_REQUIRE_MTLS.into(), Value::from(!insecure));
+    root.insert_key(field::ADMIN_REQUIRE_MTLS, Value::from(!insecure));
     changes.push(format!(
         "admin_insecure: {insecure} -> admin_require_mtls: {} (INVERTED in 1.5.3 so the safe \
          posture is the default)",
@@ -2041,16 +2012,16 @@ fn migrate_admin_require_mtls(root: &mut Mapping, changes: &mut Vec<String>) {
 }
 
 fn migrate_pools_upstream_credentials(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
 ) {
     if root
-        .get(Value::from(field::POOLS))
+        .get_key(field::POOLS)
         .is_some_and(|pools| !pools.is_mapping())
     {
         if root
-            .get(Value::from(field::AUTH))
+            .get_key(field::AUTH)
             .and_then(|auth| auth.get(field::UPSTREAM_CREDENTIALS))
             .is_some()
         {
@@ -2058,24 +2029,22 @@ fn migrate_pools_upstream_credentials(
         }
         return;
     }
-    let Some(Value::Mapping(auth)) = root.get_mut(Value::from(field::AUTH)) else {
+    let Some(Value::Map(auth)) = root.get_key_mut(field::AUTH) else {
         return;
     };
     let Some(mode) = take(auth, field::UPSTREAM_CREDENTIALS) else {
         return;
     };
-    let pools = root
-        .entry(field::POOLS.into())
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
-    if let Value::Mapping(pm) = pools {
-        if pm.contains_key(Value::from(field::UPSTREAM_CREDENTIALS)) {
+    let pools = root.entry_or_insert_with(field::POOLS, || Value::Map(Pairs::new()));
+    if let Value::Map(pm) = pools {
+        if pm.contains_key(field::UPSTREAM_CREDENTIALS) {
             changes.push(
                 "auth.upstream_credentials dropped: pools.upstream_credentials is already set (the \
                  1.5.3 home) and wins"
                     .into(),
             );
         } else {
-            pm.insert(field::UPSTREAM_CREDENTIALS.into(), mode);
+            pm.insert_key(field::UPSTREAM_CREDENTIALS, mode);
             changes.push(
                 "auth.upstream_credentials -> pools.upstream_credentials (the all-pools SCALAR \
                  default; override it per pool with `pools.<p>.upstream_credentials`)"
@@ -2085,7 +2054,7 @@ fn migrate_pools_upstream_credentials(
     }
 }
 
-fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+fn migrate_store_module(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     let mut store = match take_mapping(root, Kind::Store.root(), "", todos) {
         Taken::Got(m) => m,
         Taken::Absent | Taken::Malformed => return,
@@ -2105,7 +2074,7 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
         ));
     }
 
-    root.insert(Kind::Store.root().into(), Value::Mapping(store));
+    root.insert_key(Kind::Store.root(), Value::Map(store));
 }
 
 fn split_suffix(site: &str) -> &str {
@@ -2116,15 +2085,15 @@ fn split_suffix(site: &str) -> &str {
 }
 
 fn migrate_identity_providers(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
 ) {
-    let removed_auth = root.remove(Value::from(field::AUTH));
-    let Some(Value::Mapping(mut auth)) = removed_auth else {
+    let removed_auth = swap_remove_key(root, field::AUTH);
+    let Some(Value::Map(mut auth)) = removed_auth else {
         if let Some(other) = removed_auth {
             let shape = one_line(&other);
-            root.insert(field::AUTH.into(), other);
+            root.insert_key(field::AUTH, other);
             todos.push(format!(
                 "auth: is not a mapping (`{shape}`) — it was left EXACTLY as written and NOTHING \
                  was lifted out of it. 1.5.3 expects `auth: {{ chain: [...], admin_auth: [...] }}` \
@@ -2135,15 +2104,15 @@ fn migrate_identity_providers(
         return;
     };
 
-    let removed_defs = root.remove(Value::from(Kind::Auth.root()));
+    let removed_defs = swap_remove_key(root, Kind::Auth.root());
     let mut defs = match removed_defs {
-        None => Mapping::new(),
-        Some(Value::Mapping(m)) => m,
+        None => Pairs::new(),
+        Some(Value::Map(m)) => m,
 
         Some(other) => {
             let shape = one_line(&other);
-            root.insert(field::AUTH.into(), Value::Mapping(auth));
-            root.insert(Kind::Auth.root().into(), other);
+            root.insert_key(field::AUTH, Value::Map(auth));
+            root.insert_key(Kind::Auth.root(), other);
             todos.push(format!(
                 "identity-providers: is not a mapping (`{shape}`) — it was left EXACTLY as written \
                  and no `auth.chain:`/`auth.admin_auth:`/`auth.methods:` entry was lifted into it. \
@@ -2157,39 +2126,36 @@ fn migrate_identity_providers(
         .iter()
         .filter_map(|(k, v)| {
             let name = k.as_str()?.to_string();
-            let module = v.as_mapping()?.get(Value::from(field::MODULE))?.as_str()?;
+            let module = v.as_mapping()?.get_key(field::MODULE)?.as_str()?;
             Some((module.to_string(), name))
         })
         .collect();
 
     let lift = |module: &str,
-                body: &Mapping,
+                body: &Pairs,
                 site: &str,
-                defs: &mut Mapping,
+                defs: &mut Pairs,
                 by_module: &mut Vec<(String, String)>,
                 changes: &mut Vec<String>,
                 todos: &mut Vec<String>|
      -> String {
-        let want = body.get(Value::from(field::SETTINGS));
-        let settings_of = |defs: &Mapping, name: &str| -> Option<Value> {
-            defs.get(Value::from(name))
+        let want = body.get_key(field::SETTINGS);
+        let settings_of = |defs: &Pairs, name: &str| -> Option<Value> {
+            defs.get_key(name)
                 .and_then(|d| d.as_mapping())
-                .and_then(|d| d.get(Value::from(field::SETTINGS)))
+                .and_then(|d| d.get_key(field::SETTINGS))
                 .cloned()
         };
         let compatible = |name: &str| {
-            let existing = defs.get(Value::from(name)).and_then(Value::as_mapping);
+            let existing = defs.get_key(name).and_then(Value::as_mapping);
             [field::MAX_ADMIN_SCOPE, field::TOKEN, field::SETTINGS]
                 .iter()
-                .all(|key| {
-                    match (
-                        existing.and_then(|d| d.get(Value::from(*key))),
-                        body.get(Value::from(*key)),
-                    ) {
-                        (Some(old), Some(new)) => old == new,
+                .all(
+                    |key| match (existing.and_then(|d| d.get_key(*key)), body.get_key(*key)) {
+                        (Some(old), Some(new)) => yaml::same_tree(old, new),
                         _ => true,
-                    }
-                })
+                    },
+                )
         };
 
         let candidates: Vec<String> = by_module
@@ -2204,7 +2170,8 @@ fn migrate_identity_providers(
             candidates
                 .iter()
                 .find(|n| {
-                    compatible(n) && (want.is_none() || settings_of(defs, n).as_ref() == want)
+                    compatible(n)
+                        && (want.is_none() || same_settings(settings_of(defs, n).as_ref(), want))
                 })
                 .or_else(|| {
                     candidates
@@ -2216,11 +2183,11 @@ fn migrate_identity_providers(
             candidates.first().cloned()
         };
         if let Some(name) = reuse {
-            if let Some(Value::Mapping(existing)) = defs.get_mut(Value::from(name.as_str())) {
+            if let Some(Value::Map(existing)) = defs.get_key_mut(name.as_str()) {
                 for key in [field::MAX_ADMIN_SCOPE, field::TOKEN, field::SETTINGS] {
-                    if !existing.contains_key(Value::from(key)) {
-                        if let Some(v) = body.get(Value::from(key)) {
-                            existing.insert(key.into(), v.clone());
+                    if !existing.contains_key(key) {
+                        if let Some(v) = body.get_key(key) {
+                            existing.insert_key(key, v.clone());
                         }
                     }
                 }
@@ -2239,19 +2206,19 @@ fn migrate_identity_providers(
             module.to_string()
         };
         let name = super::migrate_export::uniq_export_name(defs, &base);
-        let mut def = Mapping::new();
-        def.insert(field::MODULE.into(), Value::from(module));
+        let mut def = Pairs::new();
+        def.insert_key(field::MODULE, Value::from(module));
         for key in [field::MAX_ADMIN_SCOPE, field::TOKEN, field::SETTINGS] {
-            if let Some(v) = body.get(Value::from(key)) {
-                def.insert(key.into(), v.clone());
+            if let Some(v) = body.get_key(key) {
+                def.insert_key(key, v.clone());
             }
         }
-        defs.insert(Value::from(name.as_str()), Value::Mapping(def));
+        defs.insert_key(name.as_str(), Value::Map(def));
         by_module.push((module.to_string(), name.clone()));
         if split {
             let settings_conflict = candidates.iter().all(|name| {
                 matches!((settings_of(defs, name).as_ref(), want),
-                    (Some(old), Some(new)) if old != new)
+                    (Some(old), Some(new)) if !yaml::same_tree(old, new))
             });
             let field = if settings_conflict {
                 "`settings:`"
@@ -2286,14 +2253,14 @@ fn migrate_identity_providers(
     };
 
     for plane in [field::CHAIN, field::ADMIN_AUTH] {
-        let Some(Value::Sequence(seq)) = auth.get(Value::from(plane)).cloned() else {
+        let Some(Value::Array(seq)) = auth.get_key(plane).cloned() else {
             continue;
         };
         let mut names: Vec<Value> = Vec::new();
         for entry in seq {
             match entry {
-                Value::String(s) => names.push(Value::from(s)),
-                Value::Mapping(m) => {
+                Value::Text(s) => names.push(Value::from(s)),
+                Value::Map(m) => {
                     let Some((module, body)) = m
                         .iter()
                         .next()
@@ -2315,10 +2282,10 @@ fn migrate_identity_providers(
                 other => names.push(other),
             }
         }
-        auth.insert(plane.into(), Value::Sequence(names));
+        auth.insert_key(plane, Value::Array(names));
     }
 
-    if let Some(Value::Mapping(methods)) = take(&mut auth, field::METHODS) {
+    if let Some(Value::Map(methods)) = take(&mut auth, field::METHODS) {
         for (k, v) in methods {
             let Some(module) = k.as_str().map(str::to_string) else {
                 continue;
@@ -2326,8 +2293,8 @@ fn migrate_identity_providers(
             let mut body = as_map(v);
             let browser_login = take(&mut body, field::BROWSER_LOGIN);
 
-            let mut settings = Mapping::new();
-            settings.insert(field::SETTINGS.into(), Value::Mapping(body));
+            let mut settings = Pairs::new();
+            settings.insert_key(field::SETTINGS, Value::Map(body));
             let name = lift(
                 &module,
                 &settings,
@@ -2337,23 +2304,21 @@ fn migrate_identity_providers(
                 changes,
                 todos,
             );
-            if let Some(Value::Mapping(def)) = defs.get_mut(Value::from(name.as_str())) {
+            if let Some(Value::Map(def)) = defs.get_key_mut(name.as_str()) {
                 if let Some(bl) = browser_login {
-                    def.insert(field::BROWSER_LOGIN.into(), bl);
+                    def.insert_key(field::BROWSER_LOGIN, bl);
                 }
 
-                if let Some(Value::Mapping(from)) =
-                    settings.get(Value::from(field::SETTINGS)).cloned()
-                {
-                    let mut merged = match def.get(Value::from(field::SETTINGS)).cloned() {
-                        Some(Value::Mapping(m)) => m,
-                        _ => Mapping::new(),
+                if let Some(Value::Map(from)) = settings.get_key(field::SETTINGS).cloned() {
+                    let mut merged = match def.get_key(field::SETTINGS).cloned() {
+                        Some(Value::Map(m)) => m,
+                        _ => Pairs::new(),
                     };
                     for (sk, sv) in from {
-                        merged.insert(sk, sv);
+                        merged.insert_key(sk, sv);
                     }
                     if !merged.is_empty() {
-                        def.insert(field::SETTINGS.into(), Value::Mapping(merged));
+                        def.insert_key(field::SETTINGS, Value::Map(merged));
                     }
                 }
             }
@@ -2364,9 +2329,17 @@ fn migrate_identity_providers(
         }
     }
 
-    root.insert(field::AUTH.into(), Value::Mapping(auth));
+    root.insert_key(field::AUTH, Value::Map(auth));
     if !defs.is_empty() {
-        root.insert(Kind::Auth.root().into(), Value::Mapping(defs));
+        root.insert_key(Kind::Auth.root(), Value::Map(defs));
+    }
+}
+
+/// `a == b` over two optional settings trees, as 1.5.5 compared them: mapping key order aside.
+fn same_settings(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => yaml::same_tree(a, b),
+        (a, b) => a.is_none() && b.is_none(),
     }
 }
 
@@ -2392,20 +2365,21 @@ mod hook_migration_tests {
             ),
             ("{kind: tap, module: observer}", vec![HookStage::Request]),
         ] {
-            let entry = serde_yaml::from_str(input).unwrap();
+            let entry: Value = yaml::from_str(input).unwrap();
             let mut todos = Vec::new();
             let value = hook_entry_to_def("observer", &entry, &mut todos);
             assert!(todos.is_empty(), "{todos:?}");
-            let definition: HookDefCfg = serde_yaml::from_value(value).unwrap();
+            let definition: HookDefCfg = yaml::from_value(value).unwrap();
             assert_eq!(definition.phase, expected, "{input}");
         }
     }
 
     #[test]
     fn named_hook_migration_is_idempotent_and_keeps_a_single_stage() {
-        let mut root: Mapping =
-            serde_yaml::from_str("hooks: {observer: {kind: tap, plugin: observer, at: response}}")
-                .unwrap();
+        let mut root: Mapping = yaml::mapping_from_str(
+            "hooks: {observer: {kind: tap, plugin: observer, at: response}}",
+        )
+        .unwrap();
         let mut changes = Vec::new();
         migrate_hook_def_keys(&mut root, &mut changes);
         assert_eq!(changes.len(), 2);
@@ -2415,7 +2389,7 @@ mod hook_migration_tests {
         assert!(changes.is_empty());
         assert_eq!(root, converted);
         let definition: HookDefCfg =
-            serde_yaml::from_value(root["hooks"]["observer"].clone()).unwrap();
+            yaml::from_value(Value::from(root.clone()).at("hooks").at("observer").clone()).unwrap();
         assert_eq!(definition.module, "observer");
         assert_eq!(definition.phase, vec![HookStage::Response]);
     }
@@ -2427,7 +2401,7 @@ mod identity_provider_migration_tests {
 
     #[test]
     fn current_named_provider_and_bindings_require_no_decision() {
-        let mut root: Mapping = serde_yaml::from_str(
+        let mut root: Mapping = yaml::mapping_from_str(
             "identity-providers: {rig: {module: oidc, settings: {issuer: https://issuer.example}, max_admin_scope: full}}
 auth: {chain: [keys], admin_auth: [rig], role_bindings: {rig: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}",
         ).unwrap();
@@ -2441,44 +2415,66 @@ auth: {chain: [keys], admin_auth: [rig], role_bindings: {rig: {reader: {admin_sc
 
     #[test]
     fn unambiguous_inline_provider_lift_preserves_exact_bindings_without_debt() {
-        let mut root: Mapping = serde_yaml::from_str(
+        let mut root: Mapping = yaml::mapping_from_str(
             "auth: {chain: [keys], admin_auth: [{oidc: {settings: {issuer: https://issuer.example}, max_admin_scope: full}}], role_bindings: {oidc: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}",
         ).unwrap();
-        let bindings = root["auth"]["role_bindings"].clone();
+        let bindings = root.get_key("auth").unwrap().at("role_bindings").clone();
         let (mut changes, mut todos) = (Vec::new(), Vec::new());
         migrate_identity_providers(&mut root, &mut changes, &mut todos);
         assert!(todos.is_empty(), "{todos:?}");
         assert!(!changes.is_empty());
-        let expected: Mapping = serde_yaml::from_str(
+        let expected: Mapping = yaml::mapping_from_str(
             "identity-providers: {oidc: {module: oidc, settings: {issuer: https://issuer.example}, max_admin_scope: full}}
 auth: {chain: [keys], admin_auth: [oidc], role_bindings: {oidc: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}",
         ).unwrap();
         assert_eq!(root, expected);
-        assert_eq!(root["auth"]["role_bindings"], bindings);
+        assert_eq!(root.get_key("auth").unwrap().at("role_bindings"), &bindings);
     }
 
     #[test]
     fn conflicting_inline_providers_preserve_both_definitions_and_require_a_decision() {
-        let mut root: Mapping = serde_yaml::from_str(
+        let mut root: Mapping = yaml::mapping_from_str(
             "auth: {chain: [{oidc: {settings: {issuer: https://data.example}}}], admin_auth: [{oidc: {settings: {issuer: https://admin.example}}}], role_bindings: {oidc: {reader: {admin_scope: read-only}}}}",
         ).unwrap();
-        let bindings = root["auth"]["role_bindings"].clone();
+        let bindings = root.get_key("auth").unwrap().at("role_bindings").clone();
         let (mut changes, mut todos) = (Vec::new(), Vec::new());
         migrate_identity_providers(&mut root, &mut changes, &mut todos);
         assert_eq!(todos.len(), 1, "{todos:?}");
         assert!(todos[0].contains("DIFFERENT `settings:`"), "{todos:?}");
-        let chain = root["auth"]["chain"][0].as_str().unwrap();
-        let admin = root["auth"]["admin_auth"][0].as_str().unwrap();
+        let chain = root
+            .get_key("auth")
+            .unwrap()
+            .at("chain")
+            .at(0usize)
+            .as_str()
+            .unwrap();
+        let admin = root
+            .get_key("auth")
+            .unwrap()
+            .at("admin_auth")
+            .at(0usize)
+            .as_str()
+            .unwrap();
         assert_ne!(chain, admin);
         assert_eq!(
-            root["identity-providers"][chain]["settings"]["issuer"].as_str(),
+            root.get_key("identity-providers")
+                .unwrap()
+                .at(chain)
+                .at("settings")
+                .at("issuer")
+                .as_str(),
             Some("https://data.example")
         );
         assert_eq!(
-            root["identity-providers"][admin]["settings"]["issuer"].as_str(),
+            root.get_key("identity-providers")
+                .unwrap()
+                .at(admin)
+                .at("settings")
+                .at("issuer")
+                .as_str(),
             Some("https://admin.example")
         );
-        assert_eq!(root["auth"]["role_bindings"], bindings);
+        assert_eq!(root.get_key("auth").unwrap().at("role_bindings"), &bindings);
     }
 }
 

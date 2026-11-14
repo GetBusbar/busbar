@@ -12,13 +12,13 @@ fn table(value: serde_json::Value) -> ProviderTable {
 
 #[test]
 fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutral_rule() {
-    let def: ProviderDef = serde_yaml::from_str(
+    let def: ProviderDef = busbar_contract::yaml::from_str(
         "protocol: proto-a\nbase_url: https://api.example.com\n\
          error_map: {a: x, b: y}\n\
          model_capabilities: [{models: [m1*], native_structured_output: true}]\n",
     )
     .expect("a catalog entry");
-    let dep: ProviderDeploy = serde_yaml::from_str(
+    let dep: ProviderDeploy = busbar_contract::yaml::from_str(
         "api_key: { module: fixture-source, settings: { slot: K } }\nerror_map: {b: z, c: w}\n\
          model_capabilities: [{models: [m2*]}]\npath: /v1/x\n",
     )

@@ -276,13 +276,14 @@ mod actual_plane_legacy_grammar {
                 "[{models: [], unknown: true}]",
                 "[{models: [], reasoning_none: true, reasoning_none: false}]",
             ] {
-                let legacy = serde_yaml::from_str::<Vec<ModelCapabilities>>(text)
+                let legacy = busbar_contract::yaml::from_str::<Vec<ModelCapabilities>>(text)
                     .unwrap_err()
                     .to_string();
-                let actual = ValueSeed::field(key)
-                    .deserialize(serde_yaml::Deserializer::from_str(text))
-                    .unwrap_err()
-                    .to_string();
+                let actual = busbar_contract::yaml::with_deserializer(text, |d| {
+                    ValueSeed::field(key).deserialize(d)
+                })
+                .unwrap_err()
+                .to_string();
                 assert_eq!(actual, legacy, "{text}");
             }
         }
@@ -293,14 +294,14 @@ mod actual_plane_legacy_grammar {
             .find(|k| k.name == "model_capabilities")
             .unwrap();
         assert!(
-            serde_yaml::from_str::<Option<Vec<ModelCapabilities>>>("null")
+            busbar_contract::yaml::from_str::<Option<Vec<ModelCapabilities>>>("null")
                 .unwrap()
                 .is_none()
         );
         assert_eq!(
-            ValueSeed::field(key)
-                .deserialize(serde_yaml::Deserializer::from_str("null"))
-                .unwrap(),
+            busbar_contract::yaml::with_deserializer("null", |d| ValueSeed::field(key)
+                .deserialize(d))
+            .unwrap(),
             Value::Null
         );
     }

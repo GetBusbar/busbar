@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::yaml::{self, prelude::*};
 use busbar_migrations::config::migrate::*;
 
 use busbar_migrations::config::migrate::{detect_legacy_markers, legacy_config_error};
@@ -66,7 +67,7 @@ observability:
 fn legacy_markers_detected_and_named() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
-    let doc: serde_yaml::Value = serde_yaml::from_str(LEGACY_14X).unwrap();
+    let doc: Value = yaml::from_str(LEGACY_14X).unwrap();
     let markers = detect_legacy_markers(&doc);
     let joined = markers.join("\n");
     for expect in [
@@ -96,7 +97,7 @@ fn legacy_markers_detected_and_named() {
             .join("../../dist/default/tests/fixtures/clean-config-1.5.0.yaml"),
     )
     .expect("the canonical example exists");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&clean).unwrap();
+    let doc: Value = yaml::from_str(&clean).unwrap();
     assert!(
         detect_legacy_markers(&doc).is_empty(),
         "the canonical 1.5.0 example must not trip the 1.x detector"
@@ -107,8 +108,7 @@ fn legacy_markers_detected_and_named() {
 fn auth_mode_marker_detected() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str("auth:\n  mode: token\nproviders: {}\nmodels: {}\n").unwrap();
+    let doc: Value = yaml::from_str("auth:\n  mode: token\nproviders: {}\nmodels: {}\n").unwrap();
     let markers = detect_legacy_markers(&doc);
     assert!(
         markers.iter().any(|m| m.contains("`auth.mode:`")),
@@ -121,20 +121,20 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
     let out = migrate_config(LEGACY_14X).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let doc: Value = yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
-    let get = |path: &[&str]| -> serde_yaml::Value {
-        let mut cur = serde_yaml::Value::Mapping(root.clone());
+    let get = |path: &[&str]| -> Value {
+        let mut cur = Value::Map(root.clone());
         for k in path {
             cur = cur
                 .as_mapping()
-                .and_then(|m| m.get(serde_yaml::Value::from(*k)).cloned())
+                .and_then(|m| m.get_key(Value::from(*k)).cloned())
                 .unwrap_or_else(|| panic!("path {path:?} missing at '{k}'"));
         }
         cur
     };
 
-    assert!(root.get(serde_yaml::Value::from("governance")).is_none());
+    assert!(root.get_key(Value::from("governance")).is_none());
     assert_eq!(get(&["store", "module"]).as_str(), Some("acme-durable"));
     assert_eq!(
         get(&["store", "settings", "url"]).as_str(),
@@ -156,7 +156,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         growth_limit
             .as_mapping()
             .unwrap()
-            .get(serde_yaml::Value::from("per"))
+            .get_key(Value::from("per"))
             .and_then(|v| v.as_str()),
         Some("day")
     );
@@ -213,14 +213,14 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         .expect("the member is still a rich object");
     assert_eq!(
         member
-            .get(serde_yaml::Value::from("model"))
+            .get_key(Value::from("model"))
             .and_then(|v| v.as_str()),
         Some("widget"),
         "`target:` was renamed to `model:` in place"
     );
     for retired in ["target", "cost_per_mtok"] {
         assert!(
-            !member.contains_key(serde_yaml::Value::from(retired)),
+            !member.contains_key(Value::from(retired)),
             "the retired member key `{retired}` is gone"
         );
     }
@@ -307,16 +307,16 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     );
 }
 
-fn migrate_to_value(raw: &str) -> (MigrateOutput, serde_yaml::Value) {
+fn migrate_to_value(raw: &str) -> (MigrateOutput, Value) {
     let out = migrate_config(raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let doc: Value = yaml::from_str(&out.yaml).expect("output is valid YAML");
     (out, doc)
 }
 
-fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
+fn dig<'a>(doc: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut cur = doc;
     for k in path {
-        cur = cur.as_mapping()?.get(serde_yaml::Value::from(*k))?;
+        cur = cur.as_mapping()?.get_key(Value::from(*k))?;
     }
     Some(cur)
 }
@@ -338,7 +338,7 @@ pools:
     members: [ { target: a } ]
     on_exhausted: { action: "fallback_pool:overflow" }
 "#;
-    let doc: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+    let doc: Value = yaml::from_str(raw).unwrap();
     let joined = detect_legacy_markers(&doc).join("\n");
     for expect in [
         "top-level `group_map:`",
@@ -368,14 +368,14 @@ models: {}
 pools: {}
 "#;
     let out = migrate_config(raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let doc: Value = yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
-    let get = |path: &[&str]| -> serde_yaml::Value {
-        let mut cur = serde_yaml::Value::Mapping(root.clone());
+    let get = |path: &[&str]| -> Value {
+        let mut cur = Value::Map(root.clone());
         for k in path {
             cur = cur
                 .as_mapping()
-                .and_then(|m| m.get(serde_yaml::Value::from(*k)).cloned())
+                .and_then(|m| m.get_key(Value::from(*k)).cloned())
                 .unwrap_or_else(|| panic!("path {path:?} missing at '{k}'"));
         }
         cur
@@ -383,14 +383,15 @@ pools: {}
     assert_eq!(
         get(&["store", "module"]).as_str(),
         Some(
-            serde_yaml::from_str::<serde_yaml::Value>(include_str!(
+            yaml::from_str::<Value>(include_str!(
                 "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
             ))
-            .expect("the frozen customer text")["legacy_backend_1_4"]
-                .as_str()
-                .expect("the frozen string")
-                .to_string()
-                .as_str()
+            .expect("the frozen customer text")
+            .at("legacy_backend_1_4")
+            .as_str()
+            .expect("the frozen string")
+            .to_string()
+            .as_str()
         ),
         "1.4.x's only durable backend -- migration must select it, not default to memory"
     );
@@ -413,32 +414,33 @@ models: {}
 pools: {}
 "#;
     let out = migrate_config(raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let doc: Value = yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
     let store = root
-        .get(serde_yaml::Value::from("store"))
+        .get_key(Value::from("store"))
         .and_then(|v| v.as_mapping().cloned())
         .expect("store: section must be present even when db_path was implicit");
     assert_eq!(
         store
-            .get(serde_yaml::Value::from("module"))
+            .get_key(Value::from("module"))
             .and_then(|v| v.as_str()),
         Some(
-            serde_yaml::from_str::<serde_yaml::Value>(include_str!(
+            yaml::from_str::<Value>(include_str!(
                 "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
             ))
-            .expect("the frozen customer text")["legacy_backend_1_4"]
-                .as_str()
-                .expect("the frozen string")
-                .to_string()
-                .as_str()
+            .expect("the frozen customer text")
+            .at("legacy_backend_1_4")
+            .as_str()
+            .expect("the frozen string")
+            .to_string()
+            .as_str()
         )
     );
     assert_eq!(
         store
-            .get(serde_yaml::Value::from("settings"))
+            .get_key(Value::from("settings"))
             .and_then(|v| v.as_mapping())
-            .and_then(|m| m.get(serde_yaml::Value::from("db_path")))
+            .and_then(|m| m.get_key(Value::from("db_path")))
             .and_then(|v| v.as_str()),
         Some("busbar-governance.db"),
         "must reproduce 1.4.x's real implicit default path, not a 1.5.0-side default"
@@ -459,7 +461,7 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let doc: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+    let doc: Value = yaml::from_str(raw).unwrap();
     let markers = detect_legacy_markers(&doc);
     let joined = markers.join("\n");
     assert!(
@@ -495,7 +497,7 @@ global_hooks:
 "#;
     let out1 = migrate_config(raw).expect("migrates");
 
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).expect("valid YAML");
+    let doc: Value = yaml::from_str(&out1.yaml).expect("valid YAML");
     assert!(
         detect_legacy_markers(&doc).is_empty(),
         "no residual 1.x marker"
@@ -536,8 +538,8 @@ global_hooks:
     );
 
     let out2 = migrate_config(&out1.yaml).expect("re-migrates");
-    let v1: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).unwrap();
-    let v2: serde_yaml::Value = serde_yaml::from_str(&out2.yaml).unwrap();
+    let v1: Value = yaml::from_str(&out1.yaml).unwrap();
+    let v2: Value = yaml::from_str(&out2.yaml).unwrap();
     assert_eq!(
         v1, v2,
         "the migration must be idempotent on the config tree"
@@ -545,7 +547,7 @@ global_hooks:
 }
 
 fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
-    let doc: serde_yaml::Value = serde_yaml::from_str(raw).expect("valid YAML");
+    let doc: Value = yaml::from_str(raw).expect("valid YAML");
     let markers = detect_legacy_markers(&doc);
     assert!(
         markers.iter().any(|m| m.contains(needle)),
@@ -558,14 +560,9 @@ fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
     );
 }
 
-fn migrate_golden(
-    raw: &str,
-) -> (
-    busbar_migrations::config::migrate::MigrateOutput,
-    serde_yaml::Value,
-) {
+fn migrate_golden(raw: &str) -> (busbar_migrations::config::migrate::MigrateOutput, Value) {
     let (out, doc) = migrate_to_value(raw);
-    let yaml = serde_yaml::to_string(&doc).expect("serializable");
+    let yaml = yaml::to_string(&doc).expect("serializable");
     let _: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_yaml_str(&yaml)
         .expect("the migrated config must boot-parse as 1.5.3");
     let (_out2, doc2) = migrate_to_value(&yaml);
@@ -706,7 +703,7 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
     );
 
     let deploy: busbar_kernel::config::DeployCfg =
-        busbar_kernel::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
+        busbar_kernel::config::deploy_from_yaml_str(&yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
     let mut errs = Vec::new();
     let export = busbar_kernel::config::resolve_export(&built_ins(&deploy.export), &mut errs);
@@ -839,7 +836,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     );
 
     let deploy: busbar_kernel::config::DeployCfg =
-        busbar_kernel::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
+        busbar_kernel::config::deploy_from_yaml_str(&yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
     let mut errs = Vec::new();
     let auth = busbar_kernel::config::resolve_auth(
@@ -869,12 +866,12 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
 
     let phase = def
         .as_mapping()
-        .and_then(|m| m.get(serde_yaml::Value::from("phase")).cloned())
+        .and_then(|m| m.get_key(Value::from("phase")).cloned())
         .and_then(|v| v.as_sequence().cloned())
         .expect("a migrated bare TAP must carry an EXPLICIT `phase:` (not the widened default)");
     assert_eq!(
         phase,
-        vec![serde_yaml::Value::from("request")],
+        vec![Value::from("request")],
         "a legacy tap with no `at:` fired at REQUEST only; migration must preserve exactly that, \
          not silently widen it to the four core stages"
     );
@@ -888,7 +885,7 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
     let (_, gdef) = gates.iter().next().expect("one definition");
     assert!(
         gdef.as_mapping()
-            .and_then(|m| m.get(serde_yaml::Value::from("phase")))
+            .and_then(|m| m.get_key(Value::from("phase")))
             .is_none(),
         "a gate carries no `at:` default, so migration must not invent a `phase:` for it"
     );
@@ -914,18 +911,20 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
 fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
-    let renamed = serde_yaml::from_str::<serde_yaml::Value>(include_str!(
+    let renamed = yaml::from_str::<Value>(include_str!(
         "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
     ))
-    .expect("the frozen customer text")["renamed_module_1_5_3"]
-        .as_str()
-        .expect("the frozen string")
-        .to_string();
-    let retired = serde_yaml::from_str::<serde_yaml::Value>(include_str!(
+    .expect("the frozen customer text")
+    .at("renamed_module_1_5_3")
+    .as_str()
+    .expect("the frozen string")
+    .to_string();
+    let retired = yaml::from_str::<Value>(include_str!(
         "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
     ))
-    .expect("the frozen customer text")["retired_modules_1_5_3"]
-        .clone();
+    .expect("the frozen customer text")
+    .at("retired_modules_1_5_3")
+    .clone();
     let retired: Vec<&str> = retired
         .as_sequence()
         .unwrap()
@@ -939,7 +938,7 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
              providers: {{}}\nmodels: {{}}\npools: {{}}\n"
         );
 
-        let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let doc: Value = yaml::from_str(&raw).unwrap();
         let joined = detect_legacy_markers(&doc).join("\n");
         assert!(
             joined.contains(old) && joined.contains(renamed.as_str()),

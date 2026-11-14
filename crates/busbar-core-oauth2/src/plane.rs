@@ -837,7 +837,7 @@ type BuildFuture = std::pin::Pin<
 >;
 
 pub(crate) fn seam_build<C: crate::Connections>(
-    block: serde_yaml::Value,
+    block: busbar_contract::yaml::Value,
     secrets: Vec<(String, String)>,
     protected_resources: Vec<String>,
     prior: Option<Arc<dyn std::any::Any + Send + Sync>>,

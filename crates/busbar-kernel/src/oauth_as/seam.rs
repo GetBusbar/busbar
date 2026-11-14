@@ -11,14 +11,14 @@ use busbar_contract::SecretRef;
 
 type AsPlaneBuildFn =
     fn(
-        serde_yaml::Value,
+        busbar_contract::yaml::Value,
         Vec<(String, String)>,
         Vec<String>,
         Option<Arc<dyn Any + Send + Sync>>,
         Arc<crate::persistence::facade::CoreStore>,
     ) -> Pin<Box<dyn Future<Output = Result<Arc<dyn Any + Send + Sync>, String>> + Send>>;
 
-type AsPlaneCheckFn = fn(&serde_yaml::Value) -> Result<Vec<(String, SecretRef)>, String>;
+type AsPlaneCheckFn = fn(&busbar_contract::yaml::Value) -> Result<Vec<(String, SecretRef)>, String>;
 
 pub struct DpopPresentation {
     pub method: String,
@@ -33,7 +33,7 @@ pub struct DpopPresentation {
 /// from a block that passed, so holding one means the owner already validated it.
 #[derive(Debug)]
 pub struct CheckedAsBlock {
-    pub block: serde_yaml::Value,
+    pub block: busbar_contract::yaml::Value,
     pub secret_refs: Vec<(String, SecretRef)>,
 }
 

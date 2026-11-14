@@ -433,9 +433,9 @@ pub(crate) fn fixture_sources() -> busbar_contract::secret_ref::Sugars {
     sources
 }
 #[cfg(test)]
-pub(crate) fn fixture_authored(yaml: &str) -> Result<SecretRef, serde_yaml::Error> {
-    busbar_contract::secret_ref::context::deserialize(
-        serde_yaml::Deserializer::from_str(yaml),
-        &fixture_sources(),
-    )
+pub(crate) fn fixture_authored(yaml: &str) -> Result<SecretRef, busbar_contract::yaml::Error> {
+    let sources = fixture_sources();
+    busbar_contract::yaml::with_deserializer(yaml, |d| {
+        busbar_contract::secret_ref::context::deserialize(d, &sources)
+    })
 }

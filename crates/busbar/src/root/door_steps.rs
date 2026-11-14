@@ -18,6 +18,7 @@ use busbar_contract::section::{
     POOL_MEMBER_NAME_KEY, POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY,
     RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
 };
+use busbar_contract::yaml::{MappingExt, ValueExt};
 use busbar_contract::MeterClassId;
 use busbar_kernel::config::groups::ExhaustionMode;
 use busbar_kernel::governance::{AdmitGrant, LimitBlocked, PLANE_LANE_SEP};
@@ -62,7 +63,7 @@ pub struct DoorPools {
 pub type Routed = (String, Vec<String>);
 
 impl DoorPools {
-    pub fn of(section: &serde_yaml::Value, declared: &str) -> Result<Self, String> {
+    pub fn of(section: &busbar_contract::yaml::Value, declared: &str) -> Result<Self, String> {
         let Some(map) = section.as_mapping() else {
             return Ok(Self::default());
         };
@@ -94,8 +95,8 @@ impl DoorPools {
         let mut pools: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut tiers: BTreeMap<String, Vec<u32>> = BTreeMap::new();
         for (name, pool) in map
-            .get(RESERVED_POOLS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
+            .get_key(RESERVED_POOLS_KEY)
+            .and_then(busbar_contract::yaml::Value::as_mapping)
             .into_iter()
             .flatten()
         {
@@ -126,8 +127,8 @@ impl DoorPools {
             reason = "config: the pools' fallbacks are gathered once per generation"
         )]
         let fallbacks = map
-            .get(RESERVED_POOLS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
+            .get_key(RESERVED_POOLS_KEY)
+            .and_then(busbar_contract::yaml::Value::as_mapping)
             .map(|pools| {
                 pools
                     .iter()
@@ -146,14 +147,14 @@ impl DoorPools {
             reason = "config: the member-granted pools are gathered once per generation"
         )]
         let member_granted = map
-            .get(RESERVED_POOLS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
+            .get_key(RESERVED_POOLS_KEY)
+            .and_then(busbar_contract::yaml::Value::as_mapping)
             .map(|pools| {
                 pools
                     .iter()
                     .filter(|(_, pool)| {
                         pool.get(busbar_contract::section::POOL_MEMBER_GRANTED_KEY)
-                            .and_then(serde_yaml::Value::as_bool)
+                            .and_then(busbar_contract::yaml::Value::as_bool)
                             .unwrap_or(false)
                     })
                     .filter_map(|(name, _)| key(name))
@@ -166,14 +167,14 @@ impl DoorPools {
             reason = "config: the pools' breakers are gathered once per generation"
         )]
         let breakers = map
-            .get(RESERVED_POOLS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
+            .get_key(RESERVED_POOLS_KEY)
+            .and_then(busbar_contract::yaml::Value::as_mapping)
             .map(|pools| {
                 pools
                     .iter()
                     .filter_map(|(name, pool)| {
                         let block = pool.get(POOL_BREAKER_KEY)?.clone();
-                        Some((key(name)?, serde_yaml::from_value(block).ok()?))
+                        Some((key(name)?, busbar_contract::yaml::from_value(block).ok()?))
                     })
                     .collect()
             })
@@ -189,9 +190,9 @@ impl DoorPools {
             .filter_map(|entry| {
                 let written = models
                     .unwrap_or(map)
-                    .get(entry.as_str())
+                    .get_key(entry.as_str())
                     .and_then(|e| e.get(busbar_contract::section::ENTRY_TIMEOUT_KEY))
-                    .and_then(serde_yaml::Value::as_str)
+                    .and_then(busbar_contract::yaml::Value::as_str)
                     .and_then(|t| busbar_contract::section::entry_timeout_ms(t).ok());
                 let ms = match (written, models) {
                     (Some(ms), _) => ms,
@@ -411,10 +412,10 @@ impl DoorPools {
     }
 }
 
-fn members(pool: &serde_yaml::Value) -> Result<Vec<(String, u32)>, String> {
+fn members(pool: &busbar_contract::yaml::Value) -> Result<Vec<(String, u32)>, String> {
     let Some(list) = pool
         .get(POOL_MEMBERS_KEY)
-        .and_then(serde_yaml::Value::as_sequence)
+        .and_then(busbar_contract::yaml::Value::as_sequence)
     else {
         return Ok(Vec::new());
     };
@@ -2153,7 +2154,7 @@ pub struct DoorConfig {
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
     /// (a door plane's other owned sections among them: a config apply hands a plane its owned
     /// sections from here, as boot hands them from the document's sections).
-    pub sections: Result<BTreeMap<&'static str, serde_yaml::Value>, String>,
+    pub sections: Result<BTreeMap<&'static str, busbar_contract::yaml::Value>, String>,
     /// The providers, by name.
     pub providers: BTreeMap<String, ProviderRoute>,
     /// The model-serving pools' bounds.
@@ -2212,7 +2213,7 @@ fn raw_sections(cfg: &busbar_kernel::config::RootCfg) -> BTreeMap<&'static str, 
     let raw = cfg
         .endpoint_resources
         .values()
-        .filter_map(|r| r.downcast_ref::<(&'static str, serde_yaml::Value)>())
+        .filter_map(|r| r.downcast_ref::<(&'static str, busbar_contract::yaml::Value)>())
         .filter(|(_, v)| !v.is_null())
         .map(|(k, v)| (*k, v.clone()))
         .collect();
@@ -2237,7 +2238,7 @@ pub fn owned_anchor_refusal(at: &str, written: &str) -> Result<(), String> {
 
 pub fn owned_anchors_refusal<P: AsRef<str>>(
     paths: &[P],
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<(), String> {
     for path in paths {
         let Some(at) = busbar_contract::section::owned_path(path.as_ref()) else {
@@ -2248,7 +2249,7 @@ pub fn owned_anchors_refusal<P: AsRef<str>>(
             .next()
             .and_then(|section| sections.get(section))
             .and_then(|v| segments.try_fold(v, |v, key| v.get(key)))
-            .and_then(serde_yaml::Value::as_str)
+            .and_then(busbar_contract::yaml::Value::as_str)
             .filter(|t| !t.is_empty());
         if let Some(written) = written {
             owned_anchor_refusal(at, written)?;
@@ -2542,17 +2543,17 @@ pub fn offline_root_rules(cfg: &busbar_kernel::config::RootCfg) -> Result<(), Ve
 /// serialization markers to YAML. A provider number outside YAML's scalar domain is refused.
 pub fn kernel_sections(
     cfg: &busbar_kernel::config::RootCfg,
-) -> Result<BTreeMap<&'static str, serde_yaml::Value>, String> {
-    use serde_yaml::{Mapping, Value};
-    fn opt(m: &mut Mapping, key: &str, v: Option<Value>) {
+) -> Result<BTreeMap<&'static str, busbar_contract::yaml::Value>, String> {
+    use busbar_contract::yaml::{Pairs, Value};
+    fn opt(m: &mut Pairs, key: &str, v: Option<Value>) {
         if let Some(v) = v {
-            m.insert(Value::from(key), v);
+            m.insert_key(Value::from(key), v);
         }
     }
     let mut out = BTreeMap::new();
-    let mut providers = Mapping::new();
+    let mut providers = Pairs::new();
     for (name, p) in &cfg.providers {
-        let mut m = Mapping::new();
+        let mut m = Pairs::new();
         for (key, value) in &p.table {
             #[expect(
                 clippy::disallowed_methods,
@@ -2570,12 +2571,12 @@ pub fn kernel_sections(
             "auth",
             p.auth.as_ref().map(style_word).map(Value::from),
         );
-        providers.insert(Value::from(name.clone()), Value::Mapping(m));
+        providers.insert_key(Value::from(name.clone()), Value::Map(m));
     }
-    let mut models = Mapping::new();
+    let mut models = Pairs::new();
     for (name, model) in &cfg.models {
-        let mut m = Mapping::new();
-        m.insert(
+        let mut m = Pairs::new();
+        m.insert_key(
             Value::from(MODEL_PROVIDER_KEY),
             Value::from(model.provider.clone()),
         );
@@ -2601,9 +2602,9 @@ pub fn kernel_sections(
             MODEL_PROTOCOL_KEYS[0],
             model.protocol.clone().map(Value::from),
         );
-        models.insert(Value::from(name.clone()), Value::Mapping(m));
+        models.insert_key(Value::from(name.clone()), Value::Map(m));
     }
-    let mut pools = Mapping::new();
+    let mut pools = Pairs::new();
     for (name, pool) in &cfg.pools {
         #[expect(
             clippy::disallowed_methods,
@@ -2619,27 +2620,31 @@ pub fn kernel_sections(
                     Value::from(member.model.clone()),
                 );
                 opt(&mut m, "reasoning", member.reasoning.map(Value::from));
-                opt(&mut m, "context_max", member.context_max.map(Value::from));
-                Value::Mapping(m)
+                opt(
+                    &mut m,
+                    "context_max",
+                    member.context_max.map(|n| Value::from(n as u64)),
+                );
+                Value::Map(m)
             })
             .collect();
-        let mut p = Mapping::new();
-        p.insert(Value::from(POOL_MEMBERS_KEY), Value::Sequence(members));
+        let mut p = Pairs::new();
+        p.insert_key(Value::from(POOL_MEMBERS_KEY), Value::Array(members));
         if let Some(busbar_kernel::config::pools::OnExhaustedCfg::FallbackPool(fallback)) =
             &pool.on_exhausted
         {
-            p.insert(
+            p.insert_key(
                 Value::from(ON_EXHAUSTED_KEY),
                 section_map([(FALLBACK_POOL_KEY, Value::from(fallback.clone()))]),
             );
         }
         if let Some(header) = pool.affinity.as_ref().and_then(|a| a.header_name.as_ref()) {
-            p.insert(
+            p.insert_key(
                 Value::from("affinity"),
                 section_map([("header_name", Value::from(header.clone()))]),
             );
         }
-        pools.insert(Value::from(name.clone()), Value::Mapping(p));
+        pools.insert_key(Value::from(name.clone()), Value::Map(p));
     }
     let limits = section_map([
         (
@@ -2648,13 +2653,13 @@ pub fn kernel_sections(
         ),
         (
             "request_body_max_bytes",
-            Value::from(cfg.limits.request_body_max_bytes),
+            Value::from(cfg.limits.request_body_max_bytes as u64),
         ),
         (
             "datagram_line_memory_bytes",
             cfg.limits
                 .datagram_line_memory_bytes
-                .map_or(Value::Null, Value::from),
+                .map_or(Value::Null, |n| Value::from(n as u64)),
         ),
         (
             "reasoning_effort_budgets",
@@ -2678,7 +2683,7 @@ pub fn kernel_sections(
     if !providers.is_empty() {
         out.insert(
             busbar_contract::plugin::Kind::Transport.root(),
-            Value::Mapping(providers),
+            Value::Map(providers),
         );
     }
     let required = |key: &'static str| {
@@ -2687,8 +2692,8 @@ pub fn kernel_sections(
             .any(|d| d.required_config_sections.contains(&key))
     };
     if !models.is_empty() || !pools.is_empty() || required(RESERVED_MODELS_KEY) {
-        out.insert(RESERVED_MODELS_KEY, Value::Mapping(models));
-        out.insert(RESERVED_POOLS_KEY, Value::Mapping(pools));
+        out.insert(RESERVED_MODELS_KEY, Value::Map(models));
+        out.insert(RESERVED_POOLS_KEY, Value::Map(pools));
     }
     out.insert("limits", limits);
     Ok(out)
@@ -2706,13 +2711,16 @@ fn section_map<const N: usize>(entries: [(&str, serde_yaml::Value); N]) -> serde
     serde_yaml::Value::Mapping(map)
 }
 
-fn provider_yaml(value: &serde_json::Value, path: &str) -> Result<serde_yaml::Value, String> {
+fn provider_yaml(
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<busbar_contract::yaml::Value, String> {
+    use busbar_contract::yaml::Value as Yaml;
     use serde_json::Value as Json;
-    use serde_yaml::Value as Yaml;
     Ok(match value {
         Json::Null => Yaml::Null,
         Json::Bool(value) => Yaml::Bool(*value),
-        Json::String(value) => Yaml::String(value.clone()),
+        Json::String(value) => Yaml::Text(value.clone()),
         Json::Number(value) => {
             if let Some(value) = value.as_u64() {
                 Yaml::from(value)
@@ -2740,14 +2748,14 @@ fn provider_yaml(value: &serde_json::Value, path: &str) -> Result<serde_yaml::Va
                 })?)
             }
         }
-        Json::Array(values) => Yaml::Sequence(
+        Json::Array(values) => Yaml::Array(
             values
                 .iter()
                 .enumerate()
                 .map(|(i, value)| provider_yaml(value, &format!("{path}[{i}]")))
                 .collect::<Result<_, _>>()?,
         ),
-        Json::Object(values) => Yaml::Mapping(
+        Json::Object(values) => Yaml::Map(
             values
                 .iter()
                 .map(|(key, value)| {
@@ -2763,7 +2771,7 @@ fn provider_yaml(value: &serde_json::Value, path: &str) -> Result<serde_yaml::Va
 
 // Decimal notation can name an exact integer beyond f64's precision. Construct it
 // with bounded checked arithmetic; an exponent never controls an allocation.
-fn decimal_integer(text: &str) -> Option<serde_yaml::Value> {
+fn decimal_integer(text: &str) -> Option<busbar_contract::yaml::Value> {
     let (negative, digits, exponent) = decimal_parts(text)?;
     if !(0..=19).contains(&exponent) || (negative && digits == "0") {
         return None;
@@ -2775,9 +2783,9 @@ fn decimal_integer(text: &str) -> Option<serde_yaml::Value> {
     if negative {
         i64::try_from(-i128::from(magnitude))
             .ok()
-            .map(serde_yaml::Value::from)
+            .map(busbar_contract::yaml::Value::from)
     } else {
-        Some(serde_yaml::Value::from(magnitude))
+        Some(busbar_contract::yaml::Value::from(magnitude))
     }
 }
 
@@ -2975,7 +2983,7 @@ pub fn provider_routes(
 
 #[must_use]
 pub fn dialect_facts(
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     providers: &BTreeMap<String, ProviderRoute>,
 ) -> Vec<busbar_contract::plane_calls::DialectFacts> {
     busbar_contract::plane_calls::dialect_facts(section, |name| {
@@ -3827,14 +3835,17 @@ impl std::fmt::Debug for DoorReach<'_> {
     }
 }
 
-fn member_entry<'s>(section: &'s serde_yaml::Value, entry: &str) -> Option<&'s serde_yaml::Value> {
+fn member_entry<'s>(
+    section: &'s busbar_contract::yaml::Value,
+    entry: &str,
+) -> Option<&'s busbar_contract::yaml::Value> {
     section.get(RESERVED_MODELS_KEY)?.get(entry)
 }
 
-fn entry_text<'s>(entry: &'s serde_yaml::Value, key: &str) -> Option<&'s str> {
+fn entry_text<'s>(entry: &'s busbar_contract::yaml::Value, key: &str) -> Option<&'s str> {
     key.split('.')
         .try_fold(entry, |value, part| value.get(part))
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(busbar_contract::yaml::Value::as_str)
 }
 
 fn origin_of(url: &str) -> &str {
@@ -3850,7 +3861,7 @@ const TOKEN_EXCHANGE_STYLE: &str = "oauth-token-exchange";
 
 fn token_exchange_binding(
     entry: &str,
-    registration: &serde_yaml::Value,
+    registration: &busbar_contract::yaml::Value,
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
@@ -3871,7 +3882,7 @@ fn token_exchange_binding(
         .ok_or_else(|| format!("member '{entry}': its token exchange states no subject token"))
         .and_then(|v| {
             busbar_contract::secret_ref::context::deserialize(
-                v,
+                busbar_contract::yaml::deserializer(v),
                 &busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows()),
             )
             .map_err(|e| format!("member '{entry}': its subject token reference: {e}"))
@@ -3944,7 +3955,7 @@ fn token_exchange_binding(
 
 fn upstream_credential_binding(
     member_name: &str,
-    registration: &serde_yaml::Value,
+    registration: &busbar_contract::yaml::Value,
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
@@ -3962,7 +3973,7 @@ fn upstream_credential_binding(
 
 fn upstream_credential(
     member_name: &str,
-    registration: &serde_yaml::Value,
+    registration: &busbar_contract::yaml::Value,
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Option<(busbar_kernel::plane_driver::AuthBinding, Arc<PerHop>)>, String> {
@@ -3992,7 +4003,7 @@ fn upstream_credential(
         })
         .and_then(|v| {
             busbar_contract::secret_ref::context::deserialize(
-                v,
+                busbar_contract::yaml::deserializer(v),
                 &busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows()),
             )
             .map_err(|_| {
@@ -4013,7 +4024,7 @@ fn upstream_credential(
         Some(p) if p.as_str() == Some(PLACEMENT_BEARER) => (BEARER_STYLE, None),
         Some(p) => match p
             .get(PLACEMENT_HEADER_KEY)
-            .and_then(serde_yaml::Value::as_str)
+            .and_then(busbar_contract::yaml::Value::as_str)
         {
             Some(header) if !header.is_empty() => (HEADER_STYLE, Some(header.to_string())),
             _ => {
@@ -4036,7 +4047,7 @@ fn upstream_credential(
     )]
     let lease = block
         .get(CREDENTIAL_LEASE_TTL_KEY)
-        .and_then(serde_yaml::Value::as_u64)
+        .and_then(busbar_contract::yaml::Value::as_u64)
         .filter(|ms| *ms > 0)
         .map(std::time::Duration::from_millis)
         .filter(|lease| minted.checked_add(*lease).is_some())
@@ -4762,7 +4773,7 @@ fn ridden(
 }
 
 pub fn member_routes(
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     pools: &DoorPools,
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     reach: &DoorReach<'_>,
@@ -4958,7 +4969,7 @@ pub fn member_routes(
 
     let section_default = section
         .get(busbar_contract::section::UPSTREAM_CREDENTIALS_KEY)
-        .and_then(serde_yaml::Value::as_str);
+        .and_then(busbar_contract::yaml::Value::as_str);
     for (entry, (need, base_url, anchors, rides, spelled, ride_anchors)) in registered {
         let mode = section
             .get(entry.as_str())
@@ -5303,7 +5314,7 @@ pub fn spelled_for(base_url: &str, transport: &str, upgrades: &[&str]) -> Option
 
 fn registration_anchors(
     entry: &str,
-    registration: &serde_yaml::Value,
+    registration: &busbar_contract::yaml::Value,
     need: busbar_contract::conn::NeedId,
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     secrets: &dyn busbar_contract::secret::SecretResolve,
@@ -5355,7 +5366,7 @@ fn registration_anchors(
                             busbar_contract::secret_ref::SecretRef,
                             _,
                         >(
-                            v,
+                            busbar_contract::yaml::deserializer(v),
                             &busbar_contract::secret::SecretAxis::sugars(
                                 crate::root::linked::secret_rows(),
                             ),
@@ -5384,7 +5395,7 @@ fn registration_anchors(
 /// Validate only sections whose actual Need explicitly selects the member TLS bundle.
 pub(crate) fn member_tls_refusal(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
 ) -> Result<(), String> {
     if served
         .need_trust
@@ -5396,7 +5407,7 @@ pub(crate) fn member_tls_refusal(
     Ok(())
 }
 
-fn member_tls_section_refusal(section: &serde_yaml::Value) -> Result<(), String> {
+fn member_tls_section_refusal(section: &busbar_contract::yaml::Value) -> Result<(), String> {
     if let Some(members) = section.as_mapping() {
         for (name, registration) in members {
             if let Some(entry) = name.as_str() {
@@ -5410,7 +5421,7 @@ fn member_tls_section_refusal(section: &serde_yaml::Value) -> Result<(), String>
 /// Read the explicitly selected member TLS bundle; its certificate material is public,
 fn registration_ca_anchors(
     entry: &str,
-    registration: &serde_yaml::Value,
+    registration: &busbar_contract::yaml::Value,
 ) -> Result<Vec<Vec<u8>>, String> {
     let Some(tls) = registration.get("tls").filter(|v| !v.is_null()) else {
         return Ok(Vec::new());

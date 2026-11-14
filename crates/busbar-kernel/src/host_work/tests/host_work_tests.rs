@@ -885,7 +885,7 @@ fn a_sections_work_bounds_fall_back_to_the_hosts_key_by_key() {
         retain_ms: 5_000,
     };
     let of = |yaml: &str| {
-        let v: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let v: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(yaml).unwrap();
         WorkBounds::of_section("p", &v, host)
     };
     assert_eq!(of("entry: {}"), Ok(host), "no work: is the host's whole");

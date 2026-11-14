@@ -322,7 +322,11 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let dir = directory.clone();
     let config_path = dir.join("config.yaml");
     let providers_path = dir.join("providers.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        busbar_contract::yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
@@ -610,7 +614,11 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let dir = directory.clone();
     let config_path = dir.join("config.yaml");
     let providers_path = dir.join("providers.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        busbar_contract::yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path.clone());
     app.providers_path = Some(providers_path);
@@ -760,7 +768,11 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let dir = directory.clone();
     let config_path = dir.join("config.yaml");
     let providers_path = dir.join("providers.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        busbar_contract::yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path.clone());
     app.providers_path = Some(providers_path);
@@ -819,7 +831,11 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
 
     let mut invalid = document.clone();
     invalid["groups"] = serde_json::json!({"broken": {"parent": "missing"}});
-    std::fs::write(&config_path, serde_yaml::to_string(&invalid).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        busbar_contract::yaml::to_string(&invalid).unwrap(),
+    )
+    .unwrap();
     let failed = client
         .post(format!("http://{addr}/api/v1/admin/config/reload"))
         .send()

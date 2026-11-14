@@ -125,7 +125,11 @@ __attribute__((constructor)) static void mark_loaded(void) {
             "advanced":{"worker_threads":1},
             "plugins":{"enabled":true,"dir":plugins,"fetch":fetch}
         });
-        std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
+        std::fs::write(
+            &config,
+            busbar_contract::yaml::to_string(&document).unwrap(),
+        )
+        .unwrap();
         let marker = dir.join(format!("{tag}.marker"));
         let output = constructor_output(std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "root::boot::bootstrap_pin_tests::early_plane_archive_pins_refuse_before_native_constructors", "--nocapture"])

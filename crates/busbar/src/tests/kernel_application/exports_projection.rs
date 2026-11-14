@@ -31,7 +31,7 @@ store:
     let defs = std::collections::HashMap::new();
 
     let control: busbar_kernel::config::DeployCfg =
-        serde_yaml::from_str(base).expect("fixture parses");
+        busbar_contract::yaml::from_str(base).expect("fixture parses");
     if let Err(errors) = busbar_kernel::config::resolve(&control, &defs) {
         panic!("the fixture without `export:` must resolve; errors were: {errors:#?}");
     }
@@ -40,7 +40,7 @@ store:
          settings:\n      url: https://siem.example.com/l\n"
     );
     let deploy: busbar_kernel::config::DeployCfg =
-        serde_yaml::from_str(&yaml).expect("fixture parses");
+        busbar_contract::yaml::from_str(&yaml).expect("fixture parses");
     let errors = busbar_kernel::config::resolve(&deploy, &defs)
         .expect_err("a producerless stream must make the whole config fail to resolve");
     assert!(

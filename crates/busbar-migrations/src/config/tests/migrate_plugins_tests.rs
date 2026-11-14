@@ -5,6 +5,7 @@ use busbar_contract::abi::sdk::migrate::{MigrateNeed, Migrated, MigrationAnswer}
 
 use super::{MigrateHost, NoPlugins};
 use crate::config::migrate::{migrate_config, migrate_config_with};
+use busbar_contract::yaml::{self, prelude::*};
 
 struct Stub;
 
@@ -65,17 +66,17 @@ plugins:
     - { github: Acme/busbar-stub@v1.0.0, sha256: aaaa }
 ";
 
-fn doc(yaml: &str) -> serde_yaml::Value {
-    let body: String = yaml
+fn doc(text: &str) -> Value {
+    let body: String = text
         .lines()
         .filter(|l| !l.starts_with('#'))
         .collect::<Vec<_>>()
         .join("\n");
-    serde_yaml::from_str(&body).expect("the migrated document parses")
+    yaml::from_str(&body).expect("the migrated document parses")
 }
 
-fn yaml(text: &str) -> serde_yaml::Value {
-    serde_yaml::from_str(text).expect("YAML")
+fn yaml(text: &str) -> Value {
+    yaml::from_str(text).expect("YAML")
 }
 
 #[test]
@@ -83,7 +84,7 @@ fn unavailable_plugin_pins_report_unmergeable_plugins_shapes() {
     for plugins in ["plugins: opaque", "plugins: { fetch: opaque }"] {
         let raw = format!("{plugins}\nidentity-providers:\n  missing:\n    module: elsewhere\n");
         let out = migrate_config_with(&raw, &Stub).expect("migrates");
-        assert_eq!(doc(&out.yaml)["plugins"], yaml(plugins)["plugins"]);
+        assert_eq!(*doc(&out.yaml).at("plugins"), *yaml(plugins).at("plugins"));
         assert!(
             out.todos
                 .iter()
@@ -103,8 +104,8 @@ fn composite_yaml_keys_do_not_become_null_plugin_settings() {
     let raw = "store:\n  module: stub\n  settings:\n    ? [private, key]\n    : retained\n";
     let out = migrate_config_with(raw, &Stub).unwrap();
     assert_eq!(
-        doc(&out.yaml)["store"]["settings"],
-        yaml(raw)["store"]["settings"]
+        *doc(&out.yaml).at("store").at("settings"),
+        *yaml(raw).at("store").at("settings")
     );
     assert!(out.todos.iter().any(|t| t.contains("store.settings")));
     assert!(!out.todos.iter().any(|t| t.contains("private")));
@@ -124,19 +125,19 @@ fn core_writes_back_the_plugins_own_migration_and_applies_only_its_needs() {
     let out = migrate_config_with(CONFIG, &Stub).expect("migrates");
     let d = doc(&out.yaml);
     assert_eq!(
-        d["store"]["settings"],
+        *d.at("store").at("settings"),
         yaml("{ signing_secret: { env: S }, url: 10.0.0.7 }"),
         "the plugin's answer replaces its section:\n{}",
         out.yaml
     );
     assert_eq!(
-        d["advanced"]["allow_destinations"],
+        *d.at("advanced").at("allow_destinations"),
         yaml("['10.0.0.7']"),
         "the raised destination, once, and nothing else:\n{}",
         out.yaml
     );
     assert!(
-        d["advanced"]["block_private_addresses"].is_null(),
+        d.at("advanced").at("block_private_addresses").is_null(),
         "core never turns the guard off"
     );
     assert!(
@@ -157,11 +158,11 @@ fn core_writes_back_the_plugins_own_migration_and_applies_only_its_needs() {
     );
 
     assert_eq!(
-        d["identity-providers"]["other"]["settings"],
+        *d.at("identity-providers").at("other").at("settings"),
         yaml("{ keep: me }")
     );
     assert_eq!(
-        d["identity-providers"]["sick"]["settings"],
+        *d.at("identity-providers").at("sick").at("settings"),
         yaml("{ keep: me }")
     );
     assert!(
@@ -178,7 +179,7 @@ fn fetch_pins_are_rewritten_through_the_release_lookup_and_unserved_plugins_gain
     let out = migrate_config_with(CONFIG, &Stub).expect("migrates");
     let d = doc(&out.yaml);
     assert_eq!(
-        d["plugins"]["fetch"],
+        *d.at("plugins").at("fetch"),
         yaml(
             "[{ github: Acme/busbar-stub@v1.6.0 }, \
              { github: Acme/busbar-elsewhere@v1.6.0 }]"
@@ -211,11 +212,11 @@ fn with_no_plugins_at_hand_every_section_passes_through_unchanged() {
     assert_eq!(plain.yaml, hosted.yaml);
     let d = doc(&plain.yaml);
     assert_eq!(
-        d["store"]["settings"],
+        *d.at("store").at("settings"),
         yaml("{ signing-secret: { env: S }, url: 10.0.0.7 }"),
         "core never renames a plugin's key"
     );
-    assert!(d["advanced"].is_null());
+    assert!(d.at("advanced").is_null());
 }
 
 use std::cell::RefCell;
@@ -356,7 +357,7 @@ impl MigrateHost for Witness {
         let Some(text) = self.catalog else {
             return Ok(None);
         };
-        let doc: serde_json::Value = serde_yaml::from_str(text).map_err(|e| e.to_string())?;
+        let doc: serde_json::Value = yaml::from_str(text).map_err(|e| e.to_string())?;
         Ok(doc.as_object().cloned())
     }
 
@@ -369,8 +370,8 @@ impl MigrateHost for Witness {
     }
 }
 
-fn run(yaml: &str, host: &Witness) -> (serde_yaml::Value, Vec<String>, Vec<String>) {
-    let serde_yaml::Value::Mapping(mut root) = serde_yaml::from_str(yaml).expect("YAML") else {
+fn run(text: &str, host: &Witness) -> (Value, Vec<String>, Vec<String>) {
+    let Value::Map(mut root) = yaml::from_str(text).expect("YAML") else {
         panic!("a mapping");
     };
     let (mut changes, mut todos, mut failures) = (Vec::new(), Vec::new(), Vec::new());
@@ -384,7 +385,7 @@ fn run(yaml: &str, host: &Witness) -> (serde_yaml::Value, Vec<String>, Vec<Strin
         },
         &[witness()],
     );
-    (serde_yaml::Value::Mapping(root), changes, todos)
+    (Value::Map(root), changes, todos)
 }
 
 const PLANE_DOC: &str = "\
@@ -417,9 +418,9 @@ fn a_plane_is_handed_its_consumed_sections_beside_its_own() {
     }
     assert_eq!(handed[SHARED], serde_json::json!({"keep": "me"}));
 
-    assert_eq!(d["witness_own"], yaml("{ new: 1 }"));
-    assert_eq!(d[SHARED], yaml("{ keep: me }"));
-    assert_eq!(d["models"], yaml("{ m: { provider: a } }"));
+    assert_eq!(*d.at("witness_own"), yaml("{ new: 1 }"));
+    assert_eq!(*d.at(SHARED), yaml("{ keep: me }"));
+    assert_eq!(*d.at("models"), yaml("{ m: { provider: a } }"));
     assert!(todos.is_empty(), "{todos:?}");
     assert!(
         changes
@@ -437,7 +438,7 @@ fn a_plane_with_none_of_its_own_sections_is_not_handed_the_ones_it_consumes() {
         &host,
     );
     assert!(host.handed.borrow().is_none(), "the plane was not called");
-    assert!(d["advanced"].is_null());
+    assert!(d.at("advanced").is_null());
     assert!(changes.is_empty() && todos.is_empty());
 }
 
@@ -455,8 +456,11 @@ fn a_selecting_consumed_section_runs_migration_without_inventing_owned_sections(
     );
     assert!(host.handed().get("pools").is_none());
     assert!(d.get("pools").is_none());
-    assert_eq!(d["advanced"]["allow_destinations"], yaml("[127.0.0.1]"));
-    assert!(d["advanced"].get("block_private_addresses").is_none());
+    assert_eq!(
+        *d.at("advanced").at("allow_destinations"),
+        yaml("[127.0.0.1]")
+    );
+    assert!(d.at("advanced").get("block_private_addresses").is_none());
     assert!(changes.iter().any(|line| line.contains("127.0.0.1")));
     assert!(todos.is_empty(), "{todos:?}");
 }
@@ -520,28 +524,34 @@ providers:
     );
 
     assert_eq!(
-        d[Kind::Transport.root()],
+        *d.at(Kind::Transport.root()),
         yaml(
             "{ a: { base_url: 'http://10.0.0.5', error_map: { y: overloaded } }, \
              mine: { protocol: two, base_url: 'http://10.0.0.6' } }"
         )
     );
-    let mut allowed: Vec<&str> = d["advanced"]["allow_destinations"]
+    let mut allowed: Vec<&str> = d
+        .at("advanced")
+        .at("allow_destinations")
         .as_sequence()
         .expect("a list")
         .iter()
-        .filter_map(serde_yaml::Value::as_str)
+        .filter_map(Value::as_str)
         .collect();
     allowed.sort();
     assert_eq!(allowed, ["10.0.0.5", "10.0.0.6", "192.168.1.9"]);
 }
 
-fn decide(host: &Witness, url: &str) -> (serde_yaml::Value, Vec<String>, Vec<String>) {
+fn decide(host: &Witness, url: &str) -> (Value, Vec<String>, Vec<String>) {
     let doc = format!(
         "pools:\n  p: {{ members: [{{ model: m }}] }}\nproviders:\n  a: {{ base_url: '{url}' }}\n"
     );
     let (d, changes, todos) = run(&doc, host);
-    (d["advanced"]["allow_destinations"].clone(), changes, todos)
+    (
+        d.at("advanced").at("allow_destinations").clone(),
+        changes,
+        todos,
+    )
 }
 
 #[test]
@@ -688,7 +698,7 @@ advanced:
 ";
     let (d, changes, todos) = run(doc, &host);
     assert_eq!(
-        d["advanced"]["allow_destinations"],
+        *d.at("advanced").at("allow_destinations"),
         yaml("[ollama.internal]")
     );
     assert!(host.resolved.borrow().is_empty());
@@ -717,7 +727,9 @@ fn the_private_destinations_fixture_allows_exactly_its_private_upstreams() {
         &host,
     );
     assert!(todos.is_empty(), "{todos:?}");
-    let mut allowed: Vec<String> = d["advanced"]["allow_destinations"]
+    let mut allowed: Vec<String> = d
+        .at("advanced")
+        .at("allow_destinations")
         .as_sequence()
         .expect("a list")
         .iter()
@@ -753,7 +765,7 @@ fn the_private_destinations_fixture_allows_exactly_its_private_upstreams() {
     }
 
     assert!(!changes.iter().any(|c| c.contains("vllm.example.com")));
-    assert!(d["advanced"]["block_private_addresses"].is_null());
+    assert!(d.at("advanced").at("block_private_addresses").is_null());
 }
 
 fn lift_sources() -> busbar_contract::secret_ref::Sugars {
@@ -840,10 +852,10 @@ fn cold_secret_lift_consumes_need_before_emitting_configuration_and_redacts_repo
     );
     let migrated = migrate_config_with(&raw, &host).unwrap();
     assert_eq!(host.observed.borrow().as_slice(), literal.as_bytes());
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&migrated.yaml).unwrap();
+    let parsed: Value = yaml::from_str(&migrated.yaml).unwrap();
     assert_eq!(
-        serde_yaml::from_value::<busbar_contract::secret_ref::SecretRef>(
-            parsed["store"]["settings"]["token"].clone()
+        yaml::from_value::<busbar_contract::secret_ref::SecretRef>(
+            parsed.at("store").at("settings").at("token").clone()
         )
         .unwrap(),
         lift_sources()
@@ -851,7 +863,10 @@ fn cold_secret_lift_consumes_need_before_emitting_configuration_and_redacts_repo
             .unwrap()
             .reference("/private/migration-secret")
     );
-    assert_eq!(parsed["store"]["settings"]["keep"].as_u64(), Some(7));
+    assert_eq!(
+        parsed.at("store").at("settings").at("keep").as_u64(),
+        Some(7)
+    );
     assert!(!migrated.yaml.contains("DO_NOT_EXPAND"));
     assert!(!migrated.changes.join("\n").contains("DO_NOT_EXPAND"));
     assert!(migrated.changes.join("\n").contains("[REDACTED]"));
@@ -886,9 +901,7 @@ fn plugin_migration_numbers_remain_scalars_and_refuse_lossy_values() {
         let json: serde_json::Value = serde_json::from_str(number).unwrap();
         let yaml = super::yaml_value(&json).unwrap();
         assert!(yaml.is_number(), "{number}");
-        assert!(!serde_yaml::to_string(&yaml)
-            .unwrap()
-            .contains("private::Number"));
+        assert!(!yaml::to_string(&yaml).unwrap().contains("private::Number"));
     }
     for number in ["18446744073709551616", "1.00000000000000001", "1e999"] {
         let json: serde_json::Value = serde_json::from_str(number).unwrap();
@@ -930,9 +943,9 @@ fn authored_secret_substitutions_keep_admitted_source_bindings() {
     for (source, compound) in [("${TOKEN}", false), ("Bearer ${TOKEN}", true)] {
         let raw = format!("store: {{module: secret-lift-test, settings: {{token: '{source}'}}}}");
         let output = migrate_config_with(&raw, &TemplateLift).unwrap();
-        let doc: serde_yaml::Value = serde_yaml::from_str(&output.yaml).unwrap();
+        let doc: Value = yaml::from_str(&output.yaml).unwrap();
         let secret: busbar_contract::secret_ref::SecretRef =
-            serde_yaml::from_value(doc["store"]["settings"]["token"].clone()).unwrap();
+            yaml::from_value(doc.at("store").at("settings").at("token").clone()).unwrap();
         if compound {
             assert_eq!(
                 secret,
@@ -1020,14 +1033,14 @@ fn browser_client_id_validation_matches_open_without_rewriting_authored_settings
                 todos.is_empty() && failures.is_empty(),
                 "{todos:?} {failures:?}"
             );
-            let result = serde_yaml::Value::Mapping(root);
-            let authored = &result["identity-providers"]["neutral"];
+            let result = Value::Map(root);
+            let authored = result.at("identity-providers").at("neutral");
             assert_eq!(
-                authored["browser_login"]["client_id"].as_str(),
+                authored.at("browser_login").at("client_id").as_str(),
                 Some(browser)
             );
             assert_eq!(
-                authored["settings"]["client_id"].as_str(),
+                authored.at("settings").at("client_id").as_str(),
                 (browser == "fallback").then_some("expected")
             );
         }
@@ -1049,7 +1062,7 @@ fn browser_client_id_projection_does_not_override_an_explicit_invalid_setting() 
         },
     );
     assert_eq!(todos.len(), 1);
-    assert_eq!(serde_yaml::Value::Mapping(root), yaml(raw));
+    assert_eq!(Value::Map(root), yaml(raw));
 }
 
 #[test]
@@ -1145,7 +1158,7 @@ fn cold_reference_discovery_preserves_owner_scope_and_never_selects_or_rewrites_
             Ok(None)
         }
     }
-    let mut root: serde_yaml::Mapping = serde_yaml::from_str("providers:\n  selected: {api_key: {artifact: old}}\n  failed: {api_key: {artifact: PRIVATE_REFERENCE}}\nunrelated: {api_key: {artifact: old}}\n").unwrap();
+    let mut root: Mapping = yaml::mapping_from_str("providers:\n  selected: {api_key: {artifact: old}}\n  failed: {api_key: {artifact: PRIVATE_REFERENCE}}\nunrelated: {api_key: {artifact: old}}\n").unwrap();
     let before = root.clone();
     let (mut changes, mut todos, mut failures) = (vec![], vec![], vec![]);
     super::migrate_over(
@@ -1163,11 +1176,14 @@ fn cold_reference_discovery_preserves_owner_scope_and_never_selects_or_rewrites_
         }],
     );
     assert_ne!(
-        root["providers"]["selected"],
-        before["providers"]["selected"]
+        root.get_key("providers").unwrap().at("selected"),
+        before.get_key("providers").unwrap().at("selected")
     );
-    assert_eq!(root["providers"]["failed"], before["providers"]["failed"]);
-    assert_eq!(root["unrelated"], before["unrelated"]);
+    assert_eq!(
+        root.get_key("providers").unwrap().at("failed"),
+        before.get_key("providers").unwrap().at("failed")
+    );
+    assert_eq!(root.get_key("unrelated"), before.get_key("unrelated"));
     assert!(
         !root.contains_key("pools")
             && !root.contains_key("advanced")

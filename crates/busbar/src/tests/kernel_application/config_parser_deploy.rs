@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::yaml::{self, prelude::*};
 use busbar_kernel::config::*;
 use std::collections::HashMap;
 
@@ -53,16 +54,15 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
     let deploy: DeployCfg =
-        serde_yaml::from_str("providers: {}\nmodels: {}\npools: {}\n").expect("parses");
+        yaml::from_str("providers: {}\nmodels: {}\npools: {}\n").expect("parses");
     assert!(
         deploy.admin_require_mtls,
         "an OMITTED admin_require_mtls must default to the SAFE posture (guard ON)"
     );
 
-    let err = serde_yaml::from_str::<DeployCfg>(
-        "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n",
-    )
-    .expect_err("the retired admin_insecure key must be rejected at parse");
+    let err =
+        yaml::from_str::<DeployCfg>("admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n")
+            .expect_err("the retired admin_insecure key must be rejected at parse");
     let current = err.to_string();
     assert_eq!(
         busbar_kernel::config::augment_config_error(&current),
@@ -78,10 +78,10 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
             format!("admin_insecure: {insecure}\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n");
         let migrated = busbar_migrations::config::migrate::migrate_config(&raw)
             .expect("the actual historical migrator converts the inverted posture");
-        let doc: serde_yaml::Value = serde_yaml::from_str(&migrated.yaml).unwrap();
+        let doc: Value = yaml::from_str(&migrated.yaml).unwrap();
         assert!(doc.get("admin_insecure").is_none());
-        assert_eq!(doc["admin_require_mtls"].as_bool(), Some(require_mtls));
-        let current: DeployCfg = serde_yaml::from_str(&migrated.yaml)
+        assert_eq!(doc.at("admin_require_mtls").as_bool(), Some(require_mtls));
+        let current: DeployCfg = yaml::from_str(&migrated.yaml)
             .expect("the converted configuration passes the current parser");
         assert_eq!(current.admin_require_mtls, require_mtls);
     }
@@ -92,7 +92,7 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
     let op = busbar_kernel::config::operator_provider();
-    let deploy: DeployCfg = serde_yaml::from_str(&format!(
+    let deploy: DeployCfg = yaml::from_str(&format!(
         "identity-providers:\n  \
            corp-ad: {{ module: ad, max_admin_scope: full, settings: {{ server: \"ldaps://corp\" }} }}\n  \
            {op}: {{ module: {op}, token: {{ env: BUSBAR_T_AD_TOKEN }} }}\n\
@@ -139,7 +139,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credenti
     crate::dist_root_install::install();
     crate::root::migration_table::install();
     let op = busbar_kernel::config::operator_provider();
-    let deploy: DeployCfg = serde_yaml::from_str(&format!(
+    let deploy: DeployCfg = yaml::from_str(&format!(
         "identity-providers:\n  corp-ad: {{ module: ad }}\n  {op}: {{ module: {op} }}\n\
          auth:\n  chain: [corp-ad]\n  admin_auth: [{op}, corp-ad]\n\
          providers: {{}}\nmodels: {{}}\npools: {{}}\n",
@@ -167,10 +167,9 @@ fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credenti
 fn test_dangling_identity_provider_reference_is_an_error() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
-    let deploy: DeployCfg = serde_yaml::from_str(
-        "auth: { chain: [keys, ghost] }\nproviders: {}\nmodels: {}\npools: {}\n",
-    )
-    .expect("parses");
+    let deploy: DeployCfg =
+        yaml::from_str("auth: { chain: [keys, ghost] }\nproviders: {}\nmodels: {}\npools: {}\n")
+            .expect("parses");
     let mut errors = Vec::new();
     let _ = busbar_kernel::config::resolve_auth(
         deploy.auth.as_ref().expect("auth block"),
@@ -189,7 +188,7 @@ fn test_dangling_identity_provider_reference_is_an_error() {
 fn test_token_on_a_non_operator_provider_is_an_error() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
-    let deploy: DeployCfg = serde_yaml::from_str(
+    let deploy: DeployCfg = yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad, token: { env: X } }\n\
          auth: { chain: [corp-ad] }\nproviders: {}\nmodels: {}\npools: {}\n",
     )
@@ -214,14 +213,14 @@ fn test_pools_reserved_hooks_key() {
     crate::root::migration_table::install();
 
     let pools: busbar_kernel::config::PoolsCfg =
-        serde_yaml::from_str("hooks: [pii]\nfast:\n  members: []\n  hooks: [cheapest, pii]\n")
+        yaml::from_str("hooks: [pii]\nfast:\n  members: []\n  hooks: [cheapest, pii]\n")
             .expect("pools with reserved hooks key parses");
     assert_eq!(pools.all_pool_hooks, ["pii"]);
     assert!(pools.pools.contains_key("fast"));
     assert!(!pools.pools.contains_key("hooks"));
     assert_eq!(pools.pools["fast"].gates, ["pii".to_string()]);
 
-    let e = serde_yaml::from_str::<busbar_kernel::config::PoolsCfg>("hooks:\n  members: []\n")
+    let e = yaml::from_str::<busbar_kernel::config::PoolsCfg>("hooks:\n  members: []\n")
         .expect_err("a pool named `hooks` must be rejected");
     assert!(
         e.to_string().contains("reserved") || e.to_string().contains("all-pools"),
@@ -233,7 +232,7 @@ fn test_pools_reserved_hooks_key() {
 fn test_pools_reserved_name_refusal_is_the_coded_sentence() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
-    let e = serde_yaml::from_str::<busbar_kernel::config::PoolsCfg>("hooks:\n  members: []\n")
+    let e = yaml::from_str::<busbar_kernel::config::PoolsCfg>("hooks:\n  members: []\n")
         .expect_err("a pool named `hooks` must be rejected");
     assert_eq!(
         e.to_string(),
@@ -245,9 +244,8 @@ fn test_pools_reserved_name_refusal_is_the_coded_sentence() {
 fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
-    let e =
-        serde_yaml::from_str::<busbar_kernel::config::PoolsCfg>("upstream_credentials: borrowed\n")
-            .expect_err("an unknown all-pools credential mode must be rejected");
+    let e = yaml::from_str::<busbar_kernel::config::PoolsCfg>("upstream_credentials: borrowed\n")
+        .expect_err("an unknown all-pools credential mode must be rejected");
     assert_eq!(
         e.to_string(),
         "the reserved `pools.upstream_credentials:` all-pools default must be `own` or \
@@ -281,7 +279,7 @@ fn additive_hook_lists_dedupe_at_first_position() {
         busbar_kernel::config::combine_hook_refs(&section, &entity)
     );
 
-    let deploy: DeployCfg = serde_yaml::from_str(
+    let deploy: DeployCfg = yaml::from_str(
         "hooks:\n  audit: { module: h, kind: gate }\n\
          pools:\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [cheapest, audit]\n\
          providers: {}\nmodels: {}\n",
@@ -295,7 +293,7 @@ fn additive_hook_lists_dedupe_at_first_position() {
         cfg.pools["fast"].gates
     );
 
-    let deploy: DeployCfg = serde_yaml::from_str(
+    let deploy: DeployCfg = yaml::from_str(
         "hooks:\n  audit: { module: h, kind: gate }\n  pii: { module: h, kind: gate }\n\
          pools:\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [pii]\n\
          providers: {}\nmodels: {}\n",
@@ -318,7 +316,7 @@ fn pools_reserved_section_keys_are_frozen() {
     );
 
     for reserved in busbar_contract::section::RESERVED_SECTION_KEYS {
-        let err = serde_yaml::from_str::<busbar_kernel::config::PoolsCfg>(&format!(
+        let err = yaml::from_str::<busbar_kernel::config::PoolsCfg>(&format!(
             "{reserved}:\n  members: [ {{ model: a }} ]\n"
         ))
         .expect_err("a pool named with a reserved section key must be rejected");
@@ -334,7 +332,7 @@ fn pools_reserved_section_keys_are_frozen() {
 fn pools_upstream_credentials_is_a_scalar_override() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
-    let deploy: DeployCfg = serde_yaml::from_str(
+    let deploy: DeployCfg = yaml::from_str(
         "pools:\n  upstream_credentials: own\n\
          \x20 fast:\n    members: []\n    upstream_credentials: passthrough\n\
          \x20 cold:\n    members: []\n\
@@ -367,7 +365,7 @@ fn pools_upstream_credentials_is_a_scalar_override() {
 fn secrets_block_stays_module_keyed_by_design() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
-    let deploy: DeployCfg = serde_yaml::from_str(
+    let deploy: DeployCfg = yaml::from_str(
         "secrets:\n  vault:\n    settings: { address: \"https://vault.internal\" }\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
@@ -384,7 +382,7 @@ fn secrets_block_stays_module_keyed_by_design() {
         Some("https://vault.internal")
     );
 
-    let err = serde_yaml::from_str::<DeployCfg>(
+    let err = yaml::from_str::<DeployCfg>(
         "secrets:\n  my-vault:\n    module: vault\n    settings: {}\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
@@ -459,7 +457,7 @@ fn test_auth_policy_absent_is_default() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
     let deploy: DeployCfg =
-        serde_yaml::from_str("auth:\n  chain: [keys]\nproviders: {}\nmodels: {}\npools: {}\n")
+        yaml::from_str("auth:\n  chain: [keys]\nproviders: {}\nmodels: {}\npools: {}\n")
             .expect("an auth block with no policy parses");
     let mut errors = Vec::new();
     let auth = busbar_kernel::config::resolve_auth(
@@ -513,7 +511,7 @@ fn test_auth_policy_ceiling_allowed_pools_three_state() {
 #[test]
 fn test_otlp_folds_into_an_export_instance() {
     crate::dist_root_install::install();
-    let defs: busbar_kernel::config::ExportDefs = serde_yaml::from_str(
+    let defs: busbar_kernel::config::ExportDefs = yaml::from_str(
         "traces:\n  module: otlp\n  settings: { url: \"http://localhost:4318/v1/traces\" }\n",
     )
     .expect("an otlp export instance parses");
@@ -547,7 +545,7 @@ fn test_otlp_folds_into_an_export_instance() {
 #[test]
 fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
     crate::dist_root_install::install();
-    let pools: busbar_kernel::config::PoolsCfg = serde_yaml::from_str(
+    let pools: busbar_kernel::config::PoolsCfg = yaml::from_str(
         "tier:\n  members: [{model: m}]\nwork:\n  members: [{model: m}]\n\
          breaker:\n  members: [{model: m}]\n",
     )
@@ -556,10 +554,9 @@ fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
     names.sort();
     assert_eq!(names, ["breaker", "tier", "work"]);
     for word in busbar_contract::section::RESERVED_SECTION_KEYS {
-        let e = serde_yaml::from_str::<busbar_kernel::config::PoolsCfg>(&format!(
-            "{word}:\n  members: []\n"
-        ))
-        .expect_err(word);
+        let e =
+            yaml::from_str::<busbar_kernel::config::PoolsCfg>(&format!("{word}:\n  members: []\n"))
+                .expect_err(word);
         assert_eq!(
             e.to_string(),
             busbar_contract::section::reserved_name_refusal("pools", "pool", word)

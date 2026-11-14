@@ -155,9 +155,10 @@ fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize
     let interpolated =
         config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
 
-    let doc: serde_yaml::Value = serde_yaml::from_str(&interpolated).ok()?;
+    use busbar_contract::yaml::ValueExt;
+    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&interpolated).ok()?;
     let worker_threads = match doc.get("advanced").and_then(|a| a.get("worker_threads")) {
-        None | Some(serde_yaml::Value::Null) => None,
+        None | Some(busbar_contract::yaml::Value::Null) => None,
         Some(v) => Some(usize::try_from(v.as_u64()?).ok()?),
     };
     match validate_worker_threads_config(worker_threads) {

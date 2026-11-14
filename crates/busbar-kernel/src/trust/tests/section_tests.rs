@@ -43,8 +43,8 @@ const KEYS: &[TrustKeyDecl] = &[
     },
 ];
 
-fn entry(yaml: &str) -> serde_yaml::Value {
-    serde_yaml::from_str(yaml).expect("test yaml parses")
+fn entry(yaml: &str) -> busbar_contract::yaml::Value {
+    busbar_contract::yaml::from_str(yaml).expect("test yaml parses")
 }
 
 fn refusal(yaml: &str) -> String {

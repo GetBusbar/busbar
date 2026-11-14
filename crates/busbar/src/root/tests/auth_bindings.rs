@@ -226,10 +226,15 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
     assert_eq!(space, want, "1.5.5's whole hook-name word space");
 }
 
-fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
+fn dig<'a>(
+    doc: &'a busbar_contract::yaml::Value,
+    path: &[&str],
+) -> Option<&'a busbar_contract::yaml::Value> {
     let mut cur = doc;
     for k in path {
-        cur = cur.as_mapping()?.get(serde_yaml::Value::from(*k))?;
+        cur = cur
+            .as_mapping()?
+            .get_key(busbar_contract::yaml::Value::from(*k))?;
     }
     Some(cur)
 }
@@ -240,7 +245,8 @@ fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
     let raw = "governance:\n  enabled: true\n  admin_token: \"${BUSBAR_ADMIN_TOKEN}\"\n\
                providers: {}\nmodels: {}\n";
     let out = busbar_migrations::config::migrate::migrate_config(raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&out.yaml).expect("output is valid YAML");
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"])
             .and_then(|v| v.as_sequence())
@@ -272,7 +278,8 @@ fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
          providers: {{}}\nmodels: {{}}\n"
     );
     let out = busbar_migrations::config::migrate::migrate_config(&raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&out.yaml).expect("output is valid YAML");
     let chain: Vec<&str> = dig(&doc, &["auth", "admin_auth"])
         .and_then(|v| v.as_sequence())
         .expect("an admin chain")

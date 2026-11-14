@@ -323,7 +323,7 @@ impl PreparedSection<'_> {
 fn prepare_admission<'a>(
     d: &InstanceDecl,
     services: &'a KernelServices,
-    section: (&str, &serde_yaml::Value),
+    section: (&str, &busbar_contract::yaml::Value),
 ) -> Result<PreparedSection<'a>, String> {
     if d.conditional_records_optional && !d.conditional_records {
         return Err("optional record transactions require declared protocol support".into());
@@ -380,7 +380,7 @@ impl PlaneDriver {
         config: DriverConfig,
         money: Arc<dyn MoneySeam>,
         services: Arc<KernelServices>,
-        section: (&str, &serde_yaml::Value),
+        section: (&str, &busbar_contract::yaml::Value),
     ) -> Result<Self, String> {
         let d = calls.declared();
         prepare_admission(&d, &services, section)?.commit().await?;
@@ -409,7 +409,7 @@ impl PlaneDriver {
     /// Prepare the same host facts and work bounds as initial admission for a new section.
     pub fn prepare_section(
         &self,
-        section: (&str, &serde_yaml::Value),
+        section: (&str, &busbar_contract::yaml::Value),
     ) -> Result<PreparedSection<'_>, String> {
         prepare_admission(&self.calls.declared(), &self.services, section)
     }

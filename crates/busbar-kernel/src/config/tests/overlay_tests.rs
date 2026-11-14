@@ -157,7 +157,7 @@ fn section_is_empty_tracks_entries_and_tombstones() {
 }
 
 fn minimal_deploy() -> DeployCfg {
-    serde_yaml::from_str("providers: {}\nmodels: {}\n").expect("minimal deploy parses")
+    busbar_contract::yaml::from_str("providers: {}\nmodels: {}\n").expect("minimal deploy parses")
 }
 
 fn sample_root() -> RootSettings {

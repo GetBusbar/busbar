@@ -130,7 +130,7 @@ impl Fixture {
         });
         let store = crate::real_store::core_over(backend.clone()).await;
         let overlay = OverlayStore::from_core(store.clone()).unwrap();
-        let groups=serde_yaml::from_str::<BTreeMap<String,GroupCfg>>("user:historic-subject:\n  parent: shared\n  limits:\n    - { requests: 9, per: total }\n    - { tokens: 10, per: hour }\n    - { budget: 100, per: day }\n    - { requests: 20, per: month, pool: opaque/a }\nshared:\n  limits:\n    - { requests: 100, per: total }\n").unwrap();
+        let groups=busbar_contract::yaml::from_str::<BTreeMap<String,GroupCfg>>("user:historic-subject:\n  parent: shared\n  limits:\n    - { requests: 9, per: total }\n    - { tokens: 10, per: hour }\n    - { budget: 100, per: day }\n    - { requests: 20, per: month, pool: opaque/a }\nshared:\n  limits:\n    - { requests: 100, per: total }\n").unwrap();
         let witness = RecordBytes::new(b"test owns this newly opened namespace".to_vec()).unwrap();
         TestRows(store.clone())
             .record_put(
@@ -2040,7 +2040,7 @@ async fn cold_principal_transition_role_policy_is_lossless_fenced_and_restart_re
         .await
         .unwrap();
     let after = f.overlay.read_required_async().await.unwrap().unwrap();
-    let mut document = serde_yaml::from_str("auth: {}\nlisten: old\n").unwrap();
+    let mut document = busbar_contract::yaml::from_str("auth: {}\nlisten: old\n").unwrap();
     after
         .document_patch
         .as_ref()

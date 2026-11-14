@@ -2,65 +2,97 @@ use std::collections::HashMap;
 
 use super::{resolve, ProviderDef, ProviderDeploy};
 
-fn deployment_refusal(key: &str) -> String {
+fn deployment_refusal(key: &str) -> busbar_contract::yaml::Error {
     crate::config::deploy_from_yaml_str(&format!(
         "providers:\n  p:\n    api_key: {{module: fixture-source, settings: {{slot: K}}}}\n    {key}: [a]\n"
     ))
     .expect_err("a sequence where the provider key wants a scalar or a map is refused")
-    .to_string()
+}
+
+/// The refusal names 1.5.5's key path, the YAML library's error kind (its exact sentence is the
+/// library's wording, not busbar's) and 1.5.5's position of the offending value.
+fn assert_refused_at(
+    error: &busbar_contract::yaml::Error,
+    path: &str,
+    kind: &str,
+    line: u64,
+    column: u64,
+) {
+    let message = error.to_string();
+    assert!(message.starts_with(&format!("{path}: ")), "{message}");
+    assert!(message.contains(kind), "{message}");
+    assert!(
+        message.ends_with(&format!(" at line {line} column {column}")),
+        "{message}"
+    );
+    assert_eq!(
+        error.location().map(|at| (at.line(), at.column())),
+        Some((line, column)),
+        "{message}"
+    );
 }
 
 #[test]
 fn a_deployment_protocol_of_the_wrong_type_is_refused_as_1_5_5_did() {
-    assert_eq!(
-        deployment_refusal("protocol"),
-        "providers.p.protocol: invalid type: sequence, expected a string at line 4 column 15"
+    assert_refused_at(
+        &deployment_refusal("protocol"),
+        "providers.p.protocol",
+        "invalid type",
+        4,
+        15,
     );
 }
 
 #[test]
 fn a_deployment_error_map_of_the_wrong_type_is_refused_as_1_5_5_did() {
-    assert_eq!(
-        deployment_refusal("error_map"),
-        "providers.p.error_map: invalid type: sequence, expected a map at line 4 column 16"
+    assert_refused_at(
+        &deployment_refusal("error_map"),
+        "providers.p.error_map",
+        "invalid type",
+        4,
+        16,
     );
 }
 
 #[test]
 fn a_deployment_path_of_the_wrong_type_is_refused_as_1_5_5_did() {
-    assert_eq!(
-        deployment_refusal("path"),
-        "providers.p.path: invalid type: sequence, expected a string at line 4 column 11"
+    assert_refused_at(
+        &deployment_refusal("path"),
+        "providers.p.path",
+        "invalid type",
+        4,
+        11,
     );
 }
 
 #[test]
 fn a_deployment_path_base_of_the_wrong_type_is_refused_as_1_5_5_did() {
-    assert_eq!(
-        deployment_refusal("path_base"),
-        "providers.p.path_base: invalid type: sequence, expected a string at line 4 column 16"
+    assert_refused_at(
+        &deployment_refusal("path_base"),
+        "providers.p.path_base",
+        "invalid type",
+        4,
+        16,
     );
 }
 
 #[test]
 fn a_catalog_entry_with_no_protocol_is_refused_as_1_5_5_did() {
-    let e =
-        serde_yaml::from_str::<HashMap<String, ProviderDef>>("p:\n  base_url: https://x.example\n")
-            .expect_err("a catalog entry must name its protocol");
-    assert_eq!(
-        e.to_string(),
-        "p: missing field `protocol` at line 2 column 3"
-    );
+    let e = busbar_contract::yaml::from_str::<HashMap<String, ProviderDef>>(
+        "p:\n  base_url: https://x.example\n",
+    )
+    .expect_err("a catalog entry must name its protocol");
+    assert_refused_at(&e, "p", "missing field `protocol`", 2, 3);
 }
 
 fn composed_refusals() -> Vec<String> {
-    let def: ProviderDef = serde_yaml::from_str(
+    let def: ProviderDef = busbar_contract::yaml::from_str(
         "protocol: proto-a\nbase_url: https://169.254.169.254\npath: /latest/meta-data\n\
          path_base: /v1\n",
     )
     .expect("a catalog entry");
     let dep: ProviderDeploy =
-        serde_yaml::from_str("api_key: {module: fixture-source, settings: {slot: K}}\n")
+        busbar_contract::yaml::from_str("api_key: {module: fixture-source, settings: {slot: K}}\n")
             .expect("a deployment");
     let mut deploy = super::tests::base_deploy();
     deploy.providers.insert("p".to_string(), dep);

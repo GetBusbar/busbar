@@ -7,15 +7,19 @@ use busbar_contract::records::{ScopeRef, VirtualKey};
 
 #[test]
 fn an_unrelated_same_name_entry_keeps_its_primary_grant_boundary() {
-    let catalog = serde_yaml::from_str("shared: { provider: catalog_provider }").unwrap();
+    let catalog =
+        busbar_contract::yaml::from_str("shared: { provider: catalog_provider }").unwrap();
 
-    let section = serde_yaml::from_str(
+    let section = busbar_contract::yaml::from_str(
         "session: { model: shared }\nmodels: { shared: { provider: unrelated_provider } }",
     )
     .unwrap();
     let (table, provenance) = routes_of(&section, Some(&catalog));
     assert!(provenance.is_none());
-    assert_eq!(table["models"]["shared"]["provider"], "unrelated_provider");
+    assert_eq!(
+        table.at("models").at("shared").at("provider").as_str(),
+        Some("unrelated_provider")
+    );
     let pools = DoorPools::of(&table, busbar_contract::section::RESERVED_POOLS_KEY).unwrap();
     let mut facts = door_facts(
         busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("neutral").unwrap(),
@@ -61,20 +65,31 @@ fn an_unrelated_same_name_entry_keeps_its_primary_grant_boundary() {
 
 #[test]
 fn only_a_route_actually_synthesized_from_the_catalog_carries_provenance() {
-    let catalog =
-        serde_yaml::from_str("shared: { provider: catalog_provider, upstream_model: upstream }")
-            .unwrap();
-    let section = serde_yaml::from_str("session: { model: shared }").unwrap();
+    let catalog = busbar_contract::yaml::from_str(
+        "shared: { provider: catalog_provider, upstream_model: upstream }",
+    )
+    .unwrap();
+    let section = busbar_contract::yaml::from_str("session: { model: shared }").unwrap();
     let (table, provenance) = routes_of(&section, Some(&catalog));
     assert_eq!(provenance.as_deref(), Some("shared"));
-    assert_eq!(table["models"]["shared"]["provider"], "catalog_provider");
-    assert_eq!(table["models"]["shared"]["upstream_model"], "upstream");
+    assert_eq!(
+        table.at("models").at("shared").at("provider").as_str(),
+        Some("catalog_provider")
+    );
+    assert_eq!(
+        table
+            .at("models")
+            .at("shared")
+            .at("upstream_model")
+            .as_str(),
+        Some("upstream")
+    );
     for yaml in [
         "session: {}",
         "session: { model: missing }",
         "models: { shared: {} }",
     ] {
-        let section = serde_yaml::from_str(yaml).unwrap();
+        let section = busbar_contract::yaml::from_str(yaml).unwrap();
         let (table, provenance) = routes_of(&section, Some(&catalog));
         assert!(provenance.is_none());
         assert_eq!(table, section);

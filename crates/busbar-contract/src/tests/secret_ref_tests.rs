@@ -26,8 +26,8 @@ fn sources() -> Sugars {
     }
     sources
 }
-fn authored(yaml: &str) -> Result<SecretRef, serde_yaml::Error> {
-    context::deserialize(serde_yaml::Deserializer::from_str(yaml), &sources())
+fn authored(yaml: &str) -> Result<SecretRef, crate::yaml::Error> {
+    crate::yaml::with_deserializer(yaml, |d| context::deserialize(d, &sources()))
 }
 fn named(word: &str, value: &str) -> SecretRef {
     sources().get(word).unwrap().reference(value)
@@ -44,7 +44,7 @@ fn deserialize_accepts_canonical_and_declared_shorthand_rejects_malformed() {
         named("drawer", "other")
     );
     let canonical: SecretRef =
-        serde_yaml::from_str("{module: independent-source, settings: {slot: opaque}}").unwrap();
+        crate::yaml::from_str("{module: independent-source, settings: {slot: opaque}}").unwrap();
     assert_eq!(canonical.source_module(), Some("independent-source"));
     assert_eq!(
         serde_json::to_value(canonical.source().unwrap().settings.writing()).unwrap(),
@@ -64,7 +64,7 @@ fn deserialize_accepts_canonical_and_declared_shorthand_rejects_malformed() {
     }
     for word in ["cabinet", "drawer", "unadmitted"] {
         let text = format!("{{{word}: credential-canary}}");
-        let error = serde_yaml::from_str::<SecretRef>(&text)
+        let error = crate::yaml::from_str::<SecretRef>(&text)
             .unwrap_err()
             .to_string();
         assert!(!error.contains("credential-canary"));
@@ -83,7 +83,7 @@ fn describe_names_only_source_identity_without_settings() {
 
 #[test]
 fn none_is_the_one_scalar_a_secret_field_accepts() {
-    let r: SecretRef = serde_yaml::from_str("none").unwrap();
+    let r: SecretRef = crate::yaml::from_str("none").unwrap();
     assert_eq!(r, SecretRef::none());
     assert!(r.is_none());
     assert!(
@@ -91,16 +91,16 @@ fn none_is_the_one_scalar_a_secret_field_accepts() {
         "keyless declares no source or settings"
     );
     assert_eq!(r.describe(), "none");
-    assert!(serde_yaml::from_str::<SecretRef>("{module: none}")
+    assert!(crate::yaml::from_str::<SecretRef>("{module: none}")
         .unwrap()
         .is_none());
     assert!(serde_json::from_str::<SecretRef>("\"none\"")
         .unwrap()
         .is_none());
     for bad in ["None", "NONE", "no", "nones", "{none: true}"] {
-        assert!(serde_yaml::from_str::<SecretRef>(bad).is_err(), "{bad}");
+        assert!(crate::yaml::from_str::<SecretRef>(bad).is_err(), "{bad}");
     }
-    let error = serde_yaml::from_str::<SecretRef>("sk-live-abc123")
+    let error = crate::yaml::from_str::<SecretRef>("sk-live-abc123")
         .unwrap_err()
         .to_string();
     assert!(error.contains("never an inline literal") && !error.contains("sk-live-abc123"));
@@ -108,7 +108,7 @@ fn none_is_the_one_scalar_a_secret_field_accepts() {
 
 #[test]
 fn deserialize_error_message_names_the_accepted_shapes() {
-    assert!(serde_yaml::from_str::<SecretRef>("[1,2]")
+    assert!(crate::yaml::from_str::<SecretRef>("[1,2]")
         .unwrap_err()
         .to_string()
         .contains("a secret reference map"));
@@ -203,7 +203,7 @@ fn an_unquoted_inline_secret_is_refused_without_echoing_it() {
         ("true", "true"),
         ("1.5", "1.5"),
     ] {
-        let error = serde_yaml::from_str::<SecretRef>(yaml)
+        let error = crate::yaml::from_str::<SecretRef>(yaml)
             .unwrap_err()
             .to_string();
         assert!(!error.contains(value), "{error}");
@@ -212,7 +212,7 @@ fn an_unquoted_inline_secret_is_refused_without_echoing_it() {
 }
 #[test]
 fn a_scalar_in_the_settings_slot_is_refused_without_echoing_it() {
-    let error = serde_yaml::from_str::<SecretRef>("{module: source, settings: sk-live-abc123}")
+    let error = crate::yaml::from_str::<SecretRef>("{module: source, settings: sk-live-abc123}")
         .unwrap_err()
         .to_string();
     assert!(!error.contains("sk-live-abc123"), "{error}");
@@ -228,7 +228,7 @@ fn a_non_string_declared_shorthand_value_is_refused_without_echoing_it() {
 }
 #[test]
 fn a_non_string_module_is_refused_without_echoing_it() {
-    let error = serde_yaml::from_str::<SecretRef>("{module: 12345}")
+    let error = crate::yaml::from_str::<SecretRef>("{module: 12345}")
         .unwrap_err()
         .to_string();
     assert!(!error.contains("12345"), "{error}");
@@ -371,6 +371,6 @@ fn template_text_rejects_nontext_without_scalar_coercion_or_echo() {
         assert!(!error.contains("483920175534"));
         assert!(!error.contains("private-marker"));
         assert!(!error.contains("private-value"));
-        assert!(serde_yaml::from_str::<SecretRef>(&yaml).is_err());
+        assert!(crate::yaml::from_str::<SecretRef>(&yaml).is_err());
     }
 }

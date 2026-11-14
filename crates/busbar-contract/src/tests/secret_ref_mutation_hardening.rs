@@ -27,7 +27,7 @@ fn secret_ref_settings_retain_authoring_data_without_debug_disclosure() {
 #[test]
 fn secret_ref_debug_output_never_contains_an_inline_literal_a_caller_tried_to_smuggle_in() {
     let distinctive_secret = "sk-DISTINCTIVE-7f3e9c-DO-NOT-ECHO";
-    let err = serde_yaml::from_str::<SecretRef>(distinctive_secret)
+    let err = crate::yaml::from_str::<SecretRef>(distinctive_secret)
         .expect_err("a bare scalar is never a secret reference")
         .to_string();
     assert!(

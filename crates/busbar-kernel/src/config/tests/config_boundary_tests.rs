@@ -170,7 +170,7 @@ fn hook_timeout_validation_covers_zero_boundary_and_overflow_in_resolved_config(
     let mut deploy = super::tests::base_deploy();
     deploy.hooks.insert(
         "too-slow".into(),
-        serde_yaml::from_str(&format!(
+        busbar_contract::yaml::from_str(&format!(
             "module: test-hook\nkind: gate\ntimeout_ms: {}",
             u64::MAX
         ))

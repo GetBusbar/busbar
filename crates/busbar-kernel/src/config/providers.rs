@@ -564,8 +564,10 @@ where
     de.deserialize_map(Entries(std::marker::PhantomData))
 }
 
-pub fn catalog_from_str(text: &str) -> Result<HashMap<String, ProviderDef>, serde_yaml::Error> {
-    catalog(serde_yaml::Deserializer::from_str(text))
+pub fn catalog_from_str(
+    text: &str,
+) -> Result<HashMap<String, ProviderDef>, busbar_contract::yaml::Error> {
+    busbar_contract::yaml::with_deserializer(text, |d| catalog(d))
 }
 
 macro_rules! provider_entry {

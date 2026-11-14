@@ -7,6 +7,7 @@
 use busbar_contract::crypto::Sha256;
 use std::collections::BTreeSet;
 
+use busbar_contract::yaml::{MappingExt, ValueExt};
 use busbar_contract::{
     abi::{
         mechanism::{self, call::BLOB_OCTETS, rendering, KindCode},
@@ -211,7 +212,9 @@ impl Resolver {
         let input = self
             .documents
             .interpolate_captured(normalized.as_deref().map_or(raw.as_str(), String::as_str))?;
-        if let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&input) {
+        if let Ok(document) =
+            busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&input)
+        {
             if !config::current_format::detect_legacy_markers(&document).is_empty() {
                 return Err("retained deployment contains unsupported historical markers".into());
             }
@@ -219,7 +222,7 @@ impl Resolver {
                 .as_mapping()
                 .into_iter()
                 .flat_map(|mapping| mapping.keys())
-                .filter_map(serde_yaml::Value::as_str)
+                .filter_map(busbar_contract::yaml::Value::as_str)
                 .collect();
             if rules.unloaded_plane_refusal(&keys).is_some() {
                 return Err("retained deployment selects an unloaded plane".into());

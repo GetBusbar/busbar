@@ -330,8 +330,9 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
         "the reload names the section and the plane in the pinned sentence: {body}"
     );
 
-    let doc: serde_yaml::Value = serde_yaml::from_str(&with_plane).unwrap();
-    let providers: serde_yaml::Value = serde_yaml::from_str(MOCK_PROVIDER).unwrap();
+    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&with_plane).unwrap();
+    let providers: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(MOCK_PROVIDER).unwrap();
     let apply = serde_json::json!({
         "config": serde_json::to_value(&doc).unwrap(),
         "providers": serde_json::to_value(&providers).unwrap(),

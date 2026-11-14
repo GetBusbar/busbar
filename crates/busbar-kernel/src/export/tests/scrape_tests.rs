@@ -5,7 +5,7 @@ use super::*;
 use crate::config::{ExportCfg, ExportDefs};
 #[test]
 fn an_explicit_neutral_declaration_selects_the_recorder_consumer() {
-    let defs: ExportDefs = serde_yaml::from_str(
+    let defs: ExportDefs = busbar_contract::yaml::from_str(
         "metrics: { module: arbitrary-sink, settings: { vendor_option: opaque } }\n",
     )
     .expect("parses");

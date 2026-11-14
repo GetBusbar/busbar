@@ -16,7 +16,7 @@ pub fn resolve_store_bootstrap_with_security(
     deploy: &DeployCfg,
     security: &Option<super::SecurityCfg>,
 ) -> Result<RootCfg, Vec<String>> {
-    let mut bootstrap: DeployCfg = serde_yaml::from_str("{}")
+    let mut bootstrap: DeployCfg = busbar_contract::yaml::from_str("{}")
         .map_err(|_| vec!["cannot construct the Store bootstrap configuration".into()])?;
     bootstrap.listen.clone_from(&deploy.listen);
     bootstrap.admin_listen.clone_from(&deploy.admin_listen);

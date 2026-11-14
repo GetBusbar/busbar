@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use busbar_contract::plane::{TrustKeyDecl, TrustRole};
+use busbar_contract::yaml::{MappingExt as _, ValueExt as _};
 
 use super::reverify::Policy;
 
@@ -51,7 +52,7 @@ impl TrustEntry {
 
 pub fn parse_entry(
     at: &str,
-    entry: &serde_yaml::Value,
+    entry: &busbar_contract::yaml::Value,
     keys: &[TrustKeyDecl],
 ) -> Result<TrustEntry, String> {
     read_entry(at, entry, keys, true)
@@ -59,7 +60,7 @@ pub fn parse_entry(
 
 pub fn judge_entry(
     at: &str,
-    entry: &serde_yaml::Value,
+    entry: &busbar_contract::yaml::Value,
     keys: &[TrustKeyDecl],
 ) -> Result<(), String> {
     read_entry(at, entry, keys, false).map(|_| ())
@@ -67,7 +68,7 @@ pub fn judge_entry(
 
 fn read_entry(
     at: &str,
-    entry: &serde_yaml::Value,
+    entry: &busbar_contract::yaml::Value,
     keys: &[TrustKeyDecl],
     strict: bool,
 ) -> Result<TrustEntry, String> {
@@ -87,7 +88,9 @@ fn read_entry(
         return Err(private_reach_retired(at, RETIRED_PRIVATE_REACH_KEY));
     }
     for decl in keys {
-        let value = map.and_then(|m| m.get(decl.key)).filter(|v| !v.is_null());
+        let value = map
+            .and_then(|m| m.get_key(decl.key))
+            .filter(|v| !v.is_null());
         match decl.role {
             TrustRole::Pin => {
                 out.pin = match value {
@@ -145,15 +148,15 @@ pub fn private_reach(_entry: &serde_yaml::Value, _keys: &[TrustKeyDecl]) -> bool
 
 fn item_approvals(
     decl: &TrustKeyDecl,
-    value: Option<&serde_yaml::Value>,
+    value: Option<&busbar_contract::yaml::Value>,
 ) -> BTreeMap<String, String> {
     let field = decl.default.unwrap_or_default();
     value
-        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(busbar_contract::yaml::Value::as_mapping)
         .into_iter()
         .flat_map(|m| m.iter())
         .filter_map(|(item, object)| {
-            let digest = object.as_mapping()?.get(field)?.as_str()?.trim();
+            let digest = object.as_mapping()?.get_key(field)?.as_str()?.trim();
             if digest.is_empty() {
                 return None;
             }
@@ -172,7 +175,7 @@ fn shape<T>(strict: bool, refusal: String) -> Result<Option<T>, String> {
 
 pub fn parse_section(
     section: &str,
-    value: &serde_yaml::Value,
+    value: &busbar_contract::yaml::Value,
     keys: &[TrustKeyDecl],
 ) -> Result<indexmap::IndexMap<String, TrustEntry>, String> {
     let mut book = indexmap::IndexMap::new();
@@ -184,8 +187,8 @@ pub fn parse_section(
 }
 
 pub(crate) fn registrations(
-    value: &serde_yaml::Value,
-) -> impl Iterator<Item = (&str, &serde_yaml::Value)> {
+    value: &busbar_contract::yaml::Value,
+) -> impl Iterator<Item = (&str, &busbar_contract::yaml::Value)> {
     value
         .as_mapping()
         .into_iter()
@@ -201,7 +204,7 @@ pub(crate) fn registrations(
 fn pin(
     at: &str,
     decl: &TrustKeyDecl,
-    value: &serde_yaml::Value,
+    value: &busbar_contract::yaml::Value,
     strict: bool,
 ) -> Result<Option<DeclaredPin>, String> {
     let k = decl.key;
@@ -285,7 +288,7 @@ fn pin(
 fn duration_ms(
     at: &str,
     decl: &TrustKeyDecl,
-    value: Option<&serde_yaml::Value>,
+    value: Option<&busbar_contract::yaml::Value>,
     strict: bool,
 ) -> Result<u64, String> {
     let k = decl.key;

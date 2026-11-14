@@ -4,9 +4,11 @@
 use super::*;
 
 fn parsed_pools(text: &str) -> PoolsCfg {
-    let document: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
+    let document: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(text).unwrap();
     let section = busbar_contract::section::split_section::<_, super::super::PoolCfg>(
-        document["pools"].clone(),
+        busbar_contract::yaml::deserializer(
+            busbar_contract::yaml::ValueExt::at(&document, "pools").clone(),
+        ),
         "pools",
         "pool",
         |_, _| Ok(()),

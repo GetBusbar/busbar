@@ -372,7 +372,7 @@ fn an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes() {
     link();
     let mut providers = config::IdentityProviders::new();
     let def: config::IdentityProviderCfg =
-        serde_yaml::from_str("module: oidc").expect("a provider definition");
+        busbar_contract::yaml::from_str("module: oidc").expect("a provider definition");
     providers.insert("oracle-oidc".to_string(), def);
     let err = busbar_kernel::preflight::plugins_preflight(
         None,
@@ -742,7 +742,7 @@ async fn renamed_provider_is_the_operator_credential(module: &str) {
     cfg.admin_auth = vec!["ops".to_string()];
 
     let ops: config::IdentityProviderCfg =
-        serde_yaml::from_str(&format!("module: {module}")).expect("ops");
+        busbar_contract::yaml::from_str(&format!("module: {module}")).expect("ops");
     cfg.identity_providers.insert("ops".to_string(), ops);
     let app = Arc::new(credentials_app(cfg, None).await.expect("boot"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1061,7 +1061,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     configured.role_bindings = role_bindings;
     let app = Arc::new(configured);
     let pools = crate::root::door_steps::DoorPools::of(
-        &serde_yaml::from_str(
+        &busbar_contract::yaml::from_str(
             "models:\n  rekey-model: {provider: p}\npools:\n  gpool-a:\n    members: \
              [rekey-model]\n  gpool-b:\n    members: [rekey-model]",
         )

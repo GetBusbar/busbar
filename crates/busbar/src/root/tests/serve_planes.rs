@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use busbar_contract::yaml::{MappingExt, ValueExt};
 use busbar_kernel::governance::GovState;
 use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
@@ -153,7 +154,10 @@ async fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published
     let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let mut sections = BTreeMap::new();
-    sections.insert("test_plane", serde_yaml::Value::Mapping(Default::default()));
+    sections.insert(
+        "test_plane",
+        busbar_contract::yaml::Value::Map(Default::default()),
+    );
     let late = composed_services();
     let served = compose_planes(
         &doors,
@@ -250,7 +254,7 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
     use crate::root::door_steps::DoorPools;
     use busbar_contract::abi::plane::ROUTE_DIRECT;
     let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
-        serde_yaml::from_str(
+        busbar_contract::yaml::from_str(
             "gpt-rt: { provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }\n",
         )
         .expect("the catalog");
@@ -258,15 +262,16 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
         serde_yaml::from_str("session: { model: gpt-rt }\nsession_max_secs: 60\n").expect("yaml");
     let routes = super::fold_catalog_routes(&section, &catalog).0;
     assert_eq!(
-        routes["models"]["gpt-rt"],
-        serde_yaml::from_str::<serde_yaml::Value>(
+        *routes.at("models").at("gpt-rt"),
+        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(
             "{ provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }"
         )
         .expect("yaml"),
         "the catalog entry's routing facts, folded"
     );
     assert_eq!(
-        routes["session"], section["session"],
+        routes.at("session"),
+        section.at("session"),
         "the section stays as written"
     );
     let pools =
@@ -347,10 +352,11 @@ test_plane_owned:
         &mut Vec::new(),
     )
     .expect("interpolates");
-    let doc: serde_yaml::Mapping = serde_yaml::from_str(&text).expect("parses");
+    let doc: busbar_contract::yaml::Mapping =
+        busbar_contract::yaml::mapping_from_str(&text).expect("parses");
     let mut sections = BTreeMap::new();
     for key in ["test_plane", "test_plane_owned"] {
-        sections.insert(key, doc.get(key).cloned().expect("written"));
+        sections.insert(key, doc.get_key(key).cloned().expect("written"));
     }
     let dispatcher = Arc::new(Dispatcher::new(
         DispatchConfig::default(),
@@ -472,7 +478,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     ]
     .into_iter()
     .collect();
-    let section: serde_yaml::Value = serde_yaml::from_str(
+    let section: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(
         "models:\n  m1: {provider: eng-a}\n  m2: {provider: eng-b}\n  m3: {provider: eng-a}\n",
     )
     .expect("a section");
@@ -495,14 +501,14 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
             ["eng-b", "dial-two", null]
         ])
     );
-    let none = dialect_facts(&serde_yaml::Value::Null, &providers);
+    let none = dialect_facts(&busbar_contract::yaml::Value::Null, &providers);
     assert!(none.is_empty(), "a section that references none hands none");
 
     let plane = bound("serve-open-dialect-none", &dispatcher);
     let snapshot = super::open(
         &plane,
         &["test_plane"],
-        &serde_yaml::Value::Null,
+        &busbar_contract::yaml::Value::Null,
         None,
         &[],
         &none,
@@ -584,7 +590,7 @@ async fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     let pid = std::process::id();
     let dir = std::env::temp_dir().join(format!("busbar-pools-refresh-refused-{pid}"));
     let _ = std::fs::remove_dir_all(&dir);
-    let section: serde_yaml::Value = serde_yaml::from_str(&format!(
+    let section: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&format!(
         "capture_to: \"{}\"\nunchecked_refresh: true\n",
         dir.display()
     ))
@@ -652,7 +658,7 @@ async fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     let mut applied = BTreeMap::new();
     applied.insert(
         busbar_contract::section::RESERVED_POOLS_KEY,
-        serde_yaml::Value::Mapping(Default::default()),
+        busbar_contract::yaml::Value::Map(Default::default()),
     );
     super::DoorAppliers(vec![Arc::clone(&pools)]).refresh_models(
         &applied,

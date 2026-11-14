@@ -420,10 +420,12 @@ advanced:
         config.as_bytes(),
         "ordinary startup must publish its mechanical old-config conversion"
     );
-    let migrated: serde_yaml::Value = serde_yaml::from_slice(&converted).unwrap();
+    use busbar_contract::yaml::ValueExt as _;
+    let migrated: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_slice(&converted).unwrap();
     assert_eq!(
-        migrated["advanced"]["allow_destinations"],
-        serde_yaml::to_value(["127.0.0.1"]).unwrap(),
+        migrated.at("advanced").at("allow_destinations"),
+        &busbar_contract::yaml::to_value(&["127.0.0.1"]).unwrap(),
         "preserve only the recorder's exact loopback destination grant"
     );
     let mut second = boot(&work.0, 2);

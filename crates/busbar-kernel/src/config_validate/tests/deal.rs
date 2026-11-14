@@ -146,13 +146,19 @@ fn red_a_refusal_names_its_position() {
         tools: std::collections::BTreeMap<String, Entry>,
     }
     let text = "tools:\n  t1:\n    url: [1]\n";
-    let library = serde_yaml::from_str::<Root>(text).expect_err("refused");
+    let library = busbar_contract::yaml::from_str::<Root>(text).expect_err("refused");
+    let at = library.location().expect("the library places its refusal");
+    // The refusal keeps 1.5.5's wording and sits where the library's own typed read does.
     assert_eq!(
         doc(text).refusal(
             &verbs(&["tools", "t1", "url"]),
             "invalid type: sequence, expected a string"
         ),
-        library.to_string()
+        format!(
+            "tools.t1.url: invalid type: sequence, expected a string at line {} column {}",
+            at.line(),
+            at.column()
+        )
     );
 }
 
@@ -277,7 +283,8 @@ pools:
 
 #[test]
 fn red_a_value_plainly_not_its_knob_names_an_entry() {
-    let y = |t: &str| serde_yaml::from_str::<serde_yaml::Value>(t).expect("yaml");
+    let y =
+        |t: &str| busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(t).expect("yaml");
     for (key, entry) in [
         ("hooks", "{url: a}"),
         ("upstream_credentials", "{url: a}"),
@@ -322,7 +329,7 @@ fn red_a_value_plainly_not_its_knob_names_an_entry() {
 #[test]
 fn the_knob_field_lists_are_the_kernel_types_own() {
     fn expected<T: serde::de::DeserializeOwned + std::fmt::Debug>(knob: &str) -> String {
-        serde_yaml::from_str::<T>("zz: 1")
+        busbar_contract::yaml::from_str::<T>("zz: 1")
             .expect_err(knob)
             .to_string()
     }

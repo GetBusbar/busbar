@@ -85,7 +85,8 @@ fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
     yaml.push_str(if providers.is_empty() { " {}\n" } else { "\n" });
     for (name, url, carve) in providers {
         let def: busbar_kernel::config::ProviderDef =
-            serde_yaml::from_str(&format!("protocol: openai\nbase_url: {url}\n")).expect("a def");
+            busbar_contract::yaml::from_str(&format!("protocol: openai\nbase_url: {url}\n"))
+                .expect("a def");
         defs.insert((*name).to_owned(), def);
         let carve = carve.join(", ");
         yaml.push_str(&format!(

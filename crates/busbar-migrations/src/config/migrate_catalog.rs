@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use serde_yaml::Value;
+use busbar_contract::yaml::{self, prelude::*};
 
 use busbar_kernel::config::providers;
 
@@ -24,8 +24,8 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
     if keys.is_empty() {
         return Err("the catalog grammar's keys could not be read".to_string());
     }
-    let doc: Value = serde_yaml::from_str(raw).map_err(|e| format!("{shown}: not YAML: {e}"))?;
-    let Value::Mapping(mut catalog) = doc else {
+    let doc: Value = yaml::from_str(raw).map_err(|e| format!("{shown}: not YAML: {e}"))?;
+    let Value::Map(mut catalog) = doc else {
         return Ok(None);
     };
 
@@ -34,7 +34,7 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
     );
     let mut changes = Vec::new();
     for (name, entry) in catalog.iter_mut() {
-        let (Some(name), Value::Mapping(entry)) = (name.as_str(), entry) else {
+        let (Some(name), Value::Map(entry)) = (name.as_str(), entry) else {
             continue;
         };
         let stray: Vec<Value> = entry
@@ -50,7 +50,7 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
             .cloned()
             .collect();
         for key in stray {
-            entry.remove(key.clone());
+            super::migrate::swap_remove_key(entry, &key);
             let shown_key = key
                 .as_str()
                 .map_or_else(|| super::migrate::one_line(&key), str::to_string);
@@ -63,7 +63,7 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
     if changes.is_empty() {
         return Ok(None);
     }
-    let yaml = serde_yaml::to_string(&Value::Mapping(catalog))
+    let yaml = yaml::to_string(&Value::Map(catalog))
         .map_err(|e| format!("{shown}: could not write the migrated catalog: {e}"))?;
     Ok(Some(CatalogMigration { yaml, changes }))
 }

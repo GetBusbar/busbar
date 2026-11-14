@@ -34,6 +34,10 @@ notes = "Local full audits bind exact reviewed Git snapshots; published registry
 audit-as-crates-io = true
 notes = "Local full audit binds the exact reviewed fixed Git snapshot; the published registry base is not certified."
 
+[policy.granit-parser]
+audit-as-crates-io = true
+notes = "Published 2.1.0 plus busbar's opt-in bom_inside_document_as_content patch; the local delta audit covers exactly that diff."
+
 [policy.h2]
 audit-as-crates-io = true
 
@@ -44,6 +48,10 @@ notes = "Local full audits bind exact reviewed Git snapshots; published registry
 [policy.stringprep]
 audit-as-crates-io = true
 notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
+
+[policy.serde-saphyr]
+audit-as-crates-io = true
+notes = "Published 2.1.1 plus busbar's opt-in serde_yaml-compatibility patch; the local delta audit covers exactly that diff."
 
 [policy.tungstenite]
 audit-as-crates-io = true
@@ -60,12 +68,24 @@ criteria = "safe-to-deploy"
 version = "1.1.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.annotate-snippets]]
+version = "0.12.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.anstyle]]
+version = "1.0.14"
+criteria = "safe-to-deploy"
+
 [[exemptions.anyhow]]
 version = "1.0.104"
 criteria = "safe-to-deploy"
 
 [[exemptions.arc-swap]]
 version = "1.9.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.arraydeque]]
+version = "0.5.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.arrayvec]]
@@ -129,6 +149,18 @@ criteria = "safe-to-deploy"
 version = "1.2.62"
 criteria = "safe-to-deploy"
 
+[[exemptions.ciborium]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.ciborium-io]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.ciborium-ll]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.cmov]]
 version = "0.5.4"
 criteria = "safe-to-deploy"
@@ -149,6 +181,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.core_affinity]]
 version = "0.8.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.core_detect]]
+version = "1.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.cpufeatures]]
@@ -173,6 +209,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-utils]]
 version = "0.8.21"
+criteria = "safe-to-deploy"
+
+[[exemptions.crunchy]]
+version = "0.2.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.crypto-common]]
@@ -237,6 +277,14 @@ notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces
 version = "0.2.9"
 criteria = "safe-to-deploy"
 
+[[exemptions.encoding_rs]]
+version = "0.8.44"
+criteria = "safe-to-deploy"
+
+[[exemptions.encoding_rs_io]]
+version = "0.1.8"
+criteria = "safe-to-deploy"
+
 [[exemptions.fancy-regex]]
 version = "0.19.0"
 criteria = "safe-to-deploy"
@@ -297,8 +345,16 @@ criteria = "safe-to-deploy"
 version = "0.3.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.granit-parser]]
+version = "2.1.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.h2]]
 version = "0.4.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.half]]
+version = "2.7.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.hashbrown]]
@@ -470,12 +526,20 @@ criteria = "safe-to-deploy"
 version = "0.10.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.multiversion_no_op]]
+version = "1.0.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.munge]]
 version = "0.4.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.munge_macro]]
 version = "0.4.7"
+criteria = "safe-to-deploy"
+
+[[exemptions.nohash-hasher]]
+version = "0.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.nom]]
@@ -795,6 +859,10 @@ criteria = "safe-to-deploy"
 version = "1.0.229"
 criteria = "safe-to-deploy"
 
+[[exemptions.serde-saphyr]]
+version = "2.1.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.serde_core]]
 version = "1.0.229"
 criteria = "safe-to-deploy"
@@ -999,6 +1067,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.unicode-joining-type]]
 version = "1.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-width]]
+version = "0.2.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.url]]
