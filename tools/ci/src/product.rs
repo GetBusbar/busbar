@@ -1,11 +1,10 @@
 //! Owner product declarations read independently from exact canonical Git
-//! commits (former `product_artifacts` and `native_product_inputs`), plus the
-//! policy readers native qualification takes from `check.py`
-//! (`vector_revisions`, `load_c_recipe`, `generated_revision`). This is the
-//! step runner's own copy; the architecture step keeps its implementation.
-use super::confine::checked_directory;
-use super::sp::{self, Dict, Io, R, at, need, value_error};
+//! commits (former `product_artifacts` and `native_product_inputs`), and the
+//! policy readers shared by `native-qualify` and `architecture` (former
+//! `check.vector_revisions`, `load_c_recipe`, `generated_revision`).
+use crate::confine::checked_directory;
 use crate::json::Value;
+use crate::native::sp::{self, Dict, Io, R, at, need, value_error};
 use crate::sha256;
 use std::path::{Path, PathBuf};
 
@@ -637,7 +636,7 @@ pub fn load_product_inputs(
 }
 
 /// `check.validate_c_recipe(recipe, entry)`.
-fn validate_c_recipe(recipe: &Value, entry: &Value) -> R<()> {
+pub fn validate_c_recipe(recipe: &Value, entry: &Value) -> R<()> {
     need(
         recipe.has_keys(&["sources", "test-root", "unit", "schema"]),
         "C witness recipe has missing or unknown keys",

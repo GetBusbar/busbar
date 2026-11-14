@@ -1,7 +1,7 @@
 //! Policy classification, the resolved shipping graph, every declared edge
 //! (including cfg-disabled optional/build tables), the assembly product
 //! vector and the disposable shipping-resolution probes.
-use super::{CORE, Call, Ctx, hex40, hex64, key, key_str, loads, read, strings};
+use super::{CORE, Call, Ctx, hex40, key, key_str, loads, read, strings};
 use crate::json::{self, Value};
 use crate::pathx::{self, join, text};
 use crate::proc::{Result, require};
@@ -10,7 +10,7 @@ use crate::sha256;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-pub const PUBLIC_C_HEADER: &str = "crates/busbar-contract/include/busbar_plugin.h";
+pub use crate::product::PUBLIC_C_HEADER;
 
 /// `(hostname, path)` of a `git+` source; hostname may be absent.
 pub type GitIdentity = (Option<String>, String);
@@ -777,89 +777,9 @@ fn quoted(text: &str) -> String {
     json::dumps(&Value::str(text), false)
 }
 
+/// `vector_revisions(policy, vector)` (the shared policy reader).
 pub fn vector_revisions(policy: &Policy, vector: &Value) -> Result<Vec<(String, String)>> {
-    let sdk = key_str(vector, "sdk")?;
-    require(hex40(sdk), "assembled SDK pin is not immutable")?;
-    let repositories = policy.data.at("repositories");
-    let mut expected = BTreeSet::new();
-    for (name, entry) in object_rows(repositories) {
-        if !py::truthy(key(entry, "private")?)
-            && !py::truthy(entry.at("standalone"))
-            && entry.at("language").as_str() != Some("c")
-        {
-            expected.insert(name.clone());
-        }
-    }
-    let mut revisions = vec![(CORE.to_owned(), sdk.to_owned())];
-    for row in key(vector, "products")?.as_array().unwrap_or(&[]) {
-        let repo = format!("GetBusbar/{}", key_str(row, "repo")?);
-        if !expected.contains(&repo) || revisions.iter().any(|(r, _)| *r == repo) {
-            return Err(format!(
-                "unclassified or duplicate assembly product: {repo}"
-            ));
-        }
-        let entry = key(repositories, &repo)?;
-        let wrappers: BTreeSet<&str> = key(entry, "packages")?
-            .as_array()
-            .unwrap_or(&[])
-            .iter()
-            .filter(|p| p.at("role").as_str() == Some("wrapper"))
-            .filter_map(|p| p.at("name").as_str())
-            .collect();
-        let url = key_str(row, "url")?;
-        if !wrappers.contains(key_str(row, "package")?)
-            || !py::eq(key(row, "kind")?, key(entry, "kind")?)
-            || url.strip_suffix(".git").unwrap_or(url) != format!("https://github.com/{repo}")
-            || !hex40(key_str(row, "commit")?)
-            || !hex64(key_str(row, "lock_sha256")?)
-        {
-            return Err(format!("assembly product identity mismatch: {repo}"));
-        }
-        revisions.push((repo, key_str(row, "commit")?.to_owned()));
-    }
-    let mut complete = expected.clone();
-    complete.insert(CORE.to_owned());
-    let actual: BTreeSet<String> = revisions.iter().map(|(r, _)| r.clone()).collect();
-    require(actual == complete, "assembly product vector is incomplete")?;
-    let witness = key(vector, "c_witness")?;
-    let keys = witness.keys();
-    let required = ["repo", "url", "commit", "sdk"];
-    let permitted = ["repo", "url", "commit", "sdk", "kind", "language", "header"];
-    require(
-        witness.is_object()
-            && required.iter().all(|k| keys.contains(k))
-            && keys.iter().all(|k| permitted.contains(k))
-            && object_rows(witness)
-                .iter()
-                .all(|(_, v)| v.as_str().is_some()),
-        "C witness vector has missing or unknown keys",
-    )?;
-    let text = |k: &str| witness.at(k).as_str().unwrap_or("");
-    let repo = format!("GetBusbar/{}", text("repo"));
-    static EMPTY: Value = Value::Object(Vec::new());
-    let c_owner = repositories.get(&repo).unwrap_or(&EMPTY);
-    let url = text("url");
-    let owner_kind = c_owner.at("kind");
-    if c_owner.at("language").as_str() != Some("c")
-        || py::truthy(c_owner.get("private").unwrap_or(&Value::Bool(false)))
-        || text("sdk") != sdk
-        || !hex40(text("commit"))
-        || url.strip_suffix(".git").unwrap_or(url) != format!("https://github.com/{repo}")
-        || witness
-            .get("language")
-            .and_then(Value::as_str)
-            .unwrap_or("c")
-            != "c"
-        || !py::eq(witness.get("kind").unwrap_or(owner_kind), owner_kind)
-        || witness
-            .get("header")
-            .and_then(Value::as_str)
-            .unwrap_or(PUBLIC_C_HEADER)
-            != PUBLIC_C_HEADER
-    {
-        return Err("C witness source/SDK mismatch".into());
-    }
-    Ok(revisions)
+    Ok(crate::product::vector_revisions(&policy.data, vector)?)
 }
 
 /// Bind every declared/locked first-party source to the assembled product vector.

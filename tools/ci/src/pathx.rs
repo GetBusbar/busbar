@@ -383,14 +383,6 @@ pub fn called_process_error(argv: &[String], code: i32) -> String {
     }
 }
 
-/// `returncode` of a finished child: negative signal numbers.
-pub fn returncode(status: std::process::ExitStatus) -> i32 {
-    use std::os::unix::process::ExitStatusExt;
-    status
-        .code()
-        .unwrap_or_else(|| -status.signal().unwrap_or(0))
-}
-
 /// `subprocess` text mode: strict UTF-8, universal newlines.
 pub fn text_mode(data: &[u8]) -> Result<String> {
     Ok(decode(data)?.replace("\r\n", "\n").replace('\r', "\n"))

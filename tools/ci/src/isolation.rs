@@ -383,201 +383,6 @@ pub fn validate_storage(config: &Value) -> Result<Value> {
     ]))
 }
 
-/// `validate_storage(config, writable_paths)`: every writable bind is a real
-/// directory on the bounded job filesystem.
-pub fn validate_storage_paths(config: &Value, writable: &[PathBuf]) -> Result<Value> {
-    let observation = validate_storage(config)?;
-    let root = PathBuf::from(config.at("storage_root").as_str().unwrap_or(""));
-    let root_dev = fs::metadata(&root).map_err(|e| e.to_string())?.dev();
-    for path in writable {
-        require(
-            path.is_dir()
-                && exact_path(path)
-                && !path.is_symlink()
-                && *path != root
-                && path.starts_with(&root),
-            "writable bind escapes job storage quota",
-        )?;
-        require(
-            fs::metadata(path).map_err(|e| e.to_string())?.dev() == root_dev,
-            "writable bind uses another filesystem",
-        )?;
-    }
-    Ok(observation)
-}
-
-/// Grant the remapped candidate ownership without following candidate links.
-/// Called only while every earlier candidate container is disposed.
-pub fn prepare_writable(config: &Value, writable: &[PathBuf], uid: u64, gid: u64) -> Result<Value> {
-    let observation = validate_storage_paths(config, writable)?;
-    let map = |key: &str, i: usize| config.at(key).index(i).as_u64().unwrap_or(0);
-    require(
-        0 < uid && uid < map("uid_map", 2) && 0 < gid && gid < map("gid_map", 2),
-        "candidate identity outside subordinate map",
-    )?;
-    let (mapped_uid, mapped_gid) = (map("uid_map", 1) + uid, map("gid_map", 1) + gid);
-    let (owner, group) = (mapped_uid as u32, mapped_gid as u32);
-    let chown = |path: &Path| {
-        std::os::unix::fs::lchown(path, Some(owner), Some(group))
-            .map_err(|e| format!("{}: {e}", path.display()))
-    };
-    for root in writable {
-        chown(root)?;
-        let mut pending = vec![root.clone()];
-        while let Some(directory) = pending.pop() {
-            let entries = fs::read_dir(&directory).map_err(|e| e.to_string())?;
-            for entry in entries {
-                let path = entry.map_err(|e| e.to_string())?.path();
-                let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-                let kind = metadata.file_type();
-                if kind.is_dir() {
-                    pending.push(path.clone());
-                }
-                if !(kind.is_file() || kind.is_dir()) {
-                    continue;
-                }
-                if (metadata.uid(), metadata.gid()) == (owner, group) {
-                    continue;
-                }
-                require(
-                    !kind.is_file() || metadata.nlink() == 1,
-                    "hard-linked candidate output cannot be reowned",
-                )?;
-                chown(&path)?;
-            }
-        }
-    }
-    Ok(observation)
-}
-
-fn bounded_proc(name: &str) -> Result<Vec<u8>> {
-    let path = format!("/proc/{name}");
-    let mut data = Vec::new();
-    fs::File::open(&path)
-        .and_then(|f| std::io::Read::read_to_end(&mut std::io::Read::take(f, 65537), &mut data))
-        .map_err(|e| format!("{path}: {e}"))?;
-    require(data.len() <= 65536, "kernel swap evidence exceeds bound")?;
-    Ok(data)
-}
-
-fn ascii_fields(line: &[u8]) -> Vec<&[u8]> {
-    line.split(|c| c.is_ascii_whitespace() || *c == 0x0b || *c == 0x0c)
-        .filter(|f| !f.is_empty())
-        .collect()
-}
-
-/// `bytes.splitlines()`.
-fn byte_lines(data: &[u8]) -> Vec<&[u8]> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    while i < data.len() {
-        if data[i] == b'\n' || data[i] == b'\r' {
-            out.push(&data[start..i]);
-            if data[i] == b'\r' && data.get(i + 1) == Some(&b'\n') {
-                i += 1;
-            }
-            start = i + 1;
-        }
-        i += 1;
-    }
-    if start < data.len() {
-        out.push(&data[start..]);
-    }
-    out
-}
-
-/// Observe zero host swap capacity; confined processes cannot add backing.
-pub fn kernel_no_swap() -> Result<Value> {
-    let swaps = bounded_proc("swaps")?;
-    let meminfo = bounded_proc("meminfo")?;
-    let rows = byte_lines(&swaps);
-    let totals: Vec<&[u8]> = byte_lines(&meminfo)
-        .into_iter()
-        .filter(|l| l.starts_with(b"SwapTotal:"))
-        .collect();
-    let header: [&[u8]; 5] = [b"Filename", b"Type", b"Size", b"Used", b"Priority"];
-    let total: [&[u8]; 3] = [b"SwapTotal:", b"0", b"kB"];
-    require(
-        rows.len() == 1
-            && ascii_fields(rows[0]) == header
-            && totals.len() == 1
-            && ascii_fields(totals[0]) == total,
-        "runtime swap is unbounded: kernel has swap capacity or invalid evidence",
-    )?;
-    let ascii = |data: &[u8]| -> Result<String> {
-        require(data.is_ascii(), "kernel swap evidence is not ASCII")?;
-        Ok(String::from_utf8_lossy(data).into_owned())
-    };
-    Ok(object([
-        ("mechanism", "kernel-zero-swap-capacity".into()),
-        ("effective_swap_bytes", 0u64.into()),
-        ("proc_swaps", ascii(&swaps)?.into()),
-        ("proc_swaps_sha256", crate::sha256::hex(&swaps).into()),
-        ("swap_total_entry", ascii(totals[0])?.into()),
-        (
-            "swap_total_entry_sha256",
-            crate::sha256::hex(totals[0]).into(),
-        ),
-    ]))
-}
-
-/// Require exact RAM and zero swap, including kernels without swap accounting.
-pub fn validate_swap_bound(daemon: &Value, host: &Value, required_memory: u64) -> Result<Value> {
-    require(
-        required_memory > 0
-            && host.at("Memory").is_int()
-            && host.at("Memory").as_u64() == Some(required_memory),
-        "runtime Memory differs from the protected RAM bound",
-    )?;
-    let observed = host.at("MemorySwap");
-    let observed_int = observed.is_int().then(|| observed.as_int()).flatten();
-    let mut proof = match daemon.at("SwapLimit") {
-        Value::Bool(true) if observed_int == Some(i128::from(required_memory)) => object([
-            ("mechanism", "docker-memory-swap-limit".into()),
-            ("effective_swap_bytes", 0u64.into()),
-        ]),
-        Value::Bool(false)
-            if observed_int == Some(i128::from(required_memory)) || observed_int == Some(-1) =>
-        {
-            let mut proof = kernel_no_swap()?;
-            proof.set("daemon_swap_limit", false.into());
-            proof
-        }
-        _ => {
-            return Err(
-                "runtime MemorySwap/SwapLimit do not prove the protected no-swap request".into(),
-            );
-        }
-    };
-    proof.set("requested_memory_swap_bytes", required_memory.into());
-    proof.set("observed_memory_swap_bytes", observed.clone());
-    Ok(proof)
-}
-
-/// Reobserve host backing after disposal when no kernel swap controller exists.
-pub fn recheck_swap_bound(proof: &mut Value) -> Result<()> {
-    if proof.at("mechanism").as_str() == Some("kernel-zero-swap-capacity") {
-        proof.set("after_disposal", kernel_no_swap()?);
-    }
-    Ok(())
-}
-
-/// The candidate must inherit the daemon's remapped user namespace.
-pub fn validate_userns_inspected(
-    config: &Value,
-    daemon: &Value,
-    inspected: &Value,
-) -> Result<Value> {
-    let observation = validate_userns(config, daemon)?;
-    let mode = inspected.at("HostConfig").get("UsernsMode");
-    require(
-        mode.is_none_or(|m| m.as_str() == Some("")),
-        "candidate must inherit the remapped user namespace",
-    )?;
-    Ok(observation)
-}
-
 pub fn validate_userns(config: &Value, daemon: &Value) -> Result<Value> {
     validate_configuration(config)?;
     require(
@@ -794,7 +599,7 @@ pub fn validate_storage_paths(config: &Value, writable: &[PathBuf]) -> Result<Va
     for path in writable {
         require(
             path.is_dir()
-                && *path == crate::native::sp::resolve(path)
+                && exact_path(path)
                 && !path.is_symlink()
                 && *path != root
                 && path.starts_with(&root),
@@ -823,15 +628,18 @@ pub fn prepare_writable(config: &Value, writable: &[PathBuf], uid: u64, gid: u64
         "candidate identity outside subordinate map",
     )?;
     let (mapped_uid, mapped_gid) = ((start(uid_map) + uid) as u32, (start(gid_map) + gid) as u32);
-    fn walk(directory: &Path, uid: u32, gid: u32) -> Result<()> {
-        let Ok(entries) = fs::read_dir(directory) else {
-            return Ok(());
+    // os.fwalk(follow_symlinks=False): the top directory must open, an
+    // unreadable subdirectory is skipped (onerror=None), and every listed
+    // entry is stat'ed without following links (errors propagate).
+    fn walk(directory: &Path, top: bool, uid: u32, gid: u32) -> Result<()> {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(e) if top => return Err(format!("{}: {e}", directory.display())),
+            Err(_) => return Ok(()),
         };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
-            };
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             let kind = metadata.file_type();
             if kind.is_file() || kind.is_dir() {
                 if (metadata.uid(), metadata.gid()) != (uid, gid) {
@@ -843,7 +651,7 @@ pub fn prepare_writable(config: &Value, writable: &[PathBuf], uid: u64, gid: u64
                         .map_err(|e| e.to_string())?;
                 }
                 if kind.is_dir() {
-                    walk(&path, uid, gid)?;
+                    walk(&path, false, uid, gid)?;
                 }
             }
         }
@@ -852,7 +660,7 @@ pub fn prepare_writable(config: &Value, writable: &[PathBuf], uid: u64, gid: u64
     for path in writable {
         std::os::unix::fs::lchown(path, Some(mapped_uid), Some(mapped_gid))
             .map_err(|e| e.to_string())?;
-        walk(path, mapped_uid, mapped_gid)?;
+        walk(path, true, mapped_uid, mapped_gid)?;
     }
     Ok(observation)
 }
@@ -936,10 +744,13 @@ pub fn kernel_no_swap_from(swaps: &[u8], meminfo: &[u8]) -> Result<Value> {
         "runtime swap is unbounded: kernel has swap capacity or invalid evidence",
     )?;
     let ascii = |data: &[u8]| -> Result<String> {
-        require(
-            data.is_ascii(),
-            "'ascii' codec can't decode kernel swap evidence",
-        )?;
+        // bytes.decode('ascii') and its UnicodeDecodeError text.
+        if let Some(position) = data.iter().position(|b| !b.is_ascii()) {
+            return Err(format!(
+                "'ascii' codec can't decode byte 0x{:02x} in position {position}: ordinal not in range(128)",
+                data[position]
+            ));
+        }
         Ok(String::from_utf8_lossy(data).into_owned())
     };
     Ok(object([

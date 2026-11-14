@@ -36,7 +36,7 @@ pub fn standalone_products(
 }
 
 fn hex40(text: &str) -> bool {
-    super::product::is_revision(text)
+    crate::product::is_revision(text)
 }
 
 /// `SOURCE.fullmatch(source)`: (repository, rev, fragment).
@@ -71,7 +71,7 @@ pub fn public_repositories(policy: &Value) -> BTreeSet<String> {
 /// `lock_inputs(text, policy)`: exact first-party commits in one lockfile.
 pub fn lock_inputs(text: &[u8], policy: &Value) -> R<Vec<(String, String)>> {
     let allowed = public_repositories(policy);
-    let lock = super::product::toml(text)?;
+    let lock = crate::product::toml(text)?;
     let mut rows: Vec<&Value> = lock
         .at("package")
         .as_array()
