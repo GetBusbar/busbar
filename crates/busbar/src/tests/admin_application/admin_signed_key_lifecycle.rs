@@ -13,55 +13,7 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_4C8799E6DE90";
     const WITNESS: &str =
         "actual root case test_admin_v1_key_idempotent_mint_and_if_match completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -218,55 +170,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_9EC4D0890DD3";
     const WITNESS: &str =
         "actual root case test_admin_v1_idempotency_reservation_frees_on_failure completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -384,55 +288,7 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_37DD5AFA7817";
     const WITNESS: &str =
         "actual root case test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -567,55 +423,7 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
 async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colon_joined_ids() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_8349FC60B8F2";
     const WITNESS: &str = "actual root case test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colon_joined_ids completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -792,55 +600,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_8EB5378FF7DE";
     const WITNESS: &str =
         "actual root case test_signed_mint_returns_token_and_expiry_never_stored completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -980,55 +740,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
 async fn test_signed_mint_expiry_parsing_matrix() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_4D12AA1E1C74";
     const WITNESS: &str = "actual root case test_signed_mint_expiry_parsing_matrix completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -1180,55 +892,7 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_800A98AB78DB";
     const WITNESS: &str =
         "actual root case test_signing_key_rotate_reports_kid_and_revoke_all completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -1366,55 +1030,7 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
 async fn test_admin_v1_audit_records_key_mutations() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_C8651BCBF8F2";
     const WITNESS: &str = "actual root case test_admin_v1_audit_records_key_mutations completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();

@@ -1,3 +1,7 @@
+#[macro_use]
+#[path = "rig.rs"]
+mod rig;
+
 #[path = "../../../../dist/default/tests/product/auth_plugin_chain_trust.rs"]
 mod auth_plugin_chain_trust;
 

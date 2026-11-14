@@ -3,7 +3,6 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use crate::root::test_plugins as plugins;
 
@@ -11,55 +10,7 @@ use crate::root::test_plugins as plugins;
 async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_apply() {
     const CHILD: &str = "BUSBAR_ADMIN_SETTINGS_BOUNDARY_CHILD";
     const WITNESS: &str = "actual root settings boundary assertions completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root settings witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root settings witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "settings");
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -196,55 +147,7 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
 async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_apply() {
     const CHILD: &str = "BUSBAR_ADMIN_SETTINGS_BOUNDARY_CHILD";
     const WITNESS: &str = "actual root settings boundary assertions completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root settings witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root settings witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "settings");
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -381,55 +284,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
 async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_to_apply() {
     const CHILD: &str = "BUSBAR_ADMIN_SETTINGS_BOUNDARY_CHILD";
     const WITNESS: &str = "actual root settings boundary assertions completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root settings witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root settings witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "settings");
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -580,55 +435,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
 async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
     const CHILD: &str = "BUSBAR_ADMIN_SETTINGS_BOUNDARY_CHILD";
     const WITNESS: &str = "actual root settings boundary assertions completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root settings witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root settings witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "settings");
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
@@ -759,55 +566,7 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
 async fn test_admin_v1_config_settings_unknown_field_400() {
     const CHILD: &str = "BUSBAR_ADMIN_SETTINGS_BOUNDARY_CHILD";
     const WITNESS: &str = "actual root settings boundary assertions completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root settings witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root settings witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "settings");
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();

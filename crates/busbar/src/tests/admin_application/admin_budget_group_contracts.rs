@@ -25,55 +25,7 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
 async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_196DAFDB1E1F";
     const WITNESS: &str = "actual root case test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400 completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     let groups = std::collections::BTreeMap::from([(
         "growth".to_string(),
         busbar_kernel::config::GroupCfg {
@@ -243,55 +195,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
 async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_17A19051983C";
     const WITNESS: &str = "actual root case test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its exact test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root case"),
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root child failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "the actual-root child timed out"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS);
     let groups = std::collections::BTreeMap::from([(
         "capped".to_string(),
         busbar_kernel::config::GroupCfg {

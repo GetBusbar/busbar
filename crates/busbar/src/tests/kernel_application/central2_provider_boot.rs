@@ -2,60 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 #[tokio::test]
 async fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     const CHILD: &str = "BUSBAR_CENTRAL2_PROVIDER_CHILD";
     const WITNESS: &str = "actual root provider boot assertion completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root usage witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root usage witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "usage");
 
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
@@ -160,55 +111,7 @@ async fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 async fn boot_starts_a_keyless_lane_declared_none() {
     const CHILD: &str = "BUSBAR_CENTRAL2_PROVIDER_CHILD";
     const WITNESS: &str = "actual root provider boot assertion completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root usage witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root usage witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "usage");
 
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
