@@ -129,44 +129,6 @@ impl Head {
         };
     }
 
-    fn stripped(&self, strips: &[Strip]) -> Option<Self> {
-        use zeroize::Zeroize as _;
-        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
-        let mut head = self.duplicate();
-        head.fields.retain_mut(|(name, value)| {
-            let remove = strips.iter().any(|strip| {
-                strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name)
-            });
-            if remove {
-                value.zeroize();
-            }
-            !remove
-        });
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the stripped query keys a line's auth declares, bounded by that declaration"
-        )]
-        let keys: Vec<&str> = strips
-            .iter()
-            .filter(|strip| strip.place == StripPlace::Query)
-            .map(|strip| strip.name.as_ref())
-            .collect();
-        if !keys.is_empty() {
-            if let Some(stripped) = head
-                .query
-                .as_deref()
-                .and_then(|query| crate::auth::without_query_keys_text(query, &keys))
-            {
-                let mut original =
-                    std::mem::replace(&mut head.query, (!stripped.is_empty()).then_some(stripped));
-                if let Some(query) = &mut original {
-                    query.zeroize();
-                }
-            }
-        }
-        Some(head)
-    }
-
     fn is_empty(&self) -> bool {
         self.method.is_empty()
             && self.target.is_empty()
@@ -2856,10 +2818,14 @@ impl Inbound {
                         let key = match table.listener.app.governance.as_ref() {
                             Some(gov) if !deadline_passed(deadline) => until_deadline(
                                 deadline,
-                                gov.peek_ticket_async(prefix, token, crate::store::now()),
+                                gov.peek_door_ticket_async(prefix, token, crate::store::now()),
                             )
                             .await
-                            .flatten(),
+                            .flatten()
+                            .map(|(key, ticket)| {
+                                derived.carry_ticket(ticket);
+                                key
+                            }),
                             _ => None,
                         };
                         let flow = if key.is_some() {
