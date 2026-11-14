@@ -194,6 +194,8 @@ pub fn table(r: &RunReport) -> String {
         "case",
         "shape",
         "rps",
+        "ok",
+        "body_miss",
         "p50us",
         "p99us",
         "p999us",
@@ -229,6 +231,12 @@ pub fn table(r: &RunReport) -> String {
             x.case.clone(),
             x.shape.clone(),
             format!("{:.0}", x.rps),
+            x.ok.to_string(),
+            if x.body_total == 0 {
+                "-".into()
+            } else {
+                crate::run::body_miss_text(x.body_miss, x.body_total)
+            },
             f(x.latency_us.p50),
             f(x.latency_us.p99),
             f(x.latency_us.p999),
@@ -256,6 +264,8 @@ pub fn table(r: &RunReport) -> String {
                 "  (background)".into(),
                 String::new(),
                 format!("{:.0}", b.rps),
+                b.ok.to_string(),
+                String::new(),
                 f(b.latency_us.p50),
                 f(b.latency_us.p99),
                 f(b.latency_us.p999),

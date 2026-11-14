@@ -279,12 +279,22 @@ where
     let _ = b.serve_connection(TokioIo::new(io), svc).await;
 }
 
-/// A self-signed certificate for 127.0.0.1/localhost, its SPKI pin and its PEM.
+/// A self-signed LEAF certificate (`basicConstraints` critical `CA:FALSE`) for
+/// 127.0.0.1/localhost, its SPKI pin and its PEM. A scenario pins it with `cert_spki` AND names
+/// the PEM as the member's own root (`tls.ca_cert_pem`): the pin is checked on top of the chain,
+/// never instead of it, and a `CA:TRUE` certificate served as the leaf is refused.
 fn tls_acceptor() -> std::io::Result<(tokio_rustls::TlsAcceptor, String, String)> {
     use base64::Engine as _;
     use rcgen::PublicKeyData as _;
-    let ck = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string(), "localhost".into()])
+    let signing_key = rcgen::KeyPair::generate().map_err(std::io::Error::other)?;
+    let mut params =
+        rcgen::CertificateParams::new(vec!["127.0.0.1".to_string(), "localhost".into()])
+            .map_err(std::io::Error::other)?;
+    params.is_ca = rcgen::IsCa::ExplicitNoCa;
+    let cert = params
+        .self_signed(&signing_key)
         .map_err(std::io::Error::other)?;
+    let ck = rcgen::CertifiedKey { cert, signing_key };
     let spki = ck.signing_key.subject_public_key_info();
     let digest = ring::digest::digest(&ring::digest::SHA256, &spki);
     let pin = format!(

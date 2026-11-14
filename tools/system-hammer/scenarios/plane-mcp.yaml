@@ -30,6 +30,7 @@ config: |
     probe:
       url: "{MOCK_TLS}/mcp"
       allow_private: true
+      tls: { ca_cert_pem: {MOCK_CA_PEM_JSON} }
       pin: { mechanism: cert_spki, key: "{MOCK_SPKI}" }
       tools_allow:
         ping:

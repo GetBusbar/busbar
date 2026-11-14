@@ -44,7 +44,7 @@ pub struct Req {
     pub headers: Vec<(HeaderName, HeaderValue)>,
     pub body: Bytes,
     pub expect_status: u16,
-    /// Bytes every sampled response body must contain.
+    /// Bytes EVERY response body must contain: a request that states it has each body checked.
     pub expect_contains: Option<Vec<u8>>,
     /// Relative weight in the case's mix.
     pub weight: u32,
@@ -82,7 +82,8 @@ pub struct Plan {
     pub timeout: Duration,
     /// h2c: in-flight streams per connection.
     pub h2_streams: usize,
-    /// Every n-th response body is collected and checked against `expect_contains`.
+    /// Every n-th response body is collected (for the error report); a request with
+    /// `expect_contains` has every body collected and checked.
     pub sample_every: u64,
 }
 
@@ -110,6 +111,9 @@ pub struct Outcome {
     pub measured: Duration,
     pub bytes_in: u64,
     pub chunks_in: u64,
+    /// Bodies checked against `expect_contains` in the measured window, and those that missed.
+    pub body_total: u64,
+    pub body_miss: u64,
 }
 
 impl Outcome {
@@ -123,6 +127,8 @@ impl Outcome {
             measured: Duration::ZERO,
             bytes_in: 0,
             chunks_in: 0,
+            body_total: 0,
+            body_miss: 0,
         }
     }
 
@@ -140,6 +146,8 @@ impl Outcome {
         }
         self.bytes_in += o.bytes_in;
         self.chunks_in += o.chunks_in;
+        self.body_total += o.body_total;
+        self.body_miss += o.body_miss;
     }
 
     pub fn rps(&self) -> f64 {
@@ -164,6 +172,8 @@ struct Local {
     windows: Vec<u32>,
     bytes_in: u64,
     chunks_in: u64,
+    body_total: u64,
+    body_miss: u64,
 }
 
 impl Local {
@@ -176,6 +186,8 @@ impl Local {
             windows: vec![0; windows],
             bytes_in: 0,
             chunks_in: 0,
+            body_total: 0,
+            body_miss: 0,
         }
     }
     fn error(&mut self, what: String) {
@@ -367,6 +379,8 @@ impl Ctx {
         let ms = self.plan.measure_start();
         let in_window = started >= ms && done <= self.plan.end();
         let mut healthy = true;
+        // `Some(hit)` when the body was checked against `expect_contains`.
+        let mut checked: Option<bool> = None;
         let verdict: Result<Exchange, String> = match result {
             Err(_) => {
                 healthy = false;
@@ -389,7 +403,8 @@ impl Ctx {
             }
             Ok(Ok(x)) => {
                 if let (Some(b), Some(want)) = (&x.body, &p.expect_contains) {
-                    if !contains(b, want) {
+                    checked = Some(contains(b, want));
+                    if checked == Some(false) {
                         let text = String::from_utf8_lossy(&b[..b.len().min(400)]).into_owned();
                         self.note_error(|| format!("body without expected marker: {text}"));
                         Err("body".into())
@@ -403,6 +418,10 @@ impl Ctx {
         };
         if !in_window {
             return healthy;
+        }
+        if let Some(hit) = checked {
+            local.body_total += 1;
+            local.body_miss += u64::from(!hit);
         }
         match verdict {
             Ok(x) => {
@@ -457,7 +476,8 @@ async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>) -> Local {
         }
         let seq = ctx.seq.fetch_add(1, Ordering::Relaxed);
         let p = &ctx.reqs[(seq % n) as usize];
-        let collect = ctx.plan.sample_every > 0 && seq.is_multiple_of(ctx.plan.sample_every);
+        let collect = p.expect_contains.is_some()
+            || (ctx.plan.sample_every > 0 && seq.is_multiple_of(ctx.plan.sample_every));
         if sender.is_none() {
             match connect(ctx.plan.addr, ctx.plan.proto).await {
                 Ok(s) => sender = Some(s),
