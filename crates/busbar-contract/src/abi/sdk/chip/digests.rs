@@ -6,18 +6,19 @@
 use zeroize::Zeroizing;
 
 fn padded(data: &[u8], big_endian: bool) -> Zeroizing<Vec<u8>> {
-    let mut m = Zeroizing::new(Vec::with_capacity(data.len() + 72));
-    m.extend_from_slice(data);
-    m.push(0x80);
-    while m.len() % 64 != 56 {
-        m.push(0);
-    }
+    // data || 0x80 || zeros to 56 mod 64 || bit length: exact size, filled in place, so the
+    // wiping buffer never grows (LINT-RULES LR-117).
+    let zeros = (55 + 64 - data.len() % 64) % 64;
+    let total = data.len() + 1 + zeros + 8;
+    let mut m = Zeroizing::new(vec![0_u8; total]);
+    m[..data.len()].copy_from_slice(data);
+    m[data.len()] = 0x80;
     let bits = (data.len() as u64).wrapping_mul(8);
-    if big_endian {
-        m.extend_from_slice(&bits.to_be_bytes());
+    m[total - 8..].copy_from_slice(&if big_endian {
+        bits.to_be_bytes()
     } else {
-        m.extend_from_slice(&bits.to_le_bytes());
-    }
+        bits.to_le_bytes()
+    });
     m
 }
 

@@ -115,21 +115,27 @@ impl SealedValue {
                 total.checked_add(length)
             })
             .expect("sealed composition length exceeds address space");
-        let mut bytes = Zeroizing::new(Vec::with_capacity(total));
+        // Exact size, filled in place: the wiping buffer never grows (LINT-RULES LR-117).
+        let mut bytes = Zeroizing::new(vec![0_u8; total]);
+        let mut at = 0;
+        let mut put = |part: &[u8]| {
+            bytes[at..at + part.len()].copy_from_slice(part);
+            at += part.len();
+        };
         let mut secure = false;
         for part in parts {
             match part {
-                CredentialPart::Public(public) => bytes.extend_from_slice(public),
+                CredentialPart::Public(public) => put(&public[..]),
                 CredentialPart::Credential(value) => {
-                    bytes.extend_from_slice(value.wire());
+                    put(value.wire());
                     secure |= value.secure_required();
                 }
                 CredentialPart::Value(value) => {
-                    bytes.extend_from_slice(value.wire());
+                    put(value.wire());
                     secure |= value.secure_required();
                 }
                 CredentialPart::Sealed(value) => {
-                    bytes.extend_from_slice(value.wire());
+                    put(value.wire());
                     secure |= value.secure_required();
                 }
             }
@@ -230,19 +236,25 @@ impl Cred {
     /// Trim ASCII spaces and collapse interior runs to one ASCII space. Only ingested
     /// credentials can be normalized; arbitrary computed values cannot enter this operation.
     pub fn normalize_ascii_spaces(&self) -> SealedValue {
-        let mut out = Zeroizing::new(Vec::with_capacity(self.len()));
+        // At most as long as the input: written in place into one exact allocation and cut to
+        // length, so the wiping buffer never grows (LINT-RULES LR-117).
+        let mut out = Zeroizing::new(vec![0_u8; self.len()]);
+        let mut n = 0;
         let mut pending = false;
         for &byte in self.wire() {
             if byte == b' ' {
                 pending = true;
             } else {
-                if pending && !out.is_empty() {
-                    out.push(b' ');
+                if pending && n != 0 {
+                    out[n] = b' ';
+                    n += 1;
                 }
                 pending = false;
-                out.push(byte);
+                out[n] = byte;
+                n += 1;
             }
         }
+        out.truncate(n);
         SealedValue(Cred::captured(out).require_secure_if(self.secure_required()))
     }
 }

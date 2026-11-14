@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Guarded operator document publication, inside the existing native durable owner.
+use busbar_contract::secure::SecureVec;
 use std::{io, path::Path};
 use zeroize::Zeroizing;
 
@@ -51,13 +52,15 @@ fn invalid() -> io::Error {
         "invalid document publication metadata",
     )
 }
-fn append(out: &mut Vec<u8>, bytes: &[u8]) -> io::Result<()> {
+fn append(out: &mut SecureVec, bytes: &[u8]) -> io::Result<()> {
     let n = u32::try_from(bytes.len()).map_err(|_| invalid())?;
-    out.try_reserve(4 + bytes.len())
-        .map_err(|_| io::Error::other("document metadata allocation failed"))?;
-    out.extend_from_slice(&n.to_le_bytes());
-    out.extend_from_slice(bytes);
-    Ok(())
+    put(out, &n.to_le_bytes())?;
+    put(out, bytes)
+}
+/// Append to a wiping buffer that never leaves a released block unwiped (LINT-RULES LR-117).
+fn put(out: &mut SecureVec, bytes: &[u8]) -> io::Result<()> {
+    out.extend(bytes)
+        .map_err(|_| io::Error::other("document metadata allocation failed"))
 }
 fn take<'a>(input: &mut &'a [u8], n: usize) -> io::Result<&'a [u8]> {
     let value = input.get(..n).ok_or_else(invalid)?;
@@ -112,10 +115,10 @@ mod platform {
     }
     fn security(file: &File) -> io::Result<Zeroizing<Vec<u8>>> {
         let m = file.metadata()?;
-        let mut out = Zeroizing::new(Vec::new());
-        out.extend_from_slice(&m.uid().to_le_bytes());
-        out.extend_from_slice(&m.gid().to_le_bytes());
-        out.extend_from_slice(&(m.mode() & 0o7777).to_le_bytes());
+        let mut out = SecureVec::new();
+        put(&mut out, &m.uid().to_le_bytes())?;
+        put(&mut out, &m.gid().to_le_bytes())?;
+        put(&mut out, &(m.mode() & 0o7777).to_le_bytes())?;
         #[cfg(target_os = "macos")]
         {
             append(&mut out, &mac_acl::get(file)?)?;
@@ -128,15 +131,16 @@ mod platform {
             append(&mut out, &key)?;
             append(&mut out, &value)?;
         }
-        Ok(out)
+        Ok(out.into_zeroizing())
     }
     fn metadata(dir: &File, file: &File) -> io::Result<Zeroizing<Vec<u8>>> {
         let m = dir.metadata()?;
-        let mut out = Zeroizing::new(vec![1]);
-        out.extend_from_slice(&m.dev().to_le_bytes());
-        out.extend_from_slice(&m.ino().to_le_bytes());
-        out.extend_from_slice(&security(file)?);
-        Ok(out)
+        let mut out = SecureVec::new();
+        put(&mut out, &[1])?;
+        put(&mut out, &m.dev().to_le_bytes())?;
+        put(&mut out, &m.ino().to_le_bytes())?;
+        put(&mut out, &security(file)?)?;
+        Ok(out.into_zeroizing())
     }
     fn restore(file: &File, bytes: &[u8]) -> io::Result<()> {
         let mut bytes = bytes;
@@ -626,11 +630,15 @@ mod platform {
         Ok(bytes)
     }
     fn metadata(parent: &File, file: &File) -> io::Result<Zeroizing<Vec<u8>>> {
-        let mut bytes = Zeroizing::new(vec![2]);
-        bytes.extend_from_slice(&identity(parent)?);
-        bytes.extend_from_slice(&file.metadata()?.file_attributes().to_le_bytes());
+        let mut bytes = SecureVec::new();
+        put(&mut bytes, &[2])?;
+        put(&mut bytes, &identity(parent)?)?;
+        put(
+            &mut bytes,
+            &file.metadata()?.file_attributes().to_le_bytes(),
+        )?;
         append(&mut bytes, &security(file)?)?;
-        Ok(bytes)
+        Ok(bytes.into_zeroizing())
     }
     // Validate every relative native descriptor span before passing protected stored bytes to Win32.
     fn valid_descriptor(bytes: &[u8]) -> bool {
