@@ -2490,17 +2490,16 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection<'_>, pool: &str) {
             shape_only.clone()
         };
         let Some(tap) = tap else { continue };
-        let reads = hooks.reads.clone();
-        let dialect = view.dialect.clone();
-        let content = *send_prompt;
         let policy = Arc::clone(hook);
         let budget = *timeout;
-        spawn_bounded_tap(async move {
-            if content && (reads)(policy.name(), None, &dialect, false).await.is_err() {
-                return;
-            }
-            policy.notify(tap, budget).await;
-        });
+        if !*send_prompt {
+            spawn_bounded_tap(async move { policy.notify(tap, budget).await });
+            continue;
+        }
+        let Some(slot) = crate::hooks::taps::tap_slot() else {
+            continue;
+        };
+        content.push((slot, policy, tap, budget));
     }
     if content.is_empty() {
         return;
