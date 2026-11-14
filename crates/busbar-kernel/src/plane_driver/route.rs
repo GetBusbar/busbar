@@ -1655,12 +1655,18 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 Toward::Session(_) | Toward::Response(_) => out.flags & EMIT_TO_FAR_END != 0,
                 Toward::Caller | Toward::Nowhere => false,
             };
+            let session = matches!(toward, Toward::Session(_));
             match toward {
                 Toward::Nowhere => return Step::Answered(out.flags & EMIT_DONE != 0),
                 Toward::FarEnd(request) | Toward::Session(request) | Toward::Response(request)
                     if far =>
                 {
                     if out.flags & EMIT_TO_FAR_END != 0 {
+                        if session && (out.verb.len != 0 || out.fields_written != 0) {
+                            busbar_contract::stage_probe::tick(
+                                busbar_contract::stage_probe::Derive::SessionRoute,
+                            );
+                        }
                         if out.verb.len != 0 {
                             request.verb = bufs.arena(out.verb).to_vec();
                             request.target = bufs.arena(out.target).to_vec();
