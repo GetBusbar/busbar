@@ -3328,34 +3328,17 @@ impl<K: Kind> Plugin<K> {
         }
     }
 
-    pub fn recall<I: InFrame, O: OutFrame>(
-        &self,
-        token: Recall,
-        s: u32,
-        frame: &mut Frame<I, O>,
-    ) -> Called {
-        if token.instance != self.instance_id() || token.slot != s {
-            return Called::from(Crossed::refused(
-                "the recall token names another instance or op",
-            ));
-        }
-        let _reference = match token.kept.as_ref() {
-            Some(kept) => match unsafe { RecallInput::new(frame.heads().0, kept.id) } {
-                Ok(reference) => Some(reference),
-                Err(()) => {
-                    return Called::from(Crossed::refused(
-                        "the recalled short answer could not be lent back",
-                    ))
-                }
-            },
-            None => None,
-        };
-        let measurement = token.measurement;
-        let called = super::measurement::with_reservation(measurement.clone(), || {
-            if token.ticket.is_none() {
-                self.call_on(s, frame, token.ticket, false, measurement)
-            } else {
-                self.call_inline(token.ticket, true, s, frame)
+    test_support_pub! {
+        fn recall<I: InFrame, O: OutFrame>(
+            &self,
+            token: Recall,
+            s: u32,
+            frame: &mut Frame<I, O>,
+        ) -> Called {
+            if token.instance != self.instance_id() || token.slot != s {
+                return Called::from(Crossed::refused(
+                    "the recall token names another instance or op",
+                ));
             }
             let _reference = match token.kept.as_ref() {
                 Some(kept) => match unsafe { RecallInput::new(frame.heads().0, kept.id) } {
@@ -3368,17 +3351,36 @@ impl<K: Kind> Plugin<K> {
                 },
                 None => None,
             };
-            let called = super::measurement::with_reservation(token.measurement.clone(), || {
+            let measurement = token.measurement;
+            let called = super::measurement::with_reservation(measurement.clone(), || {
                 if token.ticket.is_none() {
-                    self.call_on(s, frame, token.ticket, false, token.measurement.clone(), true)
+                    self.call_on(s, frame, token.ticket, false, measurement)
                 } else {
                     self.call_inline(token.ticket, true, s, frame)
                 }
-            });
-            if called.recall.is_some() {
-                return Called::from(Crossed::host(Outcome::Fault));
+                let _reference = match token.kept.as_ref() {
+                    Some(kept) => match unsafe { RecallInput::new(frame.heads().0, kept.id) } {
+                        Ok(reference) => Some(reference),
+                        Err(()) => {
+                            return Called::from(Crossed::refused(
+                                "the recalled short answer could not be lent back",
+                            ))
+                        }
+                    },
+                    None => None,
+                };
+                let called = super::measurement::with_reservation(token.measurement.clone(), || {
+                    if token.ticket.is_none() {
+                        self.call_on(s, frame, token.ticket, false, token.measurement.clone(), true)
+                    } else {
+                        self.call_inline(token.ticket, true, s, frame)
+                    }
+                });
+                if called.recall.is_some() {
+                    return Called::from(Crossed::host(Outcome::Fault));
+                }
+                called
             }
-            called
         }
     }
 
