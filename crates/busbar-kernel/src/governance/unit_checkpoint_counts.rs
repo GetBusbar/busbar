@@ -12,10 +12,11 @@ impl GovState {
         &self,
         snapshot: &UnitCheckpoint,
     ) -> RecordStoreResult<Vec<RecoveryEvent>> {
+        // busbar:expect(bp::fresh_buffer, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
         let mut events = Vec::new();
         let mut cell = BudgetCell::default();
         cell.accrue_raw(&snapshot.lane, snapshot.era(), &snapshot.units)
-            .map_err(|e| RecordStoreError(e.to_string()))?;
+            .map_err(crate::governance::store_error)?;
         let plain = ExactUsageDelta::of(&cell, false);
         let dated = ExactUsageDelta::of(&cell, true);
         for target in &snapshot.targets {
@@ -34,7 +35,7 @@ impl GovState {
                         child.first_sent_at_ms,
                         child.payload,
                     )
-                    .map_err(|e| RecordStoreError(e.to_string()))?,
+                    .map_err(crate::governance::store_error)?,
                 );
             }
         }
@@ -66,7 +67,11 @@ impl GovState {
         } else {
             MeterCounts::default()
         };
-        counts.usage_units = snapshot
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once"
+        )]
+        let usage_units = snapshot
             .units
             .iter()
             .filter(|(name, count)| {
@@ -77,6 +82,8 @@ impl GovState {
             })
             .map(|(name, count)| (name.clone(), *count))
             .collect();
+        counts.usage_units = usage_units;
+        // busbar:expect(bp::clone_alloc, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
         let key: MeterKey = (
             snapshot.principal.clone(),
             metering_bucket(snapshot.arrived),
@@ -90,11 +97,12 @@ impl GovState {
                 .map(|id| id.metering_version())
                 .unwrap_or_default(),
         );
+        let sent_at_ms = crate::store::now_ms();
         while !counts.is_zero() {
             let (delta, remaining) = metering_flush::metering_chunk(&key, &counts);
             events.push(self.metering_recovery_intent(
                 crate::door::op_id().0,
-                crate::store::now_ms(),
+                sent_at_ms,
                 &delta,
             )?);
             counts = remaining;
@@ -110,6 +118,10 @@ impl GovState {
     ) -> RecordStoreResult<()> {
         // Capture the entire hot value, then release every shard/flush guard
         // before crossing Store. Publish only if that same value still owns it.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once"
+        )]
         let mut shards: Vec<_> = snapshot
             .targets
             .iter()
@@ -118,6 +130,10 @@ impl GovState {
         shards.sort_unstable();
         shards.dedup();
         let capture = || -> RecordStoreResult<Vec<Option<BudgetCell>>> {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once"
+            )]
             let guards: Vec<_> = shards
                 .iter()
                 .map(|index| {
@@ -131,7 +147,11 @@ impl GovState {
                 .budget_flushes
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            snapshot
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once"
+            )]
+            let built = snapshot
                 .targets
                 .iter()
                 .map(|target| {
@@ -139,6 +159,7 @@ impl GovState {
                         .binary_search(&self.budget.shard_index(&target.bucket))
                         .expect("target shard held");
                     let cell = guards[index].get(&target.bucket);
+                    // busbar:expect(bp::state_scan, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
                     if cell.is_some_and(|cell| {
                         cell.dirty || cell.flushing != 0 || cell.correction.is_some()
                     }) || flights.keys().any(|(bucket, _)| bucket == &target.bucket)
@@ -149,7 +170,8 @@ impl GovState {
                     }
                     Ok(cell.cloned())
                 })
-                .collect()
+                .collect();
+            built
         };
         let before = capture()?;
         let epoch = self.recovery_selection_epoch();
@@ -160,10 +182,12 @@ impl GovState {
                     super::persistence::ledger::USAGE,
                     &[&target.window.to_be_bytes()],
                 );
-                if store
-                    .has_pending_namespace(namespace)
-                    .map_err(|e| RecordStoreError(format!("checkpoint ledger custody: {e:?}")))?
-                {
+                if store.has_pending_namespace(namespace).map_err(|e| {
+                    rendered_error(
+                        RecordStoreError,
+                        format_args!("checkpoint ledger custody: {e:?}"),
+                    )
+                })? {
                     return Err(RecordStoreError(
                         "recovered unit target has an unresolved native candidate".into(),
                     ));
@@ -172,6 +196,8 @@ impl GovState {
             Ok(())
         };
         check_pending()?;
+        let touched = crate::store::now();
+        // busbar:expect(bp::fresh_buffer, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
         let mut refreshed = Vec::new();
         for (target, previous) in snapshot.targets.iter().zip(&before) {
             if previous
@@ -186,9 +212,9 @@ impl GovState {
                 .get_usage_pair(&target.bucket, &era_bucket(&target.bucket), target.window)
                 .await?;
             let mut cell = super::state::durable_cell(plain, dated, target.window)?;
-            cell.last_touch = crate::store::now();
+            cell.last_touch = touched;
             if let Some(previous) = previous {
-                cell.group_owners = previous.group_owners.clone();
+                cell.group_owners.clone_from(&previous.group_owners);
             }
             if let Some(group) = &target.group {
                 cell.group_owners.insert(group.clone());
@@ -201,6 +227,10 @@ impl GovState {
                 "recovery selection changed during unit reload".into(),
             ));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once"
+        )]
         let mut guards: Vec<_> = shards
             .iter()
             .map(|index| {
@@ -218,6 +248,7 @@ impl GovState {
             let index = shards
                 .binary_search(&self.budget.shard_index(&target.bucket))
                 .expect("target shard held");
+            // busbar:expect(bp::state_scan, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
             if !same_checkpoint_cell(previous.as_ref(), guards[index].get(&target.bucket))
                 || flights.keys().any(|(bucket, _)| bucket == &target.bucket)
             {
@@ -237,6 +268,7 @@ impl GovState {
                 let index = shards
                     .binary_search(&self.budget.shard_index(&target.bucket))
                     .expect("target shard held");
+                // busbar:expect(bp::clone_alloc, reason = "boot: a terminated or recovered unit's raw custody is staged or reloaded once")
                 guards[index].insert(target.bucket.clone(), cell);
             }
         }
@@ -249,13 +281,8 @@ impl GovState {
         &self,
         snapshot: &UnitCheckpoint,
     ) -> Result<(), CountError> {
-        let targets: Vec<_> = snapshot
-            .targets
-            .iter()
-            .map(|t| (t.bucket.clone(), t.window, t.group.clone()))
-            .collect();
         self.accrue_count_targets(
-            &targets,
+            &snapshot.targets,
             &snapshot.lane,
             snapshot.era(),
             &snapshot.units,
@@ -265,10 +292,13 @@ impl GovState {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn accrue_count_targets(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "config: one accrual names its targets, lane, era, units, clock, mode and commit hook"
+    )]
+    pub(super) fn accrue_count_targets<T: CountTarget>(
         &self,
-        targets: &[(String, u64, Option<String>)],
+        targets: &[T],
         lane: &str,
         era: RawRateEra,
         units: &std::collections::BTreeMap<String, Count>,
@@ -276,35 +306,39 @@ impl GovState {
         durable: bool,
         before_commit: impl FnOnce() -> Result<(), CountError>,
     ) -> Result<(), CountError> {
-        let mut shards: Vec<_> = targets
-            .iter()
-            .map(|(bucket, _, _)| self.budget.shard_index(bucket))
-            .collect();
+        // A request charges a handful of buckets: the shard list, its guards and the staged cells
+        // stay inline on the stack.
+        let mut shards: smallvec::SmallVec<[usize; 4]> = smallvec::SmallVec::new();
+        shards.extend(
+            targets
+                .iter()
+                .map(|target| self.budget.shard_index(target.bucket())),
+        );
         shards.sort_unstable();
         shards.dedup();
-        let mut guards: Vec<_> = shards
-            .iter()
-            .map(|index| {
-                self.budget.shards[*index]
-                    .map
-                    .write()
-                    .unwrap_or_else(|p| p.into_inner())
-            })
-            .collect();
-        let mut changes = Vec::new();
-        for (bucket, window, group) in targets {
+        let mut guards: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
+        guards.extend(shards.iter().map(|index| {
+            self.budget.shards[*index]
+                .map
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+        }));
+        let mut changes: smallvec::SmallVec<[(usize, &str, BudgetCell); 4]> =
+            smallvec::SmallVec::new();
+        for target in targets {
+            let (bucket, window) = (target.bucket(), target.window());
             let index = shards
                 .binary_search(&self.budget.shard_index(bucket))
                 .expect("target shard held");
             let mut cell = guards[index]
                 .get(bucket)
                 .cloned()
-                .unwrap_or_else(|| BudgetCell::fresh(*window));
-            if durable && cell.window_start > *window {
+                .unwrap_or_else(|| BudgetCell::fresh(window));
+            if durable && cell.window_start > window {
                 continue;
             }
-            if cell.window_start < *window {
-                cell.roll(*window);
+            if cell.window_start < window {
+                cell.roll(window);
             }
             cell.accrue_raw(lane, era, units)?;
             fn finish(
@@ -323,16 +357,13 @@ impl GovState {
                         .map(|(_, n)| *n),
                 )?;
                 // Validate changed raw classes and their derived caps before publishing,
-                // including ancestors shared by several classes and lanes.
-                let classes: std::collections::BTreeSet<&str> = units
-                    .keys()
-                    .map(String::as_str)
-                    .chain(
-                        class_owner(lane)
-                            .into_iter()
-                            .flat_map(|owner| owner.class_parents.iter().map(|edge| edge.parent)),
-                    )
-                    .collect();
+                // including ancestors shared by several classes and lanes. A class named twice
+                // is only checked twice: the check is pure, so the outcome is the same.
+                let classes = units.keys().map(String::as_str).chain(
+                    class_owner(lane)
+                        .into_iter()
+                        .flat_map(|owner| owner.class_parents.iter().map(|edge| edge.parent)),
+                );
                 for class in classes {
                     cell.models.iter().try_fold(Count::ZERO, |total, model| {
                         total.checked_add(class_total(&model.model, &model.cur, class)?)
@@ -345,10 +376,16 @@ impl GovState {
                         .find(|m| m.model.as_ref() == lane && m.era == era)
                         .expect("just accrued model");
                     for (unit, n) in units {
-                        let raw = model.flushed.entry(unit.clone()).or_default();
-                        *raw = raw.checked_add(*n)?;
-                        let raw = model.flushed_era.entry(unit.clone()).or_default();
-                        *raw = raw.checked_add(*n)?;
+                        for flushed in [&mut model.flushed, &mut model.flushed_era] {
+                            match flushed.get_mut(unit) {
+                                Some(raw) => *raw = raw.checked_add(*n)?,
+                                None => {
+                                    // First sight of this unit in the baseline: its one key.
+                                    let first = Count::default().checked_add(*n)?;
+                                    flushed.insert(unit.as_str().into(), first);
+                                }
+                            }
+                        }
                     }
                 } else {
                     cell.dirty = true;
@@ -360,18 +397,57 @@ impl GovState {
                 finish(&mut branch.accepted, lane, era, units, durable)?;
             }
             cell.mutate(|cell| {
-                if let Some(group) = group {
-                    cell.group_owners.insert(group.clone());
+                if let Some(group) = target.group() {
+                    // A bucket learns each owning group once; later charges find it held.
+                    if !cell.group_owners.contains(group) {
+                        cell.group_owners.insert(group.into());
+                    }
                 }
                 cell.last_touch = now;
             });
-            changes.push((index, bucket.clone(), cell));
+            changes.push((index, bucket, cell));
         }
         before_commit()?;
         for (index, bucket, cell) in changes {
-            guards[index].insert(bucket, cell);
+            match guards[index].get_mut(bucket) {
+                Some(slot) => *slot = cell,
+                None => {
+                    guards[index].insert(bucket.into(), cell);
+                }
+            }
         }
         Ok(())
+    }
+}
+
+/// One bucket an accrual charges: its id, its window and the group that owns it.
+pub(super) trait CountTarget {
+    fn bucket(&self) -> &str;
+    fn window(&self) -> u64;
+    fn group(&self) -> Option<&str>;
+}
+
+impl CountTarget for (String, u64, Option<String>) {
+    fn bucket(&self) -> &str {
+        &self.0
+    }
+    fn window(&self) -> u64 {
+        self.1
+    }
+    fn group(&self) -> Option<&str> {
+        self.2.as_deref()
+    }
+}
+
+impl CountTarget for super::unit_checkpoint::UnitTarget {
+    fn bucket(&self) -> &str {
+        &self.bucket
+    }
+    fn window(&self) -> u64 {
+        self.window
+    }
+    fn group(&self) -> Option<&str> {
+        self.group.as_deref()
     }
 }
 

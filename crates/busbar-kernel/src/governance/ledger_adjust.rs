@@ -15,14 +15,24 @@ mod correction_impl;
 pub(in crate::governance) use correction_impl::PendingCorrection;
 
 fn adjustment_slot(key_id: &str, lane: &str, era: impl Into<RawRateEra>) -> String {
-    format!("{key_id}{SLOT_SEP}{lane}{SLOT_SEP}{}", era_tag(era.into()))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)"
+    )]
+    let built = format!("{key_id}{SLOT_SEP}{lane}{SLOT_SEP}{}", era_tag(era.into()));
+    built
 }
 
 #[must_use]
 pub fn metering_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
     match crate::plane_driver::registry::plane_decl_for(provider) {
         Some(decl) if !decl.fallback => {
-            std::borrow::Cow::Owned(format!("{}{}{model}", decl.key, PLANE_LANE_SEP))
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)"
+            )]
+            let built = std::borrow::Cow::Owned(format!("{}{}{model}", decl.key, PLANE_LANE_SEP));
+            built
         }
         _ => std::borrow::Cow::Borrowed(model),
     }
@@ -52,7 +62,7 @@ fn metered_count(row: &MeteringRow, class: &str) -> RecordStoreResult<Count> {
         busbar_contract::records::UNIT_CACHE_WRITE => row.tokens_cache_write,
         other => row.usage_units.get(other).copied().unwrap_or(0),
     };
-    Count::from_stored(raw, row.scale).map_err(|e| RecordStoreError(e.to_string()))
+    Count::from_stored(raw, row.scale).map_err(crate::governance::store_error)
 }
 
 /// One bucket's current window, priced by the one function: what the admin ledger views serve.
@@ -235,13 +245,18 @@ impl GovState {
     ) -> RecordStoreResult<PricedBucket> {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
-        Ok(PricedBucket {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)"
+        )]
+        let built = Ok(PricedBucket {
             window_start: cell.window_start,
             requests: cell.requests,
             billable_requests: billable_request_count(&cell)
                 .map_err(|e| RecordStoreError(format!("billable request count: {e}")))?,
             spend: cell.spend(cost, true),
-        })
+        });
+        built
     }
 
     pub async fn adjust_usage_async(
@@ -249,6 +264,10 @@ impl GovState {
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)"
+        )]
         let delta = adj
             .delta
             .iter()
@@ -291,6 +310,10 @@ impl GovState {
         adj: &Adjustment<'_, Count>,
         action_id: Option<&str>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)"
+        )]
         let _claim = self
             .correction_claims
             .claim_async(adj.key_id.to_string())
@@ -301,6 +324,10 @@ impl GovState {
         if let Err(refused) = check_epoch(adj.card_epoch_ms, crate::store::now_ms()) {
             return Ok(Err(refused));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)"
+        )]
         let delta: BTreeMap<&str, Count> = adj
             .delta
             .iter()
@@ -314,6 +341,10 @@ impl GovState {
             Ok(Some(_)) => {}
             Ok(None) => return Ok(Err(AdjustRefused::UnknownKey)),
             Err(error) => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)"
+                )]
                 return Ok(Err(AdjustRefused::Preparation {
                     reason: error.to_string(),
                 }));
@@ -344,10 +375,12 @@ impl GovState {
         &self,
         day: u64,
     ) -> RecordStoreResult<Vec<UsageAdjustment>> {
-        self.usage_adjustments_exact_async(day)
+        #[expect(clippy::disallowed_methods, reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)")]
+        let built = self.usage_adjustments_exact_async(day)
             .await?
             .into_iter()
             .map(|row| {
+                #[expect(clippy::disallowed_methods, reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)")]
                 let delta = row
                     .delta
                     .into_iter()
@@ -368,13 +401,15 @@ impl GovState {
                     delta,
                 })
             })
-            .collect()
+            .collect();
+        built
     }
 
     pub async fn usage_adjustments_exact_async(
         &self,
         day: u64,
     ) -> RecordStoreResult<Vec<UsageAdjustment<Count>>> {
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)")
         if self
             .corrections
             .lock()
@@ -396,7 +431,7 @@ impl GovState {
             for model in row.models {
                 for (class, count) in model.usage_units {
                     let count = Count::from_stored(count, model.scale)
-                        .map_err(|e| RecordStoreError(e.to_string()))?;
+                        .map_err(crate::governance::store_error)?;
                     if count.is_negative() {
                         return Err(RecordStoreError("negative adjustment magnitude".into()));
                     }
@@ -411,6 +446,7 @@ impl GovState {
                 }
             }
         }
+        // busbar:expect(bp::fresh_buffer, reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)")
         let mut result = Vec::new();
         for (slot, counts) in net {
             let mut parts = slot.splitn(3, SLOT_SEP);
@@ -421,6 +457,10 @@ impl GovState {
             let Some(era) = parse_era_tag(era)? else {
                 continue;
             };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger adjustment, run once per adjustment (control plane)"
+            )]
             let delta: BTreeMap<_, _> = counts
                 .into_iter()
                 .filter(|(_, count)| *count != 0)

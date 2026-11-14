@@ -46,11 +46,18 @@ impl GovState {
     ) -> RecordStoreResult<Self> {
         core.register_claim_scope(crate::auth::AUTH_REPLAY_OWNER, crate::auth::AUTH_REPLAY)
             .map_err(|error| {
-                RecordStoreError(format!("auth replay maintenance scope: {error:?}"))
+                rendered_error(
+                    RecordStoreError,
+                    format_args!("auth replay maintenance scope: {error:?}"),
+                )
             })?;
         core.identity().settle_pending().await?;
-        let snapshot = core.identity().snapshot().await?;
-        let denied = snapshot.denied.iter().cloned().collect();
+        let mut snapshot = core.identity().snapshot().await?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the revocation set is seeded once from the identity snapshot"
+        )]
+        let denied = std::mem::take(&mut snapshot.denied).into_iter().collect();
         let caches = Arc::new(RwLock::new(cache_snapshot(snapshot)));
         let order = Arc::new(CacheOrder::default());
         let denylist = revocation::RevocationSync::native(
@@ -78,6 +85,7 @@ impl GovState {
     /// Apply only exact rows returned after a native Applied decision. Tombstone
     /// revisions survive eviction, and older same-key deltas cannot resurrect it.
     pub(in crate::governance) fn publish_identity(&self, commit: IdentityCommit) {
+        let now = crate::store::now();
         self.refresh_order.patch(|| {
             let mut cache = self.caches_write();
             cache.revision = cache.revision.max(commit.revision);
@@ -95,6 +103,7 @@ impl GovState {
                 cache.key_revisions.insert(key.id.clone(), key.revision);
                 if key.deleted_at.is_some() {
                     cache.by_id.remove(&key.id);
+                    #[expect(clippy::disallowed_methods, reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)")]
                     cache
                         .by_credential
                         .retain(|_, (owner, _)| owner.id != key.id);
@@ -119,10 +128,11 @@ impl GovState {
                 cache
                     .credential_revisions
                     .insert(credential.meta.id.clone(), credential.meta.revision);
+                #[expect(clippy::disallowed_methods, reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)")]
                 cache
                     .by_credential
                     .retain(|_, (_, old)| old.meta.id != credential.meta.id);
-                if credential.meta.is_live(crate::store::now()) {
+                if credential.meta.is_live(now) {
                     if let Some(owner) = cache.by_id.get(&credential.meta.key_id).cloned() {
                         if cache
                             .by_credential
@@ -258,8 +268,16 @@ impl GovState {
         let (public_id, plain) = super::issue_credential(shape).store()?;
         let plain = Secret::new(plain);
         let mut random = [0u8; 16];
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)"
+        )]
         getrandom::fill(&mut random)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)"
+        )]
         let meta = CredentialMeta {
             id: format!("cred_{}", hex::encode(random)),
             key_id: binding.id.clone(),
@@ -403,6 +421,7 @@ impl GovState {
                 .and_modify(|held| *held = (*held).max(revision))
                 .or_insert(revision);
             cache.by_id.remove(id);
+            #[expect(clippy::disallowed_methods, reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)")]
             cache.by_credential.retain(|_, (owner, _)| owner.id != id);
         });
         // Pending money custody was settled before the confirmed tombstone.
@@ -498,6 +517,10 @@ impl GovState {
             }
         }
         if pass.resealed > 0 {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)"
+            )]
             crate::audit_ring::AUDIT.record_by(
                 "credential.at_rest.rewrap",
                 &format!("kid:{} rows:{}", keys.kid(), pass.resealed),
@@ -519,26 +542,43 @@ pub(super) fn committed_key(commit: &IdentityCommit, id: &str) -> RecordStoreRes
 }
 
 fn cache_snapshot(snapshot: IdentitySnapshot) -> GovCaches {
+    let now = crate::store::now();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)"
+    )]
     let key_revisions = snapshot
         .keys
         .iter()
         .map(|key| (key.id.clone(), key.revision))
         .collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)"
+    )]
     let credential_revisions = snapshot
         .credentials
         .iter()
         .map(|cred| (cred.meta.id.clone(), cred.meta.revision))
         .collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)"
+    )]
     let by_id: HashMap<_, _> = snapshot
         .keys
         .into_iter()
         .filter(|key| key.deleted_at.is_none())
         .map(|key| (key.id.clone(), Arc::new(key)))
         .collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)"
+    )]
     let by_credential = snapshot
         .credentials
         .into_iter()
-        .filter(|cred| cred.meta.is_live(crate::store::now()))
+        .filter(|cred| cred.meta.is_live(now))
         .filter_map(|cred| {
             by_id.get(&cred.meta.key_id).map(|key| {
                 (
@@ -564,8 +604,8 @@ pub(crate) async fn reload_native(
 ) -> RecordStoreResult<()> {
     loop {
         let ticket = order.ticket();
-        let snapshot = core.identity().snapshot_for_refresh().await?;
-        let denied = snapshot.denied.clone();
+        let mut snapshot = core.identity().snapshot_for_refresh().await?;
+        let denied = std::mem::take(&mut snapshot.denied);
         let mut fresh = cache_snapshot(snapshot);
         match order.turn(ticket) {
             CacheTurn::Swap(_turn) => {

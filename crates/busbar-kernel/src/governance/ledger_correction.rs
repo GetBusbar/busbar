@@ -26,7 +26,11 @@ struct Intent {
 }
 impl Intent {
     fn of(adj: &Adjustment<'_, Count>, action_id: Option<&str>) -> Self {
-        Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
+        let built = Self {
             pool: adj.pool.into(),
             model: adj.model.into(),
             era: adj.entry_era,
@@ -34,7 +38,8 @@ impl Intent {
             epoch: adj.card_epoch_ms,
             delta: adj.delta.clone(),
             action_id: action_id.map(str::to_string),
-        }
+        };
+        built
     }
 }
 
@@ -84,7 +89,13 @@ impl PendingCorrection {
     }
 
     fn receipt_retention_expired(&self) -> bool {
-        self.started.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
+        let built =
+            self.started.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS;
+        built
     }
 
     pub(super) fn unresolved_day(&self) -> Option<u64> {
@@ -99,8 +110,11 @@ impl PendingCorrection {
     }
 }
 
-fn unresolved(reason: &str) -> RecordStoreError {
-    RecordStoreError(format!("usage correction unresolved: {reason}"))
+fn unresolved(reason: impl std::fmt::Display) -> RecordStoreError {
+    crate::governance::rendered_error(
+        RecordStoreError,
+        format_args!("usage correction unresolved: {reason}"),
+    )
 }
 fn exact<T>(result: Result<T, &'static str>) -> RecordStoreResult<T> {
     result.map_err(|reason| RecordStoreError(reason.into()))
@@ -118,6 +132,7 @@ impl GovState {
         resolution: &RecoveryResolution,
     ) -> Result<(), RecoveryError> {
         resolution.validate_quiescence()?;
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
         let pending = self
             .corrections
             .lock()
@@ -154,6 +169,7 @@ impl GovState {
         &self,
         operation_id: [u8; 16],
     ) -> Result<Option<CorrectionRecoveryRun>, RecoveryError> {
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
         let pending = self
             .corrections
             .lock()
@@ -173,7 +189,7 @@ impl GovState {
                 "original correction sender is still running".into(),
             ));
         }
-        Ok(Some(CorrectionRecoveryRun(pending.running.clone())))
+        Ok(Some(CorrectionRecoveryRun(pending.running)))
     }
 
     /// Prepare foreign adoption transitions without performing persistence or runtime effects.
@@ -201,10 +217,10 @@ impl GovState {
             ));
         }
         let mut custody = recovery::Custody::decode(&event.payload)
-            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+            .map_err(|error| crate::governance::rendered_error(RecoveryError::Invalid, error))?;
         custody
             .validate_event(event)
-            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+            .map_err(|error| crate::governance::rendered_error(RecoveryError::Invalid, error))?;
         let successor =
             |previous: &RecoveryEvent, state, payload| -> Result<RecoveryEvent, RecoveryError> {
                 let next = RecoveryEvent {
@@ -243,15 +259,16 @@ impl GovState {
                 ))
             }
             RecoveryState::Intent | RecoveryState::LandedUnknown => {
+                // busbar:expect(bp::fresh_buffer, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
                 let mut events = Vec::new();
                 let previous = if event.state == RecoveryState::Intent {
                     custody.mark_age_unknown();
                     let unknown = successor(
                         event,
                         RecoveryState::LandedUnknown,
-                        custody
-                            .encode()
-                            .map_err(|error| RecoveryError::Invalid(error.to_string()))?,
+                        custody.encode().map_err(|error| {
+                            crate::governance::rendered_error(RecoveryError::Invalid, error)
+                        })?,
                     )?;
                     events.push(unknown.clone());
                     unknown
@@ -262,9 +279,9 @@ impl GovState {
                 events.push(successor(
                     &previous,
                     desired,
-                    custody
-                        .encode()
-                        .map_err(|error| RecoveryError::Invalid(error.to_string()))?,
+                    custody.encode().map_err(|error| {
+                        crate::governance::rendered_error(RecoveryError::Invalid, error)
+                    })?,
                 )?);
                 Ok(events)
             }
@@ -273,7 +290,12 @@ impl GovState {
     }
 
     fn correction_quarantine_events(&self) -> Vec<RecoveryEvent> {
-        self.selected_recovery_events()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
+        let built = self
+            .selected_recovery_events()
             .into_iter()
             .filter(|event| {
                 event.kind == RecoveryKind::Correction
@@ -287,7 +309,8 @@ impl GovState {
                         _ => false,
                     }
             })
-            .collect()
+            .collect();
+        built
     }
 
     /// Remaining unknown positive exposure from selected correction owners only. No pending
@@ -341,6 +364,7 @@ impl GovState {
             else {
                 continue;
             };
+            // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
             let pending = self
                 .corrections
                 .lock()
@@ -375,7 +399,7 @@ impl GovState {
                     selected.first_sent_at_ms,
                     custody.encode()?,
                 )
-                .map_err(|error| unresolved(&error.to_string()))?;
+                .map_err(unresolved)?;
             if let Some(pending) = pending {
                 *pending
                     .recovery_event
@@ -411,6 +435,7 @@ impl GovState {
     ) -> RecordStoreResult<()> {
         let custody = recovery::Custody::decode(&event.payload)?;
         custody.validate_event(event)?;
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
         if let Some(existing) = self
             .corrections
             .lock()
@@ -471,7 +496,7 @@ impl GovState {
                     .resume_adopted_correction(cost, event.operation_id)
                     .await
                 {
-                    first_error.get_or_insert_with(|| unresolved(&error.to_string()));
+                    first_error.get_or_insert_with(|| unresolved(error));
                 }
             }
         }
@@ -483,7 +508,9 @@ impl GovState {
         cost: &crate::cost::CostModel,
         operation_id: [u8; 16],
     ) -> Result<(), RecoveryError> {
-        let unavailable = |error: RecordStoreError| RecoveryError::Unavailable(error.to_string());
+        let unavailable = |error: RecordStoreError| {
+            crate::governance::rendered_error(RecoveryError::Unavailable, error)
+        };
         self.confirm_pending_recovery(operation_id)
             .await
             .map_err(unavailable)?;
@@ -510,6 +537,7 @@ impl GovState {
                         custody.encode().map_err(unavailable)?,
                     )?;
                     self.keep_recovery_event(&next).await.map_err(unavailable)?;
+                    // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
                     if let Some(pending) = self
                         .corrections
                         .lock()
@@ -543,6 +571,7 @@ impl GovState {
                 } else {
                     Decision::ConditionConflict
                 };
+                // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
                 let pending = self
                     .corrections
                     .lock()
@@ -596,6 +625,7 @@ impl GovState {
         &self,
         operation_id: [u8; 16],
     ) -> RecordStoreResult<()> {
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
         let pending = self
             .corrections
             .lock()
@@ -608,7 +638,7 @@ impl GovState {
         };
         let _running = self
             .hold_foreign_correction_recovery(operation_id)
-            .map_err(|error| unresolved(&error.to_string()))?;
+            .map_err(unresolved)?;
         self.confirm_pending_recovery(operation_id).await?;
         let mut selected = self
             .recovery_event(operation_id)
@@ -627,7 +657,7 @@ impl GovState {
                     selected.first_sent_at_ms,
                     custody.encode()?,
                 )
-                .map_err(|error| unresolved(&error.to_string()))?;
+                .map_err(unresolved)?;
             *pending
                 .recovery_event
                 .lock()
@@ -645,7 +675,9 @@ impl GovState {
     ) -> Result<(), RecoveryError> {
         resolution.validate_quiescence()?;
         self.validate_foreign_correction_verdict(resolution)?;
-        let unavailable = |error: RecordStoreError| RecoveryError::Unavailable(error.to_string());
+        let unavailable = |error: RecordStoreError| {
+            crate::governance::rendered_error(RecoveryError::Unavailable, error)
+        };
         self.confirm_pending_recovery(resolution.operation_id)
             .await
             .map_err(unavailable)?;
@@ -661,6 +693,7 @@ impl GovState {
         }
         let stored = recovery::Custody::decode(&selected.payload).map_err(unavailable)?;
         stored.validate_event(&selected).map_err(unavailable)?;
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
         let pending = self
             .corrections
             .lock()
@@ -801,7 +834,7 @@ impl GovState {
                 previous.first_sent_at_ms,
                 custody.encode()?,
             )
-            .map_err(|error| unresolved(&error.to_string()))?;
+            .map_err(unresolved)?;
         *pending
             .recovery_event
             .lock()
@@ -846,6 +879,10 @@ impl GovState {
                 delta: &intent.delta,
                 now: crate::store::now(),
             };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+            )]
             let delta = intent
                 .delta
                 .iter()
@@ -862,7 +899,7 @@ impl GovState {
             )
             .await?
             .map_err(|refused| {
-                unresolved(&format!(
+                unresolved(format_args!(
                     "fresh conditional correction refused: {refused:?}"
                 ))
             })?;
@@ -890,7 +927,7 @@ impl GovState {
                 latest.first_sent_at_ms,
                 custody.encode()?,
             )
-            .map_err(|error| unresolved(&error.to_string()))?;
+            .map_err(unresolved)?;
         *pending
             .recovery_event
             .lock()
@@ -919,7 +956,7 @@ impl GovState {
                 || child.first_sent_at_ms != descriptor.first_sent_at_ms
                 || child
                     .origin_reference()
-                    .map_err(|error| unresolved(&error.to_string()))?
+                    .map_err(unresolved)?
                     .is_none_or(|origin| origin.operation_id != parent.operation_id)
             {
                 return Err(unresolved(
@@ -988,6 +1025,7 @@ impl GovState {
             .as_ref()
             .filter(|branch| branch.window == window)
             .ok_or_else(|| unresolved("correction handoff has no reserved target"))?;
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
         let pending = self
             .corrections
             .lock()
@@ -1024,7 +1062,7 @@ impl GovState {
                 selected.first_sent_at_ms,
                 custody.encode()?,
             )
-            .map_err(|error| unresolved(&error.to_string()))?;
+            .map_err(unresolved)?;
         *retained = Some(event.clone());
         Ok(event)
     }
@@ -1141,7 +1179,7 @@ impl GovState {
                         selected.first_sent_at_ms,
                         custody.encode()?,
                     )
-                    .map_err(|error| unresolved(&error.to_string()))?;
+                    .map_err(unresolved)?;
                 *pending
                     .recovery_event
                     .lock()
@@ -1287,7 +1325,7 @@ impl GovState {
                     parent.first_sent_at_ms,
                     custody.encode()?,
                 )
-                .map_err(|error| unresolved(&error.to_string()))?;
+                .map_err(unresolved)?;
             *pending
                 .authorization
                 .lock()
@@ -1354,7 +1392,7 @@ impl GovState {
                         Some(pending.sent_at.saturating_mul(1_000)),
                         payload,
                     )
-                    .map_err(|error| unresolved(&error.to_string()))?;
+                    .map_err(unresolved)?;
                 *retained = Some(event.clone());
                 event
             };
@@ -1392,6 +1430,10 @@ impl GovState {
         decision: Decision,
         terminal: Option<&RecoveryEvent>,
     ) -> RecordStoreResult<()> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
         let cuts: BTreeMap<_, _> = terminal
             .map(|event| recovery::Custody::decode(&event.payload)?.selected_cuts())
             .transpose()?
@@ -1399,6 +1441,10 @@ impl GovState {
             .into_iter()
             .map(|(bucket, window, cell)| ((bucket, window), cell))
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
         let mut order: Vec<_> = pending
             .targets
             .iter()
@@ -1406,6 +1452,10 @@ impl GovState {
             .collect();
         order.sort_unstable();
         order.dedup();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
         let mut guards: Vec<_> = order
             .iter()
             .map(|shard| {
@@ -1434,6 +1484,7 @@ impl GovState {
                 return Err(unresolved("reserved raw cell custody missing"));
             }
         }
+        // busbar:expect(bp::fresh_buffer, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
         let mut selected = Vec::new();
         for (bucket, window) in &pending.targets {
             let index = order
@@ -1503,7 +1554,7 @@ impl GovState {
                         previous.first_sent_at_ms,
                         custody.encode()?,
                     )
-                    .map_err(|error| unresolved(&error.to_string()))?;
+                    .map_err(unresolved)?;
                 *retained = Some(event.clone());
                 event
             };
@@ -1513,6 +1564,10 @@ impl GovState {
     }
 
     pub(in crate::governance::state) async fn retry_usage_corrections(&self) -> Vec<String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
         let pending: Vec<_> = self
             .corrections
             .lock()
@@ -1520,6 +1575,7 @@ impl GovState {
             .values()
             .cloned()
             .collect();
+        // busbar:expect(bp::fresh_buffer, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
         let mut errors = Vec::new();
         for pending in pending {
             if pending.quarantined {
@@ -1533,12 +1589,20 @@ impl GovState {
                         .is_some_and(|event| event.state == RecoveryState::LandedUnknown)
                     {
                         if let Err(error) = result {
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+                            )]
                             errors.push(format!("{}: {error}", pending.request.key_id));
                         }
                         continue;
                     }
                 }
                 if let Err(error) = self.confirm_pending_recovery(pending.request.op_id.0).await {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+                    )]
                     errors.push(format!("{}: {error}", pending.request.key_id));
                 }
                 continue;
@@ -1547,6 +1611,10 @@ impl GovState {
                 continue;
             }
             if let Err(error) = self.decide_usage_correction(&pending).await {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+                )]
                 errors.push(format!("{}: {error}", pending.request.key_id));
             }
         }
@@ -1600,7 +1668,10 @@ impl GovState {
                     Ok(value) => value,
                     Err(error) => {
                         return Ok(Err(AdjustRefused::Preparation {
-                            reason: error.to_string(),
+                            reason: crate::governance::rendered_error(
+                                std::convert::identity,
+                                error,
+                            ),
                         }));
                     }
                 }
@@ -1616,6 +1687,10 @@ impl GovState {
             }
             let mut owners: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
             let epoch = adj.card_epoch_ms / 1_000;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+            )]
             let mut targets: Vec<(String, u64)> = match cost.chain_for(&key) {
                 Ok(chain) => chain
                     .iter()
@@ -1635,7 +1710,7 @@ impl GovState {
                     budget_window(super::super::super::WINDOW_TOTAL, epoch),
                 )],
             };
-            targets.sort();
+            targets.sort_unstable();
             targets.dedup();
             let mut snapshots = BTreeMap::new();
             for (bucket, window) in &targets {
@@ -1651,6 +1726,10 @@ impl GovState {
                 prepare!(correction::canonical_ledger(&mut row));
                 snapshots.insert(address(bucket, day), row);
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+            )]
             let mut metering: Vec<_> =
                 prepare!(self.core_store()?.ledger().list_metering(day).await)
                     .into_iter()
@@ -1681,6 +1760,10 @@ impl GovState {
             ) {
                 return Ok(Err(refused));
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+            )]
             let mut order: Vec<_> = targets
                 .iter()
                 .map(|(bucket, _)| self.budget.shard_index(bucket))
@@ -1688,6 +1771,10 @@ impl GovState {
             order.sort_unstable();
             order.dedup();
             let pending = {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+                )]
                 let mut guards: Vec<_> = order
                     .iter()
                     .map(|shard| {
@@ -1701,7 +1788,9 @@ impl GovState {
                         )
                     })
                     .collect();
+                // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
                 let mut replacements = snapshots.clone();
+                // busbar:expect(bp::fresh_buffer, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
                 let mut branches = Vec::new();
                 for (bucket, window) in &targets {
                     let index = order
@@ -1737,6 +1826,10 @@ impl GovState {
                         segment_at(&target.models, adj.model, adj.card_epoch_ms)
                     };
                     if segment.is_none() && delta.values().any(|count| *count < Count::ZERO) {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+                        )]
                         return Ok(Err(AdjustRefused::Unplaced {
                             bucket: bucket.clone(),
                             window: *window,
@@ -1790,7 +1883,15 @@ impl GovState {
                         accepted
                     } else {
                         let mut accepted = before.clone();
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+                        )]
                         accepted.rolled.retain(|(at, _)| at != window);
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+                        )]
                         accepted.rolled_eras.retain(|(at, _)| at != window);
                         accepted
                     };
@@ -1820,6 +1921,10 @@ impl GovState {
                             .ok_or("adjustment magnitude overflow")),
                     ));
                 }
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+                )]
                 let request = Request {
                     version: correction::VERSION,
                     op_id: crate::door::op_id(),
@@ -1853,6 +1958,11 @@ impl GovState {
                     }));
                     guards[index].1.insert(bucket, before);
                 }
+                // busbar:expect(bp::clock_repeat, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+                )]
                 let pending = PendingCorrection {
                     request,
                     intent: Intent::of(adj, action_id),
@@ -1938,6 +2048,10 @@ fn check_metered(
     down: &UsageLedger,
     era: RawRateEra,
 ) -> Result<(), AdjustRefused> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+    )]
     let lane: Vec<_> = metering
         .iter()
         .filter(|row| metering_lane(&row.model, &row.provider) == adj.model)
@@ -1953,6 +2067,10 @@ fn check_metered(
             in_force,
         });
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+    )]
     let rows: Vec<_> = lane
         .into_iter()
         .filter(|row| {
@@ -1984,6 +2102,10 @@ fn check_metered(
             .and_then(|n| n.checked_add(adjusted(up)?).ok())
             .and_then(|n| n.checked_sub(adjusted(down)?).ok());
         let Some(count) = count else {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+            )]
             return Err(AdjustRefused::Exceeds {
                 bucket: format!("metering@{day}"),
                 class: (*class).into(),
@@ -1992,6 +2114,10 @@ fn check_metered(
             });
         };
         if moved(count, *change).is_none() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+            )]
             return Err(AdjustRefused::Exceeds {
                 bucket: format!("metering@{day}"),
                 class: (*class).into(),
@@ -2004,11 +2130,11 @@ fn check_metered(
 }
 
 fn copy_custody(from: &BudgetCell, to: &mut BudgetCell) {
-    to.group_owners = from.group_owners.clone();
+    to.group_owners.clone_from(&from.group_owners);
     to.flushing = from.flushing;
-    to.flushing_windows = from.flushing_windows.clone();
-    to.rolled = from.rolled.clone();
-    to.rolled_eras = from.rolled_eras.clone();
+    to.flushing_windows.clone_from(&from.flushing_windows);
+    to.rolled.clone_from(&from.rolled);
+    to.rolled_eras.clone_from(&from.rolled_eras);
     to.last_touch = from.last_touch;
 }
 fn has_debt(cell: &BudgetCell) -> bool {
@@ -2059,13 +2185,17 @@ fn capture_target(
                 ))?;
             }
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
         let fees: BTreeMap<_, _> = local.fee_eras.dated().iter().copied().collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
         let flushed: BTreeMap<_, _> = local.flushed_fee_eras.dated().iter().copied().collect();
-        for era in fees
-            .keys()
-            .chain(flushed.keys())
-            .collect::<std::collections::BTreeSet<_>>()
-        {
+        for era in crate::governance::sorted_union(fees.keys(), flushed.keys()) {
             let difference = i128::from(fees.get(era).copied().unwrap_or(0))
                 - i128::from(flushed.get(era).copied().unwrap_or(0));
             exact(move_unit(
@@ -2086,6 +2216,7 @@ fn capture_target(
                 .models
                 .iter()
                 .find(|base| base.model == model.model && base.era == model.era);
+            // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
             model.flushed = base.map(|base| base.cur.clone()).unwrap_or_default();
             model.flushed_era = model.flushed.clone();
         }
@@ -2096,6 +2227,7 @@ fn capture_target(
                 .iter()
                 .any(|model| model.model == base.model && model.era == base.era)
             {
+                // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
                 before.models.push(ModelCell {
                     model: base.model,
                     era: base.era,
@@ -2146,11 +2278,7 @@ fn add_units_difference(
     current: &BTreeMap<String, Count>,
     flushed: &BTreeMap<String, Count>,
 ) -> Result<(), &'static str> {
-    for unit in current
-        .keys()
-        .chain(flushed.keys())
-        .collect::<std::collections::BTreeSet<_>>()
-    {
+    for unit in crate::governance::sorted_union(current.keys(), flushed.keys()) {
         move_unit(
             row,
             model,
@@ -2182,6 +2310,10 @@ fn move_unit(
     // Normalize the entire touched model once; every unit in a row shares its scale.
     if let Some(position) = position {
         let model = &mut row.models[position];
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction, run once per correction step (control plane)"
+        )]
         let normalized = model
             .usage_units
             .iter()
@@ -2214,6 +2346,7 @@ fn move_unit(
             row.models[position].usage_units.insert(unit.into(), next);
         }
     } else if next != 0 {
+        // busbar:expect(bp::into_alloc, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
         row.models.push(ModelTokens {
             model: model.into(),
             scale: COUNT_SCALE,

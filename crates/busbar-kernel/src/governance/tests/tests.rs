@@ -5506,7 +5506,7 @@ async fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second(
     };
     gov.record_metered_request_dated("vk_dated", "", "m", "p", add, T0 / 1_000, &clock, &dater);
 
-    let drained = gov.pending_metering.drain();
+    let drained: Vec<_> = gov.pending_metering.drain().collect();
     assert_eq!(drained.len(), 1, "one response, one cell");
     assert_eq!(
         drained[0].0 .4,
