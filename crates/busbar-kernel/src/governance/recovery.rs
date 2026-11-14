@@ -494,6 +494,14 @@ impl RecoveryBook {
         let runner = {
             let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
             let entry = entries.entry(event.operation_id).or_default();
+            // Already selected with nothing pending: re-persisting would only
+            // re-read the head and replay history to prove a selection this
+            // book already holds. Every later write (a child selection, a
+            // successor) still runs its own guarded `persist`, so a takeover
+            // fails closed there.
+            if entry.selected.as_ref() == Some(event) && entry.pending.is_none() {
+                return Ok(());
+            }
             if entry.selected.as_ref() != Some(event) {
                 event.follows(entry.selected.as_ref())?;
                 if let Some(pending) = &entry.pending {
