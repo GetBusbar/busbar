@@ -6,6 +6,15 @@
 
 pub use busbar_contract::secret_ref::SecretRef;
 
+/// The marker every blank-secret refusal carries, so a caller can keep its own operator text.
+pub(crate) const BLANK_MARKER: &str = "(BLANK)";
+
+/// A value with no content: empty, or valid UTF-8 that is only (Unicode) whitespace. Bytes that
+/// are not UTF-8 (a raw binary key) are never blank.
+fn is_blank(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|s| s.trim().is_empty())
+}
+
 /// Cheap to clone: a clone shares the one plugin resolver (and the instances it opened), so a
 /// re-lend poll re-resolves through exactly what the build resolved through.
 #[derive(Clone)]
