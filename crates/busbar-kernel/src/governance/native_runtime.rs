@@ -37,7 +37,7 @@ impl GovState {
         let observed = self.observation_total_async(bucket_id, window).await?;
         if observed.spent_nanos != 0 || !observed.units.is_empty() {
             return self
-                .price_observed_cell(cost, include_request_fee, cell, observed)?
+                .price_observed_cell(cost, include_request_fee, cell, &observed)?
                 .map_err(|error| money_refusal(bucket_id, &error));
         }
         let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
@@ -89,9 +89,19 @@ impl GovState {
             return Err(RecordStoreError("lane count total overflow".into()));
         }
         let observed = self.observation_total_async(bucket_id, window).await?;
-        let mut by_lane: BTreeMap<String, BTreeMap<String, Count>> = by_lane.into_iter().collect();
+        // Lane names are unique in `by_lane`: order it by name (the answer's order) and merge the
+        // observed lanes in place rather than rebuilding it through a map.
+        let mut by_lane = by_lane;
+        by_lane.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
         for (lane, units) in observed.units {
-            let counts = by_lane.entry(lane).or_default();
+            let at = match by_lane.binary_search_by(|(name, _)| name.as_str().cmp(&lane)) {
+                Ok(at) => at,
+                Err(at) => {
+                    by_lane.insert(at, (lane, BTreeMap::new()));
+                    at
+                }
+            };
+            let counts = &mut by_lane[at].1;
             for (class, count) in units {
                 let entry = counts.entry(class).or_default();
                 *entry = entry
@@ -99,7 +109,7 @@ impl GovState {
                     .map_err(|_| RecordStoreError("observation lane count overflow".into()))?;
             }
         }
-        Ok(by_lane.into_iter().collect())
+        Ok(by_lane)
     }
 
     pub async fn derived_bucket_usage_async(
@@ -132,7 +142,7 @@ impl GovState {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
         let observed = self.observation_total_async(bucket_id, window).await?;
-        self.price_observed_cell(cost, include_request_fee, cell, observed)
+        self.price_observed_cell(cost, include_request_fee, cell, &observed)
     }
 
     pub(super) async fn observation_total_async(
@@ -144,19 +154,14 @@ impl GovState {
         if !ObservationStore::supports(&self.core) {
             return Ok(BudgetTotal::default());
         }
-        let store = ObservationStore::open(self.core.clone())
-            .map_err(|e| RecordStoreError(e.to_string()))?;
-        if !store
-            .has_accounting()
-            .await
-            .map_err(|e| RecordStoreError(e.to_string()))?
-        {
+        let store = ObservationStore::open(self.core.clone()).map_err(|e| store_error(&e))?;
+        if !store.has_accounting().await.map_err(|e| store_error(&e))? {
             return Ok(BudgetTotal::default());
         }
         let total = store
             .budget(&crate::plane_driver::observation_budget_id(bucket, window))
             .await
-            .map_err(|e| RecordStoreError(e.to_string()))?;
+            .map_err(|e| store_error(&e))?;
         self.cache_observation_total(bucket, window, total.clone());
         Ok(total)
     }
@@ -166,7 +171,7 @@ impl GovState {
         cost: &crate::cost::CostModel,
         include_request_fee: bool,
         cell: BudgetCell,
-        observed: crate::persistence::observations::BudgetTotal,
+        observed: &crate::persistence::observations::BudgetTotal,
     ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
         if observed.spent_nanos == 0 && observed.units.is_empty() {
             return self.price_cell(cost, include_request_fee, cell);
@@ -233,4 +238,14 @@ impl GovState {
             .await?;
         durable_cell(row, eras, window)
     }
+}
+
+/// A failed observation read, rendered once on the error path.
+fn store_error(error: &dyn std::fmt::Display) -> RecordStoreError {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failed observation read renders its message once"
+    )]
+    let message = error.to_string();
+    RecordStoreError(message)
 }

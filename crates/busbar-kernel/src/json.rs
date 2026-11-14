@@ -27,12 +27,17 @@ pub fn to_vec<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, sonic_rs::Error
 
 #[inline]
 pub fn to_string<T: serde::Serialize>(value: &T) -> Result<String, sonic_rs::Error> {
-    sonic_rs::to_vec(value).map(|v| String::from_utf8_lossy(&v).into_owned())
+    sonic_rs::to_string(value)
 }
 
 #[inline]
 pub fn parse_err_log(bytes_len: usize) -> String {
-    format!("invalid JSON ({bytes_len} bytes)")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: an unparseable body renders its log line once"
+    )]
+    let line = format!("invalid JSON ({bytes_len} bytes)");
+    line
 }
 
 #[cfg(test)]

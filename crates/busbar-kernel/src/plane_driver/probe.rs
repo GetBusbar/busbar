@@ -121,8 +121,11 @@ impl ProbeTarget for PlaneProbes {
         else {
             return;
         };
-        self.driver
-            .probe(&self.kernel, self.keys.mint(), &far, timeout)
-            .await;
+        // The probe future is large; keep it on the heap so the probe target stays small.
+        Box::pin(
+            self.driver
+                .probe(&self.kernel, self.keys.mint(), &far, timeout),
+        )
+        .await;
     }
 }

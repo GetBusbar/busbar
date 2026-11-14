@@ -58,7 +58,7 @@ async fn faulty_sync(now: u64) -> (Arc<ReadFault>, Arc<RevocationSync>) {
     let core = crate::real_store::core_over(backend.clone()).await;
     let rev = RevocationSync::native(
         core,
-        HashSet::new(),
+        HashSet::default(),
         now,
         Arc::new(RwLock::new(crate::governance::GovCaches {
             by_id: Default::default(),
@@ -132,7 +132,7 @@ async fn a_successful_read_unions_and_closes_the_window() {
         .unwrap();
     let rev = RevocationSync::native(
         core,
-        HashSet::from(["vk_local".into()]),
+        HashSet::from_iter(["vk_local".into()]),
         0,
         Arc::new(RwLock::new(crate::governance::GovCaches {
             by_id: Default::default(),

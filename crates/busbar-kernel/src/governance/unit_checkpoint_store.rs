@@ -37,7 +37,12 @@ fn checkpoint_tag(snapshot: &UnitCheckpoint) -> &'static str {
     }
 }
 fn error(e: impl std::fmt::Debug) -> RecordStoreError {
-    RecordStoreError(format!("unit checkpoint: {e:?}"))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failed checkpoint operation renders its message once"
+    )]
+    let message = format!("unit checkpoint: {e:?}");
+    RecordStoreError(message)
 }
 fn refusal(message: &str) -> RecordStoreError {
     RecordStoreError(message.into())
@@ -634,7 +639,12 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
             .await
             .map_err(error)?;
         self.no_foreign_pending()?;
-        Ok(out.into_values().collect())
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: checkpoints are replayed once, when the sink is attached"
+        )]
+        let replayed = out.into_values().collect();
+        Ok(replayed)
     }
     async fn recover_audit(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
         if snapshot.measurement.is_some() {

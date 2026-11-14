@@ -350,7 +350,6 @@ pub mod host_outbound;
     )
 )]
 pub mod host_records;
-#[allow(dead_code)]
 // busbar:request-path
 #[cfg_attr(
     not(test),

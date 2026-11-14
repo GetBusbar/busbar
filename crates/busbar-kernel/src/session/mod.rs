@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+use foldhash::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// The neutral session identity — a stable hash of the request's session key (e.g. the `x-session-id`

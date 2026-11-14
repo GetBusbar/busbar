@@ -1709,7 +1709,7 @@ pub fn resolve(
                 }
             }
             if m.tier.is_none() {
-                m.tier = pool.tier.clone();
+                m.tier.clone_from(&pool.tier);
             }
             if m.attempt_timeout_ms.is_none() {
                 m.attempt_timeout_ms = pool.attempt_timeout_ms;

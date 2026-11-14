@@ -326,7 +326,7 @@ pub(super) fn validate_with_plugins(
 
         if member_protocols.len() > 1 {
             let mut protocols: Vec<&str> = member_protocols.iter().copied().collect();
-            protocols.sort();
+            protocols.sort_unstable();
             diag_warn!(
                 CONFIG_POOL_HETEROGENEOUS,
                 pool = %pool_name,

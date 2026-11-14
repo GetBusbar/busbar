@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use busbar_contract::caps::{
     Admittance, CallId, Grant, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId,
@@ -20,6 +20,53 @@ use crate::Millis;
 pub use busbar_contract::MAX_SESSION_UPSTREAMS;
 
 pub const SHARDS: usize = 16;
+
+type Shards<K, T> = [Mutex<HashMap<K, Arc<T>>>; SHARDS];
+
+fn new_shards<K, T>() -> Shards<K, T> {
+    std::array::from_fn(|_| Mutex::new(HashMap::default()))
+}
+
+/// A point-in-time view of a sharded table, gathered into the table's own reused buffer.
+///
+/// The buffer stays locked while the view lives and is emptied, keeping its capacity, when the
+/// view drops; iterating hands each slot out of the buffer.
+#[derive(Debug)]
+pub struct Snapshot<'a, T> {
+    buf: MutexGuard<'a, Vec<Arc<T>>>,
+}
+
+impl<T> Iterator for Snapshot<'_, T> {
+    type Item = Arc<T>;
+
+    fn next(&mut self) -> Option<Arc<T>> {
+        self.buf.pop()
+    }
+}
+
+impl<T> std::ops::Deref for Snapshot<'_, T> {
+    type Target = [Arc<T>];
+
+    fn deref(&self) -> &[Arc<T>] {
+        &self.buf
+    }
+}
+
+impl<T> Drop for Snapshot<'_, T> {
+    fn drop(&mut self) {
+        self.buf.clear();
+    }
+}
+
+fn gather<'a, K, T>(shards: &Shards<K, T>, scratch: &'a Mutex<Vec<Arc<T>>>) -> Snapshot<'a, T> {
+    let mut buf = scratch.lock().unwrap_or_else(|e| e.into_inner());
+    buf.clear();
+    for shard in shards {
+        let guard = shard.lock().unwrap_or_else(|e| e.into_inner());
+        buf.extend(guard.values().map(Arc::clone));
+    }
+    Snapshot { buf }
+}
 
 /// The step a unit has reached, or the fact that something took its place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,7 +334,9 @@ pub struct Enter {
 /// The node's live units.
 #[derive(Debug)]
 pub struct InFlight {
-    shards: Vec<Mutex<HashMap<UnitKey, Arc<UnitSlot>>>>,
+    shards: Shards<UnitKey, UnitSlot>,
+    /// The sweep's reused snapshot buffer.
+    scratch: Mutex<Vec<Arc<UnitSlot>>>,
     /// The units holding a counted slot: what the cap is measured against.
     count: AtomicUsize,
     /// The exempt units (administrative listener, heartbeat and sweep): live, never counted.
@@ -298,7 +347,8 @@ pub struct InFlight {
 impl InFlight {
     pub fn new(cap: usize) -> Self {
         InFlight {
-            shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
+            shards: new_shards(),
+            scratch: Mutex::new(Vec::new()),
             count: AtomicUsize::new(0),
             exempt: AtomicUsize::new(0),
             cap,
@@ -328,9 +378,6 @@ impl InFlight {
         }
     }
 
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
     fn claim_slot(&self, ceiling: Option<usize>) -> bool {
         match ceiling {
             None => {
@@ -339,7 +386,7 @@ impl InFlight {
             }
             Some(ceiling) => self
                 .count
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                     (n < ceiling).then_some(n + 1)
                 })
                 .is_ok(),
@@ -407,13 +454,8 @@ impl InFlight {
         removed
     }
 
-    pub fn snapshot(&self) -> Vec<Arc<UnitSlot>> {
-        let mut all = Vec::new();
-        for shard in &self.shards {
-            let guard = shard.lock().unwrap_or_else(|e| e.into_inner());
-            all.extend(guard.values().map(Arc::clone));
-        }
-        all
+    pub fn snapshot(&self) -> Snapshot<'_, UnitSlot> {
+        gather(&self.shards, &self.scratch)
     }
 
     fn shard(&self, key: UnitKey) -> &Mutex<HashMap<UnitKey, Arc<UnitSlot>>> {
@@ -467,12 +509,9 @@ impl SessionSlot {
             .copied()
     }
 
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
     pub fn add_upstream(&self) -> Result<usize, ReasonCode> {
         self.upstreams
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < MAX_SESSION_UPSTREAMS).then_some(n + 1)
             })
             .map_err(|_| ReasonCode::SessionBudget)
@@ -498,7 +537,9 @@ impl SessionSlot {
 /// Every live session on this node.
 #[derive(Debug)]
 pub struct Sessions {
-    shards: Vec<Mutex<HashMap<SessionId, Arc<SessionSlot>>>>,
+    shards: Shards<SessionId, SessionSlot>,
+    /// The reused snapshot buffer.
+    scratch: Mutex<Vec<Arc<SessionSlot>>>,
     count: AtomicUsize,
     budget: usize,
 }
@@ -506,7 +547,8 @@ pub struct Sessions {
 impl Sessions {
     pub fn new(budget: usize) -> Self {
         Sessions {
-            shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
+            shards: new_shards(),
+            scratch: Mutex::new(Vec::new()),
             count: AtomicUsize::new(0),
             budget,
         }
@@ -520,9 +562,6 @@ impl Sessions {
         self.len() == 0
     }
 
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
     pub fn open(
         &self,
         id: SessionId,
@@ -531,7 +570,7 @@ impl Sessions {
     ) -> Result<Arc<SessionSlot>, ReasonCode> {
         if self
             .count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < self.budget).then_some(n + 1)
             })
             .is_err()
@@ -542,7 +581,7 @@ impl Sessions {
             id,
             binding,
             principal: Mutex::new(None),
-            open: Mutex::new(HashMap::new()),
+            open: Mutex::new(HashMap::default()),
             upstreams: AtomicUsize::new(0),
             last_non_tick: AtomicU64::new(now),
             closed: AtomicBool::new(false),
@@ -579,13 +618,8 @@ impl Sessions {
         removed
     }
 
-    pub fn snapshot(&self) -> Vec<Arc<SessionSlot>> {
-        let mut all = Vec::new();
-        for shard in &self.shards {
-            let guard = shard.lock().unwrap_or_else(|e| e.into_inner());
-            all.extend(guard.values().map(Arc::clone));
-        }
-        all
+    pub fn snapshot(&self) -> Snapshot<'_, SessionSlot> {
+        gather(&self.shards, &self.scratch)
     }
 
     fn shard(&self, id: SessionId) -> &Mutex<HashMap<SessionId, Arc<SessionSlot>>> {

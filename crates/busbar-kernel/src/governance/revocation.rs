@@ -7,7 +7,7 @@
 //! Attempt and success clocks remain separate, including during wall-clock rewind.
 
 use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING};
-use std::collections::HashSet;
+use foldhash::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -56,6 +56,11 @@ impl RevocationSync {
         caches: Arc<RwLock<super::GovCaches>>,
         order: Arc<super::CacheOrder>,
     ) -> Arc<Self> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the refresh clock's origin is read once, when the identity cache is built"
+        )]
+        let clock = Instant::now();
         Arc::new(Self {
             native: NativeRefresh {
                 core,
@@ -64,7 +69,7 @@ impl RevocationSync {
             },
             set: RwLock::new(initial),
             synced_at: AtomicU64::new(now),
-            clock: Instant::now(),
+            clock,
             synced_tick: AtomicU64::new(0),
             attempted: Mutex::new(Attempt { wall: now, tick: 0 }),
             inflight: AtomicBool::new(false),
@@ -79,13 +84,15 @@ impl RevocationSync {
     }
 
     pub(crate) fn insert(&self, sub: &str) {
-        self.set
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(sub.to_string());
+        let mut set = self.set.write().unwrap_or_else(|e| e.into_inner());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a revocation is recorded once, when a key or subject is revoked"
+        )]
+        set.insert(sub.to_string());
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn synced_at(&self) -> u64 {
         self.synced_at.load(Ordering::Relaxed)
     }

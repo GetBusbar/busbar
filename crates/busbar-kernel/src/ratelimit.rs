@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 pub const MUTATION_RATE_WINDOW_SECS: u64 = 60;
 
@@ -124,7 +124,7 @@ impl MutationLimiter {
             state: std::sync::Mutex::new(LimiterState {
                 latest_window: 0,
                 behind_since: None,
-                windows: HashMap::new(),
+                windows: HashMap::default(),
             }),
         }
     }
@@ -137,6 +137,10 @@ impl MutationLimiter {
             if now - since >= MUTATION_RATE_WINDOW_SECS {
                 state.latest_window = arrived_in;
                 state.behind_since = None;
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the limiter guards admin config mutations; a clock rewind re-bases it"
+                )]
                 state.windows.retain(|_, (w, _, _)| *w <= arrived_in);
             } else {
                 state.behind_since = Some(since);
@@ -149,7 +153,15 @@ impl MutationLimiter {
         state.latest_window = window;
         let map = &mut state.windows;
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the limiter guards admin config mutations, never the request path"
+        )]
         map.retain(|_, (w, _, _)| *w >= window);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the limiter guards admin config mutations, never the request path"
+        )]
         let entry = map
             .entry((principal.to_string(), class))
             .or_insert((window, 0, 0));

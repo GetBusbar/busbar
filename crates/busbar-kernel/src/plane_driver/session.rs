@@ -9,6 +9,7 @@ use busbar_contract::abi::plane::{
     FROM_CALLER, FROM_KERNEL, PIECE_LAST, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL,
 };
 use busbar_contract::caps::{Pass, ReasonCode, Route, VerifiedDestination};
+use foldhash::HashMap;
 use tokio::sync::{mpsc, watch, Notify};
 
 use super::{
@@ -122,21 +123,23 @@ enum Next {
     Caller(Option<SessionInput>),
 }
 
-fn wake_ready(sessions: &Mutex<std::collections::HashMap<u64, Arc<Notify>>>, ready: &[u64]) {
-    let told: Vec<_> = {
-        let open = sessions.lock().unwrap_or_else(PoisonError::into_inner);
-        ready
-            .iter()
-            .filter_map(|stream| open.get(stream).cloned())
-            .collect()
-    };
-    for told in told {
-        told.notify_one();
+fn wake_ready(sessions: &Mutex<HashMap<u64, Arc<Notify>>>, ready: &[u64]) {
+    // Each stream's notifier is taken out under the lock and told after it is released: a wake may
+    // re-enter the session table.
+    for stream in ready {
+        let told = sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(stream)
+            .cloned();
+        if let Some(told) = told {
+            told.notify_one();
+        }
     }
 }
 
 impl PlaneDriver {
-    fn lock_sessions(&self) -> MutexGuard<'_, std::collections::HashMap<u64, Arc<Notify>>> {
+    fn lock_sessions(&self) -> MutexGuard<'_, HashMap<u64, Arc<Notify>>> {
         self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
