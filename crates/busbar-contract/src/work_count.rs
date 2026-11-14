@@ -25,6 +25,8 @@ pub enum Work {
     Crossing,
     /// One request submitted to the store plugin and answered.
     StoreRoundTrip,
+    /// One clock read by a connector drive (its lazy `now`: at most one per drive).
+    ClockRead,
 }
 
 #[cfg(feature = "test-support")]
@@ -42,6 +44,7 @@ pub fn tally(work: Work) {
         let counter = match work {
             Work::Crossing => &CROSSINGS,
             Work::StoreRoundTrip => &STORE_ROUND_TRIPS,
+            Work::ClockRead => &CLOCK_READS,
         };
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -59,6 +62,8 @@ pub struct Tally {
     pub crossings: u64,
     /// Store requests submitted and answered.
     pub store_round_trips: u64,
+    /// Clock reads by connector drives.
+    pub clock_reads: u64,
 }
 
 #[cfg(feature = "test-support")]
@@ -69,6 +74,7 @@ impl Tally {
             allocations: ALLOCATIONS.load(Ordering::Relaxed),
             crossings: CROSSINGS.load(Ordering::Relaxed),
             store_round_trips: STORE_ROUND_TRIPS.load(Ordering::Relaxed),
+            clock_reads: CLOCK_READS.load(Ordering::Relaxed),
         }
     }
 
@@ -80,6 +86,7 @@ impl Tally {
             store_round_trips: self
                 .store_round_trips
                 .wrapping_sub(earlier.store_round_trips),
+            clock_reads: self.clock_reads.wrapping_sub(earlier.clock_reads),
         }
     }
 }
