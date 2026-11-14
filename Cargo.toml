@@ -146,7 +146,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(linked_section_pools)", "c
 
 # Fleet bad-pattern rules: the list is in clippy.toml (a byte-identical copy of GetBusbar/busbar-release
 # template/clippy.toml's block). It is raised to deny only inside module trees that carry the
-# request-path marker; everywhere else these three stay off.
+# request-path marker; everywhere else these three stay off. The crate-wide rows
+# (clippy-crate-wide/clippy.toml) run in a second clippy pass that raises these three on the command
+# line, which outranks this table.
 [workspace.lints.clippy]
 disallowed_macros = "allow"
 disallowed_methods = "allow"
