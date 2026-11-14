@@ -593,6 +593,14 @@ pub(crate) fn validate_config_command() -> i32 {
             return EXIT_FAILURE;
         }
     };
+    // Validation runs before any log subscriber exists, so the unpriced-class advisory boot logs
+    // would be lost; a valid config still reports it.
+    for advisory in config_validate::rate_card_advisories(&cfg) {
+        eprintln!(
+            "[warn] {}: {advisory}",
+            diagnostics::CONFIG_RATE_CARD_MISSING.banner()
+        );
+    }
     println!(
         "ok: config valid — {} provider(s), {} model(s), {} pool(s)\n  config:    {}\n  providers: {}",
         cfg.providers.len(),
