@@ -140,6 +140,20 @@ pub fn hammer_git_sha() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// One file-name-safe stem component: [A-Za-z0-9._-] only, at most `max` chars.
+pub fn stem_part(s: &str, max: usize) -> String {
+    s.chars()
+        .take(max)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 fn f(v: f64) -> String {
     if v == 0.0 {
         "-".into()
