@@ -401,11 +401,173 @@ fn base_owned(kind: &str, name: &str) -> AdminError {
 }
 
 fn json_body<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<T, Box<Response>> {
-    serde_json::from_slice(body).map_err(|_| {
+    serde_json::from_slice(body).map_err(|e| {
         Box::new(err_json(&AdminError::Validation(format!(
-            "malformed {what} body"
+            "malformed {what} body: {}",
+            describe_body_error(&e)
         ))))
     })
+}
+
+/// What replaces a value excerpt serde quoted from the request body.
+const VALUES_NOT_ECHOED: &str = "(values not echoed)";
+/// What replaces a caller-typed key name longer than [`ECHOED_NAME_MAX`].
+const NAME_NOT_ECHOED: &str = "(name over 64 bytes, not echoed)";
+/// The longest caller-typed key name a refusal echoes, in bytes.
+const ECHOED_NAME_MAX: usize = 64;
+
+/// `Unexpected` renderings that carry no value and are kept verbatim.
+const VALUE_FREE_UNEXPECTED: &[&str] = &[
+    "sequence",
+    "map",
+    "unit value",
+    "null",
+    "Option value",
+    "newtype struct",
+    "enum",
+    "unit variant",
+    "newtype variant",
+    "tuple variant",
+    "struct variant",
+    "byte array",
+];
+
+/// `Unexpected` renderings that carry a value after their kind word; only the kind word is kept.
+const VALUE_KINDS: &[&str] = &[
+    "string",
+    "integer",
+    "floating point",
+    "boolean",
+    "character",
+];
+
+/// Renders a body decode error for an admin refusal: serde's structure (missing/unknown/duplicate
+/// field, expected type or list, line and column) is kept; value excerpts serde quotes from the
+/// input are replaced with `(values not echoed)`, at the head or behind an authored `<path>: `
+/// prefix. Caller-typed key names over 64 bytes are not echoed. Authored custom text passes as
+/// written.
+pub(super) fn describe_body_error(e: &serde_json::Error) -> String {
+    let text = e.to_string();
+    if e.classify() != serde_json::error::Category::Data {
+        // Syntax and EOF messages are fixed strings with a position; none quotes input.
+        return text;
+    }
+    let suffix = if e.line() != 0 {
+        format!(" at line {} column {}", e.line(), e.column())
+    } else {
+        String::new()
+    };
+    let message = text.strip_suffix(suffix.as_str()).unwrap_or(&text);
+    let mut out = render_data_message(message);
+    if message.len() != text.len() {
+        out.push_str(&suffix);
+    }
+    out
+}
+
+/// Renders a `Data` message without its position suffix (see [`describe_body_error`]).
+fn render_data_message(message: &str) -> String {
+    if let Some(head) = render_key_name_head(message) {
+        return head;
+    }
+    // Every segment start: offset 0, or the byte after an authored `": "`.
+    let starts = std::iter::once(0).chain(message.match_indices(": ").map(|(i, _)| i + 2));
+    for start in starts {
+        if let Some(rendered) = render_value_form(&message[start..]) {
+            return format!("{}{rendered}", &message[..start]);
+        }
+    }
+    // `missing field`, `invalid length` and authored custom text are kept verbatim.
+    message.to_string()
+}
+
+/// The key-name forms, recognised only at the head: a caller-typed key name is echoed only when it
+/// is at most [`ECHOED_NAME_MAX`] bytes. `None` when the head is not one of these forms.
+fn render_key_name_head(message: &str) -> Option<String> {
+    let capped = |name: &str, quoted: String| {
+        if name.len() <= ECHOED_NAME_MAX {
+            quoted
+        } else {
+            NAME_NOT_ECHOED.to_string()
+        }
+    };
+    if let Some(rest) = message.strip_prefix("unknown field `") {
+        let split = rest
+            .strip_suffix("`, there are no fields")
+            .map(|name| name.len())
+            .or_else(|| rest.rfind("`, expected "))?;
+        let (name, tail) = rest.split_at(split);
+        let tail = &tail[1..];
+        return Some(format!(
+            "unknown field {}{tail}",
+            capped(name, format!("`{name}`"))
+        ));
+    }
+    if let Some(name) = message
+        .strip_prefix("duplicate field `")
+        .and_then(|rest| rest.strip_suffix('`'))
+    {
+        return Some(format!(
+            "duplicate field {}",
+            capped(name, format!("`{name}`"))
+        ));
+    }
+    if let Some(name) = message
+        .strip_prefix("duplicate entry with key \"")
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        return Some(format!(
+            "duplicate entry with key {}",
+            capped(name, format!("\"{name}\""))
+        ));
+    }
+    None
+}
+
+/// The value-bearing forms, recognised at any segment start. `None` when `segment` does not start
+/// with one of them.
+fn render_value_form(segment: &str) -> Option<String> {
+    for marker in ["invalid type: ", "invalid value: "] {
+        if let Some(rest) = segment.strip_prefix(marker) {
+            let Some(split) = rest.rfind(", expected ") else {
+                return Some(format!("{marker}{VALUES_NOT_ECHOED}"));
+            };
+            let (unexpected, tail) = rest.split_at(split);
+            return Some(format!("{marker}{}{tail}", render_unexpected(unexpected)));
+        }
+    }
+    if let Some(rest) = segment.strip_prefix("unknown variant ") {
+        let split = [
+            rest.rfind("`, expected "),
+            rest.rfind("`, there are no variants"),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        let Some(split) = split else {
+            return Some(format!("unknown variant {VALUES_NOT_ECHOED}"));
+        };
+        let tail = &rest[split + 1..];
+        return Some(format!("unknown variant {VALUES_NOT_ECHOED}{tail}"));
+    }
+    None
+}
+
+/// Renders serde's `Unexpected` text: value-free kinds verbatim, value kinds as the kind word only,
+/// anything else fully redacted.
+fn render_unexpected(unexpected: &str) -> String {
+    if VALUE_FREE_UNEXPECTED.contains(&unexpected) {
+        return unexpected.to_string();
+    }
+    for kind in VALUE_KINDS {
+        if unexpected
+            .strip_prefix(kind)
+            .is_some_and(|rest| rest.starts_with(' '))
+        {
+            return format!("{kind} {VALUES_NOT_ECHOED}");
+        }
+    }
+    VALUES_NOT_ECHOED.to_string()
 }
 
 fn page_window(

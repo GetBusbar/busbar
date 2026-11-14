@@ -12,8 +12,8 @@ use axum::Extension;
 use axum::Router;
 
 use super::{
-    config_transaction, err_json, err_json_cond, if_match_version, respond, stale_if_match,
-    with_config_etag, Outcome,
+    config_transaction, describe_body_error, err_json, err_json_cond, if_match_version, respond,
+    stale_if_match, with_config_etag, Outcome,
 };
 use crate::admin_state::AppAdmin as _;
 use crate::v1::contract::taxonomy::Cond;
@@ -226,8 +226,9 @@ async fn put(
         Err(e) => {
             return err_json_cond(
                 &AdminError::Validation(format!(
-                    "malformed {} definition body: {e}",
-                    section.singular()
+                    "malformed {} definition body: {}",
+                    section.singular(),
+                    describe_body_error(&e)
                 )),
                 Cond::MalformedBody,
             );
@@ -259,7 +260,10 @@ async fn patch_settings(
         Ok(r) => r,
         Err(e) => {
             return err_json_cond(
-                &AdminError::Validation(format!("malformed settings body: {e}")),
+                &AdminError::Validation(format!(
+                    "malformed settings body: {}",
+                    describe_body_error(&e)
+                )),
                 Cond::MalformedBody,
             );
         }
