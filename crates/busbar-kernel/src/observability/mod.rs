@@ -2,23 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(hi), Some(lo)) = (hi, lo) {
-                out.push((hi * 16 + lo) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
+    String::from_utf8(busbar_contract::net::percent_decoded_bytes(s))
+        .unwrap_or_else(|_| s.to_owned())
 }
 
 pub const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;

@@ -221,15 +221,7 @@ fn unencodable_login_redirect() -> oauth_as::http::Response {
 }
 
 fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
+    percent_encoding::utf8_percent_encode(s, busbar_contract::net::UNRESERVED_KEPT).to_string()
 }
 
 #[cfg(test)]

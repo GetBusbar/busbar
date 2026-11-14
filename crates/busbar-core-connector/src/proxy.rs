@@ -77,9 +77,9 @@ pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
         use base64::Engine;
 
         let creds = [
-            percent_decoded(parsed.username()),
+            busbar_contract::net::percent_decoded_bytes(parsed.username()),
             b":".to_vec(),
-            percent_decoded(parsed.password().unwrap_or_default()),
+            busbar_contract::net::percent_decoded_bytes(parsed.password().unwrap_or_default()),
         ]
         .concat();
         format!(
