@@ -600,3 +600,21 @@ pub fn pct_us(h: &Histogram<u64>, q: f64) -> f64 {
     }
     h.value_at_quantile(q) as f64 / 1000.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_panicking_worker_is_counted_as_an_error_not_dropped() {
+        let mut out = Outcome::new(1);
+        let r = tokio::spawn(async {
+            panic!("boom");
+            #[allow(unreachable_code)]
+            Local::new(1)
+        })
+        .await;
+        assert!(out.merge_join(r).is_some());
+        assert_eq!(out.errors.get("worker panic"), Some(&1));
+    }
+}
