@@ -28,6 +28,28 @@ impl RoutingPolicy for Tap {
     }
 }
 
+/// A built-in ranking strategy: it says it is content-blind.
+struct Ranking;
+
+#[async_trait::async_trait]
+impl RoutingPolicy for Ranking {
+    async fn decide(
+        &self,
+        _: &RoutingRequest<'_>,
+        _: &[Candidate<'_>],
+        _: &RoutingContext<'_>,
+        _: Duration,
+    ) -> PolicyResult {
+        Ok(RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "ranking"
+    }
+    fn content_blind(&self) -> bool {
+        true
+    }
+}
+
 fn tap() -> busbar_kernel::hooks::TapEntry {
     (Duration::from_millis(500), true, Arc::new(Tap), Vec::new())
 }
@@ -163,6 +185,61 @@ async fn a_unit_whose_policy_is_a_gate_transport_states_nothing() {
             flags_over(hooks).await,
             vec![0],
             "a configured hook ordering the pool (prompt {send_prompt}) reads the request"
+        );
+    }
+}
+
+/// A pool ordering as `ranked_policy` resolves a built-in strategy (a content-blind policy), varied by what makes a
+/// policy read the request.
+fn ranking(send_prompt: bool, chained: bool) -> ResolvedPolicy {
+    let chain = chained.then(|| busbar_kernel::hooks::FallbackHook {
+        policy: Arc::new(Tap),
+        timeout: Duration::from_millis(500),
+        send_prompt: false,
+        send_user: false,
+        on_empty: PolicyOnError::Reject,
+    });
+    ResolvedPolicy::Policy {
+        policy: Arc::new(Ranking),
+        on_error: PolicyOnError::default(),
+        on_error_chain: chain.into_iter().collect(),
+        timeout: Duration::from_millis(500),
+        send_prompt,
+        send_user: false,
+        on_empty: PolicyOnError::Reject,
+    }
+}
+
+#[tokio::test]
+async fn a_ranking_only_unit_is_stated_observe_only_with_or_without_taps() {
+    for (stage, taps) in tap_stages()
+        .into_iter()
+        .chain([("no", StageTaps::default())])
+    {
+        let mut hooks = bound(Vec::new(), Vec::new());
+        hooks
+            .pool_policies
+            .insert("pool-a".to_string(), ranking(false, false));
+        hooks.taps = taps;
+        assert_eq!(
+            flags_over(hooks).await,
+            vec![PROJECT_IN_OBSERVE_ONLY],
+            "a built-in ranking strategy with {stage} tap only observes"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_content_blind_policy_that_is_sent_the_prompt_or_chains_a_fallback_states_nothing() {
+    for (send_prompt, chained) in [(true, false), (false, true), (true, true)] {
+        let mut hooks = bound(Vec::new(), Vec::new());
+        hooks
+            .pool_policies
+            .insert("pool-a".to_string(), ranking(send_prompt, chained));
+        assert_eq!(
+            flags_over(hooks).await,
+            vec![0],
+            "prompt {send_prompt}, fallback chain {chained}: the plane screens"
         );
     }
 }
