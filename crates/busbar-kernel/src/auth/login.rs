@@ -242,63 +242,75 @@ impl LoginMethods {
         registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
-        Self::build_on(cfg, registry.as_ref(), secret_resolver, || {
-            crate::preflight::auth_axis(registry.clone())
-        })
+        Self::build_on(
+            cfg,
+            registry.as_ref(),
+            secret_resolver,
+            &mut super::instances::AuthInstances::default(),
+            &|| crate::preflight::auth_axis(registry.clone()),
+        )
     }
 
-    fn build_on(
+    /// [`Self::build`] over the build's shared `instances`: a provider the chain or admin_auth
+    /// already opened is handed over, not opened again (WASTE-AUTH-SECRETS W1).
+    pub(crate) fn build_on(
         cfg: &AuthCfg,
         registry: &dyn busbar_contract::plugin_rows::PluginRows,
         secret_resolver: &crate::config::secret::SecretResolver,
-        open_axis: impl Fn() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
+        instances: &mut super::instances::AuthInstances,
+        open_axis: &dyn Fn() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
     ) -> Result<Self, String> {
         let mut methods = IndexMap::new();
 
         let mut axis: Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for (name, mc) in &cfg.methods {
-            let mut resolved = crate::config::secret::resolve_settings(
-                &mc.settings,
-                &registry.secret_slots(&mc.module),
-                &registry.reference_slots(&mc.module),
-                &mc.module,
-                secret_resolver,
-                &busbar_contract::config_time::ConfigScope::config_time(),
-            )
-            .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
-
-            if let Some(bl) = &mc.browser_login {
-                if let Some(cid) = &bl.client_id {
-                    resolved.default_text("client_id", cid.clone());
-                }
-            }
             let refused = |e: String| login_module_refusal(name, &mc.module, e);
+            let has_button = mc.browser_login.is_some();
+            let calls = instances.instance(name, || {
+                let mut resolved = super::instances::provider_settings(
+                    cfg,
+                    name,
+                    &mc.module,
+                    &mc.settings,
+                    registry,
+                    secret_resolver,
+                    |e| format!("identity-providers.{name} settings: {e}"),
+                )?;
+                let axis = match &axis {
+                    Some(a) => a.clone(),
+                    None => axis
+                        .insert(open_axis().ok_or_else(|| missing_login_axis(name, &mc.module))?)
+                        .clone(),
+                };
+
+                if !axis.answers(&mc.module) {
+                    return Err(refused(super::auth_refusal(registry, &mc.module)));
+                }
+
+                super::instances::lend_login_secret(
+                    cfg,
+                    name,
+                    &mc.module,
+                    registry,
+                    secret_resolver,
+                    &mut resolved,
+                )?;
+
+                let opened = axis.open(
+                    &mc.module,
+                    &super::instances::instance_label(name),
+                    &resolved,
+                );
+
+                drop(resolved);
+                opened.map_err(&refused)
+            })?;
             let axis = match &axis {
                 Some(a) => a.clone(),
                 None => axis
                     .insert(open_axis().ok_or_else(|| missing_login_axis(name, &mc.module))?)
                     .clone(),
             };
-
-            if !axis.answers(&mc.module) {
-                return Err(refused(super::auth_refusal(registry, &mc.module)));
-            }
-
-            let has_button = mc.browser_login.is_some();
-
-            lend_browser_login_secret(
-                name,
-                &mc.module,
-                mc.browser_login.as_ref(),
-                &registry.secret_slots(&mc.module),
-                secret_resolver,
-                &mut resolved,
-            )?;
-
-            let opened = axis.open(&mc.module, &login_label(name), &resolved);
-
-            drop(resolved);
-            let calls = opened.map_err(&refused)?;
             let inbound_style = axis.inbound_style(&mc.module);
             if inbound_style.as_ref().is_some_and(|style| {
                 style.points != calls.inbound_points()
@@ -343,7 +355,7 @@ impl LoginMethods {
 
 const CLIENT_SECRET_SLOT: &str = "client_secret";
 
-fn lend_browser_login_secret(
+pub(super) fn lend_browser_login_secret(
     name: &str,
     module: &str,
     browser: Option<&crate::config::BrowserLoginCfg>,
@@ -368,10 +380,6 @@ fn lend_browser_login_secret(
         )
         .map_err(|e| format!("identity-providers.{name} browser_login.client_secret: {e}"))?;
     resolved.insert_secret(CLIENT_SECRET_SLOT, secret_slots, secret)
-}
-
-fn login_label(name: &str) -> String {
-    format!("{name}#login")
 }
 
 /// One hosted-login method: its admitted presentation and login classification.
