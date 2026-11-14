@@ -2,60 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use busbar_contract::billing::RawTierRates;
 use busbar_kernel::rate_apply::{rates_applied, RawRates};
-use std::time::{Duration, Instant};
 #[tokio::test]
 async fn the_actual_rate_holder_preserves_every_tier_unit_fee_and_present_empty_card() {
     const CHILD: &str = "BUSBAR_CENTRAL2_RATES_CHILD";
     const WITNESS: &str = "actual root rate view fidelity completed";
-    if std::env::var_os(CHILD).is_none() {
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let name = std::thread::current()
-            .name()
-            .expect("the test runner names its test thread")
-            .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root usage witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root usage witness timed out"
-            );
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-    }
+    isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     assert!(
         busbar_kernel::preflight::root_rows().rate_apply.is_some(),
