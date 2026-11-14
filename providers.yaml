@@ -25,11 +25,16 @@ anthropic:
   base_url: https://api.anthropic.com
   error_map: {}
   # Lane capabilities (see docs/providers.md "Lane capabilities"). The newest Claude generations take
-  # reasoning ONLY as adaptive thinking (they 400 on `thinking.budget_tokens`) and reject the forced
-  # tool the older structured-output path uses, so they are sent adaptive thinking and native
-  # `output_config.format`. Claude Opus 5.5 and Fable 5.x cannot switch thinking off (they reject
-  # `thinking: {type: disabled}`), so a reasoning-off ask omits `thinking` on them. Every other model
-  # keeps the defaults (budget_tokens, forced tool, `{type: disabled}`). First matching rule wins.
+  # reasoning ONLY as adaptive thinking (they 400 on `thinking.budget_tokens`), so they are sent
+  # adaptive thinking. Claude Opus 5.5 and Fable 5.x cannot switch thinking off (they reject
+  # `thinking: {type: disabled}`), so a reasoning-off ask omits `thinking` on them. A JSON output mode
+  # with a schema rides native `output_config.format` on every model Anthropic lists for structured
+  # outputs (https://platform.claude.com/docs/en/build-with-claude/structured-outputs, supported
+  # models, as of 2026-11-13: Fable 5.x, Mythos 5.x/preview, Opus 5.5/5, Sonnet 5.5/5, Haiku 5.5/4.5,
+  # Opus 4.8/4.7/4.6/4.5, Sonnet 4.6/4.5). There is no forced-tool path: a model without
+  # `native_structured_output` refuses a JSON output mode with 400, and a schema-less JSON mode is
+  # refused on every model. Every other model keeps the thinking defaults (budget_tokens,
+  # `{type: disabled}`). First matching rule wins.
   model_capabilities:
     - models: ["claude-opus-5-5*", "claude-fable-5*"]
       anthropic_adaptive_thinking: true
@@ -37,6 +42,9 @@ anthropic:
       thinking_always_on: true
     - models: ["claude-opus-4-7*", "claude-opus-5*", "claude-sonnet-5*", "claude-fable-5*"]
       anthropic_adaptive_thinking: true
+      native_structured_output: true
+    - models: ["claude-mythos-*", "claude-haiku-5-5*", "claude-haiku-4-5*", "claude-opus-4-8*",
+               "claude-opus-4-6*", "claude-opus-4-5*", "claude-sonnet-4-6*", "claude-sonnet-4-5*"]
       native_structured_output: true
 
 # z.ai exposes two surfaces. `z.ai` is the Anthropic-compatible coding-agent endpoint

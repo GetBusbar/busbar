@@ -2080,6 +2080,10 @@ mod provider_refusal_pins;
 mod resolved_provider_tests;
 
 #[cfg(test)]
+#[path = "tests/shipped_structured_outputs_tests.rs"]
+mod shipped_structured_outputs_tests;
+
+#[cfg(test)]
 #[path = "tests/provider_debug_redaction_tests.rs"]
 mod provider_debug_redaction_tests;
 

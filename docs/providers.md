@@ -189,13 +189,14 @@ When a request crosses from one protocol to another, busbar writes it in the tar
 spelling. For three controls the correct spelling depends on the upstream **model**, and the request
 cannot tell busbar which one it is talking to. A provider entry declares them. Each one is optional,
 and when a key is omitted busbar sends what it sent before the key existed, so nothing you already run
-changes.
+changes. The one exception is `native_structured_output`: a JSON output mode an Anthropic lane cannot
+carry is refused with 400 instead of being dropped (see its row below).
 
 | Key | Values | Default | What it changes |
 |---|---|---|---|
 | `max_output_key` | `max_tokens` \| `max_completion_tokens` | `max_tokens` | The key an **OpenAI-protocol** upstream receives a translated output-token cap under. OpenAI's own API deprecates `max_tokens`, and its o-series and gpt-5 models reject it. Many OpenAI-compatible hosts understand only `max_tokens`, and a host that ignored `max_completion_tokens` would run with no output cap at all. |
 | `anthropic_adaptive_thinking` | `true` \| `false` | `false` | How an **Anthropic-protocol** upstream receives a reasoning ask given as an effort word (OpenAI `reasoning_effort`, Responses `reasoning.effort`). `true`: `thinking: {type: adaptive}` plus `output_config.effort`. `false`: `thinking.budget_tokens`, from the `limits.reasoning_effort_budgets` table. Opus 4.7 and later, Sonnet 5 and Fable accept only adaptive thinking; older Claude models accept only `budget_tokens`. |
-| `native_structured_output` | `true` \| `false` | `false` | How an **Anthropic-protocol** upstream receives a JSON-schema `response_format`. `true`: native `output_config.format`. `false`: a forced tool whose input schema is the requested schema, with the answer mapped back to text. A schema-less JSON mode has no native form, so on a `true` lane it is dropped and recorded as an `egress.control_unrepresentable` audit event. |
+| `native_structured_output` | `true` \| `false` | `false` | How an **Anthropic-protocol** upstream receives a JSON output mode with a schema. `true`: native `output_config.format`. `false`: the request is refused with 400 `invalid_request`. A JSON output mode without a schema has no Anthropic form and is refused with 400 on every lane. Each refusal writes a `rejected` `egress.unrepresentable` audit row naming the member. |
 
 A provider that serves models of several generations declares per-model overrides under
 `model_capabilities`. The **first** rule whose `models` glob list matches the lane's wire model
@@ -218,6 +219,9 @@ anthropic:
   model_capabilities:
     - models: ["claude-opus-4-7*", "claude-opus-5*", "claude-sonnet-5*", "claude-fable-5*"]
       anthropic_adaptive_thinking: true
+      native_structured_output: true
+    - models: ["claude-mythos-*", "claude-haiku-5-5*", "claude-haiku-4-5*", "claude-opus-4-8*",
+               "claude-opus-4-6*", "claude-opus-4-5*", "claude-sonnet-4-6*", "claude-sonnet-4-5*"]
       native_structured_output: true
 
 openai:
