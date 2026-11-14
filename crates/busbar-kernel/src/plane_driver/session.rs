@@ -12,7 +12,8 @@ use busbar_contract::caps::{Pass, ReasonCode, Route, VerifiedDestination};
 use tokio::sync::{mpsc, watch, Notify};
 
 use super::{
-    guarded_run, CallerEnd, End, FarEnd, OutboundRequest, Piece, Pumping, Src, Step, Toward,
+    guarded_run, CallerEnd, End, FarEnd, OutboundRequest, Piece, Pumping, SessionLeg, Src, Step,
+    Toward,
 };
 use crate::plane_driver::{PlaneDriver, PlaneUnits};
 use crate::teller::UnitCtx;
@@ -262,6 +263,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         turns: mpsc::Sender<OutboundRequest>,
     ) -> End {
         let mut opening = true;
+        let mut dialed = false;
         loop {
             let next = if std::mem::take(&mut opening) {
                 Ok(Next::Open)
@@ -307,8 +309,9 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                 }
             };
             let mut request = OutboundRequest::default();
+            let mut leg = SessionLeg { dialed, far: false };
             match self
-                .push(run, piece, &mut Toward::Session(&mut request))
+                .push(run, piece, &mut Toward::Session(&mut request, &mut leg))
                 .await
             {
                 Step::End(end) => return end,
@@ -317,7 +320,15 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                         return End::Done;
                     }
 
-                    if request != OutboundRequest::default() {
+                    // The first turn dials and must carry a route; a dialed session writes
+                    // every frame the plane emitted far-bound, an empty binary one included.
+                    let sends = if dialed {
+                        leg.far
+                    } else {
+                        request != OutboundRequest::default()
+                    };
+                    if sends {
+                        dialed = true;
                         let _ = turns.send(request).await;
                     }
                 }
