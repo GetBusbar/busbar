@@ -117,7 +117,8 @@ fn the_registered_payload_witness_distinguishes_plain_and_wiped_strings() {
     drop(plain);
     assert_eq!(WIPED.with(Cell::get), Some(false));
 
-    let wiped = zeroize::Zeroizing::new("wiped-initialized-control".to_string());
+    let wiped =
+        busbar_contract::secure::SecureString::from("wiped-initialized-control".to_string());
     watch(wiped.as_bytes());
     drop(wiped);
     assert_eq!(WIPED.with(Cell::get), Some(true));

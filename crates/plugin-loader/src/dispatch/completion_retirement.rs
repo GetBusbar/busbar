@@ -7,12 +7,13 @@ use busbar_contract::abi::mechanism::{
     lifecycle::slot,
 };
 use busbar_contract::abi::sdk::completion_retirement::{self as wire, Capability};
+use busbar_contract::secure::SecureVec;
 
 pub(crate) struct Input {
     input: *mut InHead,
     original: Blob,
     capability: Capability,
-    _bytes: zeroize::Zeroizing<Vec<u8>>,
+    _bytes: SecureVec,
 }
 
 impl Drop for Input {
@@ -66,7 +67,7 @@ pub(crate) unsafe fn prepare(
     let Ok(bytes) = wire::append_capability(prior, capability) else {
         return Ok(None);
     };
-    let bytes = zeroize::Zeroizing::new(bytes);
+    let bytes = SecureVec::from(bytes);
     head.extensions = Blob {
         ptr: bytes.as_ptr(),
         len: bytes.len(),

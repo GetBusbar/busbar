@@ -258,7 +258,11 @@ fn owns_settings_bag(ty: &syn::Type, guarded: bool) -> bool {
             let PathArguments::AngleBracketed(args) = &last.arguments else {
                 return false;
             };
-            let guarded = guarded || matches!(name.as_str(), "Secret" | "Zeroizing");
+            let guarded = guarded
+                || matches!(
+                    name.as_str(),
+                    "Secret" | "SecureVec" | "SecureString" | "SecureArray"
+                );
             args.args.iter().any(|arg| match arg {
                 GenericArgument::Type(Type::Path(p)) if name == "Vec" && p.path.is_ident("u8") => {
                     !guarded
@@ -324,16 +328,16 @@ fn settings_comments_cannot_exempt_raw_bags_and_guards_apply_to_bytes_only() {
     assert!(found[1].contains("Req.settings"), "{found:?}");
     assert!(found[2].contains("Bare.hook_settings"), "{found:?}");
     assert!(!owns_settings_bag(
-        &syn::parse_quote!(zeroize::Zeroizing<Vec<u8>>),
+        &syn::parse_quote!(busbar_contract::secure::SecureVec),
         false
     ));
     assert!(!owns_settings_bag(&syn::parse_quote!(&str), false));
     assert!(owns_settings_bag(
-        &syn::parse_quote!(zeroize::Zeroizing<serde_json::Value>),
+        &syn::parse_quote!(busbar_contract::Secret<serde_json::Value>),
         false
     ));
     assert!(owns_settings_bag(
-        &syn::parse_quote!((zeroize::Zeroizing<Vec<u8>>, Vec<u8>)),
+        &syn::parse_quote!((busbar_contract::secure::SecureVec, Vec<u8>)),
         false
     ));
 }

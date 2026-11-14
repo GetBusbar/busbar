@@ -25,9 +25,8 @@ fn candidate() -> Request {
 #[allow(unsafe_code)] // Existing SDK allocation-probe test moved with its codec.
 fn raw_record_encoder_growth_and_partial_decodes_retire_every_owned_copy_wiped() {
     use crate::alloc_counter::InitializedPayloadProbe;
-    use zeroize::Zeroizing;
 
-    let mut request = Zeroizing::new(candidate());
+    let mut request = candidate();
     request.predicates[0].expected = Expected::Bytes(b"old-record-CANARY".repeat(16));
     if let Mutation::Put { value, .. } = &mut request.mutations[0] {
         *value = b"new-record-CANARY".repeat(24);
@@ -36,8 +35,8 @@ fn raw_record_encoder_growth_and_partial_decodes_retire_every_owned_copy_wiped()
     // thread through wiping/free or the end of observation. No spare capacity is inspected.
     let probe = unsafe { InitializedPayloadProbe::start().expect("open payload observer") };
     let bytes = request.encode_held().unwrap();
-    let decoded = Zeroizing::new(Request::decode(&bytes).unwrap());
-    assert_eq!(*decoded, *request);
+    let decoded = Request::decode(&bytes).unwrap();
+    assert_eq!(decoded, request);
     assert_eq!(decoded.fingerprint(), request.fingerprint());
     drop(decoded);
     drop(bytes);
@@ -45,9 +44,9 @@ fn raw_record_encoder_growth_and_partial_decodes_retire_every_owned_copy_wiped()
 
     let encoded = request.encode_held().unwrap();
     for removed in [0, 1, 8, 32] {
-        let mut broken = Zeroizing::new(encoded.to_vec());
+        let mut broken = crate::secure::SecureVec::from(&encoded[..]);
         if removed == 0 {
-            broken.push(0);
+            broken.extend_from_slice(&[0]);
         } else {
             let len = broken.len() - removed;
             broken.truncate(len);

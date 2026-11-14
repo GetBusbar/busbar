@@ -563,13 +563,13 @@ struct StagedUpgrade {
     stripped: usize,
     /// Bytes read ahead of the commit, in one buffer that grows by replacement (never by an
     /// in-place reallocation that would leave an un-zeroized copy behind).
-    incoming: zeroize::Zeroizing<Vec<u8>>,
+    incoming: busbar_contract::secure::SecureVec,
     opening_status: Option<u32>,
     bound: Pin<Box<tokio::time::Sleep>>,
 }
 
 impl StagedUpgrade {
-    fn take_incoming(&mut self) -> zeroize::Zeroizing<Vec<u8>> {
+    fn take_incoming(&mut self) -> busbar_contract::secure::SecureVec {
         std::mem::take(&mut self.incoming)
     }
 
@@ -581,7 +581,7 @@ impl StagedUpgrade {
                 .min(WRITE_ROOM.max(len));
             let held = std::mem::replace(
                 &mut self.incoming,
-                zeroize::Zeroizing::new(Vec::with_capacity(capacity)),
+                busbar_contract::secure::SecureVec::from(Vec::with_capacity(capacity)),
             );
             self.incoming.extend_from_slice(&held);
         }
@@ -1431,7 +1431,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     stream,
                     yielded: Vec::new(),
                     stripped: 0,
-                    incoming: zeroize::Zeroizing::new(Vec::new()),
+                    incoming: busbar_contract::secure::SecureVec::new(),
                     opening_status: None,
                     bound: Box::pin(tokio::time::sleep(self.timeout)),
                 });

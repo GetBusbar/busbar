@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::alloc_counter::InitializedPayloadProbe;
+use crate::secure::SecureVec;
 
 fn request() -> Request {
     let material = b"conditional-CANARY-raw-credential".repeat(512);
@@ -102,7 +103,7 @@ fn growth_digest_result_and_settlement_temporaries_wipe_without_changing_identit
         decision: Ok(Decision::Applied),
     };
     let observer = probe();
-    let encoded = Zeroizing::new(encode_request(&request.0).unwrap());
+    let encoded = SecureVec::from(encode_request(&request.0).unwrap());
     let digest = crate::abi::sdk::digest::sha256(&encoded);
     let receipt = encode_result(&request.0, &result).unwrap();
     assert_eq!(
@@ -129,12 +130,12 @@ fn growth_digest_result_and_settlement_temporaries_wipe_without_changing_identit
 #[test]
 fn decoded_raw_fields_wipe_on_trailing_input_truncation_and_unwind() {
     let original = Decoding(request());
-    let encoded = Zeroizing::new(encode_request(&original.0).unwrap());
+    let encoded = SecureVec::from(encode_request(&original.0).unwrap());
     let header = 2 + INTENT.len() + 4;
     for removed in [0, 1, 8, 32] {
-        let mut broken = Zeroizing::new(encoded.to_vec());
+        let mut broken = SecureVec::from(&encoded[..]);
         if removed == 0 {
-            broken.push(0);
+            broken.extend_from_slice(&[0]);
         } else {
             let len = broken.len() - removed;
             broken.truncate(len);
@@ -199,7 +200,7 @@ fn a_candidate_whose_entry_exceeds_the_hard_cap_is_refused_at_encode() {
         }];
         r
     };
-    let small = Zeroizing::new(encode_request(&one(1)).unwrap());
+    let small = SecureVec::from(encode_request(&one(1)).unwrap());
     let max = crate::abi::mechanism::check::HARD_MAX_BYTES as usize;
     // The body (the entry's value) is 10 bytes under the cap; the entry's own header is not.
     let body_small = small.len() - (2 + INTENT.len() + 4);

@@ -369,7 +369,7 @@ impl<'a> Tx<'a> {
             clippy::disallowed_methods,
             reason = "config: a stored credential is read only by cache refresh and boot hydration"
         )]
-        let secret = zeroize::Zeroizing::new(
+        let secret = busbar_contract::secure::SecureString::from(
             std::str::from_utf8(secret.expose(&seal))
                 .map_err(|_| corrupt())?
                 .to_owned(),
@@ -587,7 +587,7 @@ impl<'a> Tx<'a> {
                         clippy::disallowed_methods,
                         reason = "config: an identity commit is reported only by key and credential management"
                     )]
-                    let secret = zeroize::Zeroizing::new(
+                    let secret = busbar_contract::secure::SecureString::from(
                         std::str::from_utf8(secret.expose(&crate::seal::lend()))
                             .map_err(|_| corrupt())?
                             .to_owned(),

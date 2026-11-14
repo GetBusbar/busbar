@@ -8,8 +8,8 @@ use std::cell::Cell;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
+use busbar_contract::secure::SecureVec;
 use busbar_contract::{jsonrpc, protocol::SseFrames};
-use zeroize::Zeroizing;
 
 thread_local! {
     // Keep only an address for matching. Reads always use the allocator's current live pointer.
@@ -92,7 +92,7 @@ fn the_registered_payload_witness_distinguishes_plain_and_wiping_owners() {
     drop(plain);
     assert_eq!(WIPED.with(Cell::get), Some(false));
 
-    let wiped = Zeroizing::new(b"wiped-initialized-control".to_vec());
+    let wiped = SecureVec::from(b"wiped-initialized-control".to_vec());
     watch(&wiped);
     drop(wiped);
     assert_eq!(WIPED.with(Cell::get), Some(true));
@@ -203,7 +203,7 @@ fn every_jsonrpc_producer_allocates_only_its_final_output_even_with_heavy_escapi
     ] {
         assert_eq!(out, serde_json::to_vec(&expected).unwrap());
 
-        let owner = Zeroizing::new(out);
+        let owner = SecureVec::from(out);
         watch(&owner);
         drop(owner);
         assert_eq!(WIPED.with(Cell::get), Some(true));

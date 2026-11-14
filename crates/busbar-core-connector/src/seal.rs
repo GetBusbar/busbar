@@ -3,7 +3,7 @@
 
 //! SEALED CREDENTIAL VALUES (TSEAL; the "plane never sees credential bytes" family): the bound
 
-use zeroize::Zeroizing;
+use busbar_contract::secure::SecureVec;
 
 use crate::compose::Opening;
 
@@ -22,7 +22,7 @@ const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01
 struct Seal {
     stream: u64,
     filler: Vec<u8>,
-    value: Zeroizing<Vec<u8>>,
+    value: SecureVec,
 }
 
 /// THE SEALS A CONNECTION HOLDS: those not yet spliced into its wire.
@@ -79,7 +79,7 @@ impl Seals {
         let mut pairs = Vec::new();
         fields.retain_mut(|(name, value)| {
             if busbar_contract::conn::is_sealed_query_field(name.as_bytes()) {
-                pairs.push(Zeroizing::new(std::mem::take(value)));
+                pairs.push(SecureVec::from(std::mem::take(value)));
                 false
             } else {
                 true
@@ -137,7 +137,7 @@ impl Seals {
                 self.0.push(Seal {
                     stream,
                     filler: fill,
-                    value: Zeroizing::new(value.to_vec()),
+                    value: SecureVec::from(value),
                 });
             } else {
                 target.extend_from_slice(value);
@@ -188,7 +188,7 @@ impl Seals {
         }
         for (_, v) in fields.iter_mut().filter(|(n, v)| named(n) && !v.is_empty()) {
             let fill = filler(v.len()).ok_or("the host's random source failed")?;
-            let value = Zeroizing::new(std::mem::replace(v, fill.clone()));
+            let value = SecureVec::from(std::mem::replace(v, fill.clone()));
             self.0.push(Seal {
                 stream,
                 filler: fill,

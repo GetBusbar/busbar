@@ -33,7 +33,7 @@ struct Carried {
     /// authorization server), else the first carrier.
     candidate: Option<Secret<String>>,
     /// `extract_client_token`'s answer: the first carrier only.
-    token: Option<zeroize::Zeroizing<String>>,
+    token: Option<busbar_contract::secure::SecureString>,
 }
 
 /// One unit's derived facts. Shared by the unit and, after the claim, its admitted request.
@@ -72,7 +72,7 @@ impl Derived {
             Carried {
                 candidate: crate::auth::candidate_of(app, headers),
                 token: crate::auth::carried_credential(app.auth.carriers(), headers)
-                    .map(zeroize::Zeroizing::new),
+                    .map(busbar_contract::secure::SecureString::from),
             }
         })
     }
@@ -99,10 +99,7 @@ impl Derived {
 
     /// The carried client token (carriers only), as `extract_client_token` reads it.
     pub(crate) fn client_token(&self, app: &crate::state::App, original: &Head) -> Option<&str> {
-        self.carried(app, original)
-            .token
-            .as_deref()
-            .map(String::as_str)
+        self.carried(app, original).token.as_deref()
     }
 }
 

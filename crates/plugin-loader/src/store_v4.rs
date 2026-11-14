@@ -19,6 +19,7 @@ use busbar_contract::abi::sdk::store::v4::{
 use busbar_contract::abi::sdk::wipe::WipedBytes;
 use busbar_contract::abi::store::{v4 as wire, HostBuf};
 use busbar_contract::persistence::{self as owned, Failure, PersistenceBackend};
+use busbar_contract::secure::SecureVec;
 use zeroize::Zeroize;
 
 use crate::dispatch::kinds::store_v4::StoreV4;
@@ -916,8 +917,8 @@ struct PreparedOpenLent {
 
 struct OpenLent {
     _session: Option<Arc<Session>>,
-    settings: zeroize::Zeroizing<Vec<u8>>,
-    _secrets: Vec<zeroize::Zeroizing<Vec<u8>>>,
+    settings: SecureVec,
+    _secrets: Vec<SecureVec>,
     blobs: Vec<Blob>,
 }
 // SAFETY: all blob pointers borrow immutable allocations owned by this retained value.
@@ -926,22 +927,18 @@ unsafe impl Send for OpenLent {}
 unsafe impl Sync for OpenLent {}
 impl OpenLent {
     fn new(refs: &[String], settings: &[u8]) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a store open keeps its own settings and lent secrets"
-        )]
-        let mut settings = zeroize::Zeroizing::new(settings.to_vec());
+        let mut settings = SecureVec::from(settings);
         #[expect(
             clippy::disallowed_methods,
             clippy::disallowed_types,
             reason = "boot: a store open lends its secret fields out of its settings once"
         )]
-        let secrets: Vec<zeroize::Zeroizing<Vec<u8>>> = if refs.is_empty() {
+        let secrets: Vec<SecureVec> = if refs.is_empty() {
             Vec::new()
         } else if let Ok(mut block) = serde_json::from_slice::<serde_json::Value>(&settings) {
             let as_bytes = |value: Option<serde_json::Value>| match value {
-                Some(serde_json::Value::String(value)) => value.into_bytes(),
-                _ => Vec::new(),
+                Some(serde_json::Value::String(value)) => SecureVec::from(value.into_bytes()),
+                _ => SecureVec::new(),
             };
             let values = busbar_contract::secret_fields::lend(
                 &mut block,
@@ -952,8 +949,8 @@ impl OpenLent {
             )
             .unwrap_or_else(|error| match error {});
             settings.zeroize();
-            settings.extend_from_slice(&serde_json::to_vec(&block).unwrap_or_default());
-            values.into_iter().map(zeroize::Zeroizing::new).collect()
+            let _ = serde_json::to_writer(&mut settings, &block);
+            values
         } else {
             Vec::new()
         };

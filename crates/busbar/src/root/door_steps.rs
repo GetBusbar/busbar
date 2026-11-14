@@ -2426,7 +2426,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
         kind: busbar_kernel::appbuild::ConfigDocument,
         path: &std::path::Path,
         raw: &str,
-    ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+    ) -> Result<Option<busbar_contract::secure::SecureString>, String> {
         self.documents.normalize(kind, path, raw)
     }
     fn claim_ticket_admission(

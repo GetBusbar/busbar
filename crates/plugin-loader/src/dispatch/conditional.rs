@@ -11,6 +11,7 @@ use busbar_contract::abi::mechanism::{
 use busbar_contract::abi::sdk::plane::conditional::{
     self as wire, ConditionalFailure, ConditionalResult,
 };
+use busbar_contract::secure::SecureVec;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +28,7 @@ pub(crate) enum ReceiptKind {
 pub(crate) struct Input {
     input: *mut InHead,
     original: Blob,
-    _bytes: Arc<zeroize::Zeroizing<Vec<u8>>>,
+    _bytes: Arc<SecureVec>,
 }
 impl Drop for Input {
     fn drop(&mut self) {
@@ -195,11 +196,11 @@ pub(crate) unsafe fn prepare(
         .checked_add(capability_part.len() + receipt_part.len() + settlement_part.len())
         .filter(|&n| n <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize)
         .ok_or(())?;
-    let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(len));
-    busbar_contract::secure::append(&mut bytes, prior);
-    busbar_contract::secure::append(&mut bytes, capability_part);
-    busbar_contract::secure::append(&mut bytes, receipt_part);
-    busbar_contract::secure::append(&mut bytes, settlement_part);
+    let mut bytes = SecureVec::with_capacity(len).map_err(|_| ())?;
+    bytes.extend_from_slice(prior);
+    bytes.extend_from_slice(capability_part);
+    bytes.extend_from_slice(receipt_part);
+    bytes.extend_from_slice(settlement_part);
     let bytes = Arc::new(bytes);
     head.extensions = Blob {
         ptr: bytes.as_ptr(),
@@ -639,9 +640,7 @@ pub(crate) unsafe fn answer(
     {
         return Err(AnswerError::Malformed);
     }
-    let request = wire::read_request(bytes)
-        .map_err(|_| ())?
-        .map(zeroize::Zeroizing::new);
+    let request = wire::read_request(bytes).map_err(|_| ())?;
     let observation = wire::read_observation(bytes).map_err(|_| ())?;
     if request.is_some() == observation.is_some() {
         return Err(AnswerError::Malformed);

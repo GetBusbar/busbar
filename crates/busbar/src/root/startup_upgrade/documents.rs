@@ -3,6 +3,7 @@
 
 //! Original authored bytes stay in custody across bootstrap and source-proven conversion.
 use busbar_contract::crypto::Sha256;
+use busbar_contract::secure::{SecureString, SecureVec};
 use busbar_kernel::{
     appbuild::{ConfigDocument, RootRules},
     config,
@@ -12,12 +13,12 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 struct Document {
     kind: ConfigDocument,
-    original: Zeroizing<String>,
-    converted: Option<Zeroizing<String>>,
+    original: SecureString,
+    converted: Option<SecureString>,
     published: bool,
     requires_released_source: bool,
     restored_transform: Option<[u8; 32]>,
@@ -27,8 +28,8 @@ struct Document {
 /// Complete document inventory, including unchanged documents. Debug is deliberately absent.
 pub struct Publication {
     pub path: PathBuf,
-    pub original: Zeroizing<Vec<u8>>,
-    pub converted: Zeroizing<Vec<u8>>,
+    pub original: SecureVec,
+    pub converted: SecureVec,
     pub original_digest: [u8; 32],
     pub target_digest: [u8; 32],
     pub transform_id: [u8; 32],
@@ -41,7 +42,7 @@ pub struct SecretPublication {
     pub config_path: PathBuf,
     pub site: String,
     pub settings_path: Vec<String>,
-    pub bytes: Zeroizing<Vec<u8>>,
+    pub bytes: SecureVec,
     pub path: PathBuf,
 }
 
@@ -67,12 +68,12 @@ struct State {
     config_proofs: BTreeMap<[u8; 32], busbar_migrations::config::HistoricalShape>,
     secret_binding: Option<[u8; 32]>,
     /// The decisions behind the last refused deployment normalization, wiped on drop.
-    debt: Option<Vec<Zeroizing<String>>>,
+    debt: Option<Vec<SecureString>>,
 }
 #[derive(Default)]
 pub struct Documents {
     state: Mutex<State>,
-    environment: Mutex<BTreeMap<String, Option<Zeroizing<String>>>>,
+    environment: Mutex<BTreeMap<String, Option<SecureString>>>,
     /// Startup conversion notices raised before the log is installed, replayed by
     /// [`Documents::replay_notices`] so none is silently dropped.
     notices: Mutex<Vec<String>>,
@@ -108,9 +109,9 @@ impl Documents {
             .unwrap_or_else(|error| error.into_inner());
         captured
             .entry(key.to_owned())
-            .or_insert_with(|| std::env::var(key).ok().map(Zeroizing::new))
+            .or_insert_with(|| std::env::var(key).ok().map(SecureString::from))
             .as_ref()
-            .map(|value| value.to_string())
+            .map(|value| value.as_str().to_owned())
     }
 
     pub fn normalize(
@@ -118,7 +119,7 @@ impl Documents {
         kind: ConfigDocument,
         path: &Path,
         raw: &str,
-    ) -> Result<Option<Zeroizing<String>>, String> {
+    ) -> Result<Option<SecureString>, String> {
         let (phase, revision, original) = {
             let mut state = self
                 .state
@@ -136,8 +137,7 @@ impl Documents {
                             .converted
                             .as_ref()
                             .ok_or("completed configuration is missing its retained output")?;
-                        return Ok((converted.as_str() != raw)
-                            .then(|| Zeroizing::new(converted.to_string())));
+                        return Ok((converted.as_str() != raw).then(|| converted.clone()));
                     }
                 }
                 // New runtime edits must satisfy the real current reader. The frozen
@@ -149,7 +149,7 @@ impl Documents {
                     .entry(path.to_owned())
                     .or_insert_with(|| Document {
                         kind,
-                        original: Zeroizing::new(raw.to_owned()),
+                        original: SecureString::from(raw),
                         converted: None,
                         published: false,
                         requires_released_source: false,
@@ -166,11 +166,9 @@ impl Documents {
                     return Err("configuration changed during startup migration".into());
                 }
                 if let Some(converted) = &entry.converted {
-                    return Ok(
-                        (converted.as_str() != raw).then(|| Zeroizing::new(converted.to_string()))
-                    );
+                    return Ok((converted.as_str() != raw).then(|| converted.clone()));
                 }
-                let original = Zeroizing::new(entry.original.to_string());
+                let original = entry.original.clone();
                 (state.phase, state.revision, original)
             }
         };
@@ -180,7 +178,7 @@ impl Documents {
         let (converted, requires_released_source) = match kind {
             ConfigDocument::Deployment => {
                 let mut unset = Vec::new();
-                let detection = Zeroizing::new(
+                let detection = SecureString::from(
                     config::interpolate_env_lookup(
                         &original,
                         config::EnvSubst::Lenient,
@@ -231,19 +229,19 @@ impl Documents {
                 if debt != 0 {
                     output.yaml.zeroize();
                     // The reasons stay in custody for the boot refusal to explain itself.
-                    let todos: Vec<Zeroizing<String>> =
-                        output.todos.drain(..).map(Zeroizing::new).collect();
+                    let todos: Vec<SecureString> =
+                        output.todos.drain(..).map(SecureString::from).collect();
                     if let Ok(mut state) = self.state.lock() {
                         state.debt = Some(todos);
                     }
                     return Err(debt_refusal(debt, &decisions));
                 }
                 output.todos.zeroize();
-                (Zeroizing::new(output.yaml), false)
+                (SecureString::from(output.yaml), false)
             }
             ConfigDocument::Providers => {
                 let mut unset = Vec::new();
-                let detection = Zeroizing::new(
+                let detection = SecureString::from(
                     config::interpolate_env_lookup(
                         &original,
                         config::EnvSubst::Lenient,
@@ -253,7 +251,7 @@ impl Documents {
                     .map_err(|_| "providers detection interpolation refused")?,
                 );
                 if config::providers::catalog_from_str(&detection).is_ok() {
-                    (Zeroizing::new(original.to_string()), false)
+                    (original.clone(), false)
                 } else {
                     let output = busbar_migrations::config::migrate_catalog::migrate_catalog(
                         &original,
@@ -263,9 +261,9 @@ impl Documents {
                     match output {
                         Some(mut output) => {
                             output.changes.zeroize();
-                            (Zeroizing::new(output.yaml), true)
+                            (SecureString::from(output.yaml), true)
                         }
-                        None => (Zeroizing::new(original.to_string()), false),
+                        None => (original.clone(), false),
                     }
                 }
             }
@@ -296,7 +294,7 @@ impl Documents {
         if entry.original.as_str() != original.as_str() {
             return Err("configuration custody changed".into());
         }
-        let answer = (converted.as_str() != raw).then(|| Zeroizing::new(converted.to_string()));
+        let answer = (converted.as_str() != raw).then(|| converted.clone());
         entry.runtime_only = runtime_only;
         entry.converted = Some(converted);
         entry.requires_released_source = requires_released_source;
@@ -305,7 +303,7 @@ impl Documents {
 
     /// The unresolved decisions behind the last refused deployment normalization. Taken once:
     /// a second call returns `None`.
-    pub fn take_debt(&self) -> Option<Vec<Zeroizing<String>>> {
+    pub fn take_debt(&self) -> Option<Vec<SecureString>> {
         self.state.lock().ok()?.debt.take()
     }
 
@@ -436,7 +434,7 @@ impl Documents {
     }
 
     /// Interpolate retained normalization output under only this startup's captured references.
-    pub fn interpolate_captured(&self, raw: &str) -> Result<Zeroizing<String>, String> {
+    pub fn interpolate_captured(&self, raw: &str) -> Result<SecureString, String> {
         let state = self
             .state
             .lock()
@@ -448,16 +446,13 @@ impl Documents {
         config::interpolate_env_lookup(raw, config::EnvSubst::Strict, &mut Vec::new(), |key| {
             self.captured_env(key)
         })
-        .map(Zeroizing::new)
+        .map(SecureString::from)
         .map_err(|_| "captured configuration interpolation refused".into())
     }
 
     /// The exact frozen authored deployment and a detection view under this startup's
     /// captured environment. Neither may be replaced by a re-read of a partially published file.
-    pub fn original_deployment(
-        &self,
-        path: &Path,
-    ) -> Result<(Zeroizing<String>, Zeroizing<String>), String> {
+    pub fn original_deployment(&self, path: &Path) -> Result<(SecureString, SecureString), String> {
         let authored = {
             let state = self
                 .state
@@ -473,9 +468,9 @@ impl Documents {
             if document.kind != ConfigDocument::Deployment {
                 return Err("requested source is not deployment configuration".into());
             }
-            Zeroizing::new(document.original.to_string())
+            document.original.clone()
         };
-        let detection = Zeroizing::new(
+        let detection = SecureString::from(
             config::interpolate_env_lookup(
                 &authored,
                 config::EnvSubst::Lenient,
@@ -621,7 +616,7 @@ impl Documents {
         Ok(original == target)
     }
 
-    pub fn original_provider(&self) -> Result<Option<(PathBuf, Zeroizing<String>)>, String> {
+    pub fn original_provider(&self) -> Result<Option<(PathBuf, SecureString)>, String> {
         let state = self
             .state
             .lock()
@@ -636,10 +631,7 @@ impl Documents {
         if entries.next().is_some() {
             return Err("startup provider source is ambiguous".into());
         }
-        Ok(Some((
-            path.clone(),
-            Zeroizing::new(entry.original.to_string()),
-        )))
+        Ok(Some((path.clone(), entry.original.clone())))
     }
 
     pub fn stage_catalog(&self, path: &Path, raw: &str, converted: &str) -> Result<(), String> {
@@ -655,7 +647,7 @@ impl Documents {
             .entry(path.to_owned())
             .or_insert_with(|| Document {
                 kind: ConfigDocument::Providers,
-                original: Zeroizing::new(raw.to_owned()),
+                original: SecureString::from(raw),
                 converted: None,
                 published: false,
                 requires_released_source: true,
@@ -672,7 +664,7 @@ impl Documents {
         {
             return Err("providers conversion target changed within one source phase".into());
         }
-        entry.converted = Some(Zeroizing::new(converted.to_owned()));
+        entry.converted = Some(SecureString::from(converted));
         entry.requires_released_source = true;
         Ok(())
     }
@@ -718,7 +710,7 @@ impl Documents {
                 config_path: s.config_path.clone(),
                 site: s.site.clone(),
                 settings_path: s.settings_path.clone(),
-                bytes: Zeroizing::new(s.bytes.to_vec()),
+                bytes: s.bytes.clone(),
                 path: s.path.clone(),
             })
             .collect())
@@ -739,15 +731,9 @@ impl Documents {
                 .documents
                 .iter()
                 .map(|(path, entry)| {
-                    let runtime = entry.runtime_only.then(|| {
-                        (
-                            Zeroizing::new(entry.original.to_string()),
-                            entry
-                                .converted
-                                .as_ref()
-                                .map(|value| Zeroizing::new(value.to_string())),
-                        )
-                    });
+                    let runtime = entry
+                        .runtime_only
+                        .then(|| (entry.original.clone(), entry.converted.as_ref().cloned()));
                     (path.clone(), (entry.kind, runtime))
                 })
                 .collect();
@@ -772,7 +758,7 @@ impl Documents {
                 );
             }
             let current = match std::fs::read(&publication.path) {
-                Ok(bytes) => Some(Zeroizing::new(bytes)),
+                Ok(bytes) => Some(SecureVec::from(bytes)),
                 Err(error)
                     if error.kind() == std::io::ErrorKind::NotFound
                         && input.recoverable_missing(&publication.path) =>
@@ -789,24 +775,22 @@ impl Documents {
                     "configuration changed outside the protected publication checkpoint".into(),
                 );
             }
-            let original = Zeroizing::new(
+            let original = SecureString::from(
                 std::str::from_utf8(&publication.original)
-                    .map_err(|_| "checkpoint source is not UTF-8")?
-                    .to_owned(),
+                    .map_err(|_| "checkpoint source is not UTF-8")?,
             );
-            let mut converted = Zeroizing::new(
+            let mut converted = SecureString::from(
                 std::str::from_utf8(&publication.converted)
-                    .map_err(|_| "checkpoint target is not UTF-8")?
-                    .to_owned(),
+                    .map_err(|_| "checkpoint target is not UTF-8")?,
             );
             let published = current
                 .as_ref()
                 .is_some_and(|bytes| bytes.as_slice() == publication.converted.as_slice());
             let mut runtime_only = false;
-            if publication.original == publication.converted {
+            if publication.original.as_slice() == publication.converted.as_slice() {
                 if let Some((authored, Some(current))) = runtime {
                     if authored.as_str() == original.as_str() {
-                        converted = Zeroizing::new(current.to_string());
+                        converted = current.clone();
                         runtime_only = true;
                     }
                 }
@@ -850,7 +834,7 @@ impl Documents {
                     config_path: secret.config_path.clone(),
                     site: secret.site.clone(),
                     settings_path: secret.settings_path.clone(),
-                    bytes: Zeroizing::new(secret.bytes.to_vec()),
+                    bytes: secret.bytes.clone(),
                     path: secret.path.clone(),
                 },
             );
@@ -912,8 +896,8 @@ impl Documents {
             });
             outputs.push(Publication {
                 path: path.clone(),
-                original: Zeroizing::new(entry.original.as_bytes().to_vec()),
-                converted: Zeroizing::new(converted.as_bytes().to_vec()),
+                original: SecureVec::from(entry.original.as_bytes()),
+                converted: SecureVec::from(converted.as_bytes()),
                 original_digest,
                 target_digest,
                 transform_id,
@@ -1059,7 +1043,7 @@ impl RootRules for BootstrapRules {
         kind: ConfigDocument,
         path: &Path,
         raw: &str,
-    ) -> Result<Option<Zeroizing<String>>, String> {
+    ) -> Result<Option<SecureString>, String> {
         self.0.normalize(kind, path, raw)
     }
 }
@@ -1248,7 +1232,7 @@ mod tests {
             config_path: path.into(),
             site: "store.settings".into(),
             settings_path: vec!["password".into()],
-            bytes: Zeroizing::new(b"historical".to_vec()),
+            bytes: SecureVec::from(b"historical".as_slice()),
             path: "/private/exact.secret".into(),
         })
         .unwrap();
@@ -1295,7 +1279,7 @@ mod tests {
         let sources = fixture_sources();
         docs.environment.lock().unwrap().insert(
             "CAPTURED_STORE_SECRET".into(),
-            Some(Zeroizing::new("captured".into())),
+            Some(SecureString::from("captured")),
         );
         let path = Path::new("env.yaml");
         let raw = "store: {module: custom, settings: {password: '${CAPTURED_STORE_SECRET}'}}\n";
@@ -1335,7 +1319,7 @@ mod tests {
         {
             let mut state = docs.state.lock().unwrap();
             let entry = state.documents.get_mut(path).unwrap();
-            entry.converted = Some(Zeroizing::new(runtime.into()));
+            entry.converted = Some(SecureString::from(runtime));
             entry.runtime_only = true;
         }
         let publication = docs.pending().unwrap().remove(0);
@@ -1364,7 +1348,7 @@ mod tests {
             config_path: "config.yaml".into(),
             site: "auth:test".into(),
             settings_path: vec!["token".into()],
-            bytes: Zeroizing::new(bytes.to_vec()),
+            bytes: SecureVec::from(bytes),
             path: "private/credential.secret".into(),
         };
         docs.stage_secret(secret(b"same bytes")).unwrap();

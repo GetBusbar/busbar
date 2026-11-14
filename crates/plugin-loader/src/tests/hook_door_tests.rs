@@ -345,7 +345,6 @@ mod sdk_refresh {
     };
     use busbar_contract::ids::StreamId;
     use busbar_contract::transport::ConnFacts;
-    use zeroize::Zeroizing;
 
     use crate::dispatch::kinds::hook::Hook as HookKind;
     use crate::dispatch::{
@@ -439,7 +438,9 @@ mod sdk_refresh {
             let secret = settings["secret"].as_str().unwrap().to_string();
             Ok(Box::new(Forwarder {
                 probe: Arc::clone(&probes().lock().unwrap()[&settings["scope"].as_u64().unwrap()]),
-                cred: Cred::captured(Zeroizing::new(secret.as_bytes().to_vec())),
+                cred: Cred::captured(busbar_contract::secure::SecureVec::from(
+                    secret.as_bytes().to_vec(),
+                )),
                 secret,
             }))
         }

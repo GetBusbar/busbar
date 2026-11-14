@@ -1511,7 +1511,7 @@ struct SignedAnswer {
 
 pub type SignedIngress = Arc<dyn Fn(&App, &str) -> bool + Send + Sync>;
 
-struct FieldBytes(zeroize::Zeroizing<Vec<u8>>);
+struct FieldBytes(busbar_contract::secure::SecureVec);
 
 impl AsRef<[u8]> for FieldBytes {
     fn as_ref(&self) -> &[u8] {
@@ -1532,7 +1532,7 @@ fn build_header_map(head: &Head) -> axum::http::HeaderMap {
         if let (Ok(n), Ok(v)) = (
             axum::http::HeaderName::from_bytes(n.as_bytes()),
             axum::http::HeaderValue::from_maybe_shared(bytes::Bytes::from_owner(FieldBytes(
-                zeroize::Zeroizing::new(v.clone()),
+                busbar_contract::secure::SecureVec::from(v.as_slice()),
             ))),
         ) {
             let mut v = v;
@@ -2557,7 +2557,10 @@ impl Inbound {
         mut call: Call,
     ) -> Result<impl Future<Output = Result<Answer, &'static str>> + Send + 'static, &'static str>
     {
-        let body = call.body.take().map(zeroize::Zeroizing::new);
+        let body = call
+            .body
+            .take()
+            .map(busbar_contract::secure::SecureVec::from);
         let first_request = call.unit.is_none();
         let binding = RequestBinding {
             conn: call.conn,
@@ -2588,7 +2591,7 @@ impl Inbound {
             .unwrap_or_default();
 
         let peer = point == AuthPoint::Peer;
-        if peer && !peer_payload_empty(call.unit, &call.head, body.as_deref().map(Vec::as_slice)) {
+        if peer && !peer_payload_empty(call.unit, &call.head, body.as_deref()) {
             return Err(PEER_BYTES);
         }
         if body
@@ -3267,7 +3270,7 @@ impl Inbound {
             .map(|h| h.target.clone())
             .or_else(|| line.map(|l| l.route.path.clone()))
             .unwrap_or_else(|| "/".to_string());
-        let target = zeroize::Zeroizing::new(
+        let target = busbar_contract::secure::SecureString::from(
             head.as_ref()
                 .map(Head::path_and_query)
                 .unwrap_or_else(|| path.clone()),

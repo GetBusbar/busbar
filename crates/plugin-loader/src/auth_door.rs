@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
-use zeroize::Zeroizing;
 
 use busbar_contract::abi::auth::{
     slot, AuthPoint, IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, StripName,
@@ -24,6 +23,7 @@ use busbar_contract::auth_calls::{
     AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer,
     VerifyRequest, Verifying,
 };
+use busbar_contract::secure::{SecureString, SecureVec};
 
 use crate::dispatch::call::{Answering, Pending, Ticketed};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
@@ -94,18 +94,18 @@ fn zero(bytes: &mut [u8]) {
 /// submitted request is moved in, a borrowed one copied once, and a grown recall lends the same
 /// input with larger output buffers.
 struct VerifyInput {
-    credential: Zeroizing<Vec<u8>>,
+    credential: SecureVec,
     lines: Vec<(String, Vec<u8>)>,
     named: Vec<NamedValue>,
     point: u32,
     conn: u64,
     unit: u64,
-    peer: Zeroizing<Option<Vec<u8>>>,
-    body: Zeroizing<Option<Vec<u8>>>,
-    method: Zeroizing<String>,
-    authority: Zeroizing<String>,
-    path: Zeroizing<String>,
-    query: Zeroizing<Option<String>>,
+    peer: Option<SecureVec>,
+    body: Option<SecureVec>,
+    method: SecureString,
+    authority: SecureString,
+    path: SecureString,
+    query: Option<SecureString>,
     timestamp: u64,
 }
 
@@ -127,7 +127,7 @@ impl VerifyInput {
             credential: req
                 .credential
                 .as_ref()
-                .and_then(|c| Some(Zeroizing::new(c.expose(seal?).clone())))
+                .and_then(|c| Some(SecureVec::from(c.expose(seal?).as_slice())))
                 .unwrap_or_default(),
             lines: req
                 .lines
@@ -139,12 +139,12 @@ impl VerifyInput {
             point: req.point.bit(),
             conn: req.conn,
             unit: req.unit,
-            peer: Zeroizing::new(req.peer.clone()),
-            body: Zeroizing::new(req.body.clone()),
-            method: Zeroizing::new(req.method.clone()),
-            authority: Zeroizing::new(req.authority.clone()),
-            path: Zeroizing::new(req.path.clone()),
-            query: Zeroizing::new(req.query.clone()),
+            peer: req.peer.as_deref().map(SecureVec::from),
+            body: req.body.as_deref().map(SecureVec::from),
+            method: SecureString::from(req.method.as_str()),
+            authority: SecureString::from(req.authority.as_str()),
+            path: SecureString::from(req.path.as_str()),
+            query: req.query.as_deref().map(SecureString::from),
             timestamp: req.timestamp,
         }
         .named()
@@ -160,7 +160,7 @@ impl VerifyInput {
             credential: req
                 .credential
                 .take()
-                .and_then(|c| Some(Zeroizing::new(c.into_exposed(seal?))))
+                .and_then(|c| Some(SecureVec::from(c.into_exposed(seal?))))
                 .unwrap_or_default(),
             lines: std::mem::take(&mut req.lines)
                 .into_iter()
@@ -171,12 +171,12 @@ impl VerifyInput {
             point: req.point.bit(),
             conn: req.conn,
             unit: req.unit,
-            peer: Zeroizing::new(req.peer.take()),
-            body: Zeroizing::new(req.body.take()),
-            method: Zeroizing::new(std::mem::take(&mut req.method)),
-            authority: Zeroizing::new(std::mem::take(&mut req.authority)),
-            path: Zeroizing::new(std::mem::take(&mut req.path)),
-            query: Zeroizing::new(req.query.take()),
+            peer: req.peer.take().map(SecureVec::from),
+            body: req.body.take().map(SecureVec::from),
+            method: SecureString::from(std::mem::take(&mut req.method)),
+            authority: SecureString::from(std::mem::take(&mut req.authority)),
+            path: SecureString::from(std::mem::take(&mut req.path)),
+            query: req.query.take().map(SecureString::from),
             timestamp: req.timestamp,
         }
         .named()
@@ -657,7 +657,7 @@ pub struct AuthInstance {
     metadata: Mutex<InstanceMetadata>,
     metadata_valid: AtomicBool,
 
-    settings: zeroize::Zeroizing<Vec<u8>>,
+    settings: SecureVec,
 
     /// What the instance was lent (re-lent on rotation), and that material's fingerprint.
     secrets: Mutex<Arc<KeptSecrets>>,
@@ -992,7 +992,7 @@ impl AuthInstance {
             facts,
             metadata: Mutex::new(metadata),
             metadata_valid: AtomicBool::new(true),
-            settings: zeroize::Zeroizing::new(settings.to_vec()),
+            settings: SecureVec::from(settings),
             secrets: Mutex::new(Arc::new(secrets)),
             lent_fingerprint: Mutex::new(lent_fingerprint),
             label: label.to_string(),

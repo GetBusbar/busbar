@@ -2699,8 +2699,9 @@ fn outbound_wrappers_keep_seals_opaque_and_validate_scalar_revisions() {
         resource: "https://api.example.test/rpc",
         connection: "public-id",
     };
-    let credential =
-        crate::abi::sdk::cred::Cred::captured(Zeroizing::new(b"private-credential".to_vec()));
+    let credential = crate::abi::sdk::cred::Cred::captured(crate::secure::SecureVec::from(
+        b"private-credential".to_vec(),
+    ));
     assert_eq!(
         s.outbound_publish(
             h,
@@ -2803,8 +2804,8 @@ extern "C" fn outbound_prepare_answer(
 #[test]
 fn outbound_prepare_passes_sealed_form_body_and_checks_acknowledgement_without_a_handle() {
     use crate::abi::sdk::cred::{Cred, FormBody};
-    let code = Cred::captured(Zeroizing::new(b"private-code".to_vec()));
-    let verifier = Cred::captured(Zeroizing::new(b"private-verifier".to_vec()));
+    let code = Cred::captured(crate::secure::SecureVec::from(b"private-code".to_vec()));
+    let verifier = Cred::captured(crate::secure::SecureVec::from(b"private-verifier".to_vec()));
     let body = FormBody::new()
         .sealed("code", &code)
         .sealed("code_verifier", &verifier)
@@ -2881,7 +2882,7 @@ extern "C" fn outbound_publish_body_answer(
 #[test]
 fn outbound_publish_body_keeps_form_opaque_and_supports_initial_and_cas_revisions() {
     use crate::abi::sdk::cred::{Cred, FormBody};
-    let refresh = Cred::captured(Zeroizing::new(b"private-refresh".to_vec()));
+    let refresh = Cred::captured(crate::secure::SecureVec::from(b"private-refresh".to_vec()));
     let body = FormBody::new()
         .public("grant_type", "refresh_token")
         .sealed("refresh_token", &refresh)

@@ -807,7 +807,9 @@ fn a_batch_dropped_after_failed_delivery_is_counted_as_shed() {
     let lines = (0..3)
         .map(|i| Line {
             stream: ExportStream::Logs as u8,
-            bytes: zeroize::Zeroizing::new(format!("{{\"line\":{i}}}").into_bytes()),
+            bytes: busbar_contract::secure::SecureVec::from(
+                format!("{{\"line\":{i}}}").into_bytes(),
+            ),
             _hold: Box::new(()),
         })
         .collect();

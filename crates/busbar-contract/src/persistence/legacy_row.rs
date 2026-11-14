@@ -90,7 +90,7 @@ pub fn encode<O: OwnerSeal>(
             }
         }
     }
-    Ok(Secret::held(std::mem::take(&mut *bytes.into_zeroizing())))
+    Ok(Secret::held(bytes.into_vec()))
 }
 
 /// Validated borrowed row. Parsing does not allocate or copy protected payloads.

@@ -21,6 +21,7 @@ use busbar_contract::abi::host::service::{
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
+use busbar_contract::secure::SecureVec;
 
 pub use busbar_contract::services::{
     Caller, DiskReport, HookAsk, HostServices, Later, NestAsk, OutboundAuthorization, Ran, Reading,
@@ -1229,7 +1230,7 @@ service! {
         };
         // Own the copy before parsing another field: malformed keys, replay and refusal also
         // retire initialized request bytes without issuing a disk job.
-        let mut bytes = zeroize::Zeroizing::new(bytes);
+        let mut bytes = SecureVec::from(bytes);
         let Some(key) = text_of(i.dest_key, "disk_append.dest_key") else {
             return Answered::fault();
         };
@@ -1254,7 +1255,7 @@ service! {
         // SAFETY: no buffer: the result is the `DiskWritten` slot, written below.
         let mut a = unsafe {
             pended(&served, &route, &head, req, None, |later| {
-                provider.disk_append(&dest, std::mem::take(&mut *bytes), later)
+                provider.disk_append(&dest, std::mem::take(&mut bytes).into_vec(), later)
             })
         };
         if matches!(a.outcome, Outcome::Ready | Outcome::Failed) {
@@ -2284,7 +2285,7 @@ service! {
             text_of(i.resource, "outbound_authorize.resource"),
             text_of(i.connection, "outbound_authorize.connection"),
             text_of(i.field_name, "outbound_authorize.field_name"),
-            blob_of(i.credential, "outbound_authorize.credential").map(zeroize::Zeroizing::new),
+            blob_of(i.credential, "outbound_authorize.credential").map(SecureVec::from),
         ) else { return Answered::fault(); };
         if i.action == svc::OUTBOUND_PUBLISH && (
             !field_name.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))

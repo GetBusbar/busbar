@@ -380,8 +380,8 @@ fn malformed_life_and_drop_overflow_refuse_before_submission() {
 fn queued(request: Request, answers: Arc<Mutex<Vec<ConditionalResult>>>) -> ConditionalWrite {
     ConditionalWrite::new(
         Arc::from(INSTANCE),
-        zeroize::Zeroizing::new(request),
-        zeroize::Zeroizing::new(vec![operation(Some(b"event"))]),
+        request,
+        vec![operation(Some(b"event"))],
         ConditionalOwed::new(
             7,
             Box::new(move |answer| answers.lock().unwrap().push(answer)),
@@ -470,10 +470,8 @@ fn drop_clears_fixed_width_slots_but_preserves_nested_chain_rows() {
     let seed = prepared(&rows, Expected::Absent, b"seed", Some(b"seed"));
     assert_eq!(rows.record_transaction(&seed), Ok(Decision::Applied));
     let mut nested = request(Expected::Bytes(b"seed".to_vec()), b"seed");
-    let nested_chain = ConditionalChain {
-        scope: "principal/task/nested".into(),
-        ..operation(Some(b"nested"))
-    };
+    let mut nested_chain = operation(Some(b"nested"));
+    nested_chain.scope = "principal/task/nested".into();
     nested_chain
         .prepare(
             &rows,

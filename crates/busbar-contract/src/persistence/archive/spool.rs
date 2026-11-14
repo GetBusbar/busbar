@@ -6,12 +6,13 @@
 //! or delete-on-close on Windows. Restart reconstructs the source from its owner.
 
 use crate::abi::sdk::aead::{AesGcm, AES_256_KEY_LEN, GCM_NONCE_LEN, GCM_TAG_LEN};
+use crate::secure::{SecureArray, SecureVec};
 use std::{
     fmt,
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
 };
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 const BLOCK: usize = 64 * 1024;
 const USED: usize = 4;
@@ -61,7 +62,7 @@ pub struct SpoolWriter {
     file: File,
     cipher: AesGcm,
     identity: [u8; 16],
-    plain: Zeroizing<Vec<u8>>,
+    plain: SecureVec,
     encoded: Vec<u8>,
     length: u64,
     index: u64,
@@ -88,13 +89,13 @@ impl SpoolWriter {
         if storage_limit < FRAME as u64 {
             return Err(exhausted());
         }
-        let mut seed = Zeroizing::new([0u8; AES_256_KEY_LEN]);
-        crate::crypto::fill(seed.as_mut()).map_err(|_| failed())?;
-        let cipher = AesGcm::new(seed.as_ref()).map_err(|_| failed())?;
+        let mut seed = SecureArray::<AES_256_KEY_LEN>::zeroed();
+        crate::crypto::fill(&mut seed[..]).map_err(|_| failed())?;
+        let cipher = AesGcm::new(&seed[..]).map_err(|_| failed())?;
         drop(seed);
         let mut identity = [0u8; 16];
         crate::crypto::fill(&mut identity).map_err(|_| failed())?;
-        let plain = Zeroizing::new(allocated(PLAIN)?);
+        let plain = SecureVec::from(allocated(PLAIN)?);
         let encoded = allocated(FRAME)?;
         let file = platform::create()?;
         Ok(Self {
@@ -166,7 +167,7 @@ impl SpoolWriter {
             self.poisoned = false;
             self.dirty = false;
         } else {
-            self.plain.as_mut_slice().zeroize();
+            self.plain[..].zeroize();
         }
         answer
     }
@@ -178,7 +179,7 @@ impl SpoolWriter {
         if self.file.metadata()?.len() != offset(blocks)? {
             return Err(invalid());
         }
-        self.plain.as_mut_slice().zeroize();
+        self.plain[..].zeroize();
         Ok(SpoolReader {
             file: self.file,
             cipher: self.cipher,
@@ -203,7 +204,7 @@ impl Write for SpoolWriter {
             self.persist()?;
             self.index = self.index.checked_add(1).ok_or_else(exhausted)?;
             self.used = 0;
-            self.plain.as_mut_slice().zeroize();
+            self.plain[..].zeroize();
         }
         let count = input.len().min(BLOCK - self.used);
         let length = self
@@ -212,7 +213,7 @@ impl Write for SpoolWriter {
             .ok_or_else(exhausted)?;
         if offset(length.div_ceil(BLOCK as u64))? > self.storage_limit {
             self.poisoned = true;
-            self.plain.as_mut_slice().zeroize();
+            self.plain[..].zeroize();
             return Err(exhausted());
         }
         self.plain[USED + self.used..USED + self.used + count].copy_from_slice(&input[..count]);
@@ -225,7 +226,7 @@ impl Write for SpoolWriter {
         self.persist()?;
         if let Err(error) = self.file.flush() {
             self.poisoned = true;
-            self.plain.as_mut_slice().zeroize();
+            self.plain[..].zeroize();
             return Err(error);
         }
         Ok(())
@@ -238,7 +239,7 @@ pub struct SpoolReader {
     file: File,
     cipher: AesGcm,
     identity: [u8; 16],
-    plain: Zeroizing<Vec<u8>>,
+    plain: SecureVec,
     encoded: Vec<u8>,
     length: u64,
     blocks: u64,
@@ -271,7 +272,7 @@ impl SpoolReader {
             return Ok(());
         }
         self.cached = None;
-        self.plain.as_mut_slice().zeroize();
+        self.plain[..].zeroize();
         if index >= self.blocks {
             return Err(invalid());
         }
@@ -318,7 +319,7 @@ impl SpoolReader {
     fn retire(&mut self) {
         self.poisoned = true;
         self.cached = None;
-        self.plain.as_mut_slice().zeroize();
+        self.plain[..].zeroize();
     }
 }
 impl Read for SpoolReader {
@@ -367,7 +368,7 @@ impl Seek for SpoolReader {
             SeekFrom::Current(delta) => i128::from(self.position) + i128::from(delta),
         };
         let position = u64::try_from(position).map_err(|_| exhausted())?;
-        self.plain.as_mut_slice().zeroize();
+        self.plain[..].zeroize();
         self.cached = None;
         self.position = position;
         Ok(position)

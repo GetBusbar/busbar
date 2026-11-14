@@ -715,7 +715,7 @@ fn protected_exchange_pending_facts_keep_the_original_deadline_without_writing()
         |tables| {
             // SAFETY: with_tables owns these host tables for the whole closure.
             let host = unsafe { Host::test_from_raw(tables) };
-            let credential = crate::abi::sdk::cred::Cred::captured(zeroize::Zeroizing::new(
+            let credential = crate::abi::sdk::cred::Cred::captured(crate::secure::SecureVec::from(
                 b"deadline-CANARY".to_vec(),
             ))
             .require_secure();

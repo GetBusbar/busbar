@@ -25,9 +25,9 @@ impl HistoricalConfigProof {
         self.binding
     }
     pub(super) fn settings(site: &str, settings: &serde_json::Value) -> Result<Self, String> {
-        let bytes = zeroize::Zeroizing::new(
-            serde_json::to_vec(settings).map_err(|_| "settings evidence could not be encoded")?,
-        );
+        let mut bytes = busbar_contract::secure::SecureVec::new();
+        serde_json::to_writer(&mut bytes, settings)
+            .map_err(|_| "settings evidence could not be encoded")?;
         let mut hash = Sha256::new();
         hash.update(b"busbar.config.settings-shape.1\0");
         hash.update(site.as_bytes());

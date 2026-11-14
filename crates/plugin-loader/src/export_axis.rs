@@ -7,6 +7,7 @@ use busbar_contract::abi::mechanism::lifecycle::refusal_lines;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::export_calls::{ExportCalls, PreparedExport, Probed, DEFAULT_INFLIGHT};
+use busbar_contract::secure::SecureVec;
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::{Bind, ConnTable, Dispatcher, EnvelopeSink, NoSink, Plugin, PluginLogConfig};
@@ -250,8 +251,7 @@ impl<'r> ExportRows<'r> {
             Some(seal) => seal,
             None => return Some(vec!["export check requires the host settings seal".into()]),
         };
-        let mut listed: zeroize::Zeroizing<Vec<(String, Vec<u8>)>> =
-            zeroize::Zeroizing::new(Vec::with_capacity(instances.len()));
+        let mut listed: Vec<(String, SecureVec)> = Vec::with_capacity(instances.len());
         for (name, settings) in instances {
             #[expect(
                 clippy::disallowed_methods,
@@ -261,13 +261,13 @@ impl<'r> ExportRows<'r> {
                 Ok(bytes) => bytes,
                 Err(error) => return Some(vec![error.to_string()]),
             };
-            busbar_contract::secure::push(&mut listed, (name.clone(), bytes.expose(seal).clone()));
+            listed.push((name.clone(), SecureVec::from(bytes.expose(seal).as_slice())));
         }
         #[expect(
             clippy::disallowed_methods,
             reason = "config: an export check with no instances checks the empty settings"
         )]
-        let none = [(module.to_string(), b"{}".to_vec())];
+        let none = [(module.to_string(), SecureVec::from(&b"{}"[..]))];
         let candidates = if listed.is_empty() {
             &none[..]
         } else {

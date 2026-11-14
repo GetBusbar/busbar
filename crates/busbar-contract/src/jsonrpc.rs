@@ -469,14 +469,14 @@ impl std::io::Write for JsonLength {
 fn envelope_bytes(write: impl Fn(&mut dyn std::io::Write) -> std::io::Result<()>) -> Vec<u8> {
     let mut length = JsonLength::default();
     write(&mut length).expect("JSON-RPC envelope length overflow");
-    let mut out = zeroize::Zeroizing::new(vec![0; length.0]);
-    let mut remaining = out.as_mut_slice();
+    let mut out = crate::secure::SecureVec::zeroed(length.0);
+    let mut remaining = &mut out[..];
     write(&mut remaining).expect("counted JSON-RPC envelope fits its output");
     assert!(
         remaining.is_empty(),
         "counted JSON-RPC envelope fills its output"
     );
-    std::mem::take(&mut *out)
+    out.into_vec()
 }
 
 fn push_str(out: &mut dyn std::io::Write, value: &str) -> std::io::Result<()> {

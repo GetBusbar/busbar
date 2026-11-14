@@ -107,8 +107,9 @@ fn the_projection_witness_distinguishes_plain_and_wiped_payloads() {
     drop(plain);
     assert_eq!(WIPED.with(Cell::get), Some(false));
 
-    let wiped = zeroize::Zeroizing::new(b"wiped-initialized-control".to_vec());
+    let mut wiped = b"wiped-initialized-control".to_vec();
     watch(&wiped);
+    zeroize::Zeroize::zeroize(&mut wiped);
     drop(wiped);
     assert_eq!(WIPED.with(Cell::get), Some(true));
 }

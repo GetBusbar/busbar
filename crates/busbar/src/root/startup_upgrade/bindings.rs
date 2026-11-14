@@ -209,9 +209,11 @@ impl Resolver {
         let (raw, _) = self.documents.original_deployment(&self.config_path)?;
         let normalized =
             rules.normalize_document(ConfigDocument::Deployment, &self.config_path, &raw)?;
-        let input = self
-            .documents
-            .interpolate_captured(normalized.as_deref().map_or(raw.as_str(), String::as_str))?;
+        let input = self.documents.interpolate_captured(
+            normalized
+                .as_ref()
+                .map_or(raw.as_str(), |text| text.as_str()),
+        )?;
         if let Ok(document) =
             busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&input)
         {
@@ -260,8 +262,8 @@ impl Resolver {
             rules.normalize_document(ConfigDocument::Providers, &provider_path, &raw_providers)?;
         let providers = self.documents.interpolate_captured(
             providers
-                .as_deref()
-                .map_or(raw_providers.as_str(), String::as_str),
+                .as_ref()
+                .map_or(raw_providers.as_str(), |text| text.as_str()),
         )?;
         deploy.document_source_fingerprints = Some(
             config::document_patch::SourceFingerprints::from_sources(&input, &providers),
@@ -355,14 +357,14 @@ impl busbar_migrations::FrozenBindingResolver for Resolver {
                 _ => return Err(Error::MissingCapability),
             };
             let mut output = ProtectedJson {
-                bytes: zeroize::Zeroizing::new(Vec::new()),
+                bytes: busbar_contract::secure::SecureVec::new(),
                 budget: self.value_budget,
             };
             serde_json::to_writer(&mut output, &doc.authoring(&busbar_kernel::seal::acquire()))
                 .map_err(|_| Error::Bounds)?;
             converted = Some(std::sync::Arc::new(PreparedOverlay::prepare(
                 original,
-                busbar_contract::Secret::new(std::mem::take(&mut *output.bytes)),
+                busbar_contract::Secret::new(output.bytes.into_vec()),
                 conversion_digest(),
                 self.value_budget,
             )?));
@@ -404,7 +406,7 @@ impl busbar_migrations::FrozenBindingResolver for Resolver {
 }
 
 struct ProtectedJson {
-    bytes: zeroize::Zeroizing<Vec<u8>>,
+    bytes: busbar_contract::secure::SecureVec,
     budget: usize,
 }
 impl std::io::Write for ProtectedJson {
@@ -415,7 +417,8 @@ impl std::io::Write for ProtectedJson {
             .filter(|length| *length <= self.budget)
             .ok_or_else(|| std::io::Error::other("frozen overlay encoding budget exceeded"))?;
         // Grows into a fresh block and wipes the old one (LINT-RULES LR-117).
-        busbar_contract::secure::try_append(&mut self.bytes, bytes)
+        self.bytes
+            .extend(bytes)
             .map_err(|_| std::io::Error::other("frozen overlay encoding allocation refused"))?;
         Ok(bytes.len())
     }

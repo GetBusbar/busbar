@@ -227,8 +227,8 @@ impl GovState {
         refresh_order: Arc<CacheOrder>,
         denylist: Arc<revocation::RevocationSync>,
     ) -> RecordStoreResult<Self> {
-        let mut boot_caller_ref = zeroize::Zeroizing::new([0u8; 32]);
-        busbar_contract::crypto::fill(boot_caller_ref.as_mut_slice())
+        let mut boot_caller_ref = busbar_contract::secure::SecureArray::<32>::zeroed();
+        busbar_contract::crypto::fill(&mut boot_caller_ref[..])
             .expect("OS randomness for the per-boot caller-reference key");
         Ok(Self {
             observation_view: RwLock::default(),
@@ -2150,10 +2150,10 @@ impl GovState {
         let (key, plain, enabled) = match self.lookup_credential(kind, public_id) {
             Some((key, cred)) => {
                 let plain = if cred.meta.is_live(now) {
-                    // Hand the opened plaintext over without copying it; the emptied
-                    // Zeroizing shell has nothing left to wipe.
+                    // Hand the opened plaintext over without copying it, to the `Secret` that
+                    // wipes it.
                     super::at_rest::open(keys.as_deref(), &cred.meta, &cred.secret)
-                        .map(|mut p| std::mem::take(&mut *p))
+                        .map(busbar_contract::secure::SecureString::into_string)
                 } else {
                     None
                 };

@@ -13,8 +13,8 @@ use busbar_contract::persistence::{
 };
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::redacted::constant_time_eq;
+use busbar_contract::secure::SecureVec;
 use busbar_contract::Secret;
-use zeroize::Zeroizing;
 
 const MAGIC: &[u8; 8] = b"BBCAND\0\0";
 const VERSION: u32 = 1;
@@ -46,13 +46,10 @@ pub(crate) fn encode<S: KernelSeal + ?Sized>(
     if length > allocation_budget {
         return Err(CodecError::Budget);
     }
-    let mut bytes = Zeroizing::new(Vec::new());
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|_| CodecError::Allocation)?;
+    let mut bytes = SecureVec::with_capacity(length).map_err(|_| CodecError::Allocation)?;
     write_candidate(&mut Output::Bytes(&mut bytes), prepared, seal)?;
     debug_assert_eq!(bytes.len(), length);
-    Ok(Secret::new(std::mem::take(&mut *bytes)))
+    Ok(Secret::new(bytes.into_vec()))
 }
 
 /// Decode only after a complete allocation-free framing pass and aggregate
@@ -138,17 +135,14 @@ pub(crate) fn decode<S: KernelSeal + ?Sized>(
 }
 
 fn copy(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
-    let mut result = Zeroizing::new(Vec::new());
-    result
-        .try_reserve_exact(bytes.len())
-        .map_err(|_| CodecError::Allocation)?;
-    busbar_contract::secure::append(&mut result, bytes);
-    Ok(std::mem::take(&mut *result))
+    let mut result = SecureVec::with_capacity(bytes.len()).map_err(|_| CodecError::Allocation)?;
+    result.extend_from_slice(bytes);
+    Ok(result.into_vec())
 }
 
 enum Output<'a> {
     Count(usize),
-    Bytes(&'a mut Vec<u8>),
+    Bytes(&'a mut SecureVec),
 }
 impl Output<'_> {
     fn put(&mut self, bytes: &[u8]) -> Result<(), CodecError> {

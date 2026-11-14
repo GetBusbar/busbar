@@ -10,6 +10,7 @@ use busbar_contract::abi::mechanism::{
     lifecycle::slot,
     ticket::Ticket,
 };
+use busbar_contract::secure::SecureVec;
 
 use super::ticket::{InstanceWake, Waking};
 
@@ -20,7 +21,7 @@ fn caller_key(wake: &'static InstanceWake) -> usize {
 pub(crate) struct Input {
     input: *mut InHead,
     original: Blob,
-    _bytes: Arc<zeroize::Zeroizing<Vec<u8>>>,
+    _bytes: Arc<SecureVec>,
 }
 
 impl Drop for Input {
@@ -139,12 +140,12 @@ pub(crate) unsafe fn prepare(
         };
     };
 
-    let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(len));
-    busbar_contract::secure::append(&mut bytes, prior);
+    let mut bytes = SecureVec::with_capacity(len).map_err(|_| ())?;
+    bytes.extend_from_slice(prior);
     #[cfg(test)]
     tests::watch_input_copy(&bytes);
-    busbar_contract::secure::append(&mut bytes, &capability_bytes);
-    busbar_contract::secure::append(&mut bytes, receipt_bytes);
+    bytes.extend_from_slice(&capability_bytes);
+    bytes.extend_from_slice(receipt_bytes);
     #[cfg(test)]
     tests::watch_input_copy(&bytes);
     let bytes = Arc::new(bytes);

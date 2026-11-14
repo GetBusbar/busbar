@@ -113,8 +113,9 @@ impl OutboundPlugin for Echo {
         match credential {
             b"sealed-secure" | b"sealed-unsecured" | b"sealed-pending" | b"sealed-failed"
             | b"sealed-stray" => {
-                let value =
-                    crate::abi::sdk::cred::Cred::captured(Zeroizing::new(b"opaque-token".to_vec()));
+                let value = crate::abi::sdk::cred::Cred::captured(crate::secure::SecureVec::from(
+                    b"opaque-token".to_vec(),
+                ));
                 let value = if credential == b"sealed-unsecured" {
                     value
                 } else {

@@ -856,7 +856,9 @@ impl<R: Read + Seek + Send> SourceReader for ArchiveSource<R> {
                 &member.group,
             )?;
             let marker = Record {
-                key: zeroize::Zeroizing::new(member.group.expose(&seal).clone()),
+                key: busbar_contract::secure::SecureVec::from(
+                    member.group.expose(&seal).as_slice(),
+                ),
                 value: super::legacy::projection::encode_marker(&member.group, digest.0)?,
                 preserve_exact: false,
             };

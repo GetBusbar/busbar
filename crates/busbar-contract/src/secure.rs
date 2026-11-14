@@ -14,7 +14,7 @@
 //! `SecureVec`; no `PartialEq`, and `Debug` prints the length. (4) No `realloc` of live bytes. (5) Hot wipes are a plain fill; the
 //! volatile wipe runs only on the free path.
 //!
-//! SECURE-TYPES (core #164): `zeroize::Zeroizing` is banned in our code (LR-094). Secret memory
+//! SECURE-TYPES (core #164): the zeroize crate's wiping wrapper is banned in our code (LR-094). Secret memory
 //! lives in one of three types, each built on the `zeroize` crate (`Zeroize` does the volatile
 //! wipe; `ZeroizeOnDrop` marks that drop runs it) and none of which hands out a growable
 //! `&mut Vec` or `&mut String`: [`SecureVec`] (secret bytes, fixed or growing), [`SecureString`]
@@ -130,12 +130,6 @@ impl SecureVec {
     /// past them stays as spare capacity, all zero). ONLY to hand the bytes to another owner that
     /// wipes them (`Secret`, `Held`): the `Vec` itself wipes nothing.
     #[must_use]
-    /// Interim (#164): the live bytes as a `Zeroizing` `Vec`; removed with the last caller.
-    #[must_use]
-    pub fn into_zeroizing(self) -> zeroize::Zeroizing<Vec<u8>> {
-        zeroize::Zeroizing::new(self.into_vec())
-    }
-
     pub fn into_vec(mut self) -> Vec<u8> {
         if self.head != 0 {
             let live = self.len();
@@ -617,70 +611,6 @@ impl<const N: usize> Drop for SecureArray<N> {
 }
 
 impl<const N: usize> ZeroizeOnDrop for SecureArray<N> {}
-
-/// Append `bytes` to a wiping `Vec`, never reallocating its live bytes in place: when it is
-/// full, they move into a fresh block of at least twice the capacity and the old block is
-/// volatile-wiped as its `Zeroizing` drops. The one growth path for a `zeroize::Zeroizing<Vec<u8>>`
-/// outside [`SecureVec`] (LINT-RULES LR-117); a buffer reserved to its final size never moves.
-///
-/// # Panics
-/// When the length overflows `usize` (as `Vec` growth does).
-pub fn append(v: &mut zeroize::Zeroizing<Vec<u8>>, bytes: &[u8]) {
-    let len = v
-        .len()
-        .checked_add(bytes.len())
-        .expect("wiping buffer length");
-    if len > v.capacity() {
-        let mut next = Vec::with_capacity(len.max(v.capacity().saturating_mul(2)));
-        next.extend_from_slice(&v[..]);
-        *v = zeroize::Zeroizing::new(next);
-    }
-    v.extend_from_slice(bytes);
-}
-
-/// [`append`] that reports an allocation failure instead of aborting; on [`Overflow`] nothing
-/// is appended and the held bytes are unchanged.
-///
-/// # Errors
-/// [`Overflow`] when the length overflows or the larger block cannot be allocated.
-pub fn try_append(v: &mut zeroize::Zeroizing<Vec<u8>>, bytes: &[u8]) -> Result<(), Overflow> {
-    let len = v.len().checked_add(bytes.len()).ok_or(Overflow)?;
-    if len > v.capacity() {
-        let mut next = Vec::new();
-        next.try_reserve_exact(len.max(v.capacity().saturating_mul(2)))
-            .map_err(|_| Overflow)?;
-        next.extend_from_slice(&v[..]);
-        *v = zeroize::Zeroizing::new(next);
-    }
-    v.extend_from_slice(bytes);
-    Ok(())
-}
-
-/// [`append`] for a wiping `String`.
-///
-/// # Panics
-/// When the length overflows `usize`.
-pub fn append_str(s: &mut zeroize::Zeroizing<String>, text: &str) {
-    let len = s.len().checked_add(text.len()).expect("wiping text length");
-    if len > s.capacity() {
-        let mut next = String::with_capacity(len.max(s.capacity().saturating_mul(2)));
-        next.push_str(s.as_str());
-        *s = zeroize::Zeroizing::new(next);
-    }
-    s.push_str(text);
-}
-
-/// [`append`] for a wiping list: one item, moved into a fresh block when full; the old block's
-/// spare capacity, where the moved items lay, is wiped as its `Zeroizing` drops.
-pub fn push<T: zeroize::Zeroize>(v: &mut zeroize::Zeroizing<Vec<T>>, item: T) {
-    if v.len() == v.capacity() {
-        let mut next = Vec::with_capacity(v.capacity().saturating_mul(2).max(4));
-        next.extend(v.drain(..));
-        *v = zeroize::Zeroizing::new(next);
-    }
-    v.push(item);
-}
-
 /// Whether a reader lent a region by [`SecureVec::read_into`] is trusted to have written nothing
 /// past the count it reports. Every carrier read on dev is [`Tail::Wipe`]: the carrier is a plugin
 /// door, and core never names a plugin as trusted (TRANSPORT-TLS §2.0 rule 6).

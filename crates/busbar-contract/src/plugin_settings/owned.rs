@@ -4,10 +4,10 @@
 //! Internal normalization keeps every unconsumed key and value guarded even when a
 //! reference visitor refuses early. No owner settings decoder is exposed to callers.
 use super::{Tree, RAW_JSON_TOKEN};
+use crate::secure::SecureString;
 use serde::de::{self, DeserializeSeed, IntoDeserializer, MapAccess, SeqAccess, Visitor};
 use serde::Deserializer;
 use serde_json::Value;
-use zeroize::Zeroizing;
 
 type Error = de::value::Error;
 
@@ -35,7 +35,7 @@ impl<'de> Deserializer<'de> for Tree {
             Value::Object(values) => {
                 let held: Vec<_> = std::mem::take(values)
                     .into_iter()
-                    .map(|(key, value)| (Zeroizing::new(key), Tree(value)))
+                    .map(|(key, value)| (SecureString::from(key), Tree(value)))
                     .collect();
                 visitor.visit_map(Object {
                     entries: held.into_iter(),
@@ -109,7 +109,7 @@ impl<'de> SeqAccess<'de> for Sequence {
 }
 
 struct Object {
-    entries: std::vec::IntoIter<(Zeroizing<String>, Tree)>,
+    entries: std::vec::IntoIter<(SecureString, Tree)>,
     pending: Option<Tree>,
 }
 impl<'de> MapAccess<'de> for Object {
@@ -118,11 +118,11 @@ impl<'de> MapAccess<'de> for Object {
         &mut self,
         seed: K,
     ) -> Result<Option<K::Value>, Error> {
-        let Some((mut key, value)) = self.entries.next() else {
+        let Some((key, value)) = self.entries.next() else {
             return Ok(None);
         };
         self.pending = Some(value);
-        seed.deserialize(Tree(Value::String(std::mem::take(&mut *key))))
+        seed.deserialize(Tree(Value::String(key.into_string())))
             .map(Some)
     }
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {

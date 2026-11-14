@@ -820,7 +820,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.conditional_extension(
             leases,
             wire::OBSERVE,
-            &zeroize::Zeroizing::new(wire::encode_observation(request)?),
+            &crate::secure::SecureVec::from(wire::encode_observation(request)?),
         )
     }
 
@@ -831,7 +831,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         settlement: &crate::abi::sdk::plane::conditional::Settlement,
     ) -> Result<(), &'static str> {
         use crate::abi::sdk::plane::conditional as wire;
-        let encoded = zeroize::Zeroizing::new(wire::encode_settlement_ack(settlement));
+        let encoded = crate::secure::SecureVec::from(wire::encode_settlement_ack(settlement));
         wire::read_settlement_ack(&encoded)?;
         self.conditional_extension(leases, wire::SETTLEMENT_ACK, &encoded)
     }

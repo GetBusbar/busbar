@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::secure::{SecureString, SecureVec, Tail};
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use zeroize::Zeroizing;
 
 use crate::root::test_plugins as plugins;
 
@@ -35,7 +35,7 @@ fn restart_phases(child_env: &str, with_token: bool) {
         .name()
         .expect("the test runner names its exact test thread")
         .to_string();
-    let mut handoff = Zeroizing::new(String::new());
+    let mut handoff = SecureString::new();
     for phase in ["first", "restart"] {
         let mut child = Child(
             std::process::Command::new(std::env::current_exe().unwrap())
@@ -54,14 +54,7 @@ fn restart_phases(child_env: &str, with_token: bool) {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
         loop {
             if let Some(status) = child.0.try_wait().unwrap() {
-                let mut output = Zeroizing::new(Vec::new());
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_end(&mut output)
-                    .unwrap();
+                let output = read_secure(child.0.stdout.take().unwrap());
                 // Child stdout can contain the private token handoff. Its stderr already
                 // carries assertion failures; never include the captured bytes in a panic.
                 assert!(
@@ -86,7 +79,7 @@ fn restart_phases(child_env: &str, with_token: bool) {
                     } else {
                         ""
                     };
-                    handoff = Zeroizing::new(format!("{id}\n{token}\n"));
+                    handoff = SecureString::from_args(format_args!("{id}\n{token}\n"));
                 }
                 break;
             }
@@ -110,10 +103,22 @@ fn send_handoff(id: &str, token: Option<&str>) {
     pipe.flush().unwrap();
 }
 
-fn receive_handoff() -> Zeroizing<String> {
-    let mut handoff = Zeroizing::new(String::new());
-    std::io::stdin().read_to_string(&mut handoff).unwrap();
-    handoff
+fn read_secure(mut reader: impl Read) -> SecureVec {
+    let mut bytes = SecureVec::new();
+    loop {
+        let read = bytes
+            .read_into(4096, Tail::Wipe, |region| reader.read(region))
+            .expect("room for the read")
+            .unwrap();
+        if read == 0 {
+            return bytes;
+        }
+    }
+}
+
+fn receive_handoff() -> SecureString {
+    let bytes = read_secure(std::io::stdin());
+    SecureString::from(std::str::from_utf8(&bytes).unwrap())
 }
 
 async fn application(
@@ -218,7 +223,7 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
     let first = phase == "first";
     let directory = PathBuf::from(std::env::var_os(DIRECTORY).unwrap());
     let handoff = if first {
-        Zeroizing::new(String::new())
+        SecureString::new()
     } else {
         receive_handoff()
     };
@@ -283,7 +288,7 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
     let first = phase == "first";
     let directory = PathBuf::from(std::env::var_os(DIRECTORY).unwrap());
     let handoff = if first {
-        Zeroizing::new(String::new())
+        SecureString::new()
     } else {
         receive_handoff()
     };

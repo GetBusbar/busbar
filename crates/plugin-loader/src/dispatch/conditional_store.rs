@@ -8,7 +8,7 @@ use busbar_contract::abi::sdk::plane::conditional::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Exchange {
-    Commit(zeroize::Zeroizing<Request>),
+    Commit(Request),
     Observe(Observation),
 }
 impl Exchange {
@@ -42,7 +42,7 @@ impl ExchangeRef<'_> {
 impl Exchange {
     fn is(&self, other: ExchangeRef<'_>) -> bool {
         match (self, other) {
-            (Self::Commit(kept), ExchangeRef::Commit(r)) => **kept == *r,
+            (Self::Commit(kept), ExchangeRef::Commit(r)) => *kept == *r,
             (Self::Observe(kept), ExchangeRef::Observe(r)) => kept == r,
             _ => false,
         }
@@ -195,7 +195,7 @@ impl ServiceStore {
         self.exchange_begin(
             std::ptr::from_ref(owner) as usize,
             unit,
-            Exchange::Commit(zeroize::Zeroizing::new(request.clone())),
+            Exchange::Commit(request.clone()),
             Some(owner),
         )
     }
@@ -391,14 +391,11 @@ impl ServiceStore {
             .get(&request.capability.ticket)
             .and_then(|h| h.conditionals.get(&(caller, request.capability.epoch)))
             .is_some_and(|k| {
-                k.cancelled && matches!(&k.request, Exchange::Commit(held) if &**held == request)
+                k.cancelled && matches!(&k.request, Exchange::Commit(held) if held == request)
             })
     }
 
-    pub(crate) fn settlement_input(
-        &self,
-        caller: usize,
-    ) -> Option<(zeroize::Zeroizing<Request>, Arc<[u8]>)> {
+    pub(crate) fn settlement_input(&self, caller: usize) -> Option<(Request, Arc<[u8]>)> {
         for previously_lent in [true, false] {
             let mut oldest: Option<(Ticket, u64)> = None;
             for shard in &self.shards {
@@ -515,7 +512,7 @@ impl ServiceStore {
                 || k.finished
                 || !k.settlement_lent
                 || k.receipt.is_none()
-                || **current != *request
+                || *current != *request
             {
                 return Err(());
             }

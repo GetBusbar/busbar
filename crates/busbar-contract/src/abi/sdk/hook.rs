@@ -1080,11 +1080,11 @@ hook_op!(
         match held.life().hook().configure_checkpoint(map, input.version) {
             Ok(checkpoint) => {
                 if let Some(checkpoint) = checkpoint {
-                    let mut bytes = checkpoint.encode();
+                    // Into the secret lease, which wipes it on release.
                     out.lease_secret(
                         |o| &o.head.extensions,
                         held.leases(),
-                        std::mem::take(&mut *bytes),
+                        checkpoint.encode().into_vec(),
                         crate::abi::mechanism::call::BLOB_OCTETS,
                     );
                 }

@@ -45,7 +45,8 @@ fn finish(probe: InitializedPayloadProbe) -> Vec<crate::alloc_counter::ObservedP
 
 #[test]
 fn every_secret_bearing_form_buffer_is_wiped_before_it_is_freed() {
-    let secret = Cred::captured(zeroize::Zeroizing::new(b"s&=e cr+t".repeat(256))).require_secure();
+    let secret =
+        Cred::captured(crate::secure::SecureVec::from(b"s&=e cr+t".repeat(256))).require_secure();
     let body = FormBody::new()
         .sealed("client_secret", &secret)
         .public("code", "a b&c");
@@ -88,7 +89,9 @@ fn every_secret_bearing_form_buffer_is_wiped_before_it_is_freed() {
 
 #[test]
 fn form_names_public_values_and_jws_inputs_are_wiped_on_drop() {
-    let key = Cred::captured(zeroize::Zeroizing::new(b"not used for signing".to_vec()));
+    let key = Cred::captured(crate::secure::SecureVec::from(
+        b"not used for signing".to_vec(),
+    ));
     let body = FormBody::new().public("code", "authorization code").value(
         "assertion",
         FormValue::JwsRs256 {
