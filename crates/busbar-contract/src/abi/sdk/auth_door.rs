@@ -659,18 +659,6 @@ fn write_answer(
     )
 }
 
-/// Write `id` into the host's identity buffer under `verdict` (`VERDICT_IDENTITY` for `verify`),
-/// including its credential when it carries one. For `verify` only: `complete_login` must carry no
-/// credential (the host faults it), so it answers with `auth_kit::login_identity` instead.
-pub fn write_identity(
-    id: &VerifiedIdentity,
-    buf: Lent<'_, IdentityBuf>,
-    mut out: Out<'_, IdentifyOut>,
-    verdict: u32,
-) -> Outcome {
-    write(Some(id), None, buf, &mut out, verdict)
-}
-
 /// A verify's strips as it writes them: [`Answer::strips`], then [`Answer::fixed_strips`].
 type Strips<'a> = [&'a [Strip]; 2];
 
