@@ -4,6 +4,9 @@
 [cargo-vet]
 version = "0.10"
 
+[imports.aranya]
+url = "https://raw.githubusercontent.com/aranya-project/aranya/main/supply-chain/audits.toml"
+
 [imports.bytecode-alliance]
 url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
 
@@ -59,14 +62,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.asn1-rs]]
 version = "0.7.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.asn1-rs-derive]]
-version = "0.6.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.asn1-rs-impl]]
-version = "0.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.async-trait]]
@@ -177,10 +172,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.data-encoding]]
 version = "2.11.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.der-parser]]
-version = "10.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.digest]]
@@ -429,10 +420,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.num]]
 version = "0.4.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.num-bigint]]
-version = "0.4.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.num-cmp]]
@@ -896,14 +883,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.winapi]]
 version = "0.3.9"
-criteria = "safe-to-deploy"
-
-[[exemptions.winapi-i686-pc-windows-gnu]]
-version = "0.4.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.winapi-x86_64-pc-windows-gnu]]
-version = "0.4.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.windows-result]]
