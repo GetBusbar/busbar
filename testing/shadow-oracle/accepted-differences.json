@@ -308,6 +308,52 @@
       "rationale": "Owner rulings 2026-10-27 (provider options; GetBusbar/busbar#1795, GetBusbar/busbar-plane-llm#54): every key of providers.<name> is a busbar provider key or a name on that dialect's list, judged at validation by the plane that speaks the dialect. The 1.5.5 refusal was serde's unknown-field sentence at parse; 1.6.0's is the plane's, collected with the other validation errors, exit 1 as in 1.5.5 (premise). PINNED EXACTLY: the transform rewrites the one candidate sentence the owner signed (header line and the dialect's list included) to the 1.5.5 golden line, so any other wording, list, key or error count stays red. The first transform is D-1's diagnostic-code rewrite, kept from the superseded entry. Supersedes the 2026-09-24 Q66/Q67 additive entry (the 4 lane-capability keys, which remain busbar keys)."
     },
     {
+      "id": "F-018 validation wording",
+      "kind": "additive",
+      "text_list_growth": true,
+      "transform": {
+        "candidate": [
+          [
+            "^(\\[error\\]|\\[warn\\]|warning:) BUSBAR-\\d{4}: ",
+            "\\1 "
+          ]
+        ]
+      },
+      "changelog": "Group-limit validation messages know the new keys.",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30)\\|validate$",
+      "expected_cells": 3,
+      "classes": [
+        "effects.stderr"
+      ],
+      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode sentences rephrased. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped \u2014 the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance. NARROWED AGAIN 2026-09-06 (oracle-phase0, committed-golden triage) for the two cells this entry should never have carried. BOOT-020: the divergence it forgave was 'protocol list reordered', and a reorder of an operator-visible list is neither additive nor better \u2014 it is a change nobody announced. The PUBLISHED 1.5.5 binary prints `anthropic, openai, gemini, bedrock, responses, cohere`; the plugin consolidation had moved it to `anthropic, gemini, openai, \u2026` believing that was already the shipped order. The order is RESTORED in `busbar_llm_codec::DECLS`, so BOOT-020 is byte-identical to 1.5.5 again and owes no acceptance at all. BOOT-043b: the unknown-member refusal did not merely rephrase a sentence \u2014 its FRAME LINE moved from the validate stage to the resolve stage, which an operator's log match sees; it is registered on its own terms as kind=breaking (F-013b) rather than folded into an improvement. NARROWED AGAIN 2026-09-07, and this time by FIXING rather than re-scoping. Three of the five cells this entry named were forgiven for wording that was never worth changing, so the wording was changed back and the cells left this register: BOOT-043b's refusal is returned to the VALIDATE stage (`config::resolve`'s pool-kind inference no longer refuses a member it cannot resolve \u2014 it decides a plane, and a name that resolves nowhere decides nothing \u2014 so `config_validate` refuses it in 1.5.5's words under the `config validation failed:` frame; the member still cannot escape, because a pool that takes no plane stays on the LLM lane where that validator runs, and one that takes a plane from its other members is refused by `check_failover_pool` against that plane's registry). F-013b, which registered that stage move as a break, IS DELETED along with its CHANGELOG line, because there is no longer a difference to accept. BOOT-P07 and BOOT-P09 were pure rephrasings of the reserved-name and credential-mode sentences by the three-plane `split_section` template; both are restored to 1.5.5 byte-for-byte with the section/noun substituted in, pinned by `assert_eq!` tests, and dropped from the `cells` regex. WHAT REMAINS IS THE ONE REAL DIFFERENCE: BOOT-P20/P29/P30 name the four new token-limit metric keys (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`) in a limit's expected-one-of lists. Those keys EXIST in 1.6.0's limit grammar, so hiding them from the list an operator is told to choose from would be a message that lies about what the binary accepts \u2014 a worse defect than the divergence. The owner is deciding whether that is an improvement to keep or a break to register on its own terms; `kind` is left at improvement in the meantime, unchanged, so nothing is silently reclassified while the decision is open. COUNT FOLLOWS THE NARROWING: `expected_cells` is 3, one per BOOT-P id this entry still names \u2014 not the 5 it forgave before BOOT-043b, BOOT-P07 and BOOT-P09 were fixed, and not the 7 before BOOT-020. The declared width is derived from the regex it accompanies, so a later widening of one without the other is caught by the differ rather than silently forgiven. KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.6): each BOOT-P20/P29/P30 stderr line grew the SAME backtick-quoted expected-one-of list by the four new token-limit metric names, with the surrounding sentence untouched \u2014 `text_list_growth` is the kind that proves that byte-for-byte, so this cell is no longer forgiven on the owner's say-so alone but on the tool's own splice check. RESTORED 2026-11-13 (rust-fix limit-metrics, F-018 / 1d03c45c3e): 9ccba6a6f8 froze the three limit refusals back to 1.5.5's bytes because oracle 0.3.7's text_list_growth could not read a pipe-separated list; 0.3.8 fixed that and nobody undid the freeze, so 1d03c45c3e dropped this entry as forgiving nothing. The 1.5.5 wording hides keys the limit grammar accepts, which an explained refusal must not do, so the code now derives all three texts from one table (LimitMetric::ALL and LIMIT_KEYS in crates/busbar-kernel/src/config/groups.rs) and this entry is restored as it stood at 1d03c45c3e^ with three mechanical edits and no new signature: (1) `transform` added, byte-identical to NEUT-U-models and the providers entry, because an additive entry's list proof reads its OWN transform after D-1's diagnostic-code rewrite; (2) BOOT-P29's unknown-key list also appends `admission` and `on_exhaustion` (1.6.0 keys the same match accepts), after the four token metrics; (3) `changelog` is the new CHANGELOG bullet heading verbatim. 1.6.0 text: BOOT-P20 `a limit needs exactly one metric key (requests | tokens | budget | concurrent | tokens_input | tokens_output | tokens_cache_read | tokens_cache_write)`; BOOT-P30 `<metric> is one of requests|tokens|budget|concurrent|tokens_input|tokens_output|tokens_cache_read|tokens_cache_write and <window> ...`; BOOT-P29 1.5.5's eight keys then `tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`, `admission`, `on_exhaustion`. 1.5.5's items are a strict prefix of each list (order pinned by the limit_grammar_tests unit tests; the judge proves growth, not order). Same refusal, exit code 1. The 2026-09-04 signoff covered the original, broader entry and F-018's rationale above records that the owner had not yet ruled on keeping the grown wording; the owner question (restore as additive text_list_growth under rule #10 and the Q66/Q67 precedent) is open and this restoration is not presented as an existing ruling.",
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-P20|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-P29|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-P30|validate",
+            "status": 1
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-04",
+        "ruling": "2026-09-04 parity triage"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "F-015 an inline secret is refused without echoing it",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-06 oracle-phase0 parity triage",

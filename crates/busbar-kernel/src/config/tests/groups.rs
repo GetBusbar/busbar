@@ -17,56 +17,65 @@ fn refusal(yaml: &str) -> String {
 }
 
 #[test]
-fn the_unknown_field_list_is_1_5_5s() {
+fn the_unknown_field_list_grows_1_5_5s() {
     let got = refusal("{ requests: 1, per: day, bogus: 1 }");
     assert!(
         got.contains(
             "unknown field `bogus`, expected one of `requests`, `tokens`, `budget`, \
              `concurrent`, `per`, `pool`, `on_exhaust`, `downgrade_to`"
         ),
-        "BOOT-P29 refusal is not 1.5.5's: {got}"
+        "BOOT-P29 refusal does not keep 1.5.5's list as its prefix: {got}"
+    );
+    assert!(
+        got.contains(
+            "`downgrade_to`, `tokens_input`, `tokens_output`, `tokens_cache_read`, \
+             `tokens_cache_write`, `admission`, `on_exhaustion`"
+        ),
+        "BOOT-P29 refusal does not append the 1.6.0 keys after 1.5.5's: {got}"
     );
     for word in ADDITIVE_METRIC_WORDS {
         assert!(
-            !got.contains(word),
-            "BOOT-P29 names the 1.6.0-additive metric `{word}`: {got}"
+            got.contains(word),
+            "BOOT-P29 omits the 1.6.0 metric `{word}`: {got}"
         );
     }
 }
 
 #[test]
-fn the_no_metric_key_refusal_is_1_5_5s() {
+fn the_no_metric_key_refusal_grows_1_5_5s() {
     let got = refusal("{ per: day }");
     assert!(
         got.contains(
-            "a limit needs exactly one metric key (requests | tokens | budget | concurrent)"
+            "a limit needs exactly one metric key (requests | tokens | budget | concurrent | \
+             tokens_input | tokens_output | tokens_cache_read | tokens_cache_write)"
         ),
-        "BOOT-P20 refusal is not 1.5.5's: {got}"
+        "BOOT-P20 refusal does not list every metric after 1.5.5's four: {got}"
     );
     for word in ADDITIVE_METRIC_WORDS {
         assert!(
-            !got.contains(word),
-            "BOOT-P20 names the 1.6.0-additive metric `{word}`: {got}"
+            got.contains(word),
+            "BOOT-P20 omits the 1.6.0 metric `{word}`: {got}"
         );
     }
 }
 
 #[test]
-fn the_expecting_line_is_1_5_5s() {
+fn the_expecting_line_grows_1_5_5s() {
     let got = refusal("requests");
     assert!(
         got.contains(
             "expected a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }` where \
-             <metric> is one of requests|tokens|budget|concurrent and <window> one of \
+             <metric> is one of requests|tokens|budget|concurrent|tokens_input|tokens_output|\
+             tokens_cache_read|tokens_cache_write and <window> one of \
              minute|hour|day|month|total (omit `per` for concurrent; `pool` is optional and \
              scopes the limit to one pool's traffic)"
         ),
-        "BOOT-P30 refusal is not 1.5.5's: {got}"
+        "BOOT-P30 refusal does not list every metric after 1.5.5's four: {got}"
     );
     for word in ADDITIVE_METRIC_WORDS {
         assert!(
-            !got.contains(word),
-            "BOOT-P30 names the 1.6.0-additive metric `{word}`: {got}"
+            got.contains(word),
+            "BOOT-P30 omits the 1.6.0 metric `{word}`: {got}"
         );
     }
 }
@@ -100,5 +109,68 @@ fn the_four_frozen_metrics_still_parse() {
             .unwrap_or_else(|e| panic!("`{word}` no longer parses: {e}"));
         assert_eq!(parsed.metric.as_str(), word);
         assert_eq!(parsed.amount, 7);
+    }
+}
+
+/// A minimal valid value for each `LIMIT_KEYS` entry. A key missing here fails the guard below.
+fn minimal_value(key: &str) -> &'static str {
+    match key {
+        "per" => "day",
+        "pool" | "downgrade_to" => "p",
+        "on_exhaust" => "block",
+        "admission" => "exact",
+        "on_exhaustion" => "finish-unit",
+        k if LimitMetric::from_key(k).is_some() => "1",
+        other => panic!("no minimal value for limit key `{other}`; add one"),
+    }
+}
+
+#[test]
+fn limit_tables_agree() {
+    for m in LimitMetric::ALL {
+        assert!(
+            LIMIT_KEYS.contains(&m.as_str()),
+            "metric `{}` is missing from LIMIT_KEYS",
+            m.as_str()
+        );
+    }
+    for key in LIMIT_KEYS {
+        let yaml = format!("{{ {key}: {} }}", minimal_value(key));
+        if let Err(e) = serde_yaml::from_str::<LimitCfg>(&yaml) {
+            let e = e.to_string();
+            assert!(
+                !e.contains("unknown field"),
+                "LIMIT_KEYS lists `{key}` but the parser refuses it as unknown: {e}"
+            );
+        }
+    }
+    let got = refusal("{ requests: 1, per: day, bogus: 1 }");
+    for key in LIMIT_KEYS {
+        assert!(
+            got.contains(&format!("`{key}`")),
+            "BOOT-P29 omits `{key}`: {got}"
+        );
+    }
+}
+
+#[test]
+fn every_metric_is_in_all() {
+    // Exhaustive on purpose (no `_`): a new metric fails to compile here until placed in ALL.
+    fn idx(m: LimitMetric) -> usize {
+        match m {
+            LimitMetric::Requests => 0,
+            LimitMetric::Tokens => 1,
+            LimitMetric::Budget => 2,
+            LimitMetric::Concurrent => 3,
+            LimitMetric::TokensInput => 4,
+            LimitMetric::TokensOutput => 5,
+            LimitMetric::TokensCacheRead => 6,
+            LimitMetric::TokensCacheWrite => 7,
+        }
+    }
+    assert_eq!(LimitMetric::ALL.len(), 8);
+    for m in LimitMetric::ALL {
+        assert_eq!(LimitMetric::ALL[idx(m)], m);
+        assert_eq!(LimitMetric::from_key(m.as_str()), Some(m));
     }
 }
