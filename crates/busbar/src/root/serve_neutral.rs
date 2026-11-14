@@ -411,7 +411,7 @@ impl DataRoutes {
                 if response.body.is_empty() {
                     caller.complete_head(response.status, response.fields);
                 } else {
-                    // lint-exempt(whole-body-states-length): `streams__sdp__calls` pins this
+                    // `streams__sdp__calls` pins this
                     // datagram whole response as chunked, pending the owner's ruling.
                     caller.head(response.status, response.fields);
                     let _ = caller.write_owned(response.body).await;
