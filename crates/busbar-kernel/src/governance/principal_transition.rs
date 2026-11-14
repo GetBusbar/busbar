@@ -796,13 +796,13 @@ pub async fn prepare(
         .list_keys()
         .await
         .map_err(|e| error_text(&e))?;
-    keys_before.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+    keys_before.sort_by(|a, b| a.id.cmp(&b.id));
     let mut denylist_before = core
         .identity()
         .list_denylist()
         .await
         .map_err(|e| error_text(&e))?;
-    denylist_before.sort_unstable();
+    denylist_before.sort();
     // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut carry = Vec::new();
     for (source, destination, window, period) in
@@ -1761,7 +1761,7 @@ async fn inspect(
         .list_denylist()
         .await
         .map_err(|e| error_text(&e))?;
-    denied.sort_unstable();
+    denied.sort();
     #[expect(
         clippy::disallowed_methods,
         reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
@@ -2324,7 +2324,7 @@ pub fn requirements(
             settings_sha256: digest(&definition.authoring(&crate::seal::acquire()))?,
         });
     }
-    requirements.sort_unstable();
+    requirements.sort();
     Ok(requirements)
 }
 

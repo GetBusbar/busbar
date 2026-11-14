@@ -1647,7 +1647,7 @@ impl GovState {
         );
         let mut order: ChainScratch<usize> = ChainScratch::new();
         order.extend_from_slice(&shard_idx);
-        order.sort_unstable();
+        order.sort();
         let mut guards: ChainScratch<Option<std::sync::RwLockWriteGuard<'_, _>>> =
             ChainScratch::new();
         guards.resize_with(n, || None);

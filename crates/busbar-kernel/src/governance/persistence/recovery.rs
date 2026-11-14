@@ -354,7 +354,7 @@ async fn heads(store: &CoreStore) -> Result<Vec<([u8; 16], Head)>, RecoveryError
     while let Some(bucket) = buckets.next().await {
         result.extend(bucket?);
     }
-    result.sort_unstable_by_key(|(operation, _)| *operation);
+    result.sort_by_key(|(operation, _)| *operation);
     Ok(result)
 }
 
