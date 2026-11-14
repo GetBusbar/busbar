@@ -10,7 +10,7 @@
 //! (`login-limiter-no-key`), because per-node keys over a shared store would split the budget
 //! silently.
 
-use ring::hmac;
+use busbar_contract::crypto::HmacSha256Key;
 use unicode_normalization::UnicodeNormalization;
 
 /// The HKDF label of the account key.
@@ -23,7 +23,7 @@ pub const STATE_LABEL: &[u8] = b"busbar login-state v1";
 const FINGERPRINT_HEX: usize = 32;
 
 /// The key account fingerprints are computed under. No `Debug` of the key, no `Clone`.
-pub struct AccountKeyer(hmac::Key);
+pub struct AccountKeyer(HmacSha256Key);
 
 impl std::fmt::Debug for AccountKeyer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,15 +46,15 @@ impl AccountKeyer {
     #[must_use]
     pub fn fingerprint(&self, submitted: &str) -> String {
         let normalised = normalise_account(submitted);
-        let tag = hmac::sign(&self.0, normalised.as_bytes());
-        let mut hex = hex::encode(tag.as_ref());
+        let tag = self.0.sign(normalised.as_bytes());
+        let mut hex = hex::encode(tag);
         hex.truncate(FINGERPRINT_HEX);
         hex
     }
 }
 
 /// The MAC key of the login-state cookie.
-pub struct StateKey(hmac::Key);
+pub struct StateKey(HmacSha256Key);
 
 impl std::fmt::Debug for StateKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -75,13 +75,13 @@ impl StateKey {
     /// The tag over `payload`.
     #[must_use]
     pub fn sign(&self, payload: &[u8]) -> Vec<u8> {
-        hmac::sign(&self.0, payload).as_ref().to_vec()
+        self.0.sign(payload).to_vec()
     }
 
     /// Whether `tag` is the tag over `payload` (constant time).
     #[must_use]
     pub fn verify(&self, payload: &[u8], tag: &[u8]) -> bool {
-        hmac::verify(&self.0, payload, tag).is_ok()
+        self.0.verify(payload, tag).is_ok()
     }
 }
 

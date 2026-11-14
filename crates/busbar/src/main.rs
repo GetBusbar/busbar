@@ -645,9 +645,13 @@ async fn run(
         let detail = match documents.take_debt() {
             Some(todos) => root::startup_upgrade::documents::explain_debt(
                 &todos,
-                root::cli::validate_judged(&config_path, providers_override.as_deref(), ignore_overlay)
-                    .err()
-                    .as_ref(),
+                root::cli::validate_judged(
+                    &config_path,
+                    providers_override.as_deref(),
+                    ignore_overlay,
+                )
+                .err()
+                .as_ref(),
                 &config_path,
             ),
             None => e,
@@ -1189,7 +1193,9 @@ async fn run(
 
     let blocked =
         config_validate::metadata_denylist_entries().len() + cfg.blocked_metadata_hosts.len();
-    tracing::info!("metadata protection: {blocked} hosts blocked (--print-metadata-blocklist to view)");
+    tracing::info!(
+        "metadata protection: {blocked} hosts blocked (--print-metadata-blocklist to view)"
+    );
 
     let listen = cfg.listen.clone();
     let tls_cfg = cfg.tls.clone();

@@ -321,14 +321,7 @@ test_support_pub! {
 impl Called {
     #[must_use]
     pub fn open_failure(&self, display: &str) -> String {
-        let reason: &dyn std::fmt::Display = match (&self.error, self.outcome) {
-            (Some(e), _) if !e.is_empty() => &String::from_utf8_lossy(e),
-            (_, Outcome::Fault) => &"status 3",
-            _ => &"status 1",
-        };
-        #[expect(clippy::disallowed_methods, reason = "error: a plugin's refused open")]
-        let failure = format!("plugin '{display}' open failed: {reason}");
-        failure
+        open_failure(self.outcome, self.error.as_deref(), display)
     }
 }
 
@@ -359,12 +352,14 @@ impl From<Called> for Answered {
 }
 
 fn open_failure(outcome: Outcome, error: Option<&[u8]>, display: &str) -> String {
-    let reason = match (error, outcome) {
-        (Some(e), _) if !e.is_empty() => String::from_utf8_lossy(e).into_owned(),
-        (_, Outcome::Fault) => "status 3".to_string(),
-        _ => "status 1".to_string(),
+    let reason: &dyn std::fmt::Display = match (error, outcome) {
+        (Some(e), _) if !e.is_empty() => &String::from_utf8_lossy(e),
+        (_, Outcome::Fault) => &"status 3",
+        _ => &"status 1",
     };
-    format!("plugin '{display}' open failed: {reason}")
+    #[expect(clippy::disallowed_methods, reason = "error: a plugin's refused open")]
+    let failure = format!("plugin '{display}' open failed: {reason}");
+    failure
 }
 
 /// What one crossing answered.
@@ -2879,8 +2874,7 @@ impl<K: Kind> Plugin<K> {
         // for measurement class identity after that comparison.
         let stated = &v.rendering;
         let mut statement_digest = [0; 32];
-        statement_digest
-            .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, stated).as_ref());
+        statement_digest.copy_from_slice(&busbar_contract::crypto::sha256(stated));
         #[expect(
             clippy::disallowed_methods,
             reason = "boot: an instance is bound once, at load"
@@ -3354,33 +3348,15 @@ impl<K: Kind> Plugin<K> {
             let measurement = token.measurement;
             let called = super::measurement::with_reservation(measurement.clone(), || {
                 if token.ticket.is_none() {
-                    self.call_on(s, frame, token.ticket, false, measurement)
+                    self.call_on(s, frame, token.ticket, false, measurement, true)
                 } else {
                     self.call_inline(token.ticket, true, s, frame)
                 }
-                let _reference = match token.kept.as_ref() {
-                    Some(kept) => match unsafe { RecallInput::new(frame.heads().0, kept.id) } {
-                        Ok(reference) => Some(reference),
-                        Err(()) => {
-                            return Called::from(Crossed::refused(
-                                "the recalled short answer could not be lent back",
-                            ))
-                        }
-                    },
-                    None => None,
-                };
-                let called = super::measurement::with_reservation(token.measurement.clone(), || {
-                    if token.ticket.is_none() {
-                        self.call_on(s, frame, token.ticket, false, token.measurement.clone(), true)
-                    } else {
-                        self.call_inline(token.ticket, true, s, frame)
-                    }
-                });
-                if called.recall.is_some() {
-                    return Called::from(Crossed::host(Outcome::Fault));
-                }
-                called
+            });
+            if called.recall.is_some() {
+                return Called::from(Crossed::host(Outcome::Fault));
             }
+            called
         }
     }
 

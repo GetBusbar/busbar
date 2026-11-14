@@ -725,7 +725,8 @@ fn absent_config_gives_the_owner_signed_defaults() {
 
 #[test]
 fn invalid_limits_are_refused_with_3133() {
-    let yaml = |s: &str| -> crate::config::LoginLimitsCfg { serde_yaml::from_str(s).unwrap() };
+    let yaml =
+        |s: &str| -> crate::config::LoginLimitsCfg { busbar_contract::yaml::from_str(s).unwrap() };
     for (cfg, needle) in [
         (
             "per_account: { max_failures: 0 }",
@@ -755,18 +756,20 @@ fn invalid_limits_are_refused_with_3133() {
         );
     }
     let advanced: crate::config::AdvancedCfg =
-        serde_yaml::from_str("trusted_proxies: [\"10.0.0.1/8\"]").unwrap();
+        busbar_contract::yaml::from_str("trusted_proxies: [\"10.0.0.1/8\"]").unwrap();
     assert!(policy::resolve(None, &Default::default(), &advanced).is_err());
     assert!(
-        serde_yaml::from_str::<crate::config::LoginLimitsCfg>("per_account: { enabled: false }")
-            .is_err(),
+        busbar_contract::yaml::from_str::<crate::config::LoginLimitsCfg>(
+            "per_account: { enabled: false }"
+        )
+        .is_err(),
         "the per-account limiter has no `enabled`: it cannot be disabled"
     );
 }
 
 #[test]
 fn a_provider_override_wins_for_its_method() {
-    let providers: crate::config::IdentityProviders = serde_yaml::from_str(
+    let providers: crate::config::IdentityProviders = busbar_contract::yaml::from_str(
         "corp-ad: { module: ldap, browser_login: { max_failures: 2, failure_window: 30m } }",
     )
     .unwrap();

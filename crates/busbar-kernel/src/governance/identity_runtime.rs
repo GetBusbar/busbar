@@ -268,11 +268,7 @@ impl GovState {
         let (public_id, plain) = super::issue_credential(shape).store()?;
         let plain = Secret::new(plain);
         let mut random = [0u8; 16];
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: an identity mutation or cache rebuild, once per key or credential change (control plane)"
-        )]
-        getrandom::fill(&mut random)
+        busbar_contract::crypto::fill(&mut random)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
         #[expect(
             clippy::disallowed_methods,

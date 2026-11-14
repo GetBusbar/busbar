@@ -142,7 +142,7 @@ pub fn private_reach_retired(at: &str, key: &str) -> String {
 /// ([`private_reach_retired`]); a registration writing it is refused before it is served. The one
 /// policy, `advanced.allow_destinations`, decides every private destination.
 #[must_use]
-pub fn private_reach(_entry: &serde_yaml::Value, _keys: &[TrustKeyDecl]) -> bool {
+pub fn private_reach(_entry: &busbar_contract::yaml::Value, _keys: &[TrustKeyDecl]) -> bool {
     false
 }
 

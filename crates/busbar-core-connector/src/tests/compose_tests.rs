@@ -602,16 +602,17 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
 #[test]
 fn a_dialled_refusal_of_an_unexplained_kind_is_the_stacks_words_exactly() {
     use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
-    crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
-        let server = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![leaf.into()],
-                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-            )
-            .unwrap();
+        let server = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(
+                    vec![leaf.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+                )
+            })
+            .unwrap(),
+        );
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let far = l.local_addr().unwrap().to_string();

@@ -89,7 +89,9 @@ impl Life for Rotating {
     fn refresh(&self, _: &[u8], secrets: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         match self.refresh.as_str() {
             "none" => Err(Refusal::refused(NOT_REFRESHED)),
-            "refuse" => Err(Refusal::refused("the witness refuses the rotated credential")),
+            "refuse" => Err(Refusal::refused(
+                "the witness refuses the rotated credential",
+            )),
             _ => {
                 *self.held.lock().unwrap_or_else(|e| e.into_inner()) =
                     secrets.first().copied().unwrap_or_default().to_vec();

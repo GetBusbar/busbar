@@ -21,13 +21,12 @@ impl std::fmt::Debug for CallerRefKey {
 /// material under `label` (HKDF-SHA256, empty salt). Every node that resolves the same signing key
 /// derives the same key for the same label; distinct labels give independent keys.
 #[must_use]
-pub fn derive_hmac_key(material: &[u8], label: &[u8]) -> hmac::Key {
-    let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(material);
-    let info = [label];
-    let okm = prk
-        .expand(&info, hmac::HMAC_SHA256)
+pub fn derive_hmac_key(material: &[u8], label: &[u8]) -> HmacSha256Key {
+    let mut okm = [0_u8; 32];
+    crypto::hkdf_sha256(&[], material, label, &mut okm)
         .expect("one HMAC-SHA256 key length is within HKDF-SHA256's output bound");
-    hmac::Key::from(okm)
+    // PANIC: `okm` is a fixed 32-byte derived key, never short, so the backend cannot refuse it.
+    HmacSha256Key::new(&okm).expect("a 32-byte HMAC-SHA256 key is always accepted")
 }
 
 impl CallerRefKey {

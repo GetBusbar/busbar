@@ -449,7 +449,7 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
 #[test]
 fn an_accepted_client_under_an_unknown_ca_is_refused_in_the_stacks_words_exactly() {
     use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
-    crate::tls::install_crypto_provider();
+    use busbar_contract::crypto::testing::rcgen;
     let (ca, leaf, key) = localhost_cert();
     // The stranger CA must carry its OWN subject name: rcgen names every certificate
     // `CN=rcgen self signed cert` by default, and a leaf whose issuer name matches the trusted
@@ -472,16 +472,17 @@ fn an_accepted_client_under_an_unknown_ca_is_refused_in_the_stacks_words_exactly
     worker().block_on(async move {
         let mut client_roots = rustls::RootCertStore::empty();
         client_roots.add(ca.clone().into()).unwrap();
-        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(client_roots))
-            .build()
-            .unwrap();
-        let server = rustls::ServerConfig::builder()
-            .with_client_cert_verifier(verifier)
-            .with_single_cert(
-                vec![leaf.into()],
-                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-            )
-            .unwrap();
+        let verifier =
+            busbar_contract::crypto::tls::client_verifier(Arc::new(client_roots), |b| b).unwrap();
+        let server = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_client_cert_verifier(verifier).with_single_cert(
+                    vec![leaf.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+                )
+            })
+            .unwrap(),
+        );
         let door = Arc::new(TestDoor::identity("sec"));
         let mut l = Listening::bind(
             Some(door.clone()),
@@ -496,13 +497,15 @@ fn an_accepted_client_under_an_unknown_ca_is_refused_in_the_stacks_words_exactly
         let client = tokio::spawn(async move {
             let mut roots = rustls::RootCertStore::empty();
             roots.add(ca.into()).unwrap();
-            let cfg = rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_client_auth_cert(
-                    vec![stranger_leaf.into()],
-                    rustls_pki_types::PrivateKeyDer::try_from(stranger_key).unwrap(),
-                )
-                .unwrap();
+            let cfg = std::sync::Arc::unwrap_or_clone(
+                busbar_contract::crypto::tls::client_config(|b| {
+                    b.with_root_certificates(roots).with_client_auth_cert(
+                        vec![stranger_leaf.into()],
+                        rustls_pki_types::PrivateKeyDer::try_from(stranger_key).unwrap(),
+                    )
+                })
+                .unwrap(),
+            );
             let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg));
             let s = Client::connect(addr).await.unwrap();
             let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();

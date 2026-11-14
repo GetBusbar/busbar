@@ -1609,7 +1609,7 @@ async fn a_downgrade_never_routes_a_key_into_a_pool_it_may_not_use() {
 /// models, `oracle-fb` spills into it, and `m-other` is a model in no pool.
 fn llm_baseline() -> busbar_kernel::config::RootCfg {
     let def: busbar_kernel::config::ProviderDef =
-        serde_yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
+        busbar_contract::yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
             .expect("provider");
     let defs = std::collections::HashMap::from([("p".to_string(), def)]);
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
@@ -1629,16 +1629,13 @@ fn llm_baseline() -> busbar_kernel::config::RootCfg {
 fn llm_pools_of(cfg: &busbar_kernel::config::RootCfg) -> Result<DoorPools, String> {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
     let sections = super::kernel_sections(cfg).expect("projectable configuration");
-    let mut table = serde_yaml::Mapping::new();
-    table.insert(
-        RESERVED_MODELS_KEY.into(),
-        sections[RESERVED_MODELS_KEY].clone(),
-    );
-    table.insert(
-        RESERVED_POOLS_KEY.into(),
-        sections[RESERVED_POOLS_KEY].clone(),
-    );
-    DoorPools::of(&serde_yaml::Value::Mapping(table), RESERVED_POOLS_KEY)
+    let mut table = busbar_contract::yaml::Pairs::new();
+    table.insert_key(RESERVED_MODELS_KEY, sections[RESERVED_MODELS_KEY].clone());
+    table.insert_key(RESERVED_POOLS_KEY, sections[RESERVED_POOLS_KEY].clone());
+    DoorPools::of(
+        &busbar_contract::yaml::Value::Map(table),
+        RESERVED_POOLS_KEY,
+    )
 }
 
 fn llm_pools() -> DoorPools {
@@ -1661,7 +1658,7 @@ fn llm_pool_members_written_by_kernel_sections_are_read() {
 
 #[test]
 fn pool_member_map_without_a_name_is_refused() {
-    let section: serde_yaml::Value = serde_yaml::from_str(
+    let section: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(
         "models:\n  m: {}\npools:\n  p:\n    members: [{model: m}, {weight: 3}]",
     )
     .expect("yaml");
@@ -3629,12 +3626,24 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
     assert_eq!(lapsed.len(), 1, "one 8027 for one revocation: {lapsed:?}");
     assert_eq!(lapsed[0].level, tracing::Level::ERROR);
     assert_eq!(lapsed[0].field("cause"), Some("revoked-at-source"));
-    assert_eq!(lapsed[0].field("member"), Some("planner"), "it names the member");
+    assert_eq!(
+        lapsed[0].field("member"),
+        Some("planner"),
+        "it names the member"
+    );
     assert_eq!(
         report.audits(),
         vec![
-            ("upstream_credential.refresh".to_string(), "member:planner".to_string(), "degraded"),
-            ("upstream_credential.refresh".to_string(), "member:planner".to_string(), "rejected"),
+            (
+                "upstream_credential.refresh".to_string(),
+                "member:planner".to_string(),
+                "degraded"
+            ),
+            (
+                "upstream_credential.refresh".to_string(),
+                "member:planner".to_string(),
+                "rejected"
+            ),
         ]
     );
     std::fs::write(&path, "tok").expect("put it back");
@@ -4538,8 +4547,8 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         ],
         "the door's own requests on either need carry the member's binding"
     );
-    let section: serde_yaml::Value =
-        serde_yaml::from_str("fs: {url: \"https://far.example/rpc\"}").expect("yaml");
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("fs: {url: \"https://far.example/rpc\"}").expect("yaml");
     let facts = super::door_facts(
         busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
         &[],
@@ -4593,7 +4602,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
         "audit",
         Vec::new(),
     );
-    let section = serde_yaml::from_str("{}").expect("empty section");
+    let section = busbar_contract::yaml::from_str("{}").expect("empty section");
     let pools = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("empty pools");
     let serving = ModelServing {
         pools: ModelPools::default(),
@@ -5766,7 +5775,6 @@ fn bearer_of(route: &busbar_kernel::plane_driver::MemberRoute) -> String {
 
 // WASTE-AUTH-SECRETS W3 (T3a): ten models on one provider share one credential reference, so the
 // door step resolves it once, not once per model.
-#[cfg(feature = "auth-header")]
 #[test]
 fn door_step_ten_models_one_vault_ref_resolves_once() {
     let key_file = own_secret("w3-ten", "sk-ten-models");
@@ -5788,7 +5796,6 @@ fn door_step_ten_models_one_vault_ref_resolves_once() {
 }
 
 // T3b: two providers with three models each resolve two references, one per provider.
-#[cfg(feature = "auth-header")]
 #[test]
 fn door_step_two_providers_two_refs_resolve_once_each() {
     let first = own_secret("w3-two-a", "sk-first");
@@ -5819,7 +5826,6 @@ fn door_step_two_providers_two_refs_resolve_once_each() {
 
 // T3c: nothing is kept across door-step calls: each call (boot, each reload) resolves fresh, so a
 // rotated value reaches the models on the next call.
-#[cfg(feature = "auth-header")]
 #[test]
 fn door_step_each_call_resolves_fresh() {
     let key_file = own_secret("w3-fresh", "sk-before");

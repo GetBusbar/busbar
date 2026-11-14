@@ -108,17 +108,11 @@ pub fn verify(key: &ReleaseKey, msg: &[u8], sig: &[u8]) -> bool {
                 return false;
             };
             !k.is_weak()
-                && k.verify_strict(msg, &ed25519_dalek::Signature::from_bytes(sig))
+                && k.verify_strict(msg, &crate::sign::Signature::from_bytes(sig))
                     .is_ok()
         }
         ReleaseKey::P256(k) => {
-            k[0] == 4
-                && ring::signature::UnparsedPublicKey::new(
-                    &ring::signature::ECDSA_P256_SHA256_ASN1,
-                    k,
-                )
-                .verify(msg, sig)
-                .is_ok()
+            k[0] == 4 && busbar_contract::crypto::ecdsa_p256::verify_asn1(k, msg, sig).is_ok()
         }
     }
 }
