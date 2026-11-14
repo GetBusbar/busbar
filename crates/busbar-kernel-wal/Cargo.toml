@@ -12,6 +12,7 @@ name = "busbar_kernel_wal"
 path = "src/lib.rs"
 
 [dependencies]
+hex = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 ring = { workspace = true }
 

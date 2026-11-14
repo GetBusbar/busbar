@@ -351,6 +351,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-yaml",
  "flate2",
+ "hex",
  "http-body-util",
  "jsonschema",
  "reqwest",
@@ -375,6 +376,7 @@ dependencies = [
  "crc32fast",
  "dimpl",
  "futures",
+ "hex",
  "libc",
  "rcgen",
  "ring",
@@ -406,6 +408,7 @@ dependencies = [
  "busbar-yaml",
  "bytes",
  "futures",
+ "hex",
  "http",
  "http-body-util",
  "jsonschema",
@@ -481,6 +484,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "ed25519-dalek",
+ "hex",
  "ring",
  "serde_json",
  "zeroize",
@@ -515,6 +519,7 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "hex",
  "serde",
 ]
 
@@ -523,6 +528,7 @@ name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "hex",
  "ring",
  "sha2 0.10.9",
 ]

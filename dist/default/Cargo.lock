@@ -411,6 +411,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "flate2",
+ "hex",
  "schemars",
  "serde",
  "serde_json",
@@ -431,6 +432,7 @@ dependencies = [
  "crc32fast",
  "dimpl",
  "futures",
+ "hex",
  "libc",
  "rcgen",
  "ring",
@@ -459,6 +461,7 @@ dependencies = [
  "busbar-kernel",
  "busbar-yaml",
  "bytes",
+ "hex",
  "http",
  "http-body-util",
  "oauth-as",
@@ -731,6 +734,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "ed25519-dalek",
+ "hex",
  "ring",
  "serde_json",
  "zeroize",
@@ -765,6 +769,7 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "hex",
  "serde",
 ]
 
@@ -773,6 +778,7 @@ name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "hex",
  "ring",
 ]
 

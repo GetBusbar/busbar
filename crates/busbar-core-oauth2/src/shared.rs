@@ -65,17 +65,7 @@ fn authority_body(value: &[u8]) -> Result<Option<&[u8]>, StorageError> {
 }
 
 fn digest(value: &str) -> String {
-    hex(ring::digest::digest(&ring::digest::SHA256, value.as_bytes()).as_ref())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes
-        .iter()
-        .fold(String::with_capacity(2 * bytes.len()), |mut s, b| {
-            let _ = write!(s, "{b:02x}");
-            s
-        })
+    hex::encode(ring::digest::digest(&ring::digest::SHA256, value.as_bytes()).as_ref())
 }
 
 fn nonce() -> Result<String, StorageError> {
@@ -86,7 +76,7 @@ fn nonce() -> Result<String, StorageError> {
         .map_err(|_| {
             StorageError::new("oauth_as store: the system's random source gave nothing")
         })?;
-    Ok(hex(&bytes))
+    Ok(hex::encode(bytes))
 }
 
 fn now_secs() -> u64 {

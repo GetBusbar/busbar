@@ -805,13 +805,7 @@ impl<T> Page<T> {
 }
 
 pub fn encode_offset_cursor(offset: usize) -> String {
-    use std::fmt::Write;
-    format!("o:{offset}")
-        .bytes()
-        .fold(String::new(), |mut s, b| {
-            let _ = write!(s, "{b:02x}");
-            s
-        })
+    hex::encode(format!("o:{offset}"))
 }
 
 pub fn decode_offset_cursor(cursor: &str) -> Option<usize> {
