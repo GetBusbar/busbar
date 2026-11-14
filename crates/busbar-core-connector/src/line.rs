@@ -94,6 +94,11 @@ struct Seen {
     /// off).
     secured: bool,
     peer_cert_hash: Option<String>,
+    /// The connection's [`Connection::prepared_landed`] latch: a prepared exchange's facts may be
+    /// answered from what is seen.
+    ready: bool,
+    /// The connection's [`Connection::wire_kept`]: nothing on it is ever redialled.
+    wire_kept: bool,
 }
 
 impl Seen {
@@ -117,6 +122,8 @@ impl Seen {
             self.secured = conn.secured();
             self.peer_cert_hash = conn.peer_cert_hash();
         }
+        self.ready = conn.prepared_landed();
+        self.wire_kept = conn.wire_kept();
     }
 }
 
@@ -239,7 +246,8 @@ impl std::fmt::Debug for Line {
 
 impl Line {
     /// A line over `conn`, held by its first exchange (a dialled connection's
-    pub(crate) fn new(conn: Connection) -> Arc<Self> {
+    pub(crate) fn new(mut conn: Connection) -> Arc<Self> {
+        conn.latch_prepared();
         let dialled = conn.dialled();
         let first = if dialled { EXCHANGE_STREAM } else { EVERY };
         let mut seen = Seen::default();
@@ -318,9 +326,10 @@ impl Line {
                 return;
             }
             if s.opening.is_empty() {
-                let Some(conn) = taken.conn.take() else {
+                let Some(mut conn) = taken.conn.take() else {
                     return;
                 };
+                conn.latch_prepared();
                 s.seen.refresh(&conn);
                 s.conn = Some(conn);
                 let missed = std::mem::take(&mut s.missed);
@@ -392,6 +401,13 @@ impl Line {
     /// Every byte the line's socket has taken.
     pub(crate) fn flushed(&self) -> u64 {
         self.fact(Connection::flushed, |s| s.flushed).unwrap_or(0)
+    }
+
+    /// Whether the line's connection failed keeping bytes its carrier may still deliver
+    /// ([`Connection::wire_kept`]): no exchange on it is ever redialled.
+    pub(crate) fn wire_kept(&self) -> bool {
+        self.fact(Connection::wire_kept, |s| s.wire_kept)
+            .unwrap_or(false)
     }
 
     /// An idle line, read for what the far end sent while it sat: whether it can carry the next
@@ -470,6 +486,24 @@ impl Line {
     pub(crate) fn secured(&self) -> bool {
         self.fact(Connection::secured, |s| s.secured)
             .unwrap_or(false)
+    }
+
+    /// RESERVE a stream on the line for a prepared exchange (the pool lent it, so its holder is
+    /// already counted): `attach`'s claim without an opening, which [`Line::commit`] hands over
+    /// later. Refused `Closed` (with the stream, for the caller's `leave`) on a closing line.
+    pub(crate) fn reserve(&self) -> Result<u64, (u64, Failure)> {
+        debug_assert!(
+            self.users() >= 1,
+            "the pool's lend counted the reserving holder"
+        );
+        let mut s = self.state();
+        let stream = s.next;
+        s.next += 1;
+        s.held.insert(stream);
+        if s.closing {
+            return Err((stream, Failure::Closed));
+        }
+        Ok(stream)
     }
 
     /// Open a new exchange on the line (the pool lent it, so its holder is already counted): its
@@ -686,6 +720,11 @@ impl Line {
         let waker = self.fan_waker();
         let missed = Arc::new(cx.waker().clone());
         let s = self.state();
+        // Another holder has a LANDED connection out: what it published is answered, never a
+        // wait on that holder (it flushes its own output ahead of anything queued for it).
+        if s.conn.is_none() && !s.closing && s.seen.ready && s.seen.cause.is_none() {
+            return Poll::Ready(Ok(()));
+        }
         match self.turn(
             s,
             Some(&missed),
