@@ -368,9 +368,9 @@ pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
     with_deserializer(text, |d| T::deserialize(d))
 }
 
-/// Whether `T` (under any references) is the untyped tree or its mapping: those reads and writes
-/// go through this module's tag-aware, duplicate-refusing builder and writer. Named by type so
-/// that `from_str` needs no `'static` bound.
+/// Whether `T` (under any references) is the untyped tree or its mapping: those reads go through
+/// this module's tag-aware, duplicate-refusing builder. Named by type so that `from_str` needs no
+/// `'static` bound.
 fn untyped_target<T: ?Sized>() -> bool {
     let name = std::any::type_name::<T>().trim_start_matches('&');
     name == std::any::type_name::<Value>() || name == std::any::type_name::<Mapping>()
@@ -764,14 +764,11 @@ impl<'de> serde::de::Visitor<'de> for FindTagInside {
     }
 }
 
-/// Write `value` as a YAML document. A [`Value`] or [`Mapping`] writes its application tags back
-/// (`!Name value`), as serde_yaml wrote a `Value::Tagged`.
+/// Write `value` as a YAML document. Every tagged [`Value`] in it, at any depth (the whole value,
+/// or one inside a struct field, an `Option`, a map or a sequence), writes its application tag
+/// back (`!Name value`), as serde_yaml wrote a `Value::Tagged`.
 pub fn to_string<T: Serialize + ?Sized>(value: &T) -> Result<String, Error> {
-    if untyped_target::<T>() {
-        let tree = Value::serialized(value).map_err(Error::unplaced)?;
-        return Ok(serde_saphyr::to_string(&Writable(&tree))?);
-    }
-    Ok(serde_saphyr::to_string(&value)?)
+    Ok(serde_saphyr::to_string(&Tagging(value))?)
 }
 
 /// Write `value` as a YAML document to `writer`, as [`to_string`] writes it.
@@ -779,29 +776,324 @@ pub fn to_writer<W: std::io::Write, T: Serialize + ?Sized>(
     mut writer: W,
     value: &T,
 ) -> Result<(), Error> {
-    if untyped_target::<T>() {
-        let tree = Value::serialized(value).map_err(Error::unplaced)?;
-        return Ok(serde_saphyr::to_io_writer(&mut writer, &Writable(&tree))?);
-    }
-    Ok(serde_saphyr::to_io_writer(&mut writer, &value)?)
+    Ok(serde_saphyr::to_io_writer(&mut writer, &Tagging(value))?)
 }
 
-/// A tree written as YAML: a registered application tag through serde-saphyr's `Tagged`, so it
-/// is written as the node's tag; any other node as ciborium writes it.
-struct Writable<'v>(&'v Value);
+/// ciborium's enum name for a tagged item, in its `Value`'s serde form.
+const CBOR_TAG: &str = "@@TAG@@";
 
-impl Serialize for Writable<'_> {
+/// `0` serialized through [`TagWriter`]: as it serializes itself, except that a [`Value::Tag`]
+/// anywhere inside it is written as its application tag.
+struct Tagging<'v, T: ?Sized>(&'v T);
+
+impl<T: Serialize + ?Sized> Serialize for Tagging<'_, T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self.0 {
-            Value::Tag(id, inner) => match tag_name(*id) {
-                Some(tag) => serde_saphyr::Tagged(Writable(inner), Some(tag)).serialize(serializer),
-                None => Writable(inner).serialize(serializer),
-            },
-            Value::Array(items) => serializer.collect_seq(items.iter().map(Writable)),
-            Value::Map(pairs) => {
-                serializer.collect_map(pairs.iter().map(|(k, v)| (Writable(k), Writable(v))))
+        self.0.serialize(TagWriter(serializer))
+    }
+}
+
+/// A serializer (or one of its compound serializers) that passes every call through to `0`
+/// unchanged, wrapping every nested element, field, key and value in [`Tagging`] so the rule
+/// holds at any depth, except ciborium's tagged item (`@@TAG@@::@@TAGGED@@(id, value)`): a tag
+/// the registry handed out is written through serde-saphyr's `Tagged` (`!Name value`), any other
+/// (a genuine CBOR tag) as its value alone.
+struct TagWriter<S>(S);
+
+macro_rules! pass_through {
+    ($($method:ident($ty:ty)),+ $(,)?) => {
+        $(
+            fn $method(self, v: $ty) -> Result<S::Ok, S::Error> {
+                self.0.$method(v)
             }
-            other => other.serialize(serializer),
+        )+
+    };
+}
+
+impl<S: serde::Serializer> serde::Serializer for TagWriter<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    type SerializeSeq = TagWriter<S::SerializeSeq>;
+    type SerializeTuple = TagWriter<S::SerializeTuple>;
+    type SerializeTupleStruct = TagWriter<S::SerializeTupleStruct>;
+    type SerializeTupleVariant = TagWriterVariant<S>;
+    type SerializeMap = TagWriter<S::SerializeMap>;
+    type SerializeStruct = TagWriter<S::SerializeStruct>;
+    type SerializeStructVariant = TagWriter<S::SerializeStructVariant>;
+
+    pass_through! {
+        serialize_bool(bool),
+        serialize_i8(i8),
+        serialize_i16(i16),
+        serialize_i32(i32),
+        serialize_i64(i64),
+        serialize_i128(i128),
+        serialize_u8(u8),
+        serialize_u16(u16),
+        serialize_u32(u32),
+        serialize_u64(u64),
+        serialize_u128(u128),
+        serialize_f32(f32),
+        serialize_f64(f64),
+        serialize_char(char),
+        serialize_str(&str),
+        serialize_bytes(&[u8]),
+        serialize_unit_struct(&'static str),
+    }
+
+    fn serialize_none(self) -> Result<S::Ok, S::Error> {
+        self.0.serialize_none()
+    }
+
+    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<S::Ok, S::Error> {
+        self.0.serialize_some(&Tagging(value))
+    }
+
+    fn serialize_unit(self) -> Result<S::Ok, S::Error> {
+        self.0.serialize_unit()
+    }
+
+    fn serialize_unit_variant(
+        self,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+    ) -> Result<S::Ok, S::Error> {
+        self.0.serialize_unit_variant(name, variant_index, variant)
+    }
+
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(
+        self,
+        name: &'static str,
+        value: &T,
+    ) -> Result<S::Ok, S::Error> {
+        self.0.serialize_newtype_struct(name, &Tagging(value))
+    }
+
+    fn serialize_newtype_variant<T: Serialize + ?Sized>(
+        self,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+        value: &T,
+    ) -> Result<S::Ok, S::Error> {
+        self.0
+            .serialize_newtype_variant(name, variant_index, variant, &Tagging(value))
+    }
+
+    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, S::Error> {
+        self.0.serialize_seq(len).map(TagWriter)
+    }
+
+    fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, S::Error> {
+        self.0.serialize_tuple(len).map(TagWriter)
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        name: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeTupleStruct, S::Error> {
+        self.0.serialize_tuple_struct(name, len).map(TagWriter)
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeTupleVariant, S::Error> {
+        if name == CBOR_TAG && variant == CBOR_TAGGED && len == 2 {
+            return Ok(TagWriterVariant::Tag {
+                serializer: Some(self.0),
+                id: None,
+                written: None,
+            });
+        }
+        self.0
+            .serialize_tuple_variant(name, variant_index, variant, len)
+            .map(TagWriterVariant::Through)
+    }
+
+    fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, S::Error> {
+        self.0.serialize_map(len).map(TagWriter)
+    }
+
+    fn serialize_struct(
+        self,
+        name: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeStruct, S::Error> {
+        self.0.serialize_struct(name, len).map(TagWriter)
+    }
+
+    fn serialize_struct_variant(
+        self,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeStructVariant, S::Error> {
+        self.0
+            .serialize_struct_variant(name, variant_index, variant, len)
+            .map(TagWriter)
+    }
+
+    fn collect_str<T: fmt::Display + ?Sized>(self, value: &T) -> Result<S::Ok, S::Error> {
+        self.0.collect_str(value)
+    }
+
+    fn is_human_readable(&self) -> bool {
+        self.0.is_human_readable()
+    }
+}
+
+impl<C: serde::ser::SerializeSeq> serde::ser::SerializeSeq for TagWriter<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
+    fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), C::Error> {
+        self.0.serialize_element(&Tagging(value))
+    }
+    fn end(self) -> Result<C::Ok, C::Error> {
+        self.0.end()
+    }
+}
+
+impl<C: serde::ser::SerializeTuple> serde::ser::SerializeTuple for TagWriter<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
+    fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), C::Error> {
+        self.0.serialize_element(&Tagging(value))
+    }
+    fn end(self) -> Result<C::Ok, C::Error> {
+        self.0.end()
+    }
+}
+
+impl<C: serde::ser::SerializeTupleStruct> serde::ser::SerializeTupleStruct for TagWriter<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
+    fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), C::Error> {
+        self.0.serialize_field(&Tagging(value))
+    }
+    fn end(self) -> Result<C::Ok, C::Error> {
+        self.0.end()
+    }
+}
+
+impl<C: serde::ser::SerializeMap> serde::ser::SerializeMap for TagWriter<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
+    fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<(), C::Error> {
+        self.0.serialize_key(&Tagging(key))
+    }
+    fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), C::Error> {
+        self.0.serialize_value(&Tagging(value))
+    }
+    fn serialize_entry<K: Serialize + ?Sized, V: Serialize + ?Sized>(
+        &mut self,
+        key: &K,
+        value: &V,
+    ) -> Result<(), C::Error> {
+        self.0.serialize_entry(&Tagging(key), &Tagging(value))
+    }
+    fn end(self) -> Result<C::Ok, C::Error> {
+        self.0.end()
+    }
+}
+
+impl<C: serde::ser::SerializeStruct> serde::ser::SerializeStruct for TagWriter<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), C::Error> {
+        self.0.serialize_field(key, &Tagging(value))
+    }
+    fn skip_field(&mut self, key: &'static str) -> Result<(), C::Error> {
+        self.0.skip_field(key)
+    }
+    fn end(self) -> Result<C::Ok, C::Error> {
+        self.0.end()
+    }
+}
+
+impl<C: serde::ser::SerializeStructVariant> serde::ser::SerializeStructVariant for TagWriter<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), C::Error> {
+        self.0.serialize_field(key, &Tagging(value))
+    }
+    fn skip_field(&mut self, key: &'static str) -> Result<(), C::Error> {
+        self.0.skip_field(key)
+    }
+    fn end(self) -> Result<C::Ok, C::Error> {
+        self.0.end()
+    }
+}
+
+/// [`TagWriter`]'s tuple variant: any other tuple variant passed through, or ciborium's tagged
+/// item, whose fields are the tag number and then the value.
+enum TagWriterVariant<S: serde::Serializer> {
+    Through(S::SerializeTupleVariant),
+    Tag {
+        /// The serializer the tagged value is written to, until it is.
+        serializer: Option<S>,
+        /// The tag number, once field 0 is read.
+        id: Option<u64>,
+        /// The result of writing the value (field 1).
+        written: Option<S::Ok>,
+    },
+}
+
+impl<S: serde::Serializer> serde::ser::SerializeTupleVariant for TagWriterVariant<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+
+    fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), S::Error> {
+        let (serializer, id, written) = match self {
+            Self::Through(inner) => {
+                return serde::ser::SerializeTupleVariant::serialize_field(inner, &Tagging(value))
+            }
+            Self::Tag {
+                serializer,
+                id,
+                written,
+            } => (serializer, id, written),
+        };
+        let Some(number) = *id else {
+            let number = Value::serialized(value)
+                .map_err(<S::Error as serde::ser::Error>::custom)?
+                .as_integer()
+                .and_then(|i| u64::try_from(i).ok())
+                .ok_or_else(|| {
+                    <S::Error as serde::ser::Error>::custom("a CBOR tag number must be a u64")
+                })?;
+            *id = Some(number);
+            return Ok(());
+        };
+        let serializer = serializer.take().ok_or_else(|| {
+            <S::Error as serde::ser::Error>::custom("a tagged item has one value")
+        })?;
+        *written = Some(match tag_name(number) {
+            Some(tag) => serde_saphyr::Tagged(Tagging(value), Some(tag)).serialize(serializer)?,
+            None => Tagging(value).serialize(serializer)?,
+        });
+        Ok(())
+    }
+
+    fn end(self) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Through(inner) => serde::ser::SerializeTupleVariant::end(inner),
+            Self::Tag { written, .. } => written.ok_or_else(|| {
+                <S::Error as serde::ser::Error>::custom("a tagged item is missing its value")
+            }),
         }
     }
 }
