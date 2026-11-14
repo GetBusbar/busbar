@@ -78,6 +78,7 @@ test-harness = []
 serde_json = { workspace = true }
 
 [dev-dependencies]
+busbar-core-connector = { path = "../busbar-core-connector", features = ["test-support"] }
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }
 busbar-contract = { path = "../busbar-contract", features = ["stage-probe"] }
 ring = { workspace = true }
