@@ -258,6 +258,7 @@ helm install busbar busbar/busbar -f my-values.yaml
 <details>
 <summary><strong>Plain Deployment, Service and ConfigMap, without Helm</strong></summary>
 
+<!-- doc-check: startup-probe -->
 ```yaml
 apiVersion: v1
 kind: ConfigMap
@@ -296,6 +297,10 @@ spec:
           envFrom:
             - secretRef: { name: busbar-keys }     # ANTHROPIC_KEY, OPENAI_KEY
           ports: [ { name: http, containerPort: 8080 } ]
+          # No listener is bound while a replica waits on another's first start of a shared store:
+          # the startup budget must cover it (docs/operations.md "First start with several
+          # replicas"; raise it for the one-time 1.5.5 upgrade boot).
+          startupProbe:   { httpGet: { path: /healthz, port: http }, periodSeconds: 10, failureThreshold: 100 }
           readinessProbe: { httpGet: { path: /healthz, port: http } }
           livenessProbe:  { httpGet: { path: /healthz, port: http } }
           resources:

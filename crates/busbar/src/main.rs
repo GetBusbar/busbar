@@ -346,7 +346,7 @@ fn main() {
 
     if let Err(e) = root::loader::dispatch::handle::arm() {
         eprintln!("busbar: {e}");
-        std::process::exit(1);
+        root::exit::exit(1);
     }
     // Force this boot's node now, so its one OS draw never lands on a request worker.
     let _ = busbar_kernel::door::node();
@@ -362,14 +362,20 @@ fn main() {
     let catalogue = register_diagnostics();
 
     match root::cli::handle_cli_flags() {
-        root::cli::Parsed::Exit(code) => std::process::exit(code),
+        root::cli::Parsed::Exit(code) => root::exit::exit(code),
         root::cli::Parsed::Serve => {}
     }
 
-    // A RUST_LOG the console filter cannot read stops boot here, before any work: it is never
-    // silently replaced by the default level.
-    if let Err(e) = busbar_kernel::observability::check_rust_log() {
-        die(e);
+    // The one subscriber, installed before any work so admission's diagnostics (the first-start
+    // wait line, a takeover, an exit-time hand-over) reach stderr (FIRST-START-TAKEOVER §2.8).
+    // A RUST_LOG the console filter cannot read stops boot here: it is never silently replaced
+    // by the default level.
+    match busbar_kernel::observability::init_logging() {
+        Ok(()) => {}
+        Err(busbar_kernel::observability::LoggingError::RustLog(e)) => die(e),
+        Err(e @ busbar_kernel::observability::LoggingError::AlreadyInitialized(_)) => {
+            eprintln!("busbar: {e}");
+        }
     }
 
     #[cfg(not(target_env = "msvc"))]
@@ -429,6 +435,9 @@ fn main() {
             .expect("failed to build the tokio control runtime")
             .block_on(run(late_services, catalogue, control_work));
     }
+    // Every return from `run` (a one-shot command, a serve-and-shutdown) leaves here, so an
+    // unpublished first start is handed over on a normal return too (FIRST-START-TAKEOVER §2.7).
+    root::exit::exit(0);
 }
 
 /// The control listener, line carrier and callbacks use the same detached custody as data workers.
@@ -579,6 +588,9 @@ async fn run(
     control_work: ControlWork,
 ) {
     root::observe::install(catalogue);
+    // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so
+    // an armed first-start owner hands over (FIRST-START-TAKEOVER §2.7).
+    let signal_handoff = root::exit::exit_on_signal();
 
     let argv = root::cli::argv();
 
@@ -815,6 +827,7 @@ async fn run(
             .await
             .unwrap_or_else(|error| die(error));
         let anchor_store = store_admission.store().expect("confirmed Store admission");
+        root::exit::arm(&anchor_store);
         let root::startup_upgrade::publication::Preparation {
             mut publication,
             mut progress,
@@ -1733,6 +1746,8 @@ async fn run(
             let _ = shutdown_tx.send(());
         });
     }
+    // The listener's handler drains on a signal from here on.
+    let _ = signal_handoff.send(());
 
     let budget_flusher = app_handle.load().governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
@@ -1777,10 +1792,10 @@ async fn run(
             root::shutdown::retire_storage(&mut store_admission, book.as_ref(), drained).await
         {
             tracing::error!(%error, "storage shutdown incomplete");
-            std::process::exit(1);
+            root::exit::exit(1);
         }
         lease_result.unwrap_or_else(|error| die(error));
-        std::process::exit(code);
+        root::exit::exit(code);
     }
 
     let framer = listener_plan.has_root_listener().then(|| {
@@ -1954,7 +1969,7 @@ async fn run(
         root::shutdown::retire_storage(&mut store_admission, book.as_ref(), drained).await
     {
         tracing::error!(%error, "storage shutdown incomplete");
-        std::process::exit(1);
+        root::exit::exit(1);
     }
     lease_result.unwrap_or_else(|error| die(error));
 }

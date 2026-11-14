@@ -4,6 +4,7 @@
 use super::*;
 use busbar_contract::persistence::{BackendInfo, Call, ClockObservation, Durability, Page, Scan};
 use futures::FutureExt;
+use std::time::Duration;
 use std::{collections::BTreeMap, sync::Mutex};
 
 /// One evaluated verdict, as a slot row records it.
@@ -28,6 +29,10 @@ struct Native {
     now: u64,
     commit_now: Option<u64>,
     unknown_before: bool,
+    /// One-shot reply, taken after the send is recorded and before the receipt lookup.
+    force: Option<Result<Decision, Failure>>,
+    /// One-shot write applied between a caller's read and its commit.
+    before_commit: Option<BeforeCommit>,
 }
 #[derive(Default)]
 struct Backend(Mutex<Native>);
@@ -75,8 +80,14 @@ impl PersistenceBackend for Backend {
         Box::pin(async move {
             let (decision, hold) = {
                 let mut native = self.0.lock().unwrap();
+                if let Some(apply) = native.before_commit.take() {
+                    apply(&mut *native);
+                }
                 let digest = prepared.fingerprint();
                 native.sends.push(digest);
+                if let Some(reply) = native.force.take() {
+                    return reply;
+                }
                 let candidate = prepared.candidate();
                 if std::mem::take(&mut native.unknown_before) {
                     return Err(Failure::Unknown);
@@ -218,6 +229,141 @@ async fn admitted(startup: &mut Startup) -> Arc<CoreStore> {
     panic!("startup did not finish bounded phases")
 }
 
+/// The diagnostics emitted on this thread while `future` runs, as the fmt layer prints them.
+async fn capture_diagnostics<T>(future: impl std::future::Future<Output = T>) -> (T, String) {
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = Buf::default();
+    let writer = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_target(false)
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    tracing::callsite::rebuild_interest_cache();
+    let out = future.await;
+    drop(guard);
+    let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    (out, text)
+}
+
+fn banner(diagnostic: &crate::diagnostics::Diagnostic) -> String {
+    format!("diag={}", diagnostic.banner())
+}
+
+fn birth_of(backend: &Backend) -> Birth {
+    let native = backend.0.lock().unwrap();
+    Birth::decode(
+        native.rows[&first_start::address()].expose(&crate::seal::lend()),
+        DatasetId([1; 16]),
+    )
+    .unwrap()
+}
+
+fn writer_row(backend: &Backend, writer: [u8; 16]) -> control::Writer {
+    let native = backend.0.lock().unwrap();
+    control::Writer::decode(native.rows[&writer_address(writer)].expose(&crate::seal::lend()))
+        .unwrap()
+}
+
+/// A successor over an unpublished birth record whose owner's writer row is open. It must
+/// wait, change nothing, and take over only at the window computed from the record it sees.
+async fn admitted_after_stall(backend: &Arc<Backend>, prior: [u8; 16]) -> Arc<CoreStore> {
+    let snapshot = || {
+        let native = backend.0.lock().unwrap();
+        (
+            native.rows.clone(),
+            native.sends.len(),
+            native.receipts.len(),
+        )
+    };
+    let before = snapshot();
+    let birth = birth_of(backend);
+    assert_eq!(
+        birth.owner,
+        Some(prior),
+        "the record is not the prior owner's"
+    );
+    assert!(!birth.published, "the record is already published");
+    let window = stall_window(&birth);
+    assert_eq!(
+        window,
+        FIRST_START_STALL + READY_STEP * u32::try_from(birth.done_len()).unwrap()
+    );
+    let mut successor = startup(backend, false);
+    assert_eq!(
+        successor.advance().await.unwrap(),
+        Progress::Pending,
+        "first observation"
+    );
+    assert!(snapshot() == before, "the first observation wrote");
+    tokio::time::advance(window / 2).await;
+    assert_eq!(
+        successor.advance().await.unwrap(),
+        Progress::Pending,
+        "half the window"
+    );
+    assert!(snapshot() == before, "half the window wrote");
+    tokio::time::advance(window - window / 2 - Duration::from_millis(1)).await;
+    assert_eq!(
+        successor.advance().await.unwrap(),
+        Progress::Pending,
+        "1 ms before the window"
+    );
+    assert!(snapshot() == before, "1 ms before the window wrote");
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let (store, log) = capture_diagnostics(admitted(&mut successor)).await;
+    assert!(
+        !writer_row(backend, prior).admits(1),
+        "the prior owner is not retired"
+    );
+    assert_eq!(
+        birth_of(backend).owner,
+        Some(store.authority().unwrap().writer),
+        "the successor does not own the record"
+    );
+    assert_eq!(
+        log.matches(&banner(&FIRST_START_TAKEOVER)).count(),
+        1,
+        "{log}"
+    );
+    assert!(log.contains(&writer_hex(&prior)), "{log}");
+    store
+}
+
+/// A: Initialize, Register, Admitted, then dropped with its writer row open (a crash). B is a
+/// fresh Startup advanced to the window, so its next advance submits the takeover Register.
+async fn takeover_built(backend: &Arc<Backend>) -> ([u8; 16], Startup) {
+    let owner = admitted(&mut startup(backend, true))
+        .await
+        .first_start()
+        .unwrap()
+        .owner();
+    let mut b = startup(backend, false);
+    assert_eq!(b.advance().await.unwrap(), Progress::Pending);
+    tokio::time::advance(FIRST_START_STALL).await;
+    let sends = backend.0.lock().unwrap().sends.len();
+    assert_eq!(b.advance().await.unwrap(), Progress::Advanced);
+    assert!(matches!(b.phase, Phase::Register(.., Some(_))));
+    assert_eq!(
+        backend.0.lock().unwrap().sends.len(),
+        sends,
+        "built, not sent"
+    );
+    (owner, b)
+}
+
 fn initial_binding(instance: &str, digest: u8) -> first_start::Binding {
     first_start::Binding {
         instance: instance.into(),
@@ -260,7 +406,7 @@ fn host_initialization(value: &[u8]) -> (Vec<Predicate>, Vec<Mutation>) {
     )
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn first_start_host_initialization_is_atomic_and_replay_is_read_only() {
     let backend = Arc::new(Backend::default());
     let store = admitted(&mut startup(&backend, true)).await;
@@ -284,7 +430,7 @@ async fn first_start_host_initialization_is_atomic_and_replay_is_read_only() {
         assert!(!native.rows.keys().any(|a| a.namespace == [8; 16]));
     }
     // A fresh process reconciles the definite conflict without repurposing its candidate.
-    let store = admitted(&mut startup(&backend, false)).await;
+    let store = admitted_after_stall(&backend, proof.owner()).await;
     let proof = store.first_start().unwrap();
     let (predicates, mutations) = host_initialization(b"initial");
     assert_eq!(
@@ -379,7 +525,7 @@ async fn first_start_host_unknown_retains_complete_candidate_and_stable_witness(
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn first_start_host_initialization_takeover_fences_stale_completion() {
     let backend = Arc::new(Backend::default());
     let store = admitted(&mut startup(&backend, true)).await;
@@ -392,7 +538,7 @@ async fn first_start_host_initialization_takeover_fences_stale_completion() {
             .await,
         Ok(Progress::Pending)
     );
-    let successor = admitted(&mut startup(&backend, false)).await;
+    let successor = admitted_after_stall(&backend, prior.owner()).await;
     let current = successor.first_start().unwrap();
     assert_eq!(prior.initialization_witness().await, Err(Error::Authority));
     let (predicates, mutations) = host_initialization(b"initial");
@@ -439,7 +585,7 @@ async fn first_start_host_initialization_takeover_fences_stale_completion() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn first_start_before_plan_freeze_can_resume_but_fences_delayed_old_writes() {
     let backend = Arc::new(Backend::default());
     let first = admitted(&mut startup(&backend, true)).await;
@@ -447,7 +593,7 @@ async fn first_start_before_plan_freeze_can_resume_but_fences_delayed_old_writes
     let delayed = delayed_initial_write(&first);
     // A crash before the plan exists has issued no plane initialization authority.
     assert!(!prior.permits("one").await.unwrap());
-    let second = admitted(&mut startup(&backend, false)).await;
+    let second = admitted_after_stall(&backend, prior.owner()).await;
     let current = second.first_start().unwrap();
     assert_eq!(
         current
@@ -490,7 +636,7 @@ async fn first_start_before_plan_freeze_can_resume_but_fences_delayed_old_writes
         .any(|a| a.namespace == [9; 16]));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn first_start_frozen_plan_and_native_initialization_survive_crash_exactly() {
     let backend = Arc::new(Backend::default());
     let first = admitted(&mut startup(&backend, true)).await;
@@ -519,7 +665,7 @@ async fn first_start_frozen_plan_and_native_initialization_survive_crash_exactly
     ));
     backend.0.lock().unwrap().lose_reply = true;
     assert_eq!(prior.complete("one").await.unwrap(), Progress::Pending);
-    let second = admitted(&mut startup(&backend, false)).await;
+    let second = admitted_after_stall(&backend, prior.owner()).await;
     let current = second.first_start().unwrap();
     assert_eq!(
         current
@@ -594,7 +740,7 @@ async fn first_start_unknown_plan_freeze_retains_exact_candidate_and_missing_pro
     assert!(retained.first_start().is_none());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn first_start_late_applied_ready_cannot_publish_after_owner_takeover() {
     let backend = Arc::new(Backend::default());
     let first = admitted(&mut startup(&backend, true)).await;
@@ -603,7 +749,7 @@ async fn first_start_late_applied_ready_cannot_publish_after_owner_takeover() {
     prior.freeze(plan.clone()).await.unwrap();
     backend.0.lock().unwrap().lose_reply = true;
     assert_eq!(prior.complete("one").await.unwrap(), Progress::Pending);
-    let successor = admitted(&mut startup(&backend, false)).await;
+    let successor = admitted_after_stall(&backend, prior.owner()).await;
     let current = successor.first_start().unwrap();
     current.freeze(plan).await.unwrap();
     // The successor superseded the exact birth witness: audited Reconcile (section 2.3 c).

@@ -290,7 +290,7 @@ pub fn register_stores(linked: &Linked) {
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
-            std::process::exit(2);
+            crate::root::exit::exit(2);
         }
     }
 }
@@ -372,7 +372,7 @@ pub fn register_planes() {
         Ok(rows) => busbar_kernel::plane_driver::registry::install_planes(rows.leak()),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
-            std::process::exit(2);
+            crate::root::exit::exit(2);
         }
     }
 }
@@ -622,7 +622,7 @@ pub fn register_diagnostics(linked: &Linked) -> busbar_kernel::diagnostics::Cata
         Ok(declared) => installed.extend(declared),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
-            std::process::exit(2);
+            crate::root::exit::exit(2);
         }
     }
     let declared = catalogue_registry(linked, DROPPED.get().copied())
@@ -631,7 +631,7 @@ pub fn register_diagnostics(linked: &Linked) -> busbar_kernel::diagnostics::Cata
         Ok(declared) => installed.extend(declared),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
-            std::process::exit(2);
+            crate::root::exit::exit(2);
         }
     }
     let catalogue = busbar_kernel::diagnostics::Catalogue::lent(installed.leak());
@@ -773,7 +773,7 @@ pub fn seal(units: &[&RootUnit]) {
     for seal in units.iter().filter_map(|u| u.seal) {
         if let Err(refusal) = seal() {
             eprintln!("busbar: {refusal}");
-            std::process::exit(2);
+            crate::root::exit::exit(2);
         }
     }
 }

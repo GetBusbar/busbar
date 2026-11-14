@@ -210,3 +210,61 @@ fn test_shipped_providers_catalog_valid() {
         );
     }
 }
+
+/// The number after `key:` in a one-line YAML flow mapping.
+fn flow_number(line: &str, key: &str) -> u64 {
+    let at = line
+        .find(&format!("{key}:"))
+        .unwrap_or_else(|| panic!("`{key}` missing from `{line}`"));
+    line[at + key.len() + 1..]
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|_| panic!("`{key}` is not a number in `{line}`"))
+}
+
+/// T10 (FIRST-START-TAKEOVER §2.6): the README Kubernetes example's startup budget covers the
+/// longest legitimate first-start wait for up to seven conditional-records planes, and the
+/// operations guide documents it. Changing the stall window or the README alone fails here.
+#[test]
+fn readme_startup_probe_covers_the_first_start_wait() {
+    let root = repo_root();
+    let readme = std::fs::read_to_string(root.join("README.md")).expect("read README.md");
+    let lines: Vec<&str> = readme.lines().collect();
+    let marker = lines
+        .iter()
+        .position(|line| line.trim() == "<!-- doc-check: startup-probe -->")
+        .expect("README.md has a `doc-check: startup-probe` block");
+    assert_eq!(
+        lines.get(marker + 1).map(|line| line.trim()),
+        Some("```yaml"),
+        "the startup-probe marker is not immediately followed by a ```yaml fence"
+    );
+    let block: Vec<&str> = lines[marker + 2..]
+        .iter()
+        .take_while(|line| line.trim() != "```")
+        .copied()
+        .collect();
+    let probe = block
+        .iter()
+        .find(|line| line.trim_start().starts_with("startupProbe:"))
+        .expect("the marked block has a startupProbe on the busbar container");
+    let budget = std::time::Duration::from_secs(
+        flow_number(probe, "failureThreshold") * flow_number(probe, "periodSeconds"),
+    );
+    let floor = busbar_kernel::persistence::startup::first_start_probe_floor(7);
+    assert!(
+        budget >= floor,
+        "README startupProbe budget {budget:?} is below the first-start floor {floor:?}"
+    );
+    let operations =
+        std::fs::read_to_string(root.join("docs/operations.md")).expect("read docs/operations.md");
+    assert!(
+        operations
+            .lines()
+            .any(|line| line.trim() == "### First start with several replicas"),
+        "docs/operations.md has no `First start with several replicas` section"
+    );
+}

@@ -126,11 +126,6 @@ pub fn console_filter(
     Ok(targets.with_default(default.unwrap_or(LevelFilter::INFO)))
 }
 
-/// Validate `RUST_LOG` before the server does any work, so a bad value stops boot at once.
-pub fn check_rust_log() -> Result<(), RustLogError> {
-    console_filter(std::env::var("RUST_LOG").ok().as_deref()).map(|_| ())
-}
-
 fn log_levels_from(
     raw: Option<&str>,
 ) -> Result<

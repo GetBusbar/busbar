@@ -21,10 +21,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::persistence::{control, Address, PersistenceBackend, Read, ReadResult};
+use busbar_contract::persistence::{
+    control, Address, NamespaceId, PersistenceBackend, Read, ReadResult,
+};
 
 use super::facade::{CoreStore, Limits};
-use super::first_start::{self, Binding, FirstStart};
+use super::first_start::{self, Abandoned, Binding, FirstStart};
 use super::startup::{manifest_address, root_address, writer_address, Error, Progress, Startup};
 
 /// Every drive-to-state loop is bounded; overrun is a failure naming the case and step.
@@ -427,6 +429,18 @@ async fn admitted(case: &str, step: &str, startup: &mut Startup) -> Arc<CoreStor
     panic!("{case}: {step}: not admitted within {STEPS} steps")
 }
 
+/// Admission that never waits: every advance is `Advanced` until `Admitted`.
+async fn admitted_at_once(case: &str, step: &str, startup: &mut Startup) -> Arc<CoreStore> {
+    for _ in 0..STEPS {
+        match startup.advance().await {
+            Ok(Progress::Admitted) => return startup.store().expect("admitted store"),
+            Ok(Progress::Advanced) => {}
+            other => panic!("{case}: {step}: admission answered {other:?}, not at once"),
+        }
+    }
+    panic!("{case}: {step}: not admitted within {STEPS} steps")
+}
+
 async fn retired(case: &str, step: &str, startup: &mut Startup) {
     for _ in 0..STEPS {
         match startup.advance().await {
@@ -445,13 +459,17 @@ fn owner(case: &str, who: &str, store: &CoreStore) -> Arc<FirstStart> {
     })
 }
 
-/// Freeze a one-instance plan, complete it and publish, each step applied.
-async fn publish(case: &str, who: &str, proof: &FirstStart) {
-    let binding = Binding {
+/// The one-instance plan every case freezes.
+fn kit_binding() -> Binding {
+    Binding {
         instance: "kit".into(),
         digest: [7; 32],
-    };
-    expect_advanced(case, who, "freeze", proof.freeze(vec![binding]).await);
+    }
+}
+
+/// Freeze a one-instance plan, complete it and publish, each step applied.
+async fn publish(case: &str, who: &str, proof: &FirstStart) {
+    expect_advanced(case, who, "freeze", proof.freeze(vec![kit_binding()]).await);
     expect_advanced(case, who, "complete", proof.complete("kit").await);
     expect_advanced(case, who, "publish", proof.publish().await);
     assert!(
