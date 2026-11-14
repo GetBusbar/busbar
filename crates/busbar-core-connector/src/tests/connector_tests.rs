@@ -10,6 +10,9 @@ mod fanout_waker_tests;
 #[path = "pool_retirement_tests.rs"]
 mod pool_retirement_tests;
 
+#[path = "pool_hot_path_tests.rs"]
+mod pool_hot_path_tests;
+
 #[path = "locate_once_tests.rs"]
 mod locate_once_tests;
 
