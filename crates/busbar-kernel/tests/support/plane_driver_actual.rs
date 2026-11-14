@@ -2727,6 +2727,7 @@ impl busbar_kernel::plane_driver::HookBinder for GateFirst {
                     send_prompt: false,
                     send_user: false,
                     on_empty: busbar_kernel::config::PolicyOnError::Reject,
+                    content_blind: false,
                 },
             )],
             rewrites: Vec::new(),

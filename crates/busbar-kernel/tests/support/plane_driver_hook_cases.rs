@@ -126,6 +126,7 @@ fn gate_granted(reject: Option<(u16, &'static str)>, send_prompt: bool) -> (Seen
             send_prompt,
             send_user: false,
             on_empty: PolicyOnError::Reject,
+            content_blind: false,
         },
     )
 }
@@ -1350,6 +1351,7 @@ async fn prioritize_gate_runs_the_ordinary_policy_while_prefer_keeps_its_overrid
         send_prompt: false,
         send_user: false,
         on_empty: PolicyOnError::Reject,
+        content_blind: false,
     };
     for (answer, policy_runs) in [
         (RoutingDecision::Prioritize(vec![0]), true),
@@ -1418,6 +1420,7 @@ async fn caller_transport_deadline_bounds_pending_routed_and_gated_hooks() {
             send_prompt: false,
             send_user: false,
             on_empty: PolicyOnError::Reject,
+            content_blind: false,
         };
         let mut r = rig_with_hooks(
             Way::Double,

@@ -396,6 +396,7 @@ fn ranked_policy(policy: Arc<dyn RoutingPolicy>, timeout: std::time::Duration) -
         send_user: false,
 
         on_empty: crate::config::PolicyOnError::Reject,
+        content_blind: true,
     }
 }
 
@@ -638,6 +639,7 @@ fn resolve_gate_transport(
         send_prompt,
         send_user,
         on_empty: gate_on_empty(hook),
+        content_blind: false,
     })
 }
 
@@ -1481,6 +1483,10 @@ mod tests;
 #[path = "tests/failed_policy_tests.rs"]
 mod failed_policy_tests;
 
+#[cfg(test)]
+#[path = "tests/reads_request_tests.rs"]
+mod reads_request_tests;
+
 pub type TapEntry = (
     std::time::Duration,
     bool,
@@ -1552,7 +1558,27 @@ pub enum ResolvedPolicy {
         /// is the advisory escape (fall back to SWRR over the FULL pool). Inert for non-restricting
         /// policies (native/order-only), which never produce an empty intersection.
         on_empty: crate::config::PolicyOnError,
+        /// A built-in ranking strategy (`ranked_policy`, the only constructor that sets it): it
+        /// ranks on the request's shape and never stops, changes or screens its content. Every
+        /// other constructor states `false`, so a policy nobody reviewed reads the request.
+        content_blind: bool,
     },
+}
+
+impl ResolvedPolicy {
+    /// Whether this policy may stop, change or route the unit on the request's content: true
+    /// unless it is content-blind, is sent no prompt and has no fallback chain (any link of
+    /// which may be a hook that reads the request).
+    #[must_use]
+    pub fn reads_request(&self) -> bool {
+        let Self::Policy {
+            content_blind,
+            send_prompt,
+            on_error_chain,
+            ..
+        } = self;
+        !(*content_blind && !*send_prompt && on_error_chain.is_empty())
+    }
 }
 
 pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;

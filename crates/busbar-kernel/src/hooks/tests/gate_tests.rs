@@ -479,6 +479,7 @@ fn gate(
             send_prompt,
             send_user,
             on_empty: crate::config::PolicyOnError::Reject,
+            content_blind: false,
         },
     )]
 }
@@ -1862,6 +1863,7 @@ fn chained(
             send_prompt,
             send_user,
             on_empty: crate::config::PolicyOnError::Reject,
+            content_blind: false,
         },
     )]
 }
