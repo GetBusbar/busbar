@@ -7,13 +7,9 @@ pub mod surface;
 pub mod trust;
 pub mod wire;
 
-/// A plugin kind's native interface generation.
-///
-/// Spelled here because the transport kind's own generation is spelled here, and a generation that
-/// two crates each declared their own newtype for would compare equal to nothing. It carries no
-/// meaning of its own: a kind pins a number, and the loader or the surface scan compares against it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
-pub struct AbiVersion(pub u16);
+/// A plugin kind's native interface generation: the one ABI version type
+/// ([`crate::abi::versions::AbiVersion`]), equal or not equal and nothing else (LINT-RULES R21).
+pub use crate::abi::versions::AbiVersion;
 
 /// The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check over
 pub use registry::{

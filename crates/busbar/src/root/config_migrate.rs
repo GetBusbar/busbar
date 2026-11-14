@@ -23,7 +23,7 @@ mod index_field {
     pub const ANSWERS_TO: &str = "answers_to";
     pub const RELEASES: &str = "releases";
     pub const TAG: &str = "tag";
-    pub const ABI_VERSION: &str = "abi_version";
+    pub const ABI_VERSION_KEY: &str = "abi_version";
 }
 
 const RELEASE_DOWNLOAD_ROOT: &str = "https://github.com/GetBusbar/busbar/releases/download";
@@ -147,9 +147,9 @@ impl Index {
                 .enumerate()
                 .map(|(j, r)| {
                     let rat = format!("{at}.releases[{j}]");
-                    let r = object(r, &rat, &[index_field::TAG, index_field::ABI_VERSION])?;
+                    let r = object(r, &rat, &[index_field::TAG, index_field::ABI_VERSION_KEY])?;
                     let abi = r
-                        .get(index_field::ABI_VERSION)
+                        .get(index_field::ABI_VERSION_KEY)
                         .and_then(Value::as_u64)
                         .and_then(|n| u32::try_from(n).ok())
                         .ok_or_else(|| format!("{rat}.abi_version is not a version number"))?;
@@ -190,7 +190,7 @@ impl IndexPlugin {
         let speaks = crate::root::loader::registry::supported_abi(&self.kind);
         self.releases
             .iter()
-            .filter(|r| speaks.contains(&r.abi_version))
+            .filter(|r| speaks == Some(r.abi_version))
             .max_by(|a, b| version_order(&a.tag, &b.tag))
             .map(|r| format!("{}@{}", self.repo, r.tag))
     }

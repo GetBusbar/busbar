@@ -31,16 +31,18 @@ use busbar_contract::abi::mechanism::kind;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub fn supported_abi(kind: &str) -> &'static [u32] {
+/// The ONE abi_version this binary loads for `kind` (LINT-RULES R21: exact match, never a range
+/// or a set); `None` for a kind it does not know.
+pub fn supported_abi(kind: &str) -> Option<u32> {
     match kind {
-        kind::STORE => &[busbar_contract::abi::store::ABI_VERSION],
-        kind::SECRET => &[busbar_contract::abi::secret::ABI_VERSION],
-        kind::AUTH => &[busbar_contract::abi::auth::ABI_VERSION],
-        kind::HOOK => &[busbar_contract::abi::hook::ABI_VERSION],
-        kind::EXPORT => &[busbar_contract::abi::export::ABI_VERSION],
-        kind::PLANE => &[busbar_contract::abi::plane::ABI_VERSION],
-        kind::TRANSPORT => &[busbar_contract::abi::transport::ABI_VERSION],
-        _ => &[],
+        kind::STORE => Some(busbar_contract::abi::store::ABI_VERSION),
+        kind::SECRET => Some(busbar_contract::abi::secret::ABI_VERSION),
+        kind::AUTH => Some(busbar_contract::abi::auth::ABI_VERSION),
+        kind::HOOK => Some(busbar_contract::abi::hook::ABI_VERSION),
+        kind::EXPORT => Some(busbar_contract::abi::export::ABI_VERSION),
+        kind::PLANE => Some(busbar_contract::abi::plane::ABI_VERSION),
+        kind::TRANSPORT => Some(busbar_contract::abi::transport::ABI_VERSION),
+        _ => None,
     }
 }
 
@@ -332,10 +334,7 @@ impl LinkedPlugin {
         alias: &str,
         door: busbar_contract::abi::sdk::door::RawDoorFn,
     ) -> Self {
-        let abi = supported_abi(kind::AUTH)
-            .first()
-            .copied()
-            .unwrap_or_default();
+        let abi = supported_abi(kind::AUTH).unwrap_or_default();
         Self::built_in(
             name,
             &[alias],
@@ -351,7 +350,7 @@ impl LinkedPlugin {
         name: &str,
         door: busbar_contract::abi::mechanism::door::DoorFn,
     ) -> Self {
-        let abi = supported_abi(kind).first().copied().unwrap_or_default();
+        let abi = supported_abi(kind).unwrap_or_default();
         let entry = LinkedEntry::Door(crate::dispatch::load::raw(door));
         Self::built_in(name, &[], kind, abi, entry, false)
     }
@@ -443,7 +442,7 @@ impl LinkedPlugin {
         name: &str,
         door: busbar_contract::abi::sdk::door::RawDoorFn,
     ) -> Self {
-        let abi = supported_abi(kind).first().copied().unwrap_or_default();
+        let abi = supported_abi(kind).unwrap_or_default();
         Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
     }
 }
@@ -1054,7 +1053,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         HOST_IDENTITY,
     ) {
         let speaks = supported_abi(&unpacked.manifest.kind);
-        if !speaks.is_empty() && !speaks.contains(&unpacked.manifest.abi_version) {
+        if speaks.is_some_and(|v| v != unpacked.manifest.abi_version) {
             return FileOutcome::Outdated {
                 file,
                 reason,

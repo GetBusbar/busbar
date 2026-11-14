@@ -781,11 +781,7 @@ fn pack(args: &[String]) -> ExitCode {
         let out = required("out")?;
         let kind = required("kind")?;
 
-        let default_abi = busbar_plugin_loader::supported_abi(&kind)
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(1);
+        let default_abi = busbar_plugin_loader::supported_abi(&kind).unwrap_or(1);
         let manifest = Manifest {
             name: required("name")?,
             alias: required("alias")?,
