@@ -9,6 +9,7 @@ use crate::persistence::{
 };
 use busbar_contract::{
     persistence::{Read, ReadResult, TimeGuard},
+    stage_probe::{tick, Derive},
     Secret,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -206,6 +207,7 @@ async fn native_record(
     if !valid_ticket_id(id) {
         return Err(RecordStoreError("invalid native ticket identity".into()));
     }
+    tick(Derive::TicketRead);
     let address = |kind| {
         crate::persistence::scoped::migration_address(true, OWNER, kind, id.as_bytes())
             .map_err(|_| RecordStoreError("invalid native ticket scope".into()))
@@ -828,6 +830,7 @@ impl GovState {
         }
         let body = credential.strip_prefix(prefix)?;
         let material = self.signing_material()?;
+        tick(Derive::TicketSig);
         let claims = match material.verifier.verify_ticket_body(body, prefix) {
             Ok(c) => c,
             Err(e) => {
@@ -836,6 +839,7 @@ impl GovState {
             }
         };
         let id = claims.ticket.clone()?;
+        tick(Derive::TicketStanding);
         let key = self.standing_key(&claims, now)?;
         Some((key, id, claims.exp))
     }
