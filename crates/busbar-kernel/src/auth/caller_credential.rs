@@ -30,6 +30,10 @@ impl ConsumedCredentials {
         self.names.extend_from_slice(carriers);
     }
 
+    pub(crate) fn carry_iter(&mut self, carriers: impl IntoIterator<Item = HeaderName>) {
+        self.names.extend(carriers);
+    }
+
     pub fn strip(&self, headers: &mut HeaderMap) {
         for name in &self.names {
             headers.remove(name);

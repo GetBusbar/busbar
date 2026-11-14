@@ -12,7 +12,7 @@ fn exchange_ok_body_includes_base_url_equal_to_public_url() {
         exp: 1234567890,
     };
     let public_url = "https://busbar.example.com";
-    let body = exchange_ok_body(&issued, public_url);
+    let body = serde_json::to_value(exchange_ok_body(&issued, public_url)).unwrap();
     assert_eq!(body["base_url"], public_url);
     assert_eq!(body["api_key"], "sk-busbar-abc");
     assert_eq!(body["key_id"], "kid-1");
@@ -87,7 +87,7 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
             }
             Err(error) => error,
         };
-        let response = refusal(error);
+        let response = refusal(&error);
         assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
     }
     assert!(gov.all_keys_async().await.unwrap().is_empty());
@@ -103,7 +103,7 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
 
 #[tokio::test]
 async fn dpop_refusal_keeps_the_exchange_unauthenticated_words() {
-    let response = refusal(ExchangeError::Unauthorized);
+    let response = refusal(&ExchangeError::Unauthorized);
     let status = response.status().as_u16();
     let bytes = axum::body::to_bytes(response.into_body(), 1024)
         .await

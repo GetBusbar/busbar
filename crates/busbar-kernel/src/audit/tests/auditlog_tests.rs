@@ -1573,17 +1573,20 @@ fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
         scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: true,
     };
-    let full = project_audit_event(
+    let parsed = |rendered: crate::export::projection::Rendered| -> serde_json::Value {
+        serde_json::from_slice(&rendered.line).unwrap()
+    };
+    let full = parsed(project_audit_event(
         Projection::for_test(
             &[S::Events],
             crate::export::projection::produced_fields(S::Events),
         ),
         &entry,
-    );
-    let narrow = project_audit_event(
+    ));
+    let narrow = parsed(project_audit_event(
         Projection::for_test(&[S::Events], S::Events.pinned_fields()),
         &entry,
-    );
+    ));
     assert_eq!(full[F::Kind.as_token()], "config.mutate");
     assert_eq!(full[F::Actor.as_token()], "admin");
     assert_eq!(full[F::Outcome.as_token()], "applied");
@@ -1601,13 +1604,13 @@ fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
             "ungranted fields never cross the producer boundary"
         );
     }
-    let logs = project_audit_event(
+    let logs = parsed(project_audit_event(
         Projection::for_test(
             &[S::Logs],
             crate::export::projection::produced_fields(S::Events),
         ),
         &entry,
-    );
+    ));
     assert_eq!(
         logs,
         serde_json::json!({}),

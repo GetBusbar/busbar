@@ -9,11 +9,11 @@ pub async fn admit_session(
     audience: String,
 ) -> Result<(super::AuthPrincipal, crate::governance::PlaneRequestCtx), super::IdentityRefusal> {
     tokio::spawn(async move {
-        let expected_aud = (!audience.is_empty()).then_some(audience);
+        let expected_aud = (!audience.is_empty()).then_some(audience.as_str());
         let (verdict, _, claim) = super::AuthMiddleware::judge_chain_on_request_path_naming(
             &app.auth,
-            token,
-            super::ChainHead::default(),
+            token.as_deref(),
+            &super::ChainHead::default(),
             app.governance.clone(),
             expected_aud,
         )

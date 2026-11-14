@@ -46,10 +46,7 @@ fn opaque_service_bearers_and_unbound_jwts_are_not_sender_downgrades() {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
         headers.insert("x-admin-token", token.parse().unwrap());
-        assert!(!downgraded_in(
-            &headers,
-            &["authorization".into(), "x-admin-token".into()]
-        ));
+        assert!(!downgraded_in(&headers, ["authorization", "x-admin-token"]));
     }
 }
 
@@ -59,10 +56,7 @@ fn explicit_dpop_presentations_remain_the_verifying_providers_responsibility() {
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, format!("DPoP {token}").parse().unwrap());
     // This guard does not identify or authorize that presentation, with or without a proof.
-    assert!(!downgraded_in(&headers, &["authorization".into()]));
+    assert!(!downgraded_in(&headers, ["authorization"]));
     headers.insert("x-admin-token", token.parse().unwrap());
-    assert!(downgraded_in(
-        &headers,
-        &["authorization".into(), "x-admin-token".into()]
-    ));
+    assert!(downgraded_in(&headers, ["authorization", "x-admin-token"]));
 }

@@ -63,7 +63,12 @@ pub fn actor(door: &AdminDoor) -> Option<&str> {
 fn roles(door: &AdminDoor) -> std::collections::BTreeSet<String> {
     match door {
         AdminDoor::Identified(p, _) | AdminDoor::Listed(p, _, _) => {
-            p.roles.iter().cloned().collect()
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an admin change's effect context keeps the roles it was authorized under"
+            )]
+            let held = p.roles.iter().cloned().collect();
+            held
         }
         _ => Default::default(),
     }
@@ -83,28 +88,26 @@ pub fn full_operator(door: &AdminDoor) -> bool {
 
 impl Context {
     pub fn new(method: &str, target: &str, headers: HeaderMap, admitted: &AdminDoor) -> Self {
-        Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an admin change's effect context keeps the actor it was authorized for"
+        )]
+        let context = Self {
             method: method.into(),
             target: target.into(),
             headers,
             actor: actor(admitted).map(str::to_owned),
             roles: roles(admitted),
-        }
+        };
+        context
     }
 
     pub async fn revalidate(&self, app: &App) -> Result<Authority, TxnError> {
         let completed = COMPLETED_EFFECTS.load(Ordering::SeqCst);
-        let door = super::judge_admin_door(
-            app,
-            &self.method,
-            &self.target,
-            &self.headers,
-            false,
-            false,
-            &mut Vec::new(),
-        )
-        .await
-        .map_err(|_| TxnError::Forbidden)?;
+        let (door, _) =
+            super::judge_admin_door(app, &self.method, &self.target, &self.headers, false, false)
+                .await
+                .map_err(|_| TxnError::Forbidden)?;
         if COMPLETED_EFFECTS.load(Ordering::SeqCst) != completed
             || actor(&door) != self.actor.as_deref()
             || roles(&door) != self.roles
@@ -190,6 +193,10 @@ pub async fn scope<F: Future>(context: Option<Context>, future: F) -> F::Output 
 impl crate::inbound::RequestAdmission {
     pub fn effect_context(&self) -> Context {
         let head = &self.inner.original;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an admin change's effect context keeps the target it was authorized for"
+        )]
         let target = match &head.query {
             Some(query) => format!("{}?{query}", head.target),
             None => head.target.clone(),

@@ -55,6 +55,7 @@ ed25519-dalek = { workspace = true }
 crc32fast = { workspace = true }
 async-trait = { workspace = true }
 arc-swap = { workspace = true }
+foldhash = { workspace = true }
 httpdate = { workspace = true }
 
 [features]

@@ -816,7 +816,7 @@ fn durable_caller_binding_survives_rekey_restart_and_remains_owner_scoped() {
     let new = crate::auth::CallerRefKey::derive(b"new signer").caller_ref("alice");
     assert_ne!(old, new);
     assert_eq!(
-        ready(r.s.resolve_caller_reference(&caller("inst"), "alice", &old)).unwrap(),
+        ready(r.s.resolve_caller_reference(&caller("inst"), "alice", old.clone())).unwrap(),
         old
     );
     let restarted = rig_over(r.store.clone(), WorkBounds::default());
@@ -824,7 +824,7 @@ fn durable_caller_binding_survives_rekey_restart_and_remains_owner_scoped() {
         ready(
             restarted
                 .s
-                .resolve_caller_reference(&caller("inst"), "alice", &new)
+                .resolve_caller_reference(&caller("inst"), "alice", new.clone())
         )
         .unwrap(),
         old
@@ -833,7 +833,7 @@ fn durable_caller_binding_survives_rekey_restart_and_remains_owner_scoped() {
         ready(
             restarted
                 .s
-                .resolve_caller_reference(&caller("other"), "alice", &new)
+                .resolve_caller_reference(&caller("other"), "alice", new.clone())
         )
         .unwrap(),
         new
@@ -843,16 +843,16 @@ fn durable_caller_binding_survives_rekey_restart_and_remains_owner_scoped() {
         ready(
             restarted
                 .s
-                .resolve_caller_reference(&caller("inst"), "bob", &bob)
+                .resolve_caller_reference(&caller("inst"), "bob", bob.clone())
         )
         .unwrap(),
         bob
     );
-    assert!(ready(
-        restarted
-            .s
-            .resolve_caller_reference(&caller("unadmitted"), "alice", &new)
-    )
+    assert!(ready(restarted.s.resolve_caller_reference(
+        &caller("unadmitted"),
+        "alice",
+        new.clone()
+    ))
     .is_err());
 }
 

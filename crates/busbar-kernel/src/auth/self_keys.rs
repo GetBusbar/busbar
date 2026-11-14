@@ -101,11 +101,16 @@ impl DeterministicEd25519Keys {
     }
 
     fn self_group(principal: &Principal) -> String {
-        format!(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a self-serve mint provisions its key and personal group through a config transaction"
+        )]
+        let group = format!(
             "{}{}",
             crate::governance::SELF_KEY_GROUP_PREFIX,
             principal.id
-        )
+        );
+        group
     }
 
     async fn mint(
@@ -121,6 +126,7 @@ impl DeterministicEd25519Keys {
             .await
             .map_err(ExchangeError::MintFailed)?;
 
+        // busbar:expect(bp::clone_alloc, reason = "config: a self-serve mint provisions its key and personal group through a config transaction")
         mint_provisioned_self_key(
             self.gov.clone(),
             op,
@@ -143,6 +149,10 @@ async fn mint_provisioned_self_key(
     exp: u64,
     now: u64,
 ) -> Result<IssuedKey, ExchangeError> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a self-serve mint provisions its key and personal group through a config transaction"
+    )]
     let (binding, token) = crate::governance::mint_self_offloaded(
         gov,
         op,
@@ -200,8 +210,11 @@ impl HandleProvisioner {
 #[async_trait]
 impl SelfGroupProvisioner for HandleProvisioner {
     async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
-        let leaf = leaf.to_string();
-        let parent = parent.to_string();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a self-serve mint provisions its key and personal group through a config transaction"
+        )]
+        let (leaf, parent) = (leaf.to_string(), parent.to_string());
         let actor = self.actor.clone();
         crate::config::transaction::config_transaction(&self.handle, move |txn| {
             let current = txn.app();
@@ -218,8 +231,8 @@ impl SelfGroupProvisioner for HandleProvisioner {
 
             let persist = crate::governance::group_provision::persist_provisioned_group_async(
                 installed.clone(),
-                leaf.clone(),
-                actor.clone(),
+                leaf,
+                actor,
             );
             Ok(txn.commit_async(installed, persist, ()))
         })

@@ -47,13 +47,13 @@ pub(crate) async fn exchange(
         crate::auth::dpop::SenderConstraint::Unconstrained => candidate,
         crate::auth::dpop::SenderConstraint::Proven(token) => Some(token),
         crate::auth::dpop::SenderConstraint::Refused => {
-            return refusal(ExchangeError::Unauthorized);
+            return refusal(&ExchangeError::Unauthorized);
         }
     };
     let (judged, _, claim) = AuthMiddleware::judge_chain_on_request_path_naming(
         &app.auth,
-        candidate,
-        crate::auth::ChainHead::of(&req),
+        candidate.as_deref(),
+        &crate::auth::ChainHead::of(&req),
         app.governance.clone(),
         None,
     )
@@ -83,10 +83,14 @@ pub(crate) async fn exchange(
     .await
     {
         Ok(admitted) => admitted,
-        Err(error) => return refusal(error),
+        Err(error) => return refusal(&error),
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a self-serve mint provisions a key once, under the identifying provider's name"
+    )]
     let keys = DeterministicEd25519Keys::new(gov, provider.to_string(), team, pools, provisioner);
     match issue_key(&keys, principal, ttl, false).await {
         Ok(issued) => {
@@ -97,7 +101,7 @@ pub(crate) async fn exchange(
             )
                 .into_response()
         }
-        Err(e) => refusal(e),
+        Err(e) => refusal(&e),
     }
 }
 
@@ -129,6 +133,10 @@ async fn admit_exchange_mint<'a>(
         return Err(ExchangeError::Unauthorized);
     };
     let Some(gov) = governance.cloned() else {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a mint refused because governance is disabled"
+        )]
         return Err(ExchangeError::MintFailed(
             "governance is disabled: cannot mint keys".to_string(),
         ));
@@ -141,19 +149,35 @@ async fn admit_exchange_mint<'a>(
     Ok((admitted, provider.as_str(), gov))
 }
 
-fn exchange_ok_body(issued: &IssuedKey, base_url: &str) -> serde_json::Value {
-    serde_json::json!({
-        // `.expose(&crate::seal::lend())`: the once-shown mint response is the intended, documented plaintext
-        // egress of the issued token (Secret has no Serialize, so json! cannot embed it directly).
-        "api_key": issued.secret.expose(&crate::seal::lend()),
-        "key_id": issued.key_id,
-        "group": issued.group,
-        "exp": issued.exp,
-        "base_url": base_url,
-    })
+/// The once-shown mint response, borrowed from the issued key, in member order.
+#[derive(serde::Serialize)]
+struct ExchangeOk<'a> {
+    api_key: &'a str,
+    base_url: &'a str,
+    exp: u64,
+    group: &'a str,
+    key_id: &'a str,
 }
 
-fn refusal(e: ExchangeError) -> Response {
+fn exchange_ok_body<'a>(issued: &'a IssuedKey, base_url: &'a str) -> ExchangeOk<'a> {
+    ExchangeOk {
+        // `.expose(&crate::seal::lend())`: the once-shown mint response is the intended, documented
+        // plaintext egress of the issued token (Secret has no Serialize).
+        api_key: issued.secret.expose(&crate::seal::lend()),
+        base_url,
+        exp: issued.exp,
+        group: &issued.group,
+        key_id: &issued.key_id,
+    }
+}
+
+/// An exchange refusal's body, `{"error":..}`.
+#[derive(serde::Serialize)]
+struct ExchangeRefused {
+    error: &'static str,
+}
+
+fn refusal(e: &ExchangeError) -> Response {
     let (status, msg) = match e {
         ExchangeError::StaticKeyPresented => (
             StatusCode::BAD_REQUEST,
@@ -173,12 +197,12 @@ fn refusal(e: ExchangeError) -> Response {
             StatusCode::FORBIDDEN,
             "the key this identity would mint is over the mint ceiling (auth.policy)",
         ),
-        ExchangeError::MintFailed(ref detail) => {
+        ExchangeError::MintFailed(detail) => {
             diag_error!(TOKEN_EXCHANGE_MINT_FAILED, error = %detail, "token-exchange mint failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "could not issue a key")
         }
     };
-    (status, axum::Json(serde_json::json!({ "error": msg }))).into_response()
+    (status, axum::Json(ExchangeRefused { error: msg })).into_response()
 }
 
 #[cfg(test)]

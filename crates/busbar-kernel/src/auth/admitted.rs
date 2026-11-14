@@ -84,14 +84,13 @@ async fn complete_context(
         Some(request.inner.credential.as_ref()),
         client_token.as_deref(),
     );
-    consumed.carry(
-        &request
+    consumed.carry_iter(
+        request
             .inner
             .strips
             .iter()
             .filter(|strip| strip.place == StripPlace::Field)
-            .filter_map(|strip| HeaderName::from_bytes(strip.name.as_bytes()).ok())
-            .collect::<Vec<_>>(),
+            .filter_map(|strip| HeaderName::from_bytes(strip.name.as_bytes()).ok()),
     );
     let ticketed = claimed_ticket_verdict(
         request.inner.signed,

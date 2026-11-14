@@ -46,37 +46,57 @@ pub fn www_authenticate(
     description: Option<&str>,
     scope: Option<&str>,
 ) -> String {
-    let mut params: Vec<String> = Vec::with_capacity(4);
-    params.push(format!(
-        "resource_metadata=\"{}\"",
-        quoted(resource_metadata)
-    ));
+    use std::fmt::Write as _;
+    let description = description.filter(|_| error != ChallengeError::Absent);
+    let scope = scope.filter(|_| error == ChallengeError::InsufficientScope);
+    let sized =
+        resource_metadata.len() + description.map_or(0, str::len) + scope.map_or(0, str::len);
+    // busbar:expect(bp::fresh_buffer, reason = "error: the challenge header of a refused request, written once in place")
+    let mut out = String::with_capacity(96 + sized);
+    let _ = write!(
+        out,
+        "Bearer resource_metadata=\"{}\"",
+        Quoted(resource_metadata)
+    );
     if let Some(code) = error.code() {
-        params.push(format!("error=\"{code}\""));
+        let _ = write!(out, ", error=\"{code}\"");
     }
-    if let Some(d) = description.filter(|_| error != ChallengeError::Absent) {
-        params.push(format!("error_description=\"{}\"", quoted(d)));
+    if let Some(d) = description {
+        let _ = write!(out, ", error_description=\"{}\"", Quoted(d));
     }
-
-    if let Some(s) = scope.filter(|_| error == ChallengeError::InsufficientScope) {
-        params.push(format!("scope=\"{}\"", quoted(s)));
-    }
-    format!("Bearer {}", params.join(", "))
-}
-
-fn quoted(v: &str) -> String {
-    let mut out = String::with_capacity(v.len());
-    for c in v.chars() {
-        match c {
-            '"' | '\\' => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {}
-            c => out.push(c),
-        }
+    if let Some(s) = scope {
+        let _ = write!(out, ", scope=\"{}\"", Quoted(s));
     }
     out
+}
+
+/// A quoted-string's content: `"` and `\` escaped, control characters dropped.
+struct Quoted<'a>(&'a str);
+
+impl std::fmt::Display for Quoted<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        for c in self.0.chars() {
+            match c {
+                '"' | '\\' => {
+                    f.write_char('\\')?;
+                    f.write_char(c)?;
+                }
+                c if (c as u32) < 0x20 || c as u32 == 0x7f => {}
+                c => f.write_char(c)?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The JSON body of a challenge: `{"error":..}` and, unless the credential was absent, its
+/// `error_description`.
+#[derive(serde::Serialize)]
+struct ChallengeBody<'a> {
+    error: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_description: Option<&'a str>,
 }
 
 pub fn render(
@@ -86,24 +106,32 @@ pub fn render(
     scope: Option<&str>,
 ) -> crate::plane_driver::Rendered {
     let challenge = www_authenticate(error, resource_metadata, Some(description), scope);
-    let mut body = serde_json::json!({
-        "error": error.code().unwrap_or("unauthorized"),
-    });
-    if error != ChallengeError::Absent {
-        body["error_description"] = serde_json::json!(description);
-    }
-    let challenge = HeaderValue::from_str(&challenge)
-        .ok()
-        .map(|value| value.as_bytes().to_vec())
-        .unwrap_or_else(|| b"Bearer".to_vec());
-    crate::plane_driver::Rendered {
+    let body = ChallengeBody {
+        error: error.code().unwrap_or("unauthorized"),
+        error_description: (error != ChallengeError::Absent).then_some(description),
+    };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused request's challenge head; the plane head type owns its field bytes"
+    )]
+    let fields = vec![
+        (b"content-type".to_vec(), b"application/json".to_vec()),
+        (
+            b"www-authenticate".to_vec(),
+            if HeaderValue::from_str(&challenge).is_ok() {
+                challenge.into_bytes()
+            } else {
+                b"Bearer".to_vec()
+            },
+        ),
+    ];
+    let mut rendered = crate::plane_driver::Rendered {
         status: u32::from(error.status().as_u16()),
-        fields: vec![
-            (b"content-type".to_vec(), b"application/json".to_vec()),
-            (b"www-authenticate".to_vec(), challenge),
-        ],
-        body: serde_json::to_vec(&body).expect("the challenge is a JSON value"),
-    }
+        fields,
+        body: Vec::with_capacity(128),
+    };
+    serde_json::to_writer(&mut rendered.body, &body).expect("the challenge is a JSON value");
+    rendered
 }
 
 pub fn refuse(
