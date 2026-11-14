@@ -479,6 +479,7 @@ fn an_ascii_host_is_unchanged() {
         ("https://xn--bcher-kva.example/", "xn--bcher-kva.example"),
         ("ldap://Dir.Example:389", "Dir.Example"),
         ("https://127.0.0.1./", "127.0.0.1"),
+        ("http://example.com./x", "example.com"),
     ] {
         assert_eq!(url_host(input).as_deref(), Some(host), "{input:?}");
     }
