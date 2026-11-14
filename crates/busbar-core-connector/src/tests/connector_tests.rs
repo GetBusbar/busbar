@@ -10,6 +10,9 @@ mod fanout_waker_tests;
 #[path = "pool_retirement_tests.rs"]
 mod pool_retirement_tests;
 
+#[path = "locate_once_tests.rs"]
+mod locate_once_tests;
+
 static DIAGNOSTICS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone)]

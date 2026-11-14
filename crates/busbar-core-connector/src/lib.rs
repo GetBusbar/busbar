@@ -1376,8 +1376,19 @@ impl Connector {
 
     /// A dial of `dial` over the entry `door` serves, located: the framer's `locate`, or a carrier
     fn plan(&self, door: &Arc<dyn FramerDoor>, dial: Dial) -> Result<Planned, Failure> {
+        self.plan_carried(door, dial, None)
+    }
+
+    /// [`Connector::plan`], dialling `carried` (the answer this attempt's head was completed
+    /// with, already matched to the dial's caller, need and target) instead of locating again.
+    fn plan_carried(
+        &self,
+        door: &Arc<dyn FramerDoor>,
+        dial: Dial,
+        carried: Option<framer::Located>,
+    ) -> Result<Planned, Failure> {
         match self.ride_on(door) {
-            Some((Some(framer), via)) => Planned::locate(framer, via, dial),
+            Some((Some(framer), via)) => Planned::locate_carried(framer, via, dial, carried),
             Some((None, via)) => Planned::carried(via, dial),
             None => Err(Failure::Refused(
                 "no carrier is loaded to reach an address".into(),
@@ -1393,6 +1404,20 @@ impl Connector {
         target: &str,
         timeout_ms: u64,
     ) -> Result<HeadDefaults, ConnError> {
+        self.framer_located(owner, need, target, timeout_ms)
+            .map(|(head, _)| head)
+    }
+
+    /// [`Connector::framer_head`], keeping the framer's whole locate answer for the open that
+    /// dials it ([`Conns::open_located`]). Only a framer's own locate is carried: a carrier's
+    /// answer and a datagram's rendezvous are worked out again at the open, as before.
+    fn framer_located(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<(HeadDefaults, Option<Arc<LocatedTarget>>), ConnError> {
         let (door, declared, members) = self
             .over
             .lock()
@@ -1413,29 +1438,57 @@ impl Connector {
             if !members.contains_key(program::member_of(target)) {
                 return Err(ConnError::Refused);
             }
-            return Ok(HeadDefaults {
-                lines: Vec::new(),
-                states_length: false,
-            });
+            return Ok((
+                HeadDefaults {
+                    lines: Vec::new(),
+                    states_length: false,
+                },
+                None,
+            ));
         }
         let target = declared.as_deref().unwrap_or(target);
         // A datagram association obtains its peer description over a separately
         // framed exchange. Its own door has no request-head locate operation.
-        let door = if door.facts().datagram {
+        let datagram = door.facts().datagram;
+        let door = if datagram {
             self.rendezvous_exchange(target)?.door
         } else {
             door
         };
-        let located = if door.facts().role == ROLE_CARRIER {
-            self.located(&door, target).ok_or(ConnError::Refused)
-        } else {
-            framer::locate_request(door.as_ref(), target, timeout_ms)
-                .map_err(|_| ConnError::Refused)
-        };
-        located.map(|located| HeadDefaults {
-            lines: located.defaults,
+        if door.facts().role == ROLE_CARRIER {
+            return self
+                .located(&door, target)
+                .ok_or(ConnError::Refused)
+                .map(|located| {
+                    (
+                        HeadDefaults {
+                            lines: located.defaults,
+                            states_length: located.states_length,
+                        },
+                        None,
+                    )
+                });
+        }
+        let located = framer::locate_request(door.as_ref(), target, timeout_ms)
+            .map_err(|_| ConnError::Refused)?;
+        let head = HeadDefaults {
+            lines: located.defaults.clone(),
             states_length: located.states_length,
-        })
+        };
+        let carried = (!datagram).then(|| {
+            Arc::new(LocatedTarget::new(
+                owner,
+                need,
+                target.to_owned(),
+                located.authority,
+                located.name,
+                located.secure,
+                located.offer,
+                located.defaults,
+                located.states_length,
+            ))
+        });
+        Ok((head, carried))
     }
 
     /// The ordinary exchange carrying a datagram association's peer description.
@@ -2913,6 +2966,7 @@ impl DeclaredConns for Connector {
             require_secure,
             Some(dial_timeout_ms),
             false,
+            None,
         )
     }
 
@@ -2923,7 +2977,7 @@ impl DeclaredConns for Connector {
         desc: &OpenDesc<'_>,
         dial_timeout_ms: u64,
     ) -> Result<ConnId, ConnError> {
-        self.open_timed(caller, need, desc, false, Some(dial_timeout_ms), true)
+        self.open_timed(caller, need, desc, false, Some(dial_timeout_ms), true, None)
     }
 
     fn commit_request(
@@ -3643,6 +3697,18 @@ impl Connector {
         why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
+        // The answer the attempt's head was completed with, when it was located for this very
+        // caller, need and target; any other is never trusted and the entry is asked afresh.
+        let carried = located
+            .filter(|located| located.answers(caller, need, target))
+            .map(|located| framer::Located {
+                authority: located.authority().to_owned(),
+                name: located.name().map(str::to_owned),
+                secure: located.secure(),
+                offer: located.offer().to_vec(),
+                defaults: located.defaults().to_vec(),
+                states_length: located.states_length(),
+            });
         let dial = Dial {
             target: target.to_owned(),
             tls: match tls {
@@ -3669,7 +3735,9 @@ impl Connector {
         };
 
         let trust = dial.tls.clone().map(Same);
-        let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
+        let planned = self
+            .plan_carried(&door, dial, carried)
+            .map_err(|f| map(&f))?;
         if require_secure && !planned.secure() {
             return Err(ConnError::AuthRefused);
         }
@@ -3827,6 +3895,7 @@ impl Connector {
         require_secure: bool,
         dial_timeout_ms: Option<u64>,
         prepare: bool,
+        located: Option<&LocatedTarget>,
     ) -> Result<ConnId, ConnError> {
         let started = framer::now();
         self.slab.check_need(caller, need)?;
@@ -4055,7 +4124,18 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
         require_secure: bool,
     ) -> Result<ConnId, ConnError> {
-        self.open_timed(caller, need, desc, require_secure, None, false)
+        self.open_timed(caller, need, desc, require_secure, None, false, None)
+    }
+
+    fn open_located(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+        located: Option<&LocatedTarget>,
+    ) -> Result<ConnId, ConnError> {
+        self.open_timed(caller, need, desc, require_secure, None, false, located)
     }
 
     /// A write is taken whole, short, or (no room under
@@ -4254,6 +4334,16 @@ impl PollConns for Connector {
         timeout_ms: u64,
     ) -> Result<HeadDefaults, ConnError> {
         self.framer_head(owner, need, target, timeout_ms)
+    }
+
+    fn locate_head(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<(HeadDefaults, Option<Arc<LocatedTarget>>), ConnError> {
+        self.framer_located(owner, need, target, timeout_ms)
     }
 
     fn poll_read(
