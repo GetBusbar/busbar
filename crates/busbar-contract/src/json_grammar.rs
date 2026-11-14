@@ -464,6 +464,7 @@ pub fn scan_frontier(input: &[u8]) -> usize {
 
 use serde::{Deserialize, Deserializer};
 use serde_json::{value::RawValue, Value};
+use std::marker::PhantomData;
 
 /// Parse one document bounded by [`MAX_JSON_DEPTH`], preserving exact numeric lexemes and
 /// literal object keys, including serde's private number marker. Duplicate object keys keep
@@ -474,33 +475,86 @@ pub fn parse_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
             "JSON nesting exceeds {MAX_JSON_DEPTH}"
         )));
     }
-    serde_json::from_slice::<ExactValue>(bytes).map(|value| value.0)
+    serde_json::from_slice::<Tokens<Exact>>(bytes).map(|value| value.0)
 }
 
-struct ExactValue(Value);
+/// Parse one document as serde_json's typed reader reads it: the `Value` a typed field sees.
+///
+/// Strings, literals and containers are serde_json's own, with literal object keys and the last
+/// of duplicate keys kept. Each number token is read by serde_json's typed reader as `u64`, else
+/// `i64`, else `f64`, the first reading an integer field accepts, so a token no integer field
+/// accepts stays a non-integer number. A `Value` parsed directly is not that reading under
+/// `arbitrary_precision`, which every build carries (`-0` reads there as the integer `0`).
+///
+/// # Errors
+/// What serde_json refuses for the document, in its words, and a number its typed reader cannot
+/// read (one beyond `f64`).
+pub fn parse_typed_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
+    // serde_json's own refusal and depth bound first: the token walk recurses per container.
+    serde_json::from_slice::<Value>(bytes)?;
+    serde_json::from_slice::<Tokens<Typed>>(bytes).map(|value| value.0)
+}
 
-impl<'de> Deserialize<'de> for ExactValue {
+/// How a document's scalar tokens are read; its containers are walked by [`Tokens`].
+trait Scalar {
+    fn read(token: &str) -> Result<Value, serde_json::Error>;
+}
+
+/// Each scalar as `Value` reads it, numbers kept as their exact lexeme.
+struct Exact;
+
+impl Scalar for Exact {
+    fn read(token: &str) -> Result<Value, serde_json::Error> {
+        serde_json::from_str::<Value>(token)
+    }
+}
+
+/// Each number as serde_json's typed reader reads it; other scalars as `Value` reads them.
+struct Typed;
+
+impl Scalar for Typed {
+    fn read(token: &str) -> Result<Value, serde_json::Error> {
+        if !matches!(token.as_bytes().first(), Some(b'-' | b'0'..=b'9')) {
+            return serde_json::from_str::<Value>(token);
+        }
+        if let Ok(unsigned) = serde_json::from_str::<u64>(token) {
+            return Ok(Value::from(unsigned));
+        }
+        if let Ok(signed) = serde_json::from_str::<i64>(token) {
+            return Ok(Value::from(signed));
+        }
+        // The typed reader yields only a finite `f64`, which is always a JSON number.
+        serde_json::from_str::<f64>(token).map(Value::from)
+    }
+}
+
+/// One document's tree, its scalar tokens read by `S`.
+struct Tokens<S>(Value, PhantomData<S>);
+
+impl<'de, S: Scalar> Deserialize<'de> for Tokens<S> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // RawValue identifies the actual JSON token before any arbitrary-precision transport
         // maps are synthesized. Container members recurse through this same distinction; only
-        // scalar tokens reach Value's deserializer. Escaped object keys remain ordinary keys.
+        // scalar tokens reach `S`. Escaped object keys remain ordinary keys.
         let raw = <&RawValue>::deserialize(deserializer)?.get();
         let value = match raw.as_bytes().first() {
             Some(b'{') => {
                 let mut de = serde_json::Deserializer::from_str(raw);
-                de.deserialize_map(ObjectVisitor)
+                de.deserialize_map(ObjectVisitor::<S>(PhantomData))
             }
-            Some(b'[') => serde_json::from_str::<Vec<ExactValue>>(raw)
+            Some(b'[') => serde_json::from_str::<Vec<Tokens<S>>>(raw)
                 .map(|items| Value::Array(items.into_iter().map(|item| item.0).collect())),
-            _ => serde_json::from_str::<Value>(raw),
+            _ => S::read(raw),
         };
-        value.map(ExactValue).map_err(serde::de::Error::custom)
+        value
+            .map(|value| Tokens(value, PhantomData))
+            .map_err(serde::de::Error::custom)
     }
 }
 
-struct ObjectVisitor;
+struct ObjectVisitor<S>(PhantomData<S>);
 
-impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
+impl<'de, S: Scalar> serde::de::Visitor<'de> for ObjectVisitor<S> {
     type Value = Value;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -509,7 +563,7 @@ impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let mut object = serde_json::Map::new();
-        while let Some((key, value)) = map.next_entry::<String, ExactValue>()? {
+        while let Some((key, value)) = map.next_entry::<String, Tokens<S>>()? {
             object.insert(key, value.0);
         }
         Ok(Value::Object(object))

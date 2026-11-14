@@ -1146,6 +1146,83 @@ fn codeaudit_settings_as_does_not_echo_a_mistyped_value() {
     assert!(reason.contains("unknown variant"), "{reason}");
 }
 
+const NUMBER_TOKENS: [&str; 9] = [
+    "-0",
+    "0",
+    "1",
+    "-1",
+    "1.0",
+    "1e0",
+    "-0.0",
+    "18446744073709551615",
+    "18446744073709551616",
+];
+
+#[test]
+fn settings_judge_each_number_token_as_the_typed_parser_reads_it() {
+    #[derive(serde::Deserialize)]
+    struct Unsigned {
+        x: u64,
+    }
+    #[derive(serde::Deserialize)]
+    struct Signed {
+        x: i64,
+    }
+    for token in NUMBER_TOKENS {
+        let doc = format!(r#"{{"x":{token}}}"#);
+        let doc = doc.as_bytes();
+        let typed_u64 = serde_json::from_slice::<u64>(token.as_bytes()).ok();
+        let typed_i64 = serde_json::from_slice::<i64>(token.as_bytes()).ok();
+        assert_eq!(
+            settings_as::<Unsigned>(doc).map(|s| s.x).ok(),
+            serde_json::from_slice::<Unsigned>(doc).map(|s| s.x).ok(),
+            "settings_as u64 {token}"
+        );
+        assert_eq!(
+            settings_as::<Signed>(doc).map(|s| s.x).ok(),
+            serde_json::from_slice::<Signed>(doc).map(|s| s.x).ok(),
+            "settings_as i64 {token}"
+        );
+        let value = settings_value(doc).expect(token);
+        assert_eq!(value["x"].as_u64(), typed_u64, "settings_value u64 {token}");
+        assert_eq!(value["x"].as_i64(), typed_i64, "settings_value i64 {token}");
+        let object = settings_object(doc).expect(token);
+        assert_eq!(
+            object["x"].as_u64(),
+            typed_u64,
+            "settings_object u64 {token}"
+        );
+        assert_eq!(
+            object["x"].as_i64(),
+            typed_i64,
+            "settings_object i64 {token}"
+        );
+    }
+}
+
+#[test]
+fn settings_refuse_minus_zero_as_an_integer_as_the_typed_parser_does() {
+    #[derive(serde::Deserialize)]
+    struct Unsigned {
+        x: u64,
+    }
+    #[derive(serde::Deserialize)]
+    struct Signed {
+        x: i64,
+    }
+    let doc = br#"{"x":-0}"#;
+    assert!(serde_json::from_slice::<Unsigned>(doc).is_err());
+    assert!(serde_json::from_slice::<Signed>(doc).is_err());
+    assert_eq!(settings_as::<Unsigned>(doc).map(|s| s.x).ok(), None);
+    assert_eq!(settings_as::<Signed>(doc).map(|s| s.x).ok(), None);
+    let value = settings_value(doc).expect("well-formed");
+    assert_eq!(value["x"].as_u64(), None);
+    assert_eq!(value["x"].as_i64(), None);
+    assert_eq!(value["x"].as_f64().map(f64::is_sign_negative), Some(true));
+    let object = settings_object(doc).expect("an object");
+    assert_eq!(object["x"].as_i64(), None);
+}
+
 type Host = crate::abi::sdk::conn::Host<FixtureKind>;
 
 type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;

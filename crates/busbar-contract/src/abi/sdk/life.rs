@@ -138,23 +138,24 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// A settings blob's bytes as the JSON object they must be; empty is `{}`.
+/// A settings blob's bytes as the JSON object they must be; empty is `{}`. Read as
+/// [`settings_value`] reads them.
 pub fn settings_object(
     bytes: &[u8],
 ) -> Result<serde_json::Map<String, serde_json::Value>, Refusal> {
-    if bytes.is_empty() {
-        return Ok(serde_json::Map::new());
-    }
-    match serde_json::from_slice(bytes) {
+    match settings_value(bytes) {
         Ok(serde_json::Value::Object(m)) => Ok(m),
         _ => Err(Refusal::failed("settings: must be a JSON object")),
     }
 }
 
-/// A settings blob's bytes as the JSON value they hold; empty is `{}`.
+/// A settings blob's bytes as the JSON value they hold; empty is `{}`. Every number token is read
+/// by serde_json's typed reader (`u64`, else `i64`, else `f64`), so a setting is judged here as a
+/// typed settings field reads it: `-0` is no integer.
 pub fn settings_value(bytes: &[u8]) -> Result<serde_json::Value, Refusal> {
     let bytes = if bytes.is_empty() { b"{}" } else { bytes };
-    serde_json::from_slice(bytes).map_err(|e| Refusal::failed(format!("settings: {e}")))
+    crate::json_grammar::parse_typed_value(bytes)
+        .map_err(|e| Refusal::failed(format!("settings: {e}")))
 }
 
 /// A settings blob's bytes as the plugin's settings type `T`, read from their JSON value (as the
