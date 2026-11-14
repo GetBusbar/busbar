@@ -2054,9 +2054,13 @@ fn bind_node_book(
     node.bind_book(book);
 }
 
-#[cfg(all(test, linked_axis_node))]
+#[cfg(test)]
 #[path = "tests/plane_node.rs"]
 mod tests;
+
+#[cfg(all(test, linked_axis_node))]
+#[path = "tests/plane_node_arrival.rs"]
+mod arrival_tests;
 
 #[cfg(test)]
 #[path = "tests/plane_node_seal.rs"]
