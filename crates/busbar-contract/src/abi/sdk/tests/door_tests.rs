@@ -1003,6 +1003,8 @@ fn a_kind_op_a_door_does_not_name_is_absent() {
     let auth = unsafe { &*auth_plugin::door().ops.cast::<crate::abi::auth::Ops>() };
     assert!(secret.check.is_none(), "an unnamed kind op is absent");
     assert!(auth.target.is_none(), "an unnamed kind op is absent");
+    // An auth plugin that serves no provisioning routes names no `serve`: the slot is NULL.
+    assert!(auth.serve.is_none(), "an auth door with no routes leaves serve absent");
     assert!(
         secret.resolve.is_some() && auth.verify.is_some(),
         "a named one is present"
@@ -1742,3 +1744,91 @@ fn a_transport_plugin_wires_every_kind_op() {
 }
 
 type FixtureKind = crate::plugin::markers::SecretKind;
+
+mod auth_serve_plugin {
+    //! An auth door that wires the v4 `serve` slot to `auth::ServeIn`/`auth::ServeOut`.
+    use super::*;
+    type FixtureKind = crate::plugin::markers::AuthKind;
+    type Validate = super::Validate<FixtureKind>;
+    type Open = super::Open<FixtureKind>;
+    type Refresh = super::Refresh<FixtureKind>;
+    type Retire = super::Retire<FixtureKind>;
+    type Tick = super::Tick<FixtureKind>;
+    type Drive = super::Drive<FixtureKind>;
+    type Cancel = super::Cancel<FixtureKind>;
+    type Release = super::Release<FixtureKind>;
+    type Close = super::Close<FixtureKind>;
+
+    use crate::abi::auth::{
+        BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
+        OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, ServeIn, ServeOut,
+        VerifyIn,
+    };
+
+    macro_rules! refuses {
+        ($name:ident, $in:ty, $out:ty) => {
+            pub struct $name;
+            impl RawSlot for $name {
+                type Kind = FixtureKind;
+                type In = $in;
+                type Out = $out;
+                unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                    Outcome::Refused
+                }
+            }
+        };
+    }
+    refuses!(Verify, VerifyIn, IdentifyOut);
+    refuses!(Begin, BeginLoginIn, BeginLoginOut);
+    refuses!(Complete, CompleteLoginIn, IdentifyOut);
+    refuses!(OpenOb, OpenOutboundIn, OpenOutboundOut);
+    refuses!(ObReady, OutboundReadyIn, OutboundReadyOut);
+    refuses!(Fields, FieldsIn, FieldsOut);
+    pub struct Serve;
+    impl RawSlot for Serve {
+        type Kind = FixtureKind;
+        type In = ServeIn;
+        type Out = ServeOut;
+        unsafe fn call(_: *mut c_void, i: &ServeIn, o: &mut ServeOut) -> Outcome {
+            o.status_code = if i.client.len == 0 { 401 } else { 200 };
+            Outcome::Ready
+        }
+    }
+
+    crate::plugin_door! {
+        ops: crate::abi::auth::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-auth-serve", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: {
+            verify: Verify, begin_login: Begin, complete_login: Complete,
+            open_outbound: OpenOb, outbound_ready: ObReady, fields: Fields, serve: Serve,
+        },
+    }
+}
+
+#[test]
+fn an_auth_plugin_wires_serve_with_the_verified_client() {
+    use crate::abi::auth::{slot as auth_slot, Ops, ServeIn, ServeOut};
+    use crate::abi::mechanism::call::AbiStr;
+    let d = auth_serve_plugin::door();
+    // SAFETY: the macro's `'static` door and its auth table.
+    let t = unsafe { &*d.ops.cast::<Ops>() };
+    assert_eq!(t.head.slots, crate::abi::auth::SLOTS);
+    assert!(t.serve.is_some() && t.target.is_none());
+    // SAFETY: `ServeIn` is plain data; all-zero is valid.
+    let mut input: ServeIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<ServeIn>(auth_slot::SERVE, Ticket::NONE);
+    input.client = AbiStr::of("client:primary");
+    // SAFETY: as above.
+    let mut out: ServeOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<ServeOut>());
+    assert_eq!(call(t.serve, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.status_code, 200);
+    // `serve` answers only its own index.
+    input.head.op = auth_slot::TARGET;
+    out.head = prefilled_head(size_of::<ServeOut>());
+    assert_eq!(call(t.serve, &input, &mut out), Outcome::Fault);
+}

@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod conn;
+pub mod directory;
 pub mod hook;
 pub mod io;
 pub mod service;

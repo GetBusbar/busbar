@@ -226,7 +226,14 @@ snapshot_table!(
     ticket_take,
     work_status,
     outbound_authorize,
-    hook_child
+    hook_child,
+    directory_get,
+    directory_lookup,
+    directory_scan,
+    directory_count,
+    directory_create,
+    directory_apply,
+    directory_delete
 );
 
 snapshot_table!(

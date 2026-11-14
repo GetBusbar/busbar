@@ -797,6 +797,17 @@ pub const unsafe fn check<T: KindOps>(st: &Statement, ops: &T) {
                 );
                 let o = &*p.cast::<crate::abi::auth::Ops>();
                 require!(o; verify, begin_login, complete_login, open_outbound, outbound_ready, fields);
+                // A plugin stating the provisioning capability must serve its mount.
+                if !st.kind_tail.is_null()
+                    && (*st.kind_tail).size as usize
+                        >= std::mem::size_of::<crate::abi::auth::AuthTail>()
+                {
+                    let t = &*st.kind_tail.cast::<crate::abi::auth::AuthTail>();
+                    assert!(
+                        t.caps & crate::abi::auth::CAP_PROVISION == 0 || o.serve.is_some(),
+                        "the provisioning capability requires a serve implementation"
+                    );
+                }
             }
             KindCode::Hook => {
                 assert!(

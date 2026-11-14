@@ -64,8 +64,10 @@ use busbar_contract::abi::auth::{
     OpenOutboundIn as AuthOpenOutboundIn, OpenOutboundOut as AuthOpenOutboundOut,
     OutboundReadyIn as AuthOutboundReadyIn, OutboundReadyOut as AuthOutboundReadyOut,
     RequestFacts as AuthRequestFacts, StripName as AuthStripName, StyleDecl as AuthStyleDecl,
-    TargetIn as AuthTargetIn, TargetOut as AuthTargetOut, VerifyIn as AuthVerifyIn,
+    ServeIn as AuthServeIn, TargetIn as AuthTargetIn, TargetOut as AuthTargetOut,
+    VerifyIn as AuthVerifyIn,
 };
+use busbar_contract::abi::host::directory as hdir;
 
 use busbar_contract::abi::host::conn::connector as hconn;
 use busbar_contract::abi::host::io as hio;
@@ -433,7 +435,8 @@ fn compute_layout() -> String {
             open_outbound,
             outbound_ready,
             fields,
-            target
+            target,
+            serve
         ]
     );
     record!(s, AuthStyleDecl, [name, flags, points]);
@@ -581,6 +584,11 @@ fn compute_layout() -> String {
         [head, style, credential, settings, buf, buf_cap]
     );
     record!(s, AuthTargetOut, [head, target]);
+    record!(
+        s,
+        AuthServeIn,
+        [head, method, path, query, headers, headers_len, body, client]
+    );
     record!(s, PlaneOps, [head, authenticated_route]);
     record!(s, TransportOps, [head]);
 
@@ -1531,8 +1539,65 @@ fn compute_layout() -> String {
             ticket_take,
             work_status,
             outbound_authorize,
-            hook_child
+            hook_child,
+            directory_get,
+            directory_lookup,
+            directory_scan,
+            directory_count,
+            directory_create,
+            directory_apply,
+            directory_delete
         ]
+    );
+    record!(
+        s,
+        hdir::DirectoryResult,
+        [code, index, version, state, more, count, active]
+    );
+    record!(s, hdir::DirectoryGetIn, [head, kind, _reserved, id, result, into]);
+    record!(
+        s,
+        hdir::DirectoryLookupIn,
+        [head, kind, _reserved, index, value, result, into]
+    );
+    record!(
+        s,
+        hdir::DirectoryScanIn,
+        [head, kind, limit, scope, after, result, into]
+    );
+    record!(s, hdir::DirectoryCountIn, [head, kind, _reserved, scope, result]);
+    record!(
+        s,
+        hdir::DirectoryCreateIn,
+        [head, kind, state, source, _reserved, document, indexes, indexes_len, result, into]
+    );
+    record!(
+        s,
+        hdir::DirectoryApplyIn,
+        [
+            head,
+            kind,
+            flags,
+            state,
+            _reserved,
+            id,
+            expected_version,
+            document,
+            indexes,
+            indexes_len,
+            members_add,
+            members_add_len,
+            members_remove,
+            members_remove_len,
+            members_replace,
+            members_replace_len,
+            result
+        ]
+    );
+    record!(
+        s,
+        hdir::DirectoryDeleteIn,
+        [head, kind, _reserved, id, expected_version, result]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
     record!(s, hsvc::SessionEmitIn, [head, session, bytes]);
