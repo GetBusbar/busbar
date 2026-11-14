@@ -186,3 +186,35 @@ fn every_slot_type_is_extern_c() {
     assert_eq!(door().magic(), DOOR_MAGIC);
     wake(HostCtx::NONE, Ticket::NONE);
 }
+
+#[test]
+fn auth_v4_appends_serve_after_target_and_nothing_else() {
+    use busbar_contract::abi::mechanism::lifecycle::LIFECYCLE_SLOTS;
+    use std::mem::{offset_of, size_of};
+    assert_eq!(auth::KIND_SLOTS, 8);
+    assert_eq!(auth::slot::SERVE, auth::slot::TARGET + 1);
+    assert_eq!(auth::slot::SERVE, LIFECYCLE_SLOTS + 7);
+    assert_eq!(
+        offset_of!(auth::Ops, serve),
+        8 + 8 * auth::slot::SERVE as usize
+    );
+    assert_eq!(size_of::<auth::Ops>(), 8 + 8 * auth::SLOTS as usize);
+    // `CAP_PROVISION` is a new caps bit; the old bits keep their values.
+    assert_eq!(
+        (auth::CAP_INBOUND, auth::CAP_LOGIN, auth::CAP_OUTBOUND, auth::CAP_PROVISION),
+        (1, 2, 4, 8)
+    );
+}
+
+#[test]
+fn the_auth_serve_in_is_the_hook_serve_in_plus_the_verified_client() {
+    use std::mem::{offset_of, size_of};
+    // Byte for byte the hook shape, then one appended `client`.
+    assert_eq!(offset_of!(auth::ServeIn, method), offset_of!(hook::ServeIn, method));
+    assert_eq!(offset_of!(auth::ServeIn, path), offset_of!(hook::ServeIn, path));
+    assert_eq!(offset_of!(auth::ServeIn, query), offset_of!(hook::ServeIn, query));
+    assert_eq!(offset_of!(auth::ServeIn, headers), offset_of!(hook::ServeIn, headers));
+    assert_eq!(offset_of!(auth::ServeIn, body), offset_of!(hook::ServeIn, body));
+    assert_eq!(offset_of!(auth::ServeIn, client), size_of::<hook::ServeIn>());
+    assert_eq!(size_of::<auth::ServeOut>(), size_of::<hook::ServeOut>());
+}

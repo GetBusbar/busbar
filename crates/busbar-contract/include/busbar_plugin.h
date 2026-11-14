@@ -170,8 +170,8 @@ extern "C" {
 #define BB_AUTH_IDENTITY_GROUPS_HARD_MAX UINT32_C(0x10000) /* The hard maximum of `needed_groups`: no identity asserts more groups than this. */
 #define BB_AUTH_FIELDS_HARD_MAX UINT32_C(64) /* The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the */
 #define BB_AUTH_EXT_OUTBOUND_SETTINGS_CHECK "auth.outbound-settings-check" /* Pure outbound settings validation support: Statement value `b"\x01"`; on lifecycle */
-#define BB_AUTH_ABI_VERSION UINT32_C(3) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`. */
-#define BB_AUTH_LAYOUT_FINGERPRINT UINT64_C(0x6438f190d7b44e09) /* The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
+#define BB_AUTH_ABI_VERSION UINT32_C(4) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`); 1.6.0 ships `4`, which */
+#define BB_AUTH_LAYOUT_FINGERPRINT UINT64_C(0x5b57a4ca0d0cd422) /* The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_AUTH_SLOT_VERIFY UINT32_C(9) /* `verify`. */
 #define BB_AUTH_SLOT_BEGIN_LOGIN UINT32_C(10) /* `begin_login`. */
 #define BB_AUTH_SLOT_COMPLETE_LOGIN UINT32_C(11) /* `complete_login`. */
@@ -179,11 +179,13 @@ extern "C" {
 #define BB_AUTH_SLOT_OUTBOUND_READY UINT32_C(13) /* `outbound_ready`. */
 #define BB_AUTH_SLOT_FIELDS UINT32_C(14) /* `fields`. */
 #define BB_AUTH_SLOT_TARGET UINT32_C(15) /* `target`. */
-#define BB_AUTH_KIND_SLOTS UINT32_C(7) /* How many kind ops follow the lifecycle. */
-#define BB_AUTH_SLOTS UINT32_C(16) /* [`OpsHead::slots`] for auth v3. */
+#define BB_AUTH_SLOT_SERVE UINT32_C(16) /* `serve` (auth v4). */
+#define BB_AUTH_KIND_SLOTS UINT32_C(8) /* How many kind ops follow the lifecycle. */
+#define BB_AUTH_SLOTS UINT32_C(17) /* [`OpsHead::slots`] for auth v4. */
 #define BB_AUTH_CAP_INBOUND UINT32_C(1) /* [`AuthTail::caps`]: the plugin serves `verify`. */
 #define BB_AUTH_CAP_LOGIN UINT32_C(2) /* [`AuthTail::caps`]: the plugin serves `begin_login`/`complete_login`. */
 #define BB_AUTH_CAP_OUTBOUND UINT32_C(4) /* [`AuthTail::caps`]: the plugin serves `open_outbound`/`outbound_ready`/`fields`. */
+#define BB_AUTH_CAP_PROVISION UINT32_C(8) /* [`AuthTail::caps`]: the plugin serves [`Ops::serve`] under `/provision/<instance>/ *` and may call */
 #define BB_AUTH_FACT_CACHEABLE UINT32_C(1) /* [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators): */
 #define BB_AUTH_FACT_INBOUND_NEEDS_BODY_HASH UINT32_C(2) /* [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as */
 #define BB_AUTH_FACT_INBOUND_ALL_HEADERS UINT32_C(4) /* [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's */
@@ -707,7 +709,14 @@ extern "C" {
 #define BB_HSVC_OP_WORK_STATUS UINT32_C(34) /* `work.status`: instance-scoped, read-only durable receipt status. */
 #define BB_HSVC_OP_OUTBOUND_AUTHORIZE UINT32_C(35) /* `outbound.authorize`: publish, bind, revoke or prepare scoped outbound custody. */
 #define BB_HSVC_OP_HOOK_CHILD UINT32_C(36) /* Invocation-scoped, configured hook child dispatch. */
-#define BB_HSVC_SERVICES UINT32_C(37) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_DIRECTORY_GET UINT32_C(37) /* `directory.get` ([`super::directory`]). */
+#define BB_HSVC_OP_DIRECTORY_LOOKUP UINT32_C(38) /* `directory.lookup`. */
+#define BB_HSVC_OP_DIRECTORY_SCAN UINT32_C(39) /* `directory.scan`. */
+#define BB_HSVC_OP_DIRECTORY_COUNT UINT32_C(40) /* `directory.count`. */
+#define BB_HSVC_OP_DIRECTORY_CREATE UINT32_C(41) /* `directory.create`. */
+#define BB_HSVC_OP_DIRECTORY_APPLY UINT32_C(42) /* `directory.apply`. */
+#define BB_HSVC_OP_DIRECTORY_DELETE UINT32_C(43) /* `directory.delete`. */
+#define BB_HSVC_SERVICES UINT32_C(44) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -1022,6 +1031,7 @@ typedef struct bb_auth_FieldsIn bb_auth_FieldsIn;
 typedef struct bb_auth_FieldsOut bb_auth_FieldsOut;
 typedef struct bb_auth_TargetIn bb_auth_TargetIn;
 typedef struct bb_auth_TargetOut bb_auth_TargetOut;
+typedef struct bb_auth_ServeIn bb_auth_ServeIn;
 typedef struct bb_hook_Ops bb_hook_Ops;
 typedef union bb_hook_SignalValue bb_hook_SignalValue;
 typedef struct bb_hook_SignalEntry bb_hook_SignalEntry;
@@ -1931,6 +1941,7 @@ struct bb_auth_Ops {
     bb_mech_Op outbound_ready;
     bb_mech_Op fields;
     bb_mech_Op target;
+    bb_mech_Op serve;
 };
 
 /* One outbound style a plugin serves: an open string the provider's `auth:` resolves against. */
@@ -2031,6 +2042,18 @@ struct bb_auth_TargetIn {
 struct bb_auth_TargetOut {
     bb_mech_OutHead head;
     bb_mech_Span target;
+};
+
+/* `serve`'s `in`: one HTTP request to this instance's provisioning mount. The hook kind's */
+struct bb_auth_ServeIn {
+    bb_mech_InHead head;
+    bb_mech_AbiStr method;
+    bb_mech_AbiStr path;
+    bb_mech_AbiStr query;
+    const bb_mech_AbiStr *headers;
+    size_t headers_len;
+    bb_mech_Blob body;
+    bb_mech_AbiStr client;
 };
 
 /* The hook kind's ops table. Leads with the shared [`OpsHead`]; kind op `k` is at slot index */
@@ -4040,6 +4063,13 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn work_status;
     bb_hsvc_ServiceFn outbound_authorize;
     bb_hsvc_ServiceFn hook_child;
+    bb_hsvc_ServiceFn directory_get;
+    bb_hsvc_ServiceFn directory_lookup;
+    bb_hsvc_ServiceFn directory_scan;
+    bb_hsvc_ServiceFn directory_count;
+    bb_hsvc_ServiceFn directory_create;
+    bb_hsvc_ServiceFn directory_apply;
+    bb_hsvc_ServiceFn directory_delete;
 };
 
 /* THE HOST'S I/O TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is one this host */
@@ -4128,7 +4158,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 285 of 285 structures are pinned by the golden ---- */
+/* ---- layout proof: 286 of 286 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4672,7 +4702,7 @@ BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, submitted) == 176, "bb_auth_Complete
 BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, submitted_len) == 184, "bb_auth_CompleteLoginIn.submitted_len: offset");
 BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, out_buf) == 192, "bb_auth_CompleteLoginIn.out_buf: offset");
 BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, nonce) == 224, "bb_auth_CompleteLoginIn.nonce: offset");
-BB_ASSERT(sizeof(bb_auth_Ops) == 136, "bb_auth_Ops: size");
+BB_ASSERT(sizeof(bb_auth_Ops) == 144, "bb_auth_Ops: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_Ops) == 8, "bb_auth_Ops: alignment");
 BB_ASSERT(offsetof(bb_auth_Ops, head) == 0, "bb_auth_Ops.head: offset");
 BB_ASSERT(offsetof(bb_auth_Ops, verify) == 80, "bb_auth_Ops.verify: offset");
@@ -4682,6 +4712,7 @@ BB_ASSERT(offsetof(bb_auth_Ops, open_outbound) == 104, "bb_auth_Ops.open_outboun
 BB_ASSERT(offsetof(bb_auth_Ops, outbound_ready) == 112, "bb_auth_Ops.outbound_ready: offset");
 BB_ASSERT(offsetof(bb_auth_Ops, fields) == 120, "bb_auth_Ops.fields: offset");
 BB_ASSERT(offsetof(bb_auth_Ops, target) == 128, "bb_auth_Ops.target: offset");
+BB_ASSERT(offsetof(bb_auth_Ops, serve) == 136, "bb_auth_Ops.serve: offset");
 BB_ASSERT(sizeof(bb_auth_StyleDecl) == 24, "bb_auth_StyleDecl: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_StyleDecl) == 8, "bb_auth_StyleDecl: alignment");
 BB_ASSERT(offsetof(bb_auth_StyleDecl, name) == 0, "bb_auth_StyleDecl.name: offset");
@@ -4760,6 +4791,16 @@ BB_ASSERT(sizeof(bb_auth_TargetOut) == 128, "bb_auth_TargetOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_TargetOut) == 8, "bb_auth_TargetOut: alignment");
 BB_ASSERT(offsetof(bb_auth_TargetOut, head) == 0, "bb_auth_TargetOut.head: offset");
 BB_ASSERT(offsetof(bb_auth_TargetOut, target) == 120, "bb_auth_TargetOut.target: offset");
+BB_ASSERT(sizeof(bb_auth_ServeIn) == 200, "bb_auth_ServeIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_auth_ServeIn) == 8, "bb_auth_ServeIn: alignment");
+BB_ASSERT(offsetof(bb_auth_ServeIn, head) == 0, "bb_auth_ServeIn.head: offset");
+BB_ASSERT(offsetof(bb_auth_ServeIn, method) == 96, "bb_auth_ServeIn.method: offset");
+BB_ASSERT(offsetof(bb_auth_ServeIn, path) == 112, "bb_auth_ServeIn.path: offset");
+BB_ASSERT(offsetof(bb_auth_ServeIn, query) == 128, "bb_auth_ServeIn.query: offset");
+BB_ASSERT(offsetof(bb_auth_ServeIn, headers) == 144, "bb_auth_ServeIn.headers: offset");
+BB_ASSERT(offsetof(bb_auth_ServeIn, headers_len) == 152, "bb_auth_ServeIn.headers_len: offset");
+BB_ASSERT(offsetof(bb_auth_ServeIn, body) == 160, "bb_auth_ServeIn.body: offset");
+BB_ASSERT(offsetof(bb_auth_ServeIn, client) == 184, "bb_auth_ServeIn.client: offset");
 BB_ASSERT(sizeof(bb_hook_Ops) == 136, "bb_hook_Ops: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_Ops) == 8, "bb_hook_Ops: alignment");
 BB_ASSERT(offsetof(bb_hook_Ops, head) == 0, "bb_hook_Ops.head: offset");
@@ -6347,7 +6388,7 @@ BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expected_revision) == 80, "bb_hs
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expires_at_unix) == 88, "bb_hsvc_OutboundAuthorizeIn.expires_at_unix: offset");
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, field_name) == 96, "bb_hsvc_OutboundAuthorizeIn.field_name: offset");
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, credential) == 112, "bb_hsvc_OutboundAuthorizeIn.credential: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 304, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 360, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -6388,6 +6429,13 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_take) == 272, "bb_hsvc_HostSlots.ti
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, work_status) == 280, "bb_hsvc_HostSlots.work_status: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, outbound_authorize) == 288, "bb_hsvc_HostSlots.outbound_authorize: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_child) == 296, "bb_hsvc_HostSlots.hook_child: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_get) == 304, "bb_hsvc_HostSlots.directory_get: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_lookup) == 312, "bb_hsvc_HostSlots.directory_lookup: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_scan) == 320, "bb_hsvc_HostSlots.directory_scan: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_count) == 328, "bb_hsvc_HostSlots.directory_count: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_create) == 336, "bb_hsvc_HostSlots.directory_create: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_apply) == 344, "bb_hsvc_HostSlots.directory_apply: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, directory_delete) == 352, "bb_hsvc_HostSlots.directory_delete: offset");
 BB_ASSERT(sizeof(bb_hio_IoSlots) == 88, "bb_hio_IoSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hio_IoSlots) == 8, "bb_hio_IoSlots: alignment");
 BB_ASSERT(offsetof(bb_hio_IoSlots, size) == 0, "bb_hio_IoSlots.size: offset");
