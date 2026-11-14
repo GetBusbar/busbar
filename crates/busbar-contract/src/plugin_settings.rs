@@ -834,19 +834,12 @@ pub(crate) fn encode_guarded<T: Serialize + ?Sized>(
 struct Wiping(Zeroizing<Vec<u8>>);
 impl std::io::Write for Wiping {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if self.0.capacity() - self.0.len() < bytes.len() {
-            let size = self
-                .0
-                .len()
-                .checked_add(bytes.len())
-                .ok_or_else(|| std::io::Error::other("settings too large"))?;
-            let mut next = Zeroizing::new(Vec::with_capacity(
-                size.max(self.0.capacity().saturating_mul(2)),
-            ));
-            next.extend_from_slice(&self.0);
-            self.0 = next;
-        }
-        self.0.extend_from_slice(bytes);
+        self.0
+            .len()
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("settings too large"))?;
+        // The SDK's one wiping growth path (LINT-RULES LR-117).
+        crate::secure::append(&mut self.0, bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
