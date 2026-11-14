@@ -5,6 +5,7 @@ use super::projection::{FieldValue, JsonOut, ProjectedRecord, Projection, Render
 use busbar_contract::abi::export::{ExportField as F, ExportStream::Traces};
 use std::fmt::Write as _;
 use tracing::span::{Attributes, Id};
+use tracing::subscriber::Interest;
 use tracing::Subscriber;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer};
@@ -21,7 +22,7 @@ pub fn layer<S: Subscriber + for<'a> LookupSpan<'a>>(floor: LevelFilter) -> Opti
                 super::plugin::sinks().any(records)
             }
     };
-    let filter = tracing_subscriber::filter::filter_fn(wanted).with_max_level_hint(floor);
+    let filter = SinkFilter { wanted, floor };
     let producer = Producer(deliver, records_wanted).with_filter(filter);
     super::plugin::axis().map(|_| producer)
 }
