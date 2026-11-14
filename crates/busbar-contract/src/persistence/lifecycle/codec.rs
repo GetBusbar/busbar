@@ -936,13 +936,6 @@ fn response_with<O>(
 pub fn decode_response(bytes: &[u8], bounds: Bounds) -> Result<Response, Error> {
     response_with(bytes, bounds, Secret::new)
 }
-/// Decode a complete response into the native owner's protected buffers.
-pub fn decode_response_owned<O: OwnerSeal>(
-    bytes: &[u8],
-    bounds: Bounds,
-) -> Result<Response<O>, Error> {
-    response_with(bytes, bounds, Secret::held)
-}
 /// Encode the exact empty/current/checkpoint-bound recovery OPEN binding.
 pub fn encode_open_binding(
     binding: &OpenBinding,

@@ -553,16 +553,6 @@ impl UsageLedger {
     pub fn total_input(&self) -> i128 {
         self.total_tier(UNIT_INPUT)
     }
-
-    /// OUTPUT tokens across every model — the durable counterpart of the `tokens_output` cap.
-    pub fn total_output(&self) -> i128 {
-        self.total_tier(UNIT_OUTPUT)
-    }
-
-    /// CACHE-READ tokens across every model — the durable counterpart of the `tokens_cache_read`
-    pub fn total_cache_read(&self) -> i128 {
-        self.total_tier(UNIT_CACHE_READ)
-    }
 }
 
 /// One model's signed unit delta inside a [`UsageDelta`] — the fleet-additive flush primitive's
@@ -926,17 +916,6 @@ pub enum PlaneSelector<'a> {
     All,
     /// Only records whose [`PlaneRecord::parent`] equals this value, oldest-first by `seq`.
     Parent(std::borrow::Cow<'a, str>),
-}
-
-impl PlaneSelector<'_> {
-    /// This selector owning its parent, for a request that outlives the caller's borrow.
-    #[must_use]
-    pub fn to_static(&self) -> PlaneSelector<'static> {
-        match self {
-            Self::All => PlaneSelector::All,
-            Self::Parent(p) => PlaneSelector::Parent(std::borrow::Cow::Owned(p.to_string())),
-        }
-    }
 }
 
 /// The per-request context a plane handler receives: the resolved caller identity attached to each
