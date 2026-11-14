@@ -206,7 +206,7 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
 /// The transport kind's initial released ABI; v1.5.5 had no transport kind ABI.
 /// Admission also requires the current layout fingerprint.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = super::versions::TRANSPORT.raw();
 
 /// The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x284b380003b951b8;
