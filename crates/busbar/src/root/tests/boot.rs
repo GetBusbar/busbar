@@ -1078,7 +1078,7 @@ pub(super) fn constructor_child(validate: bool) -> ! {
     crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
     let catalogue = crate::register_diagnostics();
     if validate {
-        std::process::exit(crate::root::cli::validate_config_command());
+        crate::root::exit::exit(crate::root::cli::validate_config_command());
     }
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

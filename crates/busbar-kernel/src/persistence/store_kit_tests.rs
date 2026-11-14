@@ -117,7 +117,14 @@ impl PersistenceBackend for Mock {
             }
             let initialization = control::initialization(candidate, DATASET);
             let blind = self.blind_initialize && initialization;
-            let fresh = state.rows.is_empty() && state.receipts.is_empty() && initialization;
+            // Initialize's emptiness proof ignores the import namespace (FIRST-START-TAKEOVER
+            // §2.9 (b)).
+            let fresh = !state
+                .rows
+                .keys()
+                .any(|a| control::counts_toward_empty(NamespaceId(a.namespace)))
+                && state.receipts.is_empty()
+                && initialization;
             if !fresh && !blind {
                 let seal = crate::seal::lend();
                 let Some(root) = state
@@ -191,6 +198,25 @@ impl Fixture for Mocks {
     }
 }
 
+#[async_trait::async_trait]
+impl DurableFixture for Mocks {
+    async fn seed(
+        &self,
+        dataset: &Self::Dataset,
+        namespace: NamespaceId,
+        key: &[u8],
+        value: &[u8],
+    ) {
+        dataset.state.lock().unwrap().rows.insert(
+            Address {
+                namespace: namespace.0,
+                key: key.to_vec(),
+            },
+            Secret::new(value.to_vec()),
+        );
+    }
+}
+
 /// The memory product store, but every read answers "absent": a store that misreports reads.
 struct EmptyReads(Arc<dyn PersistenceBackend>);
 
@@ -248,6 +274,19 @@ async fn the_memory_product_store_passes_the_kit() {
 #[tokio::test]
 async fn a_correct_store_passes_the_kit() {
     run(&Mocks {
+        blind_initialize: false,
+    })
+    .await;
+    run_durable(&Mocks {
+        blind_initialize: false,
+    })
+    .await;
+}
+
+/// T11 alone over the correct mock store, so its red-before-green proof names one test.
+#[tokio::test]
+async fn a_correct_store_hands_over_at_once_after_abandon() {
+    t11_abandon_hands_over(&Mocks {
         blind_initialize: false,
     })
     .await;

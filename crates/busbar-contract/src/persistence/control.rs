@@ -28,6 +28,18 @@ pub const DATASET_KEY: &[u8] = b"d";
 /// advances every mutated namespace once, atomically with its effects and slot row.
 pub const GENERATION_NAMESPACE: NamespaceId = NamespaceId(*b"busbar.scan.v1\0\0");
 
+/// The 1.5.5 import namespace (MIGRATE-ON-BOOT's `IMPORT_NS`). A store's migrate writes it
+/// with its own driver before admission, so it holds no receipt; core consumes it after Register.
+pub const IMPORT_NAMESPACE: NamespaceId = NamespaceId(*b"busbar.import.r0");
+
+/// Whether a record in `namespace` makes a dataset non-empty for Initialize's emptiness proof.
+/// Every namespace counts except the reserved import set R = {[`IMPORT_NAMESPACE`]}; receipts
+/// always count.
+#[must_use]
+pub fn counts_toward_empty(namespace: NamespaceId) -> bool {
+    namespace != IMPORT_NAMESPACE
+}
+
 /// Known control keys; an unrecognized key is not an extensible grant format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -652,5 +664,17 @@ mod tests {
         .encode()
         .is_none());
         assert_eq!(&writer_key([7; 16])[1..], &[7; 16]);
+    }
+
+    #[test]
+    fn only_import_records_are_excepted_from_the_emptiness_proof() {
+        assert!(!counts_toward_empty(IMPORT_NAMESPACE));
+        assert_eq!(&IMPORT_NAMESPACE.0, b"busbar.import.r0");
+        for namespace in [NAMESPACE, GENERATION_NAMESPACE, NamespaceId([0; 16])] {
+            assert!(counts_toward_empty(namespace), "{namespace:?}");
+        }
+        let mut near = IMPORT_NAMESPACE;
+        near.0[15] ^= 1;
+        assert!(counts_toward_empty(near));
     }
 }
