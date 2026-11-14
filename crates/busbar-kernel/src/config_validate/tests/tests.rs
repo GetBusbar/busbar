@@ -1465,6 +1465,78 @@ fn a_non_fallback_planes_card_is_checked_per_lane_including_absent_cards() {
 }
 
 #[test]
+fn a_present_card_refuses_every_configured_lane_it_does_not_name() {
+    let model = || serde_json::from_value(serde_json::json!({"provider": "standin"})).unwrap();
+    let mut cfg = make_root_cfg(
+        HashMap::new(),
+        [
+            ("a".into(), model()),
+            ("b".into(), model()),
+            ("c".into(), model()),
+        ]
+        .into(),
+        HashMap::new(),
+    );
+    cfg.rate_card = Some(card_yaml(
+        "a: { input_utok: 1, units: { search_units: 0, images: 0 } }",
+    ));
+    let errors = validate_cost_metadata(&cfg, &[&FLAT_PLANE])
+        .expect_err("a present card silent about configured models is refused");
+    assert_eq!(
+        errors,
+        vec![
+            "rate_card is present but 2 configured models have no rate entry (rate_card is \
+             AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+             Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
+             \x20   b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n\
+             \x20   c: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"
+                .to_string()
+        ]
+    );
+
+    let mut card = plane_card("class-plane", "a", "units: { calls: 10, bytes: 0 }");
+    card.extend(plane_card(
+        "class-plane",
+        "b",
+        "units: { calls: 0, bytes: 0 }",
+    ));
+    let lanes = [
+        format!("class-plane{PLANE_LANE_SEP}a"),
+        format!("class-plane{PLANE_LANE_SEP}b"),
+        format!("class-plane{PLANE_LANE_SEP}c"),
+    ];
+    let mut errors = Vec::new();
+    validate_plane_card(&CLASS_PLANE, &card, false, &lanes, &mut errors);
+    assert_eq!(
+        errors,
+        vec![
+            "tools.rate_card is present but 1 class thing has no rate entry (a present card is \
+             AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+             Paste these under tools.rate_card and fill in your rates:\n\n\
+             \x20   c: { units: { calls: 0, bytes: 0 } }\n"
+                .to_string()
+        ]
+    );
+
+    let mut errors = Vec::new();
+    let (_, warnings) = capture_rate_warnings(|| {
+        validate_plane_card(
+            &CLASS_PLANE,
+            &Default::default(),
+            false,
+            &lanes,
+            &mut errors,
+        )
+    });
+    assert!(errors.is_empty(), "no card is billing off: {errors:?}");
+    assert!(
+        warnings
+            .contains("no rate card is configured for this plane; usage-based pricing is disabled"),
+        "{warnings}"
+    );
+}
+
+#[test]
 fn missing_model_entries_warn_while_unknown_models_and_invalid_rates_still_fail() {
     let mut cfg = make_root_cfg(
         HashMap::new(),
