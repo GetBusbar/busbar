@@ -599,29 +599,8 @@ pub fn served(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> Result<Arc<dyn FramerDoor>, String> {
     let door: Arc<dyn FramerDoor> = Arc::new(Dispatched::open(plugin, settings)?);
-    let wire = Arc::new(HostWire::new(door.as_ref())?);
-    Ok((door, wire))
-}
-
-/// A linked row's build: its door admitted through the one validation, bound under the row's name
-pub fn build(
-    row: &str,
-    door: DoorFn,
-    settings: &busbar_contract::transport::TransportSettings,
-) -> Arc<HostWire> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: a linked row is built once at boot; a refusal's text is the panic's"
-    )]
-    let built = LinkedRow::of(door)
-        .map_err(|e| e.to_string())
-        .and_then(|linked| {
-            load_linked::<TransportKind>(&linked, row_bind(row)?).map_err(|e| e.to_string())
-        })
-        .and_then(|plugin| Dispatched::open(plugin, settings))
-        .and_then(|door| HostWire::new(&door))
-        .map(Arc::new);
-    built.unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+    unlayered(door.as_ref())?;
+    Ok(door)
 }
 
 /// A LINKED TRANSPORT ROW'S IDENTITY, read off its door's Statement and nothing else: the row's

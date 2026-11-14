@@ -666,8 +666,6 @@ pub struct AuthInstance {
     lifecycle: Mutex<()>,
 
     schedule: Option<tokio::task::JoinHandle<()>>,
-    // Set by the tick schedule when it stops without the plugin's own `next_tick_ns == 0`.
-    tick_failed: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for AuthInstance {
@@ -1161,7 +1159,9 @@ impl AuthCalls for AuthInstance {
     }
 
     fn reusable(&self) -> bool {
-        self.answering() && !self.tick_failed.load(Ordering::Acquire)
+        // A failed tick does not end the schedule (it is retried on the host's backoff); only a
+        // closed or faulted instance ends it early, and that instance is not answering.
+        self.answering()
     }
 
     fn refresh(&self) -> Result<u64, String> {

@@ -309,14 +309,33 @@ pub fn check_pairs(ptr: *const AbiStr, len: usize, field: &'static str) -> Resul
 /// The host's check of an apply `in`'s scalars and list framing (content is the kernel's to judge).
 pub fn check_apply_in(i: &DirectoryApplyIn) -> Result<(), Fault> {
     check_record_kind(i.kind, "directory_apply.kind")?;
-    check::bits(u64::from(i.flags), u64::from(APPLY_ALL), "directory_apply.flags")?;
+    check::bits(
+        u64::from(i.flags),
+        u64::from(APPLY_ALL),
+        "directory_apply.flags",
+    )?;
     check_result(i.result, "directory_apply.result")?;
     check_pairs(i.indexes, i.indexes_len, "directory_apply.indexes")?;
-    check::listed(i.members_add, i.members_add_len, "directory_apply.members_add")?;
-    check::listed(i.members_remove, i.members_remove_len, "directory_apply.members_remove")?;
-    check::listed(i.members_replace, i.members_replace_len, "directory_apply.members_replace")?;
+    check::listed(
+        i.members_add,
+        i.members_add_len,
+        "directory_apply.members_add",
+    )?;
+    check::listed(
+        i.members_remove,
+        i.members_remove_len,
+        "directory_apply.members_remove",
+    )?;
+    check::listed(
+        i.members_replace,
+        i.members_replace_len,
+        "directory_apply.members_replace",
+    )?;
     if i.flags & APPLY_REPLACE_MEMBERS == 0 && i.members_replace_len != 0 {
-        return Err(fault(Rule::Contradiction, "directory_apply.members_replace"));
+        return Err(fault(
+            Rule::Contradiction,
+            "directory_apply.members_replace",
+        ));
     }
     if i.kind == DIR_SUBJECT
         && (i.members_add_len | i.members_remove_len | i.members_replace_len != 0

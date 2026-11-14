@@ -2360,7 +2360,7 @@ fn executable_sha256() -> Result<String, String> {
         use std::io::Read;
         let mut file = running_executable().map_err(executable_refusal)?;
         let mut digest = Sha256::new();
-        let mut bytes = [0u8; 65536];
+        let mut bytes = [0u8; 16 * 1024];
         loop {
             let n = file.read(&mut bytes).map_err(executable_refusal)?;
             if n == 0 {
@@ -2386,9 +2386,13 @@ fn once_digest(
 
 /// The refusal for a running image that could not be opened or read.
 fn executable_refusal(error: std::io::Error) -> String {
-    format!(
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    let _ = write!(
+        text,
         "cannot read {RUNNING_EXECUTABLE} to digest the running binary for a linked auth principal's provenance: {error}"
-    )
+    );
+    text
 }
 
 fn tracked(requirements: &[Requirement]) -> impl Iterator<Item = &Requirement> {
@@ -2632,11 +2636,8 @@ pub async fn initialize_ephemeral_with_record_bootstrap(
         return Err("fresh principal baseline changed before record bootstrap".into());
     }
     let mut epoch = [0u8; 16];
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
-    )]
-    getrandom::fill(&mut epoch).map_err(|_| "fresh record bootstrap entropy unavailable")?;
+    busbar_contract::crypto::fill(&mut epoch)
+        .map_err(|_| "fresh record bootstrap entropy unavailable")?;
     // busbar:expect(bp::into_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     Ok(crate::host_record_bootstrap::ColdRecordReceipt {
         version: 1,

@@ -128,7 +128,11 @@ impl PersistenceBackend for LostPublication {
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.inner.clock(dataset)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let publication = candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, busbar_contract::persistence::Mutation::Put { address, .. } if address.key.ends_with(HEAD)));
             if publication {
@@ -137,7 +141,7 @@ impl PersistenceBackend for LostPublication {
                     .unwrap()
                     .push((candidate.candidate().id.operation, candidate.fingerprint()));
             }
-            let answer = self.inner.commit(candidate).await?;
+            let answer = self.inner.commit(candidate, key).await?;
             if publication && self.lose.swap(false, Ordering::SeqCst) {
                 Err(Failure::Unknown)
             } else {

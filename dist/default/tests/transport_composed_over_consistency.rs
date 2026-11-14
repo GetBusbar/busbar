@@ -36,11 +36,7 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
             "{} is served over the host's sockets and is built over nothing",
             row.key
         );
-        assert!(
-            row.composes_over.is_empty(),
-            "`{}` names a layer",
-            row.key
-        );
+        assert!(row.composes_over.is_empty(), "`{}` names a layer", row.key);
     }
 
     assert!(

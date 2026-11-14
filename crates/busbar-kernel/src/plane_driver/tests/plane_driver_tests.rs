@@ -20,7 +20,7 @@ async fn conditional_optional_admission_keeps_guards_without_requiring_unused_st
         conditional_record_kinds: vec![0],
         ..Default::default()
     };
-    let section = serde_yaml::Value::Null;
+    let section = busbar_contract::yaml::Value::Null;
     assert!(prepare_admission(&declaration, &services, ("sample", &section)).is_err());
     declaration.conditional_records_optional = true;
     let prepared = prepare_admission(&declaration, &services, ("sample", &section)).unwrap();
@@ -53,8 +53,8 @@ fn declaration() -> InstanceDecl {
     }
 }
 
-fn section(key: &str, max_live: usize) -> serde_yaml::Value {
-    serde_yaml::from_str(&format!(
+fn section(key: &str, max_live: usize) -> busbar_contract::yaml::Value {
+    busbar_contract::yaml::from_str(&format!(
         "peer:\n  pin: {{mechanism: rooted, key: '{key}'}}\nwork: {{max_live: {max_live}, retain_s: 7}}"
     ))
     .expect("the section parses")

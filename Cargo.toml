@@ -36,7 +36,7 @@ base64 = "0.22"
 bytes = "1"
 core_affinity = "0.8"
 crc32fast = "1"
-# ring only: no aws-lc-rs and no RustCrypto suite.
+# The DTLS protocol engine only, no default features: its crypto provider is the backend's.
 dimpl = { version = "=0.7.4", default-features = false }
 # 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
@@ -57,7 +57,6 @@ hyper-util = { version = "0.1", default-features = false, features = [
     "tokio",
 ] }
 indexmap = { version = "2", features = ["serde"] }
-itoa = "1"
 # Defaults off: validation is offline, and they pull reqwest and a second crypto backend (aws-lc-rs).
 jsonschema = { version = "0.49", default-features = false }
 # The command-line lexer for `busbar` and `busbar-audit-verify` (C19): zero dependencies.
@@ -66,8 +65,6 @@ libc = "0.2"
 libloading = "0.9"
 loom = "0.7"
 memchr = "2"
-# Already in both lockfiles (hyper, axum): the content-type parameter grammar, quoted values included.
-mime = "0.3.17"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 # No crypto of its own (decision 228): default features off, so no backend; busbar-core-oauth2 passes
@@ -81,7 +78,10 @@ oauth-as = { version = "1.1", default-features = false, features = [
     "dpop",
     "client-assertion",
 ] }
-# ring only; members whose tests write PEM add the `pem` feature.
+# URI component and form codecs (DEPENDENCY-LADDER C6); already linked through url. The fleet's
+# plugins take percent-encoding from this row too.
+percent-encoding = "2.3.2"
+form_urlencoded = "1.2.2"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 # Defaults off: rustls only, so no second crypto backend enters.
@@ -89,16 +89,17 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 webpki-roots = "1"
 x509-parser = { version = "0.18", default-features = false }
-webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std", "ring"] }
 rustls-pki-types = { version = "1", default-features = false, features = ["std"] }
-ryu = "1"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
-# YAML is busbar-yaml: serde_yaml_ng 0.10's API on a memory-safe port of libyaml (no unsafe-libyaml),
-# under the `serde_yaml` name so call sites are unchanged. A path row: busbar-contract's git
-# consumers (the plugins) resolve it from this repository at the same pin.
-serde_yaml = { package = "busbar-yaml", path = "crates/busbar-yaml" }
+# YAML is serde-saphyr (YAML 1.2, forbid(unsafe_code)) behind `busbar_contract::yaml`, which pins
+# its options to 1.5.5's meaning; the untyped tree is ciborium's `Value` (ordered pairs, no unsafe).
+# busbar-contract's git consumers (the plugins) inherit both through these rows.
+serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
+ciborium = "0.2.2"
+# Names the failing node's path in a YAML error (`a.b[0].c: ...`), as serde_yaml did.
+serde_path_to_error = "0.1.20"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
 sonic-rs = "0.5"
@@ -133,7 +134,6 @@ url = "2"
 idna_adapter = "=1.1.0"
 idna = { version = "1.1.0", default-features = false, features = ["alloc", "compiled_data"] }
 zeroize = "1"
-stringprep = "=0.1.5"
 unicode-normalization = "0.1.25"
 # The shared fast-hash aliases (foldhash::HashMap / HashSet, per-process seeded) the bad-pattern rules
 # point at instead of std's SipHash HashMap/HashSet. Already in Cargo.lock.

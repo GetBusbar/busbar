@@ -1440,12 +1440,7 @@ impl std::fmt::Debug for Inbound {
 
 fn fresh_secret() -> Option<[u64; 2]> {
     let mut b = [0u8; 16];
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: a unit's secret is drawn from OS entropy; a seeded userspace CSPRNG is a security design call (reported)"
-    )]
-    let filled = getrandom::fill(&mut b);
-    filled.ok()?;
+    busbar_contract::crypto::fill(&mut b).ok()?;
     let (a, z) = b.split_at(8);
     Some([
         u64::from_le_bytes(a.try_into().ok()?),

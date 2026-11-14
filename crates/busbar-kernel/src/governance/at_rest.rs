@@ -42,14 +42,14 @@ thread_local! {
 }
 
 /// Runs `f` over the row's associated data, built into the thread's reused buffer.
-fn with_aad<R>(meta: &CredentialMeta, f: impl FnOnce(Aad<&[u8]>) -> R) -> R {
+fn with_aad<R>(meta: &CredentialMeta, f: impl FnOnce(&[u8]) -> R) -> R {
     AAD.with_borrow_mut(|a| {
         a.clear();
         for part in [&meta.id, &meta.key_id, &meta.kind, &meta.public_id] {
             a.extend_from_slice(&(part.len() as u64).to_be_bytes());
             a.extend_from_slice(part.as_bytes());
         }
-        f(Aad::from(a.as_slice()))
+        f(a.as_slice())
     })
 }
 
@@ -77,26 +77,22 @@ impl CredentialKek {
     }
 
     fn seal(&self, meta: &CredentialMeta, plain: &[u8]) -> Result<String, String> {
-        let mut nonce = [0_u8; NONCE_LEN];
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a nonce is drawn only when a credential is sealed at mint or re-wrap"
-        )]
-        getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG unavailable: {e}"))?;
         #[expect(
             clippy::disallowed_methods,
             reason = "config: sealing copies the secret once, at mint or re-wrap"
         )]
         let mut buf = Zeroizing::new(plain.to_vec());
-        let sealed = with_aad(meta, |aad| {
-            self.key
-                .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), aad, &mut *buf)
-        });
+        let sealed = with_aad(meta, |aad| self.key.seal_random_nonce(aad, &mut buf[..]));
         #[expect(
             clippy::disallowed_methods,
             reason = "error: a seal failure renders its message once"
         )]
-        sealed.map_err(|_| "the credential could not be sealed".to_string())?;
+        let (nonce, tag) = sealed.map_err(|e| match e {
+            crypto::Error::Rng(e) => format!("CSPRNG unavailable: {e}"),
+            _ => "the credential could not be sealed".to_string(),
+        })?;
+        // The stored ciphertext is the encrypted bytes followed by the tag, as it always was.
+        buf.extend_from_slice(&tag);
         #[expect(
             clippy::disallowed_methods,
             reason = "config: the sealed envelope is the stored row, written at mint or re-wrap"
@@ -118,16 +114,16 @@ impl CredentialKek {
         }
         let nonce: [u8; NONCE_LEN] = b64().decode(nonce).ok()?.try_into().ok()?;
         let mut buf = Zeroizing::new(b64().decode(ct).ok()?);
-        let len = with_aad(meta, |aad| {
-            self.key
-                .open_in_place(Nonce::assume_unique_for_key(nonce), aad, &mut buf[..])
-                .map(|plain| plain.len())
+        let split = buf.len().checked_sub(TAG_LEN)?;
+        let tag: [u8; TAG_LEN] = buf[split..].try_into().ok()?;
+        with_aad(meta, |aad| {
+            self.key.open_in_place(&nonce, aad, &mut buf[..split], &tag)
         })
         .ok()?;
         // The plaintext is the decoded buffer's prefix: keep that buffer as the secret's own storage
         // rather than copying it out. The cut-off tag stays in spare capacity, which zeroizing clears.
         let mut bytes = std::mem::take(&mut *buf);
-        bytes.truncate(len);
+        bytes.truncate(split);
         match String::from_utf8(bytes) {
             Ok(text) => Some(Zeroizing::new(text)),
             Err(e) => {

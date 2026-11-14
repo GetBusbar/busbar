@@ -13,7 +13,6 @@ path = "src/lib.rs"
 
 [dependencies]
 foldhash = { workspace = true }
-sha2 = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
@@ -33,7 +32,6 @@ url = { workspace = true }
 indexmap = { workspace = true }
 schemars = { workspace = true, optional = true }
 loom = { workspace = true, optional = true }
-ring = { workspace = true }
 unicode-normalization = { workspace = true }
 base64 = { workspace = true }
 sonic-rs = { workspace = true }
@@ -51,11 +49,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-log = { workspace = true }
 hex = { workspace = true }
-getrandom = { workspace = true }
-ed25519-dalek = { workspace = true }
 async-trait = { workspace = true }
 arc-swap = { workspace = true }
-httpdate = { workspace = true }
 
 [features]
 openapi-schema = ["dep:schemars"]
@@ -67,11 +62,10 @@ timing = ["dep:libc"]
 
 [dev-dependencies]
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
-sha2 = { workspace = true }
 # Integration tests use ordinary production ABI test support, never kernel fixture exports.
 # Dev-only: the test seal is absent from release builds.
 # Dev-only: the single-path count probes (SINGLE-PATH §8) count only in test builds.
-busbar-contract = { path = "../busbar-contract", features = ["test-seal", "stage-probe"] }
+busbar-contract = { path = "../busbar-contract", features = ["test-seal", "stage-probe", "visit-count"] }
 tokio = { workspace = true, features = ["test-util", "net"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }
@@ -79,9 +73,6 @@ http-body-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
-criterion = { workspace = true }
-# FAST-MAPS B1 (`benches/fast_maps.rs`): foldhash against the incumbent hashers.
-foldhash = { workspace = true }
 # Member `test-support` features are enabled here, never in a release build.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger", features = ["test-support"] }
@@ -94,27 +85,6 @@ libc = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
-
-[[bench]]
-name = "pool_upstream_creds"
-harness = false
-
-[[bench]]
-name = "plane_host_vtable_perf"
-harness = false
-
-[[bench]]
-name = "plane_host_vtable_alloc"
-harness = false
-
-[[bench]]
-name = "store_buffers"
-harness = false
-
-[[bench]]
-name = "request_debug_overhead"
-harness = false
-required-features = ["test-support"]
 
 [lints]
 workspace = true
