@@ -512,6 +512,67 @@ fn refused(e: impl std::fmt::Display) -> Failure {
     Failure::Refused(text)
 }
 
+/// THE DRIVE'S CLOCK: `now`, read the first time the drive compares or arms a deadline and kept
+/// for the rest of it, so a drive reads the clock at most once, and not at all when no deadline is
+/// set. A reading taken earlier in the drive is a few µs early: it can only judge a deadline not yet
+/// due, never fire one late, and the timer [`Connection::keep_deadlines`] arms wakes the drive for it.
+fn clock(now: &mut Option<Instant>) -> Instant {
+    *now.get_or_insert_with(|| {
+        busbar_contract::work_count::tally(busbar_contract::work_count::Work::ClockRead);
+        #[cfg(test)]
+        clock_reads::read();
+        Instant::now()
+    })
+}
+
+/// What the drives on this thread did with the clock (tests only): how many drives ran, how many
+/// clock reads they made, and the most any one drive made.
+#[cfg(test)]
+pub(crate) mod clock_reads {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DRIVES: Cell<u64> = const { Cell::new(0) };
+        static READS: Cell<u64> = const { Cell::new(0) };
+        static THIS_DRIVE: Cell<u64> = const { Cell::new(0) };
+        static MOST: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// The counts since the last [`take`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct Counted {
+        pub(crate) drives: u64,
+        pub(crate) reads: u64,
+        pub(crate) most_in_one_drive: u64,
+    }
+
+    /// A drive starts.
+    pub(crate) fn drove() {
+        DRIVES.with(|n| n.set(n.get() + 1));
+        THIS_DRIVE.with(|n| n.set(0));
+    }
+
+    /// The drive under way read the clock.
+    pub(crate) fn read() {
+        READS.with(|n| n.set(n.get() + 1));
+        let this = THIS_DRIVE.with(|n| {
+            n.set(n.get() + 1);
+            n.get()
+        });
+        MOST.with(|n| n.set(n.get().max(this)));
+    }
+
+    /// The counts so far, starting them again from zero.
+    pub(crate) fn take() -> Counted {
+        THIS_DRIVE.with(|n| n.set(0));
+        Counted {
+            drives: DRIVES.with(|n| n.replace(0)),
+            reads: READS.with(|n| n.replace(0)),
+            most_in_one_drive: MOST.with(|n| n.replace(0)),
+        }
+    }
+}
+
 /// `protocols`, most preferred first, in the handshake's ProtocolNameList encoding (one length
 fn protocol_name_list(protocols: &[Vec<u8>]) -> Vec<u8> {
     // busbar:expect(bp::fresh_buffer, reason = "boot: a connection's protocol offer is encoded once, at its handshake setup")
@@ -1870,7 +1931,7 @@ impl Connection {
                 moved |= self.read(cx)?;
             }
         }
-        moved |= self.keep_deadlines(cx)?;
+        moved |= self.keep_deadlines(cx, &mut now)?;
         Ok(moved)
     }
 
@@ -2027,14 +2088,15 @@ impl Connection {
     }
 
     /// Check opening bounds before advancing their stages, and again when arming their timer.
-    fn check_open_deadlines(&self, now: Instant) -> Result<(), Failure> {
-        if (matches!(self.phase, Phase::Connecting | Phase::Handshaking) || self.handshaking())
-            && self.open_deadline.is_some_and(|at| at <= now)
-        {
+    fn check_open_deadlines(&self, now: &mut Option<Instant>) -> Result<(), Failure> {
+        let opening =
+            matches!(self.phase, Phase::Connecting | Phase::Handshaking) || self.handshaking();
+        let open_deadline = self.open_deadline.filter(|_| opening);
+        if open_deadline.is_some_and(|at| at <= clock(now)) {
             return Err(Failure::Timeout);
         }
         let tunnel_deadline = self.tunnel.as_ref().and_then(|t| t.deadline);
-        if tunnel_deadline.is_some_and(|at| at <= now) {
+        if tunnel_deadline.is_some_and(|at| at <= clock(now)) {
             return Err(Failure::Timeout);
         }
         Ok(())
@@ -2051,7 +2113,7 @@ impl Connection {
         let mut moved = false;
 
         let framer_deadline = self.framer_deadline.filter(|_| !self.begin_parked());
-        if framer_deadline.is_some_and(|at| at <= now) {
+        if framer_deadline.is_some_and(|at| at <= clock(now)) {
             self.framer_deadline = None;
             if let Some(framing) = self.framing.as_mut() {
                 let y = framing.timer().map_err(|e| match e.outcome {

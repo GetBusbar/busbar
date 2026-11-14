@@ -10,6 +10,8 @@
 # allocations       heap allocations (alloc, alloc_zeroed, realloc), process-wide
 # plugin_crossings  calls from the loader into a plugin (counted at the loader boundary)
 # store_round_trips requests submitted to the store plugin
+# connector_clock_reads  clock reads by the connector's drives (its lazy `now`: at most one per
+#                   drive, so the budget is the drives per request; TRANSPORT-TLS T10)
 #
 # An item with no line below has no budget yet: the test measures it, prints
 #   WORK-COUNT section=<section> <item>=<n>
@@ -17,10 +19,13 @@
 # printed counts.
 #
 # Not counted yet (each needs instrumentation at many sites, not one boundary): mutex
-# acquisitions on unit state, JSON parses of the request body, clock reads.
+# acquisitions on unit state, JSON parses of the request body, clock reads outside the
+# connector's drives.
 
 [buffered]
-# allocations, plugin_crossings, store_round_trips: measured on the first run, then written here.
+# allocations, plugin_crossings, store_round_trips, connector_clock_reads: measured on the first
+# run, then written here.
 
 [streamed]
-# allocations, plugin_crossings, store_round_trips: measured on the first run, then written here.
+# allocations, plugin_crossings, store_round_trips, connector_clock_reads: measured on the first
+# run, then written here.
