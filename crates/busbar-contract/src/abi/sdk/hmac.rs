@@ -178,7 +178,6 @@ pub(crate) fn stream_blocks(
                 continue;
             }
             block(&*buf);
-            fill = 0;
         }
         let (blocks, rest) = p.as_chunks::<BLOCK>();
         for c in blocks {
@@ -203,7 +202,7 @@ fn sha256_resume_parts(
     parts: &[&[u8]],
 ) -> Zeroizing<[u8; 32]> {
     let mut buf = Zeroizing::new([0_u8; BLOCK]);
-    let (fill, total) = stream_blocks(&mut *buf, consumed, parts, |b| compress(&mut state, b));
+    let (fill, total) = stream_blocks(&mut buf, consumed, parts, |b| compress(&mut state, b));
     let mut tail = Zeroizing::new([0_u8; 2 * BLOCK]);
     tail[..fill].copy_from_slice(&buf[..fill]);
     tail[fill] = 0x80;
