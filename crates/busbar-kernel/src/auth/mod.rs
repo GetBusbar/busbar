@@ -2795,6 +2795,10 @@ mod tests;
 mod plugin_chain_tests;
 
 #[cfg(test)]
+#[path = "tests/instances_tests.rs"]
+mod instances_tests;
+
+#[cfg(test)]
 #[path = "tests/acceptance_1_5_5_tests.rs"]
 mod acceptance_1_5_5_tests;
 
