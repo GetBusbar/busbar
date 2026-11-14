@@ -202,6 +202,7 @@ pub mod secret;
 pub mod shared;
 pub mod store;
 pub mod transport;
+pub mod versions;
 
 pub use crate::read_sized_field;
 

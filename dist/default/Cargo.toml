@@ -219,7 +219,8 @@ socket2 = { workspace = true }
 # else moved to busbar-core. Full rationale in main.rs at the `#[global_allocator]` site.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
-tikv-jemalloc-ctl = { workspace = true }
+# The jemalloc control main.rs calls (background purge thread, idle arena purge).
+busbar-kernel = { path = "../../crates/busbar-kernel", default-features = false, features = ["mallctl"] }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] }
@@ -912,60 +913,60 @@ resolver = "2"
 members = ["."]
 
 [workspace.dependencies]
-busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "365fc6652c3381435da2fbb790fc0553bb55ffbf" }
-busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "ea788ec75936869620d79594ad14c35b49ac2d5f" }
-busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "c34b36bdabf539c870059e31cd045849461fc0af" }
+busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "6571192080c0c838d81849a6c1f81ed9b2f639cb" }
+busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "ec75c61087d537dbc1b0e8b1175855a5696785d5" }
+busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "de55629bb3a949b67ac9684b2044ed6d190a925f" }
 # THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is
 # e154678 plus its held-cell test reading the rig's node journal (busbar #1427: the node amendment
 # journal is an instance the node owns; `node_recent` is gone).
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "b72ac652b5d4544d6cdeaab8f091194bd54d853b" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "9d10a34c13506158332f03f29db75d1471ba46b2" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
-busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "8955d19a3443434939c5a1f78968be1ce5b2eecc" }
-busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "8955d19a3443434939c5a1f78968be1ce5b2eecc" }
+busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "2389e2b525f671d89673bab89f2ec380e84bd2c7" }
+busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "2389e2b525f671d89673bab89f2ec380e84bd2c7" }
 # auth-oidc dev a19d113327 (security item 3, #59 + #62): discovery and the JWKS in open-web, the
 # token exchange in the default class named per request (a private IdP refused unless allowlisted).
-busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "8441cdda02e3e35d8d1ec8d035ee7a8dae8e9f44" }
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "8441cdda02e3e35d8d1ec8d035ee7a8dae8e9f44" }
-busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "2e4da803870abe3e7b590688f941c80fd5a5c166" }
-busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "2e4da803870abe3e7b590688f941c80fd5a5c166" }
-busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "144dca35aa338823e2a7b2e6fcd48fee07abe736" }
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "144dca35aa338823e2a7b2e6fcd48fee07abe736" }
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "32a9b2456e7a69b64773e1c877f8fff0754856fc" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "32a9b2456e7a69b64773e1c877f8fff0754856fc" }
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "3e3985fc003f5f859942492f5389ca5550712879" }
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "3e3985fc003f5f859942492f5389ca5550712879" }
+busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "dfbbc4a28cf2ab20c491fa6ab51417b4e9714837" }
+busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "dfbbc4a28cf2ab20c491fa6ab51417b4e9714837" }
+busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "8e0118e650aa9995097b427182d7f8cb516c592a" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "8e0118e650aa9995097b427182d7f8cb516c592a" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "4e11a4cb8f0035fa570cfebfbcf9cd58ac06af93" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "4e11a4cb8f0035fa570cfebfbcf9cd58ac06af93" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
 # crate's door on the secret axis; kernel tests answer the axis with the external testkit's
 # double (`busbar_kernel_testkit::test_support::secrets`), naming neither. One rev each.
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "9a89d914e320498eca0db3dc83dce98cfec9013b" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "b328f29b25d9f6c081fedfa01e9eb49f52bda4d4" }
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "297cbabf508cdfe65969381d707b25d8e76a1b68" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "8d0fc3f882be277e682bf35738b3847c5bbb0789" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
-busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "38ae8cc196ef703b79f5fb7164438b5cfcbc1db3" }
+busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "cbfd390ebceaf3b80ce25656aee2da6782c5d7b6" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
 # The pin is transport-http's dev head on busbar e171 (fdb6a882df: #45 the framer states its own head
 # lines at locate and adds none after the auth; #46 the accepted side is this door's; #49 a framing
 # failure is the system's words alone, no op prefix), moved past
 # 12b0783's behaviour in its own PR with its own oracle verdict (FLEET.md transport-http rule). The
 # door claims `https` again (the transport fold's row).
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "203b0cf4c18a01d8714deb9c97074793ba4e4f95" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "09823892a8751fc5a5c14b1058d3cb82aa8905dc" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
-busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "181fe2187863d65c675b227745737673e2b3dd01" }
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "295450d7b099c1c899d3a35984518295a630efe1" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "a89718f4c18883176a5d00560bac62f27fd6cf3e" }
-busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "38ae8cc196ef703b79f5fb7164438b5cfcbc1db3" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "2f1f8ea0e0d713b092b0f08dc985e4b18f4d7df5" }
+busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "cbfd390ebceaf3b80ce25656aee2da6782c5d7b6" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "86e640a36c57ea7739f3074add260fe824aa7256" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "86e640a36c57ea7739f3074add260fe824aa7256" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "df4852895f92f0282b895fdcaf889943dcfd9785" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "df4852895f92f0282b895fdcaf889943dcfd9785" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "404c13cced35efa66579f4f50c0e1e7af3e20ce6" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "b6a93ed6f011fffde4c21e6942ac88028e81954a" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
@@ -977,35 +978,35 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # STYLE_ENDPOINT_TOKEN_URL rank 4. Its mint needs are in the provider class (security item 3,
 # busbar-auth-oauth #43, dev ce2dbffe28): a private token endpoint is refused unless
 # advanced.allow_destinations names it, as BUSBAR-3025 says.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "27d76bf96179c619e3375ca2343da453592ea264" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "4cc1880d17e8c256298b9ad4d77d238a8d38b1b7" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
 # private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
 # On that pin, the signer logs the region warning 1.5.5 logged on every signature scoped to a
 # region defaulted at seal (`region_unread`), with the host (busbar-auth-sigv4 pin-1809-region-warn, merged onto the dev pin).
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "8e1a16115c30b068e31bd9d2f881fa63a54e7918" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "08e3a7b89882b39296d8a0339b6537f9e0b0e727" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so
 # `GET /api/v1/admin/info` `build.auth_modules` lists it, an `additive` accepted difference). One pin.
-busbar-auth-webhook-signature = { git = "https://github.com/GetBusbar/busbar-auth-webhook-signature", rev = "ec97d399419ced1e16b672cc309d4192d8d61f1f" }
+busbar-auth-webhook-signature = { git = "https://github.com/GetBusbar/busbar-auth-webhook-signature", rev = "860c6c9399e517c628e0ec63dd92750d024dccf1" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
 # axis (feature `hooks-ranking`). The root alone takes it: kernel tests link the external testkit's
 # R-FIX3 double (`busbar_kernel_testkit::test_support::ranking_double`) instead, and the root's
 # `linked_hook_ranking` tests prove the double states what this door states.
-busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "63c608ffdd983c60e3e3f2bbaf14dd4c48229d68" }
-busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-complexity", rev = "f4e0321f874692050a6f040832e6016755fb7703" }
+busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "37645f4ed7e0d4430e4b918155f59d60616c5f1a" }
+busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-complexity", rev = "46e31139d7a3ace0f88f77f0caa86be4ec659c01" }
 # THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
 # rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
 # (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
-busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "13426b06bdf26e5e6e9ea1cbc748bf2e8d3f9bdc" }
+busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "46232c4496efcec0b3b2e9b8f62528e071fd8f30" }
 # THE WEBRTC TRANSPORT: the datagram framer door (ICE, SRTP, SCTP; kind: transport), pulled at a
 # pinned rev; the logic crate the root links behind `transport-webrtc`. Its dropped-in cdylib twin
 # (`busbar-transport-webrtc-plugin`), the published suite's datagram script and its gates live in that
 # repo's plugin CI; busbar's gates read the pinned crate through the base layer. Its media stack (str0m,
 # aes) is pinned in that repo's own manifest: no member here inherits it.
-busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "a55f1b4e45d2100e7c6604c7e4897f30d1f267df" }
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "33dbeca4114fa84059f3cbd31982a6a89d4d5ad6" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its tests link the external testkit's R-FIX3
@@ -1018,31 +1019,31 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # (oracle BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
 # a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "fdf0dc743d69a620e52270b5422f670bd109a803" }
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "efd0fd43cf650160a446f092341d09c851125102" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "c5427d2728acfdceacdcdf8124919ed1fcdb7588" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "c135451ef60d184e15e9d5c361b7f014e376312a" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "224c0dab11ff2382b6489bccf48a45790f8eda09" }
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "1ea712054a52dba64715d925d0981962f86b1648" }
 # THE A2A PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the a2a
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "7909d6846eb814ddac1926ffe22fb700307fd19a" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "163daa7b0fd49872d2acd72c8f6eeb07d4e63742" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "a27ecaf51f34a170e0f145e8aef146db53fc8f43" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "e6280e69ee50b098824fbbe64d991b06d1cba80f" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
 # (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
 # busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
 # lock it carried the plane repo's busbar pin, whose plane ops table is not the host's, and every
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
-busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "a27ecaf51f34a170e0f145e8aef146db53fc8f43" }
+busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "e6280e69ee50b098824fbbe64d991b06d1cba80f" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
@@ -1066,7 +1067,8 @@ crc32fast = "1"
 dimpl = { version = "=0.7.4", default-features = false }
 # str0m and aes (the webrtc framer's media stack and its SRTP key derivation) left with the framer
 # (#964): busbar-transport-webrtc pins them in its own repo, and no member here inherits them.
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
+ed25519-dalek = { version = "3", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures = "0.3"
 getrandom = "0.3"
@@ -1181,11 +1183,10 @@ serde_json = "1"
 # Form-encoding for the engine-built RFC 8693 token exchange — the exact crate reqwest's `.form()`
 # delegated to, so the encoded bytes are identical by construction. Already in the lock via reqwest.
 serde_urlencoded = "0.7"
-# `serde_yaml` (dtolnay) is archived — its last release is literally `0.9.34+deprecated`.
-# `serde_yaml_ng` is the maintained, API-compatible fork; the `package` rename keeps every
-# `serde_yaml::from_str` call site unchanged. Renaming here states the substitution once for the
-# whole workspace instead of re-arguing it in each member.
-serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+# YAML is core's busbar-yaml (serde_yaml_ng 0.10's API on a memory-safe port of libyaml; no
+# unsafe-libyaml). The `package` rename keeps every `serde_yaml::from_str` call site unchanged and
+# states the substitution once for the whole workspace.
+serde_yaml = { package = "busbar-yaml", path = "../../crates/busbar-yaml" }
 # 0.10, the line every dependency that carries RustCrypto ships (oauth-as, sha1 via axum/tungstenite).
 # busbar's own digests and MACs are on ring (the one crypto backend); sha2 stays only where ring
 # would be a new backend in a plugin's closure (busbar-contract) and as the independent witness the
@@ -1201,7 +1202,6 @@ sonic-rs = "0.5"
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory and restores nothing to disk.
 tar = { version = "0.4", default-features = false }
-tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = "0.6"
 # No feature floor: each consumer needs a different slice of the runtime and tokio's default set is
 # empty, so the whole feature choice belongs to the member.
@@ -1270,8 +1270,8 @@ busbar-contract = { path = "../../crates/busbar-contract" }
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]
 # Dependency patches are effective only at the consuming workspace root.
-mysql_common = { git = "https://github.com/GetBusbar/busbar-store-mysql", rev = "4bd1069a1ffc0f7ccce13cf62120eb2da4950e5a" }
-postgres-protocol = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "c34b36bdabf539c870059e31cd045849461fc0af" }
+mysql_common = { git = "https://github.com/GetBusbar/busbar-store-mysql", rev = "60c6acb8cd42c9d73d1ec5ffa5001d340ba3d859" }
+postgres-protocol = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "de55629bb3a949b67ac9684b2044ed6d190a925f" }
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
 stringprep = { git = "https://github.com/MattJackson/rust-stringprep", rev = "da1e3cea3ca61b8b3882a71ee96496cd231601f2" }

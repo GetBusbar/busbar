@@ -476,6 +476,11 @@ mod dispatch_kind_transport_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
+#[path = "tests/confined_kind_ops_tests.rs"]
+mod confined_kind_ops_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/dispatch_kind_plane_tests.rs"]
 mod dispatch_kind_plane_tests;
 
@@ -527,6 +532,11 @@ mod conformance_auth_unjudged_tests;
 #[allow(unsafe_code)]
 #[path = "tests/conformance_export_unjudged_tests.rs"]
 mod conformance_export_unjudged_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/conformance_ready_after_no_ticket_tests.rs"]
+mod conformance_ready_after_no_ticket_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
