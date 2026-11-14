@@ -390,10 +390,11 @@ fn card_key(seed: u8) -> String {
 }
 
 fn busbar_signed(deployment: &crate::governance::GovState, payload: &[u8]) -> Value {
-    let (kid, _) = SignKey::sign(deployment, CARD_DOMAIN, b"").expect("a signing key");
+    let kid = SignKey::sign(deployment, CARD_DOMAIN, b"", &mut Vec::new()).expect("a signing key");
     let protected = URL_SAFE_NO_PAD.encode(json!({ "alg": "EdDSA", "kid": kid }).to_string());
     let input = format!("{protected}.{}", URL_SAFE_NO_PAD.encode(payload));
-    let (_, sig) = SignKey::sign(deployment, CARD_DOMAIN, input.as_bytes()).expect("signed");
+    let mut sig = Vec::new();
+    SignKey::sign(deployment, CARD_DOMAIN, input.as_bytes(), &mut sig).expect("signed");
     json!({ "protected": protected, "signature": URL_SAFE_NO_PAD.encode(sig) })
 }
 

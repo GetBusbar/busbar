@@ -42,7 +42,8 @@ fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separ
     };
     let old_generation = Arc::new(1usize);
     let new_generation = Arc::new(0usize);
-    let old_routes = HashMap::from([("receiver".to_owned(), (identity, old_generation.clone()))]);
+    let old_routes =
+        foldhash::HashMap::from_iter([("receiver".to_owned(), (identity, old_generation.clone()))]);
     let selected = retained_route(&old_routes, "receiver", |entry| matches(entry.0, identity))
         .expect("the route and policy select the retained instance");
     assert!(Arc::ptr_eq(&selected.1, &old_generation));
@@ -57,7 +58,8 @@ fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separ
         ),
     );
     assert_eq!(response.status, 202);
-    let new_routes = HashMap::from([("receiver".to_owned(), (identity, new_generation.clone()))]);
+    let new_routes =
+        foldhash::HashMap::from_iter([("receiver".to_owned(), (identity, new_generation.clone()))]);
     let old = retained_route(&old_routes, "receiver", |entry| matches(entry.0, identity)).unwrap();
     let new = retained_route(&new_routes, "receiver", |entry| matches(entry.0, identity)).unwrap();
     assert_eq!(
@@ -447,7 +449,7 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
                 prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
                 user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
-            &std::sync::Mutex::new(HashSet::new()),
+            &std::sync::Mutex::new(foldhash::HashSet::default()),
         )
         .0
         .can_rewrite()
@@ -486,7 +488,7 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
             prompt: need,
             user: NeedLevel::No,
         };
-        let banners = std::sync::Mutex::new(HashSet::new());
+        let banners = std::sync::Mutex::new(foldhash::HashSet::default());
 
         let mut rw = base_gate();
         rw.prompt = PromptAccess::Rw;
@@ -599,7 +601,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
         prompt: NeedLevel::No,
         user: NeedLevel::No,
     };
-    let env_banners = std::sync::Mutex::new(HashSet::new());
+    let env_banners = std::sync::Mutex::new(foldhash::HashSet::default());
     let mut h = base_gate();
     h.plugin = "inert-prompt".to_string();
     h.prompt = PromptAccess::Ro;
@@ -620,7 +622,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
         prompt: NeedLevel::Ro,
         user: NeedLevel::No,
     };
-    let env2_banners = std::sync::Mutex::new(HashSet::new());
+    let env2_banners = std::sync::Mutex::new(foldhash::HashSet::default());
     let mut h2 = base_gate();
     h2.plugin = "matched-prompt".to_string();
     h2.prompt = PromptAccess::Ro;
@@ -640,7 +642,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
         prompt: NeedLevel::No,
         user: NeedLevel::No,
     };
-    let env3_banners = std::sync::Mutex::new(HashSet::new());
+    let env3_banners = std::sync::Mutex::new(foldhash::HashSet::default());
     let mut h3 = base_gate();
     h3.plugin = "inert-user".to_string();
     h3.user = UserAccess::Ro;
@@ -661,7 +663,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
         prompt: NeedLevel::No,
         user: NeedLevel::Ro,
     };
-    let env4_banners = std::sync::Mutex::new(HashSet::new());
+    let env4_banners = std::sync::Mutex::new(foldhash::HashSet::default());
     let mut h4 = base_gate();
     h4.plugin = "matched-user".to_string();
     h4.user = UserAccess::Ro;
@@ -687,7 +689,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
         prompt: NeedLevel::Ro,
         user: NeedLevel::No,
     };
-    let env_banners = std::sync::Mutex::new(HashSet::new());
+    let env_banners = std::sync::Mutex::new(foldhash::HashSet::default());
     let mut h = base_gate();
     h.plugin = "inert-rewrite".to_string();
     h.prompt = PromptAccess::Rw;
@@ -731,7 +733,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
         prompt: NeedLevel::Rw,
         user: NeedLevel::No,
     };
-    let env3_banners = std::sync::Mutex::new(HashSet::new());
+    let env3_banners = std::sync::Mutex::new(foldhash::HashSet::default());
     let mut h3 = base_gate();
     h3.plugin = "matched-rewrite".to_string();
     h3.prompt = PromptAccess::Rw;
@@ -831,7 +833,7 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
                 prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
                 user: busbar_contract::plugin_rows::NeedLevel::Ro
             },
-            &std::sync::Mutex::new(HashSet::new())
+            &std::sync::Mutex::new(foldhash::HashSet::default())
         )
         .0
         .sends_prompt()),
@@ -895,7 +897,7 @@ fn resolve_tap_hooks_carries_prompt_grant() {
         prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
         user: busbar_contract::plugin_rows::NeedLevel::Ro,
     };
-    let banners = std::sync::Mutex::new(HashSet::new());
+    let banners = std::sync::Mutex::new(foldhash::HashSet::default());
     assert!(
         access_from_intent(ro[0].0, ro[0].1, needs, &banners)
             .0
@@ -952,7 +954,7 @@ fn gate_grants_pass_through_as_projection_flags() {
             prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
             user: busbar_contract::plugin_rows::NeedLevel::Ro,
         },
-        &std::sync::Mutex::new(HashSet::new()),
+        &std::sync::Mutex::new(foldhash::HashSet::default()),
     );
     assert!(
         prompt.sends_prompt(),
@@ -997,7 +999,7 @@ fn manifest_intent_and_grant_projection_matrix() {
             "h",
             &hooks["h"],
             needs,
-            &std::sync::Mutex::new(HashSet::new()),
+            &std::sync::Mutex::new(foldhash::HashSet::default()),
         );
         let send_prompt = prompt.sends_prompt();
         assert_eq!(
@@ -1030,7 +1032,7 @@ fn manifest_intent_and_grant_projection_matrix() {
             "h",
             &hooks["h"],
             needs,
-            &std::sync::Mutex::new(HashSet::new()),
+            &std::sync::Mutex::new(foldhash::HashSet::default()),
         );
         let send_user = user.sends_user();
         assert_eq!(
@@ -1104,7 +1106,7 @@ async fn dlopen_user_identity_projection_rides_the_wire() {
             prompt: NeedLevel::No,
             user: NeedLevel::Ro,
         },
-        &std::sync::Mutex::new(HashSet::new()),
+        &std::sync::Mutex::new(foldhash::HashSet::default()),
     );
     assert!(
         user.sends_user(),

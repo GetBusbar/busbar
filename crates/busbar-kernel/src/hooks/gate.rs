@@ -5,7 +5,7 @@ use crate::hooks::{
     Candidate, FallbackHook, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest,
 };
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
-use busbar_contract::ir::facts::{ContentItem, IrFacts, ScreenedContent, Slot};
+use busbar_contract::ir::facts::{ContentItem, DataValue, IrFacts, ScreenedContent, Slot};
 use busbar_kernel_audit::record::{HookApplied, HookHead};
 use std::borrow::Cow;
 
@@ -63,8 +63,32 @@ pub(crate) struct IncrementalScan<'a> {
 
 struct ClearedPiece {
     session: crate::session::SessionKey,
-    clearance: Box<str>,
-    digest: Box<str>,
+    clearance: Clearance,
+    digest: String,
+}
+
+/// Which (container, gate hook) a piece was screened clean for, as a hash of the pair: both names
+/// come from config, never from the caller, and the caller-controlled digest is still compared whole.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Clearance(u64);
+
+/// FNV-1a fed by `write!`, so a key's text is hashed as it is formatted and never materialized.
+struct Fnv1a(u64);
+
+impl std::fmt::Write for Fnv1a {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.bytes(s.as_bytes());
+        Ok(())
+    }
+}
+
+impl Fnv1a {
+    fn bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(busbar_kernel::store::FNV1A_PRIME);
+        }
+    }
 }
 
 impl IncrementalScan<'_> {
@@ -75,27 +99,32 @@ impl IncrementalScan<'_> {
         principal_id: &str,
         hook_generation: u64,
     ) -> crate::session::SessionKey {
-        let head = format!(
+        use std::fmt::Write as _;
+        let mut hash = Fnv1a(busbar_kernel::store::FNV1A_OFFSET_BASIS);
+        let _ = write!(
+            hash,
             "g={hook_generation}\u{1f}p{}={principal_id}\u{1f}s{}=",
             principal_id.len(),
             sid.len()
         );
-        let mut hash = busbar_kernel::store::FNV1A_OFFSET_BASIS;
-        for &byte in head.as_bytes().iter().chain(sid) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(busbar_kernel::store::FNV1A_PRIME);
-        }
-        crate::session::SessionKey(hash)
+        hash.bytes(sid);
+        crate::session::SessionKey(hash.0)
     }
 
-    fn piece_key(&self, clearance: &str, digest: &str) -> crate::session::SessionKey {
-        use std::hash::{Hash, Hasher};
-        let mut index = std::collections::hash_map::DefaultHasher::new();
-        (self.session, clearance, digest).hash(&mut index);
-        crate::session::SessionKey(index.finish())
+    fn piece_key(&self, clearance: Clearance, digest: &str) -> crate::session::SessionKey {
+        use std::hash::BuildHasher as _;
+        crate::session::SessionKey(foldhash::fast::FixedState::default().hash_one((
+            self.session,
+            clearance,
+            digest,
+        )))
     }
 
-    fn unscreened<'i>(&self, clearance: &str, items: &ScreenedContent<'i>) -> ScreenedContent<'i> {
+    fn unscreened<'i>(
+        &self,
+        clearance: Clearance,
+        items: &ScreenedContent<'i>,
+    ) -> ScreenedContent<'i> {
         items.select(|item, text| {
             if matches!(item, ContentItem::Opaque { .. }) {
                 return true;
@@ -108,13 +137,13 @@ impl IncrementalScan<'_> {
             );
             !cleared.is_some_and(|piece| {
                 piece.session == self.session
-                    && piece.clearance.as_ref() == clearance
-                    && piece.digest.as_ref() == digest
+                    && piece.clearance == clearance
+                    && piece.digest == digest
             })
         })
     }
 
-    fn mark_cleared(&self, clearance: &str, screened: &ScreenedContent<'_>) {
+    fn mark_cleared(&self, clearance: Clearance, screened: &ScreenedContent<'_>) {
         for (item, text) in screened.iter() {
             if !matches!(item, ContentItem::Opaque { .. }) {
                 let digest = item.digest_of(text);
@@ -123,8 +152,8 @@ impl IncrementalScan<'_> {
                     Self::OWNER,
                     std::sync::Arc::new(ClearedPiece {
                         session: self.session,
-                        clearance: clearance.into(),
-                        digest: digest.into_boxed_str(),
+                        clearance,
+                        digest,
                     }),
                     self.now_ms,
                     false,
@@ -135,8 +164,9 @@ impl IncrementalScan<'_> {
     }
 }
 
-fn clearance_of(container: &str, hook: &str) -> String {
-    format!("c{}={container}\u{1f}h={hook}", container.len())
+fn clearance_of(container: &str, hook: &str) -> Clearance {
+    use std::hash::BuildHasher as _;
+    Clearance(foldhash::fast::FixedState::default().hash_one((container, hook)))
 }
 
 fn context<'a>(subject: &'a GateSubject<'_>) -> RoutingContext<'a> {
@@ -182,7 +212,7 @@ pub(crate) async fn decide_over(
             .incremental
             .as_ref()
             .filter(|_| readable && *send_prompt)
-            .map(|inc| inc.unscreened(&clearance, &all));
+            .map(|inc| inc.unscreened(clearance, &all));
         if screened.as_ref().is_some_and(|s| s.is_empty()) {
             continue;
         }
@@ -220,11 +250,7 @@ pub(crate) async fn decide_over(
             .await
             .is_err()
         {
-            return GateVerdict::Reject {
-                status: 503,
-                message: "content access audit is unconfirmed".into(),
-                hook: policy.name().into(),
-            };
+            return unconfirmed_audit(policy.name());
         }
         let ctx = context(subject);
         let answer = match tokio::time::timeout(
@@ -274,7 +300,7 @@ pub(crate) async fn decide_over(
             subject.incremental.as_ref(),
             screened.as_ref(),
         ) {
-            inc.mark_cleared(&clearance, s);
+            inc.mark_cleared(clearance, s);
         }
     }
     GateVerdict::Proceed
@@ -289,12 +315,26 @@ fn failed_gate(hook: &str, closed: bool) -> HookApplied {
     gate_ran(hook, head, true)
 }
 
+/// The refusal when a content-reading gate's access audit did not confirm.
+fn unconfirmed_audit(hook: &str) -> GateVerdict {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: an unconfirmed content audit refuses the request, naming its gate"
+    )]
+    return GateVerdict::Reject {
+        status: 503,
+        message: "content access audit is unconfirmed".to_owned(),
+        hook: hook.to_owned(),
+    };
+}
+
 fn gate_ran(hook: &str, head: HookHead, failed: bool) -> HookApplied {
-    HookApplied {
-        hook: hook.to_string(),
-        head,
-        failed,
-    }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: busbar-kernel-audit HookApplied owns its hook name; borrowing it needs an audit record change"
+    )]
+    let hook = hook.to_string();
+    HookApplied { hook, head, failed }
 }
 
 fn verdict_of(
@@ -303,11 +343,18 @@ fn verdict_of(
     subject: &GateSubject<'_>,
 ) -> Option<GateVerdict> {
     match answer {
-        RoutingDecision::Reject { status, message } => Some(GateVerdict::Reject {
-            status: clamp_reject_status(status),
-            message: sanitize_reject_message(&message),
-            hook: hook.to_string(),
-        }),
+        RoutingDecision::Reject { status, message } => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a gate's rejection refuses the request, naming the gate"
+            )]
+            let hook = hook.to_string();
+            Some(GateVerdict::Reject {
+                status: clamp_reject_status(status),
+                message: sanitize_reject_message(&message),
+                hook,
+            })
+        }
 
         RoutingDecision::Prefer(_)
         | RoutingDecision::Prioritize(_)
@@ -372,11 +419,7 @@ impl Fallback<'_, '_> {
                 .await
                 .is_err()
             {
-                return Some(GateVerdict::Reject {
-                    status: 503,
-                    message: "content access audit is unconfirmed".into(),
-                    hook: fb.policy.name().into(),
-                });
+                return Some(unconfirmed_audit(fb.policy.name()));
             }
             let ctx = context(subject);
             match tokio::time::timeout(
@@ -427,10 +470,17 @@ impl Fallback<'_, '_> {
 }
 
 fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &str) -> Option<GateVerdict> {
-    crate::hooks::failed_call_refuses(on_error).then(|| GateVerdict::Reject {
-        status: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-        message: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
-        hook: hook.to_string(),
+    crate::hooks::failed_call_refuses(on_error).then(|| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a failed load-bearing gate refuses the request, naming the gate"
+        )]
+        let verdict = GateVerdict::Reject {
+            status: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            message: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+            hook: hook.to_string(),
+        };
+        verdict
     })
 }
 
@@ -443,13 +493,18 @@ fn project<'a>(
     let shape = subject.facts.shape();
     let mut content_delivered = false;
     let prompt = send_prompt.then(|| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a `prompt` grant asks for the projection, whose message list busbar-contract PromptProjection owns"
+        )]
+        let messages = items
+            .iter()
+            .filter(|(i, _)| i.slot() != Slot::System)
+            .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Borrowed(t)))
+            .collect();
         let prompt = crate::hooks::PromptProjection {
             system: join_system(items),
-            messages: items
-                .iter()
-                .filter(|(i, _)| i.slot() != Slot::System)
-                .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
-                .collect(),
+            messages,
         };
         let was_empty = prompt.system.is_none() && prompt.messages.is_empty();
         let prompt = crate::hooks::content_capped(prompt);
@@ -473,11 +528,18 @@ fn project<'a>(
         stream: subject.facts.wants_stream(),
 
         prompt,
-        identity: send_user.then(|| crate::hooks::CallerIdentity {
-            key_id: subject.key.map(|k| k.id.clone()),
-            key_name: subject.key.map(|k| k.name.clone()),
+        identity: send_user.then(|| {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a `user` grant asks for the caller identity, which busbar-contract CallerIdentity owns"
+            )]
+            let identity = crate::hooks::CallerIdentity {
+                key_id: subject.key.map(|k| k.id.clone()),
+                key_name: subject.key.map(|k| k.name.clone()),
 
-            user: subject.facts.end_user().map(str::to_string),
+                user: subject.facts.end_user().map(str::to_string),
+            };
+            identity
         }),
 
         signals: Default::default(),
@@ -574,7 +636,7 @@ impl IrFacts for DoorFacts<'_> {
                 .projection
                 .body
                 .get("tool")
-                .and_then(serde_json::Value::as_str)
+                .and_then(DataValue::as_str)
                 .unwrap_or_default(),
             value: &self.projection.body,
         }]
@@ -582,7 +644,7 @@ impl IrFacts for DoorFacts<'_> {
 }
 
 struct GateProjection {
-    body: serde_json::Value,
+    body: DataValue,
 }
 
 impl Drop for GateProjection {
@@ -591,12 +653,12 @@ impl Drop for GateProjection {
     }
 }
 
-fn wipe_projected_value(value: &mut serde_json::Value) {
+fn wipe_projected_value(value: &mut DataValue) {
     use zeroize::Zeroize as _;
     match value {
-        serde_json::Value::String(text) => text.zeroize(),
-        serde_json::Value::Array(items) => items.iter_mut().for_each(wipe_projected_value),
-        serde_json::Value::Object(members) => {
+        DataValue::String(text) => text.zeroize(),
+        DataValue::Array(items) => items.iter_mut().for_each(wipe_projected_value),
+        DataValue::Object(members) => {
             for (mut name, mut value) in std::mem::take(members) {
                 name.zeroize();
                 wipe_projected_value(&mut value);
@@ -613,22 +675,26 @@ fn read_projected(projected: Option<&[u8]>) -> Option<GateProjection> {
     if document
         .body
         .get("tool")
-        .and_then(serde_json::Value::as_str)
+        .and_then(DataValue::as_str)
         .is_none()
     {
         return Some(document);
     }
     let mut normalized = GateProjection {
-        body: serde_json::Value::Object(Default::default()),
+        body: DataValue::Object(Default::default()),
     };
-    if let serde_json::Value::Object(fields) = &mut normalized.body {
+    if let DataValue::Object(fields) = &mut normalized.body {
         for name in ["tool", "arguments"] {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a configured door gate screens a tool call as exactly its tool and arguments members"
+            )]
             fields.insert(
                 name.to_string(),
                 document
                     .body
                     .get_mut(name)
-                    .map_or(serde_json::Value::Null, serde_json::Value::take),
+                    .map_or(DataValue::Null, DataValue::take),
             );
         }
     }
@@ -647,7 +713,7 @@ pub(crate) async fn decide_door(
     let readable = read.is_some();
     let facts = DoorFacts {
         projection: read.unwrap_or_else(|| GateProjection {
-            body: serde_json::Value::Null,
+            body: DataValue::Null,
         }),
         plane: door.plane,
     };
@@ -679,8 +745,12 @@ fn join_system<'a>(items: &'a ScreenedContent<'a>) -> Option<Cow<'a, str>> {
         .peekable();
     let first = parts.next()?;
     if parts.peek().is_none() {
-        return (!first.is_empty()).then_some(Cow::Owned(first.to_string()));
+        return (!first.is_empty()).then_some(Cow::Borrowed(first));
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a `prompt` grant over several system blocks joins them into one owned text"
+    )]
     let mut out = first.to_string();
     for p in parts {
         out.push('\n');

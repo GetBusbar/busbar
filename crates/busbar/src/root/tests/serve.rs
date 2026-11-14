@@ -504,8 +504,9 @@ fn the_composed_kernel_services_are_kept_for_the_driver() {
 struct Signs;
 
 impl SignKey for Signs {
-    fn sign(&self, _: &str, data: &[u8]) -> Option<(String, Vec<u8>)> {
-        Some(("kid".to_string(), data.to_vec()))
+    fn sign(&self, _: &str, data: &[u8], sig: &mut Vec<u8>) -> Option<String> {
+        sig.extend_from_slice(data);
+        Some("kid".to_string())
     }
 }
 

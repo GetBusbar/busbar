@@ -7,7 +7,7 @@ use busbar_contract::abi::auth::AuthPoints;
 #[test]
 fn mixed_peer_answers_never_replace_their_per_request_verdicts() {
     let providers = vec!["mixed".to_string()];
-    let request_auths = HashSet::from(["mixed".to_string()]);
+    let request_auths = HashSet::from_iter(["mixed".to_string()]);
     for provisional in [Judged::Identity, Judged::Pass] {
         assert!(
             inherited_peer_answers(&providers, &request_auths, &[Some(provisional)], &[], &[])
@@ -27,7 +27,7 @@ fn mixed_peer_answers_never_replace_their_per_request_verdicts() {
 #[test]
 fn peer_only_identity_survives_an_earlier_head_pass_and_a_mixed_provisional_identity() {
     let providers = vec!["mixed".to_string(), "fallback".to_string()];
-    let request_auths = HashSet::from(["mixed".to_string()]);
+    let request_auths = HashSet::from_iter(["mixed".to_string()]);
     for first in [None, Some(Judged::Identity), Some(Judged::Pass)] {
         let peer_identity = VerifiedIdentity {
             subject: "fallback-peer".to_string(),
@@ -96,7 +96,7 @@ async fn inherited_peer_positions_keep_the_exact_replay_authority_and_provider_o
     ];
     let copied: Vec<_> = inherited_peer_answers(
         &providers,
-        &HashSet::from(["request".to_string()]),
+        &HashSet::from_iter(["request".to_string()]),
         &[Some(Judged::Identity), Some(Judged::Identity), None],
         &[Some(identity.clone()), Some(identity), None],
         &[Some(replay.clone()), Some(replay.clone())],
@@ -119,7 +119,7 @@ fn ended_peer_collections_release_each_connection_and_preserve_a_live_identity()
         subject: subject.to_string(),
         ..Default::default()
     };
-    let mut peers = HashMap::new();
+    let mut peers = HashMap::default();
     for framing in 100..140 {
         peers.insert((7, 3, framing), peer("retired"));
         let retired = take_framing_peers(&mut peers, framing);
@@ -139,7 +139,7 @@ fn ended_peer_collections_release_each_connection_and_preserve_a_live_identity()
 
 #[test]
 fn a_full_peer_collection_refuses_new_connections_without_evicting_a_held_identity() {
-    let mut peers = HashMap::new();
+    let mut peers = HashMap::default();
     for framing in 0..PEER_CONNECTIONS_MAX as u64 {
         peer_capacity(peers.contains_key(&(7, 3, framing)), peers.len()).unwrap();
         peers.insert(

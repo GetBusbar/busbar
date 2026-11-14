@@ -95,8 +95,9 @@ impl Offload for Inline {
 struct FixedKey;
 
 impl SignKey for FixedKey {
-    fn sign(&self, domain: &str, data: &[u8]) -> Option<(String, Vec<u8>)> {
-        Some(("K1".into(), [domain.as_bytes(), b":", data].concat()))
+    fn sign(&self, domain: &str, data: &[u8], sig: &mut Vec<u8>) -> Option<String> {
+        sig.extend_from_slice(&[domain.as_bytes(), b":", data].concat());
+        Some("K1".into())
     }
 }
 
