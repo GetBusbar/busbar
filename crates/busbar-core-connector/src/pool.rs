@@ -4,6 +4,7 @@
 //! THE PER-WORKER POOLS (`BUSBAR-1.6.0.md` THE DESIGN, connections: the connector owns "per-worker
 
 use std::cell::Cell;
+use std::hash::{BuildHasher, Hash, Hasher, RandomState};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
