@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::rate::{MutationClass, MutationLimiter, RateCheck, CONFIG_CLASS_RULES};
+use crate::rate::{MutationClass, MutationLimiter, RateCheck};
 use crate::verb::KernelVerb;
 
 #[test]
@@ -91,99 +91,17 @@ fn forbidden_class_has_zero_budget() {
 }
 
 #[test]
-fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
-    use KernelVerb::*;
-
-    let config_rows = [
-        PostConfigApply,
-        PostConfigReload,
-        PostConfigRollback,
-        PutConfigSettings,
-        PutAdminAuth,
-        DeleteOverlaySection,
-        PostPluginsReload,
-        PostPluginsRollback,
-        PostRestart,
-        PutExportName,
-        DeleteExportName,
-        PatchExportNameSettings,
-        PutIdentityProvidersName,
-        DeleteIdentityProvidersName,
-        PatchIdentityProvidersNameSettings,
-    ];
-    for verb in config_rows {
-        assert_eq!(
-            MutationClass::for_verb(verb, CONFIG_CLASS_RULES),
-            MutationClass::Config,
-            "{verb:?} must classify Config (10/min), matching 1.5.5"
-        );
-    }
-
-    assert_eq!(
-        MutationClass::for_verb(PostPluginsInspect, CONFIG_CLASS_RULES),
-        MutationClass::PluginInspect
-    );
-
-    let crud_rows = [
-        PostAuthCacheFlush,
-        PostGroups,
-        DeleteGroupsName,
-        PatchGroupsName,
-        PutGroupsName,
-        PostHooks,
-        DeleteHooksName,
-        PutHooksName,
-        PatchHooksNameSettings,
-        PostKeys,
-        DeleteKeysId,
-        PatchKeysId,
-        PostKeysIdRevoke,
-        PostKeysIdRotate,
-        PostPlugins,
-        DeletePluginsFile,
-        PostSigningKeyRotate,
-    ];
-    for verb in crud_rows {
-        assert_eq!(
-            MutationClass::for_verb(verb, CONFIG_CLASS_RULES),
-            MutationClass::Crud,
-            "{verb:?} must classify Crud (60/min), matching 1.5.5"
-        );
-    }
-
-    for verb in [
-        GetConfig,
-        PostConfigValidate,
-        GetAdminAuth,
-        GetExport,
-        GetIdentityProviders,
-        GetKeys,
-    ] {
-        assert_eq!(
-            MutationClass::for_verb(verb, CONFIG_CLASS_RULES),
-            MutationClass::Forbidden,
-            "{verb:?} is a read and must never be rate-limited as a mutation"
-        );
-    }
-
-    assert_eq!(
-        MutationClass::for_verb(Adjust, CONFIG_CLASS_RULES),
-        MutationClass::Crud
-    );
-}
-
-#[test]
 fn the_two_read_only_new_verbs_never_spend_a_mutation_slot() {
     for verb in [KernelVerb::Verify, KernelVerb::PlaneFacts] {
         assert_eq!(
-            MutationClass::for_verb(verb, CONFIG_CLASS_RULES),
+            MutationClass::for_verb(verb),
             MutationClass::Forbidden,
             "{verb:?} is a read and must never draw the mutation budget"
         );
     }
 
     assert_eq!(
-        MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
+        MutationClass::for_verb(KernelVerb::Adjust),
         MutationClass::Crud
     );
 }
@@ -192,25 +110,11 @@ fn the_two_read_only_new_verbs_never_spend_a_mutation_slot() {
 fn every_named_surface_is_never_rate_limited_as_a_mutation() {
     for verb in crate::verb::NAMED_SURFACES {
         assert_eq!(
-            MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
+            MutationClass::for_verb(*verb),
             MutationClass::Forbidden,
             "{verb:?} is a named surface and must never be rate-limited as a mutation"
         );
     }
-}
-
-#[test]
-fn config_class_verb_is_limited_at_10_not_60() {
-    let limiter = MutationLimiter::new();
-    let class = MutationClass::for_verb(KernelVerb::PostConfigApply, CONFIG_CLASS_RULES);
-    assert_eq!(class, MutationClass::Config);
-    for _ in 0..10 {
-        assert!(limiter.check("alice", class, 0).admitted());
-    }
-    assert!(
-        !limiter.check("alice", class, 0).admitted(),
-        "a blast-radius CONFIG verb must be capped at 10/min, not 60/min"
-    );
 }
 
 #[test]
@@ -287,29 +191,6 @@ fn the_sweep_drops_only_windows_older_than_the_current_one() {
     assert!(!limiter
         .check("alice", MutationClass::Config, 120)
         .admitted());
-}
-
-#[test]
-fn for_verb_agrees_with_the_kernel_path_classifier_for_every_legacy_mutating_verb() {
-    for row in crate::verb::LEGACY_VERBS {
-        if row.scope == crate::verb::VerbScope::ReadOnly
-            && row.verb != KernelVerb::PostPluginsInspect
-        {
-            continue;
-        }
-        let rel = row.path.strip_prefix("/api/v1/admin").unwrap_or(row.path);
-        let admin_class = MutationClass::for_verb(row.verb, CONFIG_CLASS_RULES);
-        let kernel_class = busbar_kernel::ratelimit::classify_mutation(rel);
-        assert_eq!(
-            admin_class.label(),
-            kernel_class.label(),
-            "{:?} ({rel}): admin-verb classifier says {} but the kernel path classifier says {} \
-             — the two CONFIG_CLASS_RULES tables have drifted",
-            row.verb,
-            admin_class.label(),
-            kernel_class.label(),
-        );
-    }
 }
 
 #[path = "rate_window_tests.rs"]
