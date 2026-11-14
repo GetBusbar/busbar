@@ -16,66 +16,6 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 mod adoption;
 pub use adoption::observe_adoption;
 
-/// A real held datagram upstream for composition-root tests. Its exchange, writer, reader and
-pub(crate) struct DatagramSession(crate::dialled::Dialled);
-
-impl DatagramSession {
-    /// Hold a begun association until its exchange settles it and attaches its actual leg.
-    #[must_use]
-    pub fn new(
-        framing: crate::datagram::DatagramFraming,
-        port: crate::udp::ReadyPort,
-        pairing: Arc<crate::datagram::Pairing>,
-    ) -> Self {
-        Self(crate::dialled::Dialled::new(framing, port, pairing, None))
-    }
-
-    /// Feed an actual exchange piece through the held upstream's admission path.
-    pub fn exchanged(
-        &self,
-        piece: busbar_contract::conn::Piece,
-        bytes: &[u8],
-    ) -> Result<Option<busbar_contract::conn::Piece>, busbar_contract::conn::ConnError> {
-        self.0.exchanged(piece, bytes)
-    }
-
-    /// Consume the next upstream channel piece, retaining partial-read storage in the real leg.
-    pub fn read(
-        &self,
-        waker: &std::task::Waker,
-        bytes: &mut [u8],
-    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
-        self.0.read(waker, bytes)
-    }
-
-    /// Offer application input to the actual bounded upstream writer.
-    pub fn write(
-        &self,
-        bytes: &[u8],
-        end: bool,
-        text: bool,
-    ) -> Result<usize, busbar_contract::conn::ConnError> {
-        self.0.write(bytes, end, text)
-    }
-
-    /// Register the actual upstream reader's interest.
-    #[must_use]
-    pub fn ready(&self, waker: &std::task::Waker) -> bool {
-        self.0.ready(waker)
-    }
-
-    /// Close both legs through the real session's close path.
-    pub fn close(&self) {
-        self.0.close();
-    }
-}
-
-impl Drop for DatagramSession {
-    fn drop(&mut self) {
-        self.0.close();
-    }
-}
-
 /// The default association's actual conservative pre-crossing reservation, including lease
 #[must_use]
 pub fn datagram_output_reservation_bytes() -> usize {

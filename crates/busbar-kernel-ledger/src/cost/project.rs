@@ -116,15 +116,6 @@ impl<'r> MeteredRow<'r> {
         Money::of_exact(self.exact_at_card(card)?).micros_i64()
     }
 
-    /// The row at an already resolved card and its actual history-entry key.
-    pub fn spend_micros_at_card_seq(
-        &self,
-        seq: EntryKey,
-        card: &RateCard,
-    ) -> Result<i64, MoneyError> {
-        Money::of_exact(self.exact_at_card_seq(seq, card)?).micros_i64()
-    }
-
     /// Retain the exact scale-15 figure for aggregation across rows.
     pub fn exact_at_card(&self, card: &RateCard) -> Result<i128, MoneyError> {
         self.exact_with_tally(Tally::at_card(card))

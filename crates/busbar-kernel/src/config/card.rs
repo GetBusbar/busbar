@@ -355,13 +355,6 @@ pub(crate) mod origin {
         static ORIGIN: RefCell<Option<String>> = const { RefCell::new(None) };
     }
 
-    pub(crate) fn with<T>(origin: &str, f: impl FnOnce() -> T) -> T {
-        let previous = ORIGIN.with(|o| o.replace(Some(origin.to_string())));
-        let out = f();
-        ORIGIN.with(|o| *o.borrow_mut() = previous);
-        out
-    }
-
     pub(crate) fn current() -> String {
         ORIGIN
             .with(|o| o.borrow().clone())

@@ -2290,49 +2290,6 @@ impl PortAssociations {
         (ok.unwrap_or(false), answered)
     }
 
-    /// Wait for this association's emission turn without accepting or copying a busy write.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn emit_ready(
-        &self,
-        id: u64,
-        stream: u64,
-        bytes: &[u8],
-        end_of_frame: bool,
-        text: bool,
-        send: &(dyn Fn(SocketAddr, &[u8]) + Sync),
-        answer: &(dyn Fn(Answered) + Sync),
-    ) -> bool {
-        let emission = self.lock().emissions.get(&id).cloned();
-        let Some(emission) = emission else {
-            return false;
-        };
-        let Ok(_order) = emission.order.acquire().await else {
-            return false;
-        };
-        loop {
-            let ready = emission.ready.notified();
-            tokio::pin!(ready);
-            ready.as_mut().enable();
-            let result = self.try_turn(
-                id,
-                Owed::Emit {
-                    stream,
-                    bytes: bytes.into(),
-                    end_of_frame,
-                    text,
-                },
-                Instant::now(),
-                send,
-                WhileBusy::Wait,
-            );
-            if let std::task::Poll::Ready((ok, answered)) = result {
-                answer(answered);
-                return ok.unwrap_or(false);
-            }
-            ready.await;
-        }
-    }
-
     /// THE HAND-OFF: take association `id` out, run `first` on it and then what was owed it
     fn turn(
         &self,

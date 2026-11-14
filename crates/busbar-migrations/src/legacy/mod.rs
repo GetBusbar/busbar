@@ -268,12 +268,5 @@ pub fn attach_metering_units(
     Ok(out)
 }
 
-pub(crate) fn private_schema_for_plane_kind(kind: &str) -> Option<(&'static str, &'static str)> {
-    match kind {
-        "busbar.admin-idempotency" => Some(("busbar.admin", "busbar.admin-idempotency")),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests;

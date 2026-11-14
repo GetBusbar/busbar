@@ -700,21 +700,6 @@ impl Journal {
         Ok(Journal::over(Wal::in_directory(dir, shipper, clock)?, node))
     }
 
-    /// [`Journal::in_directory`], writing as the node the directory's chain ALREADY names: the
-    pub(crate) fn in_directory_adopting(
-        fallback: u64,
-        dir: impl AsRef<std::path::Path>,
-        shipper: Box<dyn Shipper<Record>>,
-        clock: Clock,
-    ) -> Result<Self, OpenError> {
-        let log = Wal::in_directory(dir, shipper, clock)?;
-        let node = decode_run(log.recovered())
-            .ok()
-            .and_then(|records| records.last().map(|r| r.node))
-            .unwrap_or(fallback);
-        Ok(Journal::over(log, node))
-    }
-
     /// A journal over an already-open log, resuming from the tail the log recovered.
     #[must_use]
     pub fn over(log: Wal, node: u64) -> Self {
@@ -833,12 +818,6 @@ impl Journal {
     #[must_use]
     pub fn head(&self) -> [u8; 32] {
         self.head
-    }
-
-    /// The head in hexadecimal.
-    #[must_use]
-    pub(crate) fn head_hex(&self) -> String {
-        hex(&self.head)
     }
 
     /// The sequence number the next record will take.
