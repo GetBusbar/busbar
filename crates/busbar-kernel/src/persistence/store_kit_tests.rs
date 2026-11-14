@@ -110,7 +110,7 @@ impl PersistenceBackend for Mock {
             if candidate.id.dataset != DATASET {
                 return Err(Failure::Refused);
             }
-            let initialization = control::initialization(candidate, DATASET);
+            let initialization = control::initialization(&prepared, DATASET);
             let blind = self.blind_initialize && initialization;
             let fresh = state.rows.is_empty() && state.receipts.is_empty() && initialization;
             if !fresh && !blind {

@@ -80,7 +80,7 @@ impl PersistenceBackend for Backend {
                 if !native.rows.contains_key(&root_address()) {
                     if !native.rows.is_empty()
                         || !native.receipts.is_empty()
-                        || !control::initialization(candidate, self.info().dataset)
+                        || !control::initialization(&prepared, self.info().dataset)
                     {
                         return Err(Failure::Refused);
                     }
@@ -659,10 +659,7 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
         };
         let candidate = attempt.candidate();
         assert_eq!(candidate.candidate().mutations.len(), 4);
-        assert!(control::initialization(
-            candidate.candidate(),
-            backend.info().dataset
-        ));
+        assert!(control::initialization(candidate, backend.info().dataset));
         {
             let mut native = backend.0.lock().unwrap();
             native.unknown_before = interruption == "before";
