@@ -70,3 +70,44 @@ fn guarded_string_propagates_the_underlying_resolve_error() {
         .unwrap_err();
     assert!(err.contains("cannot resolve"), "{err}");
 }
+
+fn assert_blank_refusal(err: &str) {
+    assert!(err.contains("secret module 'blank-source'"), "{err}");
+    assert!(err.contains("(BLANK)"), "{err}");
+    assert!(err.contains("EMPTY or whitespace-only"), "{err}");
+}
+
+#[test]
+fn plugin_whitespace_only_bytes_are_refused_on_the_raw_path() {
+    let err = fixed_value("blank-source", b" \t\r\n")
+        .resolve_at_config(
+            &fixed_reference("blank-source"),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .unwrap_err();
+    assert_blank_refusal(&err);
+}
+
+#[test]
+fn plugin_whitespace_only_text_is_refused() {
+    let err = fixed_value("blank-source", b"   ")
+        .resolve_string_at_config(
+            &fixed_reference("blank-source"),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .unwrap_err();
+    assert_blank_refusal(&err);
+}
+
+#[test]
+fn plugin_value_with_content_or_binary_resolves_byte_for_byte() {
+    for value in [&b" \tk\r\n "[..], &[0xff, 0x20, 0x0a, 0xfe][..]] {
+        let got = fixed_value("binary-source", value)
+            .resolve_at_config(
+                &fixed_reference("binary-source"),
+                &busbar_contract::config_time::ConfigScope::config_time(),
+            )
+            .unwrap();
+        assert_eq!(got, busbar_contract::redacted::Secret::new(value.to_vec()));
+    }
+}

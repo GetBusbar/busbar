@@ -652,6 +652,10 @@ async fn blank_admin_token_refuses_to_start() {
             err.contains(config::operator_provider()),
             "the refusal names the admin credential: {err}"
         );
+        assert!(
+            err.contains("digest would be taken over the blank string"),
+            "a blank admin token keeps the operator's blank-token refusal text: {err}"
+        );
         if !blank.is_empty() {
             assert!(
                 err.contains("whitespace"),
