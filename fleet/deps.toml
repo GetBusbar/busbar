@@ -5,13 +5,13 @@
 #     [workspace.dependencies], exactly as they do for busbar's own members. No second copy here.
 #   - PLUGIN-ONLY crates, the git sources (GetBusbar forks at pinned revs), the banned list, the
 #     socket/TLS ban and the C-dependency allow-list live HERE.
-# A crate may not appear in both (`busbar-release plugin sync` refuses the render).
+# A crate may not appear in both (the fleet tool's `plugin sync` refuses the render).
 #
-# This file MOVES WITH THE BUSBAR PIN: GetBusbar/busbar-release's `busbar-release plugin sync` reads it
+# This file MOVES WITH THE BUSBAR PIN: the fleet tool's `plugin sync` reads it
 # (and the root table, the toolchain and Cargo.lock) at the busbar commit each plugin repo pins in
 # `.busbar-ref`, and renders it into that repo's root Cargo.toml [workspace.dependencies] and
-# [patch.crates-io], deny.toml and dependabot ignores. The plugin harness (busbar-release
-# ci/plugin/run.sh) enforces the rest at the same commit: the net ban, the C-dependency allow-list and Cargo.lock parity with busbar's lock (RED,
+# [patch.crates-io], deny.toml and dependabot ignores. The fleet tool's plugin
+# harness enforces the rest at the same commit: the net ban, the C-dependency allow-list and Cargo.lock parity with busbar's lock (RED,
 # ruling 3b). Adding a plugin-only crate is one reviewed row here; a plugin naming a crate in neither
 # table is a new row first.
 schema = 1
@@ -71,7 +71,7 @@ repos = ["busbar-store-valkey"]
 reason = "TESTS ONLY: the upstream Valkey client the valkey store's live tests verify what landed with, independently of the store (the plugin crate's live tests add the `tls-rustls` feature to verify the store's TLS through the host's connector; tests only). Never in the shipped image: the store speaks RESP itself over the host's connector (busbar-store-valkey#19), and [net-ban] refuses redis in the shipped closure."
 
 [plugin-deps.rusqlite]
-version = "0.41"
+version = "0.42"
 features = ["bundled"]
 repos = ["busbar-store-sqlite"]
 reason = "the SQLite store's engine, with SQLite compiled in (libsqlite3-sys bundled, on the C allow-list below)."
@@ -119,7 +119,7 @@ reason = "the HTTP/1 chunked transfer-coding decoder (parse_chunk_size) a refuse
 # the crates.io crate the fork replaces. `git` is a repository under https://github.com/GetBusbar/;
 # the sole external exception is the exact tungstenite URL/revision/WS-only row below, already
 # approved in core Cargo.lock. `rev` is a full 40-hex commit (no branch, no tag). Every other
-# outside repository, revision or consumer scope refuses the render. `busbar-release plugin sync` renders each row into the listed repos only: its
+# outside repository, revision or consumer scope refuses the render. The fleet tool's `plugin sync` renders each row into the listed repos only: its
 # `git` joins deny.toml's [sources] allow-git, and `name = { git, rev }` joins Cargo.toml's
 # [patch.crates-io]. busbar's `cargo xtask plugin-gates gitsources` validates the rows.
 # The str0m, dimpl and ring forks were dropped (the webrtc plugin builds from crates.io,
@@ -140,7 +140,7 @@ reason = "Existing core-approved tungstenite patch, matching core Cargo.lock and
 # is RED on a declared line it refused.
 [parity-lines]
 allow = [
-    { crate = "sha2", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "postgres-protocol >= 0.6.11 (SCRAM-SHA-256; 0.6.10 carries RUSTSEC-2026-0179/0180) is on the sha2 0.11 line; busbar holds 0.10" },
+    { crate = "sha2", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "postgres-protocol >= 0.6.11 (SCRAM-SHA-256; 0.6.10 carries RUSTSEC-2026-0179/0180) is on the sha2 0.11 line; busbar's own rows hold 0.10 (its lock also carries 0.11, only through ed25519-dalek 3)" },
     { crate = "digest", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "sha2 0.11's digest line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "block-buffer", line = "0.12", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's block-buffer line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "crypto-common", line = "0.2", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's crypto-common line (postgres-protocol >= 0.6.11 SCRAM)" },
@@ -161,10 +161,12 @@ deny = [
     { crate = "hyper:<1", reason = "HTTP is hyper 1; no hyper 0.14 stack" },
     { crate = "rustls:<0.23", reason = "one rustls major (0.23) fleet-wide" },
     { crate = "ring:<0.17", reason = "one ring major (0.17) fleet-wide" },
-    { crate = "serde_yaml", reason = "unmaintained; busbar uses serde_yaml_ng" },
+    { crate = "serde_yaml", reason = "unmaintained; YAML is busbar's busbar-yaml (through busbar-contract)" },
+    { crate = "unsafe-libyaml", reason = "unmaintained C translation (RUSTSEC-2024-0449); busbar-yaml is a safe port of libyaml" },
+    { crate = "paste", reason = "unmaintained (RUSTSEC-2024-0436)" },
 ]
 # Duplicate versions the fleet accepts beyond busbar's own. multiple-versions is "deny" (OWNER
-# 2026-10-02: no plugin may drag in a second version of anything busbar already uses); busbar-release's
+# 2026-10-02: no plugin may drag in a second version of anything busbar already uses); the fleet tool's
 # render adds a skip for every duplicate busbar's own Cargo.lock holds at the pin and bans every version
 # of a shared crate outside the line busbar resolves it to, so this list stays for a reviewed exception:
 # `{ crate = "name@<version>", reason = "..." }`.
@@ -204,6 +206,6 @@ carriers = []
 [c-deps]
 allow = [
     { crate = "ring", version = "0.17", features = [], reason = "the one crypto backend (accepted, §Libraries)" },
-    { crate = "libsqlite3-sys", version = "=0.39.1", features = ["bundled"], reason = "SQLite compiled in for the sqlite store (SQLite 3.54.1 fixes RUSTSEC-2026-0459, bundled + pinned)" },
+    { crate = "libsqlite3-sys", version = "=0.40.0", features = ["bundled"], reason = "SQLite compiled in for the sqlite store (rusqlite 0.42's line, bundling SQLite 3.54.1, which fixes RUSTSEC-2026-0459; bundled + pinned)" },
     { crate = "libz-sys", version = "=1.1.29", features = ["static"], reason = "zlib compiled in for the mysql store's compression (ARCHITECT 2026-10-01, bundled + pinned)" },
 ]
