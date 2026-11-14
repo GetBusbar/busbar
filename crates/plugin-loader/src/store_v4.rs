@@ -170,6 +170,14 @@ impl OpenFailure {
 }
 
 impl LoadedPersistence {
+    /// The opened instance, for a harness that crosses its kind slots inline with its own lent
+    /// frames (`busbar-plugin-bench`). Test support only: serving never bypasses [`Self::submit`].
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn plugin(&self) -> &Plugin<StoreV4> {
+        &self.plugin
+    }
+
     /// Open and ready the instance using only asynchronous dispatcher crossings.
     pub async fn open(
         plugin: Plugin<StoreV4>,
