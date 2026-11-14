@@ -1,119 +1,25 @@
 use super::*;
-use busbar_kernel_identity::module::AuthOutcome;
-use std::sync::Mutex;
 
-/// A directory a test can state the whole truth of in four lines.
-#[derive(Default)]
+/// A directory a test can state the whole truth of in one line.
 struct Directory {
-    keys: Vec<(String, KeyFacts)>,
     revoked: Vec<String>,
-    asked: Mutex<Vec<String>>,
 }
 
-impl VirtualKeyDirectory for Directory {
-    fn verify(&self, credential: &str, _now: u64, _expected_aud: Option<&str>) -> Option<KeyFacts> {
-        self.asked
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(credential.to_string());
-        self.keys
-            .iter()
-            .find(|(c, _)| c == credential)
-            .map(|(_, f)| f.clone())
-    }
-
-    fn revoked(&self, credential: &str) -> bool {
+impl RevocationView for Directory {
+    fn is_revoked(&self, credential: &str) -> bool {
         self.revoked.iter().any(|r| r == credential)
     }
 }
 
 fn a_directory() -> Arc<Directory> {
     Arc::new(Directory {
-        keys: vec![(
-            "tok-live".to_string(),
-            KeyFacts {
-                id: "vk_1".to_string(),
-                name: "the operator's key".to_string(),
-            },
-        )],
         revoked: vec!["vk_gone".to_string()],
-        asked: Mutex::new(Vec::new()),
     })
 }
 
 #[test]
-fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    struct Revocable(Arc<AtomicBool>);
-    impl busbar_kernel_identity::module::AuthModule for Revocable {
-        fn name(&self) -> &'static str {
-            "revocable"
-        }
-        fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
-            match candidate {
-                Some(_) if self.0.load(Ordering::SeqCst) => AuthOutcome::Reject,
-                Some(id) => {
-                    AuthOutcome::Identify(busbar_kernel_identity::principal::Principal::from_id(id))
-                }
-                None => AuthOutcome::Pass,
-            }
-        }
-        fn cacheable(&self) -> bool {
-            true
-        }
-    }
-
-    for bindings in [
-        AuthBindings::without_directory(),
-        AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>),
-    ] {
-        let revoked = Arc::new(AtomicBool::new(false));
-        let chain = busbar_kernel_identity::AuthChain::new(
-            vec![busbar_kernel_identity::chain::ChainEntry {
-                provider: "revocable".to_string(),
-                module: Box::new(Revocable(Arc::clone(&revoked))),
-            }],
-            false,
-        );
-        let first = chain.run_chain_with(Some("vk_live"), bindings.keys(), 10, None);
-        assert!(matches!(
-            first,
-            busbar_kernel_identity::chain::ChainVerdict::Identified { .. }
-        ));
-        revoked.store(true, Ordering::SeqCst);
-        let second = chain.run_chain_with(Some("vk_live"), bindings.keys(), 11, None);
-        assert!(
-            matches!(second, busbar_kernel_identity::chain::ChainVerdict::Denied),
-            "the revoked credential was answered out of a cache: {second:?}"
-        );
-    }
-}
-
-#[test]
-fn the_bound_verifier_resolves_through_the_directory() {
-    let directory = a_directory();
-    let bindings = AuthBindings::new(directory.clone() as Arc<dyn VirtualKeyDirectory>);
-
-    let keys = bindings.keys().expect("a bound directory is a verifier");
-    assert_eq!(
-        keys.verify_token("tok-live", 10, None),
-        Some(ResolvedKey {
-            id: "vk_1".to_string(),
-            name: "the operator's key".to_string(),
-        })
-    );
-    assert_eq!(keys.verify_token("tok-unknown", 10, None), None);
-    assert_eq!(
-        directory.asked.lock().expect("asked").len(),
-        2,
-        "both questions reached the directory rather than a second table here"
-    );
-}
-
-#[test]
 fn the_revocation_view_reads_the_same_directory() {
-    let bindings = AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>);
+    let bindings = AuthBindings::new(a_directory() as Arc<dyn RevocationView>);
     let revocations = bindings
         .revocations()
         .expect("a bound directory is a revocation view");
@@ -124,7 +30,6 @@ fn the_revocation_view_reads_the_same_directory() {
 #[test]
 fn an_unbound_node_binds_no_authority() {
     let bindings = AuthBindings::without_directory();
-    assert!(bindings.keys().is_none());
     assert!(bindings.revocations().is_none());
 }
 

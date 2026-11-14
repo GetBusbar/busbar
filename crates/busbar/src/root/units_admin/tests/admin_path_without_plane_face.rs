@@ -38,55 +38,17 @@ const THE_OPERATORS_CREDENTIAL: &str = "admin-token";
 struct ADirectoryThatMintedIt;
 
 #[cfg(feature = "root-admin")]
-impl crate::root::auth_bindings::VirtualKeyDirectory for ADirectoryThatMintedIt {
-    fn verify(
-        &self,
-        credential: &str,
-        _now: u64,
-        _expected_aud: Option<&str>,
-    ) -> Option<crate::root::auth_bindings::KeyFacts> {
-        (credential == THE_OPERATORS_CREDENTIAL).then(|| crate::root::auth_bindings::KeyFacts {
-            id: "key-admin-1".to_string(),
-            name: "the operator credential these cells present".to_string(),
-        })
-    }
-
-    fn revoked(&self, _credential: &str) -> bool {
+impl busbar_kernel_identity::RevocationView for ADirectoryThatMintedIt {
+    fn is_revoked(&self, _credential: &str) -> bool {
         false
     }
 }
 
 #[cfg(feature = "root-admin")]
-struct IdentifiesTheOperator;
-
-#[cfg(feature = "root-admin")]
-impl busbar_kernel_identity::module::AuthModule for IdentifiesTheOperator {
-    fn name(&self) -> &'static str {
-        "identifies-the-operator"
-    }
-
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some(THE_OPERATORS_CREDENTIAL) => {
-                busbar_kernel_identity::module::AuthOutcome::Identify(
-                    busbar_kernel_identity::principal::Principal::from_id(
-                        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
-                    ),
-                )
-            }
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
-}
-
-#[cfg(feature = "root-admin")]
-fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
-    busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-the-operator".to_string(),
-            module: Box::new(IdentifiesTheOperator),
-        }],
-        false,
+fn a_door_that_identifies_the_operator() -> crate::root::units_admin::AdminDoorFn {
+    crate::root::units_admin::door_identifying(
+        THE_OPERATORS_CREDENTIAL,
+        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
     )
 }
 
@@ -150,7 +112,7 @@ struct ANodeWhoseChainThisCellReads {
 async fn mounted_over(
     inner: axum::Router,
     request_body_max_bytes: usize,
-    door: busbar_kernel_identity::AuthChain,
+    door: crate::root::units_admin::AdminDoorFn,
     tweak: impl FnOnce(&mut crate::root::kernel::ProductionUnits),
 ) -> axum::Router {
     let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
@@ -162,10 +124,7 @@ async fn mounted_over(
         request_body_max_bytes,
         move |dispatch| {
             let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
-                dispatch,
-                crate::root::units_admin::door_of_chain(door),
-                held,
-                None,
+                dispatch, door, held, None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,
@@ -1212,29 +1171,8 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
     };
 
 #[cfg(feature = "root-admin")]
-struct IdentifiesATenant;
-
-#[cfg(feature = "root-admin")]
-impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
-    fn name(&self) -> &'static str {
-        "identifies-a-tenant"
-    }
-
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some(THE_OPERATORS_CREDENTIAL) => {
-                busbar_kernel_identity::module::AuthOutcome::Identify(
-                    busbar_kernel_identity::principal::Principal::from_id("a-tenant"),
-                )
-            }
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
-}
-
-#[cfg(feature = "root-admin")]
 async fn a_q71_node(
-    door: busbar_kernel_identity::AuthChain,
+    door: crate::root::units_admin::AdminDoorFn,
 ) -> (
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
@@ -1244,7 +1182,7 @@ async fn a_q71_node(
 
 #[cfg(feature = "root-admin")]
 async fn a_q71_node_trusting(
-    door: busbar_kernel_identity::AuthChain,
+    door: crate::root::units_admin::AdminDoorFn,
     trust: crate::root::units_admin::TrustDesk,
 ) -> (
     axum::Router,
@@ -1872,13 +1810,7 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
         );
     }
 
-    let tenant = busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-a-tenant".to_string(),
-            module: Box::new(IdentifiesATenant),
-        }],
-        false,
-    );
+    let tenant = crate::root::units_admin::door_identifying(THE_OPERATORS_CREDENTIAL, "a-tenant");
     let (tenants_node, tenants_kept) = a_q71_node(tenant).await;
     for (method, path, body) in the_q71_verbs() {
         let needed = if method == "GET" { "read-only" } else { "full" };
