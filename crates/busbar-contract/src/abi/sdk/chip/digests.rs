@@ -75,7 +75,7 @@ pub(crate) fn sha1_resume_parts(
     parts: &[&[u8]],
 ) -> Zeroizing<[u8; 20]> {
     let mut buf = Zeroizing::new([0_u8; 64]);
-    let (fill, total) = crate::abi::sdk::hmac::stream_blocks(&mut *buf, consumed, parts, |b| {
+    let (fill, total) = crate::abi::sdk::hmac::stream_blocks(&mut buf, consumed, parts, |b| {
         sha1_compress(&mut h, b);
     });
     let mut tail = Zeroizing::new([0_u8; 128]);
