@@ -1016,6 +1016,20 @@ async fn downgrade_book(
     std::sync::Arc<busbar_kernel::state::App>,
     std::sync::Arc<busbar_contract::records::VirtualKey>,
 ) {
+    money_book(limits, allowed_pools, None, 10).await
+}
+
+/// The governed door generation [`downgrade_book`] builds, with its `rate_card:` and
+/// `per_request_fee` stated by the caller.
+async fn money_book(
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+    allowed_pools: Option<Vec<String>>,
+    rate_card: Option<std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg>>,
+    per_request_fee: i64,
+) -> (
+    std::sync::Arc<busbar_kernel::state::App>,
+    std::sync::Arc<busbar_contract::records::VirtualKey>,
+) {
     let governance_store = crate::root::real_store::core().await;
     let gov = std::sync::Arc::new(
         busbar_kernel::governance::GovState::new_with_core(
@@ -1041,7 +1055,8 @@ async fn downgrade_book(
             ..Default::default()
         },
     )]);
-    let cost = busbar_kernel::cost::CostModel::resolve_parts(None, 10, &groups);
+    let cost =
+        busbar_kernel::cost::CostModel::resolve_parts(rate_card.as_ref(), per_request_fee, &groups);
     let (key, _secret) = gov
         .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
@@ -1113,7 +1128,8 @@ async fn downgrade_book(
         let mut cfg = busbar_kernel::config::resolve(&deploy, &providers)
             .expect("the door deployment resolves");
 
-        cfg.per_request_fee = 10;
+        cfg.per_request_fee = per_request_fee;
+        cfg.rate_card = rate_card.clone();
         cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -1526,6 +1542,347 @@ async fn a_downgrade_never_routes_a_key_into_a_pool_it_may_not_use() {
         charged.routed,
         owned("frontier", &["big"]),
         "the route is unchanged"
+    );
+}
+
+/// The baseline llm configuration the A31 upgrade cells serve: `oracle-fo` walks two weighted
+/// models, `oracle-fb` spills into it, and `m-other` is a model in no pool.
+fn llm_baseline() -> busbar_kernel::config::RootCfg {
+    let def: busbar_kernel::config::ProviderDef =
+        serde_yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
+            .expect("provider");
+    let defs = std::collections::HashMap::from([("p".to_string(), def)]);
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "providers:\n  p:\n    api_key: {env: BUSBAR_TEST_KEY}\n\
+         models:\n  m-openai-chat:\n    provider: p\n  m-anthropic:\n    provider: p\n  \
+         m-other:\n    provider: p\n\
+         pools:\n  oracle-fo:\n    members:\n      - {model: m-openai-chat, weight: 3}\n      \
+         - {model: m-anthropic, weight: 1}\n  oracle-fb:\n    members: [{model: m-anthropic}]\n    \
+         on_exhausted: {fallback_pool: oracle-fo}\n",
+    )
+    .expect("deployment");
+    busbar_kernel::config::resolve(&deploy, &defs).expect("resolved configuration")
+}
+
+/// The llm plane's pools exactly as the root hands them: `kernel_sections` writes the `models`
+/// and `pools` sections and the llm table joins them (`walked_section`).
+fn llm_pools_of(cfg: &busbar_kernel::config::RootCfg) -> Result<DoorPools, String> {
+    use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
+    let sections = super::kernel_sections(cfg).expect("projectable configuration");
+    let mut table = serde_yaml::Mapping::new();
+    table.insert(
+        RESERVED_MODELS_KEY.into(),
+        sections[RESERVED_MODELS_KEY].clone(),
+    );
+    table.insert(
+        RESERVED_POOLS_KEY.into(),
+        sections[RESERVED_POOLS_KEY].clone(),
+    );
+    DoorPools::of(&serde_yaml::Value::Mapping(table), RESERVED_POOLS_KEY)
+}
+
+fn llm_pools() -> DoorPools {
+    llm_pools_of(&llm_baseline()).expect("the llm pools")
+}
+
+#[test]
+fn llm_pool_members_written_by_kernel_sections_are_read() {
+    let p = llm_pools();
+    assert_eq!(
+        routed(&p, ROUTE_POOL, Some("oracle-fo")),
+        owned("oracle-fo", &["m-openai-chat", "m-anthropic"]),
+        "every member kernel_sections writes for an llm pool is a member the walk reaches"
+    );
+    assert_eq!(
+        routed(&p, ROUTE_POOL, Some("oracle-fb")),
+        owned("oracle-fb", &["m-anthropic"])
+    );
+}
+
+#[test]
+fn pool_member_map_without_a_name_is_refused() {
+    let section: serde_yaml::Value = serde_yaml::from_str(
+        "models:\n  m: {}\npools:\n  p:\n    members: [{model: m}, {weight: 3}]",
+    )
+    .expect("yaml");
+    let refused = DoorPools::of(&section, busbar_contract::section::RESERVED_POOLS_KEY)
+        .expect_err("a member that names no entry refuses the load instead of vanishing");
+    assert!(refused.contains("pool 'p'"), "{refused}");
+    assert!(refused.contains("member 1"), "{refused}");
+}
+
+#[tokio::test]
+async fn exhausted_pool_walk_bills_under_a_member_lane() {
+    const EXACT: &str = concat!(
+        module_path!(),
+        "::exhausted_pool_walk_bills_under_a_member_lane"
+    );
+    let Some(case) = isolated_fixture_cases(EXACT, &["priced"]) else {
+        return;
+    };
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
+    use std::sync::Arc;
+
+    let card = [
+        "big",
+        "small",
+        "tiny",
+        "m-openai-chat",
+        "m-anthropic",
+        "m-other",
+    ]
+    .into_iter()
+    .map(|lane| {
+        (
+            lane.to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 1.0,
+                output_utok: 1.0,
+                ..Default::default()
+            },
+        )
+    })
+    .collect::<std::collections::BTreeMap<_, _>>();
+    let (app, key) = money_book(
+        vec![LimitCfg {
+            metric: LimitMetric::Budget,
+            amount: 1_000_000,
+            per: Some(LimitWindow::Day),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        }],
+        None,
+        Some(card),
+        0,
+    )
+    .await;
+    let pools = llm_pools();
+    let gov = Arc::clone(app.governance.as_ref().expect("a governed generation"));
+    let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
+        crate::root::plane_node::Node::new(),
+    )));
+    let money = PlaneMoney::new(Arc::clone(&gov), post as Arc<dyn EndPost>);
+    let arrived = busbar_kernel::store::now();
+    let steps = super::DoorSteps::new(
+        &facts,
+        &pools,
+        Arc::new(|_: &str| None),
+        Arc::clone(&app),
+        Some(&money),
+        super::DoorCaller {
+            principal: busbar_contract::caps::PrincipalId::new(key.id.as_str()),
+            key: Some(Arc::clone(&key)),
+            open: false,
+            arrived,
+            records: None,
+            depth: 0,
+            credential: None,
+            ticket: None,
+        },
+    );
+    steps.lock().routed = pools.resolve(ROUTE_POOL, Some(b"oracle-fo"));
+    let ctx = busbar_kernel::teller::UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
+        key: busbar_contract::UnitKey::new(1),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    assert!(
+        steps
+            .charge(&ctx, &key)
+            .map_err(|refusal| refusal.reason())
+            .is_ok(),
+        "the first request into the pool is admitted"
+    );
+    // Every member answered 503: the walk is exhausted, nothing commits, the caller sees 503.
+    money.settle_end(ctx.key, 503);
+
+    let lanes: Vec<String> = gov
+        .bucket_model_tokens_async(&key.id, busbar_kernel::governance::WINDOW_TOTAL, arrived)
+        .await
+        .expect("the key's lanes read")
+        .into_iter()
+        .map(|(lane, _)| lane)
+        .collect();
+    assert!(
+        lanes.iter().all(|lane| lane == "m-openai-chat"),
+        "the exhausted unit's row is posted under the pool's first member lane, never the \
+         empty lane: {lanes:?}"
+    );
+
+    let usage = gov
+        .viewed_usage_for_async(&app.cost, &key.id, arrived)
+        .await
+        .expect("the key's usage prices: no row names an unpriced lane")
+        .expect("the key's ledger exists");
+    assert_eq!(usage.requests, 1, "the exhausted request is counted");
+    assert_eq!(usage.spend_cents, 0, "and costs nothing");
+
+    let (fresh, _secret) = gov
+        .mint_signed_async(
+            busbar_kernel::governance::NewKeySpec {
+                name: "fresh".to_string(),
+                group: Some("team".to_string()),
+                ..Default::default()
+            },
+            4_000_000_000,
+            1_700_000_000,
+        )
+        .await
+        .expect("a fresh key in the same group");
+    let admitted = gov.try_admit_estimated_counts(
+        &app.cost,
+        &fresh,
+        "oracle-fo",
+        busbar_kernel::store::now(),
+        &["m-openai-chat", "m-anthropic"],
+        &std::collections::BTreeMap::new(),
+    );
+    assert!(
+        admitted.is_ok(),
+        "the group is still served after one exhausted walk: {:?}",
+        admitted.as_ref().err()
+    );
+    drop(admitted);
+
+    assert_eq!(
+        busbar_kernel::snapshot::refresh_scrape_gauges(&app).await,
+        Ok(()),
+        "the scrape stays fail-closed and succeeds: no unpriceable row exists"
+    );
+    isolated_fixture_done(EXACT, &case);
+}
+
+#[test]
+fn llm_pool_member_scope_is_judged_at_the_pool_not_the_member() {
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    let p = llm_pools();
+    let key = |scopes: &[&str]| VirtualKey {
+        allowed_scopes: Some(scopes.iter().map(|n| ScopeRef::pool(*n)).collect()),
+        ..VirtualKey::default()
+    };
+    let granted = |k: &VirtualKey, pool: &str, member: Option<&str>| {
+        p.granted_to(
+            Some("pool"),
+            Some(k),
+            (ROUTE_POOL, Some(pool.as_bytes())),
+            member.map(str::as_bytes),
+        )
+    };
+    assert!(
+        granted(&key(&["oracle-fo"]), "oracle-fo", Some("m-anthropic")),
+        "a key granted the pool reaches its members"
+    );
+    assert!(
+        !granted(&key(&["m-openai-chat"]), "oracle-fo", None),
+        "a key granted only a member is not granted the pool"
+    );
+    assert!(
+        !granted(&key(&["oracle-fb"]), "oracle-fb", None),
+        "a pool whose fallback is ungranted is refused"
+    );
+    assert_eq!(
+        p.member_pool("m-anthropic"),
+        None,
+        "no llm pool is member-granted"
+    );
+}
+
+#[tokio::test]
+async fn child_grant_on_a_pooled_llm_target_walks_only_the_target() {
+    use busbar_contract::caps::{Dial, OpClassId, PrincipalId, ReasonCode};
+    use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, PlaneMoney};
+    use std::sync::Arc;
+
+    let (app, key) = downgrade_book(Vec::new(), None).await;
+    let pools = llm_pools();
+    let facts = super::door_facts("p", &["pool"], &[], &[], "door", Vec::new());
+    let gov = Arc::clone(app.governance.as_ref().expect("a governed generation"));
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
+        crate::root::plane_node::Node::new(),
+    )));
+    let money = PlaneMoney::new(gov, post as Arc<dyn EndPost>);
+    let principal = PrincipalId::new(key.id.as_str());
+    let ctx = busbar_kernel::teller::UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
+        key: busbar_contract::UnitKey::new(1),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let child = |target: &str| {
+        let steps = super::DoorSteps::new(
+            &facts,
+            &pools,
+            Arc::new(|_: &str| None),
+            Arc::clone(&app),
+            Some(&money),
+            super::DoorCaller {
+                principal: principal.clone(),
+                key: Some(Arc::clone(&key)),
+                open: false,
+                arrived: busbar_kernel::store::now(),
+                records: None,
+                depth: 1,
+                credential: None,
+                ticket: None,
+            },
+        )
+        .with_child_constraints(Some(busbar_kernel::hook_child::Constraints {
+            grant: Arc::new(busbar_kernel::hook_child::Grant {
+                revision: 1,
+                plane: "p".to_string(),
+                operation: "op".to_string(),
+                target: "/child".to_string(),
+                target_binding: target.to_string(),
+                max_input_bytes: 1024,
+                max_output_bytes: 1024,
+                max_children: 1,
+                timeout_ms: 1_000,
+                max_budget_micros: 1_000_000,
+            }),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            cancellation: Arc::new(busbar_kernel::hook_child::Cancellation::default()),
+        }));
+        steps.decoded(&ctx, OpClassId::new("op"), ROUTE_POOL, Some(b"oracle-fo"));
+        let verified = steps
+            .verify(
+                &busbar_contract::caps::Grant::<Dial>::mint(&busbar_kernel::seal::acquire()),
+                &ctx,
+                &principal,
+            )
+            .map(|_| ())
+            .map_err(|refusal| refusal.reason());
+        (verified, steps.routed())
+    };
+
+    let (verified, walked) = child("m-anthropic");
+    assert_eq!(
+        verified,
+        Ok(()),
+        "a child bound to a pool member reaches it"
+    );
+    assert_eq!(
+        walked,
+        owned("oracle-fo", &["m-anthropic"]),
+        "the walk is narrowed to exactly the bound target"
+    );
+
+    let (verified, _) = child("m-other");
+    assert_eq!(
+        verified,
+        Err(ReasonCode::ScopeDenied),
+        "a child bound outside the pool is still refused"
     );
 }
 
@@ -3894,6 +4251,41 @@ fn a_pools_reach_follows_its_fallback_and_the_declared_words() {
         bound.labels("spill", ("spill", "own"), Some(&stated("first", "a"))),
         ("spill".to_string(), "own".to_string(), true),
         "a fallback pool does not reach back into the pool that spilled into it"
+    );
+}
+
+#[test]
+fn llm_pool_label_bound_reaches_members() {
+    use busbar_kernel_egress::ports::StatedLabels;
+    let p = llm_pools();
+    let bound = super::label_bound("", &p, &[]);
+    let stated = |pool: &str, lane: &str| StatedLabels {
+        pool: Some(pool.to_string()),
+        lane: Some(lane.to_string()),
+    };
+    let pooled = super::egress_pool(
+        "",
+        &routed(&p, ROUTE_POOL, Some("oracle-fo")).expect("a pool route"),
+    );
+    let own = super::plane_lane("", "m-openai-chat");
+    assert_eq!(
+        bound.labels(
+            &pooled,
+            (&pooled, &own),
+            Some(&stated("oracle-fo", "m-anthropic"))
+        ),
+        ("oracle-fo".to_string(), "m-anthropic".to_string(), false),
+        "an llm pool's label reaches its members"
+    );
+    assert!(
+        bound
+            .labels(
+                &pooled,
+                (&pooled, &own),
+                Some(&stated("oracle-fo", "m-unknown"))
+            )
+            .2,
+        "a lane outside the configured names is refused"
     );
 }
 
