@@ -10,7 +10,7 @@
       "crates/busbar-core-connector/src/io/unix.rs": { "keywords": 1, "allows": 1, "by": "W3.6 (edge::sys)" },
       "crates/busbar-core-connector/src/lib.rs": { "keywords": 0, "allows": 1, "by": "W3.6 (edge::sys)" },
       "crates/busbar-kernel/src/lib.rs": { "keywords": 0, "allows": 1, "by": "W3.10 (boot::mallctl)" },
-      "crates/busbar-kernel/src/mallctl.rs": { "keywords": 4, "allows": 0, "by": "W3.10 (boot::mallctl)" },
+      "crates/busbar-kernel/src/mallctl.rs": { "keywords": 2, "allows": 0, "by": "W3.10 (boot::mallctl)" },
       "crates/busbar-kernel/src/plane_driver/registry.rs": { "keywords": 1, "allows": 1, "by": "W3.11" },
       "crates/busbar-kernel/src/preflight.rs": { "keywords": 1, "allows": 1, "by": "W3.11" },
       "crates/busbar-kernel/src/seal.rs": { "keywords": 0, "allows": 1, "by": "W4.3" },
