@@ -530,7 +530,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     Ops::LAYOUT,
 ];
 /// Fingerprint of the primitive shapes, independent from the legacy business layout.
-pub const LAYOUT_FINGERPRINT: u64 = 0xd66505223254d413;
+pub const LAYOUT_FINGERPRINT: u64 = 0x5f47532174fb052b;
 
 // SAFETY: C structs leading with the shared head and containing only plain data.
 unsafe impl crate::abi::sdk::door::AbiIn for ReadIn {}
