@@ -137,16 +137,6 @@ impl Mapping {
         index.shift_remove_from(self)
     }
 
-    /// Remove and return the key-value pair.
-    ///
-    /// Like [`Vec::remove`], the entry is removed by shifting all of the
-    /// elements that follow it, preserving their relative order. This perturbs
-    /// the index of all of those elements!
-    #[inline]
-    pub(crate) fn shift_remove_entry<I: Index>(&mut self, index: I) -> Option<(Value, Value)> {
-        index.shift_remove_entry_from(self)
-    }
-
     /// Scan through each key-value pair in the map and keep those where the
     /// closure `keep` returns true.
     #[inline]
@@ -754,12 +744,6 @@ impl<'a> VacantEntry<'a> {
     #[inline]
     pub fn key(&self) -> &Value {
         self.vacant.key()
-    }
-
-    /// Takes ownership of the key, leaving the entry vacant.
-    #[inline]
-    pub(crate) fn into_key(self) -> Value {
-        self.vacant.into_key()
     }
 
     /// Sets the value of the entry with the VacantEntry's key, and returns a
