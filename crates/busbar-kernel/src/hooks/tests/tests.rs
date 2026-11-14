@@ -186,6 +186,214 @@ fn plugin_strategy_open_failure_refuses_pool_construction() {
     assert!(error.contains("strategy constructor refused"));
 }
 
+/// Per decide call, per candidate: the routing-cost prices the hook's view carried (`None` when
+/// the view carried no recipe for that candidate).
+type SeenPrices = Vec<Vec<Option<Vec<Option<f64>>>>>;
+
+/// A strategy-word hook that writes down the routing-cost recipe each candidate carried in its
+/// decide view, and abstains.
+#[derive(Default)]
+struct CostSeen(std::sync::Mutex<SeenPrices>);
+
+impl busbar_contract::hook_calls::HookCalls for CostSeen {
+    fn name(&self) -> &str {
+        EXTRA_STRATEGY
+    }
+    fn decide(
+        &self,
+        frame: Arc<busbar_contract::abi::host::hook::DecideFrame>,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<
+        busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::DecideOut>,
+    > {
+        let prices = frame.decoded(|decoded| {
+            decoded
+                .candidates
+                .iter()
+                .map(|c| {
+                    busbar_contract::signal::route_cost::decode(&c.signals)
+                        .ok()
+                        .flatten()
+                        .map(|terms| terms.iter().map(|t| t.price_per_unit).collect())
+                })
+                .collect()
+        });
+        self.0.lock().unwrap().push(prices);
+        Box::pin(async move {
+            let (outcome, out) =
+                frame.answer_decide(&busbar_contract::abi::sdk::hook::Verdict::Abstain);
+            busbar_contract::hook_calls::Answered::Answer {
+                outcome,
+                out,
+                error: None,
+                frame,
+            }
+        })
+    }
+    fn transform(
+        &self,
+        _: Arc<busbar_contract::abi::host::hook::DecideFrame>,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<
+        busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::TransformOut>,
+    > {
+        Box::pin(async { busbar_contract::hook_calls::Answered::TimedOut })
+    }
+    fn notify(
+        &self,
+        _: Arc<busbar_contract::abi::host::hook::NotifyFrame>,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<()> {
+        Box::pin(std::future::ready(()))
+    }
+    fn configure(
+        &self,
+        _: &str,
+        _: &busbar_contract::plugin_settings::ResolvedSettings,
+        _: u64,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<Result<(), String>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    fn status(
+        &self,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<Option<Vec<u8>>> {
+        Box::pin(std::future::ready(None))
+    }
+    fn describe(
+        &self,
+        _: std::time::Duration,
+    ) -> busbar_contract::hook_calls::Pending<Option<Vec<u8>>> {
+        Box::pin(std::future::ready(None))
+    }
+}
+
+/// An axis serving one gate hook that declares [`EXTRA_STRATEGY`] as its word.
+struct StrategyAxis(Arc<CostSeen>);
+
+impl busbar_contract::hook_calls::HookAxis for StrategyAxis {
+    fn probe(
+        &self,
+        module: &str,
+        _: &str,
+        _: &busbar_contract::plugin_settings::ResolvedSettings,
+    ) -> Option<busbar_contract::hook_calls::Probed> {
+        (module == EXTRA_STRATEGY).then(|| {
+            (
+                Some(busbar_contract::hook_calls::HookFacts {
+                    name: EXTRA_STRATEGY.into(),
+                    class: busbar_contract::abi::hook::CLASS_GATE,
+                    words: vec![EXTRA_STRATEGY.into()],
+                    ..Default::default()
+                }),
+                Vec::new(),
+            )
+        })
+    }
+    fn open(
+        &self,
+        module: &str,
+        _: &str,
+        _: &busbar_contract::plugin_settings::ResolvedSettings,
+        _: std::time::Duration,
+    ) -> Result<Arc<dyn busbar_contract::hook_calls::HookCalls>, String> {
+        assert_eq!(module, EXTRA_STRATEGY);
+        Ok(self.0.clone())
+    }
+    fn linked(&self, _: &str) -> bool {
+        true
+    }
+    fn call_budget(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(5)
+    }
+    fn first_party(&self, _: &str) -> bool {
+        true
+    }
+}
+
+fn route_cost_candidate(idx: usize, input: f64, output: f64) -> Candidate<'static> {
+    let mut signals = SignalBag::new();
+    busbar_contract::signal::route_cost::append(
+        &mut signals,
+        [
+            busbar_contract::signal::route_cost::Term {
+                class: "input",
+                price_per_unit: Some(input),
+                expected_units: 0.5,
+            },
+            busbar_contract::signal::route_cost::Term {
+                class: "output",
+                price_per_unit: Some(output),
+                expected_units: 0.5,
+            },
+        ],
+    );
+    Candidate {
+        idx,
+        model: if idx == 0 { "m-cheap" } else { "m-dear" },
+        provider: "prov",
+        weight: 1,
+        context_max: None,
+        tier: None,
+        cost_per_mtok: None,
+        tags: &[],
+        latency_ms: None,
+        available_concurrency: 1,
+        budget_remaining: None,
+        rate_headroom: None,
+        signals,
+    }
+}
+
+/// `hooks: [word]`, `strategy: word` and `on_error: word` all open through `ranking_on_axis`; the
+/// form has no `signals:` key, so the opener grants the candidate route cost the strategies read.
+#[tokio::test]
+async fn a_strategy_word_policy_is_shown_the_candidate_route_cost() {
+    let seen = Arc::new(CostSeen::default());
+    let axis = StrategyAxis(seen.clone());
+    let (policy, budget) = crate::preflight::ranking_on_axis(&axis, EXTRA_STRATEGY)
+        .expect("the declared strategy word opens");
+    let candidates = [
+        route_cost_candidate(0, 1000.0, 2000.0),
+        route_cost_candidate(1, 100_000.0, 200_000.0),
+    ];
+    let req = RoutingRequest {
+        request_id: 1,
+        pool: "cap-cheapest",
+        ingress_protocol: "",
+        requested_model: None,
+        message_count: 0,
+        tool_count: 0,
+        has_tools: false,
+        total_chars: 0,
+        system_chars: 0,
+        max_tokens: None,
+        stream: false,
+        prompt: None,
+        identity: None,
+        signals: SignalBag::new(),
+        session: None,
+    };
+    let ctx = RoutingContext {
+        pool: "cap-cheapest",
+        budget_remaining: None,
+        budget: &[],
+    };
+    policy
+        .decide(&req, &candidates, &ctx, budget)
+        .await
+        .expect("the hook answers");
+    assert_eq!(
+        *seen.0.lock().unwrap(),
+        vec![vec![
+            Some(vec![Some(1000.0), Some(2000.0)]),
+            Some(vec![Some(100_000.0), Some(200_000.0)]),
+        ]],
+        "each candidate's priced routing-cost recipe reaches the strategy word's hook"
+    );
+}
+
 fn empty_env() -> HookEnv {
     HookEnv::new(
         std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),

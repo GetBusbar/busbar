@@ -50,9 +50,9 @@ use crate::config::PolicyOnError;
 use crate::diagnostics::{
     DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT, DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
     ON_ERROR_FALLBACK_ANSWERED, ON_ERROR_FALLBACK_DEADLINE_EXCEEDED, ON_ERROR_FALLBACK_HOOK_FAILED,
-    ROUTING_POLICY_DEADLINE_EXCEEDED, ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
-    ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
-    ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
+    ROUTING_POLICY_ABSTAINED_UNPRICED, ROUTING_POLICY_DEADLINE_EXCEEDED,
+    ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK, ROUTING_POLICY_REJECTED,
+    ROUTING_POLICY_RESTRICT_REJECT, ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
 use crate::hooks::taps::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
 use crate::hooks::{
@@ -1001,6 +1001,57 @@ fn trimmed_tags(mut tags: Vec<String>) -> Vec<String> {
     tags.truncate(kept);
     tags
 }
+
+static UNRANKED_WARNED: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// The ordering policy answered and made no choice: the walk is SWRR. Say so once per
+/// policy@pool when no shown member carries a fully priced routing-cost recipe.
+/// Returns whether it logged (for tests).
+fn note_unranked(policy: &str, pool: &str, shown: &[Candidate<'_>]) -> bool {
+    if shown.is_empty() || shown.iter().any(has_known_cost) {
+        return false;
+    }
+    let fresh = UNRANKED_WARNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(format!("{policy}@{pool}"));
+    if fresh {
+        crate::diag_warn!(
+            ROUTING_POLICY_ABSTAINED_UNPRICED,
+            policy = policy,
+            pool = pool,
+            "routing policy '{policy}' made no choice for pool '{pool}' and no member has a known \
+             routing cost; the pool is using weighted round-robin. If this policy ranks by cost, \
+             price every member's lane for the plane's cost classes in rate_card (a named hook \
+             also needs signals: [candidate_route_cost])"
+        );
+    }
+    fresh
+}
+
+/// True when the core's unfiltered bag decodes to at least one term and every term is priced.
+fn has_known_cost(c: &Candidate<'_>) -> bool {
+    let (mut terms, mut priced) = (0usize, true);
+    let recipe = busbar_contract::signal::route_cost::visit(&c.signals, |t| {
+        terms += 1;
+        priced &= t.price_per_unit.is_some();
+    });
+    matches!(recipe, Ok(true)) && terms > 0 && priced
+}
+
+fn unranked_clear(policy: &str, pool: &str) {
+    let mut set = UNRANKED_WARNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !set.is_empty() {
+        set.remove(&format!("{policy}@{pool}"));
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/unranked_tests.rs"]
+mod unranked_tests;
 
 fn map_answer(
     answer: RoutingDecision,
@@ -2237,9 +2288,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             named,
         };
         let (decided, hook) = Box::pin(asked.decide(policy)).await;
+        let clean = hook.as_ref().is_some_and(|h| !h.failed);
         ran.extend(hook);
         match decided {
             Decided::Prioritize { candidates, name } => {
+                unranked_clear(&name, pool);
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
                     "policy" => Arc::clone(&name),
@@ -2251,6 +2304,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 Ok(())
             }
             Decided::Order { order, name } => {
+                unranked_clear(&name, pool);
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
                     "policy" => Arc::clone(&name),
@@ -2261,7 +2315,15 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 constraint.policy = Some(name);
                 Ok(())
             }
-            Decided::Weighted => Ok(()),
+            Decided::Weighted => {
+                if clean {
+                    let ResolvedPolicy::Policy {
+                        policy: ordering, ..
+                    } = policy;
+                    note_unranked(ordering.name(), pool, &shown);
+                }
+                Ok(())
+            }
             Decided::Reject => Err(veto(
                 503,
                 "The routing policy could not select an upstream. Please retry shortly.",

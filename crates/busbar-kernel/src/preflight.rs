@@ -385,6 +385,12 @@ pub(crate) fn ranking_settings_from(
     Ok(settings)
 }
 
+/// The candidate facts a strategy word (`hooks: [word]`, `strategy: word`, `on_error: word`) is
+/// granted: the form has no `signals:` key, and the strategies it names read the plane's
+/// route-cost recipe at the card's prices. No request content and no caller facts.
+const STRATEGY_WORD_SIGNALS: &[busbar_contract::Signal] =
+    &[busbar_contract::Signal::CandidateRouteCost];
+
 pub(crate) fn ranking_on_axis(
     axis: &dyn busbar_contract::hook_calls::HookAxis,
     name: &str,
