@@ -1453,14 +1453,6 @@ fn json_amount(value: i128, out: &mut String) {
     out.push('"');
 }
 
-fn hex32(bytes: &[u8; 32]) -> String {
-    let mut out = String::with_capacity(64);
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
-}
-
 fn render_refused(refused: &[RefusedRow], out: &mut String) {
     out.push_str(",\"refused\":[");
     for (i, row) in refused.iter().enumerate() {

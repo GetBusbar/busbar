@@ -98,21 +98,12 @@ pub(crate) struct ListView {
     next_cursor: Option<String>,
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
-}
-
 impl From<RecoveryItem> for ItemView {
     fn from(item: RecoveryItem) -> Self {
         Self {
             owner_node: item.owner_node.map(|node| format!("{node:016x}")),
-            operation_id: hex(&item.operation_id),
-            body_fingerprint: hex(&item.body_fingerprint),
+            operation_id: hex::encode(&item.operation_id),
+            body_fingerprint: hex::encode(&item.body_fingerprint),
             recovery_version: item.revision,
             kind: match item.kind {
                 RecoveryKind::Usage => KindView::Usage,
@@ -174,7 +165,7 @@ pub(crate) async fn list(State(handle): State<Arc<AppHandle>>, body: Bytes) -> R
             let next_cursor = if more {
                 items
                     .last()
-                    .map(|item| format!("{CURSOR_PREFIX}{}", hex(&item.operation_id)))
+                    .map(|item| format!("{CURSOR_PREFIX}{}", hex::encode(&item.operation_id)))
             } else {
                 None
             };
@@ -274,20 +265,11 @@ pub(crate) struct ResolveRequest {
 }
 
 fn lower_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
-    if value.len() != N * 2 {
+    if value.bytes().any(|b| b.is_ascii_uppercase()) {
         return None;
     }
-    fn digit(byte: u8) -> Option<u8> {
-        match byte {
-            b'0'..=b'9' => Some(byte - b'0'),
-            b'a'..=b'f' => Some(byte - b'a' + 10),
-            _ => None,
-        }
-    }
     let mut bytes = [0; N];
-    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
-        bytes[index] = digit(pair[0])? * 16 + digit(pair[1])?;
-    }
+    hex::decode_to_slice(value, &mut bytes).ok()?;
     Some(bytes)
 }
 

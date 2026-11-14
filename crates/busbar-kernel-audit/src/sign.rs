@@ -39,16 +39,6 @@ pub fn checkpoint_preimage(body: &[u8]) -> Vec<u8> {
     preimage
 }
 
-/// Lowercase hexadecimal, the one spelling everything here reads and writes.
-fn to_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(char::from_digit(u32::from(b >> 4), 16).unwrap_or('0'));
-        out.push(char::from_digit(u32::from(b & 0x0f), 16).unwrap_or('0'));
-    }
-    out
-}
-
 /// What went wrong reading a key, said WITHOUT quoting the thing that went wrong.
 ///
 /// Every variant is a whole-input judgement. None of them carries the text, a character from it, or
@@ -105,27 +95,15 @@ impl std::error::Error for KeyError {}
 
 /// Decode lowercase hex into exactly `N` bytes, saying nothing about WHAT was wrong with it.
 fn from_hex_exact<const N: usize>(text: &str) -> Result<[u8; N], KeyError> {
-    let bytes = text.as_bytes();
-    if bytes.len() != N * 2 {
+    if text.len() != N * 2 {
         return Err(KeyError::WrongLength);
     }
-
+    if text.bytes().any(|c| c.is_ascii_uppercase()) {
+        return Err(KeyError::NotHex);
+    }
     let mut out = zeroize::Zeroizing::new([0u8; N]);
-    for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
-        let hi = nibble(pair[0])?;
-        let lo = nibble(pair[1])?;
-        out[i] = (hi << 4) | lo;
-    }
+    hex::decode_to_slice(text, &mut *out).map_err(|_| KeyError::NotHex)?;
     Ok(*out)
-}
-
-/// One lowercase hex digit's value, or [`KeyError::NotHex`] — which does not say which digit.
-fn nibble(c: u8) -> Result<u8, KeyError> {
-    match c {
-        b'0'..=b'9' => Ok(c - b'0'),
-        b'a'..=b'f' => Ok(c - b'a' + 10),
-        _ => Err(KeyError::NotHex),
-    }
 }
 
 /// The identifier for one public key: the first [`KEY_ID_BYTES`] bytes of its SHA-256, in lowercase
@@ -193,13 +171,13 @@ impl AuditSigningKey {
     /// The public half as 64 lowercase hex characters.
     #[must_use]
     pub fn public_key_hex(&self) -> String {
-        to_hex(self.inner.verifying_key().as_bytes())
+        hex::encode(self.inner.verifying_key().as_bytes())
     }
 
     /// Sign one record's digest. The answer is 128 lowercase hex characters.
     #[must_use]
     pub fn sign_digest(&self, digest_hex: &str) -> String {
-        to_hex(&self.inner.sign(&signing_preimage(digest_hex)).to_bytes())
+        hex::encode(&self.inner.sign(&signing_preimage(digest_hex)).to_bytes())
     }
 }
 
@@ -245,7 +223,7 @@ impl AuditVerifyingKey {
     /// The key as 64 lowercase hex characters.
     #[must_use]
     pub fn public_key_hex(&self) -> String {
-        to_hex(self.inner.as_bytes())
+        hex::encode(self.inner.as_bytes())
     }
 
     /// Check one signature over one digest.

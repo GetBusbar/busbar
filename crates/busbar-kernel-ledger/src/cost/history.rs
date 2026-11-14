@@ -78,12 +78,12 @@ impl EntryKey {
 
     /// The key as lowercase hex (40 characters), the spelling the admin verbs take.
     pub fn hex(&self) -> String {
-        hex(&self.0)
+        hex::encode(self.0)
     }
 
     /// The key from its 40-character hex spelling.
     pub fn parse_hex(text: &str) -> Option<Self> {
-        unhex(text).and_then(|b| Self::from_slice(&b))
+        hex::decode(text).ok().and_then(|b| Self::from_slice(&b))
     }
 }
 
@@ -167,12 +167,12 @@ impl EntryId {
 
     /// The 24-character lowercase hex spelling.
     pub fn hex(&self) -> String {
-        hex(&self.0)
+        hex::encode(self.0)
     }
 
     /// The id from its 24-character hex spelling.
     pub fn parse_hex(text: &str) -> Option<Self> {
-        let bytes = unhex(text)?;
+        let bytes = hex::decode(text).ok()?;
         <[u8; ENTRY_ID_LEN]>::try_from(bytes.as_slice())
             .ok()
             .map(EntryId)
@@ -199,25 +199,6 @@ impl std::fmt::Display for EntryId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.hex())
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
-}
-
-fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
-        .collect()
 }
 
 /// Why an entry exists. The distinction is the whole audit trail: an operator reading the history

@@ -27,13 +27,7 @@ fn pipe(host_reads: bool) -> io::Result<(NamedPipeServer, Stdio)> {
     SystemRandom::new()
         .fill(&mut nonce)
         .map_err(|_| io::Error::other("could not generate a child pipe name"))?;
-    let name = format!(
-        r"\\.\pipe\busbar-child-{}",
-        nonce
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    );
+    let name = format!(r"\\.\pipe\busbar-child-{}", hex::encode(nonce));
     let server = ServerOptions::new()
         .first_pipe_instance(true)
         .reject_remote_clients(true)

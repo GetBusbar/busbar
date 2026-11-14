@@ -12,5 +12,6 @@ name = "busbar_kernel_ledger"
 path = "src/lib.rs"
 
 [dependencies]
+hex = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 serde = { workspace = true }

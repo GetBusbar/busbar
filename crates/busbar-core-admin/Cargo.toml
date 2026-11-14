@@ -12,6 +12,7 @@ name = "busbar_core_admin"
 path = "src/lib.rs"
 
 [dependencies]
+hex = { workspace = true }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
 axum = { workspace = true }

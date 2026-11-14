@@ -382,12 +382,7 @@ pub fn body_digest(body: &[u8]) -> [u8; 32] {
 /// Thirty-two bytes as hexadecimal.
 #[must_use]
 pub fn hex(bytes: &[u8; 32]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(64);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
+    ::hex::encode(bytes)
 }
 
 fn read4(bytes: &[u8], at: usize) -> [u8; 4] {
