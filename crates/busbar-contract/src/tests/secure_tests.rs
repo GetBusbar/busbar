@@ -212,3 +212,125 @@ fn secure_vec_read_into_rejects_overlong_count() {
         "the lent region is wiped"
     );
 }
+
+// SECURE-TYPES (core #164): the types that replace `zeroize::Zeroizing`. RED until they land.
+
+/// RED against a `Zeroizing<String>` that grows in place: growth moves the text into a fresh
+/// block and wipes the old block before it is freed.
+#[test]
+fn secure_string_growth_wipes_old_block() {
+    let mut s = SecureString::with_capacity(SENTINEL.len());
+    s.push_str(std::str::from_utf8(SENTINEL).unwrap());
+    let old = s.as_str().as_ptr();
+    let old_len = s.as_str().len();
+    let ((), old_wiped, _) =
+        crate::support::observe_wipe(old, old_len, || s.push_str(&"x".repeat(4096)));
+    assert_ne!(s.as_str().as_ptr(), old, "the text grew into a new block");
+    assert_eq!(
+        old_wiped,
+        Some(true),
+        "the old block is wiped before it is freed"
+    );
+    assert!(s.as_str().as_bytes().starts_with(SENTINEL), "text kept");
+    assert_eq!(s.len(), SENTINEL.len() + 4096);
+}
+
+#[test]
+fn secure_string_drop_wipes() {
+    let s = SecureString::from(String::from_utf8(SENTINEL.to_vec()).unwrap());
+    let (p, n) = (s.as_str().as_ptr(), s.len());
+    let ((), wiped, _) = crate::support::observe_wipe(p, n, || drop(s));
+    assert_eq!(
+        wiped,
+        Some(true),
+        "a dropped SecureString is wiped before it is freed"
+    );
+}
+
+#[test]
+fn secure_vec_from_vec_drop_wipes() {
+    let v = SecureVec::from(SENTINEL.to_vec());
+    assert_eq!(&v[..], SENTINEL, "adopted bytes are the live bytes");
+    let (p, n) = (v.as_slice().as_ptr(), v.len());
+    let ((), wiped, _) = crate::support::observe_wipe(p, n, || drop(v));
+    assert_eq!(
+        wiped,
+        Some(true),
+        "a dropped SecureVec is wiped before it is freed"
+    );
+}
+
+#[test]
+fn secure_array_drop_wipes() {
+    let a = Box::new(SecureArray::<32>::from([0x5a_u8; 32]));
+    let p = a.as_ptr();
+    let ((), wiped, _) = crate::support::observe_wipe(p, 32, || drop(a));
+    assert_eq!(
+        wiped,
+        Some(true),
+        "a dropped SecureArray is wiped before it is freed"
+    );
+}
+
+/// RED against adopting a `Vec` as is: bytes a caller truncated away stay in the spare capacity.
+#[test]
+fn secure_vec_from_vec_scrubs_spare_capacity() {
+    let mut raw = Vec::with_capacity(256);
+    raw.extend_from_slice(b"ab");
+    raw.extend_from_slice(SENTINEL);
+    raw.truncate(2);
+    let v = SecureVec::from(raw);
+    assert_eq!(v.as_slice(), b"ab");
+    assert!(
+        !holds(v.allocation(), SENTINEL),
+        "stale spare bytes are scrubbed"
+    );
+    assert!(outside_live_is_zero(&v));
+}
+
+#[test]
+fn secure_vec_truncate_wipes_tail_and_zeroed_is_live_zero() {
+    let mut v = SecureVec::zeroed(8);
+    assert_eq!(v.as_slice(), &[0_u8; 8]);
+    v.copy_from_slice(b"KEEPGONE");
+    v.truncate(4);
+    assert_eq!(&v[..], b"KEEP");
+    assert!(!holds(v.allocation(), b"GONE"), "the cut tail is wiped");
+    v.extend_from_slice(b"+1");
+    assert_eq!(&v[..], b"KEEP+1");
+    assert_eq!(v.into_vec(), b"KEEP+1".to_vec());
+}
+
+#[test]
+fn secure_types_debug_prints_length_only() {
+    let v = SecureVec::from(SENTINEL.to_vec());
+    let s = SecureString::from("SENTINEL-abc");
+    let a = SecureArray::<4>::from(*b"SENT");
+    assert_eq!(
+        format!("{v:?}"),
+        format!("SecureVec {{ len: {} }}", SENTINEL.len())
+    );
+    assert_eq!(format!("{s:?}"), "SecureString { len: 12 }");
+    assert_eq!(format!("{a:?}"), "SecureArray { len: 4 }");
+}
+
+#[test]
+fn secure_string_serde_round_trip_and_constant_time_eq() {
+    use serde::Deserialize as _;
+    let s = SecureString::deserialize(
+        serde::de::value::StrDeserializer::<serde::de::value::Error>::new("tok-1"),
+    )
+    .unwrap();
+    assert_eq!(s.as_str(), "tok-1");
+    assert_eq!(serde_saphyr::to_string(&s).unwrap().trim(), "tok-1");
+    assert_eq!(s, SecureString::from("tok-1"));
+    assert_ne!(s, SecureString::from("tok-2"));
+    assert_eq!(s.clone(), s);
+    let bytes = s.into_bytes();
+    assert_eq!(bytes.as_slice(), b"tok-1");
+    assert_eq!(
+        SecureArray::<2>::from(*b"ab"),
+        SecureArray::<2>::from(*b"ab")
+    );
+    assert_ne!(SecureArray::<2>::from(*b"ab"), SecureArray::<2>::zeroed());
+}
