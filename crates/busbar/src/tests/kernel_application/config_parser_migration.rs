@@ -74,19 +74,11 @@ fn migrate_preserves_unrecognized_pool_sections_and_destinations() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
     for raw in [
-        "tool_pools: [unread]\n",
-        "agent_pools: opaque\n",
-        "tool_pools: [MIGRATION_PRIVATE_SENTINEL]\n",
-        "agent_pools: MIGRATION_PRIVATE_SENTINEL\n",
         "auth: { upstream_credentials: caller }\npools: [unread]\n",
         "global_hooks: [screen]\npools: [unread]\n",
         "hooks: { screen: { socket: /tmp/screen, global: true } }\npools: opaque\n",
         "global_hooks: [screen]\npools: { hooks: opaque }\n",
         "hooks: { screen: { socket: /tmp/screen, global: true } }\npools: { hooks: opaque }\n",
-        "tool_pools: { x: { members: [a] } }\ntools: opaque\n",
-        "tool_pools: { x: { members: [a] } }\ntools: { pools: opaque }\n",
-        "agent_pools: { x: { members: [a] } }\nagents: opaque\n",
-        "agent_pools: { x: { members: [a] } }\nagents: { pools: opaque }\n",
     ] {
         let original: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
         let (out, doc) = migrate_to_value(raw);
@@ -1566,56 +1558,6 @@ fn migrate_export_flags_the_retired_audit_stream() {
 }
 
 #[test]
-fn migrate_moves_tool_and_agent_pools_under_their_verb() {
-    crate::dist_root_install::install();
-    crate::root::migration_table::install();
-    let tools = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    let agents = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
-    let raw = "providers: {}\nmodels:\n  widget: {}\n  gizmo: {}\npools:\n  fast:\n    members: [widget, gizmo]\n\
-               tool_pools:\n  search:\n    members: [search-eu, search-us]\n    repeatable: [find]\n\
-               agent_pools:\n  planner:\n    members: [planner-eu, planner-us]\n";
-    let (out, doc) = migrate_to_value(raw);
-    assert!(
-        dig(&doc, &["tool_pools"]).is_none() && dig(&doc, &["agent_pools"]).is_none(),
-        "the unreleased sections are gone"
-    );
-    assert_eq!(
-        dig(&doc, &[tools, "pools", "search", "members"]).unwrap(),
-        &serde_yaml::from_str::<serde_yaml::Value>("[search-eu, search-us]").unwrap(),
-        "the tool pool moved under its verb verbatim"
-    );
-    assert_eq!(
-        dig(&doc, &[tools, "pools", "search", "repeatable"]).unwrap(),
-        &serde_yaml::from_str::<serde_yaml::Value>("[find]").unwrap(),
-        "the neutral `repeatable:` knob is carried"
-    );
-    assert!(
-        dig(&doc, &[agents, "pools", "planner", "members"]).is_some(),
-        "the agent pool moved under its verb too"
-    );
-    assert!(
-        dig(&doc, &["pools", "search"]).is_none() && dig(&doc, &["pools", "fast"]).is_some(),
-        "the top-level `pools:` keeps only the model plane's pool"
-    );
-    assert!(
-        out.changes
-            .iter()
-            .any(|c| c.contains(&format!("tool_pools.search -> {tools}.pools.search")))
-            && out
-                .changes
-                .iter()
-                .any(|c| c.contains(&format!("agent_pools.planner -> {agents}.pools.planner"))),
-        "the move is announced: {:?}",
-        out.changes
-    );
-    assert!(
-        !out.todos.iter().any(|t| t.contains("pools.fast")),
-        "a model pool raises no todo: {:?}",
-        out.todos
-    );
-}
-
-#[test]
 fn migrate_reports_a_top_level_pool_of_another_plane() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
@@ -1695,97 +1637,6 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
     assert!(
         busbar_kernel::config::deploy_from_yaml_str(&out.yaml).is_ok(),
         "the rewritten config boot-parses on 1.6.0"
-    );
-}
-
-#[test]
-fn migrate_renames_a_tool_server_refresh_ttl_to_verify_ttl_with_a_warning() {
-    crate::dist_root_install::install();
-    crate::root::migration_table::install();
-    let raw = r#"
-tools:
-  servers:
-    fs:
-      url: "https://fs.example.com/rpc"
-      pin: { mechanism: cert_spki, key: "sha256:abc" }
-      refresh_ttl: "6h"
-    docs:
-      url: "https://docs.example.com/rpc"
-      pin: { mechanism: unpinned }
-"#;
-    let out = migrate_config(raw).expect("migrates");
-    let root: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("valid yaml");
-    let get = |keys: &[&str]| -> serde_yaml::Value {
-        let mut v = root.clone();
-        for k in keys {
-            v = v
-                .get(serde_yaml::Value::from(*k))
-                .cloned()
-                .unwrap_or(serde_yaml::Value::Null);
-        }
-        v
-    };
-
-    assert!(
-        get(&["tools", "servers", "fs", "refresh_ttl"]).is_null(),
-        "the old `refresh_ttl` key must be removed: {}",
-        out.yaml
-    );
-    assert_eq!(
-        get(&["tools", "servers", "fs", "verify_ttl"]).as_str(),
-        Some("6h"),
-        "the value is carried over onto `verify_ttl`: {}",
-        out.yaml
-    );
-
-    assert!(get(&["tools", "servers", "docs", "verify_ttl"]).is_null());
-
-    assert!(
-        out.warnings.iter().any(|w| {
-            w.contains("tools.servers.fs.refresh_ttl -> verify_ttl") && w.contains("MAX staleness")
-        }),
-        "the rename must warn about the changed meaning: {:?}",
-        out.warnings
-    );
-}
-
-#[test]
-fn migrate_renames_a_flat_tools_entry_refresh_ttl() {
-    crate::dist_root_install::install();
-    crate::root::migration_table::install();
-    let raw = r#"
-tools:
-  fs:
-    url: "https://fs.example.com/rpc"
-    pin: { mechanism: cert_spki, key: "sha256:abc" }
-    refresh_ttl: "6h"
-  docs:
-    url: "https://docs.example.com/rpc"
-    pin: { mechanism: unpinned }
-"#;
-    let (out, doc) = migrate_to_value(raw);
-    assert!(
-        dig(&doc, &["tools", "fs", "refresh_ttl"]).is_none(),
-        "the old `refresh_ttl` key must be removed: {}",
-        out.yaml
-    );
-    assert_eq!(
-        dig(&doc, &["tools", "fs", "verify_ttl"]).and_then(|v| v.as_str()),
-        Some("6h"),
-        "the value is carried over onto `verify_ttl`: {}",
-        out.yaml
-    );
-    assert!(
-        dig(&doc, &["tools", "docs", "verify_ttl"]).is_none(),
-        "an entry that never set it is untouched: {}",
-        out.yaml
-    );
-    assert!(
-        out.warnings.iter().any(|w| {
-            w.contains("tools.fs.refresh_ttl -> verify_ttl") && w.contains("MAX staleness")
-        }),
-        "the rename must warn about the changed meaning: {:?}",
-        out.warnings
     );
 }
 
