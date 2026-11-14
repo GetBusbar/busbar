@@ -981,6 +981,16 @@ pub struct Framing {
     idle: Vec<Box<dyn crate::carrier::Side>>,
     /// THE TICKETED OPS PARKED, each on its own ticket, in the order they parked: a parked `begin`
     parked: Vec<Parked>,
+    /// The piece bytes the `parked` ops' yields hold, kept current wherever `parked` changes
+    /// (LINT-RULES LR-108, BP04).
+    parked_input: usize,
+}
+
+/// The piece bytes one yield holds.
+fn yielded_input(y: &Yielded) -> usize {
+    y.pieces
+        .iter()
+        .fold(0, |n, p| n.saturating_add(p.bytes.len()))
 }
 
 /// A detached connection's bytes and host ownership, consumed by its adopting framing.
@@ -1807,6 +1817,7 @@ impl Framing {
             ticketed: ticket.is_some(),
             idle: Vec::new(),
             parked: Vec::new(),
+            parked_input: 0,
         };
         let op = Ticketed::Begin {
             side,
@@ -1825,10 +1836,7 @@ impl Framing {
         let plugin = self.context.as_ref().map_or(0, |scope| {
             usize::try_from(scope.retained_input()).unwrap_or(usize::MAX)
         });
-        self.parked
-            .iter()
-            .flat_map(|p| &p.yielded.pieces)
-            .fold(plugin, |n, p| n.saturating_add(p.bytes.len()))
+        plugin.saturating_add(self.parked_input)
     }
 
     /// Whether any ticketed op is parked, waiting for its ticket's wake.
@@ -1863,6 +1871,7 @@ impl Framing {
             return std::task::Poll::Ready(Ok(Yielded::default()));
         }
         let mut waiting = std::mem::take(&mut self.parked).into_iter();
+        self.parked_input = 0;
         let mut out = Yielded::default();
         let (mut completed, mut failed) = (false, None);
         for p in waiting.by_ref() {
@@ -1881,7 +1890,10 @@ impl Framing {
             }
         }
         if let Some(e) = failed {
-            self.parked.extend(waiting);
+            for p in waiting {
+                self.parked_input = self.parked_input.saturating_add(yielded_input(&p.yielded));
+                self.parked.push(p);
+            }
             return std::task::Poll::Ready(Err(e));
         }
         if completed {
@@ -2134,6 +2146,7 @@ impl Framing {
                     return Err(error);
                 }
                 if let Some(t) = ticket.take() {
+                    self.parked_input = self.parked_input.saturating_add(yielded_input(&yielded));
                     self.parked.push(Parked {
                         op: op.owned(),
                         yielded,
@@ -2301,6 +2314,7 @@ impl Framing {
             ticketed: ticket.is_some(),
             idle: Vec::new(),
             parked: Vec::new(),
+            parked_input: 0,
         };
         let op = Ticketed::Adopt {
             side,
@@ -2748,6 +2762,7 @@ impl Framing {
 
     /// CANCEL every op parked on the framing's tickets, each on its own (`abi::mechanism::lifecycle`,
     fn cancel_parked(&mut self) {
+        self.parked_input = 0;
         for p in std::mem::take(&mut self.parked) {
             let side = p.ticket.as_ref();
             self.cancel_ticket(side);

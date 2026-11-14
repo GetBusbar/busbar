@@ -15,6 +15,7 @@ fn every_busy_line_poll_owns_raw_wakers_before_taking_state() {
             refused: Default::default(),
             missed: Vec::new(),
             parked: Default::default(),
+            parked_total: 0,
             held: Default::default(),
             next: 3,
         }),
