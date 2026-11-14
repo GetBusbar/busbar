@@ -10,6 +10,7 @@
 //! namespaces before any daemon process exists, prepares bounded job storage,
 //! stages inputs and runs the step runner, then disposes everything and writes
 //! `bootstrap.json` (schema `busbar.native-ci-root-bootstrap/1`, unchanged).
+use crate::confined;
 use crate::fetch;
 use crate::images;
 use crate::inputs::{self, HOST_DOCKER, base_env};
@@ -681,22 +682,32 @@ fn job_directory(path: &Path) -> Result<PathBuf> {
 
 /// `shutil.copytree` (mode and mtime preserved). With `links`, symbolic links
 /// are recreated; otherwise any link refuses. Special files always refuse.
+///
+/// `source` and `destination` are controller-chosen; the entry names inside
+/// them are not (candidate-produced evidence is merged through here), so every
+/// entry is read and written through [`confined::Root`]: a source entry swapped
+/// for a link, or a destination entry that already is one, refuses instead of
+/// being followed.
 pub fn copy_tree(source: &Path, destination: &Path, links: bool, merge: bool) -> Result<()> {
     let metadata = io(fs::symlink_metadata(source), source)?;
     require(
         metadata.file_type().is_dir(),
         "copy source is not a directory",
     )?;
-    if !(merge && destination.is_dir()) {
+    if !(merge && fs::symlink_metadata(destination).is_ok_and(|m| m.is_dir())) {
         io(fs::create_dir(destination), destination)?;
     }
-    for entry in io(fs::read_dir(source), source)? {
+    let from_root = confined::Root::new(source)?;
+    let to_root = confined::Root::new(destination)?;
+    for entry in io(fs::read_dir(from_root.as_path()), source)? {
         let entry = io(entry, source)?;
-        let (from, to) = (entry.path(), destination.join(entry.file_name()));
+        let name = PathBuf::from(entry.file_name());
+        let from = entry.path();
+        let to = to_root.resolve(&name)?;
         let kind = io(entry.file_type(), &from)?;
         if kind.is_symlink() {
             require(links, "indirect controller evidence")?;
-            if merge && (to.exists() || to.is_symlink()) {
+            if merge && fs::symlink_metadata(&to).is_ok() {
                 io(fs::remove_file(&to), &to)?;
             }
             io(
@@ -708,16 +719,25 @@ pub fn copy_tree(source: &Path, destination: &Path, links: bool, merge: bool) ->
         if kind.is_dir() {
             copy_tree(&from, &to, links, merge)?;
         } else if kind.is_file() {
-            io(fs::copy(&from, &to), &to)?;
+            let mut input = from_root.open(&name)?;
+            let held = io(input.metadata(), &from)?;
+            require(held.is_file(), "copy source entry is not a regular file")?;
+            if merge && fs::symlink_metadata(&to).is_ok() {
+                io(fs::remove_file(&to), &to)?;
+            }
+            let mut output = to_root.create_new(&name, 0o600)?;
+            io(std::io::copy(&mut input, &mut output), &to)?;
+            io(
+                output.set_permissions(fs::Permissions::from_mode(held.mode() & 0o7777)),
+                &to,
+            )?;
+            io(output.set_modified(io(held.modified(), &from)?), &to)?;
         } else {
             return Err(format!("{}: unsupported special file", from.display()));
         }
-        let metadata = io(fs::symlink_metadata(&from), &from)?;
-        if kind.is_file() {
-            let file = io(fs::File::open(&to), &to)?;
-            io(file.set_modified(io(metadata.modified(), &from)?), &to)?;
-        }
     }
+    // Controller-chosen (or confined by the caller's recursion above): internal.
+    let destination = confined::Trusted::internal(destination).as_path();
     let file = io(fs::File::open(destination), destination)?;
     io(
         file.set_modified(io(metadata.modified(), source)?),

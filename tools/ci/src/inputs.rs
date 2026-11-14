@@ -1,5 +1,6 @@
 //! Protected job inputs staged by the root controller before the step runner:
 //! pinned fixture-service images and conformance judge instruments.
+use crate::confined;
 use crate::fetch;
 use crate::images;
 use crate::json::{self, Value, object};
@@ -9,7 +10,7 @@ use crate::sha256;
 use crate::tar;
 use std::fs;
 use std::io::Read;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -49,9 +50,11 @@ pub fn stage_services(
     }
     let root = store.join("service-inputs");
     mkdir_private(&root)?;
+    // Service names come from the protected policy; they are still confined to `root`.
+    let confined_root = confined::Root::new(&root)?;
     for row in &rows {
         proc::check_interrupted()?;
-        let archive = root.join(format!("{}.tar", row.name));
+        let archive = confined_root.resolve(Path::new(&format!("{}.tar", row.name)))?;
         let result = (|| -> Result<()> {
             fetch::fetch(
                 &row.archive_url,
@@ -146,6 +149,8 @@ pub fn unpack(source: impl Read, output: &Path, manifest_sha256: &str) -> Result
         .map_err(|e| e.to_string())?;
     mkdir_private(output)?;
     let result = (|| -> Result<PathBuf> {
+        // Member names are archive data: every write is confined to `output` (zip-slip).
+        let destination = confined::Root::new(output)?;
         let mut reader = tar::Reader::new(source);
         let mut seen: std::collections::BTreeSet<String> = Default::default();
         let mut total = 0u64;
@@ -168,24 +173,16 @@ pub fn unpack(source: impl Read, output: &Path, manifest_sha256: &str) -> Result
                 entry.size <= limit && total <= (4 << 30) + (16 << 20),
                 "conformance archive exceeds byte budget",
             )?;
-            let path = output.join(&entry.name);
-            fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .custom_flags(proc::O_NOFOLLOW)
-                .mode(0o600)
-                .open(&path)
-                .map_err(|e| e.to_string())?;
+            let mut file = destination.create_new(Path::new(&entry.name), 0o600)?;
             let copied = std::io::copy(&mut reader.data(entry.size), &mut file)
                 .map_err(|e| e.to_string())?;
             require(copied == entry.size, "truncated conformance archive member")?;
-            fs::set_permissions(&path, fs::Permissions::from_mode(entry.mode & 0o555))
+            file.set_permissions(fs::Permissions::from_mode(entry.mode & 0o555))
                 .map_err(|e| e.to_string())?;
             seen.insert(entry.name);
         }
         reader.finish()?;
-        let manifest = output.join("manifest.json");
+        let manifest = destination.resolve(Path::new("manifest.json"))?;
         let metadata =
             fs::symlink_metadata(&manifest).map_err(|_| "portable conformance manifest differs")?;
         require(
@@ -278,20 +275,30 @@ pub fn stage_judges(
     }
     let private = store.join("judge-inputs");
     mkdir_private(&private)?;
+    // Owner names come from the protected plan; they are still confined to `private`.
+    let private_root = confined::Root::new(&private)?;
     let schema = "busbar.native-conformance-inputs/1";
     let mut bundles_out = Value::Object(Vec::new());
     let mut retained = Vec::new();
     for owner in &owners {
         let row = plan.at("owners").at(owner);
-        let archive = private.join(format!("{owner}.tar.gz"));
+        let archive = private_root.resolve(Path::new(&format!("{owner}.tar.gz")))?;
         fetcher(row, &archive)?;
-        let portable_path = gunzip_unpack(
+        let unpacked = private_root.resolve(Path::new(owner.as_str()))?;
+        gunzip_unpack(
             &archive,
-            &private.join(owner),
+            &unpacked,
             row.at("portable_manifest_sha256").as_str().unwrap(),
         )?;
         fs::remove_file(&archive).map_err(|e| e.to_string())?;
-        let portable = json::parse(&fs::read(&portable_path).map_err(|e| e.to_string())?)?;
+        // The manifest is an archive member: read back only through the confined root.
+        let unpacked_root = confined::Root::new(&unpacked)?;
+        let mut portable_bytes = Vec::new();
+        unpacked_root
+            .open(Path::new("manifest.json"))?
+            .read_to_end(&mut portable_bytes)
+            .map_err(|e| e.to_string())?;
+        let portable = json::parse(&portable_bytes)?;
         let mut names: Vec<&str> = portable.at("bundles").keys();
         names.sort();
         let mut wanted: Vec<&str> = row
@@ -315,7 +322,8 @@ pub fn stage_judges(
                     && bundle.at("path").as_str() == Some(&format!("bundles/{name}")),
                 "portable judge path or ownership differs",
             )?;
-            let source = portable_path.parent().unwrap().join("bundles").join(name);
+            // Bundle names are manifest (archive) data: confined to the unpacked tree.
+            let source = unpacked_root.resolve(Path::new(&format!("bundles/{name}")))?;
             actual_bytes += if source.is_dir() {
                 tree_bytes(&source)?
             } else {

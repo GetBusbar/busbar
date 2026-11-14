@@ -564,13 +564,41 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     crate::tests::hooks::parent_fsync(dir)?;
     #[cfg(unix)]
     {
-        std::fs::File::open(dir)?.sync_all()
+        // Internal: `dir` is the log directory (operator configuration) or one this log created,
+        // holding a segment or quarantine entry it just wrote; never request or plugin input.
+        TrustedPath::internal(dir).open_dir()?.sync_all()
     }
 
     #[cfg(not(unix))]
     {
         let _no_barrier = dir;
         Ok(())
+    }
+}
+
+/// A path that is internal or operator-only and so deliberately not confined: the local mirror of
+/// `busbar_contract::confined_path::TrustedPath` (this crate takes no edge onto busbar-contract),
+/// so the trust decision is a typed statement at the call site.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct TrustedPath<'a>(&'a Path);
+
+#[cfg(unix)]
+impl<'a> TrustedPath<'a> {
+    fn internal(path: &'a Path) -> Self {
+        Self(path)
+    }
+
+    /// Open the directory read-only for its durability barrier; a non-directory refuses.
+    fn open_dir(self) -> io::Result<std::fs::File> {
+        let file = std::fs::File::open(self.0)?;
+        if !file.metadata()?.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "trusted directory is not a directory",
+            ));
+        }
+        Ok(file)
     }
 }
 
