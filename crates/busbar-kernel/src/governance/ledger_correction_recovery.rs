@@ -15,6 +15,7 @@ fn change_unit(debt: &mut ExactUsageDelta, model: &str, unit: &str, change: i128
             .checked_add(change)
             .expect("raw correction debt overflow");
     } else {
+        // busbar:expect(bp::into_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         debt.models
             .push(crate::governance::exact_debt::ExactModelDelta {
                 model: model.into(),
@@ -134,6 +135,10 @@ fn take_positives_mode(
                 } else {
                     &mut branch.rolled
                 };
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+                )]
                 windows.retain(|(at, _)| *at != window);
                 if !remaining.is_zero() {
                     windows.push((window, remaining));
@@ -164,6 +169,7 @@ fn positive_current(
 ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
     let mut plain = ExactUsageDelta::default();
     let mut dated = ExactUsageDelta::default();
+    // busbar:expect(bp::fresh_buffer, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
     let mut transfers = Vec::new();
     for model in &accepted.models {
         if model.era != RawRateEra::legacy(0) && model.flushed != model.flushed_era {
@@ -173,7 +179,7 @@ fn positive_current(
             let flushed = model.flushed.get(unit).copied().unwrap_or_default();
             let mut amount = current
                 .checked_sub(flushed)
-                .map_err(|e| unresolved(&e.to_string()))?
+                .map_err(unresolved)?
                 .max(Count::ZERO);
             if common_only {
                 amount = amount.min(
@@ -189,7 +195,7 @@ fn positive_current(
                                 .checked_sub(raw.flushed.get(unit).copied().unwrap_or_default())
                                 .map(|n| n.max(Count::ZERO))
                         })
-                        .map_err(|e| unresolved(&e.to_string()))?,
+                        .map_err(unresolved)?,
                 );
             }
             if amount.is_zero() {
@@ -213,12 +219,28 @@ fn positive_current(
             before.requests.saturating_sub(before.flushed_requests),
         ));
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+    )]
     let fees: BTreeMap<_, _> = accepted.fee_eras.dated().iter().copied().collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+    )]
     let flushed: BTreeMap<_, _> = accepted.flushed_fee_eras.dated().iter().copied().collect();
     let mut legacy_fee =
         i128::from(accepted.billable_requests) - i128::from(accepted.flushed_billable_requests);
     let mut fee_transfers = BTreeMap::new();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+    )]
     let before_fees: BTreeMap<_, _> = before.fee_eras.dated().iter().copied().collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+    )]
     let before_flushed: BTreeMap<_, _> = before.flushed_fee_eras.dated().iter().copied().collect();
     let before_legacy_fee = i128::from(before.billable_requests)
         - i128::from(before.flushed_billable_requests)
@@ -230,12 +252,7 @@ fn positive_current(
             .values()
             .map(|count| i128::from(*count))
             .sum::<i128>();
-    for era in fees
-        .keys()
-        .chain(flushed.keys())
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>()
-    {
+    for era in crate::governance::sorted_union(fees.keys().copied(), flushed.keys().copied()) {
         let count = i128::from(fees.get(&era).copied().unwrap_or(0))
             - i128::from(flushed.get(&era).copied().unwrap_or(0));
         legacy_fee -= count;
@@ -276,16 +293,16 @@ fn positive_current(
                 .find(|raw| raw.model == *model && raw.era == *era)
                 .ok_or_else(|| unresolved("common raw model missing from one branch"))?;
             let baseline = raw.flushed.entry(unit.clone()).or_default();
-            *baseline = baseline
-                .checked_add(*amount)
-                .map_err(|e| unresolved(&e.to_string()))?;
+            *baseline = baseline.checked_add(*amount).map_err(unresolved)?;
             if *era != RawRateEra::legacy(0) {
                 let baseline = raw.flushed_era.entry(unit.clone()).or_default();
-                *baseline = baseline
-                    .checked_add(*amount)
-                    .map_err(|e| unresolved(&e.to_string()))?;
+                *baseline = baseline.checked_add(*amount).map_err(unresolved)?;
             }
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
         let mut baseline: BTreeMap<_, _> =
             branch.flushed_fee_eras.dated().iter().copied().collect();
         for (era, amount) in &fee_transfers {
@@ -346,26 +363,30 @@ impl RawDebt {
     fn capture(debt: &ExactUsageDelta) -> RecordStoreResult<Self> {
         let mut models = BTreeMap::new();
         for model in &debt.models {
-            if models
-                .insert(
-                    model.model.clone(),
-                    model
-                        .usage_units
-                        .iter()
-                        .map(|(unit, count)| (unit.clone(), count.to_string()))
-                        .collect(),
-                )
-                .is_some()
-            {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+            )]
+            let units = model
+                .usage_units
+                .iter()
+                .map(|(unit, count)| (unit.clone(), count.to_string()))
+                .collect();
+            if models.insert(model.model.clone(), units).is_some() {
                 return Err(unresolved("duplicate raw debt model in custody"));
             }
         }
-        Ok(Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
+        let built = Ok(Self {
             scale: COUNT_SCALE,
             requests: debt.requests.to_string(),
             billable_requests: debt.billable_requests.to_string(),
             models,
-        })
+        });
+        built
     }
 
     fn restore(self) -> RecordStoreResult<ExactUsageDelta> {
@@ -374,14 +395,16 @@ impl RawDebt {
                 .parse::<i128>()
                 .map_err(|_| unresolved("invalid signed raw debt in custody"))
         };
-        Ok(ExactUsageDelta {
+        #[expect(clippy::disallowed_methods, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")]
+        let built = Ok(ExactUsageDelta {
             requests: signed(&self.requests)?,
             billable_requests: signed(&self.billable_requests)?,
             models: self
                 .models
                 .into_iter()
                 .map(|(model, units)| {
-                    Ok(crate::governance::exact_debt::ExactModelDelta {
+                    #[expect(clippy::disallowed_methods, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")]
+                    let built = Ok(crate::governance::exact_debt::ExactModelDelta {
                         model,
                         scale: COUNT_SCALE,
                         usage_units: units
@@ -390,15 +413,17 @@ impl RawDebt {
                                 Ok((
                                     unit,
                                     Count::from_stored(signed(&count)?, self.scale)
-                                        .map_err(|e| unresolved(&e.to_string()))?
+                                        .map_err(unresolved)?
                                         .micros(),
                                 ))
                             })
                             .collect::<RecordStoreResult<_>>()?,
-                    })
+                    });
+                    built
                 })
                 .collect::<RecordStoreResult<_>>()?,
-        })
+        });
+        built
     }
 }
 
@@ -421,7 +446,12 @@ struct RawCell {
 
 impl RawCell {
     fn capture(cell: &BudgetCell) -> RecordStoreResult<Self> {
-        Ok(Self {
+        // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
+        let built = Ok(Self {
             group_owners: cell.group_owners.clone(),
             window_start: cell.window_start,
             requests: cell.requests,
@@ -464,11 +494,16 @@ impl RawCell {
                 .map(|(window, debt)| Ok((*window, RawDebt::capture(debt)?)))
                 .collect::<RecordStoreResult<_>>()?,
             last_touch: cell.last_touch,
-        })
+        });
+        built
     }
 
     fn restore(self) -> RecordStoreResult<BudgetCell> {
         let mut identities = std::collections::BTreeSet::new();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
         let models = self
             .models
             .into_iter()
@@ -488,6 +523,10 @@ impl RawCell {
             .collect::<RecordStoreResult<_>>()?;
         let fees = |rows: Vec<(RawEra, u64)>| -> RecordStoreResult<RawFeeEras> {
             let mut identities = std::collections::BTreeSet::new();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+            )]
             let rows = rows
                 .into_iter()
                 .map(|(era, count)| {
@@ -500,6 +539,10 @@ impl RawCell {
                 .collect::<RecordStoreResult<Vec<_>>>()?;
             Ok(RawFeeEras::of(rows))
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
         let mut cell = BudgetCell {
             group_owners: self.group_owners,
             window_start: self.window_start,
@@ -717,6 +760,7 @@ impl Custody {
 
     pub(super) fn repost_descriptor(&self) -> Option<&RecoveryChild> {
         self.repost_operation_id.and_then(|operation_id| {
+            // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
             self.handoffs.iter().find(|child| {
                 child.operation_id == operation_id && child.kind == RecoveryKind::Correction
             })
@@ -834,6 +878,7 @@ impl Custody {
     }
 
     pub(super) fn owns_quarantined_target(&self, bucket: &str, window: u64) -> bool {
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         !self.intent_applied
             && self
                 .targets
@@ -864,7 +909,12 @@ impl Custody {
         let decision = self
             .decision
             .ok_or_else(|| unresolved("selected correction has no decision"))?;
-        self.targets
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
+        let built = self
+            .targets
             .into_iter()
             .map(|target| {
                 let cut = match decision {
@@ -873,7 +923,8 @@ impl Custody {
                 };
                 Ok((target.bucket, target.window, cut.restore()?))
             })
-            .collect()
+            .collect();
+        built
     }
 
     pub(super) fn capture(gov: &GovState, pending: &PendingCorrection) -> RecordStoreResult<Self> {
@@ -884,6 +935,10 @@ impl Custody {
             .as_ref()
             .map(|event| Self::decode(&event.payload))
             .transpose()?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
         let mut order: Vec<_> = pending
             .targets
             .iter()
@@ -891,6 +946,10 @@ impl Custody {
             .collect();
         order.sort_unstable();
         order.dedup();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
         let guards: Vec<_> = order
             .iter()
             .map(|shard| {
@@ -901,6 +960,10 @@ impl Custody {
                     .unwrap_or_else(|p| p.into_inner())
             })
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
         let targets = pending
             .targets
             .iter()
@@ -958,7 +1021,13 @@ impl Custody {
     }
 
     pub(super) fn encode(&self) -> RecordStoreResult<Vec<u8>> {
-        serde_json::to_vec(self).map_err(|_| unresolved("cannot encode raw correction custody"))
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
+        let built = serde_json::to_vec(self)
+            .map_err(|_| unresolved("cannot encode raw correction custody"));
+        built
     }
 
     pub(super) fn decode(bytes: &[u8]) -> RecordStoreResult<Self> {
@@ -977,6 +1046,7 @@ impl Custody {
                 return Err(unresolved("invalid raw correction custody targets"));
             }
             previous = Some(identity);
+            // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
             for bucket in [target.bucket.clone(), era_bucket(&target.bucket)] {
                 if !custody.request.usage.iter().any(|row| {
                     row.address.bucket_id == bucket && row.address.window_start == target.window
@@ -1000,6 +1070,7 @@ impl Custody {
             .as_ref()
             .filter(|branch| branch.op_id == self.request.op_id && branch.window == window)
             .ok_or_else(|| unresolved("correction handoff target does not match its parent"))?;
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         let target = self
             .targets
             .iter_mut()
@@ -1007,6 +1078,7 @@ impl Custody {
             .ok_or_else(|| unresolved("correction handoff target is outside raw custody"))?;
         target.before = RawCell::capture(cell)?;
         target.accepted = RawCell::capture(&branch.accepted)?;
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         if let Some(existing) = self
             .handoffs
             .iter()
@@ -1033,6 +1105,7 @@ impl Custody {
             return Ok((ExactUsageDelta::default(), ExactUsageDelta::default()));
         }
         let capacity = |bucket: &str| -> RecordStoreResult<ExactUsageDelta> {
+            // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
             let row = self
                 .request
                 .usage
@@ -1061,15 +1134,15 @@ impl Custody {
                         &model.model,
                         unit,
                         Count::from_stored(*count, model.scale)
-                            .map_err(|e| unresolved(&e.to_string()))?
+                            .map_err(unresolved)?
                             .checked_sub(
                                 Count::from_stored(
                                     previous,
                                     before.map_or(COUNT_SCALE, |m| m.scale),
                                 )
-                                .map_err(|e| unresolved(&e.to_string()))?,
+                                .map_err(unresolved)?,
                             )
-                            .map_err(|e| unresolved(&e.to_string()))?
+                            .map_err(unresolved)?
                             .micros(),
                     );
                 }
@@ -1087,7 +1160,7 @@ impl Custody {
                             &model.model,
                             unit,
                             -Count::from_stored(*count, model.scale)
-                                .map_err(|e| unresolved(&e.to_string()))?
+                                .map_err(unresolved)?
                                 .micros(),
                         );
                     }
@@ -1097,6 +1170,7 @@ impl Custody {
         };
         let plain_capacity = capacity(bucket)?;
         let dated_capacity = capacity(&era_bucket(bucket))?;
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         let target = self
             .targets
             .iter()
@@ -1137,6 +1211,7 @@ impl Custody {
         dated: &ExactUsageDelta,
     ) -> RecordStoreResult<Option<(ExactUsageDelta, ExactUsageDelta)>> {
         let (plain_capacity, dated_capacity) = self.negative_capacity(bucket, window)?;
+        // busbar:expect(bp::state_scan, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
         let target = self
             .targets
             .iter_mut()
@@ -1185,13 +1260,18 @@ impl Custody {
         {
             return Err(unresolved("raw correction custody event identity mismatch"));
         }
+        // busbar:expect(bp::fresh_buffer, reason = "boot: a retained correction custody is restored once, at recovery")
         let mut targets = Vec::new();
         for target in self.targets {
             target.before.restore()?;
             target.accepted.restore()?;
             targets.push((target.bucket, target.window));
         }
-        Ok(PendingCorrection {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a retained correction custody is restored once, at recovery"
+        )]
+        let built = Ok(PendingCorrection {
             request: self.request,
             intent: self.intent,
             targets,
@@ -1208,7 +1288,8 @@ impl Custody {
                 event.state,
                 RecoveryState::VerdictLanded | RecoveryState::VerdictNotLanded
             ))),
-        })
+        });
+        built
     }
 }
 
@@ -1236,6 +1317,10 @@ pub(super) fn apply_selected_cut(
         } else {
             &mut live.rolled
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)"
+        )]
         rolled.retain(|(at, _)| *at != window);
         if !remaining.is_zero() {
             rolled.push((window, remaining));
@@ -1251,7 +1336,9 @@ pub(super) fn apply_selected_cut(
                 .iter()
                 .find(|base| base.model == model.model && base.era == model.era)
             {
+                // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
                 model.flushed = base.cur.clone();
+                // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
                 model.flushed_era = base.cur.clone();
             }
         }
@@ -1262,6 +1349,7 @@ pub(super) fn apply_selected_cut(
                 .iter()
                 .any(|model| model.model == base.model && model.era == base.era)
             {
+                // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction custody, built once per correction step (control plane)")
                 live.models.push(ModelCell {
                     model: base.model.clone(),
                     era: base.era,
