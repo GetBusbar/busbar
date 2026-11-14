@@ -12,7 +12,12 @@
 //! the loader boundary, `busbar_contract::work_count::Work::Crossing`, so the gate keeps working
 //! when MIN-3 replaces the mechanism behind that boundary) and store round trips. A request's
 //! count is the lowest of [`RUNS`] identical requests after [`WARM`] warm-up requests, so lazy
-//! first-use work and stray background work cannot raise it.
+//! first-use work, and background work that lands in only some of the runs, do not raise it.
+//!
+//! The counters are process-wide statics, so a count is this request's work only while no other
+//! test shares the process: the gate relies on nextest's process-per-test execution and refuses to
+//! run under any other harness (libtest runs tests on threads of one process, whose concurrent
+//! work would land in these counts).
 
 use busbar_contract::work_count::Tally;
 
@@ -105,6 +110,13 @@ async fn counted(rig: &Rig, node: &Node, fixture: Fixture) -> Tally {
 
 /// Lowest count of each kind over [`RUNS`] requests, after [`WARM`] warm-up requests.
 async fn measure(fixture: Fixture) -> Tally {
+    // The counters are process-wide: only a process running this one test counts its work alone.
+    assert_eq!(
+        std::env::var("NEXTEST_EXECUTION_MODE").as_deref(),
+        Ok("process-per-test"),
+        "the work-budget gate counts process-wide; run it under cargo nextest (one process per \
+         test), never a harness that shares the process between tests"
+    );
     let rig = rig(fixture).await;
     let node = Node::new();
     for _ in 0..WARM {
