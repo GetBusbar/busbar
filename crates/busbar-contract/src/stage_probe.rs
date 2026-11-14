@@ -28,29 +28,89 @@ pub enum Derive {
     CredentialExtract,
     /// The token-exchange endpoint's own credential read; no inbound unit exists there.
     ExchangeToken,
+    /// A presented unit reference's MAC checked by the kernel (SP-AU5).
+    UnitMac,
+    /// The kernel's inbound units table locked (SP-AU5). A lock, not a derivation, counted
+    /// here so one scope reads both.
+    UnitsLock,
+    /// A head scanned for the credentials its unit's auth points strip (SP-AU4).
+    StripScan,
+    /// An inbound head copied into an owned value (SP-A2).
+    HeadCopy,
+    /// A provider's verify input copied (SP-AU2).
+    VerifyCopy,
+    /// A door ticket's signature verified and its claims parsed (SP-AU3).
+    TicketSig,
+    /// A door ticket's standing (key liveness, signing material) re-checked (SP-AU3).
+    TicketStanding,
+    /// A door ticket's native record read from the store (SP-AU3).
+    TicketRead,
+    /// The caller secret copied into a fresh plaintext buffer (SP-AU6).
+    SecretCopy,
+    /// A routed plane entry resolved or re-scanned by name (SP-V1).
+    EntryResolve,
+    /// A unit's expected budget units built (SP-AD1).
+    BudgetUnits,
+    /// A unit's cost estimate computed (SP-AD1).
+    Estimate,
+    /// A key's budget chain resolved (SP-AD1).
+    ChainFor,
+    /// An upstream target located through its framer (SP-R1).
+    Locate,
+    /// An outbound request head copied (SP-R2).
+    OutboundHead,
+    /// An outbound auth fields request copied (SP-R3).
+    AuthFieldsCopy,
+    /// A session frame's route (verb, target, fields) copied (SP-R4).
+    SessionRoute,
+    /// A unit's final usage counts folded (SP-M1).
+    UsageFold,
+    /// A money shard locked (SP-M1). A lock, counted here so one scope reads both.
+    MoneyShardLock,
+    /// A unit's usage checkpoint staged (SP-M2).
+    CheckpointStage,
+    /// A hook projection's input or output copied (SP-P9).
+    ProjectCopy,
+    /// A hook child's ancestry walked for a cycle (SP-P14).
+    AncestryCheck,
 }
 
 impl Derive {
-    /// Every id, in counter order.
-    pub const ALL: [Derive; 6] = [
+    /// Every id, in counter order (declaration order).
+    pub const ALL: [Derive; 28] = [
         Derive::PlaneAdmission,
         Derive::AdmissionOnHead,
         Derive::HeaderMap,
         Derive::ServedHeaderMap,
         Derive::CredentialExtract,
         Derive::ExchangeToken,
+        Derive::UnitMac,
+        Derive::UnitsLock,
+        Derive::StripScan,
+        Derive::HeadCopy,
+        Derive::VerifyCopy,
+        Derive::TicketSig,
+        Derive::TicketStanding,
+        Derive::TicketRead,
+        Derive::SecretCopy,
+        Derive::EntryResolve,
+        Derive::BudgetUnits,
+        Derive::Estimate,
+        Derive::ChainFor,
+        Derive::Locate,
+        Derive::OutboundHead,
+        Derive::AuthFieldsCopy,
+        Derive::SessionRoute,
+        Derive::UsageFold,
+        Derive::MoneyShardLock,
+        Derive::CheckpointStage,
+        Derive::ProjectCopy,
+        Derive::AncestryCheck,
     ];
 
     #[cfg(feature = "stage-probe")]
     const fn slot(self) -> usize {
-        match self {
-            Derive::PlaneAdmission => 0,
-            Derive::AdmissionOnHead => 1,
-            Derive::HeaderMap => 2,
-            Derive::ServedHeaderMap => 3,
-            Derive::CredentialExtract => 4,
-            Derive::ExchangeToken => 5,
-        }
+        self as usize
     }
 }
 
@@ -144,6 +204,13 @@ mod counting {
 #[cfg(all(test, feature = "stage-probe"))]
 mod tests {
     use super::{tick, Derive, Scope};
+
+    #[test]
+    fn every_id_has_its_own_slot_in_declaration_order() {
+        for (at, derive) in Derive::ALL.iter().enumerate() {
+            assert_eq!(derive.slot(), at, "{derive:?}");
+        }
+    }
 
     #[test]
     fn a_scope_counts_only_its_own_thread_and_restores_the_previous_scope() {
