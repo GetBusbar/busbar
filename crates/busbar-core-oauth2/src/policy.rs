@@ -36,7 +36,7 @@
 //!    authorization endpoint and client authentication at the token endpoint.
 //! 2. **Reclamation.** A self-registered client that has held nothing (no code, token, refresh
 //!    token, pushed request, device grant or consent) for [`REGISTERED_CLIENT_IDLE`] is deleted by
-//!    the sweep, in the deployment's store (`shared`) and in this process (`cimd::Records`) alike.
+//!    the sweep, in the deployment's store (`shared`).
 //!    A client the operator provisioned (`oauth_as.clients:`) and a metadata-document client are
 //!    never stored, so neither is ever reclaimed. A reclaimed client that comes back is told
 //!    `invalid_client` and registers again, which RFC 7591 clients do.

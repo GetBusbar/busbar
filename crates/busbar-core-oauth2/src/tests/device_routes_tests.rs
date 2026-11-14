@@ -25,7 +25,7 @@ async fn device_csrf_is_shared_and_spent_once_across_fresh_nodes() {
             None,
             Vec::new(),
             crate::cimd::unconnected(),
-            Arc::new(crate::plane::Carried::over(Some(Arc::clone(&store))).unwrap()),
+            Arc::new(crate::plane::Carried::over(Arc::clone(&store)).unwrap()),
         )
         .await
         .unwrap()
@@ -121,7 +121,7 @@ async fn build_owner(
         None,
         Vec::new(),
         crate::cimd::unconnected(),
-        Arc::new(crate::plane::Carried::over(Some(crate::testkit::memory_store().await)).unwrap()),
+        Arc::new(crate::plane::Carried::over(crate::testkit::memory_store().await).unwrap()),
     )
     .await
 }

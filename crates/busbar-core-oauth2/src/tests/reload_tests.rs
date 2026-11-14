@@ -23,7 +23,7 @@ async fn generation(
         Vec::new(),
         Vec::new(),
         prior.cloned(),
-        Some(crate::testkit::memory_store().await),
+        crate::testkit::memory_store().await,
     )
     .await
     .expect("the owner's real generation builds");
@@ -64,10 +64,14 @@ async fn a_reload_carries_the_servers_records_sessions_and_key() {
             .await
             .expect("the client is stored");
     }
-    let session = first.sessions().open("operator", "session-1".to_string());
+    let session = first
+        .open_session("operator", "session-1".to_string())
+        .await
+        .expect("the store keeps the session");
     first
-        .sessions()
-        .stake(&session, "request-1".to_string(), true);
+        .stake(&session, "request-1".to_string(), true)
+        .await
+        .expect("the store keeps the answer");
     let key = first.server().jwks();
     assert!(key.is_some(), "the server publishes its key");
 
@@ -101,7 +105,7 @@ async fn a_reload_carries_the_servers_records_sessions_and_key() {
         );
     }
     assert!(
-        second.sessions().is_staked(&session, "request-1"),
+        second.is_staked(&session, "request-1").await,
         "the operator's consent session and its staked answer survive the reload"
     );
     assert_eq!(
