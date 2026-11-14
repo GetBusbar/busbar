@@ -309,6 +309,34 @@ fn a_sync_caller_reads_a_submitted_answer_without_a_runtime() {
     assert_eq!(answer, Some(alice()));
 }
 
+#[test]
+fn a_submitted_verify_input_is_lent_without_another_copy() {
+    use busbar_contract::stage_probe::{Derive, Scope};
+    let a = opened("judge-a");
+    let scope = Scope::open();
+    assert_eq!(a.verify_now(&request(Some("good"), None)), Some(alice()));
+    assert_eq!(
+        scope.count(Derive::VerifyCopy),
+        1,
+        "a borrowed request is copied once to be lent"
+    );
+    let mut v = a.verify(request(Some("good"), None));
+    assert_eq!(
+        scope.count(Derive::VerifyCopy),
+        1,
+        "a submitted request moves into what the plugin is lent"
+    );
+    let mut answer = None;
+    for _ in 0..500 {
+        answer = v.settled();
+        if answer.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(answer, Some(alice()));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_short_answer_is_recalled_once_with_the_buffers_it_named() {
     let a = opened("judge-a");

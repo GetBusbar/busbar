@@ -151,6 +151,7 @@ impl Held {
         groups_cap: u32,
         strip_cap: u32,
     ) -> Arc<Self> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::VerifyCopy);
         let buf = Box::into_raw(vec![0u8; buf_cap].into_boxed_slice()).cast::<u8>();
         let empty = Span {
             offset: SPAN_ABSENT,
