@@ -16,7 +16,7 @@
 //!
 //! Every list only shrinks: against the merge base no entry may be added or raised, and an
 //! entry the code no longer needs fails until it is lowered or removed. Production code only:
-//! test targets and `cfg(test)` regions are skipped. The check parses sources; it never builds.
+//! test targets and test-only regions (`cfg(test)` or the `test-support` feature) are skipped. The check parses sources; it never builds.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
