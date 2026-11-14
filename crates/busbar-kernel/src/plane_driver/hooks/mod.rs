@@ -34,7 +34,9 @@ use busbar_contract::abi::hook::{
     MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome as AbiOutcome, Span};
-use busbar_contract::abi::plane::{ProjectIn, ProjectOut, CLAIM_PROBE, SPAN_ABSENT};
+use busbar_contract::abi::plane::{
+    ProjectIn, ProjectOut, CLAIM_PROBE, PROJECT_IN_OBSERVE_ONLY, SPAN_ABSENT,
+};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::hooks::{
@@ -237,6 +239,24 @@ impl UnitHooks {
             && self.gates.is_empty()
             && self.policy.is_none()
             && self.taps.is_empty()
+    }
+
+    /// No bound hook stops, changes or routes the request on its content: no rewrite, no gate,
+    /// and at most a content-blind policy ([`ResolvedPolicy::reads_request`]). Taps of any stage
+    /// only observe. What `project` states to the plane as
+    /// [`busbar_contract::abi::plane::PROJECT_IN_OBSERVE_ONLY`].
+    #[must_use]
+    pub fn observe_only(&self) -> bool {
+        self.rewrites.is_empty()
+            && self.gates.is_empty()
+            && self.policy.as_ref().is_none_or(|p| !p.reads_request())
+    }
+
+    /// No rewrite, gate or policy is bound: an unreadable first view leaves the unit to its
+    /// ordinary protocol handling. Implies [`Self::observe_only`], never the reverse.
+    #[must_use]
+    pub fn idle(&self) -> bool {
+        self.rewrites.is_empty() && self.gates.is_empty() && self.policy.is_none()
     }
 }
 
@@ -1300,11 +1320,24 @@ impl ProjectArena {
 #[path = "tests/project_arena_custody_tests.rs"]
 mod project_arena_custody_tests;
 
+#[cfg(test)]
+#[path = "tests/project_copy_tests.rs"]
+mod project_copy_tests;
+
+#[cfg(test)]
+#[path = "tests/observe_only_tests.rs"]
+mod observe_only_tests;
+
 const SIGNALS_CAP: usize = 16;
 const MESSAGES_CAP: usize = 64;
 
 impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
-    fn project(&self, rewrite: Option<&[u8]>, faultable: bool) -> Result<Projection, Stopped> {
+    fn project(
+        &self,
+        rewrite: Option<&[u8]>,
+        faultable: bool,
+        observe_only: bool,
+    ) -> Result<Projection, Stopped> {
         let a = &self.arrival;
         let unit = self.lock().unit;
         let body = self.lock().body.clone().unwrap_or_else(|| a.body.clone());
@@ -1348,6 +1381,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             messages_buf: bufs.messages.as_mut_ptr(),
             messages_cap: bufs.messages.len(),
             unit,
+            flags: if observe_only {
+                PROJECT_IN_OBSERVE_ONLY
+            } else {
+                0
+            },
             ..blank_in()
         };
         let mut o: ProjectOut = blank_out();
@@ -1433,7 +1471,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             system: opt(o.prompt.system),
             turns,
             end_user: opt(o.end_user),
-            rewritten: span(o.rewritten),
+            rewritten: span(o.rewritten).inspect(|_| {
+                busbar_contract::stage_probe::tick(
+                    busbar_contract::stage_probe::Derive::ProjectCopy,
+                );
+            }),
             projected: span(o.body),
             rewrite_not_applicable: v.flags
                 & busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
@@ -1503,10 +1545,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         S: super::DriverSteps,
     {
         let mut ran = Vec::new();
-        let scope = crate::hook_child::Scope {
-            services: Arc::clone(&self.driver.services),
-            unit: self.lock().unit,
-        };
+        let scope =
+            crate::hook_child::Scope::new(Arc::clone(&self.driver.services), self.lock().unit);
         let stage = crate::hook_child::SCOPE
             .scope(scope, self.run_request_stage(token, &mut ran))
             .await;
@@ -1573,18 +1613,16 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 
         let faultable = !hooks.rewrites.is_empty();
 
-        let first = self.project(None, faultable).map_err(|e| match e {
-            Stopped::Unparseable { .. } => Stopped::Unreadable,
-            other => other,
-        });
+        let first = self
+            .project(None, faultable, hooks.observe_only())
+            .map_err(|e| match e {
+                Stopped::Unparseable { .. } => Stopped::Unreadable,
+                other => other,
+            });
         let mut view = match first {
             Ok(view) => view,
 
-            Err(Stopped::Unreadable)
-                if hooks.rewrites.is_empty()
-                    && hooks.gates.is_empty()
-                    && hooks.policy.is_none() =>
-            {
+            Err(Stopped::Unreadable) if hooks.idle() => {
                 Projection::empty(walk_pool.clone(), hooks.dialect.clone())
             }
             Err(stopped) => {
@@ -1613,10 +1651,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
-                    match self.project(Some(&bytes), true) {
-                        Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => {
-                            if let Some(body) = &next.rewritten {
-                                self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
+                    match self.project(Some(&bytes), true, false) {
+                        Ok(mut next) if next.rewritten.is_some() || rw.messages.is_empty() => {
+                            if let Some(body) = next.rewritten.take() {
+                                self.lock().body = Some(bytes::Bytes::from(body));
                             }
                             view = next;
                         }

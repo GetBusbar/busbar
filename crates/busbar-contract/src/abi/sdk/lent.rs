@@ -1233,6 +1233,7 @@ macro_rules! lent_field_list {
             crate::abi::plane::ProjectIn {
                 sub head: crate::abi::mechanism::call::InHead;
                 val claim: u32;
+                val flags: u32;
                 str target;
                 val fields_len: usize;
                 blob body;

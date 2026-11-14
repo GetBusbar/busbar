@@ -43,6 +43,54 @@ impl HookPolicy {
         })
     }
 
+    /// A built-in ranking strategy: the gate hook that declares the word `name`, asked for no
+    /// signals and granted no child dispatch, answering only `decide`. It is content-blind
+    /// ([`RoutingPolicy::content_blind`]); every other hook policy is not.
+    pub(crate) fn ranking(calls: Arc<dyn HookCalls>, name: &str) -> Arc<dyn RoutingPolicy> {
+        Arc::new(Ranking(Self {
+            calls,
+            name: Arc::from(name),
+            signals: Vec::new(),
+            child: None,
+            statics: std::sync::Mutex::new(Vec::new()),
+        }))
+    }
+
+    async fn decided(
+        &self,
+        req: &RoutingRequest<'_>,
+        candidates: &[Candidate<'_>],
+        ctx: &RoutingContext<'_>,
+        budget: Duration,
+    ) -> PolicyResult {
+        if crate::hook_child::recursive(&self.name) {
+            return Ok(RoutingDecision::Abstain);
+        }
+        let statics = self.statics_for(candidates);
+        let frame = DecideFrame::first(DecideView::build_with_signals(
+            req,
+            statics,
+            candidates,
+            ctx,
+            &self.signals,
+        ))
+        .with_child(crate::hook_child::invocation(
+            &self.name,
+            self.child.as_ref(),
+            budget,
+        ));
+        match self.calls.decide(frame, budget).await {
+            Answered::Answer {
+                outcome: Outcome::Ready,
+                out,
+                frame,
+                ..
+            } => Ok(lower_decide(&out, &frame, candidates)),
+
+            other => Err(PolicyError::from(unanswered(&self.name, budget, other))),
+        }
+    }
+
     fn statics_for(&self, candidates: &[Candidate<'_>]) -> Arc<CandidateStatics> {
         let mut kept = self
             .statics
@@ -163,8 +211,7 @@ pub(super) fn transformed(
     }
     serde_json::from_slice::<serde_json::Value>(&rewrite())
         .ok()
-        .as_ref()
-        .and_then(wire::parse_rewrite)
+        .and_then(wire::take_rewrite)
         .map_or(TransformOutcome::Abstain, TransformOutcome::Rewrite)
 }
 
@@ -177,32 +224,7 @@ impl RoutingPolicy for HookPolicy {
         ctx: &RoutingContext<'_>,
         budget: Duration,
     ) -> PolicyResult {
-        if crate::hook_child::recursive(&self.name) {
-            return Ok(RoutingDecision::Abstain);
-        }
-        let statics = self.statics_for(candidates);
-        let frame = DecideFrame::first(DecideView::build_with_signals(
-            req,
-            statics,
-            candidates,
-            ctx,
-            &self.signals,
-        ))
-        .with_child(crate::hook_child::invocation(
-            &self.name,
-            self.child.as_ref(),
-            budget,
-        ));
-        match self.calls.decide(frame, budget).await {
-            Answered::Answer {
-                outcome: Outcome::Ready,
-                out,
-                frame,
-                ..
-            } => Ok(lower_decide(&out, &frame, candidates)),
-
-            other => Err(PolicyError::from(unanswered(&self.name, budget, other))),
-        }
+        self.decided(req, candidates, ctx, budget).await
     }
 
     fn name(&self) -> &str {
@@ -272,6 +294,36 @@ impl RoutingPolicy for HookPolicy {
         self.calls
             .notify(tap.with_signals(&self.signals), budget)
             .await;
+    }
+}
+
+/// [`HookPolicy::ranking`]: a pool's built-in ranking strategy. It is only ever asked to rank
+/// (pool ordering or an `on_error` fallback link), so it answers `decide` and its name and keeps
+/// every other call at the trait default.
+struct Ranking(HookPolicy);
+
+#[async_trait::async_trait]
+impl RoutingPolicy for Ranking {
+    async fn decide(
+        &self,
+        req: &RoutingRequest<'_>,
+        candidates: &[Candidate<'_>],
+        ctx: &RoutingContext<'_>,
+        budget: Duration,
+    ) -> PolicyResult {
+        self.0.decided(req, candidates, ctx, budget).await
+    }
+
+    fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    fn name_arc(&self) -> Arc<str> {
+        Arc::clone(&self.0.name)
+    }
+
+    fn content_blind(&self) -> bool {
+        true
     }
 }
 
