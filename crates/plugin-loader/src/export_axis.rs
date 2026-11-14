@@ -9,20 +9,12 @@ use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::export_calls::{ExportCalls, PreparedExport, Probed, DEFAULT_INFLIGHT};
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
-use crate::dispatch::{
-    load_dropped_bytes, load_linked, Bind, ConnTable, Dispatcher, EnvelopeSink, LinkedRow, NoSink,
-    Plugin, PluginLogConfig,
-};
+use crate::dispatch::{Bind, ConnTable, Dispatcher, EnvelopeSink, NoSink, Plugin, PluginLogConfig};
 use crate::export_door::{self, ExportInstance};
-use crate::registry::LoadablePlugin;
+use crate::registry::{open_loadable, LoadablePlugin, RowRefusal};
 use crate::PluginRegistry;
 
 const SECTION: &str = busbar_contract::plugin::Kind::Export.root();
-
-enum Image {
-    Linked(LinkedRow),
-    Dropped(Vec<u8>),
-}
 
 pub const NO_DOOR: &str = "it states no export door (the 1.5.5 JSON export contract, which this host does not load) — rebuild the plugin against the 1.6.0 SDK";
 
@@ -97,45 +89,35 @@ impl<'r> ExportRows<'r> {
         opening: Option<u32>,
     ) -> Result<Plugin<Export>, String> {
         let name = &row.manifest.name;
-        let refused = |e: crate::dispatch::LoadError| format!("export plugin '{name}': {e}");
-        let image = match row.door() {
-            Some(door) => Image::Linked(LinkedRow::of_raw(door).map_err(refused)?),
-            None => match row.manifest.stated_rendering()? {
-                Some(stated) => Image::Dropped(stated),
-                None => return Err(format!("export plugin '{name}': {NO_DOOR}")),
-            },
-        };
-
-        let sink: Arc<dyn EnvelopeSink> = match opening {
-            None => Arc::new(NoSink),
-            Some(_) => {
-                let envelope = self.envelope.clone().unwrap_or_else(|| Arc::new(NoSink));
-                match self.logs {
-                    Some(logs) => Arc::new(logs.sink(label, KindCode::Export, envelope)?),
-                    None => envelope,
+        let bind = || -> Result<Bind, String> {
+            let sink: Arc<dyn EnvelopeSink> = match opening {
+                None => Arc::new(NoSink),
+                Some(_) => {
+                    let envelope = self.envelope.clone().unwrap_or_else(|| Arc::new(NoSink));
+                    match self.logs {
+                        Some(logs) => Arc::new(logs.sink(label, KindCode::Export, envelope)?),
+                        None => envelope,
+                    }
                 }
-            }
-        };
-        let max_inflight_cap = opening.unwrap_or(DEFAULT_INFLIGHT);
-        let bind = Bind {
-            instance: Arc::from(label),
-            max_inflight_cap,
-            sink,
-            dispatcher: self.dispatcher.adopter(),
+            };
+            Ok(Bind {
+                instance: Arc::from(label),
+                max_inflight_cap: opening.unwrap_or(DEFAULT_INFLIGHT),
+                sink,
+                dispatcher: self.dispatcher.adopter(),
 
-            conns: if opening.is_some() {
-                ConnTable::serving(self.conns.clone())
-            } else {
-                ConnTable::Probe
-            },
+                conns: if opening.is_some() {
+                    ConnTable::serving(self.conns.clone())
+                } else {
+                    ConnTable::Probe
+                },
+            })
         };
-        let loaded = match &image {
-            Image::Linked(r) => load_linked::<Export>(r, bind),
-            Image::Dropped(stated) => {
-                load_dropped_bytes::<Export>(&row.lib_bytes, name, stated, bind)
-            }
-        };
-        loaded.map_err(refused)
+        open_loadable::<Export>(row, name, bind).map_err(|e| match e {
+            RowRefusal::Stated(e) | RowRefusal::Bind(e) => e,
+            RowRefusal::NoDoor => format!("export plugin '{name}': {NO_DOOR}"),
+            RowRefusal::Load(e) => format!("export plugin '{name}': {e}"),
+        })
     }
 
     #[must_use]
