@@ -470,6 +470,7 @@ extern "C" {
 #define BB_PLANE_PROJECT_FAULT_MESSAGE "request rewrite could not be applied" /* The words a FAULT `project` answers the caller with, byte for byte 1.5.5's. */
 #define BB_PLANE_PROJECT_FAULT_UNPARSEABLE UINT32_C(0x80000000) /* THE UNPARSEABLE-BODY MARK, in `ProjectOut::view.flags` of a FAULT `project`: the plane parsed */
 #define BB_PLANE_PROJECT_REWRITE_NOT_APPLICABLE UINT32_C(0x40000000) /* THE REWRITE-NOT-APPLICABLE MARK, in `ProjectOut::view.flags` of a READY `project` that carried */
+#define BB_PLANE_PROJECT_IN_OBSERVE_ONLY UINT32_C(1) /* [`ProjectIn::flags`]: no hook core bound to this unit stops, changes or routes the request, */
 
 /* transport */
 #define BB_TRANSPORT_EXT_ADOPTED_SESSION "session.adopted" /* An Adopt input's host-issued session reference, in the shared extensions envelope. */
@@ -2892,7 +2893,7 @@ struct bb_plane_PlaneCancelOut {
 struct bb_plane_ProjectIn {
     bb_mech_InHead head;
     uint32_t claim;
-    uint32_t _reserved;
+    uint32_t flags;
     bb_mech_AbiStr target;
     const bb_mech_Field *fields;
     size_t fields_len;

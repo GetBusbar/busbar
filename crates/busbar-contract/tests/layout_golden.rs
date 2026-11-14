@@ -1280,7 +1280,7 @@ fn compute_layout() -> String {
         [
             head,
             claim,
-            _reserved,
+            flags,
             target,
             fields,
             fields_len,
