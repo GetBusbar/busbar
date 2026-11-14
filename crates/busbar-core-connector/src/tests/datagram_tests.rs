@@ -37,6 +37,9 @@ mod secure_credit_tests;
 #[path = "datagram_finish_tests.rs"]
 mod finish_tests;
 
+#[path = "datagram_place_tests.rs"]
+mod place_tests;
+
 fn p(s: &str) -> SocketAddr {
     s.parse().expect("addr")
 }
