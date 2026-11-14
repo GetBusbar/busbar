@@ -803,7 +803,7 @@ mod tests;
 #[path = "tests/linked_secret_sources.rs"]
 mod secret_source_tests;
 
-#[cfg(all(test, linked_operator_auth, linked_axis_body_ingress))]
+#[cfg(all(test, linked_operator_auth, linked_section_pools))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
 
