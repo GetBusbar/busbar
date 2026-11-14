@@ -28,7 +28,7 @@ All notable changes to Busbar are documented here. The format is based on
   - Hosted credential sign-in forwards only the fields the login plugin declared, each once, and refuses a form that repeats a declared field with 400 "Sign-in didn't finish".
   Configure with `auth.login_limits`, `identity-providers.<name>.browser_login.max_failures` /
   `failure_window`, and `advanced.trusted_proxies` / `advanced.forwarded_header` (set these when an
-  ingress or load balancer fronts busbar). New codes BUSBAR-4032..4042 and BUSBAR-3133. A login
+  ingress or load balancer fronts busbar). New codes BUSBAR-4033..4042, BUSBAR-4045 and BUSBAR-3133. A login
   plugin may report `reject_hint: account_locked` on a declined credential.
 
 - A2A `message/send` no longer answers `502 plane_panic` under concurrency: task quota changes
@@ -853,7 +853,7 @@ Details are in [the 1.6.0 migration guide](docs/migration-1.6.md).
   `advanced.allow_destinations` entry that names a cloud-metadata host, address, or /32 or /128 equal
   to one refuses startup (BUSBAR-3134). `security.blocked_metadata_hosts` still extends the
   denylist. BUSBAR-5045 is retired. Signed by the owner on 2026-11-13.
-- 1.6.0 Breaking: plugin ABI rules frozen for 1.6.0: a plane declaring the retired trust role `TRUST_PRIVATE_REACH` (4) or an operator-infrastructure need over a framed transport without `target_from` is refused (BUSBAR-6013); `dest.judge` refuses the operator-infrastructure class and a mid-stream upgrade refuses an offered name that is not the dialled host (BUSBAR-6014).
+- 1.6.0 Breaking: plugin ABI rules frozen for 1.6.0: a plane declaring the retired trust role `TRUST_PRIVATE_REACH` (4) or an operator-infrastructure need over a framed transport without `target_from` is refused (BUSBAR-6017); `dest.judge` refuses the operator-infrastructure class and a mid-stream upgrade refuses an offered name that is not the dialled host (BUSBAR-6014).
   `UPGRADE_VERIFY_OFF` and a CA PEM through `trust_from` stay honoured in 1.6.x, deprecated and
   refused from 1.7.0; a used `UPGRADE_VERIFY_OFF` is flagged once per instance (BUSBAR-6015).
 - 1.6.0 Breaking: `POST /api/v1/admin/ledger/amend-rate-history` is served on every node and needs only a `full` admin grant, with no operator key or signature.
@@ -1307,7 +1307,7 @@ each dialect translates, field by field, is listed in the generated
 - 1.6.0 Fixed: a webrequest hook's status no longer reports drift where its settings match.
 - `hooks: [cheapest]` / `strategy: cheapest` rank by card price again: a strategy word is granted
   the candidate route-cost signal. A pool whose ordering policy makes no choice while no member has a
-  known cost (so the walk falls back to weighted round-robin) now logs BUSBAR-5046 once per policy
+  known cost (so the walk falls back to weighted round-robin) now logs BUSBAR-5050 once per policy
   and pool; gates never log it.
 - **Billing change: Gemini transcriptions bill every token Google reports.** A transcription
   (`generateContent` with inline audio) served same-dialect, from a Gemini caller to a Gemini

@@ -4,7 +4,7 @@
 //! EVERY OUTBOUND REFUSAL AND TLS FAILURE, EXPLAINED AND AUDITED.
 //!
 //! A refused dial (the destination guard, the plaintext rule, the trust store) is one coded
-//! BUSBAR-5046 line and one `egress.dial_refused` audit record; a TLS verification failure is one
+//! BUSBAR-5051 line and one `egress.dial_refused` audit record; a TLS verification failure is one
 //! BUSBAR-5047 line and one `egress.tls_verification_failed` audit record carrying the dialled host,
 //! the `advanced.tls.destinations` entries that matched and the fingerprints of the operator
 //! anchors in force. Lines are rate-limited per (host, reason) so a retry storm writes one line a
@@ -94,7 +94,7 @@ pub fn verdict_name(v: u64) -> &'static str {
     }
 }
 
-/// A REFUSED DIAL: one BUSBAR-5046 line and one audit record, rate-limited per host and reason.
+/// A REFUSED DIAL: one BUSBAR-5051 line and one audit record, rate-limited per host and reason.
 /// `class` is the need's egress class when known; `owner` names the instance and need.
 pub fn dial_refused(target: &str, class: Option<u32>, why: &str, owner: Option<(u64, u32)>) {
     let host = shown(target);

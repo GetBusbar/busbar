@@ -19,7 +19,7 @@ pub const EGRESS_PROVIDER: u32 = 1;
 ///
 /// The class is a property of a CONFIG-DECLARED target, never a plugin's choice: `dest.judge`
 /// refuses it (BUSBAR-6014), and a need over a FRAMED transport (`http`, `grpc`) in this class must
-/// name its target from config (`target_from`) or it is refused at declaration (BUSBAR-6013). A
+/// name its target from config (`target_from`) or it is refused at declaration (BUSBAR-6017). A
 /// CARRIER need (`tcp`, `unix`) in this class without `target_from` is DEPRECATED: honoured in
 /// 1.6.x, refused from 1.7.0.
 pub const EGRESS_OPERATOR_INFRASTRUCTURE: u32 = 2;

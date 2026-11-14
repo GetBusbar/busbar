@@ -300,7 +300,7 @@ fn an_absent_settings_trust_anchor_declares_the_need_over_the_public_roots_alone
     });
 }
 
-/// BUSBAR-6013: an operator-infrastructure need over a FRAMED transport must name its target from
+/// BUSBAR-6017: an operator-infrastructure need over a FRAMED transport must name its target from
 /// config (`target_from`); without one the plugin would pick any destination and the class would be
 /// its own choice, so the declaration is refused. A config-declared target declares, and a CARRIER
 /// need without one (postgres, valkey, mysql, ldap name the host per connection) is still admitted:

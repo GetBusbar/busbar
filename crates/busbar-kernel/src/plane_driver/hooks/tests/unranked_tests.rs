@@ -13,7 +13,7 @@ use busbar_contract::signal::route_cost::{self, Term};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 /// The catalogued code of `ROUTING_POLICY_ABSTAINED_UNPRICED`.
-const CODE: &str = "BUSBAR-5046";
+const CODE: &str = "BUSBAR-5050";
 
 /// Every WARN line, its fields rendered ` name=value`.
 #[derive(Clone, Default)]

@@ -93,10 +93,22 @@ impl Catalogue {
 /// Declares each built-in diagnostic as a `pub const` and lists them, in the table's order, in
 /// [`REGISTRY`]. An entry is `NAME = code, Class, Severity, "slug", "since", retired,` then its
 /// title, summary and action; `NAME in path;` re-exports a const defined at `path` instead.
+///
+/// OPERATOR MESSAGES. An entry an operator reads as a message (a config refusal, a CLI error, a
+/// migration warning) continues `=> constructor(placeholder, ..) "template"`, optionally followed
+/// by `, example "<what triggers it>"` and `, detail "<the template filled in for it>"`. The
+/// template has a `{name}` per argument and no trailing period; the constructor is the const's name
+/// in lower case and lists the template's placeholders in order of first appearance. It becomes
+/// `coded::<constructor>(..)`, which formats exactly that template (the compiler checks every
+/// placeholder against the arguments) and renders `BUSBAR-NNNN: <text>. See <docs page>`; its
+/// text and example land in [`TEXTS`] for the code's docs page. Call sites never spell a code, a
+/// link or the template: they call the constructor.
 macro_rules! diagnostics {
     ($($(#[$meta:meta])* $name:ident
         $(= $code:literal, $class:ident, $severity:ident, $slug:literal, $since:literal,
-            $retired:literal, $title:literal, $summary:literal, $action:literal)?
+            $retired:literal, $title:literal, $summary:literal, $action:literal
+            $(=> $ctor:ident($($arg:ident),*) $text:literal
+                $(, example $example:literal)? $(, detail $detail:literal)?)?)?
         $(in $($segment:ident)::+)?;)*) => {
         $(
             $(#[$meta])*
@@ -117,6 +129,34 @@ macro_rules! diagnostics {
         /// here: the composition root folds them into the [`Catalogue`] it lends, and the full
         /// runtime catalog is [`Catalogue::all`].
         pub static REGISTRY: &[&Diagnostic] = &[$(&$name,)*];
+
+        /// Typed constructors for the templated codes: `coded::<const name in lower case>(..)`
+        /// builds the code's operator message from its catalog template.
+        pub mod coded {
+            $($($(
+                #[doc = concat!(
+                    "Builds the operator message of [`super::",
+                    stringify!($name),
+                    "`] from its catalog template."
+                )]
+                #[cold]
+                #[must_use]
+                pub fn $ctor($($arg: impl ::core::fmt::Display),*)
+                    -> ::busbar_contract::diagnostic::Coded {
+                    super::$name.coded(::core::format_args!($text $(, $arg = $arg)*))
+                }
+            )?)?)*
+        }
+
+        /// The page text of every templated host code, in the table's order.
+        pub static TEXTS: &[::busbar_contract::diagnostic::ErrorText] = &[$($($(
+            ::busbar_contract::diagnostic::ErrorText {
+                code: $code,
+                text: $text,
+                example: concat!("" $(, $example)?),
+                example_detail: concat!("" $(, $detail)?),
+            },
+        )?)?)*];
     };
 }
 
@@ -129,7 +169,7 @@ diagnostics! {
     DEPRECATED_ENV_VAR_HONORED = 3021, Config, Actionable, "deprecated-env-var-honored", "1.5.0", true,
         "A deprecated environment variable is set and still honored — RETIRED",
         "RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.",
-        "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md.";
+        "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.";
 
     /// RETIRED before 1.6.0 shipped: nothing emits it. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened.
     DURABLE_WRITETHROUGH_BELOW_FLOOR = 1001, Durability, BenignRecurring, "durable-writethrough-below-floor", "1.6.0", true,
@@ -232,6 +272,54 @@ diagnostics! {
         "Declared billable classes have no configured rate",
         "A plugin declares billable classes for a configured lane, but that lane lacks one or more rates. Startup continues and raw counts remain available. With a present card, missing classes remain unpriced; a rate on another lane does not price them. With no card for the plane, usage-based pricing is disabled. An explicit zero rate is a configured free class, not a missing rate. Class-parent relationships are reporting and cap projections, not inherited prices.",
         "Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup.";
+
+    /// An `advanced.allow_destinations` entry names a cloud-metadata destination, which no configuration admits.
+    CONFIG_DESTINATION_NAMES_METADATA = 3134, Config, Fatal, "config-destination-names-metadata", "1.6.0", false,
+        "An allowlist entry names a cloud-metadata destination",
+        "An `advanced.allow_destinations` entry is a cloud-metadata host name (such as `metadata.google.internal`), a metadata address (such as `169.254.169.254`, `fd00:ec2::254` or an IPv6 link-local address), or a /32 or /128 network equal to one. Cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so the entry is refused at startup rather than silently ignored. A wider network that merely covers a metadata address (such as `169.254.0.0/16`) loads, and still never admits the metadata address.",
+        "Remove the entry named in the message. A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.";
+
+    /// A retired 1.5.5 cloud-metadata carve-out key is set; no configuration admits cloud metadata.
+    CONFIG_METADATA_CARVE_OUT_RETIRED = 3136, Config, Fatal, "config-metadata-carve-out-retired", "1.6.0", false,
+        "A retired cloud-metadata carve-out key is set",
+        "The configuration sets `security.allow_metadata_hosts`, `security.allow_all_metadata: true` or a provider's `allow_metadata_hosts`. In 1.6.0 cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so these 1.5.5 carve-outs are retired. The configuration is refused rather than read with the carve-out ignored. `security.blocked_metadata_hosts` still extends the denylist.",
+        "Run `busbar --migrate-config`: it removes the keys and reports each removed entry (BUSBAR-3411). A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.";
+
+    /// The migration retired a registration's `allow_private` and listed exactly its hosts in `advanced.allow_destinations`.
+    MIGRATE_PRIVATE_REACH_TO_ALLOWLIST = 3410, Config, Actionable, "migrate-private-reach-to-allowlist", "1.6.0", false,
+        "A registration's allow_private was replaced by exact advanced.allow_destinations entries",
+        "An MCP server (`tools.<server>`) or A2A agent (`agents.<agent>`) set the retired `allow_private`. The migration removed the key and listed exactly the hosts that registration dials in `advanced.allow_destinations` (never a wildcard or a network, never a cloud-metadata host). A plaintext `http://` registration to a non-loopback host is refused at 1.6.0: the planes admit `http://` to loopback only.",
+        "Review the listed hosts. Move a non-loopback `http://` registration to `https://`; per-destination plaintext arrives after 1.6.0.";
+
+    /// The migration removed a retired 1.5.5 cloud-metadata carve-out key.
+    MIGRATE_METADATA_CARVE_OUT_REMOVED = 3411, Config, Actionable, "migrate-metadata-carve-out-removed", "1.6.0", false,
+        "A retired cloud-metadata carve-out key was removed",
+        "The migration removed `security.allow_metadata_hosts`, `security.allow_all_metadata` or a provider's `allow_metadata_hosts`, naming each removed entry. 1.6.0 refuses cloud metadata for every outbound connection and no configuration admits it; a destination the carve-out reached is now refused.",
+        "If a removed entry reached an instance credential endpoint, move that workload to workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file.";
+
+    /// A plugin declares a retired ABI value or need shape; the plugin or need is refused.
+    PLUGIN_DECLARES_RETIRED_ABI_VALUE = 6017, Plugins, Fatal, "plugin-declares-retired-abi-value", "1.6.0", false,
+        "A plugin declares a retired ABI value",
+        "A plugin's Statement or need uses something the 1.6.0 ABI retired: the plane trust role `TRUST_PRIVATE_REACH` (4), or an operator-infrastructure need over a framed transport (`http`, `grpc`) that names no config-declared target (`target_from`). The operator-infrastructure class is a property of a target the operator configured, never a plugin's choice. The plugin (for a trust role) or the need is refused, naming what it declared. A carrier need (`tcp`, `unix`) without a declared target is deprecated and refused from 1.7.0.",
+        "Upgrade the plugin to a release built against busbar 1.6.0. A plugin author drops the retired role, and declares `target_from` on an operator-infrastructure need.";
+
+    /// A plugin call broke an ABI rule and was refused; flagged once per instance and audited.
+    PLUGIN_CALL_REFUSED_ABI_RULE = 6014, Plugins, Actionable, "plugin-call-refused-abi-rule", "1.6.0", false,
+        "A plugin call was refused by an ABI rule",
+        "A plugin asked for something the ABI does not allow: `dest.judge` under the operator-infrastructure egress class (content-named hosts are judged in the default or open-web class), or a mid-stream upgrade offering a name that is not the dialled host (only a dial to an IP literal may offer another name). The call is refused; the first refusal per instance is logged and audited.",
+        "Upgrade the plugin to a release built against busbar 1.6.0, or report the plugin to its author.";
+
+    /// A plugin used a deprecated ABI value that is still honoured; flagged once per instance and audited.
+    PLUGIN_USES_DEPRECATED_ABI_VALUE = 6015, Plugins, Actionable, "plugin-uses-deprecated-abi-value", "1.6.0", false,
+        "A plugin used a deprecated ABI value (refused from 1.7.0)",
+        "A plugin secured an operator-infrastructure connection with `UPGRADE_VERIFY_OFF`, so the far end's certificate is not verified (postgres `sslmode=prefer`, valkey `#insecure`). The value is honoured in 1.6.x, deprecated, and refused from 1.7.0. The first use per instance is logged and audited.",
+        "Configure the server with a certificate the plugin can verify (`sslmode=require` or `verify-full`, `rediss://` without `#insecure`); the core trust store for private CAs arrives after 1.6.0.";
+
+    /// A plane registration sets the retired `allow_private`; the one private-address policy is `advanced.allow_destinations`.
+    CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", false,
+        "A registration still carries the retired per-registration private-address switch",
+        "A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.",
+        "Run `busbar --migrate-config`: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.";
 
     /// A provider URL names a private or loopback host the destination guard refuses (1.5.5 upgrade).
     CONFIG_PROVIDER_DESTINATION_REFUSED = 3025, Config, Actionable, "config-provider-destination-refused", "1.6.0", false,
@@ -487,6 +575,8 @@ diagnostics! {
 
     USAGE_TAP_DECODE_FAILED in busbar_contract::diagnostic;
 
+    CONFIG_RESERVED_NAME in busbar_contract::diagnostic;
+
     /// The host's metrics recorder failed to install at boot; /metrics will be empty.
     METRICS_RECORDER_INSTALL_FAILED = 5032, Proxy, Actionable, "metrics-recorder-install-failed", "1.6.0", false,
         "Metrics recorder install failed; /metrics will be empty",
@@ -619,11 +709,11 @@ diagnostics! {
         "A budget flush tick could not persist one or more group-budget buckets to the store. busbar re-marks those buckets dirty and retries them on the next tick, so no spend is lost. This is already collapsed to ONE aggregate warning per tick (per-bucket detail is at debug), so it fires at a human cadence, not per bucket.",
         "Investigate the governance store if the failure count stays non-zero across ticks — a transient store hiccup self-heals on the next flush. Spend is retained and re-tried, so budgets are not lost, only delayed.";
 
-    /// --safe-mode boot: the config overlay was quarantined; running on base config.yaml alone.
-    SAFE_MODE_OVERLAY_QUARANTINED = 8012, Governance, Actionable, "safe-mode-overlay-quarantined", "1.6.0", false,
-        "SAFE MODE: config overlay not merged (running on base config.yaml alone)",
-        "busbar was booted with `--safe-mode`, so the persisted config overlay (API-registered hooks) was NOT merged and busbar is running on the operator-owned base config.yaml alone. This is the intentional escape hatch for an applied hook that harms traffic and re-applies itself every boot. The overlay file is untouched, not deleted.",
-        "This is an operator-requested state. Repair or remove the offending overlay entry, then boot WITHOUT `--safe-mode` to re-apply the overlay. Until then, API-registered hooks are not in effect.";
+    /// --ignore-overlay boot: the config overlay was not merged; running on base config.yaml/providers.yaml alone.
+    OVERLAY_IGNORED = 8012, Governance, Actionable, "safe-mode-overlay-quarantined", "1.6.0", false,
+        "IGNORE OVERLAY: config overlay not merged (running on base config alone)",
+        "busbar was booted with `--ignore-overlay`, so the persisted config overlay (API-registered hooks) was NOT merged and busbar is running on the operator-owned base config.yaml/providers.yaml alone. This is the intentional escape hatch for an applied hook that harms traffic and re-applies itself every boot. The overlay in the Store is untouched, not deleted. `GET /api/v1/admin/info` reports `overlay_ignored: true`.",
+        "Operator-requested state. Repair or remove the offending overlay entry, then boot WITHOUT `--ignore-overlay`. An admin reload, apply or config write in this process re-merges the Store overlay and persists to it.";
 
     /// RETIRED before 1.6.0 shipped, superseded by [`PROVIDER_API_KEY_UNRESOLVABLE`]: the degrade this code described no longer exists. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened and what replaced it.
     PROVIDER_API_KEY_UNRESOLVED = 8013, Governance, Actionable, "provider-api-key-unresolved", "1.6.0", true,
@@ -634,7 +724,7 @@ diagnostics! {
     /// A provider api_key SecretRef did not resolve; boot refuses.
     PROVIDER_API_KEY_UNRESOLVABLE = 8020, Governance, Fatal, "provider-api-key-unresolvable", "1.6.0", false,
         "Provider api_key did not resolve (boot refuses)",
-        "A provider's `api_key` secret reference could not be resolved — an unset environment variable, a missing or empty file, an unknown module, or a secret plugin that failed — so busbar refuses to start. It does not fall back to an empty credential: that lane could never authenticate, would report healthy, would be skipped by the health prober (no key, no probe), and would answer every request routed to it with a 401 from the upstream. The diagnostic names the provider and the reference (`env:VAR`, `file:/path`), never the value.",
+        "A provider's `api_key` secret reference could not be resolved — an unset environment variable, a missing file, a value or file that is empty or whitespace-only, an unknown module, or a secret plugin that failed — so busbar refuses to start. It does not fall back to an empty credential: that lane could never authenticate, would report healthy, would be skipped by the health prober (no key, no probe), and would answer every request routed to it with a 401 from the upstream. The diagnostic names the provider and the secret module (`secret module 'busbar-secret-env'`), never the value.",
         "Fix the reference so it resolves (set the variable, mount the file, install and trust the secret plugin), or — if this upstream genuinely takes NO credential, such as a local ollama or vLLM — declare that explicitly with `api_key: none`, which starts the lane with no credential and sends no auth header. `--validate` reports the same refusal before you deploy.";
 
     /// A unit's one line carried a class its plane never declared.
@@ -667,17 +757,37 @@ diagnostics! {
         "A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with credentials.at_rest.key configured re-seals it under that key.",
         "Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear.";
 
+    /// A plane member's upstream credential could not be refreshed; the held value is kept until its lease ends.
+    UPSTREAM_CREDENTIAL_REFRESH_FAILED = 8026, Governance, Actionable, "upstream-credential-refresh-failed", "1.6.0", false,
+        "A plane member's upstream credential could not be refreshed",
+        "busbar renews each plane member's upstream_credential off the request path, at half its lease_ttl_ms (at most every five minutes). A renewal failed: the source could not be read (cause resolve: unavailable, internal fault, an empty or non-text value), or the value changed and the auth plugin refused the new one (cause reopen, at ERROR). The value already held is still presented until its lease ends, and the renewal is retried with a jittered backoff. Reported on the first failure, then at most once a minute per member (also after the lease has ended); members on the same source within that minute are counted in its others field. Each report is audited as upstream_credential.refresh, degraded. An A2A member whose lease ends meanwhile has its hops refused as BUSBAR-7013.",
+        "Check the source the reference field names (the file, the environment variable or the secret module) and the error field. For cause reopen, the value at the source is one the auth plugin cannot present (for example a header value with illegal characters): correct it at the source. The next successful refresh logs that it refreshed again and is audited as applied.";
+
+    /// A plane member's upstream credential is no longer presented: its lease ended unrenewed, or its source confirmed it revoked.
+    UPSTREAM_CREDENTIAL_LAPSED = 8027, Governance, Actionable, "upstream-credential-lapsed", "1.6.0", false,
+        "A plane member's upstream credential lapsed or was revoked at its source",
+        "A plane member's upstream credential is no longer presented, so every hop on the member is refused (credential_unavailable; for an A2A member, BUSBAR-7013). Cause lease-expired: its lease_ttl_ms ran out with no successful refresh (reported when the lease ends, whether or not a hop arrives). Cause revoked-at-source: the source answered not-found or permission-denied twice, one second apart, so busbar dropped the credential at once instead of riding out an outage. Reported once per lapse and audited as upstream_credential.refresh, rejected. Refreshes continue; the first that succeeds presents the credential again.",
+        "For revoked-at-source, this is expected after deleting the secret or removing busbar's access to it; restore it to resume. For lease-expired, see the BUSBAR-8026 lines for the member: they name the source and the error. A longer lease_ttl_ms rides out longer outages; a shorter one revokes faster.";
+
+    /// A plugin instance's own rotated credential could not be applied; the running instance is kept.
+    PLUGIN_CREDENTIAL_ROTATION_FAILED = 8028, Governance, Actionable, "plugin-credential-rotation-failed", "1.6.0", false,
+        "A plugin's rotated credential could not be applied",
+        "busbar re-reads the secret references a secret or auth plugin instance was opened with every 30 seconds. When one changed (a rotated token file, for example a workload-identity token), busbar hands the new material to the plugin's refresh, or, for a plugin with no refresh, opens a new instance from the same plugin artifact and swaps it in. This failed: the reference could not be re-read (cause unresolvable), the plugin refused the new material (cause refused, at ERROR), or the new instance did not open (cause reopen-failed, at ERROR). The running instance and the credentials it holds are kept and the change is retried on the next poll. Reported at most once a minute per instance and audited as plugin.credential.rotate, degraded; a later success is audited as applied.",
+        "Check the reference and the error field. For refused or reopen-failed, the plugin rejected the rotated material: fix it at the source. If the old material expires first, the plugin's own calls fail until the new material is accepted.";
+
+    PLUGIN_TICK_FAILED in busbar_contract::diagnostic;
+
     /// A store settings SecretRef does not resolve at boot; restart-to-apply, so it WILL fail next restart.
     STORE_SECRET_REF_UNRESOLVED = 8015, Governance, Actionable, "store-secret-ref-unresolved", "1.6.0", false,
         "Store settings hold a secret reference that does not resolve here",
         "A governance-store `settings` value holds a secret reference that does not resolve on this boot. busbar warns rather than fails, because the store is restart-to-apply and staging a ref whose secret the orchestrator mounts on the next deploy is a legitimate workflow. But if the secret is still absent at the next restart, THAT restart will fail in resolve_settings before serving.",
         "Ensure the named store secret reference resolves before the next restart. If you are staging it for an upcoming deploy, no action now; otherwise fix the reference so the next restart does not die resolving it.";
 
-    /// The in-memory (ephemeral) governance store was selected; keys/usage/ledgers reset on restart.
+    /// The in-memory (ephemeral) governance store was selected; keys/usage/ledgers and admin config changes reset on restart.
     GOVERNANCE_STORE_EPHEMERAL = 8016, Governance, Actionable, "governance-store-ephemeral", "1.6.0", false,
         "Governance store is in-memory (ephemeral) — state resets on restart",
-        "busbar selected the in-memory (ephemeral) governance store, so virtual keys, groups' usage, and ledgers live only in RAM and are LOST on restart. This is the default when no durable store plugin is configured — fine for a trial or local development, but not for anything that must retain keys or spend across restarts.",
-        "Configure a durable governance store plugin for persistence if keys, usage, or budgets must survive a restart. No action is needed for ephemeral/dev use.";
+        "busbar selected the in-memory (ephemeral) governance store, so virtual keys, groups' usage, and ledgers live only in RAM and are LOST on restart. This is the default when no durable store plugin is configured — fine for a trial or local development, but not for anything that must retain keys or spend across restarts. Admin-API config changes are held in the same RAM: live ones apply until restart; restart-only ones (including creating or replacing an exporter) are refused, because the restart would discard them.",
+        "Configure a durable governance store plugin for persistence if keys, usage, or budgets must survive a restart. No action is needed for ephemeral/dev use. To change a restart-only setting or add an exporter, edit config.yaml and restart.";
 
     /// Durable store is configured with keys but keys-in-chain is off; durable keys are inert.
     DURABLE_KEYS_INERT = 8017, Governance, Actionable, "durable-keys-inert", "1.6.0", false,
@@ -872,6 +982,16 @@ diagnostics! {
         "An update_key request body did not parse as valid JSON, so busbar returns a generic 400, logging only the body's byte length (never the raw serde error or an input fragment). Mirror of BUSBAR-4027 for the update path. This is a CLIENT-side bad request, so it is emitted at debug.",
         "None — self-heals; the client must send well-formed JSON. Persistent volume from one caller indicates a broken client worth fixing.";
 
+    SELF_MINT_HELD = 4043, Auth, BenignRecurring, "self-mint-held", "1.6.0", false,
+        "Self-serve sign-in or refresh refused: the subject's key is on hold",
+        "A self-serve sign-in (POST /auth/token or the hosted login) or a Refresh was refused because the subject's key is on hold: an administrator disabled it, an administrator revoked it, it was issued through a different identity provider, or the subject itself is held by a principal transition. Nothing is written: the key is not re-enabled, no sibling key is minted, and its old tokens stay dead. The caller gets a 403 that names the reason, and the admin audit log records `self_serve.mint` as `rejected` on `key:<id>#<reason>` (or `subject:<subject>#on_hold`). This is a client-side state, so it is emitted at debug.",
+        "Nothing, if the hold is intended. To let the user back in: for a disabled key, PATCH /api/v1/admin/keys/{id} with `enabled: true` (the same key comes back and its earlier tokens work again). For a revoked key, or a key issued through another provider, DELETE /api/v1/admin/keys/{id}: the next sign-in issues a new key with a new id, and every old token stays dead. A revoked key is never re-enabled.";
+
+    REVOKED_KEY_REENABLE_REFUSED = 4044, Auth, BenignRecurring, "revoked-key-reenable-refused", "1.6.0", false,
+        "Admin request to re-enable a revoked key refused (revoked is terminal)",
+        "A PATCH /api/v1/admin/keys/{id} asked for `enabled: true` on a revoked key. Revoked is terminal: no admin request, sign-in or refresh ever re-enables a revoked key. The request is answered 409 `conflict` with this code, nothing is written, and the admin audit log records `key.patch` as `rejected`. This is a client-side request, so it is emitted at debug.",
+        "Leave the key revoked. To give a self-serve user a working key again, DELETE the revoked key: their next sign-in issues a new key with a new id. For an admin-minted key, mint a new one.";
+
     PLANE_BREAKER_TRIPPED = 5038, Proxy, Actionable, "plane-breaker-tripped", "1.6.0", false,
         "Plane breaker tripped (upstream target failing; dispatches fast-fail)",
         "A plane target's circuit breaker transitioned Closed→Open because the upstream target is failing, so further dispatches fast-fail until the half-open probe recovers it. Names the specific target (every plane target shares one degenerate lane, so without this the operator would not learn WHICH server is down). Emitted once per logical trip, not per failure.",
@@ -972,11 +1092,23 @@ diagnostics! {
         "The blocking task that reads the config overlay for `GET /config/settings` failed to join — it panicked, or the runtime is shutting down — so busbar returns 500 rather than a fabricated empty-settings 200 that would misreport \"no overrides set\" when the read never completed. A panic here is a bug.",
         "Retry the request; a shutdown-race clears on its own. A repeatable failure is a panic in the overlay read path — capture the logged join error and file a bug.";
 
-    /// The nuclear `allow_all_metadata` is set: the cloud-metadata SSRF guard is OFF. Security posture.
-    METADATA_PROTECTION_DISABLED = 5045, Proxy, Actionable, "metadata-protection-disabled", "1.6.0", false,
-        "Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set)",
-        "The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's cloud-metadata SSRF guard is OFF and EVERY cloud-metadata endpoint (e.g. 169.254.169.254, the GCP/Azure metadata hosts) is reachable through the proxy. That is a security-relevant degradation: a crafted upstream URL or a compromised plugin can reach the instance's credential endpoint. Emitted once at boot.",
-        "Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list).";
+    /// RETIRED in 1.6.0: `allow_all_metadata` is refused (BUSBAR-3136), so the cloud-metadata guard is never off.
+    METADATA_PROTECTION_DISABLED = 5045, Proxy, Actionable, "metadata-protection-disabled", "1.6.0", true,
+        "Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set) — RETIRED",
+        "RETIRED. Nothing emits this code: 1.6.0 refuses `security.allow_all_metadata` at startup (BUSBAR-3136), and cloud metadata is refused for every outbound connection, so the guard can no longer be disabled.",
+        "Nothing emits this code. See BUSBAR-3136.";
+
+    /// A unit the provider answered settled without billing its final stated usage. Money: reconcile.
+    PLANE_USAGE_UNREAD = 5046, Proxy, Actionable, "plane-usage-unread", "1.6.0", false,
+        "Provider usage not read (a unit settled without billing its final stated usage)",
+        "A unit the provider answered settled without billing its final stated usage; `reason` names the ReasonCode that ended it (deadline, drain/reload, unpriced, over-budget, far cut, body cap, plane fault, destination unreachable, client gone before fold). The unit's ledger line bills the last usage report busbar accepted, and its terminal checkpoint record carries the same `unread` reason. Emitted once per affected unit, with an audit row under the same slug.",
+        "Reconcile the line against the provider's usage report: the provider may have charged more than the line bills.";
+
+    /// A pool's ordering policy made no choice while no member has a known routing cost; the walk is SWRR. Warn-once per policy@pool.
+    ROUTING_POLICY_ABSTAINED_UNPRICED = 5050, Proxy, Actionable, "routing-policy-abstained-unpriced", "1.6.0", false,
+        "Routing policy made no choice and no member has a known routing cost",
+        "The pool's ordering policy made no choice and no member has a known routing cost; the pool uses weighted round-robin. Gates never report this. Warned once per policy and pool until the policy ranks that pool again.",
+        "If the policy ranks by cost, price every member's lane in rate_card; a named hook also needs `signals: [candidate_route_cost]`.";
 
     /// `--validate`'s plugin pre-flight (the exact pipeline boot runs) failed. Plugin-trust subject.
     CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED = 6009, Plugins, Actionable, "cli-validate-plugin-preflight-failed", "1.6.0", false,
@@ -1001,6 +1133,12 @@ diagnostics! {
         "First-party anti-downgrade floor could not be persisted (it will not survive a restart)",
         "busbar raised the per-plugin-name high-water marks — the automatic first-party anti-downgrade floor — but could not write them to the data directory. The floor still applies to THIS process; it will not survive a restart, so the replay window reopens at the next boot until a load re-establishes it.",
         "Make the configured data directory writable (the log names the underlying I/O error). A node that cannot write its data directory usually has a larger problem than this notice.";
+
+    /// Plugin-supplied text over its cap was cut. Fields and caps: a hook reject message (`reject_message`, 300), a metric `help` (`metric_help`, 200), `label` (`metric_label`, 64), `unit` (`metric_unit`, 16) or label value (`metric_label_value`, 64), and a plugin diagnostic message (`diag_message`, 300) or field value (`diag_field`, 64). The `plugin` field is the configured hook instance name for a reject or a hook status read, and the plugin module name for a metric or diagnostic a plugin reported. `busbar_plugin_text_cut_total{plugin,field}` counts over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused).
+    PLUGIN_TEXT_CUT = 6013, Plugins, Actionable, "plugin-text-cut", "1.6.0", false,
+        "Plugin-supplied text exceeded its cap and was cut",
+        "A plugin or hook sent text longer than its documented cap: a hook reject message, a metric help, label, unit or label value, or a plugin diagnostic message or field. busbar kept the first `cap` sanitised characters exactly as 1.5.5 did, with nothing appended (for a reject whose kept text is all whitespace, clients see the default reject message instead). This warning fires once per plugin and field for the life of the process; `busbar_plugin_text_cut_total{plugin,field}` counts over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused).",
+        "Shorten the named plugin's text for the named field to within the cap; the log gives the cap and the text's length after sanitising (control and format characters removed).";
 
     /// A group `/usage` read could not derive a bucket's usage from the governance store. Read-path fault.
     GROUP_USAGE_READ_FAILED = 8018, Governance, Actionable, "group-usage-read-failed", "1.6.0", false,
@@ -1037,6 +1175,663 @@ diagnostics! {
         "--generate-signing-key could not mint a key (OS entropy source unavailable)",
         "`busbar --generate-signing-key` could not mint a fresh ed25519 signing secret because the OS entropy source was unavailable, so it printed nothing and exited non-zero. No key was generated and nothing was written.",
         "Retry on a host with a working RNG (`/dev/urandom` / `getrandom`). A persistent failure points at a broken or blocked entropy source in the environment.";
+
+    CLI_UNRECOGNIZED_ARGUMENT = 9101, Boot, Fatal, "cli-unrecognized-argument", "1.6.0", false,
+        "The command line names an argument busbar does not know",
+        "busbar was started with an argument that is neither a flag it accepts nor the value of one. Nothing ran; the process exited with the usage status (2).",
+        "Check the spelling against `busbar --help`. Configuration is not passed on the command line: put settings in config.yaml and point busbar at it with `--config <path>`."
+        => cli_unrecognized_argument(argument) "unrecognized argument '{argument}'; try 'busbar --help'",
+        example "busbar --valdiate",
+        detail "unrecognized argument '--valdiate'; try 'busbar --help'";
+
+    CLI_INVALID_ARGUMENTS = 9102, Boot, Fatal, "cli-invalid-arguments", "1.6.0", false,
+        "A command's arguments do not fit together",
+        "A command-line command (an overlay migration or a principal transition) was given arguments it cannot act on: a missing companion flag, a conflicting pair, or a malformed value. The text after the code names which. Nothing ran; the process exited with the usage status (2).",
+        "Fix the arguments the message names; `busbar --help` lists every command with its flags."
+        => cli_invalid_arguments(reason) "{reason}; try 'busbar --help'",
+        example "busbar --migrate-overlay",
+        detail "--migrate-overlay requires --overlay <path>; try 'busbar --help'";
+
+    CLI_FLAG_REQUIRES_VALUE = 9103, Boot, Fatal, "cli-flag-requires-value", "1.6.0", false,
+        "A command-line flag is missing its value",
+        "A flag that takes a value (such as `--config <path>` or `--providers <path>`) was the last argument, so it has nothing to read. Nothing ran; the process exited with the usage status (2).",
+        "Give the flag its value, for example `busbar --config /etc/busbar/config.yaml --validate`."
+        => cli_flag_requires_value(flag) "{flag} requires a value; try 'busbar --help'",
+        example "busbar --validate --config",
+        detail "--config requires a value; try 'busbar --help'";
+
+    MIGRATE_PATH_MISSING = 3401, Config, Fatal, "migrate-path-missing", "1.6.0", false,
+        "--migrate-config was given no file to migrate",
+        "`busbar --migrate-config` converts one old config file and needs its path. None was given, so nothing was read or printed; the process exited with the usage status (2).",
+        "Name the file: `busbar --migrate-config old-config.yaml > config.yaml`."
+        => migrate_path_missing() "--migrate-config requires a path: busbar --migrate-config <old-config.yaml>",
+        example "busbar --migrate-config",
+        detail "--migrate-config requires a path: busbar --migrate-config <old-config.yaml>";
+
+    MIGRATE_SOURCE_UNREADABLE = 3402, Config, Fatal, "migrate-source-unreadable", "1.6.0", false,
+        "--migrate-config could not read the file it was given",
+        "The old config file named to `--migrate-config` could not be read: it does not exist, it is not readable by this user, or it is not UTF-8 text. The operating system's reason follows the path. Nothing was migrated.",
+        "Check the path and its permissions, then run the migration again."
+        => migrate_source_unreadable(path, error) "cannot read '{path}': {error}",
+        example "busbar --migrate-config /etc/busbar/old.yaml",
+        detail "cannot read '/etc/busbar/old.yaml': No such file or directory (os error 2)";
+
+    MIGRATE_LAUNCH_DIRECTORY = 3403, Config, Fatal, "migrate-launch-directory", "1.6.0", false,
+        "--migrate-config could not resolve its working directory",
+        "The migration resolves relative paths (a providers file, a store path) against the directory busbar was launched from, as the old launcher did. The current directory could not be read (it was deleted or is not accessible), so nothing was migrated.",
+        "Run the migration from an existing, readable directory, ideally the one the old deployment was launched from."
+        => migrate_launch_directory(error) "cannot resolve migration launch directory: {error}",
+        example "cd /tmp/gone && rmdir /tmp/gone && busbar --migrate-config old.yaml",
+        detail "cannot resolve migration launch directory: No such file or directory (os error 2)";
+
+    MIGRATE_FAILED = 3404, Config, Fatal, "migrate-failed", "1.6.0", false,
+        "--migrate-config refused the file",
+        "The old config could not be converted mechanically: it is not valid YAML, it has a shape no busbar release accepted, or it carries a value the migration cannot carry forward without guessing. The reason follows the code. Nothing was printed to stdout, so no half-migrated config can be deployed by accident.",
+        "Fix the reason the message names in the OLD file (or capture the setting by hand), then run the migration again. docs/migration-1-6.md lists every key the migration rewrites."
+        => migrate_failed(reason) "--migrate-config failed: {reason}",
+        example "busbar --migrate-config not-yaml.txt",
+        detail "--migrate-config failed: config is not a YAML mapping";
+
+    MIGRATE_REFRESH_TTL_MEANING_CHANGED = 3405, Config, Actionable, "migrate-refresh-ttl-meaning-changed", "1.6.0", false,
+        "Migration carried refresh_ttl over to verify_ttl, whose meaning differs",
+        "1.5's `refresh_ttl` was a background sweep cadence (default 6h). Its replacement `verify_ttl` is the longest a cached tool listing may be served before a `tools/call` re-verifies the upstream live (default 5s). The migration carried your value over unchanged, which can leave a long drift-serving window on the request path.",
+        "Review the migrated `verify_ttl`: a few seconds is the default, `0` is strict-live, and a large value is an explicit security downgrade."
+        => migrate_refresh_ttl_meaning_changed(entry, value) "{entry}.refresh_ttl -> verify_ttl (value `{value}` carried over). The meaning CHANGED: `refresh_ttl` was a background sweep cadence (default 6h); `verify_ttl` is the MAX staleness before a `tools/call` re-verifies the upstream live (default 5s). Your value is now a drift-serving window on the request path — reconsider it: a few seconds is the new default, `0` is strict-live, and a large value is an explicit security downgrade",
+        example "mcp_servers:\n  search:\n    refresh_ttl: 6h",
+        detail "mcp_servers.search.refresh_ttl -> verify_ttl (value `6h` carried over). The meaning CHANGED: `refresh_ttl` was a background sweep cadence (default 6h); `verify_ttl` is the MAX staleness before a `tools/call` re-verifies the upstream live (default 5s). Your value is now a drift-serving window on the request path — reconsider it: a few seconds is the new default, `0` is strict-live, and a large value is an explicit security downgrade";
+
+    MIGRATE_ADMIN_SCOPE_WIDENED = 3406, Config, Actionable, "migrate-admin-scope-widened", "1.6.0", false,
+        "Migration widened a retired delegated admin scope to full",
+        "1.5.2 retired the delegated admin scopes. An auth chain entry or role binding that granted one is migrated to `full`, the nearest scope that keeps every call it allowed working, which may be broader than intended.",
+        "Review the named entry and tighten it to `read-only` if `full` is too broad."
+        => migrate_admin_scope_widened(entry, old) "{entry}: {old} -> full (the delegated {old} scope is retired in 1.5.2; tighten to read-only if full is too broad)",
+        example "auth:\n  admin_auth:\n    - oidc: { max_admin_scope: keys }",
+        detail "auth.admin_auth entry 'oidc' max_admin_scope: keys -> full (the delegated keys scope is retired in 1.5.2; tighten to read-only if full is too broad)";
+
+    MIGRATE_EMPTY_ALLOWED_POOLS_FLIPPED = 3407, Config, Actionable, "migrate-empty-allowed-pools-flipped", "1.6.0", false,
+        "An empty allowed_pools list now means no pools",
+        "Before 1.5.0 an empty `allowed_pools: []` on a role binding meant every pool; since 1.5.0 it means no pool. The migration keeps the list as written, so the role now reaches nothing.",
+        "If the role should reach every pool, delete the `allowed_pools` line (omitted means all). If it should reach none, keep `[]`."
+        => migrate_empty_allowed_pools_flipped(module, role) "auth.role_bindings.{module}.{role}.allowed_pools: [] - the MEANING of an empty list FLIPPED in 1.5.0: it used to mean ALL pools, it now means NO pools. If this role should reach every pool, DELETE the allowed_pools line (omitted = all); if it should reach none, keep []",
+        example "auth:\n  role_bindings:\n    oidc:\n      engineers: { allowed_pools: [] }",
+        detail "auth.role_bindings.oidc.engineers.allowed_pools: [] - the MEANING of an empty list FLIPPED in 1.5.0: it used to mean ALL pools, it now means NO pools. If this role should reach every pool, DELETE the allowed_pools line (omitted = all); if it should reach none, keep []";
+
+    MIGRATE_UNGOVERNED_BINDING_ADDED = 3408, Config, Actionable, "migrate-ungoverned-binding-added", "1.6.0", false,
+        "Migration added a binding that keeps 1.5.5's ungoverned access",
+        "1.5.5 admitted a principal its identity provider recognised even when no role binding granted it anything; 1.6.0 refuses such a principal (401). To keep a migrated deployment serving the same callers, the migration wrote an empty binding for them: every pool, no group, no budget.",
+        "Tighten the named binding (allowed_pools, a group with limits) or remove it to refuse those principals."
+        => migrate_ungoverned_binding_added(provider, role, who) "auth.role_bindings.{provider}.\"{role}\" was written by the migration to keep 1.5.5's access: {who} is admitted on every pool with no budget, as 1.5.5 admitted them. Tighten it (allowed_pools, a group with limits) or remove it to refuse them",
+        example "auth:\n  auth_chain: [oidc]",
+        detail "auth.role_bindings.oidc.\"*\" was written by the migration to keep 1.5.5's access: every principal it identifies is admitted on every pool with no budget, as 1.5.5 admitted them. Tighten it (allowed_pools, a group with limits) or remove it to refuse them";
+
+    MIGRATE_WORKER_THREADS_IGNORED = 3409, Config, Actionable, "migrate-worker-threads-ignored", "1.6.0", false,
+        "BUSBAR_WORKER_THREADS was not a positive integer and was not captured",
+        "The migration captures the old launcher's BUSBAR_WORKER_THREADS into `advanced.worker_threads`. Its value was not a positive integer, which the old launcher also ignored, so nothing was captured and the configured worker count (or TOKIO_WORKER_THREADS) still applies.",
+        "Set `advanced.worker_threads` in the migrated config if you meant to pin the worker count, and remove BUSBAR_WORKER_THREADS from the launcher."
+        => migrate_worker_threads_ignored() "BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved",
+        example "BUSBAR_WORKER_THREADS=auto busbar --migrate-config old.yaml",
+        detail "BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved";
+
+    CONFIG_MODEL_INVALID = 3102, Config, Fatal, "config-model-invalid", "1.6.0", false,
+        "A model definition is invalid",
+        "An entry under `models:` names a provider that is not defined, or sets a per-model value outside its range: `default_max_tokens`, `max_concurrent` or `max_requests` of 0, an `attempt_timeout_ms` of 0 or above the 30-year ceiling, an empty `upstream_model`, or a `context_max` that two pools declare differently. The message names the model and the field.",
+        "Fix the named field under `models.<name>:`: point `provider:` at a provider defined in providers.yaml or `providers:`, use a positive value, or omit the field to take its default. Then run `busbar --validate`."
+        => config_model_invalid(detail) "{detail}",
+        example "models:\n  gpt-4o:\n    provider: openia     # typo: no such provider",
+        detail "model 'gpt-4o' references unknown provider 'openia'";
+
+    CONFIG_NAME_RESERVED_ROUTE = 3103, Config, Fatal, "config-name-reserved-route", "1.6.0", false,
+        "A model, pool or provider is named after a reserved route prefix",
+        "Models, pools and providers are reachable at `/<name>/...`. The names `admin` and the native-API root are routed to the operator admin surface before any model, pool or provider route, so an entry with one of those names could never be reached by a client and would bypass its own governance.",
+        "Rename the model, pool or provider the message names, and update every reference to it."
+        => config_name_reserved_route(detail) "{detail}",
+        example "pools:\n  admin:\n    members: [gpt-4o]",
+        detail "pool name 'admin' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a pool reachable via that path is unreachable to clients and bypasses per-pool governance; rename it";
+
+    CONFIG_NAME_CONFLICT = 3104, Config, Fatal, "config-name-conflict", "1.6.0", false,
+        "A pool shares its name with a provider or a model",
+        "Pools, providers and models share one route namespace (`/<name>/...`), so a pool may not take the name of a provider or a model: one of the two would be unreachable.",
+        "Rename the pool (or the provider or model) so every name is distinct, and update the references to it."
+        => config_name_conflict(detail) "{detail}",
+        example "models:\n  fast: { provider: openai }\npools:\n  fast: { members: [fast] }",
+        detail "pool name 'fast' conflicts with model name 'fast'; pools and models must have distinct names";
+
+    CONFIG_POOL_MEMBERS_INVALID = 3105, Config, Fatal, "config-pool-members-invalid", "1.6.0", false,
+        "A pool's member list is invalid",
+        "A pool has no members, a member's `weight` is 0, a member's `attempt_timeout_ms` is 0 or above the 30-year ceiling, or a member names a model that is not defined (or whose provider is not). A pool with no routable member answers every request with a misleading 503.",
+        "Fix the member the message names under `pools.<pool>.members:`: name a model defined under `models:`, use a weight of at least 1 and a positive timeout, or remove the pool."
+        => config_pool_members_invalid(detail) "{detail}",
+        example "pools:\n  default:\n    members: [gpt-4o, claude-sonet]   # typo",
+        detail "pool 'default' references unknown model 'claude-sonet'";
+
+    CONFIG_POOL_FAILOVER_INVALID = 3106, Config, Fatal, "config-pool-failover-invalid", "1.6.0", false,
+        "A pool's failover block is invalid",
+        "`failover.timeout_secs` is 0 (every request would 503 before its first attempt) or above 24 hours, or `failover.exclusions` names something that is not a member of the pool (so it benches nothing).",
+        "Set `failover.timeout_secs` between 1 and 86400 and list only the pool's own members under `failover.exclusions`."
+        => config_pool_failover_invalid(detail) "{detail}",
+        example "pools:\n  default:\n    members: [gpt-4o]\n    failover: { timeout_secs: 0 }",
+        detail "pool 'default' failover.timeout_secs must be >= 1; a 0 budget rejects the primary attempt before it runs (every request 503s)";
+
+    CONFIG_POOL_ON_EXHAUSTED_INVALID = 3107, Config, Fatal, "config-pool-on-exhausted-invalid", "1.6.0", false,
+        "A pool's on_exhausted block is invalid",
+        "`on_exhausted` names a fallback pool that does not exist or the pool itself, or its `queue.max_ms` is 0 or longer than the pool's whole failover budget. Such a setting never engages: the pool 503s exactly as if it had no fallback.",
+        "Point `on_exhausted.fallback_pool` at a different, defined pool, and keep `queue.max_ms` above 0 and at or below the failover budget (or raise `failover.timeout_secs`)."
+        => config_pool_on_exhausted_invalid(detail) "{detail}",
+        example "pools:\n  primary:\n    members: [gpt-4o]\n    on_exhausted: { fallback_pool: backup }   # no such pool",
+        detail "pool 'primary' on_exhausted references unknown fallback pool 'backup'";
+
+    CONFIG_POOL_AFFINITY_INVALID = 3108, Config, Fatal, "config-pool-affinity-invalid", "1.6.0", false,
+        "A pool's affinity header name is invalid",
+        "`affinity.header_name` must be a valid, non-empty, ASCII HTTP field-name of at most 64 characters; anything else would silently disable session affinity.",
+        "Set `affinity.header_name` to a plain header name such as `x-session-id`, or remove the affinity block."
+        => config_pool_affinity_invalid(detail) "{detail}",
+        example "pools:\n  chat:\n    members: [gpt-4o]\n    affinity: { mode: header, header_name: \"\" }",
+        detail "pool 'chat' affinity.header_name must not be empty (an empty HTTP header field-name silently disables session affinity)";
+
+    CONFIG_POOL_FALLBACK_CYCLE = 3109, Config, Fatal, "config-pool-fallback-cycle", "1.6.0", false,
+        "Pools' on_exhausted fallbacks form a cycle",
+        "Following `on_exhausted.fallback_pool` from pool to pool leads back to a pool already visited. The runtime loop guard would cut the ring on re-entry, so every pool in it 503s instead of degrading.",
+        "Break the cycle the message prints: point one pool at a pool outside the ring, or remove its `on_exhausted`."
+        => config_pool_fallback_cycle(detail) "{detail}",
+        example "pools:\n  a: { members: [m1], on_exhausted: { fallback_pool: b } }\n  b: { members: [m2], on_exhausted: { fallback_pool: a } }",
+        detail "fallback_pool cycle detected: a -> b -> a; on_exhausted fallback chains must not loop — the runtime loop guard terminates a cycle on re-entry, so every pool in the ring 503s instead of degrading. Break the cycle (point one pool at a non-looping pool or remove its on_exhausted)";
+
+    CONFIG_POOL_BREAKER_INVALID = 3110, Config, Fatal, "config-pool-breaker-invalid", "1.6.0", false,
+        "A pool's circuit-breaker settings are invalid",
+        "A `breaker:` value is out of range: a cooldown of 0 (which re-admits a tripped backend at once), `max_cooldown_secs` below `base_cooldown_secs`, a trip `min_requests`, `window_secs` or `consecutive_n` of 0, or an error-rate `threshold` outside (0.0, 1.0].",
+        "Fix the field the message names under `pools.<pool>.breaker:`; docs/circuit-breaker.md gives every default."
+        => config_pool_breaker_invalid(detail) "{detail}",
+        example "pools:\n  default:\n    members: [gpt-4o]\n    breaker: { base_cooldown_secs: 0 }",
+        detail "pool 'default' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off";
+
+    CONFIG_POOL_HOOKS_INVALID = 3111, Config, Fatal, "config-pool-hooks-invalid", "1.6.0", false,
+        "A pool's hook list is invalid",
+        "A pool's `hooks:` list names a hook that is not defined under top-level `hooks:`, names a tap (only a gate can influence routing), or names a built-in ranking strategy this binary was built without.",
+        "Define the hook under top-level `hooks:`, use a gate, or name a strategy this build carries (`busbar --help` lists the build's features)."
+        => config_pool_hooks_invalid(detail) "{detail}",
+        example "pools:\n  default:\n    members: [gpt-4o]\n    hooks: [pii-scrub]   # not defined under hooks:",
+        detail "pool 'default' references unknown hook 'pii-scrub'; define it under top-level `hooks:`";
+
+    CONFIG_HOOK_INVALID = 3112, Config, Fatal, "config-hook-invalid", "1.6.0", false,
+        "A hook definition is invalid",
+        "An entry under top-level `hooks:` (or `global_hooks:`) cannot work as written: it names no plugin, a tap asks to rewrite or to be the default ordering, it takes a reserved name, more than one hook is the default, its timeout is out of range, or its `on_error` chain names an unknown fallback, a tap, an absent ranking strategy or loops.",
+        "Fix the hook the message names: set `module:` to a `kind: hook` plugin, use `kind: gate` where it must decide, rename it off reserved words, and end every `on_error` chain on nothing, weighted, reject, first or a ranking strategy."
+        => config_hook_invalid(detail) "{detail}",
+        example "hooks:\n  audit-tap:\n    module: audit\n    kind: tap\n    prompt: rw",
+        detail "hook 'audit-tap' is a tap with `prompt: rw`, but only a gate can rewrite (a tap never replies). Use `kind: gate`, or lower to `prompt: ro`";
+
+    CONFIG_AUTH_POLICY_INVALID = 3113, Config, Fatal, "config-auth-policy-invalid", "1.6.0", false,
+        "An auth policy or key lifetime setting is invalid",
+        "A setting under `auth:` that governs minted keys cannot hold: a duration that does not parse, a default TTL above the maximum, a per-role mint ceiling wider than the deployment-wide policy, a delegated admin scope that does not parse, or a browser-login method without a `public_url:` to build its redirect URLs.",
+        "Fix the named setting: durations are written like `30d` or `12h`, per-role ceilings must stay within `auth.policy`, and a browser login needs top-level `public_url: https://<busbar-host>`."
+        => config_auth_policy_invalid(detail) "{detail}",
+        example "auth:\n  policy: { default_ttl: 90d, max_ttl: 30d }",
+        detail "auth.policy.default_ttl ('90d', 7776000s) exceeds auth.policy.max_ttl ('30d', 2592000s); the default a mint falls back to cannot be longer than the ceiling";
+
+    CONFIG_ROLE_BINDING_INVALID = 3114, Config, Fatal, "config-role-binding-invalid", "1.6.0", false,
+        "A role binding is invalid",
+        "An entry under `auth.role_bindings` names a module that is in neither auth chain, a role that shadows the reserved operator principal, an unknown admin scope or admin verb, a grant kind no installed plane declares, or a group that does not exist. A binding like that grants nothing, or grants something other than what it says.",
+        "Fix the binding the message names; the message prints the exact YAML to add where a module or group is missing."
+        => config_role_binding_invalid(detail) "{detail}",
+        example "auth:\n  role_bindings:\n    oidc:\n      engineers: { group: eng }   # no group `eng`",
+        detail "role_bindings.oidc.engineers names group 'eng', which does not exist.\nPaste this under groups and set its limits:\n\n  eng:\n    limits:\n      - { requests: 0, per: minute }\n";
+
+    CONFIG_AUTH_CHAIN_INVALID = 3115, Config, Fatal, "config-auth-chain-invalid", "1.6.0", false,
+        "The auth chain cannot authenticate as configured",
+        "The data-plane or admin auth chain is incomplete: it names a module that was removed, it verifies busbar-signed keys without an `auth.signing_key` or without any way to mint one, an operator token sits on a module that is not the operator provider, or the operator token has no answer. Busbar refuses rather than start with an auth surface that admits the wrong callers or none.",
+        "Follow the message: generate a signing key with `busbar --generate-signing-key` and reference it from `auth.signing_key`, name `keys` or an IdP plugin in `auth.chain`, and keep the operator token on the operator provider."
+        => config_auth_chain_invalid(detail) "{detail}",
+        example "auth:\n  chain: [keys]          # no signing_key",
+        detail "auth.signing_key is required for signed-token auth (auth.chain names the built-in `keys` verifier), but none is set - and busbar no longer auto-generates one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR} - a SHARED secret across nodes for a fleet)";
+
+    CONFIG_PLANE_OPEN_TO_ANONYMOUS = 3116, Config, Fatal, "config-plane-open-to-anonymous", "1.6.0", false,
+        "A plane is configured while the data-plane auth chain is empty",
+        "A plane section (tools, agents and the like) is configured but `auth.chain` is empty, so the plane would serve anonymous callers with wildcard grants over every registered subject, and outbound credentials would have no inbound grant to bind to.",
+        "Close the data-plane chain (`auth: { chain: [keys] }` or an IdP auth plugin), or remove the plane block if this deployment does not serve it."
+        => config_plane_open_to_anonymous(detail) "{detail}",
+        example "tools:\n  search: { url: https://mcp.example.com }\n# no auth.chain",
+        detail "`tools:` is configured but auth.chain is empty, which serves the MCP endpoint to ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it runs with WILDCARD grants over every registered subject on that plane. It also leaves `upstream::authorise` with no inbound grant to bind busbar's outbound credentials to. Close the data-plane chain (`auth: { chain: [keys] }`, or an IdP auth plugin), or remove the `tools:` block if this deployment is not a MCP endpoint";
+
+    CONFIG_SETTING_OUT_OF_RANGE = 3117, Config, Fatal, "config-setting-out-of-range", "1.6.0", false,
+        "A global limit or timing setting is out of range",
+        "A value under `limits:`, `health:`, `routing:` or `advanced:` is outside what busbar can run with: a timeout or interval of 0 (which fails or disables the thing it bounds), a size below its floor or above its ceiling, a duration above the 30-year ceiling the runtime's clock arithmetic can hold, or reasoning-effort budgets that are zero or not ascending.",
+        "Set the named key within the range the message states, or omit it to take the default; docs/configuration.md lists every default."
+        => config_setting_out_of_range(detail) "{detail}",
+        example "limits:\n  upstream_request_timeout_secs: 0",
+        detail "limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call instantly)";
+
+    CONFIG_RATE_CARD_INVALID = 3118, Config, Fatal, "config-rate-card-invalid", "1.6.0", false,
+        "A rate card or fee is invalid",
+        "A rate card or fee cannot be priced as written: a rate that is negative, not finite or implausibly large, a unit or class the plane does not declare or count, a reserved class priced by name, a card entry for a model that is not defined, or a negative per-request fee.",
+        "Fix the named entry: price only the units and classes the plane declares, keep rates finite and non-negative, and name only defined models."
+        => config_rate_card_invalid(detail) "{detail}",
+        example "rate_card:\n  gpt-5: { input_utok: 1.25 }   # no model gpt-5",
+        detail "rate_card names model 'gpt-5', which is not defined under models:";
+
+    CONFIG_GROUP_INVALID = 3119, Config, Fatal, "config-group-invalid", "1.6.0", false,
+        "A group's limits are invalid",
+        "A group under `groups:` sets a limit of 0, which rejects every request through the group instead of bounding it.",
+        "Use a positive limit, or remove the limit to leave that dimension unbounded."
+        => config_group_invalid(detail) "{detail}",
+        example "groups:\n  eng:\n    limits:\n      - { requests: 0, per: minute }",
+        detail "groups.eng has a `requests` limit of 0, which rejects every request through the group from the first admission; set a positive amount, or set `enabled: false` to freeze the group explicitly";
+
+    CONFIG_STORE_INVALID = 3120, Config, Fatal, "config-store-invalid", "1.6.0", false,
+        "The store block is missing or names no module",
+        "Busbar keeps keys, budgets, audit and configuration overlays in the store named by top-level `store:`. The block is missing or its `module:` is empty.",
+        "Add `store: { module: <store plugin> }` (for example `sqlite` with a `db_path` setting)."
+        => config_store_invalid(detail) "{detail}",
+        example "store:\n  module: \"\"",
+        detail "store.module must be non-empty; name the configured Store plugin";
+
+    CONFIG_SECRET_REFERENCE_INVALID = 3121, Config, Fatal, "config-secret-reference-invalid", "1.6.0", false,
+        "A secret reference or secret module setting is invalid",
+        "A secret is referenced in a way busbar cannot resolve safely: `none` where a credential is required, a reference form the setting does not accept, or module-level settings on a built-in secret module that takes none.",
+        "Reference the secret as `{ env: VAR }`, `{ file: /path }` or `{ module: <secret-module>, settings: {...} }`, as the message shows for the setting it names."
+        => config_secret_reference_invalid(detail) "{detail}",
+        example "secrets:\n  env: { prefix: BUSBAR_ }",
+        detail "secrets.env: the built-in 'env' secret module takes no module-level settings";
+
+    CONFIG_METADATA_HOST_ENTRY_INVALID = 3122, Config, Fatal, "config-metadata-host-entry-invalid", "1.6.0", false,
+        "A metadata host list entry can never match",
+        "`security.blocked_metadata_hosts` and `security.allow_metadata_hosts` are matched by exact IP or hostname. An entry with a CIDR (`/`) or one that maps to no host would silently never match, leaving the protection it was meant to add (or remove) a no-op.",
+        "List exact IPs or hostnames, for example `169.254.169.254`, not `169.254.0.0/16`."
+        => config_metadata_host_entry_invalid(detail) "{detail}",
+        example "security:\n  blocked_metadata_hosts: [169.254.0.0/16]",
+        detail "security.blocked_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR is not supported here): these lists are matched by EXACT IP or hostname, so a CIDR/slash entry silently never matches and is a no-op. List exact IPs/hostnames instead (e.g. '169.254.169.254', not '169.254.0.0/16')";
+
+    CONFIG_PROVIDER_INVALID = 3123, Config, Fatal, "config-provider-invalid", "1.6.0", false,
+        "A provider definition is invalid",
+        "A provider's settings cannot work: a health interval or timeout of 0 or above its ceiling, an `error_map` class that does not exist, a `path` or `path_base` that does not begin with `/`, or an option the provider's protocol does not take.",
+        "Fix the field the message names under `providers.<name>:`; docs/providers.md documents every provider field."
+        => config_provider_invalid(detail) "{detail}",
+        example "providers:\n  openai:\n    base_url: https://api.openai.com\n    path: v1/chat/completions",
+        detail "provider 'openai' path 'v1/chat/completions' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + 'v1/chat/completions') and can redirect signed traffic to an attacker-controlled host";
+
+    CONFIG_PROVIDER_DESTINATION_BLOCKED = 3124, Config, Fatal, "config-provider-destination-blocked", "1.6.0", false,
+        "A provider URL targets a blocked cloud-metadata host",
+        "A provider's `base_url`, `base_url` + `path`, `base_url` + `path_base` or `token_url` resolves to a cloud-metadata (IMDS) endpoint on `security.blocked_metadata_hosts`. Busbar would send credentials there, so it refuses the configuration.",
+        "Point the provider at its real API host. If the host is deliberately reachable, list it under `security.allow_metadata_hosts`."
+        => config_provider_destination_blocked(detail) "{detail}",
+        example "providers:\n  internal:\n    base_url: http://169.254.169.254",
+        detail "provider 'internal' base_url 'http://169.254.169.254' targets a blocked cloud-metadata host '169.254.169.254' (cloud-metadata/IMDS endpoints are denied; ...)";
+
+    CONFIG_PROVIDER_CREDENTIAL_INVALID = 3125, Config, Fatal, "config-provider-credential-invalid", "1.6.0", false,
+        "A provider's credential cannot be used as configured",
+        "A provider's outbound credential is invalid for its auth style: the referenced secret does not parse (a service-account key, a signing key), required auth settings are missing, or the settings contradict the style. The message names the provider, the style and the secret's source, never its value.",
+        "Fix the secret the message points at (its `env:`, `file:` or module source) or the provider's auth settings, then run `busbar --validate`."
+        => config_provider_credential_invalid(detail) "{detail}",
+        example "providers:\n  vertex:\n    auth: jwt-bearer\n    api_key: { env: VERTEX_SA }   # not a service-account JSON",
+        detail "provider 'vertex' jwt-bearer credential (from env:VERTEX_SA) is invalid: service-account key is not JSON";
+
+    CONFIG_PROVIDER_PROTOCOL_UNKNOWN = 3126, Config, Fatal, "config-provider-protocol-unknown", "1.6.0", false,
+        "A provider names a protocol this build does not speak",
+        "A provider's `protocol:` is not one this binary carries: it is misspelled, or the build has no plane that speaks it.",
+        "Use one of the protocols the message lists, or run a build that carries the plane for it."
+        => config_provider_protocol_unknown(detail) "{detail}",
+        example "providers:\n  claude:\n    protocol: antropic",
+        detail "provider 'claude' has unknown protocol 'antropic': must be one of: anthropic, bedrock, cohere, gemini, openai, responses";
+
+    CONFIG_PLANE_POOL_INVALID = 3127, Config, Fatal, "config-plane-pool-invalid", "1.6.0", false,
+        "A plane section's failover pool is invalid",
+        "A failover pool inside a plane section (`tools.pools`, `agents.pools`, ...) cannot fail over as written: it has fewer than two members or more than the breaker's lane table holds, it shares its name with a registration, it names a member twice, a member belongs to another plane or is not defined, a member sits in two pools, or a `repeatable:` entry is empty.",
+        "Fix the pool the message names: list two or more distinct members defined in the same plane section, give the pool its own name, and keep each registration in at most one pool."
+        => config_plane_pool_invalid(detail) "{detail}",
+        example "tools:\n  pools:\n    search: { members: [brave] }",
+        detail "tools.search: a failover pool needs at least TWO members (it has 1). A pool with one member has nowhere to fail over to, so it changes nothing; remove it or add the second registration";
+
+    CONFIG_PROVIDER_REFERENCE_UNKNOWN = 3128, Config, Fatal, "config-provider-reference-unknown", "1.6.0", false,
+        "A reference names a provider that is not defined or speaks the wrong protocol",
+        "config.yaml (or a plane section) names a provider that providers.yaml and `providers:` do not define, or one whose protocol the referencing plane does not speak.",
+        "Define the provider, fix the spelling, or point the reference at a provider of the right protocol; the message lists the valid choices."
+        => config_provider_reference_unknown(detail) "{detail}",
+        example "models:\n  gpt-4o: { provider: openai-eu }   # not in providers.yaml",
+        detail "provider 'openai-eu' referenced in config.yaml not found in providers.yaml";
+
+    CONFIG_SECTION_INVALID = 3129, Config, Fatal, "config-section-invalid", "1.6.0", false,
+        "A configuration section is not valid for this build",
+        "A top-level section does not parse into its shape, its registry fails its own checks, or it configures a plane (such as `oauth_as:`) whose implementation this binary does not link. The message names the section and the reason.",
+        "Fix the section as the message describes, or remove a section this build does not carry."
+        => config_section_invalid(detail) "{detail}",
+        example "oauth_as:\n  issuer: https://busbar.example.com",
+        detail "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) is not linked into this binary";
+
+    CONFIG_ADMIN_LISTENER_EXPOSED = 3130, Config, Fatal, "config-admin-listener-exposed", "1.6.0", false,
+        "The admin listener is network-exposed without mTLS",
+        "`admin_listen` binds a non-loopback address but `admin_tls.client_ca` is unset, so the admin plane would accept connections from the network without client certificates.",
+        "Set `admin_tls.client_ca` to require client certificates, or bind `admin_listen` to a loopback address."
+        => config_admin_listener_exposed(detail) "{detail}",
+        example "admin_listen: 0.0.0.0:9090",
+        detail "admin_listen '0.0.0.0:9090' is network-exposed but the admin plane has no mTLS (admin_tls.client_ca is unset). Require client certificates by supplying admin_tls.client_ca, bind admin_listen to loopback, or set admin_require_mtls: false to deliberately run a token-only admin plane (e.g. behind a mesh)";
+
+    CONFIG_EXPORT_INVALID = 3131, Config, Fatal, "config-export-invalid", "1.6.0", false,
+        "An export sink definition is invalid",
+        "An entry under `export:` cannot deliver what it promises: an unknown module, settings the module refuses, a stream or field that does not exist, has no producer or that the module cannot carry, a duplicate, an empty list, a pinned field left out, or `durable: true` that this release does not implement.",
+        "Fix the sink the message names; the message lists the valid streams and fields. docs/export.md documents every stream."
+        => config_export_invalid(detail) "{detail}",
+        example "export:\n  siem:\n    module: otlp\n    streams: [audit]",
+        detail "export.siem.streams: `audit` is NOT a stream — it was a use case, not a data type";
+
+    CONFIG_DESTINATION_REFUSED = 3132, Config, Fatal, "config-destination-refused", "1.6.0", false,
+        "An outbound destination is refused by the egress policy",
+        "A configured outbound URL (an upstream, a token endpoint, a sink) is not one busbar will send to: it is malformed, uses plaintext for a public host, or targets a blocked cloud-metadata host.",
+        "Use an `https://` URL for a public host, fix the URL the message names, or list a deliberately reachable metadata host under `security.allow_metadata_hosts`."
+        => config_destination_refused(detail) "{detail}",
+        example "providers:\n  remote: { base_url: http://api.example.com }",
+        detail "provider 'remote' base_url must use a secure connection for a public host; plaintext is permitted only for a private/loopback local-model upstream";
+
+    /// The admin API error envelope's `diag` for `error.code = not_found`.
+    ADMIN_NOT_FOUND = 8101, Governance, Actionable, "admin-not-found", "1.6.0", false,
+        "The admin resource named in the request does not exist",
+        "The path names a resource (a key, a group, a hook, an exporter, a plugin) that this deployment does not have, or one that cannot exist in its current mode (a key read with governance disabled). The response's `message` names the missing thing.",
+        "List the collection (for example `GET /api/v1/admin/keys`) to find the right name or id, or create the resource first.";
+
+    /// The admin API error envelope's `diag` for `error.code = unauthorized`.
+    ADMIN_UNAUTHORIZED = 8102, Governance, Actionable, "admin-unauthorized", "1.6.0", false,
+        "The admin request carries no valid admin credential",
+        "The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` or `x-admin-token` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).",
+        "Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>` or `x-admin-token`. docs/admin-api.md covers the auth chain.";
+
+    /// The admin API error envelope's `diag` for `error.code = method_not_allowed`.
+    ADMIN_METHOD_NOT_ALLOWED = 8103, Governance, Actionable, "admin-method-not-allowed", "1.6.0", false,
+        "The admin path does not take this HTTP method",
+        "The path exists on the admin surface, but not with the method the request used (for example a `DELETE` on a read-only collection).",
+        "Use a method the path documents; the OpenAPI document at /docs/api/ lists every path and method.";
+
+    /// The admin API error envelope's `diag` for `error.code = forbidden`.
+    ADMIN_FORBIDDEN = 8104, Governance, Actionable, "admin-forbidden", "1.6.0", false,
+        "The admin credential's scope does not cover this call",
+        "The caller authenticated, but its admin scope (read-only, or a role binding's verb list) does not include this operation. The message names the scope that would have sufficed.",
+        "Call with a credential whose scope covers the operation, or widen the role binding's `admin_scope` or `verbs`.";
+
+    /// The admin API error envelope's `diag` for `error.code = invalid_request`.
+    ADMIN_INVALID_REQUEST = 8105, Governance, Actionable, "admin-invalid-request", "1.6.0", false,
+        "The admin request is malformed or fails validation",
+        "The request body or its parameters are not what the operation takes: a malformed JSON body, an unknown or missing field, a value out of range, or a configuration change that fails the same validation `busbar --validate` runs. The message says which.",
+        "Fix the request as the message describes; the OpenAPI document at /docs/api/ gives each operation's schema.";
+
+    /// The admin API error envelope's `diag` for `error.code = version_conflict`.
+    ADMIN_VERSION_CONFLICT = 8106, Governance, Actionable, "admin-version-conflict", "1.6.0", false,
+        "The If-Match version is stale",
+        "The request's `If-Match` names a version of the resource that is no longer current: someone else changed it after you read it. This is retryable.",
+        "Re-read the resource, re-apply your change to the current version, and retry with the new `ETag`.";
+
+    /// The admin API error envelope's `diag` for `error.code = conflict`.
+    ADMIN_CONFLICT = 8107, Governance, Actionable, "admin-conflict", "1.6.0", false,
+        "The admin request contradicts the server's state",
+        "The request cannot apply to the current state and a retry will not change that: governance is disabled, a base-defined hook cannot be removed, a grant is immutable, a duplicate already exists, or an idempotency key is still in flight. The message says which.",
+        "Change the request (or the state it depends on) as the message describes; this is not a transient error.";
+
+    /// The admin API error envelope's `diag` for `error.code = rate_limited`.
+    ADMIN_RATE_LIMITED = 8108, Governance, Actionable, "admin-rate-limited", "1.6.0", false,
+        "The admin mutation rate limit is exhausted",
+        "The caller has used its per-minute budget of admin mutations. Reads are not limited.",
+        "Wait for the window the `retry-after` header gives (at most a minute) and retry; batch changes where the API allows.";
+
+    /// The admin API error envelope's `diag` for `error.code = internal`.
+    ADMIN_INTERNAL = 8109, Governance, Actionable, "admin-internal", "1.6.0", false,
+        "The admin call failed inside busbar",
+        "An internal failure (a store or plugin error) stopped the call. The response never carries the cause, which may be sensitive; the server log carries it under its own code.",
+        "Check the busbar log at the time of the call for the error line and its code, then retry once the cause is fixed.";
+
+    /// The admin API error envelope's `diag` for `error.code = unavailable`.
+    ADMIN_UNAVAILABLE = 8110, Governance, Actionable, "admin-unavailable", "1.6.0", false,
+        "The admin call could not complete within its bound",
+        "An operation that is normally fast could not start or finish in time (for example the plugin catalog scan), or no administrative surface is mounted on this listener. The call was abandoned rather than left to hang.",
+        "Retry after a short wait. If it persists, check the server log and the store's health.";
+
+    /// The admin API error envelope's `diag` for `error.code = unpriced_class`.
+    ADMIN_UNPRICED_CLASS = 8111, Governance, Actionable, "admin-unpriced-class", "1.6.0", false,
+        "A usage read names a class the rate card does not price",
+        "A usage query asked for a class the rate card in force does not price, so there is no amount to report for it.",
+        "Price the class on the plane's rate card, or drop it from the query.";
+
+    /// The admin API error envelope's `diag` for `error.code = request_too_large`.
+    ADMIN_REQUEST_TOO_LARGE = 8112, Governance, Actionable, "admin-request-too-large", "1.6.0", false,
+        "The admin request body exceeds the configured limit",
+        "The request body is larger than the admin surface accepts.",
+        "Send a smaller body (split a bulk change into several requests), or raise the configured admin body limit.";
+
+    /// The admin API error envelope's `diag` for `error.code = (any other)`.
+    ADMIN_REQUEST_REFUSED = 8199, Governance, Actionable, "admin-request-refused", "1.6.0", false,
+        "The admin request was refused",
+        "The admin surface refused the request for a reason the `error.code` field names. This code covers refusals without a more specific admin code.",
+        "Read `error.code` and `error.message` in the response; docs/admin-api.md lists every error code.";
+
+    /// One source spent its budget of refused admin credentials; it is answered 429 until the window passes.
+    ADMIN_AUTH_THROTTLED_SOURCE = 4038, Auth, BenignRecurring, "admin-auth-throttled-source", "1.6.0", false,
+        "Admin door: a source's refused-credential budget is spent",
+        "A source presented `auth.login_limits.admin.max_failures` admin credentials that were refused inside the window. Further admin requests from it get 429 `rate_limited` (BUSBAR-8108) with the real Retry-After, before any credential is judged. Requests that present no credential are never counted. Logged at warn and audited (`admin.auth_throttled`) once per source and window.",
+        "Check who is guessing the admin credential from that source. Use a long random operator token (see BUSBAR-4042).";
+
+    /// The configured operator token is shorter than 32 bytes.
+    ADMIN_OPERATOR_TOKEN_SHORT = 4042, Auth, Actionable, "admin-operator-token-short", "1.6.0", false,
+        "Operator token is shorter than 32 bytes",
+        "The admin operator token is operator-chosen and compared by digest, so its entropy is the only thing between an online guesser and the admin API. A token shorter than 32 bytes is warned at every boot and reload in 1.6 and will be refused in 1.7.",
+        "Replace it with at least 32 random bytes (for example `openssl rand -hex 32`).";
+
+    /// A DPoP-bound token or DPoP presentation was refused (RFC 9449). Emitted per refusal by `auth::dpop`, never with the token.
+    AUTH_SENDER_CONSTRAINT_REFUSED = 4032, Auth, Actionable, "auth-sender-constraint-refused", "1.6.0", false,
+        "Sender-constrained (DPoP) credential refused",
+        "A DPoP-bound token or DPoP presentation was refused because its sender constraint was not met or cannot be verified here",
+        "Have the client present a DPoP proof (with `oauth_as` configured) or an unbound token; if the IdP binds tokens for bearer-only clients, change the IdP client";
+
+    /// A login-limits setting is out of range or malformed; boot refuses.
+    CONFIG_LOGIN_LIMITS_INVALID = 3133, Config, Fatal, "config-login-limits-invalid", "1.6.0", false,
+        "A login attempt limit setting is invalid",
+        "A key of `auth.login_limits`, a provider's `browser_login.max_failures` or `browser_login.failure_window`, `advanced.trusted_proxies` or `advanced.forwarded_header` is out of range or does not parse, so busbar refuses the config rather than run with a limit nobody chose. Counts are 1..=100 (per account) or at least 1, windows 1m..=24h, `per_account.max_failures` may not exceed `per_source.max_failures`, every trusted proxy is an IP or a CIDR, and the forwarded header is `x-forwarded-for` or `forwarded`.",
+        "Fix the key the message names.";
+
+    /// A first-start owner made no progress write for longer than its step budget.
+    FIRST_START_SLOW_STEP = 9016, Boot, Actionable, "first-start-slow-step", "1.6.0", false,
+        "First start step slower than its budget (waiters may take over)",
+        "A first-start owner went longer than the step budget (45 s, plus 35 s for a step that runs inside a plane's READY) between two progress writes. Waiting replicas take over after 90 s without progress, so a gap near that window risks retiring a live owner. The line names the step and the gap.",
+        "Find what made the step slow (plugin load or open, driver build, the store, an import page) and make it faster. A single replica is not at risk; several replicas sharing the store are.";
+
+    /// This process retired a first-start owner whose progress rows did not change for the stall window and took over its first start.
+    FIRST_START_TAKEOVER = 9014, Boot, Actionable, "first-start-takeover", "1.6.0", false,
+        "Took over a stalled first start (the previous owner is retired)",
+        "An unpublished first start of this dataset was owned by another writer whose progress rows stayed byte-for-byte unchanged for the whole stall window (90 s plus 35 s per plane already done), so this process retired that writer and now owns the first start. Logged only when the takeover Register applied. The line names the dataset, the previous and new writer ids, the stall, the window and the observed digest. The previous owner, if still alive, is fenced and fails boot asking for reconciliation.",
+        "Find out why the previous owner stopped: it crashed, was killed, or hung past its own deadlines (a plugin READY, an unavailable store). No action is needed for the dataset; this process finishes first start.";
+
+    /// A first-start takeover was attempted but its outcome is unknown or it was refused; boot refuses.
+    FIRST_START_TAKEOVER_UNCONFIRMED = 9015, Boot, Actionable, "first-start-takeover-unconfirmed", "1.6.0", false,
+        "First-start takeover not confirmed (outcome unknown or refused)",
+        "This process tried to take over a stalled first start, but the store did not confirm it: either the outcome is unknown (the previous writer may or may not have been retired) or the store refused it with no effect. Nothing claims the takeover happened; boot then refuses with the store admission error that follows this line.",
+        "Check the store's health and restart. The next start reads the dataset as it is: it waits on the owner, or takes over at once if the earlier takeover did apply.";
+
+    /// One account has been throttled in more than four consecutive failure windows: a targeted account.
+    LOGIN_ACCOUNT_THROTTLE_SUSTAINED = 4041, Auth, Actionable, "login-account-throttle-sustained", "1.6.0", false,
+        "An account has been throttled for more than four consecutive windows",
+        "Someone keeps spending one account's failure budget, window after window. busbar keeps refusing (inside busbar only; the directory is protected), but the real user cannot sign in either. The log carries the account's key fingerprint, never the name. Warned once per window while it lasts.",
+        "Treat it as a security event: find the sources in the audit log and block them upstream. Tell the user; consider a trusted network path for them.";
+
+    /// A credential sign-in or admin request came from a source busbar cannot identify; per-source limits do not apply to it.
+    LOGIN_CLIENT_ADDRESS_UNKNOWN = 4036, Auth, Actionable, "login-client-address-unknown", "1.6.0", false,
+        "Client address unknown: per-source login limits skipped",
+        "busbar could not tell who sent a request: the server has no socket peer (an embedded server), a trusted proxy forwarded an unparseable hop, or a private or loopback peer sent `X-Forwarded-For` or `Forwarded` while `advanced.trusted_proxies` is empty, which means an ingress sits in front of busbar and every user would otherwise share one bucket. Per-source limits are skipped for such requests; the per-account limiter still applies. Warned once, then at debug.",
+        "List the ingress or load balancer addresses in `advanced.trusted_proxies` (and set `advanced.forwarded_header` if it sends `Forwarded`).";
+
+    /// Credential sign-in failures on this node passed the global alarm threshold; per-source limits are tightened.
+    LOGIN_GLOBAL_ALARM = 4034, Auth, Actionable, "login-global-alarm", "1.6.0", false,
+        "Credential sign-in failures passed the global alarm threshold",
+        "More than `auth.login_limits.global.max_failures_per_minute` credential sign-in failures happened on this node in one minute: the shape of a distributed password spray. busbar does not refuse everyone; while the alarm holds it cuts each source's failure ceiling to a quarter and its submission rate to a third, and records `auth.login_alarm`. Warned once per trip; the clear is logged at info.",
+        "Investigate the spray (sources, targeted accounts in the audit log). Put a WAF rate limit in front of `POST /auth/token` if it persists.";
+
+    /// A login limiter is disabled by config.
+    LOGIN_LIMITER_DISABLED = 4037, Auth, Actionable, "login-limiter-disabled", "1.6.0", false,
+        "A login attempt limiter is disabled",
+        "`auth.login_limits.per_source.enabled` or `auth.login_limits.global.enabled` is false. That is allowed for a site whose WAF already does this, and logged at every boot and reload so it is never silent. The per-account limiter cannot be disabled.",
+        "Re-enable it, or confirm that a WAF in front of busbar rate-limits `POST /auth/token`.";
+
+    /// Credential sign-in is refused because no auth.signing_key is configured to key the login limiter.
+    LOGIN_LIMITER_NO_KEY = 4039, Auth, Actionable, "login-limiter-no-key", "1.6.0", false,
+        "Credential sign-in refused: no signing key to key the login limiter",
+        "The per-account limiter keys accounts with an HMAC derived from `auth.signing_key`, so every node computes the same key over the shared store. No signing key is configured, so busbar refuses each credential sign-in with 503 and does not call the plugin; it never falls back to a per-node random key, which would split the budget silently. Such a deployment cannot issue keys either. Warned once, then at debug.",
+        "Configure `auth.signing_key` (`busbar --generate-signing-key`).";
+
+    /// The login attempt limiter could not reach the core store; credential sign-ins are refused (503) without calling the plugin.
+    LOGIN_LIMITER_STORE_UNAVAILABLE = 4035, Auth, Actionable, "login-limiter-store-unavailable", "1.6.0", false,
+        "Login attempt limiter cannot reach the core store (sign-ins refused)",
+        "The per-account limiter keeps its counts in the core store so they hold fleet-wide. The store failed, was absent, or a compare-and-swap could not settle, so busbar fails closed: every credential sign-in answers 503 \"Couldn't reach your provider\" with Retry-After and the login plugin is not called (a sign-in could not finish anyway: issuing the key writes to the same store). Warned on entering the state and logged on recovery.",
+        "Restore the core store (`store:`). Sign-ins resume on their own once it answers.";
+
+    /// A credential method's identity provider failed repeatedly; sign-ins to it are answered 503 for a short time without calling it.
+    LOGIN_PROVIDER_BREAKER_OPEN = 4040, Auth, Actionable, "login-provider-breaker-open", "1.6.0", false,
+        "Credential method held open after repeated provider outages",
+        "The login plugin answered `Outage` (directory or IdP unreachable) five times within a minute. busbar answers sign-ins for that method with 503 \"Couldn't reach your provider\" and Retry-After: 30 for 30 seconds, without calling the plugin and without counting the attempts against anyone, so an outage does not throttle every user. Warned each time it opens.",
+        "Restore the directory or identity provider the method uses.";
+
+    /// A credential sign-in was refused because its account's failure ceiling is reached.
+    LOGIN_THROTTLED_ACCOUNT = 4045, Auth, BenignRecurring, "login-throttled-account", "1.6.0", false,
+        "Credential sign-in throttled: the account's failure ceiling is reached",
+        "A hosted credential sign-in (`POST /auth/token` with a login cookie) named an account that already has `max_failures` failed attempts inside its failure window, counted fleet-wide in the core store and keyed on an HMAC of the normalised account name (never the name). busbar answered 429 \"Too many sign-in attempts\" with Retry-After and did NOT call the login plugin, so the directory saw no bind. The first refusal per account and window is logged at warn and audited (`auth.login_throttled`); later ones log at debug.",
+        "None for a single burst: it expires on its own. Repeated refusals for one account are a targeted attack or a user who forgot a password: see BUSBAR-4041. Keep `browser_login.max_failures` x ceil(directory reset window / failure window) below the directory's lockout threshold.";
+
+    /// A credential sign-in was refused because its source address spent its failure or submission budget.
+    LOGIN_THROTTLED_SOURCE = 4033, Auth, BenignRecurring, "login-throttled-source", "1.6.0", false,
+        "Credential sign-in throttled: the client's source spent its budget",
+        "One client source (an IPv4 address, or an IPv6 /64 with /48 and /32 aggregates) exceeded the per-source failure ceiling or the submission rate inside the window, typically one client spraying many usernames. busbar answered 429 with Retry-After without calling the login plugin. The first refusal per source and window is logged at warn and audited; later ones log at debug.",
+        "None for a single client. If every user arrives from one address (an ingress or load balancer), configure `advanced.trusted_proxies` so busbar sees the real client address.";
+
+    STORE_COMMIT_FENCED_IN_DOUBT = 1011, Durability, Actionable, "store-commit-fenced-in-doubt", "1.6.0", false,
+        "A store commit whose earlier send may have applied was fenced on retry",
+        "A slotted commit lost its reply, and its retry found the writer's epoch no longer admitted (the writer was closed, which also deleted its slot rows). Whether the earlier send applied cannot be decided automatically, so the operation is held for reconciliation instead of being assumed either way.",
+        "Reconcile the named operation against the store's records before reusing its effects. This follows a writer closure (recovery adoption or shutdown) while a commit was in doubt.";
+
+    STORE_INFLIGHT_EXHAUSTED = 1010, Durability, Actionable, "store-inflight-exhausted", "1.6.0", false,
+        "Store in-flight queue exhausted: new store writes are refused until slots free up",
+        "Every pending-operation slot of this writer is held, so new store commits answer Overloaded and money-path arrivals are refused with DurabilityUnavailable. Emitted when exhaustion starts and again when it ends, with the in_doubt, resolved_uncollected and reconcile counts of the held slots.",
+        "store unreachable or slow (in_doubt); a domain not collecting answers (resolved_uncollected, a bug); operator reconciliation pending (reconcile). See the busbar_store_slots gauge.";
+
+    STORE_SELF_FENCED_AMBIGUOUS = 1013, Durability, Actionable, "store-self-fenced-ambiguous", "1.6.0", false,
+        "A self-fenced store commit's readback could not decide whether it applied",
+        "An administrative commit that can apply at most once lost its reply, and the readback of its witness and predicates could not prove it applied or prove it never will (a record moved past both values, a domain predicate could return to its expected value, or the store refused a predicate that holds). It is held for reconciliation instead of being assumed.",
+        "Reconcile the named administrative step (boot registration, writer transition, first start or migration step) against the store before retrying it.";
+
+    STORE_SLOT_INVARIANT = 1012, Durability, Actionable, "store-slot-invariant", "1.6.0", false,
+        "A live store commit was answered STALE: the slot queue invariant was broken",
+        "The store reported that a later sequence of this commit's slot was already evaluated. A live attempt holds its slot, so this means the slot was leased twice or the store's slot row is wrong. Nothing was applied by this send; an in-doubt attempt is held for reconciliation.",
+        "This is a bug in the slot facade or the store plugin. Capture the log line (writer, slot) and file a bug; reconcile any held operation.";
+
+    STORE_TIME_GUARD_INCONSISTENT = 1014, Durability, Actionable, "store-time-guard-inconsistent", "1.6.0", false,
+        "The store answered an inconsistent time-guard failure",
+        "The store reported a time-guard failure whose observation came from another clock authority, or whose time the commit's guard permits, or for a commit with no guard. That is a store fault; retrying would replay the same recorded verdict, so the operation is held for reconciliation.",
+        "Check the store plugin and its clock authority. Capture the log line (store, writer, slot, observed authority and time, the guard) and reconcile the held operation.";
+
+    /// A 1.5.5 file overlay holds settings this Store has not imported; serving refuses to start (fatal).
+    CONFIG_LEGACY_OVERLAY_NOT_IMPORTED = 3027, Config, Fatal, "config-legacy-overlay-not-imported", "1.6.0", false,
+        "A 1.5.5 file overlay holds settings this Store has not imported (boot refuses to start)",
+        "The overlay file a 1.5.5 deployment read and wrote (config.overlay.file, BUSBAR_CONFIG_OVERLAY, or busbar-overlay.json beside config.yaml) holds admin-API settings, and this Store has no import receipt for it. 1.6 serving never reads file overlays, so starting would silently drop those settings, security hooks and groups included; serving REFUSES to start instead. The message names the file and how it was selected, never its settings. In --safe-mode it is a warning and the boot continues.",
+        "Follow the remedy the message gives for this Store. Empty durable Store: import once with `busbar --config <config.yaml> --migrate-overlay <old-config.yaml>` before any admin-API config change. Ephemeral Store: configure a durable Store first, then import. Store already holds a 1.6 overlay: --migrate-overlay cannot import into it, so move the file away (keep a copy), start, and re-apply the settings you still want through the admin API. Moving the file away without a copy abandons the settings deliberately. Admin-API config writes in safe mode create a Store overlay, after which the file can no longer be imported.";
+
+    /// A 1.5.5 overlay selector, BUSBAR_CONFIG_OVERLAY or overlay file that loses nothing is not read.
+    CONFIG_LEGACY_OVERLAY_NOT_READ = 3028, Config, Actionable, "config-legacy-overlay-not-read", "1.6.0", false,
+        "A 1.5.5 overlay selector, variable or file is not read (nothing to import)",
+        "The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does not read: a config.overlay selector or BUSBAR_CONFIG_OVERLAY naming a file that does not exist, an overlay file that holds no settings, a file whose settings this Store has already imported, or a file beside a locked config (which 1.5.5 ignored too). Nothing is lost, so the boot continues; the message names the file and how it was selected.",
+        "Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. `busbar --migrate-config` removes config.overlay from config.yaml. See docs/migration-1.6.md.";
+
+    /// A `plaintext: true` destination entry names a wildcard or a CIDR.
+    CONFIG_PLAINTEXT_ENTRY_NOT_EXACT = 3144, Config, Fatal, "config-plaintext-entry-not-exact", "1.6.0", false,
+        "A plaintext destination entry is not an exact host or IP",
+        "`plaintext: true` on an `advanced.tls.destinations` entry is accepted only on an exact host name or an exact IP. A wildcard or a CIDR would admit cleartext to destinations nobody named.",
+        "Write one entry per host or IP that must be reached in clear.";
+
+    /// An outbound proxy is configured: the guard judges names, and addresses where they resolve locally.
+    CONFIG_PROXY_DELEGATES_ADDRESS_CHECK = 3149, Config, BenignRecurring, "config-proxy-delegates-address-check", "1.6.0", false,
+        "Outbound connections go through a proxy",
+        "HTTP(S)_PROXY / ALL_PROXY is set. busbar judges every target's name, and when the name resolves locally it judges every address it answers and refuses a private or metadata answer even behind the proxy. A name that does not resolve locally is reached through the proxy's own resolution, so the address check is delegated to the proxy for it. One line at boot (proxy endpoint redacted, NO_PROXY) and one audit record. Trust anchors are selected by the target, never by the proxy hop.",
+        "Nothing, if the proxy is yours. Make sure the proxy enforces your egress policy for names it resolves.";
+
+    /// One accepted `advanced.tls` trust anchor, or the base set loaded, with its fingerprint (info).
+    CONFIG_TLS_ANCHOR_ACCEPTED = 3138, Config, BenignRecurring, "config-tls-anchor-accepted", "1.6.0", false,
+        "An advanced.tls trust anchor was accepted",
+        "Logged once at boot for each operator trust anchor busbar accepted (SHA-256 of the DER certificate, subject, issuer, notAfter, and the scope: `global` or the destination entry), and once for the base set (`roots`: its count and a SHA-256 over the sorted set, and the bundle path for `system`). Each accepted anchor also writes one `config.tls_trust_anchor` audit record.",
+        "Nothing to do. Compare the fingerprints with the CAs you intended to trust.";
+
+    /// An `advanced.tls` trust anchor expires within 30 days.
+    CONFIG_TLS_ANCHOR_EXPIRING = 3139, Config, Actionable, "config-tls-anchor-expiring", "1.6.0", false,
+        "An advanced.tls trust anchor expires within 30 days",
+        "An operator trust anchor's notAfter is within 30 days. The warning is logged at boot and repeated once a day by the hourly trust-store sweep. When the anchor expires, the sweep withdraws it from new connections (BUSBAR-5048) and the next boot refuses it (BUSBAR-3137).",
+        "Rotate the CA: list the new CA beside the old one, restart, then remove the old one once every server presents a chain to the new CA.";
+
+    /// An `advanced.tls` trust anchor fails boot validation.
+    CONFIG_TLS_ANCHOR_INVALID = 3137, Config, Fatal, "config-tls-anchor-invalid", "1.6.0", false,
+        "An advanced.tls trust anchor is not a usable CA",
+        "A trust anchor listed under `advanced.tls.trust_anchors` or `advanced.tls.destinations[].trust_anchors` was refused at boot: it could not be read, does not parse as PEM, holds no certificate or holds a private key, is not an X.509 v3 CA (`basicConstraints CA:TRUE`, and `keyCertSign` when `keyUsage` is present), is not yet valid (more than five minutes before `notBefore`) or has expired, or rustls does not accept it. busbar refuses to boot rather than open connections with a trust set the operator did not intend. The line names the key, the index, the source (file, env or inline) and the destination it scopes; never the certificate bytes.",
+        "List the CA that issued the server's certificate (not the server's own certificate), as a PEM file, environment variable or inline PEM. Rotate an expired CA before restarting. A self-signed server certificate (`CA:FALSE`) is not a trust anchor: issue the server a certificate from a CA you control and list that CA.";
+
+    /// `roots: system` dropped certificates from the OS bundle (expired, not a CA, unreadable).
+    CONFIG_TLS_BASE_ROOTS_DROPPED = 3147, Config, Actionable, "config-tls-base-roots-dropped", "1.6.0", false,
+        "System CA bundle entries were not used",
+        "With `advanced.tls.roots: system`, certificates in the operating system's CA bundle that are expired, are not CA certificates, or do not parse are not used as trust anchors. One warning at boot carries the count and the first reason. Operating-system bundles routinely carry such entries, so the boot continues.",
+        "Usually nothing. If a CA you rely on is in the count, update the base image's ca-certificates package or list the CA under `advanced.tls.trust_anchors`.";
+
+    /// An `advanced.tls.destinations` entry is malformed (match, pin, client identity or shape).
+    CONFIG_TLS_DESTINATION_INVALID = 3148, Config, Fatal, "config-tls-destination-invalid", "1.6.0", false,
+        "An advanced.tls destination entry is invalid",
+        "An `advanced.tls.destinations` entry was refused at boot: its `match` is not a host, `*.domain`, IP or CIDR; a `pin_spki_sha256` is not `sha256/<base64>` of 32 bytes; its `client_identity` certificate or key cannot be read or do not belong together; or a `plaintext: true` entry also lists TLS settings. The line names the index and the key, never key material.",
+        "Correct the entry. Client identity keys are read by core from a file or environment variable and are never handed to a plugin.";
+
+    /// No trust anchor applies: `roots: none` with nothing listed, or an empty system bundle.
+    CONFIG_TLS_TRUST_EMPTY = 3140, Config, Fatal, "config-tls-trust-empty", "1.6.0", false,
+        "No trust anchor applies to a TLS destination",
+        "`advanced.tls.roots: system` found no usable certificate in the operating system's CA bundle (refused at boot), or `advanced.tls.roots: none` is set and a TLS dial matched neither a global trust anchor nor a destination entry listing one (the dial is refused; a pinned destination is refused the same way, never a panic). busbar never opens a TLS connection it cannot verify.",
+        "Install the distribution's ca-certificates package or set SSL_CERT_FILE for `roots: system`; with `roots: none`, list the CA under `advanced.tls.trust_anchors` or a matching `advanced.tls.destinations` entry; or use `roots: bundled` (the default).";
+
+    /// An `advanced.tls.destinations` wildcard covers a single label.
+    CONFIG_WILDCARD_OVER_PUBLIC_SUFFIX = 3145, Config, Fatal, "config-wildcard-over-public-suffix", "1.6.0", false,
+        "A destination wildcard is too wide",
+        "An `advanced.tls.destinations` `match` is a wildcard over a single label (for example `*.com` or `*.internal`), which would scope the entry's CAs, pins or identity to names nobody named. Public-suffix-list wildcards (for example `*.co.uk`) are not detected in 1.6.0.",
+        "Name the domain you own: `*.corp.example.com`.";
+
+    /// An outbound dial was refused (destination guard, plaintext rule or trust store).
+    EGRESS_DIAL_REFUSED = 5051, Proxy, BenignRecurring, "egress-dial-refused", "1.6.0", false,
+        "An outbound dial was refused",
+        "busbar refused an outbound connection: the destination guard refused the host or an address it answered, plaintext was not admitted to it (BUSBAR-3141), or no trust anchor applies (BUSBAR-3140). The line carries the verdict, the class, the host, the owning plugin and need; it is rate-limited per host and reason, and each refusal writes one `egress.dial_refused` audit record.",
+        "If the destination is intended, add it to `advanced.allow_destinations` (private hosts), use TLS, or list its CA under `advanced.tls`.";
+
+    /// An `advanced.tls` trust anchor expired at runtime and was withdrawn.
+    EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN = 5048, Proxy, Actionable, "egress-tls-anchor-expired-withdrawn", "1.6.0", false,
+        "An expired trust anchor was withdrawn",
+        "The hourly trust-store sweep found an operator trust anchor past its notAfter and withdrew it from new connections (audited as `egress.tls_anchor_withdrawn`). A dial whose matching destination entry has no anchor left is refused. Connections already open are unaffected.",
+        "Rotate the CA, list the new one, and restart.";
+
+    /// An `advanced.tls` anchor file changed on disk since boot.
+    EGRESS_TLS_ANCHOR_FILE_CHANGED = 5049, Proxy, Actionable, "egress-tls-anchor-file-changed", "1.6.0", false,
+        "A trust anchor file changed; restart to apply",
+        "The hourly trust-store sweep found that a trust anchor file's contents differ from what busbar loaded at boot (for example cert-manager trust-manager rotated the bundle). The trust store is boot-time, so the change is not applied until restart. Logged once per change and audited as `egress.tls_anchor_file_changed`.",
+        "Restart busbar to apply the new anchors (validate first).";
+
+    /// An outbound TLS handshake failed certificate or key-pin verification.
+    EGRESS_TLS_VERIFICATION_FAILED = 5047, Proxy, Actionable, "egress-tls-verification-failed", "1.6.0", false,
+        "An outbound TLS connection failed verification",
+        "The far end's certificate did not verify: unknown issuer, wrong host name, expired, or a key that is not the pinned one. The line and the `egress.tls_verification_failed` audit record carry the dialled host, the `advanced.tls.destinations` entries that matched, the fingerprints of the operator anchors in force, and the reason; never the certificate body. busbar never skips verification.",
+        "List the CA that issued the server's certificate under `advanced.tls.destinations` for that host (or `trust_anchors` for a corporate root), fix the server's certificate, or update the pin.";
+
+    /// A process that owned an unpublished first start could not retire its writer on exit; the next start waits the stall window.
+    FIRST_START_EXIT_RETIRE_FAILED = 9018, Boot, Actionable, "first-start-exit-retire-failed", "1.6.0", false,
+        "First start not handed over on exit (the next start waits)",
+        "This process owned an unpublished first start and exited, but retiring its writer row did not complete within the exit budget (5 s), was refused, or its outcome is unknown. The next start of this dataset waits up to the named window before it takes over, as after a crash.",
+        "Check the store's health. Keep the next start running for at least the named window so it can take over; restarting it early resets the wait.";
+
+    /// A process that owned an unpublished first start retired its own writer on exit, so the next start takes over at once.
+    FIRST_START_EXIT_RETIRED = 9017, Boot, Actionable, "first-start-exit-retired", "1.6.0", false,
+        "First start handed over on exit (writer retired)",
+        "This process owned an unpublished first start and exited before publishing it (a boot refusal, a signal, or a one-shot command), so it retired its own writer row on the way out. The birth record is unchanged; the next start of this dataset, here or on another replica, takes over at once with no wait.",
+        "None for the hand-over. Fix the reason the process exited, which is printed just before this line.";
+
+    /// A waiting process sees another writer's unpublished first start of the same dataset and waits for it.
+    FIRST_START_WAITING = 9013, Boot, Actionable, "first-start-waiting", "1.6.0", false,
+        "Waiting on another writer's first start of this dataset (no listener bound yet)",
+        "Another process owns this dataset's first start and has not published it, and its progress rows (birth record, writer row, R0 progress row) changed within the stall window, so this process waits instead of retiring it. It binds no listener while it waits. The line names the owner's writer id, how long ago its progress last changed and when this process takes over if nothing changes. A restart resets the wait.",
+        "Let it wait: it is admitted once the owner publishes, or takes over once the owner stops making progress for the window. Do not stop or restart it before the named takeover time; give the supervisor a startup budget of at least 200 + 105 x P seconds (P = conditional-records planes), see docs/operations.md First start with several replicas.";
+
+    /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
+    RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,
+        "A retired launch environment variable is set and IGNORED",
+        "busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.",
+        "Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher.";
 }
 
 /// The page text (template + example) of every templated code the host knows: the catalog's own
