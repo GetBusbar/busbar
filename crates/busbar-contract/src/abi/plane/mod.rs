@@ -65,11 +65,13 @@
 //!    those whose source bills ([`units_bill`]: [`UNITS_REPORTED`], and [`UNITS_FLOOR`] for a
 //!    delivered reply whose usage could not be read) count; [`UNITS_ESTIMATED`] never bills.
 //! 3. A NON-STREAMED PARTIAL BILLS ZERO: [`CANCEL_OK_PARTIAL`] bills the reported units only when
-//!    the reply was streamed to the caller; a cut whole-body reply bills `0`.
+//!    the reply was streamed to the caller; a cut whole-body reply bills `0`, unless the plane
+//!    said done. A plane that said done (a READY answer that closed the unit) has stated its final
+//!    usage, so that reply is not a partial, and whatever cancel follows bills the stated units.
 //! 4. THE BUDGET REFUND IS A SEPARATE ACT: whatever the disposition, the kernel releases the unit's
 //!    budget hold on its own path; cancel billing never folds the refund in and never returns it.
 //!
-//! [`CANCEL_FAILED`] bills nothing.
+//! [`CANCEL_FAILED`] bills nothing, except after the plane said done (rule 3).
 //!
 //! # The cancel rule
 //!

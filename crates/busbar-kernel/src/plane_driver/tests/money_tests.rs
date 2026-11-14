@@ -223,6 +223,7 @@ async fn a_cancel_bill_is_ledgered_and_the_end_adds_nothing() {
             far_end_answered: true,
             streamed: true,
             billed: vec![(INPUT, Count::from(70u64))],
+            unread: None,
         },
     );
     assert_eq!(usage(&r).await.0, Count::from(70u64), "the bill's counts");
@@ -788,6 +789,7 @@ async fn a_cancelled_stream_meters_only_a_reported_bill() {
             .into_iter()
             .map(|(class, count)| (class, count.into()))
             .collect(),
+        unread: None,
     };
     let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     r.money.served(&ctx(1), "m", "acme");
@@ -893,6 +895,7 @@ fn bill(cause: ReasonCode, amount: u64) -> CancelBill {
         far_end_answered: true,
         streamed: true,
         billed: vec![(INPUT, amount.into())],
+        unread: None,
     }
 }
 
@@ -1022,6 +1025,7 @@ async fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_neve
             far_end_answered: false,
             streamed: false,
             billed: Vec::new(),
+            unread: None,
         },
     );
     r.money.settle_end(UnitKey::new(1), 504);
@@ -1069,6 +1073,8 @@ async fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
         content: true,
         cut: false,
         relayed: false,
+        plane_done: false,
+        unread: None,
         units: vec![
             floor(INPUT, 40),
             UnitCount {
@@ -1142,6 +1148,7 @@ async fn a_cancelled_side_does_not_replace_the_sessions_line() {
                 far_end_answered: false,
                 streamed: false,
                 billed: Vec::new(),
+                unread: None,
             },
         );
         r.money.cancelled(&ctx(1), &bill(cause, 40));

@@ -319,6 +319,7 @@ fn scoped_headroom(session: bool, pool: &str, lane: &str, other: &str) {
                     (1, busbar_contract::Count::from(3u64)),
                 ]
             },
+            unread: None,
         },
     );
     if session {
