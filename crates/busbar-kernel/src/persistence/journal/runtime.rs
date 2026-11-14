@@ -162,15 +162,6 @@ impl RuntimeJournal {
     pub fn is_bound_to(&self, store: &Arc<CoreStore>) -> bool {
         Arc::ptr_eq(&self.store, store)
     }
-    pub fn next_sequence(&self) -> std::result::Result<u64, RuntimeError> {
-        self.state
-            .lock()
-            .map_err(|_| RuntimeError::Corrupt)?
-            .reserved
-            .sequence
-            .checked_add(1)
-            .ok_or(RuntimeError::Budget)
-    }
     pub fn pending_records(&self) -> usize {
         self.state.lock().map_or(usize::MAX, |state| state.records)
     }

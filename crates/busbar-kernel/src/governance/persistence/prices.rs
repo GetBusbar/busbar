@@ -6,7 +6,6 @@
 //! retained through uncertainty; only their original Applied decision authorizes
 //! local publication. No legacy record/chunk size limits apply to these records.
 
-pub mod legacy;
 pub mod runtime;
 
 use crate::{
