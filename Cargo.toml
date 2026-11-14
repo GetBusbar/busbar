@@ -137,7 +137,6 @@ stringprep = "=0.1.5"
 unicode-normalization = "0.1.25"
 # The shared fast-hash aliases (foldhash::HashMap / HashSet, per-process seeded) the bad-pattern rules
 # point at instead of std's SipHash HashMap/HashSet. Already in Cargo.lock.
-foldhash = "0.2"
 
 # Every member takes these with `[lints] workspace = true`.
 [workspace.lints.rust]
