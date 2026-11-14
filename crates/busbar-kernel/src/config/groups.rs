@@ -613,4 +613,4 @@ impl Serialize for LimitCfg {
 
 #[cfg(test)]
 #[path = "tests/groups.rs"]
-mod frozen_limit_grammar_tests;
+mod limit_grammar_tests;

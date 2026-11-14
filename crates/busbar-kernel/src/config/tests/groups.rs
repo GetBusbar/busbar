@@ -17,56 +17,65 @@ fn refusal(yaml: &str) -> String {
 }
 
 #[test]
-fn the_unknown_field_list_is_1_5_5s() {
+fn the_unknown_field_list_grows_1_5_5s() {
     let got = refusal("{ requests: 1, per: day, bogus: 1 }");
     assert!(
         got.contains(
             "unknown field `bogus`, expected one of `requests`, `tokens`, `budget`, \
              `concurrent`, `per`, `pool`, `on_exhaust`, `downgrade_to`"
         ),
-        "BOOT-P29 refusal is not 1.5.5's: {got}"
+        "BOOT-P29 refusal does not keep 1.5.5's list as its prefix: {got}"
+    );
+    assert!(
+        got.contains(
+            "`downgrade_to`, `tokens_input`, `tokens_output`, `tokens_cache_read`, \
+             `tokens_cache_write`, `admission`, `on_exhaustion`"
+        ),
+        "BOOT-P29 refusal does not append the 1.6.0 keys after 1.5.5's: {got}"
     );
     for word in ADDITIVE_METRIC_WORDS {
         assert!(
-            !got.contains(word),
-            "BOOT-P29 names the 1.6.0-additive metric `{word}`: {got}"
+            got.contains(word),
+            "BOOT-P29 omits the 1.6.0 metric `{word}`: {got}"
         );
     }
 }
 
 #[test]
-fn the_no_metric_key_refusal_is_1_5_5s() {
+fn the_no_metric_key_refusal_grows_1_5_5s() {
     let got = refusal("{ per: day }");
     assert!(
         got.contains(
-            "a limit needs exactly one metric key (requests | tokens | budget | concurrent)"
+            "a limit needs exactly one metric key (requests | tokens | budget | concurrent | \
+             tokens_input | tokens_output | tokens_cache_read | tokens_cache_write)"
         ),
-        "BOOT-P20 refusal is not 1.5.5's: {got}"
+        "BOOT-P20 refusal does not list every metric after 1.5.5's four: {got}"
     );
     for word in ADDITIVE_METRIC_WORDS {
         assert!(
-            !got.contains(word),
-            "BOOT-P20 names the 1.6.0-additive metric `{word}`: {got}"
+            got.contains(word),
+            "BOOT-P20 omits the 1.6.0 metric `{word}`: {got}"
         );
     }
 }
 
 #[test]
-fn the_expecting_line_is_1_5_5s() {
+fn the_expecting_line_grows_1_5_5s() {
     let got = refusal("requests");
     assert!(
         got.contains(
             "expected a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }` where \
-             <metric> is one of requests|tokens|budget|concurrent and <window> one of \
+             <metric> is one of requests|tokens|budget|concurrent|tokens_input|tokens_output|\
+             tokens_cache_read|tokens_cache_write and <window> one of \
              minute|hour|day|month|total (omit `per` for concurrent; `pool` is optional and \
              scopes the limit to one pool's traffic)"
         ),
-        "BOOT-P30 refusal is not 1.5.5's: {got}"
+        "BOOT-P30 refusal does not list every metric after 1.5.5's four: {got}"
     );
     for word in ADDITIVE_METRIC_WORDS {
         assert!(
-            !got.contains(word),
-            "BOOT-P30 names the 1.6.0-additive metric `{word}`: {got}"
+            got.contains(word),
+            "BOOT-P30 omits the 1.6.0 metric `{word}`: {got}"
         );
     }
 }
