@@ -1185,6 +1185,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     if let Err(end) = self.refused_piece_coded(run, reason).await {
                         return end;
                     }
+                    // The last attempted member failed on its own credential: a configuration
+                    // refusal a retry hits again, never a retryable overload.
+                    if self.far.credential_refused(run.token) {
+                        return End::Failed(ReasonCode::CredentialUnavailable);
+                    }
                     return match self.stated_wait(run) {
                         Ok(wait) => End::Exhausted(status, wait.or(retry_after), detail),
                         Err(end) => end,

@@ -1,6 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! THE HELD EXCHANGES OF A DRIVER TICKET (`dispatch::worker`, held work on a driver ticket): what
+//! the host sees of the work a plugin holds PENDING side by side on one driver ticket, by
+//! completion handle, through the two slots that keep answers by handle (the host services,
+//! `super::services`, and the connector, `super::conn_services`).
+//!
+//! * ONE PENDING HANDLE PER HELD EXCHANGE. An exchange stops at its first call that answers PENDING
+//!   (Ready|Pending(wake), the replay rule), so the handles whose last call answered PENDING are
+//!   the held exchanges, one each. A handle leaves the set when a call on it answers anything else:
+//!   its exchange moved on (and is held again under its next handle if that one pends) or is over.
+//!   The worker bounds the set by the instance's `max_inflight`, and a slot frees as each held
+//!   exchange ends, not only when a `drive` answers that nothing is held.
+//! * NO HANDLE IS ISSUED TWICE IN A KEPT CYCLE. While a cycle is kept (something was held at its
+//!   tick's start), a `tick` starts new work: a call it makes under a handle already issued in the
+//!   cycle would be answered another exchange's kept answer. It is REFUSED as a fault instead (the
+//!   one fault answer, `Outcome::Fault`, no text), and nothing runs. A pending exchange is resumed
+//!   by the `drive` its wake brings, never by a `tick`. The first such refusal of a cycle is logged
+//!   at WARN, naming the ticket, the handle and the rule: it is always a plugin bug.
+//!
+//! Only driver tickets are tracked ([`Held::track`]); a call on any other ticket passes untouched.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -30,6 +50,8 @@ struct Cycle {
     /// One inspection per issuing instance, outside the completion-handle namespace.
     inspections: HashSet<usize>,
     conditionals: HashSet<usize>,
+    /// This cycle's first kept-cycle refusal has been logged (one WARN per cycle, never per call).
+    warned: bool,
 }
 
 /// The driver tickets' cycles, by ticket.
@@ -160,11 +182,23 @@ impl Held {
             caller,
             handle: Handle { domain, seq: h.seq },
         };
-        if (c.refusing && c.issued.contains(&key))
-            || c.issued.iter().chain(c.fresh.iter()).any(|old| {
-                old.caller == caller && old.handle.seq == h.seq && old.handle.domain != domain
-            })
-        {
+        if c.refusing && c.issued.contains(&key) {
+            if !std::mem::replace(&mut c.warned, true) {
+                tracing::warn!(
+                    ticket_slot = h.ticket.slot,
+                    ticket_generation = h.ticket.generation,
+                    seq = h.seq,
+                    domain = ?domain,
+                    "a plugin re-issued a completion handle at a kept-cycle tick: a tick starts new \
+                     work and never re-issues a handle issued earlier in the cycle (the drive its \
+                     wake brings resumes it); the call is refused as FAULT"
+                );
+            }
+            return false;
+        }
+        if c.issued.iter().chain(c.fresh.iter()).any(|old| {
+            old.caller == caller && old.handle.seq == h.seq && old.handle.domain != domain
+        }) {
             return false;
         }
         c.fresh.insert(key);
