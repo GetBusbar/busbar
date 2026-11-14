@@ -50,6 +50,7 @@ cases:
     requests:
       - { listener: admin, method: GET, path: /api/v1/admin/keys, weight: 4 }
       - { listener: admin, method: POST, path: /api/v1/admin/keys, expect: 201, headers: { content-type: application/json }, body: '{"name":"hammer-bg","group":"bench"}', weight: 1 }
+      - { listener: data, method: GET, path: /stats, headers: { authorization: "Bearer {KEY}" }, weight: 1 }
   - name: openai>openai with admin ops beside it
     shape: { closed: 32 }
     requests:
@@ -62,3 +63,4 @@ cases:
       requests:
         - { listener: admin, method: GET, path: /api/v1/admin/keys, weight: 4 }
         - { listener: admin, method: POST, path: /api/v1/admin/keys, expect: 201, headers: { content-type: application/json }, body: '{"name":"hammer-bg","group":"bench"}', weight: 1 }
+        - { listener: data, method: GET, path: /stats, headers: { authorization: "Bearer {KEY}" }, weight: 1 }

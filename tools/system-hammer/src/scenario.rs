@@ -613,6 +613,84 @@ mod tests {
     }
 
     #[test]
+    fn every_admin_noun_a_scenario_description_names_is_driven() {
+        let dir = scenarios_dir();
+        for n in &all_names(&dir) {
+            let s = load(&dir, n).unwrap_or_else(|e| panic!("{e}"));
+            if s.group != "admin" {
+                continue;
+            }
+            for noun in ["keys", "stats"] {
+                let named = s.description.contains(noun);
+                let suffix = format!("/{noun}");
+                let driven = s.cases.iter().any(|c| {
+                    c.requests
+                        .iter()
+                        .chain(c.background.iter().flat_map(|b| &b.requests))
+                        .any(|r| r.path.ends_with(&suffix))
+                });
+                assert!(
+                    !named || driven,
+                    "{n}: description names {noun} but no request drives it"
+                );
+            }
+        }
+    }
+
+    /// Each admin noun a description names must be driven at the route that really serves it:
+    /// keys on the admin listener's `/api/v1/admin/keys`, stats on the data listener's root
+    /// `/stats` with the minted key (the admin surface has no stats verb, so any other path
+    /// answers 404/401 instead of the expected 200).
+    #[test]
+    fn admin_nouns_are_driven_at_their_real_route_and_listener() {
+        let dir = scenarios_dir();
+        let routes: [(&str, Listener, &str, &str, bool); 2] = [
+            ("keys", Listener::Admin, "GET", "/api/v1/admin/keys", false),
+            ("stats", Listener::Data, "GET", "/stats", true),
+        ];
+        for n in &all_names(&dir) {
+            let s = load(&dir, n).unwrap_or_else(|e| panic!("{e}"));
+            if s.group != "admin" {
+                continue;
+            }
+            let all: Vec<&ReqSpec> = s
+                .cases
+                .iter()
+                .flat_map(|c| {
+                    c.requests
+                        .iter()
+                        .chain(c.background.iter().flat_map(|b| &b.requests))
+                })
+                .collect();
+            for (noun, listener, method, path, keyed) in routes {
+                if !s.description.contains(noun) {
+                    continue;
+                }
+                let driven = all.iter().any(|r| {
+                    r.listener == listener
+                        && r.method.eq_ignore_ascii_case(method)
+                        && r.path == path
+                        && r.expect == 200
+                        && (!keyed
+                            || r.headers
+                                .get("authorization")
+                                .is_some_and(|v| v.contains("{KEY}")))
+                });
+                assert!(
+                    driven,
+                    "{n}: description names {noun} but no request drives {method} {path} on {listener:?}"
+                );
+            }
+            for r in &all {
+                assert!(
+                    r.path != "/api/v1/admin/stats",
+                    "{n}: /api/v1/admin/stats is not an admin route"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn fill_replaces_only_known_tokens() {
         let mut v = BTreeMap::new();
         v.insert("KEY".to_string(), "k1".to_string());
