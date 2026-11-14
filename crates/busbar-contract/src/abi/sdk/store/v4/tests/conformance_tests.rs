@@ -103,17 +103,16 @@ impl PersistenceBackend for Mock {
 
 struct Counted(Arc<Mock>);
 
-#[async_trait::async_trait]
 impl Subject for Counted {
     fn store(&self) -> Arc<dyn PersistenceBackend> {
         self.0.clone()
     }
-    async fn retained(&self) -> u64 {
+    fn retained(&self) -> u64 {
         let rows = self.0.rows.lock().unwrap().len();
         let receipts = self.0.receipts.lock().unwrap().len();
         u64::try_from(rows + receipts).unwrap()
     }
-    async fn jump(&self, by: Duration) {
+    fn jump(&self, by: Duration) {
         self.0.host_secs.fetch_add(by.as_secs(), Ordering::Relaxed);
     }
 }
