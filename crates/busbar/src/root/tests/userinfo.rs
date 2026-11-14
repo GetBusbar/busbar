@@ -42,6 +42,14 @@ fn a_urls_userinfo_reads_as_reqwest_read_it() {
         ("https://svcuser:%FF@api.example.com", "svcuser:"),
         ("https://a:b@api.example.com", "a:b"),
         ("https://ab:c@api.example.com", "ab:c"),
+        (
+            "https://Aladdin:open%20sesame@api.example.com",
+            "Aladdin:open sesame",
+        ),
+        (
+            "https://%C3%A9:%F0%9F%94%91@api.example.com",
+            "\u{e9}:\u{1f511}",
+        ),
     ] {
         let read = UserinfoBasic::of(url).expect("a userinfo");
         assert_eq!(value_of(&read), basic(plain), "{url}");

@@ -135,3 +135,42 @@ fn base64_encode_into_reuses_capacity_without_reallocating() {
         assert_eq!(out.capacity(), 64);
     }
 }
+
+/// What the decoder has always accepted, pinned before it moves onto the `base64` crate
+/// (DEPENDENCY-LADDER C4): any amount of trailing padding, whitespace anywhere (padding included),
+/// and non-zero trailing bits in the last symbol.
+#[test]
+fn base64_decode_keeps_its_leniencies() {
+    assert_eq!(base64_decode("").as_deref(), Some(&b""[..]));
+    assert_eq!(base64_decode("=").as_deref(), Some(&b""[..]));
+    assert_eq!(base64_decode("QQ=").as_deref(), Some(&b"A"[..]));
+    assert_eq!(base64_decode("QQ=====").as_deref(), Some(&b"A"[..]));
+    assert_eq!(base64_decode("Zm9v=").as_deref(), Some(&b"foo"[..]));
+    assert_eq!(base64_decode("Q Q =\t=\r\n").as_deref(), Some(&b"A"[..]));
+    assert_eq!(base64_decode("\x0cZm9v").as_deref(), Some(&b"foo"[..]));
+    assert_eq!(base64_decode("Zh").as_deref(), Some(&b"f"[..]));
+    assert_eq!(base64_decode("Zm9=").as_deref(), Some(&b"fo"[..]));
+    assert_eq!(
+        base64_decode("\x0bZm9v"),
+        None,
+        "U+000B is not ASCII whitespace"
+    );
+    assert_eq!(
+        base64_decode("Zm9v-_"),
+        None,
+        "the URL-safe alphabet is refused"
+    );
+    assert_eq!(base64_decode("=Zm9v"), None);
+    assert_eq!(base64_decode("Zm9vA==="), None);
+    assert_eq!(base64_decode("Zm9vYmFy\u{e9}"), None);
+}
+
+#[test]
+fn base64_encode_into_appends() {
+    let mut out = b"Basic ".to_vec();
+    base64_encode_into(b"Aladdin:open sesame", &mut out);
+    assert_eq!(out, b"Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
+    let mut out = Vec::new();
+    base64_encode_into(&[0xff, 0xfe, 0xfd, 0xfc], &mut out);
+    assert_eq!(out, b"//79/A==");
+}
