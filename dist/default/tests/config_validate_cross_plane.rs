@@ -151,3 +151,63 @@ fn a_plane_card_silent_about_a_declared_class_does_not_refuse_boot() {
         );
     }
 }
+
+#[test]
+fn a_present_plane_card_refuses_every_lane_it_does_not_name() {
+    linked::install();
+    let planes: Vec<_> = linked::planes()
+        .iter()
+        .copied()
+        .filter(|d| !d.fallback)
+        .filter(|d| {
+            d.billable_classes
+                .iter()
+                .any(|c| !d.fee_units.contains(&c.class))
+        })
+        .collect();
+    assert!(
+        planes.len() >= 2,
+        "the rigs' two billed planes (the `tools:` and `agents:` sections) are test-linked: {:?}",
+        planes.iter().map(|d| d.key).collect::<Vec<_>>()
+    );
+    for d in planes {
+        let zero = (d.billable_classes.iter())
+            .map(|c| c.class)
+            .filter(|c| !d.fee_units.contains(c))
+            .map(|c| format!("{c}: 0"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let kind = d
+            .scope_kinds
+            .first()
+            .expect("a billed door states a scope kind");
+        let text = format!(
+            "store: {{ module: memory }}\nproviders: {{}}\nmodels: {{}}\n{s}:\n  \
+             rate_card:\n    {kind}:probe: {{ units: {{ {zero} }} }}\n  \
+             probe: {{ url: \"https://x.example/t\", pin: {{ mechanism: unpinned }} }}\n  \
+             other: {{ url: \"https://y.example/t\", pin: {{ mechanism: unpinned }} }}\n",
+            s = d.config_section,
+        );
+        let deploy = config::deploy_from_yaml_str(&text)
+            .unwrap_or_else(|e| panic!("{}: the document parses: {e}\n{text}", d.key));
+        let cfg = config::resolve(&deploy, &HashMap::new())
+            .unwrap_or_else(|e| panic!("{}: the document resolves: {e:?}\n{text}", d.key));
+        let errors = busbar_kernel::config_validate::validate(&cfg).expect_err(&format!(
+            "{}: a present card silent about a configured lane must refuse",
+            d.key
+        ));
+        let want = format!(
+            "{section}.rate_card is present but 1 {noun} has no rate entry (a present card is \
+             AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+             Paste these under {section}.rate_card and fill in your rates:\n\n    \
+             {kind}:other: {{ units: {{ {zero} }} }}\n",
+            section = d.config_section,
+            noun = d.subject_noun,
+        );
+        assert!(
+            errors.contains(&want),
+            "{}: the refusal names the unnamed lane with a stub: {errors:?}",
+            d.key
+        );
+    }
+}
