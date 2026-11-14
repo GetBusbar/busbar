@@ -134,7 +134,7 @@ pub(crate) fn verify_source<S: IndexedFrames>(
     Ok(VerifiedNode {
         node,
         head: observed,
-        original_digest: digest.finalize().into(),
+        original_digest: digest.finish(),
     })
 }
 

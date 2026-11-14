@@ -5,8 +5,8 @@
 //! Full partition identity remains in record keys/metadata: a hash collision can
 //! cause extra contention, never alias two business records or grant authority.
 
+use busbar_contract::abi::sdk::digest::Sha256Stream as Sha256;
 use busbar_contract::persistence::NamespaceId;
-use sha2::{Digest, Sha256};
 
 pub(crate) fn namespace(owner: NamespaceId, parts: &[&[u8]]) -> NamespaceId {
     let mut hash = Sha256::new();
@@ -17,7 +17,7 @@ pub(crate) fn namespace(owner: NamespaceId, parts: &[&[u8]]) -> NamespaceId {
         hash.update((part.len() as u64).to_be_bytes());
         hash.update(part);
     }
-    let digest = hash.finalize();
+    let digest = hash.finish();
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest[..16]);
     // Reserved adapter-control and fixed core namespaces are ASCII. Derived

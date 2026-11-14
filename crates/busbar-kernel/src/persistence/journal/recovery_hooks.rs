@@ -442,7 +442,7 @@ impl<'a> StoreJournal<'a> {
                 namespace: selection.address.namespace,
                 operation: selection.operation_id,
             },
-            digest.finalize().into(),
+            digest.finish(),
         )? {
             LogicalClaim::Prepare(permit) => permit,
             LogicalClaim::Retained(id) => {
