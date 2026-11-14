@@ -1011,4 +1011,25 @@ mod tests {
         assert_eq!(v["a"], "http://a/mcp");
         assert_eq!(v["g"], "grp");
     }
+
+    #[test]
+    fn case_setup_never_discards_a_work_dir_write_error() {
+        let src = include_str!("run.rs");
+        let body = src
+            .split("fn run_scenario")
+            .nth(1)
+            .unwrap()
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        for bad in [
+            "let _ = std::fs::write(",
+            "let _ = std::fs::create_dir_all(",
+        ] {
+            assert!(
+                !body.contains(bad),
+                "run_scenario discards a setup write error: {bad}"
+            );
+        }
+    }
 }
