@@ -137,7 +137,7 @@ pub use kinds::{
     SecretRef, StoreError,
 };
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin};
-pub use redacted::{constant_time_eq, sha256_hex, OwnerSeal, Secret};
+pub use redacted::{constant_time_eq, sha256_hex, OwnerSeal, Secret, SharedSecret};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};

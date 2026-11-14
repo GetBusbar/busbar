@@ -8,12 +8,18 @@ use http::HeaderValue;
 fn a_cloned_caller_credential_shares_one_zeroising_buffer() {
     let held = CallerCredential::verified("sk-caller-credential");
     let clone = held.clone();
-    assert_eq!(
-        held.0.as_ptr(),
-        clone.0.as_ptr(),
+    assert!(
+        busbar_contract::SharedSecret::ptr_eq(&held.0, &clone.0),
         "a clone shares the one buffer, never a second plaintext copy"
     );
-    assert_eq!(clone.0.as_slice(), b"sk-caller-credential");
+    assert!(
+        busbar_contract::SharedSecret::ptr_eq(&held.0, &clone.lend()),
+        "the egress lend is a handle on the same buffer, never a copy"
+    );
+    assert_eq!(
+        clone.0.expose(&crate::seal::lend()).as_slice(),
+        b"sk-caller-credential"
+    );
     assert_eq!(format!("{clone:?}"), "CallerCredential(<present>)");
 }
 

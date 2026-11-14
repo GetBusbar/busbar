@@ -468,9 +468,12 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
             match serving.auth.open_outbound("api-key", b"", &settings) {
                 Ok(handle) => {
                     let mut r = request();
-                    r.caller_credential = Some(busbar_contract::redacted::Secret::new(
-                        c.passthrough.value.as_bytes().to_vec(),
-                    ));
+                    r.caller_credential = Some(
+                        busbar_contract::redacted::Secret::new(
+                            c.passthrough.value.as_bytes().to_vec(),
+                        )
+                        .share(),
+                    );
                     if serving.auth.fields_now(handle, &r).is_none() {
                         notes.push("passthrough fields did not answer on the spot".into());
                     }

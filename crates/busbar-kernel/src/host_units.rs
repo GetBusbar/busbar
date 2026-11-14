@@ -207,7 +207,7 @@ impl UnitRecords {
 }
 
 impl busbar_contract::conn::LendCredential for UnitRecords {
-    fn lent(&self, unit: u64) -> Option<busbar_contract::redacted::Secret<Vec<u8>>> {
+    fn lent(&self, unit: u64) -> Option<busbar_contract::SharedSecret> {
         self.lock(unit)
             .get(&unit)?
             .lent

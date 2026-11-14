@@ -50,6 +50,8 @@ use tokio::sync::{watch, Notify};
 
 pub use answer::PlaneAnswer;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
+#[cfg(test)]
+pub(crate) use far_end::tests::lent_on_egress;
 pub use far_end::{
     fixed_breaker, AuthBinding, BreakerSource, Egress, EgressFarEnd, MemberFacts, MemberRoute,
     MemberSignals, MemberStanding, ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,

@@ -85,42 +85,41 @@ impl ConsumedCredentials {
 }
 
 /// The caller's verified credential, retained in host request context. Its `Debug` prints
-/// presence only; the host lends a wiping copy to the selected auth-kind binding at egress.
+/// presence only; at egress the host lends the one buffer to the selected auth-kind binding.
 ///
 /// ONE BUFFER, SHARED (SINGLE-PATH SP-AU6): `CallerCredential::verified` is the one copy from
 /// transport custody into kernel custody. Every later holder (the data door, the unit's record,
-/// the far end's route) clones this value, which shares the buffer; only [`CallerCredential::lend`]
-/// at egress makes the wiping copy a plugin input owns.
+/// the far end's route, the plugin lend at egress) clones a handle on that buffer, never its bytes:
+/// [`CallerCredential::lend`] hands out a handle too.
 ///
 /// ZEROISED AT EXIT (THE DESIGN §6: the kernel "holds it on the unit, zeroised at exit, for the
-/// caller-credential style"; "auth material is zeroised"): the bytes live in ONE zeroising buffer,
-/// and a clone shares it, so the plaintext is wiped when the last holder drops, never left behind in
-/// a copy a clone made.
+/// caller-credential style"; "auth material is zeroised"): the bytes live in ONE [`Secret`], shared,
+/// so the plaintext is wiped once, when the last holder drops, never left behind in a copy.
+///
+/// [`Secret`]: busbar_contract::Secret
 #[derive(Clone)]
-pub struct CallerCredential(std::sync::Arc<zeroize::Zeroizing<Vec<u8>>>);
+pub struct CallerCredential(busbar_contract::SharedSecret);
 
 impl CallerCredential {
     pub(super) fn verified(token: &str) -> Self {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
-        Self(std::sync::Arc::new(zeroize::Zeroizing::new(
-            token.as_bytes().to_vec(),
-        )))
+        Self(busbar_contract::Secret::new(token.as_bytes().to_vec()).share())
     }
 
-    /// The wiping copy an egress input owns (an outbound auth call's caller credential): the one
-    /// plaintext copy made after `CallerCredential::verified`.
+    /// Bytes already in [`Secret`] custody, MOVED into the one shared buffer (no copy). There is
+    /// no constructor from plain bytes.
+    ///
+    /// [`Secret`]: busbar_contract::Secret
     #[must_use]
-    pub fn lend(&self) -> busbar_contract::redacted::Secret<Vec<u8>> {
-        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
-        busbar_contract::redacted::Secret::new(self.0.to_vec())
+    pub fn adopted(secret: busbar_contract::Secret<Vec<u8>>) -> Self {
+        Self(secret.share())
     }
-}
 
-/// Bytes the host already holds as a verified caller credential, MOVED into the one shared
-/// buffer (no copy).
-impl From<Vec<u8>> for CallerCredential {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self(std::sync::Arc::new(zeroize::Zeroizing::new(bytes)))
+    /// The handle an egress input holds (an outbound auth call's caller credential): the one
+    /// buffer, shared, never a copy of it.
+    #[must_use]
+    pub fn lend(&self) -> busbar_contract::SharedSecret {
+        self.0.clone()
     }
 }
 
@@ -137,7 +136,3 @@ impl std::fmt::Debug for CallerCredential {
 )]
 #[path = "tests/caller_credential_tests.rs"]
 mod caller_credential_tests;
-
-#[cfg(test)]
-#[path = "tests/caller_credential_custody.rs"]
-mod caller_credential_custody;
