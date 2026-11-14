@@ -415,7 +415,6 @@ dependencies = [
  "indexmap",
  "libc",
  "memchr",
- "num-bigint",
  "ring",
  "serde",
  "serde_json",
