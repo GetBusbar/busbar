@@ -15,15 +15,7 @@ All notable changes to Busbar are documented here. The format is based on
   `phase: [response]` for a single stage. Hook responses omit `at`; clients read `fires_at`.
   One-shot configuration and overlay migration convert old `plugin`/`at` fields.
 
-- **`RUST_LOG` is read strictly and accepts per-target directives:** `busbar=debug,hyper=warn`
-  and `warn,busbar::request=debug` now filter per target over an `info` default, `off` is honoured,
-  and a value that is not a filter stops boot with `BUSBAR-9007` instead of silently logging at
-  `info` (1.5.5 read only a bare level, so the documented `RUST_LOG=busbar=debug` did nothing).
-  Bare level words read exactly as before.
-- At `DEBUG`, every request ends with one `request finished` summary (target `busbar::request`):
-  request id, ingress, pool, key id, governance decision, each attempt's lane, provider, upstream
-  status, latency and failover reason, outcome, status and total latency. No body, header or
-  credential is logged. At the default level none of it is computed.
+### Upgrade notes
 
 - **Credential sign-in attempt limiter (security).** Hosted LDAP/AD-style sign-in had no attempt
   limit, so anyone could lock any directory account or guess passwords at line rate. Now:
@@ -78,40 +70,45 @@ All notable changes to Busbar are documented here. The format is based on
   These refused requests reached no provider, so under the refused-unspent rule they no longer count
   against the caller's request-rate limit. Token, fee and spend figures are unchanged.
 
-Busbar 1.6.0 is 1.5.5 plus three more planes. Everything a model-plane request already got — the
-caller's key, its grants, its budget, hooks and the audit chain — applies to an MCP tool call, an
-A2A agent task and a live voice session unchanged, and a deployment that declares none of them
-gains no endpoint and no route. The bar for this release was measured, not asserted: the same
-config, the same requests and the same plugins were run through the published 1.5.5 binary and
-through 1.6.0, and every difference is either listed below as an improvement, a breaking change, or
-does not exist.
+### Breaking changes
 
-**Upgrading from 1.5.5:** start with [What's new in 1.6.0](docs/whats-new-1.6.md), the one-page
-summary of the upgrade, the security changes and everything you might notice.
+- A provider whose `api_key` reference does not resolve refuses boot (`BUSBAR-8020`) and refuses an admin apply or reload. A keyless local upstream must declare `api_key: none` (not with `jwt-bearer` or `oauth-client-credentials`); migration does not insert it.
+- Provider and identity-provider addresses that resolve to a private network are refused unless allowlisted (`advanced.block_private_addresses` defaults to `true`). The destination guard also covers A2A peers, streaming upstreams and WebSocket dials; allow them in `advanced.allow_destinations` (an A2A registration may set `allow_private: true`).
+- An identified principal that earns no governance key (no roles, or unbound roles) is refused with `401`; 1.5.5 admitted it ungoverned and booked its spend to `anonymous`. Bind its roles in `role_bindings`.
+- A request whose key row has a passed `expires_at` is refused with `401`, and the refusal is audited.
+- When an auth plugin's `max_inflight` is full, or an inbound auth plugin's `verify` gives no verdict (for example an OIDC key set that is unavailable), a request is answered `503` with `Retry-After: 1` instead of `401`. A rejected credential is still `401`.
+- A sign-in whose identity provider answers 5xx or 429, or times out, answers `503` with the provider's `Retry-After` (clamped 1 to 3600 s, 5 when absent).
+- A hook with `on_error: reject` whose transform fails answers `503`; 1.5.5 passed the request through.
+- `allow_unsigned` no longer admits a plugin signed by a retired busbar release key (`retired_key`); name the key under `plugins.trust.publishers` to opt in.
+- `GET /auth/token?method=<m>&refresh=1` rotates the key only on a same-origin navigation from Busbar's own page; otherwise it re-shows the current key.
+- `POST /api/v1/admin/keys` with `issue_aws_credential: true` and no at-rest key answers `409 conflict` and writes nothing. The secret access key is now stored sealed (AES-256-GCM); keys minted by 1.5.5 are re-sealed once a key is configured.
+- `POST /api/v1/admin/ledger/amend-rate-history` needs only a `full` admin grant. `auth.operator_pub` is gone; drop it, and stop signing corrections.
+- `POST /api/v1/admin/keys/{id}/rotate` answers `400 invalid_request` for an id over 64 characters, not `404`.
+- `POST /api/v1/admin/adjust` requires `pool` (a configured pool, else `400`).
+- A fallback, least-bad or queue hop refused upstream with 401/403 is answered in Busbar's ingress-native auth-failure envelope (not the upstream's body) and trips the lane's breaker, as the primary hop already did.
+- A same-dialect Anthropic stream cut mid-flight ends on an `error` event with `error.type: api_error`; a Bedrock ConverseStream ends on `internalServerException`.
+- A request translated between dialects no longer has an unrepresentable value substituted (an unsupported Bedrock image format relabelled `png`, Gemini `thinkingBudget: -1` sent as `medium`): the field is dropped with a warning and audit row, and a wrong-typed one is refused with the caller's own 400.
+- A chat request whose `stream_options` is not a JSON object is refused with `400`; 1.5.5 forwarded it.
+- A reserved-name configuration refusal is one generic sentence linking https://getbusbar.com/docs/configuration#reserved-names.
+- A store refuses a different record at an already-used task-event sequence as a fork. A store plugin refuses an `op_id` replayed with different fields (`STORE_OPID_CONFLICT`).
+- The LDAP auth plugin fails closed on a malformed reply or hostless URL, fails fast on an overrunning length, and caps inbound replies at 16 MiB.
+- A configuration apply that first writes a plane section (`mcp:`, `agents:`, `streams:`, `decisions:`) the process did not load at start is refused whole with `400` naming the section; write it in the config file and restart. A plane loaded but not opened accepts the change and lists it under `reload_to_apply`.
+- An `mcp:` block with an empty `auth.chain` refuses to start.
+- `RUST_LOG` is read strictly: per-target directives such as `busbar=debug,hyper=warn` now work, `off` is honoured, and an invalid value stops boot with `BUSBAR-9007` (1.5.5 silently logged at `info`).
 
-### Additive planes
+### Billing and metering changes
 
-- **MCP.** Busbar is an MCP server (`mcp:`) and a governed gateway in front of your MCP tool estate
-  (`tools:`), over HTTP and over stdio. See [the MCP guide](docs/mcp.md).
-- **A2A.** Busbar serves A2A over all three of that specification's bindings (JSON-RPC, HTTP+JSON,
-  gRPC) in front of registered agents (`agents:`). See [the A2A guide](docs/a2a.md).
-- **Streaming.** A `streams:` block declares the streaming plane: full-duplex realtime sessions
-  (voice, over the OpenAI Realtime and Gemini Live dialects, on one IR) metered by the same ledger
-  as everything else. Named `streaming` rather than `voice` (owner ruling Q96/F10): voice is one
-  dialect the plane carries, not the plane itself. Since this plane did not exist in any published
-  1.5.5 release, there is nothing to migrate — refusal text, log lines, the audit record kind and
-  the plane's diagnostic all read `streaming` in 1.6.0. See [the voice guide](docs/voice.md).
-- **Decisions.** A `decisions:` block declares the decisions plane (the first-party
-  `busbar-plane-decisions` plugin, pinned in this release). Each `decisions.models.<name>` entry
-  names a provider whose protocol is one of the plane's two dialects, and the plane serves it as a
-  byte-for-byte passthrough: `jev` at `POST /v1/systemone`, `nanojev` at `POST /api/evaluate`. A
-  provider of any other protocol is refused at validate and boot. The plane does not serve
-  `/v1/models`, so `GET /v1/models` answers exactly as in 1.5.5. Its card is `decisions.rate_card`
-  (`decision`, `input_tokens`, `output_tokens`) and it takes `decisions.fees.per_request`.
+- Rate cards are a dated history: a new card applies from its effective date, and spend already booked keeps the price in force when the request arrived. `GET /api/v1/admin/usage` reports `rate_card_version` and accepts `?as_of=`. Applying a config no longer reprices spend in the `/metrics` series. After a rate-card edit and a restart, key and group budget reads can differ from `/admin/usage` for the same consumption.
+- Fallback, least-bad and queue hops to an OpenAI Chat lane now bill streamed usage; expect spend to rise for traffic that fails over.
+- Gemini turns that use server-side tools bill the tool-use tokens in the input tier; every itemized Gemini count is ledgered, and an unexplained total gap is ledgered as `unitemized_tokens`.
+- Every provider-reported count is ledgered under its own class: `classifications`, `web_fetch_requests`, `images`, `audio_ms` and Bedrock `guardrail_*`. An OpenAI transcription answered in its own dialect, billed nothing in 1.5.5, is now metered.
+- A stream that fails or is cancelled after its first byte keeps its charge for the tokens that streamed, and the request-budget unit is not returned.
+- A stream that dies mid-flight (an OpenAI-compatible inline error chunk, a Cohere `ERROR` finish) is no longer served and billed as a completed one; the breaker records the fault.
+- A failed request's flat fee is refunded from the window bucket it was charged to, even after the window rolled.
+- A request that asks for a stream gets a stream in the caller's dialect, even when the upstream answers with one whole body (audited as `egress.stream_synthesized`).
+- An upstream that is down is counted and billed nothing, as in 1.5.5.
 
-Each plane is inert until its section is written. An `mcp:` block with an empty `auth.chain`
-refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
-wildcard grants over every registered server: close the data-plane chain, or drop the block.
+### New
 
 A plane is loaded once, at start, when the configuration uses it. A plane that the configuration
 did not use at start cannot take its first section on a running process. A `POST /config/apply`,
@@ -1280,92 +1277,14 @@ each dialect translates, field by field, is listed in the generated
 
 ### Changed
 
-- On a same-dialect Gemini route the upstream request keeps the client's `?alt=sse` query; 1.5.5 dropped it.
-- 1.6.0 Changed: an export plugin's log lines (its configuration refusals included) go to the plugin's own log file, not busbar.log.
-- 1.6.0 Changed: a postgres store that cannot open names the server's SQLSTATE and message (or the TLS failure) where 1.5.5 printed `db error` / `error performing TLS handshake`.
-- 1.6.0 Changed: a plugin's `interface_version` is its kind's memory-ABI contract version (hook 2, store 3).
-- 1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.
-- 1.6.0 Changed: a sign-in whose identity provider answered its token or userinfo request with a 5xx or 429, or timed out, answers 503 with the identity provider's own `Retry-After` (clamped to 1 to 3600 seconds; 5 when the provider sent none), on the browser callback and the credential sign-in alike. A login plugin states it on its `LOGIN_OUTAGE` answer under the reply-extensions key `retry_after` (SDK: `auth_kit::login_outage`, `abi::auth::retry_after_secs`); only an RFC 6749 §5.2 credential error answers 401 (owner-signed 2026-10-30, OWNER-QUEUE.md item: IdP errors).
-- **The TLS listener now offers h2 via ALPN** (owner-signed, 2026-10-04, Q137). A `tls:` listener offers
-  ALPN `h2, http/1.1`; 1.5.5 offered `http/1.1` alone. A client that offers `h2` (curl, browsers, gRPC
-  clients) speaks HTTP/2 to Busbar over TLS; a client that offers only `http/1.1`, or no ALPN, is served
-  exactly as before. On an HTTP/2 connection a client that does not open with the HTTP/2 connection preface
-  is disconnected, as RFC 9113 requires. **Migration:** none; a client that must stay on HTTP/1.1 offers
-  only `http/1.1`.
-- **The data plane is thread-per-core on unix.** `advanced.worker_threads` (default: one per core,
-  cap 128) now sizes N pinned single-threaded runtimes, each with its own `SO_REUSEPORT` listener
-  on the data port; the admin plane and background tasks run on a separate control-runtime thread.
-  Observable after upgrade: N threads named `busbar-core-0` … `busbar-core-N-1`, N listen sockets
-  on the data port in `ss -tlnp`, and one `busbar listening` log line per listener. An accept-time
-  placement balancer hands a just-accepted connection from an overloaded worker to the least-loaded
-  one, so a skewed kernel accept distribution cannot pin hot connections onto one core. Non-unix
-  builds keep the classic single work-stealing runtime; no config change is needed anywhere. See
-  [the 1.6.0 migration guide](docs/migration-1.6.md).
-- **Hooks fire on the normalized IR**, the same representation the upstream request is built
-  from, so a screening hook can no longer be shown a different payload than the provider receives.
-  A client's in-band `{role: "system"}` turn still reaches a hook as a turn, at its position,
-  exactly as in 1.5.5, so a rewrite hook's reply keeps the operator's system prompt; tool-call arguments are projected into the
-  content a hook holding a `prompt: ro` or `prompt: rw` grant is shown, so a gate written to screen
-  a prompt screens them through the field it already reads; and a request body Busbar cannot read
-  is rejected with a `400` rather than forwarded. See [the hooks guide](docs/hooks.md).
-- The embedded OAuth 2.1 authorization server moved to `oauth-as` 1.0.0.
-  Nothing you write changes. The discovery document no longer advertises `introspection_endpoint`,
-  a path Busbar has never mounted and which answered 404.
-- Usage sub-buckets survive a cross-protocol hop, so a bill reconciles line by line:
-  `reasoning_tokens` (which used to arrive as a hard `0`), Anthropic's separately priced 5-minute
-  and 1-hour cache tiers, and Cohere `search_units`. Each is a slice of a total; what Busbar bills
-  is unchanged.
-- The documentation states exactly what "lossless" covers. Same-protocol routes are byte-for-byte
-  identical to calling the provider directly. Cross-protocol, every modelled field arrives in the
-  target's native shape, and what cannot cross is dropped with a log line naming it. See
-  [the protocols guide](docs/protocols.md).
-- 1.6.0 Changed: citations a streamed Cohere or Responses upstream sends now reach the client.
-  1.5.5 dropped them from a streamed answer (Cohere grounding citations, Responses `url_citation`
-  annotations) while the buffered answer to the same request kept them. A streamed answer now
-  carries the citations the buffered one carries, in every client protocol with a citation member:
-  Anthropic, Bedrock, Gemini, Responses and Cohere. **Migration:** none; a streaming client that
-  does not read citation events is unaffected.
-- busbar is invisible to upstreams. On a same-dialect route every client header and body field
-  passes through unchanged, except the fields busbar governs: credential headers (each dialect
-  declares its own, e.g. Authorization, x-api-key, api-key, x-goog-api-key), replaced by busbar's
-  upstream credential; tenant selectors (e.g. OpenAI-Organization, OpenAI-Project), set from
-  busbar's config and never from the caller; the model, which is mapped; hook rewrites; and the
-  HTTP hop-by-hop headers plus Host and Content-Length, re-derived for the upstream connection. On
-  a translated route busbar translates what maps and drops the rest. There are no feature
-  allowlists; beta and version headers are ordinary fields. 1.5.5 forwarded no client header.
-- A `prompt: ro|rw` hook sees tool-call arguments and tool results (the prompt projection walks
-  ToolUse input and ToolResult content); 1.5.5 showed only text blocks.
-- A Bedrock response served from an Anthropic upstream carries `usage.cacheDetails`, the per-TTL
-  split of the cache-write tokens (additive: billed counts are unchanged).
-- A translated OpenAI Chat answer carries a model refusal in `message.refusal` / `delta.refusal`
-  and the serving `service_tier`, an image answer omits `created` when the upstream sent none, and
-  a translated request keeps a `developer` system prompt in the `developer` role.
-- A translated OpenAI Responses request keeps a `developer` system prompt as a `developer` input
-  item and sends a JSON tool result as the `function_call_output` text, and a translated Responses
-  stream ends at `response.failed` and names the serving `service_tier`.
-- A translated Gemini request or answer carries `functionCall.id` / `functionResponse.id`, a failed
-  tool result as `functionResponse.response.error`, a `fileData.mimeType`, the caller's
-  transcription prompt and temperature, and reads Vertex `createTime`, a `functionResponse.id` as
-  the call id, and the image content-policy stops as safety stops.
-- A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
-  shape the published Chat Completions schema defines.
-- On a same-dialect route the caller receives every upstream response header except hop-by-hop
-  fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers;
-  1.5.5 relayed only Content-Type and the dialect's request-id headers.
-- A same-dialect request reaches the upstream as the caller's own bytes. Where busbar edits a
-  member it governs (the mapped `model`, the `stream_options.include_usage` it asks for to meter a
-  stream, a `prompt: rw` hook's rewrite), the member is edited in place; key order, spacing and
-  number spelling stay the caller's. 1.5.5 re-serialized such a body with its keys sorted.
-- A request translated between LLM dialects no longer carries an empty text block in place of a
-  content block the target dialect cannot represent, and an answer translated back no longer
-  delivers one; the block is dropped with a warning and an audit row naming its wire path.
-- What a dialect's reader cannot carry across a translation (an unknown image detail or effort
-  word, a tool-choice form or modality with no counterpart, extra choices or candidates, a Bedrock-only
-  answer member, a Responses answer's request echoes) is now audited like a writer's drop, and every
-  drop names the caller's own wire path, never an internal name.
-- 1.6.0 Changed: a streamed chat request whose `stream_options` is not a JSON object (a string, number, boolean or array) is refused with a 400 naming the field. 1.5.5 forwarded it to the upstream unchanged.
-- 1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.
-- 1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.
+- Same-dialect routes pass the caller's bytes, headers and `?alt=sse` through unchanged apart from governed fields; the caller receives every upstream response header except hop-by-hop and credential-derived ones.
+- Cross-dialect answers are closer to each provider's published schema: Anthropic, Responses and Gemini objects carry their required members, Responses streams carry the lifecycle frames, errors use native types, and `finish_reason` is always a real token. Citations an Anthropic or Bedrock caller cannot represent are omitted with a warning and audit record.
+- A Gemini speech response with no audio is no longer served as an MP3; a Bedrock `cachePoint` before a document no longer sends it twice; a non-image attachment no longer reaches Anthropic as an `image`.
+- Fields dropped at the cross-protocol seam are named in the log and audited.
+- A postgres store that cannot open names the server's SQLSTATE and message; a mis-encoded `env:` secret is reported as an encoding problem, not unset.
+- `/metrics` families are emitted in a stable sorted order; `busbar_lane_state` reads each pool's own breaker.
+- `--help` documents `-c`/`--config` and `--providers`, and `--version` prints a second line. `openapi.json` reports the running build version.
+- MCP servers and A2A agents are refused only on a breaker trip, not on a single timeout's cooldown.
 
 ### Fixed
 
