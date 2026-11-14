@@ -196,7 +196,7 @@ mod recovered_worker_tests {
 
     #[test]
     fn recovered_data_runtime_keeps_control_alive_and_drains_registered_work() {
-        let control = tokio::runtime::Builder::new_multi_thread()
+        let control = busbar_kernel::rt::multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
@@ -397,7 +397,7 @@ fn main() {
     control_work.register();
     #[cfg(unix)]
     {
-        tokio::runtime::Builder::new_current_thread()
+        busbar_kernel::rt::current_thread()
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
@@ -406,7 +406,7 @@ fn main() {
     #[cfg(not(unix))]
     {
         let worker_work = control_work.clone();
-        tokio::runtime::Builder::new_multi_thread()
+        busbar_kernel::rt::multi_thread()
             .worker_threads(worker_threads)
             .on_thread_start(move || worker_work.register())
             .enable_all()
@@ -2029,7 +2029,7 @@ fn spawn_multithread_data(
         .spawn(move || {
             let detached = busbar_kernel::detached::DetachedTasks::new();
             let worker_detached = detached.clone();
-            let runtime = tokio::runtime::Builder::new_multi_thread()
+            let runtime = busbar_kernel::rt::multi_thread()
                 .worker_threads(workers)
                 .thread_name("busbar-data")
                 .on_thread_start(move || {
@@ -2115,7 +2115,7 @@ fn serve_thread_per_core(
                 busbar_kernel::detached::set_worker_detached(detached.clone());
 
                 busbar_kernel::detached::set_worker_shutdown(worker_shutdown);
-                let rt = tokio::runtime::Builder::new_current_thread()
+                let rt = busbar_kernel::rt::current_thread()
                     .enable_all()
                     .build()
                     .unwrap_or_else(|e| {
@@ -2178,7 +2178,7 @@ fn serve_private_listener(
             let detached = busbar_kernel::detached::DetachedTasks::new();
             busbar_kernel::detached::set_worker_detached(detached.clone());
             busbar_kernel::detached::set_worker_shutdown(worker_shutdown);
-            let runtime = tokio::runtime::Builder::new_current_thread()
+            let runtime = busbar_kernel::rt::current_thread()
                 .enable_all()
                 .build()
                 .unwrap_or_else(|e| die(format!("cannot build listener runtime for {addr}: {e}")));

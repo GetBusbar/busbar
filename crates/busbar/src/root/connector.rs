@@ -232,7 +232,7 @@ pub(crate) fn install_io(dispatcher: &crate::root::loader::dispatch::Dispatcher)
 fn io_reactor() -> tokio::runtime::Handle {
     static IO: OnceLock<tokio::runtime::Handle> = OnceLock::new();
     IO.get_or_init(|| {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = busbar_kernel::rt::current_thread()
             .enable_all()
             .build()
             .unwrap_or_else(|e| {
