@@ -581,6 +581,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "syn 2.0.117",
  "tar",
  "tokio",
  "tracing",
