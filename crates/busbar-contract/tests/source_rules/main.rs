@@ -5,6 +5,7 @@
 
 mod config;
 mod credential_typecheck;
+mod rt_builders;
 mod secrets;
 mod walk;
 mod workflows;
