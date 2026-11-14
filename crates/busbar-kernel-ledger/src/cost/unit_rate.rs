@@ -46,22 +46,38 @@ impl UnitRate {
 
     /// Decimal text in micro-units per unit, read EXACTLY (no float), or the reason it cannot be.
     pub fn parse_micros(text: &str) -> Result<UnitRate, String> {
-        let count = busbar_contract::count::read_count(text)
-            .map_err(|e| format!("`{text}` is not an exact non-negative decimal rate ({e:?})"))?;
+        let count = busbar_contract::count::read_count(text).map_err(|e| {
+            refusal(format_args!(
+                "`{text}` is not an exact non-negative decimal rate ({e:?})"
+            ))
+        })?;
 
         let per_nano = i128::from(1_000_000 / NANOS_PER_MICRO_UNIT);
         if count.micros() % per_nano != 0 {
-            return Err(format!(
+            return Err(refusal(format_args!(
                 "`{text}` micro-units per unit is finer than one nano-unit, the finest rate the card \
                  holds; round it to three decimal places"
-            ));
+            )));
         }
         u64::try_from(count.micros() / per_nano)
             .map(UnitRate)
             .map_err(|_| {
-                format!("`{text}` micro-units per unit is past the largest rate the card holds")
+                refusal(format_args!(
+                    "`{text}` micro-units per unit is past the largest rate the card holds"
+                ))
             })
     }
+}
+
+/// A configured rate's refusal, spelled once into the `String` the configuration check reports.
+#[cold]
+fn refusal(text: std::fmt::Arguments<'_>) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a configured rate's refusal is spelled once, when configuration is read"
+    )]
+    let spelled = std::fmt::format(text);
+    spelled
 }
 
 impl serde::Serialize for UnitRate {
@@ -70,8 +86,10 @@ impl serde::Serialize for UnitRate {
         if frac == 0 {
             s.serialize_u64(whole)
         } else {
-            let digits = format!("{frac:03}");
-            s.serialize_str(&format!("{whole}.{}", digits.trim_end_matches('0')))
+            // At most 17 whole digits, the point and three decimals: always fits.
+            let mut spelled = super::spelled::Spelled::<32>::new();
+            let _ = std::fmt::Write::write_fmt(&mut spelled, format_args!("{whole}.{frac:03}"));
+            s.serialize_str(spelled.as_str().trim_end_matches('0'))
         }
     }
 }
@@ -89,14 +107,14 @@ impl<'de> serde::Deserialize<'de> for UnitRate {
             }
             fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<UnitRate, E> {
                 UnitRate::from_whole_micros(v).ok_or_else(|| {
-                    E::custom(format!(
+                    E::custom(format_args!(
                         "{v} micro-units per unit is past the largest rate the card holds"
                     ))
                 })
             }
             fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<UnitRate, E> {
                 let v = u64::try_from(v)
-                    .map_err(|_| E::custom(format!("a rate cannot be negative (got {v})")))?;
+                    .map_err(|_| E::custom(format_args!("a rate cannot be negative (got {v})")))?;
                 self.visit_u64(v)
             }
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<UnitRate, E> {

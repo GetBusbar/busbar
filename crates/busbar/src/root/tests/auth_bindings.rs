@@ -53,9 +53,9 @@ fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
         fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
             match candidate {
                 Some(_) if self.0.load(Ordering::SeqCst) => AuthOutcome::Reject,
-                Some(id) => {
-                    AuthOutcome::Identify(busbar_kernel_identity::principal::Principal::from_id(id))
-                }
+                Some(id) => AuthOutcome::Identify(
+                    busbar_kernel_identity::principal::Principal::from_id(id.to_owned()),
+                ),
                 None => AuthOutcome::Pass,
             }
         }

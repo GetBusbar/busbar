@@ -246,7 +246,7 @@ fn entries_are_named_by_the_id_of_their_key() {
     let id = key.id();
     assert_eq!(id.hex().len(), 24);
     assert_eq!(EntryId::parse_hex(&id.hex()), Some(id));
-    let prefix = id.pseudo_prefix();
+    let prefix = format!("{id}{}", EntryId::SEPARATOR);
     assert_eq!(prefix.len(), 25);
     assert_eq!(
         EntryId::split_pseudo(&format!("{prefix}gpt-4o")),

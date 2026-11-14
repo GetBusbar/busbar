@@ -19,7 +19,7 @@ fn pre_tier_amount_is_the_sum_of_the_lines_including_the_fee() {
     let amounts: Vec<(&str, u128)> = posted
         .lines
         .iter()
-        .map(|l| (l.class.as_str(), l.amount_nanos))
+        .map(|l| (l.class, l.amount_nanos))
         .collect();
     assert_eq!(
         amounts,
@@ -39,7 +39,7 @@ fn the_fee_line_is_always_present_even_at_zero() {
     let posted = priced(&c, "m", &usage(&[(INPUT, 10)]), 0, STANDARD_TIER_BP);
     let fee = posted.lines.last().expect("a fee line");
     assert_eq!(
-        (fee.class.as_str(), fee.quantity, fee.amount_nanos),
+        (fee.class, fee.quantity, fee.amount_nanos),
         (FEE_CLASS, busbar_contract::Count::ZERO, 0)
     );
     assert_eq!(posted.pre_tier_nanos, 10_000);
