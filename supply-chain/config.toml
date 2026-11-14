@@ -126,6 +126,16 @@ criteria = "safe-to-run"
 version = "1.1.0"
 criteria = "safe-to-run"
 
+[[exemptions.cmov]]
+version = "0.5.4"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
+
+[[exemptions.const-oid]]
+version = "0.10.2"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
+
 [[exemptions.core_affinity]]
 version = "0.8.3"
 criteria = "safe-to-deploy"
@@ -162,6 +172,11 @@ criteria = "safe-to-deploy"
 version = "0.2.2"
 criteria = "safe-to-deploy"
 notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
+
+[[exemptions.ctutils]]
+version = "0.4.8"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
 
 [[exemptions.curve25519-dalek]]
 version = "5.0.0"
