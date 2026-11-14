@@ -15,9 +15,14 @@ pub use busbar_contract::hook_calls::HookFacts;
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
 fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
-    crate::dispatch::plugin::str_bytes(s)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a Statement string is copied out once, at bind"
+    )]
+    let owned = crate::dispatch::plugin::str_bytes(s)
         .and_then(|b| std::str::from_utf8(b).ok())
-        .map(str::to_owned)
+        .map(str::to_owned);
+    owned
 }
 
 const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
@@ -30,21 +35,37 @@ pub const SIGNALS_REFUSED: &str = "the hook tail states requested_signals: the s
 fn read(st: &Statement) -> Result<HookContext, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
     if st.kind_tail.is_null() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(NO_TAIL.to_string());
     }
     // SAFETY: `Tail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid: NULL
     // lists of length 0); a non-NULL kind tail is `'static` plugin data of its stated size.
     let t: Tail = unsafe { crate::dispatch::plugin::kind_tail(st, "a hook", HOOK_TAIL_FROZEN) }?;
     if t.kind_class != CLASS_GATE && t.kind_class != CLASS_TAP {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!("the hook tail states class {}", t.kind_class));
     }
     if t.prompt_access > PROMPT_RW {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!(
             "the hook tail states prompt access {}",
             t.prompt_access
         ));
     }
     if t.user_access > USER_RO {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!(
             "the hook tail states user access {}",
             t.user_access
@@ -56,6 +77,10 @@ fn read(st: &Statement) -> Result<HookContext, String> {
         return Err("the hook tail's route list is null or exceeds the route bound".into());
     }
     if t.requested_signals_len != 0 {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(SIGNALS_REFUSED.to_string());
     }
     let mut facts = HookFacts {
@@ -70,6 +95,7 @@ fn read(st: &Statement) -> Result<HookContext, String> {
     // bound before forming a slice; the existing route count and NULL checks remain above.
     let routes = unsafe { crate::dispatch::validate::lent(t.routes, t.routes_len) }
         .ok_or("the hook tail's route list is misaligned or exceeds the byte bound")?;
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the routes are copied out once, at bind")
     let mut declared_routes = Vec::new();
     for r in routes {
         let path = owned(r.path).ok_or("a hook route's path is malformed")?;
@@ -77,6 +103,10 @@ fn read(st: &Statement) -> Result<HookContext, String> {
         if !path.starts_with('/') {
             return Err("a hook route's path must start with '/'".into());
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         let method = [
             RouteMethod::Get,
             RouteMethod::Post,
@@ -92,6 +122,10 @@ fn read(st: &Statement) -> Result<HookContext, String> {
             hook::ROUTE_AUTH_KEY => RouteAuth::Key,
             hook::ROUTE_AUTH_ADMIN => RouteAuth::Admin,
             _ => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: a load-time Statement refusal"
+                )]
                 return Err(format!(
                     "the hook route {path} names an unsupported auth bar"
                 ));

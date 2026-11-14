@@ -556,6 +556,7 @@ dependencies = [
  "busbar-contract",
  "ed25519-dalek",
  "flate2",
+ "foldhash",
  "futures",
  "getrandom 0.3.4",
  "h2",
