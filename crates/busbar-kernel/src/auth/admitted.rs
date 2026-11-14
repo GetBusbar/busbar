@@ -62,21 +62,23 @@ async fn complete_context(
 
     // HTTP-compatible credential carriers are an auth concern, not the plane data envelope.
     // Fields that are not carriers remain opaque in `head`, including non-HTTP field names.
-    let headers = crate::inbound::header_map(&request.inner.original);
-    let client_token = app.auth.extract_client_token(&headers);
+    let headers = request.original_headers();
+    let client_token = request.client_token();
     let mut read = None;
     let (client_token, proven) = match dpop::judge_method(
         &app,
         &request.inner.original.method,
         &request.inner.original.target,
-        &headers,
-        client_token.as_deref(),
+        headers,
+        client_token,
         &mut read,
     )
     .await
     {
-        dpop::SenderConstraint::Unconstrained => (client_token, false),
-        dpop::SenderConstraint::Proven(token) => (Some(token), true),
+        dpop::SenderConstraint::Unconstrained => {
+            (client_token.map(std::borrow::Cow::Borrowed), false)
+        }
+        dpop::SenderConstraint::Proven(token) => (Some(std::borrow::Cow::Owned(token)), true),
         dpop::SenderConstraint::Refused => return Err(AdmittedRefusal::SenderConstraint),
     };
     let mut consumed = gate_consumed(&app, false, proven);
@@ -138,7 +140,7 @@ async fn complete_context(
     if !request.claim_replay().await {
         return Err(AdmittedRefusal::Identity(IdentityRefusal::Denied));
     }
-    let consumed_fields = ConsumedCredentials::fields_of(Some(&consumed), &headers);
+    let consumed_fields = ConsumedCredentials::fields_of(Some(&consumed), headers);
     consumed.strip_neutral(&mut head);
     Ok(AdmittedContext {
         app,
@@ -165,10 +167,10 @@ impl AdmittedRefusal {
             Self::Identity(IdentityRefusal::NoGrant) => (challenge::ChallengeError::InsufficientScope,
                 "The authenticated principal carries no grant on this resource."),
             Self::Identity(IdentityRefusal::Denied) => {
-                let headers = crate::inbound::header_map(&request.inner.original);
                 let app = request.app();
-                let present = app.auth.extract_client_token(&headers).is_some()
-                    || (app.oauth_as.is_some() && dpop::dpop_credential(&headers).is_some());
+                let present = request.client_token().is_some()
+                    || (app.oauth_as.is_some()
+                        && dpop::dpop_credential(request.original_headers()).is_some());
                 (if present { challenge::ChallengeError::InvalidToken } else { challenge::ChallengeError::Absent },
                  "Authentication is required for this resource.")
             }
@@ -192,7 +194,7 @@ impl crate::inbound::RequestAdmission {
             super::admin_sender_constraint::downgraded(
                 &app,
                 &admitted.provider,
-                &crate::inbound::header_map(&self.inner.original),
+                self.original_headers(),
             )
         }) {
             return super::AdminVerdict {

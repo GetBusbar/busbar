@@ -197,7 +197,7 @@ impl crate::inbound::RequestAdmission {
         Context::new(
             &head.method,
             &target,
-            crate::inbound::header_map(head),
+            self.original_headers().clone(),
             &self.admin_verdict().door,
         )
     }
