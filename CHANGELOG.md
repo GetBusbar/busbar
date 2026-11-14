@@ -149,6 +149,17 @@ Everything else in this release is identical to 1.5.5, apart from the improvemen
 register entries listed below. These are the changes an operator must act on or will notice, each
 signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
+- **A provider's completed answer bills its stated usage when a cancel overtakes it.**
+  1.6.0 Changed: once the provider's answer completes (the plane said done), a cancel for any reason
+  (client gone, deadline, budget cut, drain or reload) bills the usage the provider stated, where
+  1.5.5 billed 0. This includes streams, and a cancel that arrives while busbar is still reading the
+  final piece. The line is priced at, and attributed to, the pool member and provider that actually
+  served the answer. If the final report could not be priced, its count was refused, or the client
+  left before busbar read it, the line bills the last accepted report. The unit's checkpoint record
+  then carries `unread` and the audit log has a `plane-usage-unread` row (`BUSBAR-5046`), both
+  stating the reason. A refused final count bills that way whether or not a cancel overtook it
+  (1.5.5 billed 0 for a non-streaming answer); the refused count itself is never billed. A plane
+  fault still bills as before.
 - **A request that asks for a stream gets a stream.**
   1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.
   1.5.5 relayed such an answer as one `application/json` body to a caller that asked for

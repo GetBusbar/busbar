@@ -1428,6 +1428,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-5046",
+    "number": 5046,
+    "class": "proxy",
+    "slug": "plane-usage-unread",
+    "title": "Provider usage not read (a unit settled without billing its final stated usage)",
+    "severity": "actionable",
+    "summary": "A unit the provider answered settled without billing its final stated usage; `reason` names the ReasonCode that ended it (deadline, drain/reload, unpriced, over-budget, far cut, body cap, plane fault, destination unreachable, client gone before fold). The unit's ledger line bills the last usage report busbar accepted, and its terminal checkpoint record carries the same `unread` reason. Emitted once per affected unit, with an audit row under the same slug.",
+    "action": "Reconcile the line against the provider's usage report: the provider may have charged more than the line bills.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-6001",
     "number": 6001,
     "class": "plugins",

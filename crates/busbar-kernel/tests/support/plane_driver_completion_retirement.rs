@@ -583,7 +583,14 @@ async fn completion_retirement_dropped_before_consumption_sweeps_without_duplica
         busbar_contract::caps::ReasonCode::ClientGone
     );
     assert_eq!(money.closes.load(Ordering::SeqCst), 1);
-    assert!(rows.0.lock().unwrap().is_empty());
+    // No plane record row is written twice (or at all: the primary's result was never consumed).
+    // The kernel's one usage-unread row says the primary's done report (1 unit) was never folded.
+    let rows = rows.0.lock().unwrap().clone();
+    let (unread, plane): (Vec<_>, Vec<_>) =
+        rows.iter().partition(|row| row.0 == "plane-usage-unread");
+    assert!(plane.is_empty(), "{plane:?}");
+    assert_eq!(unread.len(), 1, "{unread:?}");
+    assert!(unread[0].1.ends_with("reason:client_gone"), "{unread:?}");
     driver.sweep();
     assert_eq!(money.bills.lock().unwrap().len(), 1);
     drop(driver);

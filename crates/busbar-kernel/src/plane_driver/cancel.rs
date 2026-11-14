@@ -79,6 +79,13 @@ pub(crate) struct Facts {
     pub(crate) relayed: bool,
     /// The last cumulative units the plane reported.
     pub(crate) units: Vec<UnitCount>,
+    /// The unit closed on the plane's own done: a READY `on_piece` answer that said the reply is
+    /// complete (`closes_unit`), never a kernel cancel. Its stated units are final, so a cancel
+    /// that follows bills them, whatever its cause.
+    pub(crate) plane_done: bool,
+    /// Why the provider's final stated usage was not billed, when it was not: the reason that
+    /// ended the unit before its final report was accepted (`BUSBAR-5046`).
+    pub(crate) unread: Option<ReasonCode>,
 }
 
 /// A cancelled unit's bill.
@@ -97,6 +104,10 @@ pub struct CancelBill {
     pub streamed: bool,
     /// The far-end-reported cumulative units that bill; empty when nothing bills.
     pub billed: Vec<(u32, busbar_contract::Count)>,
+    /// The provider answered, but its final stated usage was not billed: the reason that ended
+    /// the unit before that report was accepted. Ledgered on the unit's record and audited
+    /// (`BUSBAR-5046 plane-usage-unread`); `None` when nothing went unread.
+    pub unread: Option<ReasonCode>,
 }
 
 impl CancelBill {
@@ -106,8 +117,11 @@ impl CancelBill {
             _ => CANCEL_FAILED,
         };
 
-        let bills =
-            facts.far_end_answered && cancel_bills_reported_units(disposition, facts.streamed);
+        // A unit that closed on the plane's own done has stated its final usage: the cancel that
+        // follows (any cause) bills it. The disposition stays what the plane gave, never a
+        // plane-acknowledged partial that did not happen.
+        let bills = facts.far_end_answered
+            && (facts.plane_done || cancel_bills_reported_units(disposition, facts.streamed));
         let billed = super::money::reported(if bills { &facts.units[..] } else { &[] });
         CancelBill {
             cause,
@@ -115,6 +129,7 @@ impl CancelBill {
             far_end_answered: facts.far_end_answered,
             streamed: facts.streamed,
             billed,
+            unread: facts.unread,
         }
     }
 }
@@ -147,6 +162,17 @@ pub(crate) struct Buried {
     pub(crate) piece_flags: u32,
 
     pub(crate) final_answer: bool,
+
+    /// The leg the in-flight piece was pushed toward, for the same pre-fold and attribution
+    /// checks the walk makes.
+    pub(crate) leg: super::route::Leg,
+
+    /// The unit's buffers (moved here by `Pumping::drop`): the settled piece's lane and reply
+    /// bytes, and the attempt's member and provider.
+    pub(crate) keep: super::route::Keep,
+
+    /// `Pumping::drop` already settled a done flight it found settled (attributed, or refused).
+    pub(crate) done_settled: bool,
 }
 
 impl PlaneDriver {
@@ -182,9 +208,10 @@ impl PlaneDriver {
                             bill_ready = true;
                             Some((d, flight.cancel_writes()))
                         }
+                        // A plane fault is explicit: never a plane-done bill.
                         (None, AbiOutcome::Fault) => {
                             bill_ready = true;
-                            None
+                            Some((CANCEL_FAILED, Vec::new()))
                         }
                         (None, _)
                             if super::route::answered_done(
@@ -194,6 +221,27 @@ impl PlaneDriver {
                                 unit.final_answer,
                             ) =>
                         {
+                            // The done piece settled after the bury: it is attributed (or
+                            // refused) here, exactly as the walk would have, before the bill.
+                            if !unit.done_settled {
+                                if let Some(out) = flight.out() {
+                                    let keep = unit
+                                        .keep
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    if let Some(bufs) = keep.as_deref() {
+                                        super::route::bury_done(
+                                            &*self.money,
+                                            &unit.ctx,
+                                            &out,
+                                            bufs,
+                                            unit.leg,
+                                            unit.piece_flags,
+                                            &mut unit.facts,
+                                        );
+                                    }
+                                }
+                            }
                             bill_ready = true;
                             None
                         }
@@ -239,6 +287,7 @@ impl PlaneDriver {
             let bill = CancelBill::new(ReasonCode::ClientGone, disposition, &unit.facts);
             if bill_ready && !unit.billed.swap(true, std::sync::atomic::Ordering::AcqRel) {
                 self.money.cancelled(&unit.ctx, &bill);
+                self.usage_unread(&unit.ctx, &bill, unit.principal.as_ref());
             }
             self.calls.recycle(unit.ticket);
         }
