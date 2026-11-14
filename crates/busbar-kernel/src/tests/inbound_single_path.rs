@@ -96,3 +96,67 @@ async fn keys_judging_reads_the_carried_admission_and_credential() {
     assert_eq!(scope.count(Derive::HeaderMap), 1);
     assert_eq!(scope.count(Derive::CredentialExtract), 1);
 }
+
+fn refused(k: &Kit, unit: UnitRef) -> Refusal {
+    k.inbound
+        .refuse(Refuse {
+            owner: OWNER,
+            generation: GEN,
+            unit,
+            cause: REFUSE_STOPPED,
+            line: 0,
+            request: Some(signed_head()),
+            conn: 1,
+            stream: 1,
+            framing: Some(1),
+        })
+        .expect("refused")
+}
+
+#[tokio::test]
+async fn a_refused_unit_reads_the_admission_and_credential_its_auth_calls_derived() {
+    let seen = Arc::default();
+    let reader = probe("reader", AuthPoints::HEAD_BODY, Verified::Pass, &seen);
+    let head = probe("head", AuthPoints::HEAD, Verified::Pass, &seen);
+    let body = probe("body", AuthPoints::HEAD_BODY, Verified::Pass, &seen);
+    let k = mixed(reader, &[head, body]);
+
+    let scope = Scope::open();
+    let answer = two_points(&k, &seen).await;
+    assert_eq!(answer.flow, FLOW_STOP, "no key is presented, so keys deny");
+    let refusal = refused(&k, answer.unit);
+
+    assert_eq!(refusal.status, 401, "today's refusal is unchanged");
+    assert_eq!(
+        scope.count(Derive::PlaneAdmission),
+        1,
+        "the refusal reads the admission keys judging already resolved"
+    );
+    assert_eq!(
+        scope.count(Derive::HeaderMap),
+        1,
+        "the refusal reads the unit's header map, never builds a second"
+    );
+    assert_eq!(
+        scope.count(Derive::CredentialExtract),
+        1,
+        "the refusal reads the unit's carried credential"
+    );
+}
+
+#[tokio::test]
+async fn a_refusal_with_no_unit_derives_each_input_once() {
+    let seen = Arc::default();
+    let reader = probe("reader", AuthPoints::HEAD_BODY, Verified::Pass, &seen);
+    let head = probe("head", AuthPoints::HEAD, Verified::Pass, &seen);
+    let body = probe("body", AuthPoints::HEAD_BODY, Verified::Pass, &seen);
+    let k = mixed(reader, &[head, body]);
+
+    let scope = Scope::open();
+    let refusal = refused(&k, UnitRef::NONE);
+
+    assert_eq!(refusal.status, 401);
+    assert_eq!(scope.count(Derive::PlaneAdmission), 1);
+    assert_eq!(scope.count(Derive::HeaderMap), 1);
+    assert_eq!(scope.count(Derive::CredentialExtract), 1);
+}
