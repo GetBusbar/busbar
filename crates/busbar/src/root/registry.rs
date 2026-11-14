@@ -108,6 +108,7 @@ pub struct Dropped {
 }
 
 impl Dropped {
+    #[cfg(test)]
     pub const NONE: Self = Self {
         doors: std::borrow::Cow::Borrowed(&[]),
     };

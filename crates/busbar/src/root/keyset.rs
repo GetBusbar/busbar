@@ -30,6 +30,7 @@ pub fn fingerprint_of_signer(key: &AuditSigningKey) -> [u8; 32] {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeysetSource {
     /// Minted for a helper process with no Store, written nowhere.
+    #[cfg(test)]
     Ephemeral,
     /// The deployment keyset kept by the configured Store, including its first boot.
     Stored,

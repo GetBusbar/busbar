@@ -51,6 +51,7 @@ use busbar_kernel::plane_routes::{
     PlaneRefusalSpec, PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec,
 };
 
+#[cfg(test)]
 pub const DEFAULT_EGRESS_CLASS: u32 = 0;
 
 #[path = "serve_neutral.rs"]
@@ -671,6 +672,7 @@ impl LateServices {
         self.kernel.get().cloned()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn is_installed(&self) -> bool {
         self.slot.is_installed()
@@ -835,6 +837,7 @@ pub struct ServedPlane {
     /// The first generation's snapshot, as the host copied it.
     pub snapshot: OwnedSnapshot,
     /// The `audit_kind` its tail states: what its units are audited under.
+    #[cfg(test)]
     pub audit_kind: &'static str,
     /// Its key, scope kind, billable classes and fee units, read off its tail.
     pub facts: DoorFacts,
@@ -1916,6 +1919,7 @@ pub async fn compose_served_checked(
     Ok(served)
 }
 
+#[cfg(test)]
 pub fn datagram_binds(
     doors: &[(String, DoorPlane)],
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
@@ -1933,6 +1937,7 @@ pub fn datagram_binds(
     Ok(binds)
 }
 
+#[cfg(test)]
 pub(crate) fn need_binds(
     instance: &str,
     section_name: &str,
@@ -2778,6 +2783,7 @@ pub(crate) async fn compose_planes_over(
             instance: instance.clone(),
             driver,
             snapshot,
+            #[cfg(test)]
             audit_kind: served_facts.audit_kind,
             facts,
             money: plane_money,
@@ -3483,26 +3489,6 @@ impl std::fmt::Debug for DataRoutes {
     }
 }
 
-pub fn data_routes(
-    served: Served,
-    data_chain: &[ChainAuth],
-    core: &[(
-        String,
-        busbar_contract::abi::mechanism::route::RouteMethod,
-        busbar_contract::abi::mechanism::route::RouteAuth,
-    )],
-) -> Result<Vec<busbar_kernel::plane_routes::PlaneRouteSpec>, String> {
-    if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok(Vec::new());
-    }
-    door_routes(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        data_chain,
-        core,
-    )
-}
-
 pub type DataMounts = (
     Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
@@ -3845,6 +3831,7 @@ impl ListenerPlan {
         tail
     }
 
+    #[cfg(test)]
     pub fn guests(
         &self,
         app: &busbar_kernel::state::App,
@@ -5260,6 +5247,7 @@ fn mount_paths(path: &str) -> Option<Vec<String>> {
 
 type DoorClaim = (usize, u32);
 
+#[cfg(test)]
 pub fn door_routes(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -5290,6 +5278,7 @@ impl std::fmt::Debug for DoorMounts {
     }
 }
 
+#[cfg(test)]
 pub fn door_mounts(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -7652,6 +7641,7 @@ impl SessionCaller for IngressCaller {
 }
 
 impl IngressReply {
+    #[cfg(test)]
     pub async fn response(self) -> Option<Response> {
         let head = self.head.await.ok()?;
         Some(stated(

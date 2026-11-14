@@ -1681,6 +1681,7 @@ async fn bind_boot_keyset(
         }
     }
 }
+#[cfg(test)]
 pub async fn book(
     app: &busbar_kernel::state::App,
     store: &str,

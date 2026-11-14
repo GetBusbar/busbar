@@ -12,7 +12,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::App;
 
 use super::planes_tests::{bound, composed_services, PUBLISHING};
-use super::{compose_planes, compose_served, data_routes, door_routes};
+use super::{compose_planes, compose_served_checked, datagram_binds, door_routes};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
 
@@ -937,9 +937,10 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     };
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", serde_yaml::from_str("m: {}").expect("yaml"));
-    let served = compose_served(
+    let doors = [(instance.to_string(), plane)];
+    let served = compose_served_checked(
         Some(Arc::clone(&gov)),
-        &[(instance.to_string(), plane)],
+        &doors,
         &dispatcher,
         &services,
         &sections,
@@ -947,12 +948,14 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         &reach,
         None,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
+        &|_| datagram_binds(&doors, &sections),
     )
     .await
     .expect("every build composes a configured door plane");
     assert_eq!(served.planes.len(), 1, "the dropped-in door plane composed");
     let post = Arc::clone(served.post.as_ref().expect("its units post on the node"));
-    let routes = data_routes(served, &[], &[]).expect("its claims mount on the data listener");
+    let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
+        .expect("its claims mount on the data listener");
     let deployment = governed("serve-money-boot-composition-app", true).await;
     let mut app = (*deployment.app).clone();
     app.governance = Some(Arc::clone(&gov));

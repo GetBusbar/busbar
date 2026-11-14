@@ -256,7 +256,7 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
         .expect("the catalog");
     let section: serde_yaml::Value =
         serde_yaml::from_str("session: { model: gpt-rt }\nsession_max_secs: 60\n").expect("yaml");
-    let routes = super::catalog_routes(&section, &catalog);
+    let routes = super::fold_catalog_routes(&section, &catalog).0;
     assert_eq!(
         routes["models"]["gpt-rt"],
         serde_yaml::from_str::<serde_yaml::Value>(
@@ -278,10 +278,10 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
     );
     let unknown: serde_yaml::Value =
         serde_yaml::from_str("session: { model: nope }\n").expect("yaml");
-    assert_eq!(super::catalog_routes(&unknown, &catalog), unknown);
+    assert_eq!(super::fold_catalog_routes(&unknown, &catalog).0, unknown);
     let own: serde_yaml::Value =
         serde_yaml::from_str("session: { model: gpt-rt }\nmodels: { mine: {} }\n").expect("yaml");
-    assert_eq!(super::catalog_routes(&own, &catalog), own);
+    assert_eq!(super::fold_catalog_routes(&own, &catalog).0, own);
 }
 
 #[tokio::test]
