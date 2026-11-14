@@ -2209,7 +2209,8 @@ impl Connection {
         }
         self.tls_out()?;
         if matches!(self.phase, Phase::Open) && (!plain.is_empty() || closed) {
-            self.ingest(plain.as_slice(), closed, true)?;
+            let copied = plain.as_slice().to_vec();
+            self.ingest(&copied, closed, true)?;
         }
         Ok(())
     }
