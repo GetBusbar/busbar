@@ -26,6 +26,16 @@ thread_local! {
     static YIELDED_WIRE_WATCH: std::cell::RefCell<Option<Vec<YieldedWireWatch>>> = const {
         std::cell::RefCell::new(None)
     };
+    /// Heap allocations made on this thread (`alloc`; `alloc_zeroed` and `realloc` go through it).
+    static ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many heap allocations `run` makes on the calling thread.
+pub fn allocations_during<T>(run: impl FnOnce() -> T) -> (T, u64) {
+    let before = ALLOCATIONS.with(std::cell::Cell::get);
+    let result = run();
+    let after = ALLOCATIONS.with(std::cell::Cell::get);
+    (result, after.wrapping_sub(before))
 }
 
 struct ObservingAllocator;
@@ -37,6 +47,7 @@ static OBSERVING_ALLOCATOR: ObservingAllocator = ObservingAllocator;
 // bytes immediately before the matching System deallocation, on the observing test's thread.
 unsafe impl std::alloc::GlobalAlloc for ObservingAllocator {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let _ = ALLOCATIONS.try_with(|count| count.set(count.get().wrapping_add(1)));
         // SAFETY: the caller supplied GlobalAlloc's layout.
         unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) }
     }
