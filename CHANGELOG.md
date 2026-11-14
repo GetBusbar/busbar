@@ -1005,13 +1005,17 @@ each dialect translates, field by field, is listed in the generated
   and `streams:` are new top-level keys; every 1.5.5 key keeps its 1.5.5 meaning and default, and a
   config with none of the three new keys boots and behaves exactly as it did under 1.5.5 (see
   [Behaviour identical to 1.5.5](#behaviour-identical-to-155) above), with one exception below.
-- **A `rate_card` must price every billable class the build declares, or boot refuses.** An unpriced
-  class never silently bills 0. A 1.5.5 config with a `rate_card` needs each entry to gain a
-  `units:` map pricing every LLM open class (`search_units`, `classifications`,
+- **A present `rate_card` must name every configured model and lane, or boot refuses.** Startup,
+  `--validate` and `PUT /api/v1/admin/config/settings` (400 `invalid_request`) refuse a card that
+  leaves out a configured model, and print a paste-ready zero stub of exactly the missing entries,
+  as 1.5.5 did. A named entry missing an open class (`search_units`, `classifications`,
   `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms` and the nine Bedrock
-  `guardrail_*` units; 0 keeps each free, as 1.5.5 billed them), and a rate card written through
-  `PUT /api/v1/admin/config/settings` needs the same keys or the write answers 400. `--validate`
-  names every class it wants.
+  `guardrail_*` units) only warns (BUSBAR-3026), so a 1.5.5 card boots unchanged. The count is
+  still ledgered and the class is unpriced, never billed 0. **Once a named entry's missing open
+  class is hit, usage and cost reads that cover it refuse with 409 `unpriced_class` until a rate
+  is configured (`units: { <class>: 0 }` for free).** Before upgrading a 1.5.5 card, add `units:`
+  for every open class your models can produce (for example Anthropic `web_fetch_requests`,
+  Cohere `classifications`, Bedrock `guardrail_*`).
 - **Every count a provider reports is ledgered under its own class** (owner ruling LEDGER-100).
   Beside its tokens, a turn now ledgers Cohere's billed `classifications`, Anthropic's
   `web_fetch_requests`, the tokens a provider's stated total counts above its itemized buckets

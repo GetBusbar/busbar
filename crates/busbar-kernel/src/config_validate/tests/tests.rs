@@ -1725,6 +1725,32 @@ fn missing_rate_diagnostic_matches_published_docs() {
     .contains(entry));
 }
 
+/// The CHANGELOG upgrade promise for `rate_card` must describe what the validator does: a
+/// present card that leaves out a configured model or lane refuses, a named entry missing an
+/// open class only warns, and a hit on that unpriced class makes usage reads answer 409.
+#[test]
+fn changelog_rate_card_promise_matches_the_validator() {
+    let changelog = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../CHANGELOG.md"))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        changelog.contains("must name every configured model and lane, or boot refuses"),
+        "the CHANGELOG must promise entry completeness, which the validator enforces"
+    );
+    assert!(
+        changelog.contains(
+            "usage and cost reads that cover it refuse with 409 `unpriced_class` until a rate \
+             is configured"
+        ),
+        "the CHANGELOG must state the runtime 409 an operator sees for a hit unpriced class"
+    );
+    assert!(
+        !changelog.contains("must price every billable class the build declares, or boot refuses"),
+        "a missing open class only warns (BUSBAR-3026); the CHANGELOG must not promise a refusal"
+    );
+}
+
 static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDeclaration =
     crate::plane_driver::registry::PlaneDeclaration {
         key: "door-fee-plane",
