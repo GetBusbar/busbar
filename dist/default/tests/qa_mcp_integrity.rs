@@ -33,7 +33,7 @@
 //!    plane's own `the_digest_of_the_cross_language_pin_fixture_is_pinned`. A drift here would make
 //!    the control fail for the wrong reason; this test names that reason instead.
 
-#![cfg(all(linked_section_tools, feature = "auth-admin-tokens"))]
+#![cfg(linked_section_tools)]
 
 mod common;
 
