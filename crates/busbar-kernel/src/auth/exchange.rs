@@ -28,7 +28,7 @@ pub(crate) async fn exchange(
         Err(req) => *req,
     };
 
-    let candidate = app.auth.extract_client_token(req.headers());
+    let candidate = app.auth.exchange_token(req.headers());
 
     let judged = if app.oauth_as.is_some() {
         crate::auth::dpop::judge(
