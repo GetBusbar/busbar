@@ -5,8 +5,8 @@
 //! TTL row, an aging queue) and no clock decides what it holds. Every store's suite runs both
 //! cases, each on a fresh, empty dataset:
 //!
-//! - [`state_does_not_grow_over_commits`]: [`COMMITS`] commits leave the store holding what it
-//!   held after the first [`WARM`].
+//! - [`state_does_not_grow_over_commits`]: [`EXACT_COMMITS`] commits over an exact count, or
+//!   [`COMMITS`] over a noisy one, leave the store holding what it held after the first [`WARM`].
 //! - [`nothing_changes_after_clock_jump`]: a [`JUMP`] of the host clock the store's code reads
 //!   ([`Subject::jump`]) changes nothing it holds or answers.
 //!
@@ -32,8 +32,12 @@ use crate::persistence::{
 };
 use crate::Secret;
 
-/// Commits the growth case makes.
+/// Commits the growth case makes over a noisy measure ([`resident_bytes`]).
 pub const COMMITS: u64 = 1_000_000;
+/// Commits the growth case makes over an exact count (every row or key entry, `noise` 0): one
+/// state row per commit shows up as exactly `EXACT_COMMITS - WARM` more, whatever the count, so
+/// zero growth over this many is as strict as over [`COMMITS`].
+pub const EXACT_COMMITS: u64 = 10_000;
 /// Commits before the first observation, so steady-state structures exist.
 pub const WARM: u64 = 1_000;
 /// Distinct data keys the commits overwrite: data stays this size.
@@ -73,6 +77,15 @@ pub trait Subject: Send + Sync {
     fn noise(&self) -> u64 {
         0
     }
+    /// Commits the growth case makes: [`EXACT_COMMITS`] for an exact count (`noise` 0), else
+    /// [`COMMITS`].
+    fn commits(&self) -> u64 {
+        if self.noise() == 0 {
+            EXACT_COMMITS
+        } else {
+            COMMITS
+        }
+    }
 }
 
 /// Resident bytes of this process (Linux `/proc/self/statm`, 4 KiB pages), for the `retained`
@@ -89,22 +102,27 @@ pub fn resident_bytes() -> u64 {
     pages.saturating_mul(4096)
 }
 
-/// GROWTH: [`COMMITS`] commits over [`KEYS`] keys hold what the first [`WARM`] held.
+/// GROWTH: [`Subject::commits`] commits over [`KEYS`] keys hold what the first [`WARM`] held.
 pub async fn state_does_not_grow_over_commits<S: Subject + ?Sized>(subject: &S) {
     const CASE: &str = "state_does_not_grow_over_commits";
+    let commits = subject.commits();
+    assert!(
+        commits > WARM,
+        "{CASE}: {commits} commits leave nothing after the warm-up"
+    );
     let store = subject.store();
     bootstrap(CASE, &*store).await;
     for n in 0..WARM {
         put(CASE, &*store, OPS + u128::from(n), n).await;
     }
     let warm = subject.retained();
-    for n in WARM..COMMITS {
+    for n in WARM..commits {
         put(CASE, &*store, OPS + u128::from(n), n).await;
     }
     let after = subject.retained();
     assert!(
         after <= warm.saturating_add(subject.noise()),
-        "{CASE}: LR-118: the store held {warm} after {WARM} commits and {after} after {COMMITS}: \
+        "{CASE}: LR-118: the store held {warm} after {WARM} commits and {after} after {commits}: \
          it keeps state per commit (a receipt, TTL row or horizon)"
     );
     passed(CASE);
