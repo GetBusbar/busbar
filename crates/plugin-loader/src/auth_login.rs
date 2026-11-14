@@ -14,9 +14,9 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, DeadlineClass, Outcome, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::auth::{BeginLogin, FieldKind, LoginForm, LoginOutcome, Principal};
-use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled, VerifyRequest};
+use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled};
 
-use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Shared};
+use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Shared, VerifyInput};
 use crate::dispatch::call::{Answering, Pending, Ticketed};
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::lifecycle::{release, AnswerLease};
@@ -249,14 +249,7 @@ impl CompleteHeld {
                 })
                 .collect(),
             named: Vec::new(),
-            id: Held::new(
-                &VerifyRequest::default(),
-                seal,
-                &super::Headers::None,
-                buf_cap,
-                groups_cap,
-                0,
-            ),
+            id: Held::new(VerifyInput::empty(), buf_cap, groups_cap, 0),
         };
         held.named = held
             .submitted
