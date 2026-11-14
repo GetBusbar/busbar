@@ -31,7 +31,6 @@ struct State {
 struct RootAuthority(RwLock<State>);
 static AUTHORITY: LazyLock<Arc<RootAuthority>> =
     LazyLock::new(|| Arc::new(RootAuthority::default()));
-static READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 struct Maintenance;
 struct Request {
@@ -337,29 +336,20 @@ pub(super) fn install(app: &busbar_kernel::state::App) -> Result<(), String> {
     state.governor = Arc::downgrade(&gov);
     state.runtime = Some(runtime);
     drop(state);
-    READY.notify_waiters();
     Ok(())
 }
 
-/// Detached periodic work starts only after recovery has installed accounting custody.
-/// Its later callbacks are system usage, even if the task was created during startup.
-pub(super) async fn background<F: Future>(future: F) -> F::Output {
-    loop {
-        let ready = READY.notified();
-        tokio::pin!(ready);
-        ready.as_mut().enable();
-        if AUTHORITY
-            .0
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .runtime
-            .is_some()
-        {
-            break;
-        }
-        ready.await;
-    }
-    measurement::scope(None, future).await
+/// AN OUTBOUND CREDENTIAL'S UPKEEP: an auth instance's mint and refresh schedule, run from the
+/// moment its binding opens. A minted style presents nothing until its first tick mints, so a
+/// schedule held back until recovery installs accounting custody leaves every binding opened
+/// before it (and every one in a process that never runs recovery) with no bearer to present.
+/// A credential is configuration-time material, so each poll is scoped as
+/// [`configuration_refresh`] scopes a secret refresh: bootstrap maintenance before custody,
+/// ordinary system usage after it. The context is decided per poll, never per task, so a schedule
+/// started during startup never keeps startup's accounting suppression.
+pub(super) async fn credential_upkeep<F: Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    std::future::poll_fn(|cx| configuration_refresh(|| future.as_mut().poll(cx))).await
 }
 
 /// Config-time secret refresh also runs on host threads. Initial resolution is bootstrap
