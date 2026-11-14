@@ -346,8 +346,9 @@ fn main() {
 
     #[cfg(not(target_env = "msvc"))]
     {
-        use tikv_jemalloc_ctl::background_thread;
-        let enabled = match background_thread::write(true).and_then(|()| background_thread::read())
+        use busbar_kernel::mallctl;
+        let enabled = match mallctl::write(c"background_thread", true)
+            .and_then(|()| mallctl::read::<bool>(c"background_thread"))
         {
             Ok(true) => true,
             Ok(false) => {
@@ -2337,13 +2338,12 @@ const IDLE_PURGE_SWEEP_SECS: u64 = 15;
 
 #[cfg(not(target_env = "msvc"))]
 fn spawn_jemalloc_idle_purge_fallback() {
-    use tikv_jemalloc_ctl::{Access, AsName};
+    use busbar_kernel::mallctl;
 
-    const ARENAS_DIRTY_DECAY_DEFAULT: &[u8] = b"opt.dirty_decay_ms\0";
     let spawned = std::thread::Builder::new()
         .name("busbar-idle-purge".into())
         .spawn(move || {
-            match Access::<isize>::read(ARENAS_DIRTY_DECAY_DEFAULT.name()) {
+            match mallctl::read::<isize>(c"opt.dirty_decay_ms") {
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!(
@@ -2376,19 +2376,19 @@ fn spawn_jemalloc_idle_purge_fallback() {
 
 #[cfg(not(target_env = "msvc"))]
 fn purge_idle_arenas() {
-    use tikv_jemalloc_ctl::{Access, AsName};
-    const ARENAS_NARENAS: &[u8] = b"arenas.narenas\0";
-    let narenas: u32 = ARENAS_NARENAS.name().read().unwrap_or(0);
+    use busbar_kernel::mallctl;
+    let narenas: u32 = mallctl::read(c"arenas.narenas").unwrap_or(0);
     for i in 0..narenas {
-        let key = format!("arena.{i}.dirty_decay_ms\0");
-        let name = key.as_bytes().name();
-        let Ok(prior) = Access::<isize>::read(name) else {
+        let Ok(name) = std::ffi::CString::new(format!("arena.{i}.dirty_decay_ms")) else {
+            continue;
+        };
+        let Ok(prior) = mallctl::read::<isize>(&name) else {
             continue;
         };
         if prior == 0 {
             continue;
         }
-        let _ = name.write(0isize).and_then(|()| name.write(prior));
+        let _ = mallctl::write(&name, 0isize).and_then(|()| mallctl::write(&name, prior));
     }
 }
 

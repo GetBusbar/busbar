@@ -17,6 +17,7 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
+    "crates/busbar-yaml",
 ]
 
 # Each version is written once here; members inherit with `workspace = true` and may add features.
@@ -36,7 +37,8 @@ crc32fast = "1"
 dimpl = { version = "=0.7.4", default-features = false }
 # Dev-only; default features off drops the plotting stack.
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
+ed25519-dalek = { version = "3", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures = "0.3"
 getrandom = "0.3"
@@ -57,6 +59,7 @@ hyper-util = { version = "0.1", default-features = false, features = [
     "tokio",
 ] }
 indexmap = { version = "2", features = ["serde"] }
+itoa = "1"
 # Defaults off: validation is offline, and they pull reqwest and a second crypto backend (aws-lc-rs).
 jsonschema = { version = "0.49", default-features = false }
 libc = "0.2"
@@ -87,12 +90,15 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 webpki-roots = "1"
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std", "ring"] }
 rustls-pki-types = { version = "1", default-features = false, features = ["std"] }
+ryu = "1"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 serde_urlencoded = "0.7"
-# serde_yaml is archived; serde_yaml_ng is the maintained fork, renamed so call sites are unchanged.
-serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+# YAML is busbar-yaml: serde_yaml_ng 0.10's API on a memory-safe port of libyaml (no unsafe-libyaml),
+# under the `serde_yaml` name so call sites are unchanged. A path row: busbar-contract's git
+# consumers (the plugins) resolve it from this repository at the same pin.
+serde_yaml = { package = "busbar-yaml", path = "crates/busbar-yaml" }
 sha2 = "0.10"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
@@ -100,7 +106,9 @@ sonic-rs = "0.5"
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory.
 tar = { version = "0.4", default-features = false }
-tikv-jemalloc-ctl = "0.6"
+# Called directly (busbar-kernel `mallctl`); default features off adds nothing tikv-jemallocator
+# does not already turn on.
+tikv-jemalloc-sys = { version = "0.6", default-features = false }
 tikv-jemallocator = "0.6"
 # No feature floor: each member picks its own slice.
 tokio = "1"

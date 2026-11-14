@@ -1,0 +1,23 @@
+[package]
+name = "busbar-yaml"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "Busbar's YAML: serde_yaml_ng 0.10's serde API on a memory-safe, pure-Rust port of libyaml (no unsafe-libyaml), byte-for-byte compatible."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_yaml"
+path = "src/lib.rs"
+
+[dependencies]
+indexmap = { workspace = true }
+itoa = { workspace = true }
+ryu = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
