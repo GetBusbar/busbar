@@ -45,9 +45,8 @@
 # https://github.com/GetBusbar/busbar-store-sqlite/releases/download/vX/store-sqlite.tar.gz), in which
 # case plugins.dir must itself be WRITABLE (the fetch downloads into it). Example:
 #   -v busbar-plugins:/etc/busbar/plugins -v busbar-data:/var/lib/busbar
-# See docs/getting-started.md#durable-store-giving-persistence-a-writable-volume for the full
-# walkthrough (including the exact refusal text for each way this goes wrong) and
-# docker/docker-compose.yml for a wired-up example.
+# See https://getbusbar.com/getting-started/ for the full walkthrough (including the exact
+# refusal text for each way this goes wrong) and a wired-up compose example.
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 
 ARG TARGETARCH
