@@ -59,7 +59,7 @@ fn model_with_card(groups: &[(&str, GroupCfg)], fee: i64, card: &[(&str, f64, f6
                     input_utok: *i,
                     output_utok: *o,
                     cache_read_utok: 0.0,
-                    cache_write_utok: 0.0,
+                    cache_write_utok: Some(0.0),
                     ..Default::default()
                 },
             )

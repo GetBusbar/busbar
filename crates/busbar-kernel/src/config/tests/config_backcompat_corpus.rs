@@ -122,7 +122,7 @@ fn snapshot(cfg: &super::RootCfg) -> String {
                     rate(r.input_utok),
                     rate(r.output_utok),
                     rate(r.cache_read_utok),
-                    rate(r.cache_write_utok),
+                    rate(r.cache_write_rate()),
                 );
             }
         }

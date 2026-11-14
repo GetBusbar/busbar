@@ -6,6 +6,7 @@ use serde_yaml::{Mapping, Value};
 
 #[path = "migrate_1_6.rs"]
 mod upgrade_1_6;
+pub(super) use upgrade_1_6::unfold_zero_cache_write;
 
 pub(super) mod vocabulary {
     pub mod field {
@@ -172,6 +173,9 @@ pub struct MigrateOutput {
     pub changes: Vec<String>,
     pub todos: Vec<String>,
     pub warnings: Vec<String>,
+    /// Change lines a startup caller must log (at WARN) before it zeroizes `changes`: each holds
+    /// only an authored key and fixed text, never a value from the environment or the Store.
+    pub notices: Vec<String>,
 }
 
 #[cold]
@@ -211,6 +215,7 @@ fn migrate_document(
     let mut changes: Vec<String> = Vec::new();
     let mut todos: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut notices: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
 
     migrate_governance(&mut root, &mut changes, &mut todos);
@@ -264,9 +269,9 @@ fn migrate_document(
     migrate_store_required(&mut root, &mut changes);
 
     if source_specific {
-        upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings);
+        upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings, &mut notices);
     } else {
-        upgrade_1_6::migrate_bootstrap(&mut root, &mut changes);
+        upgrade_1_6::migrate_bootstrap(&mut root, &mut changes, &mut notices);
     }
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
@@ -299,6 +304,7 @@ fn migrate_document(
         changes,
         todos,
         warnings,
+        notices,
     })
 }
 
@@ -311,8 +317,8 @@ pub fn migrate_overlay_fragment(
 ) -> Result<MigrateOutput, String> {
     let mut root: Mapping =
         serde_yaml::from_str(raw).map_err(|_| "overlay fragment is not a mapping")?;
-    let (mut changes, mut todos, mut warnings, mut failures) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut changes, mut todos, mut warnings, mut failures, mut notices) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     migrate_store_module(&mut root, &mut changes, &mut todos);
     super::former_names::migrate(&mut root, &mut changes, &mut todos);
     super::migrate_plugins::migrate(
@@ -327,7 +333,7 @@ pub fn migrate_overlay_fragment(
     if !failures.is_empty() {
         return Err(failures.join("; "));
     }
-    upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings);
+    upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings, &mut notices);
     let yaml = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|_| "cannot serialize converted overlay fragment")?;
     Ok(MigrateOutput {
@@ -335,6 +341,7 @@ pub fn migrate_overlay_fragment(
         changes,
         todos,
         warnings,
+        notices,
     })
 }
 

@@ -122,6 +122,7 @@ fn normalize(
         normalized.yaml = settings.yaml;
         normalized.changes.append(&mut settings.changes);
         normalized.todos.append(&mut settings.todos);
+        normalized.notices.append(&mut settings.notices);
     }
     normalized.todos.extend(decisions);
     for marker in migrate::detect_legacy_markers(&after) {
@@ -148,7 +149,11 @@ fn normalize_recognized_settings(
     let root = doc
         .as_mapping_mut()
         .ok_or("authored settings document is not a mapping")?;
-    let (mut changes, mut todos, mut failures) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut changes, mut todos, mut failures, mut notices) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // The fast path never reaches `migrate_bootstrap`, so it unfolds a root 1.5.5
+    // `cache_write_utok: 0` itself; re-serialization below keys off a non-empty `changes`.
+    migrate::unfold_zero_cache_write(root, &mut changes, &mut notices);
     migrate_plugins::migrate_recognized(
         root,
         host,
@@ -176,6 +181,7 @@ fn normalize_recognized_settings(
         changes,
         todos,
         warnings: Vec::new(),
+        notices,
     })
 }
 

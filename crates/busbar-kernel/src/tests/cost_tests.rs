@@ -81,7 +81,7 @@ fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
                     input_utok: *i,
                     output_utok: *o,
                     cache_read_utok: 0.0,
-                    cache_write_utok: 0.0,
+                    cache_write_utok: Some(0.0),
                     ..Default::default()
                 },
             )
@@ -191,7 +191,7 @@ fn nano_scale_keeps_sub_micro_precision() {
             input_utok: 3.125,
             output_utok: 0.0,
             cache_read_utok: 0.0,
-            cache_write_utok: 0.0,
+            cache_write_utok: Some(0.0),
             ..Default::default()
         },
     )]);
@@ -408,7 +408,7 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
             input_utok: 1.0,
             output_utok: 2.0,
             cache_read_utok: 0.5,
-            cache_write_utok: 4.0,
+            cache_write_utok: Some(4.0),
             ..Default::default()
         },
     )]);
@@ -473,7 +473,7 @@ fn explicit_zero_rate_model_is_known_and_derives_zero() {
             input_utok: 0.0,
             output_utok: 0.0,
             cache_read_utok: 0.0,
-            cache_write_utok: 0.0,
+            cache_write_utok: Some(0.0),
             ..Default::default()
         },
     )]);
@@ -583,7 +583,7 @@ fn rate_nanos_from_cfg_refuses_a_rate_finer_than_one_nano_unit() {
         input_utok: 0.0015,
         output_utok: 0.0014,
         cache_read_utok: 0.002,
-        cache_write_utok: 0.0,
+        cache_write_utok: Some(0.0),
         ..Default::default()
     };
     let raw = sub_nano.raw_tier_rates();
@@ -609,7 +609,7 @@ fn rate_nanos_from_cfg_clamps_a_non_finite_positive_rate_to_zero_not_max() {
         input_utok: f64::INFINITY,
         output_utok: 0.0,
         cache_read_utok: 0.0,
-        cache_write_utok: 0.0,
+        cache_write_utok: Some(0.0),
         ..Default::default()
     };
     let rn = crate::cost::RateNanos::from_cfg(&cfg);
@@ -686,7 +686,7 @@ fn from_raw_clamps_a_finite_but_overflowing_rate_to_zero_not_to_u64_max() {
         input_utok: 1e300,
         output_utok: f64::INFINITY,
         cache_read_utok: -1.0,
-        cache_write_utok: f64::NAN,
+        cache_write_utok: Some(f64::NAN),
         ..crate::config::RateEntryCfg::default()
     };
     let raw = cfg.raw_tier_rates();
@@ -857,7 +857,7 @@ fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rat
             input_utok: utok,
             output_utok: utok,
             cache_read_utok: utok,
-            cache_write_utok: utok,
+            cache_write_utok: Some(utok),
             ..crate::config::RateEntryCfg::default()
         };
         let Some(want) = unclamped_reference(utok) else {

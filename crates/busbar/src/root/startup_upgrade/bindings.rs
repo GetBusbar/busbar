@@ -333,8 +333,18 @@ impl busbar_migrations::FrozenBindingResolver for Resolver {
                         self.documents.clone(),
                     )
                     .map_err(|_| Error::Corrupt)?;
-                    busbar_migrations::config::migrate_overlay::migrate_overlay_with(raw, &host)
-                        .map_err(|_| Error::Corrupt)?
+                    let mut converted =
+                        busbar_migrations::config::migrate_overlay::migrate_overlay_with(
+                            raw, &host,
+                        )
+                        .map_err(|_| Error::Corrupt)?;
+                    // Change lines may quote resolved values and are zeroized; a notice holds only
+                    // an authored key and fixed text, so the operator sees it at WARN.
+                    for notice in &converted.notices {
+                        self.documents.notice(notice);
+                    }
+                    zeroize::Zeroize::zeroize(&mut converted.changes);
+                    converted.doc
                 }
                 version if version == busbar_kernel::config::overlay::OVERLAY_VERSION => {
                     serde_json::from_slice(raw).map_err(|_| Error::Corrupt)?

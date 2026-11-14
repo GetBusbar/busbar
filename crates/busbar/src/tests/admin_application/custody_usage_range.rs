@@ -22,7 +22,7 @@ fn zero_cost() -> CostModel {
             input_utok: 0.0,
             output_utok: 0.0,
             cache_read_utok: 0.0,
-            cache_write_utok: 0.0,
+            cache_write_utok: Some(0.0),
             ..Default::default()
         },
     )]);

@@ -900,7 +900,7 @@ pub(crate) fn cells_onto(
                 entry.cache_read_utok = micro_of(*nanos)
             }
             busbar_kernel_ledger::cost::CLASS_CACHE_WRITE => {
-                entry.cache_write_utok = micro_of(*nanos);
+                entry.cache_write_utok = Some(micro_of(*nanos));
             }
             other => {
                 entry.units.insert(

@@ -5,15 +5,85 @@ use serde_yaml::{Mapping, Value};
 
 const LEGACY_UNPRICED_BILLABLE_UNIT_RATE: i32 = 0;
 
-pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
-    migrate_bootstrap(root, changes);
+/// The cache-write TTL units. 1.5.5 billed these tokens inside the input, never at 0, so a migrated
+/// card prices them at the entry's resolved write rate (its `cache_write_utok`, else `input_utok`).
+const WRITE_TIER_UNITS: [&str; 2] = ["cache_write_30m", "cache_write_12h"];
+
+/// The key the TTL write units are priced from, and that rate as an exact `UnitRate` value (with
+/// its rendering) when it is a representable number. A present `cache_write_utok` never falls back
+/// to `input_utok`; a non-number (an uninterpolated `${RATE}`), a negative rate or one finer than a
+/// nano-unit yields `None`, and the units stay unpriced (refused under #42 when hit, audited).
+fn resolved_write_unit_rate(entry: &Mapping) -> (&'static str, Option<(Value, String)>) {
+    let key = if entry.contains_key(Value::from("cache_write_utok")) {
+        "cache_write_utok"
+    } else {
+        "input_utok"
+    };
+    let rate = entry
+        .get(Value::from(key))
+        .and_then(Value::as_f64)
+        .and_then(busbar_kernel_ledger::cost::representable_nano_rate)
+        .map(busbar_kernel_ledger::cost::UnitRate::from_nanos)
+        .and_then(|rate| serde_yaml::to_value(rate).ok())
+        .map(|value| {
+            let shown = match &value {
+                Value::String(text) => text.clone(),
+                other => serde_yaml::to_string(other)
+                    .map(|text| text.trim_end().to_owned())
+                    .unwrap_or_default(),
+            };
+            (value, shown)
+        });
+    (key, rate)
+}
+
+pub(super) fn migrate(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    notices: &mut Vec<String>,
+) {
+    migrate_bootstrap(root, changes, notices);
     drop_hostless_metadata_entries(root, changes);
     price_open_units(root, changes);
     bind_ungoverned_principals(root, changes, warnings);
 }
 
-pub(super) fn migrate_bootstrap(root: &mut Mapping, changes: &mut Vec<String>) {
+pub(super) fn migrate_bootstrap(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    notices: &mut Vec<String>,
+) {
     drop_overlay_selector(root, changes);
+    unfold_zero_cache_write(root, changes, notices);
+}
+
+/// A root `rate_card.<model>.cache_write_utok: 0` is the 1.5.5 spelling of "no separate write
+/// tariff": 1.5.5 billed Chat cache writes inside the input, and its overlay serializer and paste
+/// template wrote `0` into every card. YAML carries no provenance, so the spelling gets that one
+/// meaning on every path: the key is removed and writes price at `input_utok`, never 0. Each removal
+/// is a change line and a notice (only the authored model key and fixed text, never a value), which
+/// the startup callers log at WARN because they zeroize change lines. Plane blocks are untouched.
+pub(crate) fn unfold_zero_cache_write(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    notices: &mut Vec<String>,
+) {
+    let models = busbar_kernel::config::zero_cache_write_models(root);
+    let Some(card) = mapping_mut(root, "rate_card") else {
+        return;
+    };
+    for model in models {
+        if let Some(Value::Mapping(entry)) = card.get_mut(Value::from(model.as_str())) {
+            entry.remove(Value::from("cache_write_utok"));
+            let line = format!(
+                "rate_card.{model}.cache_write_utok: 0 removed (1.5.5 spelling of 'no separate \
+                 write tariff'); cache writes price at input_utok"
+            );
+            changes.push(line.clone());
+            notices.push(line);
+        }
+    }
 }
 
 fn drop_overlay_selector(root: &mut Mapping, changes: &mut Vec<String>) {
@@ -97,17 +167,36 @@ fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
         let Value::Mapping(entry) = entry else {
             continue;
         };
+        let (write_source, write_rate) = resolved_write_unit_rate(entry);
         let units = entry
             .entry(Value::from("units"))
             .or_insert_with(|| Value::Mapping(Mapping::new()));
         let Value::Mapping(units) = units else {
             continue;
         };
-        let added: Vec<&str> = open
+        let (written, added): (Vec<&str>, Vec<&str>) = open
             .iter()
             .copied()
             .filter(|u| !units.contains_key(Value::from(*u)))
-            .collect();
+            .partition(|u| WRITE_TIER_UNITS.contains(u));
+        if !written.is_empty() {
+            match &write_rate {
+                Some((rate, shown)) => {
+                    for unit in &written {
+                        units.insert(Value::from(*unit), rate.clone());
+                    }
+                    changes.push(format!(
+                        "rate_card.{lane}.units: added {} at {shown} (the entry's cache_write_utok, \
+                         else input_utok; 1.5.5 billed cache writes inside input, never at 0)",
+                        written.join(", ")
+                    ));
+                }
+                None => changes.push(format!(
+                    "rate_card.{lane}.units: {} left unpriced: {write_source} is not an exact rate",
+                    written.join(", ")
+                )),
+            }
+        }
         for unit in &added {
             units.insert(
                 Value::from(*unit),
