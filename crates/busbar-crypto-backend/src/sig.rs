@@ -299,6 +299,17 @@ pub mod rsa {
         }
     }
 
+impl SigningKey {
+        /// An RSASSA-PSS SHA-256 signature (PS256) of `msg`.
+        pub fn sign_pss_sha256(&self, msg: &[u8]) -> Result<Vec<u8>, Error> {
+            let mut sig = vec![0_u8; self.modulus_len()];
+            self.0
+                .sign(&signature::RSA_PSS_SHA256, &SystemRandom::new(), msg, &mut sig)
+                .map_err(|_| Error::Invalid("RSA signing"))?;
+            Ok(sig)
+        }
+    }
+
     /// An RSASSA-PKCS1-v1_5 SHA-256 signature of `msg` under the PKCS#8 DER key `pkcs8`.
     pub fn sign_pkcs1_sha256(pkcs8: &[u8], msg: &[u8]) -> Result<Vec<u8>, Error> {
         SigningKey::from_pkcs8(pkcs8)?.sign_pkcs1_sha256(msg)

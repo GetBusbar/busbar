@@ -13,7 +13,6 @@ mod scheme;
 pub use operations::{rsa_public_key_sha256, CredentialPart, Digest, SealedValue};
 
 use crate::abi::sdk::cred::{Cred, Seal};
-use crate::abi::sdk::hmac::HmacSha256Key;
 use base64::Engine as _;
 use zeroize::Zeroizing;
 

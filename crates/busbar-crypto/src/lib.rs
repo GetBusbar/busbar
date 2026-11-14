@@ -648,6 +648,11 @@ pub mod rsa {
         pub fn sign_pkcs1_sha256(&self, msg: &[u8]) -> Result<Vec<u8>, Error> {
             self.0.sign_pkcs1_sha256(msg).map_err(map)
         }
+
+        /// An RSASSA-PSS SHA-256 signature (PS256) of `msg`.
+        pub fn sign_pss_sha256(&self, msg: &[u8]) -> Result<Vec<u8>, Error> {
+            self.0.sign_pss_sha256(msg).map_err(map)
+        }
     }
 
     /// An RS256 signature of `msg` under the PKCS#8 DER key `pkcs8`.

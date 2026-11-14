@@ -210,9 +210,13 @@ impl AuditSigningKey {
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> [u8; 32] {
         let mut seed = self.inner.to_bytes();
-        let out = crate::wiped::hmac_sha256(&seed, label);
+        // A 32-byte key: no backend refuses it (FIPS's floor is 14 bytes).
+        let out = busbar_contract::crypto::hmac_sha256(&seed, label);
         seed.zeroize();
-        out
+        match out {
+            Ok(mac) => mac,
+            Err(e) => panic!("crypto backend refused HMAC-SHA256 under a 32-byte key: {e}"),
+        }
     }
 
     /// The public half, for the key-set verb.
