@@ -1241,8 +1241,9 @@ mod dropped_image {
             &path,
         )
         .unwrap_or_else(|e| panic!("{e}"));
-        // SAFETY: the fixture's image; held open (leaked) so its door stays valid.
-        let lib = unsafe { libloading::Library::new(&path) }.expect("the image loads");
+        // The fixture's image, through the one load (LINT-RULES R23); held open (leaked) so its door
+        // stays valid.
+        let lib = crate::stage::dlopen_on_worker(path.as_os_str()).expect("the image loads");
         let door: RawDoorFn = *unsafe { lib.get::<RawDoorFn>(b"busbar_plugin_door\0") }
             .expect("the image exports its door");
         std::mem::forget(lib);

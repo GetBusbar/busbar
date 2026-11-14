@@ -108,8 +108,8 @@ mod unload_witness {
                 &witness.path,
             )
             .expect("copy this test's existing dropped fixture");
-            let lib =
-                crate::dlopen_on_worker(witness.path.as_os_str()).expect("load the copied image");
+            let lib = crate::stage::dlopen_on_worker(witness.path.as_os_str())
+                .expect("load the copied image");
             type Arm = extern "C" fn(extern "C" fn(usize), usize) -> bool;
             // SAFETY: the existing fixture exports exactly this registration function. `lib` remains
             // live through the call; neither the Symbol nor a plugin function pointer escapes it.
@@ -2446,7 +2446,7 @@ fn recycling_the_last_driver_releases_its_own_image_on_a_permanent_worker() {
     let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let p = load_dropped::<TestKind>(witness.path(), &stated(), bind(quiet()))
         .expect("this test's independently owned image loads");
-    crate::dlclose_on_worker(registration);
+    crate::stage::dlclose_on_worker(registration);
     assert_eq!(open(&d, &p, 0), Outcome::Ready);
     let drv = d.driver(&p, 0).unwrap();
     let gone = std::sync::Arc::downgrade(&p.inner);
@@ -2479,7 +2479,7 @@ fn recycling_a_driver_allows_its_finalizer_to_mint_on_the_same_worker() {
             let (witness, registration) = UnloadWitness::reentrant(Arc::clone(&d));
             let p = load_dropped::<TestKind>(witness.path(), &stated(), bind(quiet()))
                 .expect("this child's owned image loads");
-            crate::dlclose_on_worker(registration);
+            crate::stage::dlclose_on_worker(registration);
             assert_eq!(open(&d, &p, 0), Outcome::Ready);
             let driver = d.driver(&p, 0).expect("a driver on worker zero");
             let gone = Arc::downgrade(&p.inner);

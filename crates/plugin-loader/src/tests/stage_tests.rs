@@ -341,7 +341,7 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
     };
     assert_eq!(from_a, 1, "plugin A answers with A's bytes");
 
-    crate::dlclose_on_worker(lib_a);
+    crate::stage::dlclose_on_worker(lib_a);
     drop(staged_a);
 
     let (lib_b, staged_b) = load_library_from_bytes(&b, "probe-b").expect("stage plugin B");
@@ -366,7 +366,7 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
     let only_a = unsafe { lib_b.get::<Probe>(b"busbar_stage_only_a") };
     assert!(only_a.is_err(), "A's symbol must not answer on B's handle");
 
-    crate::dlclose_on_worker(lib_b);
+    crate::stage::dlclose_on_worker(lib_b);
     drop(staged_b);
 }
 
@@ -385,7 +385,7 @@ mod staged_file_pin {
 
     pub(super) fn release(loaded: (Library, Staged)) {
         let (lib, staged) = loaded;
-        crate::dlclose_on_worker(lib);
+        crate::stage::dlclose_on_worker(lib);
         drop(staged);
     }
 
