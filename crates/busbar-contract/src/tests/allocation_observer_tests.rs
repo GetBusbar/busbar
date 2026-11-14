@@ -204,7 +204,7 @@ fn the_payload_probe_checks_only_registered_prefixes_and_records_complete_reads(
     let mut wiped = Vec::with_capacity(16384);
     wiped.resize(8193, 1u8);
     // Adopted without a copy: the allocation and its initialized prefix stay where they are.
-    let wiped = crate::secure::SecureVec::from(wiped);
+    let wiped = busbar_contract::secure::SecureVec::from(wiped);
     // SAFETY: each slice starts at its allocation base and names only its initialized prefix.
     unsafe {
         super::watch_initialized_payload(&plain);
