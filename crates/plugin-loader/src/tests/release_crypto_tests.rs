@@ -51,22 +51,14 @@ impl ReleaseCrypto for TraceCrypto {
             PublicKey::P256(k) => k.to_vec(),
         }))?;
         Ok(match key {
-            PublicKey::Ed25519(k) => ed25519_dalek::VerifyingKey::from_bytes(k)
-                .is_ok_and(|v| !v.is_weak() && v.to_edwards().compress().to_bytes() == *k),
+            PublicKey::Ed25519(k) => {
+                sign::VerifyingKey::from_bytes(k).is_ok_and(|v| !v.is_weak() && v.to_bytes() == *k)
+            }
             PublicKey::P256(k) => {
                 // Validate the curve point independently of whether a particular signature is
-                // valid. ring's agreement service performs the complete P-256 point check.
-                let private = ring::agreement::EphemeralPrivateKey::generate(
-                    &ring::agreement::ECDH_P256,
-                    &ring::rand::SystemRandom::new(),
-                )
-                .unwrap();
-                ring::agreement::agree_ephemeral(
-                    private,
-                    &ring::agreement::UnparsedPublicKey::new(&ring::agreement::ECDH_P256, k),
-                    |_| (),
-                )
-                .is_ok()
+                // valid. The ECDH agreement service performs the complete P-256 point check.
+                let private = busbar_contract::crypto::ecdh_p256::EphemeralKey::generate().unwrap();
+                busbar_contract::crypto::ecdh_p256::agree(private, k).is_ok()
             }
         })
     }
@@ -510,7 +502,7 @@ fn legacy_first_party_and_allowlisted_signatures_use_the_same_provider() {
 }
 
 #[test]
-fn native_key_decoders_do_not_construct_dalek_keys_or_hash_outside_provider() {
+fn native_key_decoders_do_not_construct_keys_or_hash_outside_provider() {
     struct RawOnly;
     impl ReleaseCrypto for RawOnly {
         fn sha256(&self, _: &[u8]) -> Result<[u8; 32], CryptoUnavailable> {
@@ -538,7 +530,7 @@ fn native_key_decoders_do_not_construct_dalek_keys_or_hash_outside_provider() {
     }
     let mut invalid = [0; 32];
     invalid[0] = 2;
-    assert!(ed25519_dalek::VerifyingKey::from_bytes(&invalid).is_err());
+    assert!(sign::VerifyingKey::from_bytes(&invalid).is_err());
     let raw = RawReleaseKey::Ed25519(invalid);
     let roots =
         sign::parse_release_keys_with_crypto(&format!("raw:{}", hex::encode(invalid)), &RawOnly)

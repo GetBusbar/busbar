@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use busbar_contract::crypto::Sha256;
 use busbar_contract::persistence::*;
-use sha2::{Digest, Sha256};
 
 use super::{Activation, ActivationChange, Error, Manifest, State};
 use busbar_kernel::persistence::{
@@ -36,9 +36,9 @@ impl BootstrapIds {
         }
         let derive = |domain: &[u8]| -> Result<super::Id, Error> {
             let mut hash = Sha256::new();
-            hash.update(domain);
-            hash.update(plan.plan_digest());
-            let digest = hash.finalize();
+            hash.update(&domain[..]);
+            hash.update(&plan.plan_digest()[..]);
+            let digest = hash.finish();
             let id: super::Id = digest[..16].try_into().map_err(|_| Error::Corrupt)?;
             if id == [0; 16] {
                 return Err(Error::Corrupt);

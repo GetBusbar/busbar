@@ -15,10 +15,9 @@
 //! the repository's own files change.
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 fn digest(s: &str) -> String {
-    Sha256::digest(s.as_bytes())
+    busbar_contract::crypto::sha256(s.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

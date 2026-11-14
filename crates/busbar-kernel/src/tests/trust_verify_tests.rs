@@ -3,7 +3,7 @@
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
-use ed25519_dalek::{Signer as _, SigningKey};
+use busbar_contract::crypto::ed25519::SigningKey;
 use serde_json::{json, Value};
 
 use super::*;
@@ -17,11 +17,11 @@ const KEY_INFO_HEAD: [u8; 12] = [
 ];
 
 fn key(seed: u8) -> SigningKey {
-    SigningKey::from_bytes(&[seed; 32])
+    SigningKey::from_seed(&[seed; 32]).expect("an Ed25519 seed")
 }
 
 fn key_info(k: &SigningKey) -> String {
-    STANDARD.encode([&KEY_INFO_HEAD[..], k.verifying_key().as_bytes()].concat())
+    STANDARD.encode([&KEY_INFO_HEAD[..], &k.verifying_key().to_bytes()[..]].concat())
 }
 
 fn entry(root_key: Option<String>, root: bool) -> TrustEntry {
@@ -69,7 +69,7 @@ fn signature(k: &SigningKey, header: &Value, payload: &[u8]) -> Value {
     let protected = URL_SAFE_NO_PAD.encode(header.to_string());
     let input = format!("{protected}.{}", URL_SAFE_NO_PAD.encode(payload));
     let sig = k.sign(input.as_bytes());
-    json!({ "protected": protected, "signature": URL_SAFE_NO_PAD.encode(sig.to_bytes()) })
+    json!({ "protected": protected, "signature": URL_SAFE_NO_PAD.encode(sig) })
 }
 
 fn eddsa() -> Value {
@@ -282,7 +282,7 @@ fn the_protected_header_is_verified_as_received_not_as_we_would_spell_it() {
     let sig = key(1).sign(input.as_bytes());
     let sigs = json!([{
         "protected": protected,
-        "signature": URL_SAFE_NO_PAD.encode(sig.to_bytes())
+        "signature": URL_SAFE_NO_PAD.encode(sig)
     }]);
     assert_eq!(
         verdict(&verify(&s, "issuer", PAYLOAD, &sigs)),
@@ -297,7 +297,7 @@ fn only_a_well_formed_ed25519_key_info_becomes_an_issuer_key() {
     assert!(root_key(&key_info(&k)).is_ok());
     assert!(root_key(&format!("  {}\n", key_info(&k))).is_ok());
 
-    let raw = STANDARD.encode(k.verifying_key().as_bytes());
+    let raw = STANDARD.encode(k.verifying_key().to_bytes());
     assert_eq!(
         root_key(&raw),
         Err((svc::SIGNED_MALFORMED_ROOT, String::new()))
@@ -419,7 +419,7 @@ async fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
     assert_eq!(&card_key_pin[..12], &KEY_INFO_HEAD[..], "an Ed25519 SPKI");
     assert_ne!(
         &card_key_pin[12..],
-        token.verifying_key().as_bytes().as_slice(),
+        token.verifying_key().to_bytes().as_slice(),
         "THE WHOLE POINT: the card key is not the credential-minting key"
     );
     assert_ne!(
@@ -428,7 +428,7 @@ async fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
         "and the derived PUBLIC key must not be the token SECRET either"
     );
     let token_key =
-        STANDARD.encode([&KEY_INFO_HEAD[..], token.verifying_key().as_bytes()].concat());
+        STANDARD.encode([&KEY_INFO_HEAD[..], &token.verifying_key().to_bytes()[..]].concat());
     let s = pinned(&[("token-key", token_key)]);
     let card = json!([busbar_signed(&deployment(7).await, PAYLOAD)]);
     assert_eq!(

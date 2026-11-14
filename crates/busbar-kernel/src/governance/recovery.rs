@@ -243,10 +243,9 @@ impl RecoveryResolution {
 
 impl RecoveryEvent {
     pub fn fingerprint(&self) -> Result<[u8; 32], RecoveryError> {
-        use sha2::Digest;
         let encoded = serde_json::to_vec(self)
             .map_err(|error| RecoveryError::Invalid(format!("invalid recovery event: {error}")))?;
-        let mut digest = sha2::Sha256::new();
+        let mut digest = crate::hashing::Sha256::new();
         digest.update(b"busbar.usage-recovery.event.v1\0");
         digest.update(&encoded);
         Ok(digest.finalize().into())
@@ -1371,7 +1370,7 @@ impl MigratedChildContext {
         child: &mut RecoveryChild,
         ordinal: usize,
     ) -> Result<(), RecoveryError> {
-        use sha2::{Digest, Sha256};
+        use crate::hashing::Sha256;
         let mut hash = Sha256::new();
         hash.update(b"busbar.recovery.imported-unsent-child/1\0");
         hash.update(self.seed);

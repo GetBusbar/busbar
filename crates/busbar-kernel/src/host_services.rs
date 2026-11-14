@@ -3354,7 +3354,7 @@ impl HostServices for KernelServices {
             return Stored::refused(FILL_OUT_OF_RANGE);
         }
         let mut bytes = vec![0; len as usize];
-        if getrandom::fill(&mut bytes).is_err() {
+        if busbar_contract::crypto::fill(&mut bytes).is_err() {
             return failed(NO_RANDOMNESS);
         }
         Stored {
@@ -3670,7 +3670,7 @@ impl HostServices for KernelServices {
                         }
                     }
                     let mut reference = [0; 16];
-                    if getrandom::fill(&mut reference).is_err() {
+                    if busbar_contract::crypto::fill(&mut reference).is_err() {
                         owed.answer(failed(NO_RANDOMNESS));
                         return;
                     }
@@ -3742,7 +3742,7 @@ impl HostServices for KernelServices {
                 }
             }
             let mut reference = [0u8; 16];
-            if getrandom::fill(&mut reference).is_err() {
+            if busbar_contract::crypto::fill(&mut reference).is_err() {
                 return failed(NO_RANDOMNESS);
             }
             let work = Work {

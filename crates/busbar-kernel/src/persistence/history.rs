@@ -15,6 +15,7 @@ use super::{
     fences::scan_guard,
     keys, partition,
 };
+use crate::hashing::Sha256;
 use busbar_contract::{
     persistence::{
         Address, Candidate, Decision, ExpectedValue, Failure, Mutation, NamespaceId, Predicate,
@@ -26,7 +27,6 @@ use busbar_contract::{
     Secret,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,

@@ -62,9 +62,9 @@ pub fn generation_matches(generation_hash: &str, presented: Option<&str>) -> boo
     }
 }
 
-pub(crate) fn generate_binding_generation() -> Result<String, getrandom::Error> {
+pub(crate) fn generate_binding_generation() -> Result<String, busbar_contract::crypto::RngError> {
     let mut raw = [0u8; 16];
-    getrandom::fill(&mut raw)?;
+    busbar_contract::crypto::fill(&mut raw)?;
     Ok(hex::encode(raw))
 }
 
@@ -434,8 +434,8 @@ fn park_window(parked: &mut Vec<(u64, ExactUsageDelta)>, window: u64, delta: Exa
 }
 
 fn era_bucket(bucket: &str) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, bucket.as_bytes());
-    format!("{ERA_BUCKET_PREFIX}{}", hex::encode(&digest.as_ref()[..16]))
+    let digest = busbar_contract::crypto::sha256(bucket.as_bytes());
+    format!("{ERA_BUCKET_PREFIX}{}", hex::encode(&digest[..16]))
 }
 
 pub fn is_token_class(class: &str) -> bool {
@@ -1160,13 +1160,13 @@ pub use busbar_contract::records::PlaneRequestCtx;
 
 pub type GovCtx = busbar_contract::records::PlaneRequestCtx;
 
-fn draw(alphabet: &str, n: usize) -> Result<String, getrandom::Error> {
+fn draw(alphabet: &str, n: usize) -> Result<String, busbar_contract::crypto::RngError> {
     let symbols = alphabet.as_bytes();
     if symbols.is_empty() {
         return Ok(String::new());
     }
     let mut buf = vec![0u8; n];
-    getrandom::fill(&mut buf)?;
+    busbar_contract::crypto::fill(&mut buf)?;
     Ok(buf
         .iter()
         .map(|&b| char::from(symbols[usize::from(b) % symbols.len()]))
@@ -1175,7 +1175,7 @@ fn draw(alphabet: &str, n: usize) -> Result<String, getrandom::Error> {
 
 pub(crate) fn issue_credential(
     shape: &busbar_contract::auth_calls::IssuedShape,
-) -> Result<(String, String), getrandom::Error> {
+) -> Result<(String, String), busbar_contract::crypto::RngError> {
     let tail = shape.id_len.saturating_sub(shape.id_prefix.len());
     let id = format!("{}{}", shape.id_prefix, draw(&shape.id_alphabet, tail)?);
     Ok((id, draw(&shape.secret_alphabet, shape.secret_len)?))
@@ -1187,7 +1187,7 @@ pub(crate) fn issue_credential(
 #[doc(hidden)]
 pub fn issue_credential_for_test(
     shape: &busbar_contract::auth_calls::IssuedShape,
-) -> Result<(String, String), getrandom::Error> {
+) -> Result<(String, String), busbar_contract::crypto::RngError> {
     issue_credential(shape)
 }
 
@@ -1503,9 +1503,9 @@ impl PendingMetering {
 trait IntoStoreResult<T> {
     fn store(self) -> RecordStoreResult<T>;
 }
-impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
+impl<T> IntoStoreResult<T> for Result<T, busbar_contract::crypto::RngError> {
     fn store(self) -> RecordStoreResult<T> {
-        self.map_err(|e| RecordStoreError(format!("OS CSPRNG (getrandom) unavailable: {e}")))
+        self.map_err(|e| RecordStoreError(format!("OS CSPRNG unavailable: {e}")))
     }
 }
 

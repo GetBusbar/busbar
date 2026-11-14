@@ -28,8 +28,7 @@ impl fmt::Debug for SourceFingerprints {
 impl SourceFingerprints {
     /// Private binding for startup/recovery custody, never an admin-visible digest.
     pub fn binding_digest(&self) -> [u8; 32] {
-        use sha2::Digest;
-        let mut digest = sha2::Sha256::new();
+        let mut digest = crate::hashing::Sha256::new();
         digest.update(b"busbar.configuration.sources.1\0");
         digest.update(self.config);
         digest.update(self.catalog);
@@ -44,8 +43,7 @@ impl SourceFingerprints {
     }
 }
 fn source_digest(text: &str) -> [u8; 32] {
-    use sha2::Digest;
-    sha2::Sha256::digest(text.as_bytes()).into()
+    crate::hashing::Sha256::digest(text.as_bytes()).into()
 }
 
 /// A loader-local refusal flag lets the admin boundary distinguish source drift (409) from

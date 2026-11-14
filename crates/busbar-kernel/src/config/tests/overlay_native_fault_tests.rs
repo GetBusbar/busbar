@@ -3,9 +3,9 @@
 
 use super::*;
 use crate::config::overlay::{persist_root_async, write_async, RootSettings};
+use crate::hashing::Sha256;
 use crate::persistence::scoped::{Expected, Mutation, Outcome, Predicate, Request, ScopedStore};
 use busbar_contract::{persistence::*, Secret};
-use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub(in crate::config) const SCHEMA: &str = "busbar.config.overlay.v1";

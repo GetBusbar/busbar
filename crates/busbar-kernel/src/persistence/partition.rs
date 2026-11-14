@@ -5,8 +5,8 @@
 //! Full partition identity remains in record keys/metadata: a hash collision can
 //! cause extra contention, never alias two business records or grant authority.
 
+use crate::hashing::Sha256;
 use busbar_contract::persistence::NamespaceId;
-use sha2::{Digest, Sha256};
 
 pub(crate) fn namespace(owner: NamespaceId, parts: &[&[u8]]) -> NamespaceId {
     let mut hash = Sha256::new();

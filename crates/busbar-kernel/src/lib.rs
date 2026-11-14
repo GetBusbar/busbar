@@ -84,6 +84,7 @@ pub mod canary;
 pub mod door;
 pub mod grammar;
 pub mod guest;
+pub(crate) mod hashing;
 pub mod inbound;
 pub mod inflight;
 pub mod plane_driver;

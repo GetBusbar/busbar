@@ -3,7 +3,7 @@
 
 //! The record layout: one fixed-size frame, and the continuation rule for a body that does not fit.
 
-use ring::digest::{Context, SHA256};
+use busbar_contract::crypto::Sha256;
 
 /// How long one frame is, header and payload together. The record cap the contract pins.
 pub const FRAME_BYTES: usize = 512;
@@ -252,7 +252,7 @@ fn encode_frame(
 
 /// The header check a frame carries over its fixed header fields.
 pub(crate) fn header_check(frame: &[u8; FRAME_BYTES]) -> [u8; 4] {
-    let mut hasher = Context::new(&SHA256);
+    let mut hasher = Sha256::new();
     hasher.update(&frame[0..HEADER_CHECKED_BYTES]);
     let digest = digest32(hasher);
     [digest[0], digest[1], digest[2], digest[3]]
@@ -355,17 +355,15 @@ fn read_header(frame: &[u8; FRAME_BYTES]) -> Result<(FrameHeader, u16), FrameErr
 
 /// The digest a frame carries: over the header up to the digest field, then over the payload area
 pub(crate) fn frame_digest(frame: &[u8; FRAME_BYTES]) -> [u8; 32] {
-    let mut hasher = Context::new(&SHA256);
+    let mut hasher = Sha256::new();
     hasher.update(&frame[0..DIGEST_OFFSET]);
     hasher.update(&frame[FRAME_HEADER_BYTES..]);
     digest32(hasher)
 }
 
-/// A finished SHA-256 (ring, the one crypto backend) as the 32 bytes the frame and the journal store.
-pub(crate) fn digest32(hasher: Context) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out.copy_from_slice(hasher.finish().as_ref());
-    out
+/// A finished SHA-256 (the crypto facade) as the 32 bytes the frame and the journal store.
+pub(crate) fn digest32(hasher: Sha256) -> [u8; 32] {
+    hasher.finish()
 }
 
 /// Read one frame back: its header, and the payload bytes it really carries.

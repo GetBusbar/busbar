@@ -10,12 +10,12 @@ use crate::{
     source_facts::{FactRow, View},
     Bounds, Edge, Error, Family, Format, Record, Registry, TargetRow, Transform,
 };
+use busbar_contract::crypto::Sha256;
 use busbar_contract::{
     persistence::{archive::Table, lifecycle::source::HistoricalFact, Address},
     Secret,
 };
 use busbar_kernel::persistence::import_target::records::{self, history::HistoryMode};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -91,7 +91,7 @@ impl FactTransform {
             target_namespace,
         })
         .collect();
-        let edge = registered_edge(source, hash.finalize().into(), families, bounds)?;
+        let edge = registered_edge(source, hash.finish(), families, bounds)?;
         Ok(Self {
             edge,
             provenance,
@@ -139,7 +139,7 @@ impl FactTransform {
         });
         self.edge = super::transform::registered_edge(
             self.edge.source,
-            hash.finalize().into(),
+            hash.finish(),
             families,
             self.edge.bounds,
         )?;
@@ -161,7 +161,7 @@ impl FactTransform {
         super::transform::hash_field(&mut hash, &proofs.descriptor_digest());
         self.edge = super::transform::registered_edge(
             self.edge.source,
-            hash.finalize().into(),
+            hash.finish(),
             self.edge.families.clone(),
             self.edge.bounds,
         )?;
@@ -180,7 +180,7 @@ impl FactTransform {
         hash_field(&mut hash, &plan.descriptor_digest());
         self.edge = registered_edge(
             self.edge.source,
-            hash.finalize().into(),
+            hash.finish(),
             self.edge.families.clone(),
             self.edge.bounds,
         )?;
@@ -697,7 +697,7 @@ impl FactTransform {
                 }
             }
         }
-        verified.semantics_digest = semantic.finalize().into();
+        verified.semantics_digest = semantic.finish();
         Ok(verified)
     }
 }

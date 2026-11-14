@@ -259,7 +259,7 @@ fn process_epoch() -> &'static ProcessEpoch {
     EPOCH.get_or_init(|| {
         let mut bytes = [0u8; 16];
         ProcessEpoch {
-            nonce: getrandom::fill(&mut bytes)
+            nonce: busbar_contract::crypto::fill(&mut bytes)
                 .ok()
                 .map(|()| hex::encode(bytes)),
             started: Instant::now(),

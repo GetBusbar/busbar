@@ -58,7 +58,7 @@ pub(crate) fn journal_inventory_bytes(
     bytes
 }
 fn journal_inventory_checksum(bytes: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
+    use crate::hashing::Sha256;
     let mut hash = Sha256::new();
     hash.update(b"busbar.node.original-journal-inventory/1\0");
     hash.update(bytes);
@@ -419,7 +419,7 @@ fn id_key(id: u64) -> Vec<u8> {
 }
 fn random<const N: usize>() -> Result<[u8; N], String> {
     let mut bytes = [0; N];
-    getrandom::fill(&mut bytes).map_err(error)?;
+    busbar_contract::crypto::fill(&mut bytes).map_err(error)?;
     Ok(bytes)
 }
 

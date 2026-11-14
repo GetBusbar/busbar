@@ -38,7 +38,7 @@ impl Fixture {
         // Unique namespace and witness, owned only by this test. No background producer or old
         // namespace exists. The single setup write is definitively acknowledged before attesting.
         let mut epoch = [0u8; 16];
-        getrandom::fill(&mut epoch).unwrap();
+        busbar_contract::crypto::fill(&mut epoch).unwrap();
         let epoch = hex::encode(epoch);
         let backend = Arc::new(Backend::default());
         let store =
@@ -219,7 +219,7 @@ fn consumed_epoch_cannot_be_reused_after_restart_or_under_another_instance() {
         .is_err());
     let mut renewed = fixture.receipt();
     let mut epoch = [0u8; 16];
-    getrandom::fill(&mut epoch).unwrap();
+    busbar_contract::crypto::fill(&mut epoch).unwrap();
     renewed.epoch = hex::encode(epoch);
     fixture
         .arm_receipt(&next, renewed, "test-owned-store-fingerprint")

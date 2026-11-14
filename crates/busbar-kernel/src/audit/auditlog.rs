@@ -654,7 +654,7 @@ fn pending_audit(
     origin: EventOrigin,
 ) -> RecordStoreResult<PendingAudit> {
     let mut operation = [0; 16];
-    getrandom::fill(&mut operation).map_err(|error| {
+    busbar_contract::crypto::fill(&mut operation).map_err(|error| {
         request_failed();
         RecordStoreError(format!("admin audit operation entropy: {error}"))
     })?;
@@ -1408,7 +1408,7 @@ async fn drain_native(
                 // framing after refreshing the canonical head; preserve suffix.
                 restore_native(log, &native).await?;
                 let mut operation = [0; 16];
-                getrandom::fill(&mut operation)
+                busbar_contract::crypto::fill(&mut operation)
                     .map_err(|_| RecordStoreError("audit operation entropy unavailable".into()))?;
                 let mut held = queue.rows.lock().unwrap_or_else(|error| error.into_inner());
                 let first = held

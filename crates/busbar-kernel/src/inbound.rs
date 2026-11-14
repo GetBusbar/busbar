@@ -1313,7 +1313,7 @@ impl std::fmt::Debug for Inbound {
 
 fn fresh_secret() -> Option<[u64; 2]> {
     let mut b = [0u8; 16];
-    getrandom::fill(&mut b).ok()?;
+    busbar_contract::crypto::fill(&mut b).ok()?;
     let (a, z) = b.split_at(8);
     Some([
         u64::from_le_bytes(a.try_into().ok()?),

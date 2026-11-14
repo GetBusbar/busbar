@@ -5,8 +5,8 @@
 //! the inspected session's exact admission binding.
 
 use crate::{CompletionReceipt, Digest32, Error, Identity, IntentStore, CORE_FORMAT};
+use busbar_contract::crypto::Sha256;
 use busbar_contract::persistence::{axis::OpenedBackend, lifecycle as native};
-use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
 
 /// Backend and binding consumed by the one normal application construction.
@@ -263,10 +263,10 @@ impl StartupUpgrade {
         if self.documents.is_none() {
             let derive = |domain: &[u8]| {
                 let mut hash = Sha256::new();
-                hash.update(domain);
-                hash.update(backend.info().dataset.0);
-                hash.update(custody_id);
-                let digest: Digest32 = hash.finalize().into();
+                hash.update(&domain[..]);
+                hash.update(&backend.info().dataset.0[..]);
+                hash.update(&custody_id[..]);
+                let digest: Digest32 = hash.finish();
                 let mut id = [0; 16];
                 id.copy_from_slice(&digest[..16]);
                 id
@@ -402,7 +402,8 @@ impl StartupUpgrade {
             native::InspectionState::Current => {
                 let source = inspection.source.as_ref().ok_or(Error::Corrupt)?;
                 let marker = inspection.admission_marker.as_ref().ok_or(Error::Corrupt)?;
-                let digest: Digest32 = Sha256::digest(marker.expose(&crate::seal::lend())).into();
+                let digest: Digest32 =
+                    busbar_contract::crypto::sha256(marker.expose(&crate::seal::lend())).into();
                 (
                     native::OpenBinding::Current {
                         source: source.clone(),
@@ -435,10 +436,10 @@ impl StartupUpgrade {
         };
         let mut hash = Sha256::new();
         hash.update(b"busbar.startup.current.v1");
-        hash.update(backend.info().dataset.0);
-        hash.update(backend.info().atomic_domain);
-        hash.update(backend.info().physical_version.to_le_bytes());
-        let digest: Digest32 = hash.finalize().into();
+        hash.update(&backend.info().dataset.0[..]);
+        hash.update(&backend.info().atomic_domain[..]);
+        hash.update(&backend.info().physical_version.to_le_bytes());
+        let digest: Digest32 = hash.finish();
         let mut upgrade_id = [0; 16];
         upgrade_id.copy_from_slice(&digest[..16]);
         let target = Identity {
@@ -506,10 +507,10 @@ impl StartupUpgrade {
                 .descriptor_digest();
             let mut hash = Sha256::new();
             hash.update(b"busbar.native.begin.v1");
-            hash.update(source.native_anchor);
-            hash.update(source.dataset.0);
-            hash.update(route_digest);
-            let digest: Digest32 = hash.finalize().into();
+            hash.update(&source.native_anchor[..]);
+            hash.update(&source.dataset.0[..]);
+            hash.update(&route_digest[..]);
+            let digest: Digest32 = hash.finish();
             let mut operation_id = [0; 16];
             operation_id.copy_from_slice(&digest[..16]);
             self.begin_request = Some(Arc::new(native::Request::BeginOrResume {
@@ -1102,27 +1103,27 @@ fn target_identity(info: busbar_contract::persistence::BackendInfo) -> Result<Id
     }
     let mut hash = Sha256::new();
     hash.update(b"busbar.native.target.v1");
-    hash.update(info.dataset.0);
-    hash.update(info.atomic_domain);
-    hash.update(info.clock_authority);
-    hash.update(info.physical_version.to_le_bytes());
-    hash.update([match info.durability {
+    hash.update(&info.dataset.0[..]);
+    hash.update(&info.atomic_domain[..]);
+    hash.update(&info.clock_authority[..]);
+    hash.update(&info.physical_version.to_le_bytes());
+    hash.update(&[match info.durability {
         busbar_contract::persistence::Durability::Ephemeral => 0,
         busbar_contract::persistence::Durability::Local => 1,
         busbar_contract::persistence::Durability::Quorum => 2,
     }]);
-    let artifact_digest = hash.finalize().into();
+    let artifact_digest = hash.finish();
     let mut schema = Sha256::new();
     schema.update(b"busbar.core.format.v1");
-    schema.update(CORE_FORMAT.owner);
-    schema.update(CORE_FORMAT.logical.to_le_bytes());
-    schema.update(CORE_FORMAT.physical.to_le_bytes());
-    schema.update(CORE_FORMAT.codec.to_le_bytes());
+    schema.update(&CORE_FORMAT.owner[..]);
+    schema.update(&CORE_FORMAT.logical.to_le_bytes());
+    schema.update(&CORE_FORMAT.physical.to_le_bytes());
+    schema.update(&CORE_FORMAT.codec.to_le_bytes());
     Ok(Identity {
         dataset: info.dataset.0,
         format: CORE_FORMAT,
         artifact_digest,
-        schema_digest: schema.finalize().into(),
+        schema_digest: schema.finish(),
         product_release: [1, 6, 0],
     })
 }

@@ -172,7 +172,7 @@ impl NativeSourceFence {
             });
         }
         let mut challenge = [0; 32];
-        getrandom::fill(&mut challenge).map_err(|_| Error::Entropy)?;
+        busbar_contract::crypto::fill(&mut challenge).map_err(|_| Error::Entropy)?;
         if challenge == [0; 32] {
             return Err(Error::Entropy);
         }

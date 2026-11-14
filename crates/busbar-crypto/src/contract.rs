@@ -140,6 +140,10 @@ const _: () = {
         b::webpki_algs;
     let _: fn(&rustls::ClientConfig) -> R<()> = b::approve_client_config;
     let _: fn(&rustls::ServerConfig) -> R<()> = b::approve_server_config;
+    let _: fn() -> R<dimpl::crypto::CryptoProvider> = b::dtls_provider;
+    let _: fn() -> R<b::DtlsCert> = b::dtls_self_signed;
+    let _: fn(&b::DtlsCert) -> &[u8] = b::DtlsCert::der;
+    let _: fn(&b::DtlsCert) -> &[u8] = b::DtlsCert::handle;
 };
 
 /// The facade's start-up known answers, through this API (after the backend's own checks).

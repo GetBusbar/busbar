@@ -130,7 +130,8 @@ impl From<MintError> for RecordStoreError {
 
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
-    getrandom::fill(&mut raw).map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
+    busbar_contract::crypto::fill(&mut raw)
+        .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
     let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
     let generation = generate_binding_generation().store()?;
     let binding = VirtualKey {
@@ -175,7 +176,7 @@ impl GovState {
         denylist: Arc<revocation::RevocationSync>,
     ) -> RecordStoreResult<Self> {
         let mut boot_caller_ref = zeroize::Zeroizing::new([0u8; 32]);
-        getrandom::fill(boot_caller_ref.as_mut_slice())
+        busbar_contract::crypto::fill(boot_caller_ref.as_mut_slice())
             .expect("OS randomness for the per-boot caller-reference key");
         Ok(Self {
             observation_view: RwLock::default(),

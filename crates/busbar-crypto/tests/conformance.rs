@@ -3,7 +3,7 @@
 
 //! CRYPTO-SEAM §6 T2: the conformance suite against whichever backend is linked.
 
-use busbar_crypto::conformance as c;
+use busbar_contract::crypto::conformance as c;
 
 #[test]
 fn backend_identity_and_self_test() {
@@ -52,9 +52,12 @@ fn tls_handshake_through_the_facade() {
 
 #[test]
 fn software_backend_provides_everything() {
-    assert_eq!(busbar_crypto::BACKEND, "software");
-    for name in busbar_crypto::alg::ALL {
-        assert!(busbar_crypto::supports(name), "{name}");
+    assert_eq!(busbar_contract::crypto::BACKEND, "software");
+    for name in busbar_contract::crypto::alg::ALL {
+        assert!(busbar_contract::crypto::supports(name), "{name}");
     }
-    assert_eq!(busbar_crypto::link::RECIPE, "busbar.audit.digest.v7");
+    assert_eq!(
+        busbar_contract::crypto::link::RECIPE,
+        "busbar.audit.digest.v7"
+    );
 }

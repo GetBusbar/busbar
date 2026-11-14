@@ -287,7 +287,7 @@ pub(crate) mod unix {
             return Ok(output);
         }
         let mut random = [0; 16];
-        getrandom::fill(&mut random)
+        busbar_contract::crypto::fill(&mut random)
             .map_err(|_| failure("temporary name", "secure randomness unavailable"))?;
         let temporary_name = name(OsStr::new(&format!(".pending-{}", hex::encode(random))))?;
         let mut file = open_at(
@@ -665,7 +665,7 @@ mod windows {
             return Ok(output_text);
         }
         let mut random = [0; 16];
-        getrandom::fill(&mut random)
+        busbar_contract::crypto::fill(&mut random)
             .map_err(|_| failure("temporary identity", "secure randomness unavailable"))?;
         let mut temporary = Temporary {
             path: directory_path.join(format!(".pending-{}", hex::encode(random))),
@@ -769,7 +769,7 @@ mod windows {
         impl Fixture {
             fn new() -> Self {
                 let mut random = [0; 16];
-                getrandom::fill(&mut random).unwrap();
+                busbar_contract::crypto::fill(&mut random).unwrap();
                 let directory = std::env::temp_dir()
                     .canonicalize()
                     .unwrap()
@@ -859,7 +859,7 @@ mod tests {
         fn new() -> Self {
             let base = std::env::temp_dir().canonicalize().unwrap();
             let mut random = [0; 16];
-            getrandom::fill(&mut random).unwrap();
+            busbar_contract::crypto::fill(&mut random).unwrap();
             let directory = base.join(format!("busbar-migration-secret-{}", hex::encode(random)));
             std::fs::create_dir(&directory).unwrap();
             std::fs::write(directory.join("config.yaml"), b"original config\n").unwrap();

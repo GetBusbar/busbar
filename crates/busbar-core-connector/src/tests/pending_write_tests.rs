@@ -219,20 +219,21 @@ fn connecting_empty_frames_backpressure_wake_and_retry_without_loss() {
 
 #[test]
 fn handshaking_empty_frames_backpressure_and_retry_after_the_handshake() {
-    crate::tls::install_crypto_provider();
     let ca = crate::test_support::private_ca();
     let trust = busbar_contract::transport::trust::EgressTrust {
         extra_anchors: crate::test_support::certs_from_pem(&ca.ca_pem),
         ..Default::default()
     };
     let tls = Arc::new(crate::tls::client::build_client_config(&trust).unwrap());
-    let server = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![ca.leaf_der.into()],
-            rustls_pki_types::PrivateKeyDer::try_from(ca.key_der).unwrap(),
-        )
-        .unwrap();
+    let server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![ca.leaf_der.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(ca.key_der).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
     worker().block_on(async {
         let (listener, far) = far_end().await;
         let gate = Arc::new(ConnectGate::default());

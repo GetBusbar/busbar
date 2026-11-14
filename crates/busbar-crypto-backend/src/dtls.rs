@@ -1,8 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! dimpl's crypto provider on RING — the tree's one crypto backend, the same one rustls runs on
+//! dimpl's DTLS crypto provider over AWS-LC (aws-lc-rs), and the per-session self-signed
+//! certificate WebRTC presents. Only `busbar-crypto` calls these. A session key never leaves this
+//! module: dimpl carries an opaque handle in its place, which the key provider resolves here.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use aws_lc_rs::aead::{self, LessSafeKey, UnboundKey};
+use aws_lc_rs::agreement::{self, EphemeralPrivateKey, UnparsedPublicKey};
+use aws_lc_rs::rand::{SecureRandom as _, SystemRandom};
+use aws_lc_rs::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+use aws_lc_rs::{digest, hmac};
 use dimpl::crypto::{
     Aad, ActiveKeyExchange, Buf, Cipher, CryptoProvider, Dtls12CipherSuite, Dtls13CipherSuite,
     HashAlgorithm, HashContext, HashProvider, HmacProvider, KeyProvider, NamedGroup, Nonce,
@@ -10,17 +20,14 @@ use dimpl::crypto::{
     SupportedDtls13CipherSuite, SupportedKxGroup, TmpBuf,
 };
 use dimpl::{CryptoError, CryptoOperation};
-use ring::aead::{self, LessSafeKey, UnboundKey};
-use ring::agreement::{self, EphemeralPrivateKey, UnparsedPublicKey};
-use ring::rand::{SecureRandom as _, SystemRandom};
-use ring::{digest, hmac, signature};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use zeroize::Zeroizing;
+
+use crate::Error;
 
 /// What a key handle starts with; anything else is refused as a private key.
 const HANDLE_TAG: &[u8] = b"busbar-dtls-key-handle:";
 
-type KeyRegistry = Mutex<HashMap<Vec<u8>, Arc<signature::EcdsaKeyPair>>>;
+type KeyRegistry = Mutex<HashMap<Vec<u8>, Arc<EcdsaKeyPair>>>;
 
 fn key_registry() -> &'static KeyRegistry {
     static REGISTRY: OnceLock<KeyRegistry> = OnceLock::new();
@@ -28,11 +35,9 @@ fn key_registry() -> &'static KeyRegistry {
 }
 
 /// Park `pair` and answer the handle dimpl carries in its place.
-pub(crate) fn register_key(pair: Arc<signature::EcdsaKeyPair>) -> Result<Vec<u8>, CryptoError> {
+fn register_key(pair: Arc<EcdsaKeyPair>) -> Result<Vec<u8>, Error> {
     let mut id = [0_u8; 16];
-    SystemRandom::new()
-        .fill(&mut id)
-        .map_err(|_| CryptoError::OperationFailed(CryptoOperation::FillRandom))?;
+    SystemRandom::new().fill(&mut id).map_err(|_| Error::Rng)?;
     let mut handle = HANDLE_TAG.to_vec();
     handle.extend_from_slice(&id);
     key_registry()
@@ -43,16 +48,69 @@ pub(crate) fn register_key(pair: Arc<signature::EcdsaKeyPair>) -> Result<Vec<u8>
 }
 
 /// Forget the key a handle names.
-pub(crate) fn unregister_key(handle: &[u8]) {
+fn unregister_key(handle: &[u8]) {
     key_registry()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(handle);
 }
 
-/// The provider every association is built with.
-pub(crate) fn provider() -> CryptoProvider {
-    CryptoProvider {
+/// A per-session self-signed ECDSA P-256 certificate. Its private key stays parked in this
+/// backend for the certificate's lifetime; [`DtlsCert::handle`] is what dimpl carries in its place
+/// (`DtlsCertificate::private_key`), and only [`dtls_provider`]'s key provider resolves it.
+pub struct DtlsCert {
+    der: Vec<u8>,
+    handle: Vec<u8>,
+}
+
+impl core::fmt::Debug for DtlsCert {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DtlsCert").finish_non_exhaustive()
+    }
+}
+
+impl Drop for DtlsCert {
+    fn drop(&mut self) {
+        unregister_key(&self.handle);
+    }
+}
+
+impl DtlsCert {
+    /// The certificate, DER (public).
+    #[must_use]
+    pub fn der(&self) -> &[u8] {
+        &self.der
+    }
+
+    /// The opaque handle naming the parked private key (not key material).
+    #[must_use]
+    pub fn handle(&self) -> &[u8] {
+        &self.handle
+    }
+}
+
+/// Mint a fresh self-signed ECDSA P-256 certificate whose key stays in this backend.
+pub fn dtls_self_signed() -> Result<DtlsCert, Error> {
+    let rng = SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+        .map_err(|_| Error::Rng)?;
+    let pkcs8 = Zeroizing::new(pkcs8.as_ref().to_vec());
+    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &pkcs8)
+        .map_err(|_| Error::Invalid("DTLS session key"))?;
+    let signer = rcgen::KeyPair::try_from(pkcs8.as_slice())
+        .map_err(|_| Error::Invalid("DTLS session key for the certificate"))?;
+    let cert = rcgen::CertificateParams::new(Vec::<String>::new())
+        .and_then(|p| p.self_signed(&signer))
+        .map_err(|_| Error::Invalid("DTLS self-signed certificate"))?;
+    let der = cert.der().to_vec();
+    let handle = register_key(Arc::new(pair))?;
+    Ok(DtlsCert { der, handle })
+}
+
+/// The dimpl crypto provider every DTLS association is built with. The software backend always
+/// provides it.
+pub fn dtls_provider() -> Result<CryptoProvider, Error> {
+    Ok(CryptoProvider {
         kx_groups: KX_GROUPS,
         signature_verification: &VERIFIER,
         key_provider: &KEYS,
@@ -61,7 +119,7 @@ pub(crate) fn provider() -> CryptoProvider {
         hmac_provider: &HMACS,
         cipher_suites: SUITES_12,
         dtls13_cipher_suites: SUITES_13,
-    }
+    })
 }
 
 const KX_GROUPS: &[&dyn SupportedKxGroup] = &[
@@ -88,11 +146,11 @@ static RNG: Rng = Rng;
 static HASHES: Hashes = Hashes;
 static HMACS: Hmacs = Hmacs;
 
-/// One ring AEAD key (AES-GCM or ChaCha20-Poly1305); the nonce and AAD are dimpl's.
+/// One AEAD key (AES-GCM or ChaCha20-Poly1305); the nonce and AAD are dimpl's.
 struct Aead(LessSafeKey);
 
-impl std::fmt::Debug for Aead {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Aead {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Aead")
     }
 }
@@ -212,8 +270,8 @@ struct Exchange {
     public: Buf,
 }
 
-impl std::fmt::Debug for Exchange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Exchange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Exchange")
             .field("group", &self.group)
             .finish_non_exhaustive()
@@ -226,16 +284,16 @@ impl ActiveKeyExchange for Exchange {
     }
     fn complete(self: Box<Self>, peer: &[u8], out: &mut Buf) -> Result<(), CryptoError> {
         let group = self.group;
-
         agreement::agree_ephemeral(
             self.key,
-            &UnparsedPublicKey::new(self.alg, peer),
+            UnparsedPublicKey::new(self.alg, peer),
+            CryptoError::InvalidPublicKey(group),
             |secret| {
                 out.clear();
                 out.extend_from_slice(secret);
+                Ok(())
             },
         )
-        .map_err(|_| CryptoError::InvalidPublicKey(group))
     }
     fn group(&self) -> NamedGroup {
         self.group
@@ -267,10 +325,10 @@ impl SupportedKxGroup for KxGroup {
     }
 }
 
-struct Signer(Arc<signature::EcdsaKeyPair>);
+struct Signer(Arc<EcdsaKeyPair>);
 
-impl std::fmt::Debug for Signer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Signer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Signer")
     }
 }
@@ -334,17 +392,17 @@ impl SignatureVerifier for Verifier {
         if alg != SignatureAlgorithm::ECDSA {
             return Err(CryptoError::UnsupportedSignatureAlgorithm(alg));
         }
-        let der = rustls_pki_types::CertificateDer::from(cert_der);
+        let der = rustls::pki_types::CertificateDer::from(cert_der);
         let leaf = webpki::EndEntityCert::try_from(&der)
             .map_err(|_| CryptoError::CertificateParseFailed)?;
-        let candidates: &[&dyn rustls_pki_types::SignatureVerificationAlgorithm] = match hash {
+        let candidates: &[&dyn rustls::pki_types::SignatureVerificationAlgorithm] = match hash {
             HashAlgorithm::SHA256 => &[
-                webpki::ring::ECDSA_P256_SHA256,
-                webpki::ring::ECDSA_P384_SHA256,
+                webpki::aws_lc_rs::ECDSA_P256_SHA256,
+                webpki::aws_lc_rs::ECDSA_P384_SHA256,
             ],
             HashAlgorithm::SHA384 => &[
-                webpki::ring::ECDSA_P256_SHA384,
-                webpki::ring::ECDSA_P384_SHA384,
+                webpki::aws_lc_rs::ECDSA_P256_SHA384,
+                webpki::aws_lc_rs::ECDSA_P384_SHA384,
             ],
             _ => return Err(CryptoError::UnsupportedSignatureAlgorithm(alg)),
         };
@@ -366,8 +424,8 @@ impl SignatureVerifier for Verifier {
 
 struct Hash(digest::Context);
 
-impl std::fmt::Debug for Hash {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Hash {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Hash")
     }
 }

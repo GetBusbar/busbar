@@ -89,11 +89,11 @@ impl SpoolWriter {
             return Err(exhausted());
         }
         let mut seed = Zeroizing::new([0u8; AES_256_KEY_LEN]);
-        getrandom::fill(seed.as_mut()).map_err(|_| failed())?;
+        crate::crypto::fill(seed.as_mut()).map_err(|_| failed())?;
         let cipher = AesGcm::new(seed.as_ref()).map_err(|_| failed())?;
         drop(seed);
         let mut identity = [0u8; 16];
-        getrandom::fill(&mut identity).map_err(|_| failed())?;
+        crate::crypto::fill(&mut identity).map_err(|_| failed())?;
         let plain = Zeroizing::new(allocated(PLAIN)?);
         let encoded = allocated(FRAME)?;
         let file = platform::create()?;
@@ -393,7 +393,7 @@ mod platform {
         }
         for _ in 0..16 {
             let mut random = [0; 16];
-            getrandom::fill(&mut random).map_err(|_| failed())?;
+            crate::crypto::fill(&mut random).map_err(|_| failed())?;
             let name =
                 std::ffi::CString::new(format!("busbar-source-spool-{}", hex::encode(random)))
                     .map_err(|_| failed())?;
@@ -482,7 +482,7 @@ mod platform {
             };
             for _ in 0..16 {
                 let mut random = [0; 16];
-                getrandom::fill(&mut random).map_err(|_| failed())?;
+                crate::crypto::fill(&mut random).map_err(|_| failed())?;
                 let path = directory.join(format!("busbar-source-spool-{}", hex::encode(random)));
                 let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
                 if path[..path.len() - 1].contains(&0) {

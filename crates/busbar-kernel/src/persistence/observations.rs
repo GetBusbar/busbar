@@ -11,6 +11,7 @@ use super::{
     commit::SubmitResult,
     facade::{CoreStore, PendingId},
 };
+use crate::hashing::Sha256;
 use busbar_contract::{
     abi::sdk::plane::observation::{Observation, ScopeId, State},
     persistence::{
@@ -20,7 +21,6 @@ use busbar_contract::{
     Count, Secret,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
 
 const NS: NamespaceId = NamespaceId(*b"busbar.usage.v1\0");
@@ -296,7 +296,7 @@ impl ObservationStore {
     pub async fn create_scope(&self, binding: Binding) -> Result<ScopeId, Error> {
         binding.validate()?;
         let mut scope = [0; 32];
-        getrandom::fill(&mut scope).map_err(|_| Error::Invalid)?;
+        busbar_contract::crypto::fill(&mut scope).map_err(|_| Error::Invalid)?;
         if scope == [0; 32] {
             return Err(Error::Invalid);
         }

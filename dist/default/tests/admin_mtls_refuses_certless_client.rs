@@ -30,17 +30,21 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn ca_and_leaf(sans: &[&str]) -> (String, String, String) {
-    let ca_key = rcgen::KeyPair::generate().unwrap();
-    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_key = busbar_contract::crypto::testing::rcgen::KeyPair::generate().unwrap();
+    let mut ca_params =
+        busbar_contract::crypto::testing::rcgen::CertificateParams::new(Vec::new()).unwrap();
+    ca_params.is_ca = busbar_contract::crypto::testing::rcgen::IsCa::Ca(
+        busbar_contract::crypto::testing::rcgen::BasicConstraints::Unconstrained,
+    );
     let ca_pem = ca_params.self_signed(&ca_key).unwrap().pem();
-    let issuer = rcgen::Issuer::from_params(&ca_params, ca_key);
-    let leaf_key = rcgen::KeyPair::generate().unwrap();
-    let leaf =
-        rcgen::CertificateParams::new(sans.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
-            .unwrap()
-            .signed_by(&leaf_key, &issuer)
-            .unwrap();
+    let issuer = busbar_contract::crypto::testing::rcgen::Issuer::from_params(&ca_params, ca_key);
+    let leaf_key = busbar_contract::crypto::testing::rcgen::KeyPair::generate().unwrap();
+    let leaf = busbar_contract::crypto::testing::rcgen::CertificateParams::new(
+        sans.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
+    )
+    .unwrap()
+    .signed_by(&leaf_key, &issuer)
+    .unwrap();
     (ca_pem, leaf.pem(), leaf_key.serialize_pem())
 }
 
@@ -56,27 +60,50 @@ fn log(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("out.log")).unwrap_or_default()
 }
 
-fn client(server_ca_pem: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .add_root_certificate(reqwest::Certificate::from_pem(server_ca_pem.as_bytes()).unwrap())
-        .use_rustls_tls()
-        .timeout(Duration::from_secs(10));
-    if let Some((leaf, key)) = identity {
-        builder = builder
-            .identity(reqwest::Identity::from_pem(format!("{leaf}{key}").as_bytes()).unwrap());
+/// A reqwest TLS config trusting `ca_pem`, with an optional client identity (`leaf`, `key` PEM),
+/// built through the crypto facade.
+fn preconfigured_tls(ca_pem: &str, identity: Option<(&str, &str)>) -> rustls::ClientConfig {
+    use rustls::pki_types::{pem::PemObject as _, CertificateDer, PrivateKeyDer};
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in CertificateDer::pem_slice_iter(ca_pem.as_bytes()) {
+        roots.add(cert.expect("cert PEM")).expect("root");
     }
-    builder.build().unwrap()
+    let config = busbar_contract::crypto::tls::client_config(|b| {
+        let b = b.with_root_certificates(roots);
+        match identity {
+            Some((leaf, key)) => {
+                let chain = CertificateDer::pem_slice_iter(leaf.as_bytes())
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("client certificate PEM");
+                let key = PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("client key PEM");
+                b.with_client_auth_cert(chain, key)
+            }
+            None => Ok(b.with_no_client_auth()),
+        }
+    })
+    .expect("a client config");
+    (*config).clone()
+}
+
+fn client(server_ca_pem: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
+    reqwest::Client::builder()
+        .use_preconfigured_tls(preconfigured_tls(server_ca_pem, identity))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap()
 }
 
 #[test]
 fn admin_listener_with_admin_tls_client_ca_rejects_certless_client() {
     let dir = fixture_dir();
 
-    let server_key = rcgen::KeyPair::generate().unwrap();
-    let server_cert = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()])
-        .unwrap()
-        .self_signed(&server_key)
-        .unwrap();
+    let server_key = busbar_contract::crypto::testing::rcgen::KeyPair::generate().unwrap();
+    let server_cert = busbar_contract::crypto::testing::rcgen::CertificateParams::new(vec![
+        "127.0.0.1".to_owned(),
+    ])
+    .unwrap()
+    .self_signed(&server_key)
+    .unwrap();
     let server_pem = server_cert.pem();
     let (client_ca, client_leaf, client_key) = ca_and_leaf(&["busbar-admin-client"]);
     let (_other_ca, other_leaf, other_key) = ca_and_leaf(&["impostor"]);

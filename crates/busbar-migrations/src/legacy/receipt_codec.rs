@@ -5,9 +5,9 @@
 //! dedupe.rs at 241065e0c1 (wide) and its parent (narrow/scale-aware). These are
 //! comparison-only historical hashes, never current persistence receipts.
 use crate::Error;
+use busbar_contract::crypto::Sha256;
 use busbar_contract::records::{MeteringDelta, UsageDelta};
 use busbar_kernel::persistence::import_target::records::OriginalAccounting;
-use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy)]
 enum Codec {
@@ -17,13 +17,13 @@ enum Codec {
 struct Feed(Sha256);
 impl Feed {
     fn u64(&mut self, v: u64) {
-        self.0.update(v.to_le_bytes());
+        self.0.update(&v.to_le_bytes());
     }
     fn i64(&mut self, v: i64) {
-        self.0.update(v.to_le_bytes());
+        self.0.update(&v.to_le_bytes());
     }
     fn i128(&mut self, v: i128) {
-        self.0.update(v.to_le_bytes());
+        self.0.update(&v.to_le_bytes());
     }
     fn count(&mut self, v: usize) -> Result<(), Error> {
         self.u64(v.try_into().map_err(|_| Error::Bounds)?);
@@ -31,7 +31,7 @@ impl Feed {
     }
     fn bytes(&mut self, v: &[u8]) -> Result<(), Error> {
         self.count(v.len())?;
-        self.0.update(v);
+        self.0.update(&v[..]);
         Ok(())
     }
     fn text(&mut self, v: &str) -> Result<(), Error> {
@@ -136,7 +136,7 @@ fn encode(values: &OriginalAccounting, codec: Codec) -> Result<[u8; 32], Error> 
             feed.bytes(digest)?;
         }
     }
-    Ok(feed.0.finalize().into())
+    Ok(feed.0.finish())
 }
 #[cfg(test)]
 fn matches(values: &OriginalAccounting, actual: &[u8; 32]) -> Result<bool, Error> {

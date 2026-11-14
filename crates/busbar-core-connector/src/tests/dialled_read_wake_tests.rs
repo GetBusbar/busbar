@@ -204,10 +204,9 @@ impl FramerDoor for RawFramer {
 fn binding_answer(request: &[u8], secret: &[u8]) -> Vec<u8> {
     let mut answer = vec![1, 1, 0, 24, 0x21, 0x12, 0xa4, 0x42];
     answer.extend_from_slice(&request[8..20]);
-    let key = ::ring::hmac::Key::new(::ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, secret);
-    let signature = ::ring::hmac::sign(&key, &answer);
+    let signature = busbar_contract::crypto::legacy::hmac_sha1(secret, &answer).unwrap();
     answer.extend_from_slice(&[0, 8, 0, 20]);
-    answer.extend_from_slice(signature.as_ref());
+    answer.extend_from_slice(&signature);
     answer
 }
 
@@ -317,13 +316,11 @@ impl Rig {
         check.extend_from_slice(&[7; 12]);
         check.extend_from_slice(&[0, 6, 0, 8]);
         check.extend_from_slice(username);
-        let key = ::ring::hmac::Key::new(
-            ::ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY,
-            b"host-password-0123456789",
-        );
-        let signature = ::ring::hmac::sign(&key, &check);
+        let signature =
+            busbar_contract::crypto::legacy::hmac_sha1(b"host-password-0123456789", &check)
+                .unwrap();
         check.extend_from_slice(&[0, 8, 0, 20]);
-        check.extend_from_slice(signature.as_ref());
+        check.extend_from_slice(&signature);
         framing
             .datagram(far.local_addr(), &check, Instant::now())
             .unwrap();

@@ -99,7 +99,7 @@ pub fn bootstrap_fingerprint(body: &[u8]) -> Option<[u8; 32]> {
 
 fn mint_seed_hex() -> Result<Zeroizing<String>, KeysetError> {
     let mut seed = Zeroizing::new([0u8; 32]);
-    getrandom::fill(seed.as_mut()).map_err(|_| KeysetError::NoEntropy)?;
+    busbar_contract::crypto::fill(seed.as_mut()).map_err(|_| KeysetError::NoEntropy)?;
     Ok(Zeroizing::new(hex::encode(*seed)))
 }
 

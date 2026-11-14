@@ -4,9 +4,9 @@
 //! One semantic admission policy for all config representations and reloads.
 use super::transaction::TxnError;
 use crate::auth::effect::{Authority, Context};
+use crate::hashing::Sha256;
 use crate::state::App;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 pub(super) fn digest(value: &serde_json::Value) -> [u8; 32] {
     let bytes = zeroize::Zeroizing::new(value.to_string().into_bytes());

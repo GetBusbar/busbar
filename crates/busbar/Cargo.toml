@@ -40,10 +40,8 @@ busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
-getrandom = { workspace = true }
 arc-swap = { workspace = true }
 tower = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "process"] }
@@ -79,7 +77,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }
-ring = { workspace = true }
+busbar-contract = { path = "../busbar-contract", features = ["tls", "test-support"] }
 # External fixtures used by this source when the distribution runs its unit tests.
 
 [lints.rust]

@@ -1320,19 +1320,11 @@ impl Connection {
         use std::fmt::Write as _;
         let tls = self.tls.as_ref().filter(|t| !t.is_handshaking())?;
         let leaf = tls.peer_certificates()?.first()?;
-        let digest = ring::digest::digest(
-            crate::tls::client::end_point_digest(leaf.as_ref()),
-            leaf.as_ref(),
-        );
-        Some(
-            digest
-                .as_ref()
-                .iter()
-                .fold(String::with_capacity(64), |mut hex, b| {
-                    let _ = write!(hex, "{b:02x}");
-                    hex
-                }),
-        )
+        let digest = crate::tls::client::end_point_digest(leaf.as_ref()).digest(leaf.as_ref());
+        Some(digest.iter().fold(String::with_capacity(64), |mut hex, b| {
+            let _ = write!(hex, "{b:02x}");
+            hex
+        }))
     }
 
     /// Why the connection failed, once it has: the stage it failed in (the socket's open,

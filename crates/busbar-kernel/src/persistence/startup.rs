@@ -530,7 +530,7 @@ fn prepare(
 }
 pub(super) fn random_id() -> Result<[u8; 16], Error> {
     let mut value = [0; 16];
-    getrandom::fill(&mut value).map_err(|_| Error::Entropy)?;
+    busbar_contract::crypto::fill(&mut value).map_err(|_| Error::Entropy)?;
     if value == [0; 16] {
         return Err(Error::Entropy);
     }

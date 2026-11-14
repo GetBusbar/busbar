@@ -147,9 +147,8 @@ impl Request {
     /// Fingerprint binding the complete canonical request, including operation identity.
     #[must_use]
     pub fn fingerprint(&self) -> [u8; 32] {
-        use sha2::Digest as _;
         let bytes = serde_json::to_vec(self).expect("usage correction contains only JSON values");
-        sha2::Sha256::digest(bytes).into()
+        crate::crypto::sha256(&bytes).into()
     }
 }
 

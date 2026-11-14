@@ -5,11 +5,11 @@
 //! has its own bounded pages, so a legal source group need not fit a copy page.
 use super::archive::Provenance;
 use crate::{Bounds, Error, Record, TargetRow};
+use busbar_contract::crypto::Sha256;
 use busbar_contract::{
     persistence::{legacy_row::Row, Address},
     Secret,
 };
-use sha2::{Digest, Sha256};
 
 pub const PHYSICAL: [u8; 16] = *b"legacy.physical1";
 const TAG: &[u8; 8] = b"BBLPROJ1";
@@ -62,7 +62,7 @@ pub fn encode_marker(
     let mut value = Vec::new();
     value.try_reserve_exact(72).map_err(|_| Error::Bounds)?;
     value.extend_from_slice(TAG);
-    value.extend_from_slice(&Sha256::digest(key));
+    value.extend_from_slice(&busbar_contract::crypto::sha256(key));
     value.extend_from_slice(&inventory_digest);
     Ok(Secret::new(value))
 }
@@ -74,7 +74,7 @@ pub fn decode_marker(record: &Record) -> Result<[u8; 32], Error> {
     if value.len() != 72
         || value.get(..8) != Some(TAG.as_slice())
         || key.is_empty()
-        || value[8..40] != Sha256::digest(key)[..]
+        || value[8..40] != busbar_contract::crypto::sha256(key)[..]
         || value[40..] == [0; 32]
     {
         return Err(Error::Corrupt);
@@ -286,9 +286,9 @@ pub fn verify_physical(
     Ok(super::transform::PageVerification {
         source_rows: records.len() as u64,
         target_rows: expected.len() as u64,
-        source_digest: source.finalize().into(),
-        target_digest: target.finalize().into(),
-        semantics_digest: semantics.finalize().into(),
+        source_digest: source.finish(),
+        target_digest: target.finish(),
+        semantics_digest: semantics.finish(),
     })
 }
 

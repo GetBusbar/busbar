@@ -2579,7 +2579,7 @@ impl DeclaredConns for Connector {
             if class != Some(EGRESS_OPERATOR_INFRASTRUCTURE) {
                 return Err(ConnError::Refused);
             }
-            Arc::new(crate::tls::client::unverified_client_config())
+            crate::tls::client::unverified_client_config().map_err(|_| ConnError::Refused)?
         } else {
             let declared = self.declared.lock().expect("declared needs");
             let trust_from = declared

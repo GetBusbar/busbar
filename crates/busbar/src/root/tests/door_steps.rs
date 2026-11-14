@@ -4127,9 +4127,12 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
 }
 
 fn a_ca_pem() -> String {
-    let kp = rcgen::KeyPair::generate().expect("a key");
-    let mut params = rcgen::CertificateParams::new(Vec::new()).expect("params");
-    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let kp = busbar_contract::crypto::testing::rcgen::KeyPair::generate().expect("a key");
+    let mut params = busbar_contract::crypto::testing::rcgen::CertificateParams::new(Vec::new())
+        .expect("params");
+    params.is_ca = busbar_contract::crypto::testing::rcgen::IsCa::Ca(
+        busbar_contract::crypto::testing::rcgen::BasicConstraints::Unconstrained,
+    );
     params.self_signed(&kp).expect("the CA").pem()
 }
 

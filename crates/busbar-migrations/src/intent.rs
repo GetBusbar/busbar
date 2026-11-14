@@ -31,8 +31,8 @@ fn checkpoint_phase(
     candidate: &PreparedCandidate,
     migration: Id,
 ) -> Result<Option<busbar_contract::persistence::lifecycle::CompletionMarker>, Error> {
+    use busbar_contract::crypto::Sha256;
     use busbar_contract::persistence::lifecycle as native;
-    use sha2::{Digest, Sha256};
     let marker_address = native::completion_marker_address(migration);
     let mut markers =
         candidate
@@ -74,7 +74,8 @@ fn checkpoint_phase(
             _ => None,
         })
         .ok_or(Error::Corrupt)?;
-    let digest: [u8; 32] = Sha256::digest(checkpoint.expose(&crate::seal::lend())).into();
+    let digest: [u8; 32] =
+        busbar_contract::crypto::sha256(checkpoint.expose(&crate::seal::lend())).into();
     if digest != marker.checkpoint_value_digest {
         return Err(Error::Corrupt);
     }
@@ -843,7 +844,7 @@ impl StoreIntent {
             expected: value.map_or(ExpectedValue::Absent, ExpectedValue::Exact),
         };
         let mut journal_operation = [0; 16];
-        getrandom::fill(&mut journal_operation).map_err(|_| Error::Entropy)?;
+        busbar_contract::crypto::fill(&mut journal_operation).map_err(|_| Error::Entropy)?;
         let mut predicates = vec![
             exact(startup::root_address(), Some(observed.root)),
             exact(
@@ -1006,7 +1007,7 @@ impl StoreIntent {
             }
         } else {
             let mut operation = [0; 16];
-            getrandom::fill(&mut operation).map_err(|_| Error::Entropy)?;
+            busbar_contract::crypto::fill(&mut operation).map_err(|_| Error::Entropy)?;
             let exact = |address, value| Predicate {
                 address,
                 expected: ExpectedValue::Exact(value),

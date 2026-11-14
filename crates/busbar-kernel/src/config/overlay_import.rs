@@ -40,7 +40,7 @@ pub(in crate::config) fn canonicalize(value: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use crate::config::overlay::{OverlayDoc, OverlayStore};
-    use sha2::{Digest, Sha256};
+    use crate::hashing::Sha256;
 
     #[tokio::test]
     async fn old_overlay_import_survives_reopen_and_never_replays_over_admin_changes() {

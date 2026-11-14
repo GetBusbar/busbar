@@ -3,7 +3,8 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use busbar_contract::crypto::ed25519::{SigningKey, VerifyingKey};
+use busbar_contract::crypto::{self, RngError};
 use serde::{Deserialize, Serialize};
 
 pub const TOKEN_PREFIX: &str = "bbk_";
@@ -112,19 +113,27 @@ impl std::fmt::Debug for TokenSigner {
     }
 }
 
+/// The Ed25519 key of a 32-byte seed. PANIC: every 32-byte seed is a valid RFC 8032 seed, so this
+/// fails only if the crypto backend refuses Ed25519 outright, and a node without its token key
+/// cannot run.
+fn signing_key(seed: &[u8; 32]) -> SigningKey {
+    SigningKey::from_seed(seed)
+        .unwrap_or_else(|e| panic!("crypto backend refused an Ed25519 seed: {e}"))
+}
+
 impl TokenSigner {
     pub fn from_secret_bytes(bytes: &[u8; 32], kid: impl Into<String>) -> Self {
         Self {
-            key: SigningKey::from_bytes(bytes),
+            key: signing_key(bytes),
             kid: kid.into(),
         }
     }
 
-    pub fn generate(kid: impl Into<String>) -> Result<Self, getrandom::Error> {
+    pub fn generate(kid: impl Into<String>) -> Result<Self, RngError> {
         let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes)?;
+        crypto::fill(&mut bytes)?;
         Ok(Self {
-            key: SigningKey::from_bytes(&bytes),
+            key: signing_key(&bytes),
             kid: kid.into(),
         })
     }
@@ -134,7 +143,7 @@ impl TokenSigner {
     }
 
     pub fn secret_bytes(&self) -> [u8; 32] {
-        self.key.to_bytes()
+        *self.key.to_seed()
     }
 
     pub fn verifying_key(&self) -> VerifyingKey {
@@ -142,19 +151,19 @@ impl TokenSigner {
     }
 
     pub fn derived_subkey_seed(&self, domain: &str) -> [u8; 32] {
-        subkey_seed(&self.key.to_bytes(), domain)
+        subkey_seed(&self.key.to_seed(), domain)
     }
 
     pub fn sign_with_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {
-        let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
-        key.sign(input).to_bytes()
+        let key = signing_key(&self.derived_subkey_seed(domain));
+        key.sign(input)
     }
 
     pub fn subkey_key_info_base64(&self, domain: &str) -> String {
-        let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
+        let key = signing_key(&self.derived_subkey_seed(domain));
         let mut der = Vec::with_capacity(ED25519_KEY_INFO_PREFIX.len() + 32);
         der.extend_from_slice(&ED25519_KEY_INFO_PREFIX);
-        der.extend_from_slice(key.verifying_key().as_bytes());
+        der.extend_from_slice(&key.verifying_key().to_bytes());
         base64::engine::general_purpose::STANDARD.encode(der)
     }
 
@@ -214,11 +223,11 @@ impl TokenSigner {
 
     fn sign_body(&self, claims: &TokenClaims) -> String {
         let payload = serde_json::to_vec(claims).expect("TokenClaims serializes");
-        let sig: Signature = self.key.sign(&payload);
+        let sig = self.key.sign(&payload);
         format!(
             "{}.{}",
             URL_SAFE_NO_PAD.encode(&payload),
-            URL_SAFE_NO_PAD.encode(sig.to_bytes())
+            URL_SAFE_NO_PAD.encode(sig)
         )
     }
 }
@@ -283,13 +292,12 @@ impl TokenVerifier {
             .as_slice()
             .try_into()
             .map_err(|_| VerifyError::Malformed)?;
-        let signature = Signature::from_bytes(&sig_arr);
 
         let claims: TokenClaims =
             serde_json::from_slice(&payload).map_err(|_| VerifyError::Malformed)?;
         let key = self.keys.get(&claims.kid).ok_or(VerifyError::UnknownKid)?;
 
-        key.verify(&payload, &signature)
+        key.verify_strict(&payload, &sig_arr)
             .map_err(|_| VerifyError::BadSignature)?;
 
         if expiry_clock.is_some_and(|now| claims.exp <= now) {

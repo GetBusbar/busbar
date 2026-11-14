@@ -7,10 +7,10 @@
 //! executable receipt, business outcome, or append-custody grant.
 use super::{journal::JournalPlan, transform::ARCHIVAL};
 use crate::{archive_source::ArchiveSource, Bounds, Error, Record};
+use busbar_contract::crypto::Sha256;
 use busbar_contract::{persistence::Address, Secret};
 use busbar_kernel::persistence::import_target::{journal::VerifiedNode, records, recovery::*};
 use busbar_kernel_wal::JournalRecord;
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     io::{Read, Seek},
@@ -86,7 +86,7 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
                 return Err(Error::Bounds);
             }
             let value = read_head(&source, key, op, bounds)?;
-            let digest = Sha256::digest(value.expose(&crate::seal::lend())).into();
+            let digest = busbar_contract::crypto::sha256(value.expose(&crate::seal::lend())).into();
             if heads
                 .insert(
                     op,
@@ -114,7 +114,7 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
             bounds,
             frame_bytes,
             heads,
-            digest: hash.finalize().into(),
+            digest: hash.finish(),
         };
         inventory.visit_selections(&mut |_| Ok(()))?;
         Ok(inventory)
@@ -236,8 +236,9 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
             let fact = receipts.get(&op).ok_or(Error::ReconciliationRequired)?;
             let head_fact = self.heads.get(&op).ok_or(Error::Verification)?;
             let head = read_head(&self.source, &head_fact.group, op, self.bounds)?;
-            if <[u8; 32]>::from(Sha256::digest(head.expose(&crate::seal::lend())))
-                != head_fact.digest
+            if <[u8; 32]>::from(busbar_contract::crypto::sha256(
+                head.expose(&crate::seal::lend()),
+            )) != head_fact.digest
             {
                 return Err(Error::Verification);
             }
@@ -303,7 +304,7 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
             provenance,
             receipts,
             applied,
-            digest: hash.finalize().into(),
+            digest: hash.finish(),
         })
     }
     pub fn visit_selections(
@@ -386,7 +387,10 @@ impl<R: Read + Seek + Send> RecoveryHistory for FrozenRecovery<R> {
         };
         let head = read_head(&self.source, &fact.group, *operation, self.bounds)
             .map_err(|e| RecoveryError::Invalid(format!("frozen head: {e:?}")))?;
-        if <[u8; 32]>::from(Sha256::digest(head.expose(&crate::seal::lend()))) != fact.digest {
+        if <[u8; 32]>::from(busbar_contract::crypto::sha256(
+            head.expose(&crate::seal::lend()),
+        )) != fact.digest
+        {
             return Err(RecoveryError::Invalid("frozen head changed".into()));
         }
         Ok(Some(head))
@@ -490,19 +494,19 @@ fn receipt_digest(
     }
     match receipt.recorded_at {
         Some(v) => {
-            hash.update([1]);
-            hash.update(v.to_le_bytes());
+            hash.update(&[1]);
+            hash.update(&v.to_le_bytes());
         }
-        None => hash.update([0]),
+        None => hash.update(&[0]),
     }
     match receipt.expires_at_ms {
         Some(v) => {
-            hash.update([1]);
-            hash.update(v.to_le_bytes());
+            hash.update(&[1]);
+            hash.update(&v.to_le_bytes());
         }
-        None => hash.update([0]),
+        None => hash.update(&[0]),
     }
-    hash.finalize().into()
+    hash.finish()
 }
 impl FencedReceiptProofs {
     pub fn provenance(&self) -> super::archive::Provenance {

@@ -8,13 +8,13 @@
 
 use std::{ops::Range, sync::Arc};
 
+use crate::hashing::Sha256;
 use busbar_contract::persistence::{
     Address, AttemptId, Candidate, DatasetId, ExpectedValue, Failure, InvalidCandidate, Mutation,
     NamespaceId, PersistenceBackend, Predicate, PreparedCandidate, Read, ReadResult,
     CANDIDATE_VERSION,
 };
 use busbar_contract::{plugin::KernelSeal, Secret};
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 /// Chunk payload size, independent of plane record limits.
