@@ -208,7 +208,7 @@ impl DataRoutes {
             plane,
             app,
             principal,
-            key: gov.key.clone(),
+            key: gov.key,
             open,
             credential: consumed
                 .caller
@@ -256,7 +256,6 @@ impl DataRoutes {
 
     /// The same teller driver, money seam, hooks and NodeEndPost as the compatibility adapter.
     /// The admitted line selects the handler; no URL or method is parsed as HTTP here.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn serve_admitted<C: Output>(
         self: Arc<Self>,
         admission: &RequestAdmission,
@@ -292,7 +291,6 @@ impl DataRoutes {
 
     /// The same teller driver, money seam, hooks and NodeEndPost as the compatibility adapter.
     /// The admitted line selects the handler; no URL or method is parsed as HTTP here.
-    #[allow(clippy::too_many_arguments)]
     async fn serve_admitted_inner<C: Output>(
         self: Arc<Self>,
         admission: &RequestAdmission,
@@ -535,13 +533,30 @@ impl<C: Output> FramedOutput<C> {
     }
 
     fn finish(&self, status: u32, message: &[u8], details: &[u8]) {
-        let inner = Arc::clone(&self.inner);
+        let mut slot = serve_framed::lock(&self.stream);
+        if let Some(mut stream) = slot.stream.take() {
+            // The stream is home: finish it now, straight from the borrowed status words.
+            drop(slot);
+            if let Ok(closing) = stream.finish_response(status, message, details) {
+                self.inner.trailers(closing.fields);
+            }
+            return;
+        }
+        if !slot.out || slot.then.is_some() {
+            return;
+        }
+        // The stream is still crossing the plugin: finish it when it is returned.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a unit finishes while its stream is still out only when it is cut short mid-emit"
+        )]
         let (message, details) = (message.to_vec(), details.to_vec());
-        serve_framed::close_with(&self.stream, move |mut stream| {
+        let inner = Arc::clone(&self.inner);
+        slot.then = Some(Box::new(move |mut stream: FramedStream| {
             if let Ok(closing) = stream.finish_response(status, &message, &details) {
                 inner.trailers(closing.fields);
             }
-        });
+        }));
     }
 
     async fn refused(&self, rendered: Rendered) {
@@ -616,7 +631,8 @@ impl<C: Output> SessionCaller for FramedOutput<C> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        body.map(|body| body.to_vec())
+        // Hands the body's buffer over without a copy when this is its last handle.
+        body.map(Vec::from)
     }
 }
 impl<C: Output> Stated for FramedOutput<C> {

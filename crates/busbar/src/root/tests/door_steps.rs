@@ -3839,7 +3839,7 @@ fn a_model_shaped_section_takes_the_stated_labels_the_previous_release_counted()
             (&direct, &own),
             Some(&stated("m-direct", "m-direct"))
         ),
-        ("m-direct".to_string(), "m-direct".to_string(), false),
+        ("m-direct", "m-direct", false),
         "the golden direct-route request cell"
     );
 
@@ -3854,19 +3854,19 @@ fn a_model_shaped_section_takes_the_stated_labels_the_previous_release_counted()
                 (&pooled, &super::plane_lane("p", member)),
                 Some(&stated("cap-fo", member))
             ),
-            ("cap-fo".to_string(), member.to_string(), false),
+            ("cap-fo", member, false),
             "route.529__failover__primary: {member}"
         );
     }
 
     assert_eq!(
         bound.labels(&direct, (&direct, &own), None),
-        (direct.clone(), own.clone(), false)
+        (direct.as_str(), own.as_str(), false)
     );
 
     assert_eq!(
         bound.labels(&direct, (&direct, &own), Some(&stated("cap-fo", "m-first"))),
-        (direct.clone(), own.clone(), true),
+        (direct.as_str(), own.as_str(), true),
         "a direct route reaches no pool and no other entry"
     );
 }
@@ -3884,15 +3884,15 @@ fn a_pools_reach_follows_its_fallback_and_the_declared_words() {
     };
     assert_eq!(
         bound.labels("first", ("first", "own"), Some(&stated("spill", "b"))),
-        ("spill".to_string(), "b".to_string(), false)
+        ("spill", "b", false)
     );
     assert_eq!(
         bound.labels("first", ("first", "own"), Some(&stated("a", "word"))),
-        ("a".to_string(), "word".to_string(), false)
+        ("a", "word", false)
     );
     assert_eq!(
         bound.labels("spill", ("spill", "own"), Some(&stated("first", "a"))),
-        ("spill".to_string(), "own".to_string(), true),
+        ("spill", "own", true),
         "a fallback pool does not reach back into the pool that spilled into it"
     );
 }
