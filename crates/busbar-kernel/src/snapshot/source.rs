@@ -12,7 +12,7 @@ use metrics::atomics::AtomicU64;
 use metrics::{Counter, Gauge, Histogram, HistogramFn, Key, KeyName, Metadata, Recorder};
 use metrics::{SharedString, Unit};
 use metrics_util::registry::{Generation, GenerationalStorage, Registry, Storage};
-use metrics_util::storage::{AtomicBucket, Summary};
+use metrics_util::storage::Summary;
 
 const QUANTILES: [f64; 7] = [0.0, 0.5, 0.9, 0.95, 0.99, 0.999, 1.0];
 
@@ -20,11 +20,26 @@ pub(super) const QUANTILE_LABEL: &str = "quantile";
 const SUMMARY_SUM_SUFFIX: &str = "_sum";
 const SUMMARY_COUNT_SUFFIX: &str = "_count";
 
-pub struct Samples(AtomicBucket<(f64, Instant)>);
+/// One histogram's samples since the last drain.
+///
+/// A plain mutex, not `metrics_util`'s `AtomicBucket`: that bucket's `clear_with` can detach a
+/// block that a concurrent `push` already loaded and then writes into, and the sample is never
+/// read. Here a sample is pushed and taken under one lock, so each one lands in exactly one drain.
+pub struct Samples(Mutex<Vec<(f64, Instant)>>);
+
+impl Samples {
+    /// Everything recorded so far, leaving room for about as many again.
+    fn take(&self) -> Vec<(f64, Instant)> {
+        let mut samples = lock(&self.0);
+        let capacity = samples.len();
+        std::mem::replace(&mut *samples, Vec::with_capacity(capacity))
+    }
+}
 
 impl HistogramFn for Samples {
     fn record(&self, value: f64) {
-        self.0.push((value, Instant::now()));
+        let at = Instant::now();
+        lock(&self.0).push((value, at));
     }
 }
 
@@ -41,7 +56,7 @@ impl<K> Storage<K> for Stamped {
         Arc::new(AtomicU64::new(0))
     }
     fn histogram(&self, _: &K) -> Self::Histogram {
-        Arc::new(Samples(AtomicBucket::new()))
+        Arc::new(Samples(Mutex::default()))
     }
 }
 
@@ -426,18 +441,16 @@ impl Source {
                         .cloned()
                         .collect::<Vec<_>>(),
                 );
-                h.get_inner().0.clear_with(|xs| {
-                    for &(seconds, _) in xs {
-                        requests.add(&cohort, seconds, outcome, self.process_boot_nonce.is_some());
-                    }
-                });
+                for (seconds, _) in h.get_inner().take() {
+                    requests.add(&cohort, seconds, outcome, self.process_boot_nonce.is_some());
+                }
                 continue;
             }
             let d = dists.entry(key).or_default();
             let (width, n) = (self.width, self.buckets);
-            h.get_inner()
-                .0
-                .clear_with(|xs| xs.iter().for_each(|&(v, at)| d.add(v, at, width, n)));
+            for (v, at) in h.get_inner().take() {
+                d.add(v, at, width, n);
+            }
         }
     }
 

@@ -10,20 +10,10 @@
 # written justification and a tracking link — never blanket-ignore.
 version = 2
 ignore = [
-    # RUSTSEC-2024-0436: `paste` is unmaintained (author archived the repo). It's pulled in
-    # transitively as a BUILD-TIME proc-macro via tikv-jemalloc-ctl (jemalloc) — no runtime
-    # code, no vulnerability, and there is no safe upgrade (jemalloc-ctl has not migrated off
-    # it). Advisory is "unmaintained", not a security hole. Re-evaluate when tikv-jemalloc-ctl
-    # drops paste. Tracking: https://github.com/tikv/jemallocator/issues
-    "RUSTSEC-2024-0436",
-    # RUSTSEC-2024-0449: `unsafe-libyaml` 0.2.11 is unmaintained. It is pulled in only via
-    # serde_yaml_ng 0.10, busbar's YAML config parser (`cargo tree -i unsafe-libyaml`:
-    # busbar, busbar-a2a, busbar-contract, busbar-kernel, busbar-core-oauth2,
-    # xtask and others -> serde_yaml_ng -> unsafe-libyaml). Advisory is "unmaintained", not a
-    # security hole. There is no safe swap now: a different YAML parser risks 1.5.5 config-parse
-    # parity (customer-visible behaviour, guarded by the oracle). Re-evaluate when serde_yaml_ng
-    # moves off unsafe-libyaml. Tracking: https://rustsec.org/advisories/RUSTSEC-2024-0449.html
-    "RUSTSEC-2024-0449",
+    # Empty. RUSTSEC-2024-0436 (`paste`, via tikv-jemalloc-ctl) and RUSTSEC-2024-0449
+    # (`unsafe-libyaml`, via serde_yaml_ng) were accepted here until both crates left the graph:
+    # busbar-kernel's `mallctl` calls jemalloc directly, and YAML is busbar-yaml. The bans below keep
+    # them out.
 ]
 
 [licenses]
@@ -85,20 +75,26 @@ deny = [
     { crate = "rustls@0.21", reason = "TLS is rustls 0.23" },
     { crate = "rustls@0.22", reason = "TLS is rustls 0.23" },
     { crate = "ring@0.16", reason = "the crypto backend is ring 0.17" },
-    { crate = "serde_yaml", reason = "unmaintained; YAML is serde_yaml_ng" },
-    # ONE Ed25519 = ed25519-dalek 2 (ARCHITECT ruling 2026-10-02, DEPS-AUDIT cut #9 REFUSED). Plugin
-    # signatures, the audit-chain seal, token and card signing and the operator signature verify
-    # through dalek's `verify_strict`, which refuses small-order keys and signatures. ring has no
-    # such check, and ring plus a hand-written weak-key blocklist would be home-made crypto in a
-    # security-critical verifier; five crates do not pay for that, nor for churning the
+    { crate = "serde_yaml", reason = "unmaintained; YAML is busbar-yaml" },
+    { crate = "serde_yaml_ng", reason = "rests on unsafe-libyaml; YAML is busbar-yaml" },
+    { crate = "unsafe-libyaml", reason = "unmaintained C translation (RUSTSEC-2024-0449); YAML is busbar-yaml's safe port of libyaml" },
+    { crate = "tikv-jemalloc-ctl", reason = "pulls unmaintained `paste`; jemalloc control is busbar-kernel's `mallctl`" },
+    { crate = "paste", reason = "unmaintained (RUSTSEC-2024-0436)" },
+    # ONE Ed25519 = ed25519-dalek 3 (ARCHITECT ruling 2026-10-02, DEPS-AUDIT cut #9 REFUSED; moved
+    # from 2 to 3 so der 0.7 and pkcs8 0.10 leave the graph). Plugin signatures, the audit-chain
+    # seal, token and card signing and the operator signature verify through dalek's
+    # `verify_strict`, which refuses small-order keys and signatures. ring has no such check, and
+    # ring plus a hand-written weak-key blocklist would be home-made crypto in a security-critical
+    # verifier; five crates do not pay for that, nor for churning the
     # plugin-facing `busbar_plugin_loader::sign::{SigningKey, VerifyingKey}`. So dalek stays, at ONE
-    # version (2.x; `multiple-versions = "deny"` refuses a second), busbar code never calls
+    # version (3.x; `multiple-versions = "deny"` refuses a second), busbar code never calls
     # ring's Ed25519, and no other Ed25519 crate may enter.
-    { crate = "ed25519-dalek@1", reason = "ONE Ed25519: ed25519-dalek 2" },
-    { crate = "ed25519-dalek@0", reason = "ONE Ed25519: ed25519-dalek 2" },
-    { crate = "ed25519-compact", reason = "ONE Ed25519: ed25519-dalek 2" },
-    { crate = "ed25519-zebra", reason = "ONE Ed25519: ed25519-dalek 2" },
-    { crate = "ed25519-consensus", reason = "ONE Ed25519: ed25519-dalek 2" },
+    { crate = "ed25519-dalek@2", reason = "ONE Ed25519: ed25519-dalek 3" },
+    { crate = "ed25519-dalek@1", reason = "ONE Ed25519: ed25519-dalek 3" },
+    { crate = "ed25519-dalek@0", reason = "ONE Ed25519: ed25519-dalek 3" },
+    { crate = "ed25519-compact", reason = "ONE Ed25519: ed25519-dalek 3" },
+    { crate = "ed25519-zebra", reason = "ONE Ed25519: ed25519-dalek 3" },
+    { crate = "ed25519-consensus", reason = "ONE Ed25519: ed25519-dalek 3" },
 ]
 # THE ACCEPTED DUPLICATES: each version here is one a parent forces and busbar cannot collapse.
 skip = [
@@ -111,6 +107,14 @@ skip = [
     { crate = "hashbrown@0.16", reason = "metrics-util (metrics-exporter-prometheus)" },
     { crate = "foldhash@0.1", reason = "follows hashbrown 0.15 (petgraph, build time only)" },
     { crate = "rand_core@0.10", reason = "rand 0.10 via chacha20, forced by busbar-store-postgres's postgres-protocol; dist/default only" },
+    # The RustCrypto 0.11 hash line. ed25519-dalek 3 (and, in dist/default, postgres-types) hash on
+    # sha2 0.11, while oauth-as 1.0.1, the busbar-auth-oauth plugin and the workspace's own sha2
+    # rows are still on 0.10, so neither line can collapse until those move.
+    { crate = "sha2@0.11", reason = "ed25519-dalek 3 (and postgres-types, dist/default) on sha2 0.11; oauth-as 1.0.1 and busbar-auth-oauth pin 0.10" },
+    { crate = "digest@0.11", reason = "follows sha2 0.11 (ed25519-dalek 3, postgres-types)" },
+    { crate = "block-buffer@0.12", reason = "follows digest 0.11 (ed25519-dalek 3, postgres-types)" },
+    { crate = "crypto-common@0.2", reason = "follows digest 0.11 (ed25519-dalek 3, postgres-types)" },
+    { crate = "cpufeatures@0.3", reason = "sha2 0.11 and curve25519-dalek 5 (ed25519-dalek 3), chacha20 0.10 in dist/default" },
     { crate = "base64@0.23", reason = "pem 4 via rcgen's `pem` feature, which only the tests enable" },
 ]
 

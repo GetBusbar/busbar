@@ -12,7 +12,8 @@ release artifacts still require owner-controlled provisioning and separate quali
 
 Code: `crates/plugin-loader/src/release_trust/` (the chain and the encoding),
 `crates/plugin-loader/src/sign.rs` (`first_party_signer`, `evaluate`), `crates/plugin-loader/src/pack.rs`
-(the release tooling), `scripts/release/publish_gate.py` (the release gate). Tests:
+(the release tooling); the release gate (`busbar-publish-gate`) is owner release tooling outside
+this repository that drives `pack.rs`. Tests:
 `crates/plugin-loader/src/tests/release_trust_tests.rs` and `release_seal_tests.rs`.
 
 ## 1. The chain
@@ -254,23 +255,24 @@ separate qualification results, not implied by this source integration.
    - `busbar-plugin-pack release-manifest --version <unix time> --expires <keys doc expiry> --out rm.signed <tarball>=<target>...`
      writes the signed bytes of the one release manifest.
    - The release signer signs `rm.signed` **once**: `CMD rm.signed rm.sig`.
-     - `scripts/release/sign-key-env.sh` is the interim CI signer. It reads the PEM from the step's
-       secret environment through a pipe and never writes it to disk.
-     - `sign-kms.sh` signs with Cloud KMS.
-     - `sign-piv.sh` signs with PIV 9C.
+     - The interim CI signer reads the PEM from the step's secret environment through a pipe and
+       never writes it to disk.
+     - The Cloud KMS signer signs with Cloud KMS.
+     - The PIV signer signs with PIV 9C.
+     These signer commands are release tooling outside this repository.
    - `busbar-plugin-pack envelope --signed rm.signed --key p256:<signer> --signature rm.sig --out release-manifest.json`
      refuses a signature that does not verify.
    - For each tarball, `busbar-plugin-pack seal <tarball> --keys-doc keys.json --release release-manifest.json --target <t> --keys <root list> --out signed/<tarball>`.
      It refuses unless the result verifies through the whole chain for its target.
    - `busbar-plugin-pack verify` runs again on the written bytes.
-3. The owner's gate (`publish_gate.py sign` / `plugin-release`) runs the same sequence through
+3. The owner's gate (`busbar-publish-gate sign` / `plugin-release`) runs the same sequence through
    `seal_release`, with `--k1-sign-cmd` as the signer command. Its trust file names the root list
    (`k1`), the release signer (`release_signer`) and the current keys document (`keys_doc`).
 
 A keys document is made with `busbar-plugin-pack keys-doc --spec spec.json --out keys.signed`. The
 spec has these fields: `version`, `expires`, `signers` (as `["p256:<hex>"]`), `threshold`,
-`revoked_keyids` and `revoked_digests`. A root signs `keys.signed` (`sign-kms.sh keys.signed
-keys.sig`), and `busbar-plugin-pack envelope --key <root> ...` wraps the signature.
+`revoked_keyids` and `revoked_digests`. A root signs `keys.signed` (the Cloud KMS signer
+command, `CMD keys.signed keys.sig`), and `busbar-plugin-pack envelope --key <root> ...` wraps the signature.
 
 ## 5. Open questions
 

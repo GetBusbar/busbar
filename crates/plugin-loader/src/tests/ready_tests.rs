@@ -123,7 +123,11 @@ fn ready_before_open_is_refused_without_a_crossing() {
     let p = load_linked::<Secret>(&row, bind(&d)).expect("the witness loads");
     assert_eq!(
         p.ready(&d, WITHIN),
-        Err("plugin 'ready-witness' ready failed: Refused".to_string())
+        Err(format!(
+            "plugin 'ready-witness' ready failed: the host refused this call: {}",
+            crate::dispatch::plugin::DOES_NOT_FIT
+        )),
+        "a host refusal says why (decision 43)"
     );
     assert_eq!(crossings(&p), 0);
 }

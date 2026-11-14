@@ -79,7 +79,7 @@ YAML
 # `{requests:0, models:[tokens]}`, and the published store-mysql drops a delta whose models list is
 # empty (docs/advisories/1.6.0/mysql-store-split-flush-request-count-loss.md). The restart then read
 # `requests 0` beside intact spend/tokens and `survived: no` -- whether it did was the phase of the
-# flush clock against the mock's latency, not the binary: busbar-release golden jobs 110875947634
+# flush clock against the mock's latency, not the binary: oracle golden jobs 110875947634
 # and 110940772389 (both `usage_before_restart` requests 1, `usage_after_restart` requests 0,
 # spend_cents 250 and tokens 18 kept). With the periodic tick an hour out, no tick fires inside
 # this cell's boots, and the GRACEFUL stop below (`kill` = SIGTERM; 1.5.5's main.rs runs a final

@@ -206,8 +206,8 @@ rm -f "$MARKER" 2>/dev/null || true
 # passed by scripts/release-build.sh as PGO_PROFILE). The optimized build is then a function of
 # the tree alone, and a second builder can reproduce it byte for byte. Training stays nondeterministic
 # (concurrency, timing), so it is done once, on purpose: PGO_TRAIN_ONLY=<path> runs phases 1-2 and
-# the merge, writes the merged profile to <path> and stops. `scripts/release/candidate.py
-# pgo-train` drives that, and a person reviews and commits the result. Both modes are fail-closed.
+# the merge, writes the merged profile to <path> and stops. The release tooling's `pgo-train`
+# step drives that, and a person reviews and commits the result. Both modes are fail-closed.
 if [ -n "${PGO_PROFILE:-}" ] && [ -n "${PGO_TRAIN_ONLY:-}" ]; then
   pgo_fail "PGO_PROFILE (build from a committed profile) and PGO_TRAIN_ONLY (train one) are exclusive"
 fi
