@@ -433,4 +433,24 @@ mod tests {
         assert_eq!(glob(&root, "a/missing"), Vec::<PathBuf>::new());
         fs::remove_dir_all(&root).unwrap();
     }
+
+    /// `copytree` into an existing destination never writes through a link it finds there.
+    #[test]
+    fn copytree_never_writes_through_a_destination_link() {
+        let root = std::env::temp_dir().join(format!("pathx-copy-{}", uuid4()));
+        let (source, outside, destination) =
+            (root.join("source"), root.join("outside"), root.join("dest"));
+        fs::create_dir_all(source.join("sub")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("file"), "copied").unwrap();
+        fs::write(source.join("sub/inner"), "copied").unwrap();
+        fs::write(outside.join("target"), "host").unwrap();
+        std::os::unix::fs::symlink(outside.join("target"), destination.join("file")).unwrap();
+        std::os::unix::fs::symlink(&outside, destination.join("sub")).unwrap();
+        assert!(copytree(&source, &destination).is_err());
+        assert_eq!(fs::read(outside.join("target")).unwrap(), b"host");
+        assert!(!outside.join("inner").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
