@@ -35,6 +35,10 @@ pub fn digest(path: &Path) -> R<String> {
     })
 }
 
+/// Each invocation's private Cargo home, at one path in every job (the same
+/// value as `native_dep_cache.CARGO_HOME_PATH` and `confinement_entry`).
+pub const INVOCATION_CARGO_HOME: &str = "/__busbar_cargo_home";
+
 /// `canonical(value)`: sorted compact JSON plus newline.
 pub fn canonical(value: &Value) -> Vec<u8> {
     json::encoded(value)
@@ -197,6 +201,9 @@ pub struct Execution {
     pub compiler_readonly: bool,
     pub prepared_git: Option<PathBuf>,
     pub readonly_candidate_inputs: Option<PathBuf>,
+    /// The next invocation is a vendored-source harness check
+    /// (`invocation(..., vendored_sources=True)`): an empty private Cargo home.
+    pub vendored_sources: bool,
     pub hooks: Hooks,
 }
 
@@ -415,6 +422,7 @@ impl Execution {
             compiler_readonly: false,
             prepared_git: None,
             readonly_candidate_inputs: None,
+            vendored_sources: false,
             hooks: Hooks::default(),
         })
     }
@@ -825,6 +833,7 @@ impl Execution {
             "CARGO_TARGET_DIR",
             "CARGO_BUILD_JOBS",
             "CARGO_TERM_COLOR",
+            "CARGO_INCREMENTAL",
             "CARGO_PROFILE_DEV_DEBUG",
             "CARGO_PROFILE_TEST_DEBUG",
             "CARGO_NET_GIT_FETCH_WITH_CLI",
@@ -1078,6 +1087,18 @@ impl Execution {
             argv.first().is_some_and(|a| !a.starts_with('-')),
             "missing candidate executable",
         )?;
+        // A vendored-source compiler check reads every dependency from the
+        // controller's read-only vendor directory, never from the job seed.
+        let vendored_sources = std::mem::take(&mut self.vendored_sources);
+        require(
+            !vendored_sources
+                || (discard_harness_target
+                    && argv.len() >= 2
+                    && argv[0] == "cargo"
+                    && argv[1] == "check"
+                    && argv.iter().any(|a| a == "--config")),
+            "an empty Cargo cache requires a vendored harness compiler check",
+        )?;
         if discard_harness_target {
             let index = argv.iter().position(|a| a == "--manifest-path");
             require(
@@ -1116,7 +1137,11 @@ impl Execution {
                         let value = resources.at(k);
                         value.is_int()
                             && value.as_int().is_some_and(|v| {
-                                v > 0 && aggregate.at(k).as_int().is_some_and(|a| v * 2 <= a)
+                                v > 0
+                                    && aggregate
+                                        .at(k)
+                                        .as_int()
+                                        .is_some_and(|a| v * COMPILER_POOL_WIDTH as i128 <= a)
                             })
                     }),
                 "compiler slices exceed the aggregate resource budget",
@@ -1243,19 +1268,6 @@ impl Execution {
             args.push("--add-host".into());
             args.push(alias.clone());
         }
-        for (source, destination, writable) in &mounts {
-            require(
-                !sp::text(source).contains(',') && !sp::text(destination).contains(','),
-                "unsupported bind path",
-            )?;
-            args.push("--mount".into());
-            args.push(format!(
-                "type=bind,src={},dst={}{}",
-                sp::text(source),
-                sp::text(destination),
-                if *writable { "" } else { ",readonly" }
-            ));
-        }
         let mut safe_env = self.cargo_environment(&argv, env)?;
         let mut disposable_target = None;
         if discard_harness_target {
@@ -1284,10 +1296,34 @@ impl Execution {
         }
         let mut cargo_home = None;
         if safe_env.get("CARGO_HOME").is_some_and(|v| !v.is_empty()) {
+            // One fixed in-container path, independent of the job directory, so
+            // registry/Git unit fingerprints are portable between jobs.
             let path = self.roots.candidate.join("cargo-home-invocation");
             sp::mkdir(&path, 0o700, false)?;
-            safe_env.insert("BUSBAR_INVOCATION_CARGO_HOME".into(), sp::text(&path));
+            mounts.push((path.clone(), INVOCATION_CARGO_HOME.into(), true));
+            safe_env.insert(
+                "BUSBAR_INVOCATION_CARGO_HOME".into(),
+                INVOCATION_CARGO_HOME.into(),
+            );
+            if vendored_sources {
+                // Still private, writable and removed on disposal; only the
+                // copy of the job seed it would never read is skipped.
+                safe_env.insert("BUSBAR_INVOCATION_CARGO_HOME_EMPTY".into(), "1".into());
+            }
             cargo_home = Some(path);
+        }
+        for (source, destination, writable) in &mounts {
+            require(
+                !sp::text(source).contains(',') && !sp::text(destination).contains(','),
+                "unsupported bind path",
+            )?;
+            args.push("--mount".into());
+            args.push(format!(
+                "type=bind,src={},dst={}{}",
+                sp::text(source),
+                sp::text(destination),
+                if *writable { "" } else { ",readonly" }
+            ));
         }
         let isolation = self.config.at("isolation").clone();
         let writable: Vec<PathBuf> = mounts.iter().filter(|m| m.2).map(|m| m.0.clone()).collect();
@@ -1363,7 +1399,7 @@ impl Execution {
         ]);
         if self.resource_slice.is_some() {
             observation.set("aggregate_resources", aggregate.clone());
-            observation.set("compiler_pool_width", 2u64.into());
+            observation.set("compiler_pool_width", (COMPILER_POOL_WIDTH as u64).into());
         }
         self.observations.push(observation);
         let mut invocation = Invocation {
@@ -1755,7 +1791,15 @@ fn text_mode(data: &[u8]) -> R<String> {
     crate::pathx::text_mode(data).map_err(sp::from_text)
 }
 
-/// Two compiler isolates sharing only readonly inputs and an aggregate quota.
+/// Job 6131: each seeded witness case ran 20-30 s inside its container with
+/// 2 CPUs, of which one rustc checks the case's own crate; the remainder was
+/// the private copy of the whole job Cargo seed, which vendored cases never
+/// read. Four 1 CPU / 1.5 GiB isolates keep the same 4 CPU / 6 GiB aggregate.
+pub const COMPILER_POOL_WIDTH: usize = 4;
+/// CPUs (and Cargo jobs) of one isolate: the measured 4 CPU aggregate split.
+pub const COMPILER_POOL_JOBS: usize = 4 / COMPILER_POOL_WIDTH;
+
+/// Compiler isolates sharing only readonly inputs and an aggregate quota.
 ///
 /// Each case owns its Execution, observations, home, lockfile, cache and target.
 /// The callback validates its result so failure cancels other work before
@@ -1779,7 +1823,7 @@ impl Slot {
     }
 
     /// `CompilerPool.run`: one confined compiler command, cancellable.
-    pub fn run(&mut self, argv: &[String], cwd: &Path) -> R<Done> {
+    pub fn run(&mut self, argv: &[String], cwd: &Path, vendored_sources: bool) -> R<Done> {
         if self.cancelled() {
             return Err(cancelled());
         }
@@ -1789,11 +1833,12 @@ impl Slot {
             ("BUSBAR_TEST_TMP_ROOT", "/tmp/tests"),
             ("XDG_CACHE_HOME", "/tmp/cache"),
             ("MODERNCI_CACHE_DIR", "/tmp/cache"),
-            ("CARGO_BUILD_JOBS", "2"),
+            ("CARGO_BUILD_JOBS", COMPILER_POOL_JOBS.to_string().as_str()),
         ] {
             env.set(key, value);
         }
         let cancel = self.cancel.clone();
+        self.execution.vendored_sources = vendored_sources;
         self.execution
             .invocation_with(argv, cwd, &env, true, |command, client_env| {
                 let stop = || cancel.load(Ordering::SeqCst) || proc::interrupted().is_some();
@@ -1824,10 +1869,11 @@ impl<'a> CompilerPool<'a> {
         )?;
         // Deliberately cap the pool at the measured 4 CPU / 6 GiB even on larger
         // runners. Container memory includes its tmpfs and shared memory charges.
+        let width = COMPILER_POOL_WIDTH as i128;
         let slice = object([
-            ("cpus", 2u64.into()),
-            ("memory_bytes", (3u64 << 30).into()),
-            ("pids", Value::int(value("pids") / 2)),
+            ("cpus", Value::int(COMPILER_POOL_JOBS as i128)),
+            ("memory_bytes", Value::int((6i128 << 30) / width)),
+            ("pids", Value::int(value("pids") / width)),
         ]);
         Ok(CompilerPool {
             execution,
@@ -1915,7 +1961,7 @@ impl<'a> CompilerPool<'a> {
             (result, rows)
         };
         std::thread::scope(|scope| {
-            for _ in 0..2 {
+            for _ in 0..COMPILER_POOL_WIDTH {
                 scope.spawn(|| {
                     loop {
                         let index = {
@@ -2516,6 +2562,45 @@ pub mod lifecycle_tests {
     }
 
     #[test]
+    fn empty_cargo_home_only_for_vendored_harness_checks() {
+        let fixture = Fixture::new();
+        let engine = Engine::new(2 << 30);
+        let mut execution = fixture.execution(engine.hooks());
+        let mut vendored = harness_argv(&fixture);
+        vendored.extend(["--config".into(), "/v.toml".into()]);
+        let mut build = vendored.clone();
+        build[1] = "build".into();
+        for (argv, discard) in [
+            (vendored.clone(), false),
+            (harness_argv(&fixture), true),
+            (build, true),
+        ] {
+            execution.vendored_sources = true;
+            let error = execution
+                .invocation_with(
+                    &argv,
+                    &fixture.roots.checkout,
+                    &no_env(),
+                    discard,
+                    |_, _| -> R<()> { panic!("unvendored command skipped the seed copy") },
+                )
+                .unwrap_err();
+            assert!(error.message.contains("vendored harness compiler check"));
+            assert!(!execution.vendored_sources, "the request is consumed");
+        }
+        execution.vendored_sources = true;
+        execution
+            .invocation_with(
+                &vendored,
+                &fixture.roots.checkout,
+                &no_env(),
+                true,
+                |_, _| Ok(()),
+            )
+            .unwrap();
+    }
+
+    #[test]
     fn default_retains_generated_build_output() {
         let fixture = Fixture::new();
         let engine = Engine::new(2 << 30);
@@ -2808,8 +2893,9 @@ pub mod lifecycle_tests {
             ));
             assert_eq!(
                 json::dumps(row.at("resources"), false),
-                r#"{"cpus": 2, "memory_bytes": 3221225472, "pids": 128}"#
+                r#"{"cpus": 1, "memory_bytes": 1610612736, "pids": 64}"#
             );
+            assert_eq!(row.at("compiler_pool_width").as_int(), Some(4));
             assert_eq!(
                 row.at("storage").at("root").as_str().unwrap(),
                 text(&fixture.base)

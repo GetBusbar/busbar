@@ -6,7 +6,7 @@ use super::{CORE, Q, fetch_environment, git, server_url};
 use crate::json::Value;
 use crate::sha256;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub type Sources = BTreeMap<String, BTreeSet<String>>;
 
@@ -149,39 +149,103 @@ pub fn product_inputs(
     Ok(out)
 }
 
-pub fn prepare(q: &mut Q, host: &Path) -> R<()> {
-    let mut sources = inputs(host, &q.root, &q.policy)?;
+/// Each forge fetch is latency-bound (several HTTP round trips, tiny packs).
+/// Bounded concurrency keeps one job from monopolizing the forge.
+pub const FETCH_WORKERS: usize = 8;
+const FETCH_TIMEOUT: u64 = 300;
+
+/// `subject_locks(candidate, host, sdk)`: the exact subject closures every
+/// confined job's dependency seed covers (shared with `seed::lock_inputs`).
+pub fn subject_locks<'a>(
+    candidate: &'a Path,
+    host: &'a Path,
+    sdk: &'a Path,
+) -> [(&'static str, &'a Path, &'static str); 4] {
+    [
+        ("candidate", candidate, "Cargo.lock"),
+        ("host", host, "Cargo.lock"),
+        ("distribution", host, "dist/default/Cargo.lock"),
+        ("sdk", sdk, "Cargo.lock"),
+    ]
+}
+
+fn plugin_job(repository: &str, policy: &Value) -> bool {
+    repository != CORE
+        && repository != "GetBusbar/busbar-release"
+        && policy.at("repositories").get(repository).is_some()
+}
+
+/// `required_sources(q, host, vector)`: what this job's consumers read from
+/// canonical-inputs. Plugin jobs build only their own workspace against the
+/// seeded subject closures; core and release keep the full historical set.
+fn required_sources(q: &mut Q, host: &Path, vector: &Value) -> R<Sources> {
     let sdk = q.sdk()?;
+    if plugin_job(&q.repository, &q.policy) {
+        let mut sources = Sources::new();
+        for (_, root, relative) in subject_locks(&q.root, host, &sdk) {
+            let lock = root.join(relative);
+            if lock.is_file() {
+                add(&mut sources, lock_inputs(&sp::read(&lock)?, &q.policy)?);
+            }
+        }
+        sources
+            .entry(CORE.to_owned())
+            .or_default()
+            .insert(sp::at_str(vector, "sdk")?.to_owned());
+        return Ok(sources);
+    }
+    let mut sources = inputs(host, &q.root, &q.policy)?;
     for (repository, revisions) in inputs(&sdk, &q.root, &q.policy)? {
         sources.entry(repository).or_default().extend(revisions);
     }
-    let vector = sp::read_json(&host.join("scripts/ci-product-pins.json"))?;
     let core = sources.entry(CORE.to_owned()).or_default();
-    core.insert(sp::at_str(&vector, "sdk")?.to_owned());
+    core.insert(sp::at_str(vector, "sdk")?.to_owned());
     core.insert(git(host, &["rev-parse", "HEAD"])?);
-    for product in at(&vector, "products")?.as_array().unwrap_or(&[]) {
+    for product in at(vector, "products")?.as_array().unwrap_or(&[]) {
         sources
             .entry(format!("GetBusbar/{}", sp::at_str(product, "repo")?))
             .or_default()
             .insert(sp::at_str(product, "commit")?.to_owned());
     }
-    // All listed products are public; private candidates never enter a public map.
-    let allowed = public_repositories(&q.policy);
-    if sources.keys().any(|name| !allowed.contains(name)) {
-        return Err(value_error(
-            "unclassified or private repository in public product inputs",
-        ));
-    }
-    let parent = q.work.join("canonical-inputs");
-    sp::mkdir(&parent, 0o777, false)?;
-    let env = fetch_environment()?.pairs();
-    let server = server_url()?;
-    let mut fetched: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut fetch = |repository: &str, revisions: &BTreeSet<String>| -> R<()> {
-        if revisions.iter().any(|r| !hex40(r)) {
-            return Err(value_error("immutable source revision required"));
+    Ok(sources)
+}
+
+/// `local_core_stores(q, host)`: controller-fetched core checkouts already
+/// verified at an exact revision (plugin host and SDK under the work root).
+/// A core job's host is its runner checkout and is never reused.
+fn local_core_stores(work: &Path, roots: &[PathBuf]) -> R<BTreeMap<String, PathBuf>> {
+    let work = sp::resolve(work);
+    let mut stores = BTreeMap::new();
+    for root in roots {
+        let root = sp::resolve(root);
+        let trusted = root.parent() == Some(work.as_path())
+            && matches!(
+                root.file_name().and_then(|n| n.to_str()),
+                Some("host" | "sdk")
+            );
+        if trusted {
+            stores
+                .entry(git(&root, &["rev-parse", "HEAD"])?)
+                .or_insert(root);
         }
-        let cache = parent.join(repository.rsplit('/').next().unwrap_or(repository));
+    }
+    Ok(stores)
+}
+
+struct Fetcher<'a> {
+    parent: &'a Path,
+    server: &'a str,
+    env: &'a [(String, String)],
+    local: &'a BTreeMap<String, PathBuf>,
+}
+
+impl Fetcher<'_> {
+    /// One shallow fetch per source carries every exact revision; each is then
+    /// verified by exact `rev-parse`.
+    fn one(&self, repository: &str, revisions: &[String]) -> R<()> {
+        let cache = self
+            .parent
+            .join(repository.rsplit('/').next().unwrap_or(repository));
         if !cache.exists() {
             sp::check_call(Spec::new(sp::strings(&[
                 "git",
@@ -191,58 +255,137 @@ pub fn prepare(q: &mut Q, host: &Path) -> R<()> {
                 &sp::text(&cache),
             ])))?;
         }
-        let done = fetched.entry(repository.to_owned()).or_default();
-        for revision in revisions
-            .iter()
-            .filter(|r| !done.contains(*r))
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            sp::check_call(
-                Spec::new(sp::strings(&[
-                    "git",
-                    "-C",
-                    &sp::text(&cache),
-                    "fetch",
-                    "--quiet",
-                    "--depth",
-                    "1",
-                    &format!("{server}/{repository}.git"),
-                    &format!("{revision}:refs/heads/input-{revision}"),
-                ]))
-                .env(&env),
-            )?;
+        let mut remotes: BTreeMap<String, Vec<&String>> = BTreeMap::new();
+        for revision in revisions {
+            let remote = match self.local.get(revision) {
+                Some(store) if repository == CORE => sp::text(store),
+                _ => format!("{}/{repository}.git", self.server),
+            };
+            remotes.entry(remote).or_default().push(revision);
+        }
+        for (remote, wanted) in &remotes {
+            let mut argv = sp::strings(&[
+                "git",
+                "-C",
+                &sp::text(&cache),
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--depth",
+                "1",
+                remote,
+            ]);
+            argv.extend(wanted.iter().map(|r| format!("{r}:refs/heads/input-{r}")));
+            sp::check_call(Spec::new(argv).env(self.env).timeout(FETCH_TIMEOUT))?;
+        }
+        for revision in revisions {
             if git(
                 &cache,
                 &["rev-parse", &format!("refs/heads/input-{revision}")],
-            )? != revision
+            )? != *revision
             {
                 return Err(value_error("canonical input revision mismatch"));
             }
-            done.insert(revision);
         }
         Ok(())
-    };
-    for (repository, revisions) in &sources {
-        fetch(repository, revisions)?;
     }
-    let standalone = standalone_products(&q.repository, q.evaluation_only, &vector)?;
-    let mut discovered: Vec<(String, BTreeSet<String>)> = Vec::new();
-    for (repository, revision) in product_inputs(&parent, &standalone, &q.policy)? {
-        match discovered.iter_mut().find(|(r, _)| *r == repository) {
-            Some((_, revisions)) => {
-                revisions.insert(revision);
+
+    /// Fetch every not-yet-fetched revision; independent repositories run
+    /// concurrently with at most `workers` in flight.
+    fn all(&self, selected: &Sources, fetched: &mut Sources, workers: usize) -> R<()> {
+        let mut pending: Vec<(String, Vec<String>)> = Vec::new();
+        for (repository, revisions) in selected {
+            if revisions.iter().any(|r| !hex40(r)) {
+                return Err(value_error("immutable source revision required"));
             }
-            None => discovered.push((repository, BTreeSet::from([revision]))),
+            let done = fetched.get(repository);
+            let missing: Vec<String> = revisions
+                .iter()
+                .filter(|r| done.is_none_or(|d| !d.contains(*r)))
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                pending.push((repository.clone(), missing));
+            }
         }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let results: Vec<R<()>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers.clamp(1, pending.len().max(1)))
+                .map(|_| {
+                    scope.spawn(|| -> R<()> {
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let Some((repository, revisions)) = pending.get(index) else {
+                                return Ok(());
+                            };
+                            self.one(repository, revisions)?;
+                        }
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err(sp::runtime("canonical input fetch panicked")))
+                })
+                .collect()
+        });
+        for result in results {
+            result?;
+        }
+        for (repository, revisions) in pending {
+            fetched.entry(repository).or_default().extend(revisions);
+        }
+        Ok(())
     }
-    for (repository, revisions) in discovered {
+}
+
+pub fn prepare(q: &mut Q, host: &Path) -> R<()> {
+    let vector = sp::read_json(&host.join("scripts/ci-product-pins.json"))?;
+    let mut sources = required_sources(q, host, &vector)?;
+    // All listed products are public; private candidates never enter a public map.
+    let allowed = public_repositories(&q.policy);
+    let mut listed = Vec::new();
+    for product in at(&vector, "products")?.as_array().unwrap_or(&[]) {
+        listed.push(format!("GetBusbar/{}", sp::at_str(product, "repo")?));
+    }
+    if sources
+        .keys()
+        .chain(listed.iter())
+        .any(|name| !allowed.contains(name))
+    {
+        return Err(value_error(
+            "unclassified or private repository in public product inputs",
+        ));
+    }
+    let parent = q.work.join("canonical-inputs");
+    sp::mkdir(&parent, 0o777, false)?;
+    let env = fetch_environment()?.pairs();
+    let server = server_url()?;
+    let sdk = q.sdk()?;
+    let local = local_core_stores(&q.work, &[host.to_owned(), sdk])?;
+    let fetcher = Fetcher {
+        parent: &parent,
+        server: &server,
+        env: &env,
+        local: &local,
+    };
+    let mut fetched = Sources::new();
+    fetcher.all(&sources, &mut fetched, FETCH_WORKERS)?;
+    let standalone = standalone_products(&q.repository, q.evaluation_only, &vector)?;
+    let mut discovered = Sources::new();
+    add(
+        &mut discovered,
+        product_inputs(&parent, &standalone, &q.policy)?,
+    );
+    for (repository, revisions) in &discovered {
         sources
             .entry(repository.clone())
             .or_default()
             .extend(revisions.iter().cloned());
-        fetch(&repository, &revisions)?;
     }
+    fetcher.all(&discovered, &mut fetched, FETCH_WORKERS)?;
     let mut settings = Vec::new();
     for repository in sources.keys() {
         let cache = parent.join(repository.rsplit('/').next().unwrap_or(repository));
@@ -324,6 +467,144 @@ mod tests {
             standalone_products("GetBusbar/busbar-x", false, &vector)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch() -> Scratch {
+        let path = sp::resolve(&std::env::temp_dir().join(format!(
+            "native-sources-{}-{}",
+            std::process::id(),
+            crate::pathx::uuid4()
+        )));
+        std::fs::create_dir_all(&path).unwrap();
+        Scratch(path)
+    }
+
+    /// A non-bare repository with one commit per message; returns the SHAs.
+    fn repository(path: &Path, messages: &[&str]) -> Vec<String> {
+        std::fs::create_dir_all(path).unwrap();
+        let run = |args: &[&str]| {
+            let mut argv = sp::strings(&[
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-C",
+                &sp::text(path),
+            ]);
+            argv.extend(args.iter().map(|a| (*a).to_owned()));
+            sp::check_call(Spec::new(argv).quiet()).unwrap();
+        };
+        run(&["init", "-q"]);
+        run(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        messages
+            .iter()
+            .map(|message| {
+                std::fs::write(path.join("file"), message).unwrap();
+                run(&["add", "file"]);
+                run(&["commit", "-q", "-m", message]);
+                git(path, &["rev-parse", "HEAD"]).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plugin_jobs_use_exactly_the_seeded_subject_locks() {
+        let policy =
+            crate::json::parse(br#"{"repositories": {"GetBusbar/busbar-x": {"private": false}}}"#)
+                .unwrap();
+        assert!(plugin_job("GetBusbar/busbar-x", &policy));
+        for owner in [CORE, "GetBusbar/busbar-release", "GetBusbar/unclassified"] {
+            assert!(!plugin_job(owner, &policy));
+        }
+        let (c, h, s) = (Path::new("/c"), Path::new("/h"), Path::new("/s"));
+        let locks: Vec<_> = subject_locks(c, h, s)
+            .iter()
+            .map(|(label, root, relative)| (*label, root.join(relative)))
+            .collect();
+        assert_eq!(
+            locks,
+            vec![
+                ("candidate", c.join("Cargo.lock")),
+                ("host", h.join("Cargo.lock")),
+                ("distribution", h.join("dist/default/Cargo.lock")),
+                ("sdk", s.join("Cargo.lock")),
+            ]
+        );
+    }
+
+    #[test]
+    fn grouped_concurrent_fetches_verify_every_exact_revision() {
+        let root = scratch();
+        let forge = root.0.join("forge");
+        let a = repository(&forge.join("GetBusbar/busbar-a.git"), &["a1", "a2"]);
+        let b = repository(&forge.join("GetBusbar/busbar-b.git"), &["b1"]);
+        // Only the trusted SDK checkout holds the core revision; the forge has
+        // no core repository, so success proves the local controller source.
+        let work = root.0.join("work");
+        let sdk = repository(&work.join("sdk"), &["sdk"]);
+        let runner = root.0.join("runner");
+        repository(&runner, &["runner"]);
+        let local = local_core_stores(&work, &[runner.clone(), work.join("sdk")]).unwrap();
+        assert_eq!(local.keys().cloned().collect::<Vec<_>>(), sdk);
+        let parent = work.join("canonical-inputs");
+        std::fs::create_dir_all(&parent).unwrap();
+        let server = sp::text(&forge);
+        let fetcher = Fetcher {
+            parent: &parent,
+            server: &server,
+            env: &[],
+            local: &local,
+        };
+        let mut wanted = Sources::new();
+        wanted.insert("GetBusbar/busbar-a".into(), a.iter().cloned().collect());
+        wanted.insert("GetBusbar/busbar-b".into(), b.iter().cloned().collect());
+        wanted.insert(CORE.into(), sdk.iter().cloned().collect());
+        let mut fetched = Sources::new();
+        fetcher.all(&wanted, &mut fetched, 2).unwrap();
+        assert_eq!(fetched, wanted);
+        for (name, revisions) in &wanted {
+            let cache = parent.join(name.rsplit('/').next().unwrap());
+            for revision in revisions {
+                assert_eq!(
+                    git(
+                        &cache,
+                        &["rev-parse", &format!("refs/heads/input-{revision}")]
+                    )
+                    .unwrap(),
+                    *revision
+                );
+            }
+        }
+        // Already fetched revisions are not fetched again; unknown ones fail.
+        fetcher.all(&wanted, &mut fetched, 2).unwrap();
+        let mut missing = Sources::new();
+        missing.insert(
+            "GetBusbar/busbar-b".into(),
+            BTreeSet::from(["0".repeat(40)]),
+        );
+        assert!(fetcher.all(&missing, &mut fetched, 2).is_err());
+        let mut mutable = Sources::new();
+        mutable.insert(
+            "GetBusbar/busbar-b".into(),
+            BTreeSet::from(["dev".to_owned()]),
+        );
+        assert_eq!(
+            fetcher.all(&mutable, &mut fetched, 2).unwrap_err().message,
+            "immutable source revision required"
         );
     }
 }
