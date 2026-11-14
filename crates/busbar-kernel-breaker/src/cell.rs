@@ -13,10 +13,6 @@ const ST_HALF_OPEN: u64 = 2;
 /// Bounded capacity of a cell's sliding outcome window (recent request outcomes feeding the
 const OUTCOME_WINDOW_CAPACITY: usize = 1024;
 
-/// FNV-1a 64-bit hash constants — used only to decorrelate simultaneous trips' jitter (see
-const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
-
 /// Lock a `std::sync::Mutex` without panicking on poison — a poisoned outcome-window or
 fn lock_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -376,11 +372,11 @@ impl BreakerCell {
             let jitter_range = (duration / 10).max(1);
             let time_seed = now_time as u128;
             let cell_id = self as *const _ as *const () as usize as u128;
-            let mut seed = FNV1A_OFFSET_BASIS as u128;
+            let mut seed = fnv::FnvHasher::default();
             for part in [time_seed, cell_id, streak as u128] {
-                seed = (seed ^ part).wrapping_mul(FNV1A_PRIME as u128);
+                std::hash::Hasher::write(&mut seed, &part.to_le_bytes());
             }
-            let jitter_seed = seed;
+            let jitter_seed = u128::from(std::hash::Hasher::finish(&seed));
 
             let span = 2 * jitter_range as u128 + 1;
             let unbiased = (jitter_seed % span) as i64;
