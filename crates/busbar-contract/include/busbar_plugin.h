@@ -82,6 +82,7 @@ extern "C" {
 #define BB_MECH_EXT_DECLARES "declares" /* The `declares` document's key in a door's `Statement::extensions`. */
 #define BB_MECH_EXT_REFERENCE_FIELDS "reference_fields" /* The reference-capable, non-secret settings fields' key in a door's `Statement::extensions`. */
 #define BB_MECH_EXT_SPAN_RECORDS "span_records" /* The full span records' key in an export door's `Statement::extensions`. */
+#define BB_MECH_EXT_WHOLE_BATCHES "whole_batches" /* The whole-batch carriage key in an export door's `Statement::extensions`. */
 #define BB_MECH_SLOT_VALIDATE UINT32_C(0) /* `validate`. */
 #define BB_MECH_SLOT_OPEN UINT32_C(1) /* `open`. */
 #define BB_MECH_SLOT_REFRESH UINT32_C(2) /* `refresh`. */
