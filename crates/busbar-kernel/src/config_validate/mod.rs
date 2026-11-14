@@ -1505,7 +1505,7 @@ fn declared_setting_refusal(
     let source = r.source()?;
     sugars
         .iter()
-        .filter(|sugar| sugar.plugin == source.module)
+        .filter(|sugar| sugar.answers(&source.module))
         .find_map(|sugar| sugar.reference_refusal(source))
         .map(|reason| format!("{what}: {reason}"))
 }
