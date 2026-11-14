@@ -27,6 +27,9 @@ mod completion_retirement;
 #[path = "plane_driver_retirement_cases.rs"]
 mod retirement_cases;
 
+#[path = "plane_driver_unbilled_cases.rs"]
+mod unbilled_cases;
+
 use futures::FutureExt as _;
 use std::collections::HashMap;
 use std::future::Future;
