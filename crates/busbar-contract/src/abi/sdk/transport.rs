@@ -5,10 +5,10 @@
 
 use crate::abi::mechanism::call::AbiStr;
 use crate::abi::sdk::io::Io;
-use crate::abi::sdk::life::{settings_object, Held, Life, Refusal};
+use crate::abi::sdk::life::{Held, Life, Refusal};
 use crate::abi::sdk::safe::Instance;
 use crate::abi::shared::code;
-use crate::abi::transport::{SettingDecl, SETTING_COUNT, SETTING_FLAG, SETTING_TEXT};
+use crate::abi::transport::SettingDecl;
 use crate::grammar::SelectorForm;
 use crate::transport::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
@@ -71,21 +71,6 @@ impl SettingRow {
             ..SettingDecl::ZERO
         }
     }
-
-    /// Why `value` is not a value of this setting's kind: [`SETTING_FLAG`] is `true`/`false`,
-    fn refuses(&self, value: &serde_json::Value) -> Option<String> {
-        let path = self.path;
-        match self.kind {
-            SETTING_FLAG if !value.is_boolean() => {
-                Some(format!("settings: {path} must be true or false"))
-            }
-            SETTING_COUNT if !value.as_u64().is_some_and(|n| n > 0) => {
-                Some(format!("settings: {path} must be a count above 0"))
-            }
-            SETTING_TEXT if !value.is_string() => Some(format!("settings: {path} must be text")),
-            _ => None,
-        }
-    }
 }
 
 /// `rows` as the Statement's setting declarations, in order.
@@ -100,24 +85,8 @@ pub const fn setting_decls<const N: usize>(rows: &[SettingRow; N]) -> [SettingDe
     out
 }
 
-/// A transport's `settings` as the JSON object they must be (`{}` when empty), read against the
-pub fn settings_reading(
-    settings: &[u8],
-    reads: &[SettingRow],
-) -> Result<serde_json::Map<String, serde_json::Value>, Refusal> {
-    let object = settings_object(settings)?;
-    for (key, value) in &object {
-        let Some(row) = reads.iter().find(|r| r.path == key) else {
-            return Err(Refusal::failed(format!(
-                "settings: {key} is not a setting this transport reads"
-            )));
-        };
-        if let Some(why) = row.refuses(value) {
-            return Err(Refusal::failed(why));
-        }
-    }
-    Ok(object)
-}
+/// A transport's `settings` read against its rows, at configure time ([`super::settings`]).
+pub use super::settings::settings_reading;
 
 /// Carrier op `$op`'s open instance and the host's armed I/O for it on the op's ticket, e.g.
 /// `carried!(i, "flush")`; its refusals are static words, which reach the caller even from a call
@@ -141,12 +110,12 @@ pub fn carried_saying<'a, L: Life<Kind = crate::plugin::markers::TransportKind>>
     no_instance: &'static str,
     no_io: &'static str,
 ) -> Result<(&'a L, Io<'a>), Refusal> {
-    let held = i.get().ok_or(Refusal::failed(no_instance))?;
+    let held = i.get().ok_or_else(|| Refusal::failed(no_instance))?;
     let io = held
         .host()
         .map(|h| h.io(i.ticket()))
         .filter(Io::armed)
-        .ok_or(Refusal::failed(no_io))?;
+        .ok_or_else(|| Refusal::failed(no_io))?;
     Ok((held.life(), io))
 }
 

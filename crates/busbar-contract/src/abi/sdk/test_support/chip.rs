@@ -29,7 +29,7 @@ pub fn drive_sealed<E>(
 /// The whole head an [`Exchange`](crate::abi::sdk::exchange::Exchange) frames (its method, target
 #[must_use]
 pub fn framed_head(exchange: &crate::abi::sdk::exchange::Exchange) -> Vec<u8> {
-    exchange.head_bytes()
+    exchange.head_bytes().to_vec()
 }
 
 /// Observe the initialized payload of a credential in a test's allocator witness.

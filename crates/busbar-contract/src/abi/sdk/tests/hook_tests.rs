@@ -7,7 +7,8 @@ use super::*;
 use crate::abi::hook::slot;
 use crate::abi::hook::validate::{check_decide, check_transform};
 use crate::abi::host::hook::{DecideFrame, DecideView, NotifyFrame};
-use crate::hook_wire::{OP_DECIDE, OP_TRANSFORM};
+use crate::hook_wire::{HookStageProjection, OP_DECIDE, OP_NOTIFY, OP_TRANSFORM};
+use crate::hooks::{CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingRequest};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -2592,7 +2593,7 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
                 head_only,
                 fail_before_head,
                 fail_body,
-                reads: HashMap::new(),
+                reads: HashMap::default(),
                 built: 0,
                 issued: std::collections::HashSet::new(),
                 posts: 0,

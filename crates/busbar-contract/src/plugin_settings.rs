@@ -773,7 +773,7 @@ impl<'de> Visitor<'de> for RawTree {
     fn visit_str<E: de::Error>(self, text: &str) -> Result<Tree, E> {
         // This parser uses input-span provenance to distinguish real object keys
         // from numeric transport tags; decoded strings and partial trees are wiped.
-        let mut held = crate::abi::sdk::cred::protected_json::document(text.as_bytes(), false)
+        let mut held = crate::abi::sdk::cred::settings_json::document(text.as_bytes(), false)
             .map_err(|_| E::custom("invalid settings JSON (values not echoed)"))?;
         Ok(Tree(std::mem::take(&mut held.0)))
     }

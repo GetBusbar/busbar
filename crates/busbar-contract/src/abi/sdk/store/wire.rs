@@ -356,13 +356,18 @@ struct Idle {
     session: Option<Box<dyn Any + Send>>,
 }
 
+/// The ops waiting on a pool, in the order they waited.
+type Waiters = indexmap::IndexMap<usize, Weak<Waiter>, foldhash::fast::RandomState>;
+
 #[derive(Default)]
 struct PoolState {
     idle: Vec<Idle>,
     /// Established connections: idle plus held by an op.
     live: usize,
-    /// Ops waiting for a connection, woken when one comes back.
-    waiters: Vec<Weak<Waiter>>,
+    /// Ops waiting for a connection, woken in the order they waited when one comes back; keyed by
+    /// the waiter's address (live while its entry holds a `Weak`), so a wait and an unwait are one
+    /// lookup, never a scan.
+    waiters: Waiters,
     /// The host tables the idle connections are closed through when the set goes.
     host: Option<Host>,
 }
@@ -382,10 +387,9 @@ impl Waiter {
 impl PoolState {
     fn wait(&mut self, waiter: &Arc<Waiter>, host: Host, ticket: Ticket) {
         *waiter.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((host, ticket));
-        let weak = Arc::downgrade(waiter);
-        if !self.waiters.iter().any(|w| w.ptr_eq(&weak)) {
-            self.waiters.push(weak);
-        }
+        self.waiters
+            .entry(Arc::as_ptr(waiter) as usize)
+            .or_insert_with(|| Arc::downgrade(waiter));
     }
 
     fn unwait(&mut self, waiter: &Arc<Waiter>) {
@@ -394,8 +398,7 @@ impl PoolState {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        let weak = Arc::downgrade(waiter);
-        self.waiters.retain(|w| !w.ptr_eq(&weak));
+        self.waiters.shift_remove(&(Arc::as_ptr(waiter) as usize));
     }
 }
 
@@ -448,8 +451,8 @@ impl Pool {
     }
 
     /// Wake every waiting op (outside the lock).
-    fn wake_all(waiters: Vec<Weak<Waiter>>) {
-        for waiter in waiters {
+    fn wake_all(waiters: Waiters) {
+        for waiter in waiters.into_values() {
             if let Some(waiter) = waiter.upgrade() {
                 waiter.wake();
             }
@@ -631,9 +634,17 @@ impl Channels {
     #[must_use]
     pub fn new(count: usize) -> Self {
         assert!(count > 0, "native channels require a connection slot");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a store instance's retained channels, made once as it opens"
+        )]
+        let (pools, wires) = (
+            (0..count).map(|_| Pool::new(1)).collect(),
+            (0..count).map(|_| Wire::default()).collect(),
+        );
         Self {
-            pools: (0..count).map(|_| Pool::new(1)).collect(),
-            wires: (0..count).map(|_| Wire::default()).collect(),
+            pools,
+            wires,
             active: Arc::new(AtomicBool::new(false)),
             waiting: Arc::default(),
         }
@@ -679,13 +690,14 @@ pub fn drive_channels<T: 'static>(
             channels.waiting.clone(),
         ))
     };
-    run_channels(
-        cx,
-        channels.pools.iter().cloned().map(Some).collect(),
-        Some(&channels.wires),
-        claim,
-        start,
-    )
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a lifecycle operation's retained channels, listed once per operation"
+    )]
+    let pools = channels.pools.iter().cloned().map(Some).collect();
+    run_channels(cx, pools, Some(&channels.wires), claim, |wires| {
+        start(wires.into_vec())
+    })
 }
 
 struct WaitingChannels;
@@ -707,10 +719,13 @@ impl Drop for ChannelClaim {
     }
 }
 
+/// An op's channels: one inline (every ordinary op), more only for a lifecycle operation.
+type OpChannels<T> = smallvec::SmallVec<[T; 1]>;
+
 /// What the host ticket retains across a pending operation.
 struct Running<T> {
     body: Mutex<Body<T>>,
-    channels: Vec<Channel>,
+    channels: OpChannels<Channel>,
     active: usize,
     buf: Mutex<Option<Zeroizing<Vec<u8>>>>,
     _claim: Option<ChannelClaim>,
@@ -776,17 +791,22 @@ fn run<T: 'static>(
     pool: Option<&Arc<Pool>>,
     start: impl FnOnce(Wire) -> Body<T>,
 ) -> Step<T> {
-    run_channels(cx, vec![pool.cloned()], None, None, |mut wires| {
-        start(wires.remove(0))
-    })
+    // One channel: its pool, channel and wire lists stay inline, never on the heap.
+    run_channels(
+        cx,
+        smallvec::smallvec![pool.cloned()],
+        None,
+        None,
+        |mut wires| start(wires.swap_remove(0)),
+    )
 }
 
 fn run_channels<T: 'static>(
     cx: &mut Op<'_>,
-    pools: Vec<Option<Arc<Pool>>>,
+    pools: OpChannels<Option<Arc<Pool>>>,
     wires: Option<&[Wire]>,
     claim: Option<ChannelClaim>,
-    start: impl FnOnce(Vec<Wire>) -> Body<T>,
+    start: impl FnOnce(OpChannels<Wire>) -> Body<T>,
 ) -> Step<T> {
     let mut running = match cx.resume::<Running<T>>() {
         Some(r) => r,
@@ -794,20 +814,19 @@ fn run_channels<T: 'static>(
             panic!("a store op's RESUME found no parked wire body: it is never run afresh")
         }
         None => {
-            let channels: Vec<_> = pools
-                .into_iter()
-                .enumerate()
-                .map(|(index, pool)| {
-                    let mut channel = Channel::new(pool, cx.host().copied());
-                    if let Some(wires) = wires {
-                        channel.wire = wires[index].clone();
-                        channel.wire.state().bound_at = None;
-                        channel.persistent = true;
-                    }
-                    channel
-                })
-                .collect();
-            let wires = channels.iter().map(|c| c.wire.clone()).collect();
+            let mut channels = OpChannels::new();
+            channels.extend(pools.into_iter().enumerate().map(|(index, pool)| {
+                let mut channel = Channel::new(pool, cx.host().copied());
+                if let Some(wires) = wires {
+                    channel.wire = wires[index].clone();
+                    channel.wire.state().bound_at = None;
+                    channel.persistent = true;
+                }
+                channel
+            }));
+            let mut op_wires = OpChannels::new();
+            op_wires.extend(channels.iter().map(|c| c.wire.clone()));
+            let wires = op_wires;
             Running {
                 body: Mutex::new(start(wires)),
                 _claim: claim,
@@ -866,9 +885,7 @@ fn run_channels<T: 'static>(
             Bound::Passed => {
                 cx.abandon_pending_service();
                 channel.unwait();
-                Served::Answer(Err(ConnFailure::Failed(
-                    crate::conn::ConnError::Timeout.text().to_owned(),
-                )))
+                Served::Answer(Err(crate::abi::sdk::exchange::timed_out()))
             }
             _ => {
                 let read = if matches!(ask, Ask::Read) {
@@ -1105,7 +1122,7 @@ fn connect(
                 kept: false,
             });
         } else if st.live >= pool.max && !st.idle.is_empty() && st.live == st.idle.len() {
-            let idle = st.idle.remove(0);
+            let idle = st.idle.swap_remove(0);
             running.unwait_in(&mut st);
             drop(st);
             cx.adopt(idle.conn);

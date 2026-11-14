@@ -311,6 +311,7 @@ dependencies = [
  "aws-lc-sys",
  "base64 0.22.1",
  "bytes",
+ "foldhash",
  "futures",
  "getrandom 0.3.4",
  "hex",

@@ -93,7 +93,7 @@ fn append(prior: &[u8], key: &str, value: &[u8]) -> Result<Vec<u8>, Error> {
     }
     let mut bytes = Vec::with_capacity(length);
     bytes.extend_from_slice(prior);
-    bytes.extend_from_slice(&extensions::encode(&[(key, value)]));
+    extensions::encode_into(&mut bytes, &[(key, value)]);
     Ok(bytes)
 }
 
@@ -129,7 +129,7 @@ pub fn read_ack(bytes: &[u8]) -> Result<Option<Acknowledgement>, Error> {
         return Err(Error::Invalid);
     }
     let mut handles = Vec::with_capacity(count);
-    let mut seen = std::collections::HashSet::with_capacity(count);
+    let mut seen = foldhash::HashSet::with_capacity_and_hasher(count, Default::default());
     for record in value[69..].as_chunks::<5>().0 {
         let handle = Handle {
             domain: match record[0] {
@@ -198,7 +198,7 @@ impl Retirement {
         {
             return Err(Error::Invalid);
         }
-        let mut reusable = Vec::new();
+        let mut acknowledged = None;
         if let Some(waiting) = &self.waiting {
             if waiting.capability != next {
                 if waiting.capability.epoch == next.epoch
@@ -206,19 +206,22 @@ impl Retirement {
                 {
                     return Err(Error::Invalid);
                 }
-                reusable = self
-                    .waiting
-                    .take()
-                    .expect("the pending acknowledgement")
-                    .handles;
+                acknowledged = self.waiting.take().map(|a| a.handles);
             }
         }
-        if self
+        let new_epoch = self
             .capability
-            .is_some_and(|prior| prior.epoch != next.epoch)
-        {
-            reusable.append(&mut self.consumed);
-        }
+            .is_some_and(|prior| prior.epoch != next.epoch);
+        // The handles move whole; only both lists at once are joined.
+        let reusable = match (acknowledged, new_epoch) {
+            (Some(mut handles), true) => {
+                handles.append(&mut self.consumed);
+                handles
+            }
+            (Some(handles), false) => handles,
+            (None, true) => std::mem::take(&mut self.consumed),
+            (None, false) => Vec::new(),
+        };
         self.capability = Some(next);
         Ok(reusable)
     }
@@ -275,7 +278,12 @@ impl Retirement {
             let count = count.min(self.consumed.len());
             self.waiting = Some(Acknowledgement {
                 capability: self.capability.ok_or(Error::Unsupported)?,
-                handles: self.consumed.drain(..count).collect(),
+                handles: if count == self.consumed.len() {
+                    std::mem::take(&mut self.consumed)
+                } else {
+                    let rest = self.consumed.split_off(count);
+                    std::mem::replace(&mut self.consumed, rest)
+                },
             });
         }
         Ok(self.waiting.clone())
