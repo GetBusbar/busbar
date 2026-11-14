@@ -246,6 +246,24 @@ pub fn check_sources(
         if let Some(jobs) = jobs {
             build_command.extend(["--jobs".into(), jobs.to_string()]);
         }
+        if let (Some(seed), Some(candidate)) = (super::dependency_units(), candidate.as_ref())
+            && repository != CORE
+        {
+            // A private writable copy of trusted dependency units; the seed itself
+            // is never mounted. Any failure leaves the probe on a fresh target.
+            let probe_target = candidate.join(format!("probe-target-{}", pathx::uuid4()));
+            match crate::native::depcache::install(seed, &probe_target, None) {
+                Ok(()) => build_command.extend(["--target-dir".into(), text(&probe_target)]),
+                Err(reason) => {
+                    let _ = std::fs::remove_dir_all(&probe_target);
+                    ctx.progress(
+                        "dependency-units",
+                        "fallback",
+                        vec![("reason", Value::str(reason))],
+                    );
+                }
+            }
+        }
         let jobs_value = jobs.map_or(Value::Null, Value::int);
         ctx.progress(
             "source-materialization",

@@ -9,6 +9,7 @@
 //! only Python left on this path is named in [`pysteps`].
 pub mod capabilities;
 pub mod cinputs;
+pub mod depcache;
 
 pub mod fixtures;
 pub mod junit;
@@ -76,12 +77,43 @@ pub fn native_scheduling(cpus: usize, resources: Option<&Value>) -> Value {
     ])
 }
 
-const OPTIMIZED_STEPS: [&str; 3] = ["product-inputs", "bounded-loom", "final-binary"];
+const OPTIMIZED_STEPS: [&str; 2] = ["bounded-loom", "final-binary"];
 
-/// Optimized builds keep the conservative slot budget; unoptimized ones use the CPUs.
+const UNOPTIMIZED_CARGO_COMMANDS: [&str; 6] =
+    ["check", "clippy", "test", "nextest", "build", "doc"];
+
+/// Controller-named core wrapper steps whose every compiler invocation is a
+/// dev-profile `cargo build`: product-inputs runs the trusted
+/// scripts/ci-product-inputs.sh (plugin cdylibs land in target/debug), and core
+/// conformance runs the digest-pinned testing/conformance/run.sh, whose suites
+/// build dist/default, the packer and the OIDC plugin unoptimized. Matched by
+/// step name and the exact trusted script name, never by candidate input.
+const UNOPTIMIZED_WRAPPER_STEPS: [(&str, &str); 2] = [
+    ("product-inputs", "scripts/ci-product-inputs.sh"),
+    ("core-native-conformance", "testing/conformance/run.sh"),
+];
+
+/// Only a visible unoptimized cargo command gets the wider budget. Wrapper
+/// scripts may build optimized binaries inside (a plugin's runtime preparation
+/// runs its LTO release build), so they keep the conservative slot budget like
+/// every optimized step, except the named core wrappers above.
 pub fn step_build_jobs(name: &str, argv: &[String], scheduling: &Value) -> Value {
+    let mut unoptimized = argv.len() >= 2
+        && argv[0] == "cargo"
+        && UNOPTIMIZED_CARGO_COMMANDS.contains(&argv[1].as_str())
+        && !argv.iter().any(|a| a == "--release")
+        && !argv.iter().any(|a| a.starts_with("--profile"));
+    if let Some((_, script)) = UNOPTIMIZED_WRAPPER_STEPS
+        .iter()
+        .find(|(step, _)| *step == name)
+        && argv.len() == 2
+        && argv[0] == "bash"
+        && argv[1].ends_with(&format!("/{script}"))
+    {
+        unoptimized = true;
+    }
     if OPTIMIZED_STEPS.contains(&name)
-        || argv.iter().any(|a| a == "--release")
+        || !unoptimized
         || scheduling.get("unoptimized_build_jobs").is_none()
     {
         return scheduling.at("build_jobs").clone();
@@ -791,6 +823,10 @@ impl Q {
             ("CARGO_TARGET_DIR", work_text("target")),
             ("RUSTC_WRAPPER", String::new()),
             ("RUSTC_WORKSPACE_WRAPPER", String::new()),
+            // Every job starts from an empty target directory, so incremental
+            // query caches are written and never read; release is already
+            // non-incremental.
+            ("CARGO_INCREMENTAL", "0".to_owned()),
             ("CARGO_PROFILE_DEV_DEBUG", "0".to_owned()),
             ("CARGO_PROFILE_TEST_DEBUG", "0".to_owned()),
             (
@@ -1465,6 +1501,10 @@ impl Q {
 
     /// The architecture step: this controller's `architecture` command.
     pub fn architecture(&mut self, sdk: Option<&Path>) -> R<()> {
+        self.architecture_with(sdk, None)
+    }
+
+    pub fn architecture_with(&mut self, sdk: Option<&Path>, units: Option<&Path>) -> R<()> {
         let scratch = self.harness.join("architecture");
         let controller = self.controller()?;
         let (context, expected) = self.execution().write_context()?;
@@ -1479,6 +1519,10 @@ impl Q {
             sdk,
             Some((&context, &expected)),
         );
+        let mut command = command;
+        if let Some(units) = units {
+            command.extend(["--dependency-units".into(), sp::text(units)]);
+        }
         self.run_controller("architecture", command)?;
         let observed = sp::read_json(&self.evidence.join("architecture.json"))?;
         let rows = at(&observed, "candidate_execution")?
@@ -1537,6 +1581,9 @@ impl Q {
     }
 
     pub fn core(&mut self) -> R<()> {
+        if dependency_units_producer(&self.repository) {
+            return self.preparation("dependency-units-producer", depcache::produce);
+        }
         self.core_compilation()?;
         self.architecture(None)?;
         let host = self.host()?;
@@ -1903,11 +1950,19 @@ impl Q {
             .to_owned();
         let sdk = self.sdk()?;
         self.receipt.set("sdk_revision", sdk_pin.into());
-        self.architecture(Some(&sdk))?;
+        let mut units = None;
+        self.preparation("dependency-units", |q| {
+            units = depcache::restore(q, None)?;
+            depcache::install_job_target(q, units.as_deref())
+        })?;
+        let architecture = self.architecture_with(Some(&sdk), units.as_deref());
+        depcache::discard(units.as_deref());
+        architecture?;
         let services = fixtures::Services::open(self, &host)?;
         let body = plugins::qualify_plugin(self, &host, &sdk);
         let closed = services.close(self);
-        closed.and(body)
+        closed.and(body)?;
+        depcache::account(self)
     }
 
     /// `conformance(name)`: the owner roster under the protected inventory.
@@ -2377,16 +2432,24 @@ fn source_checks(q: &mut Q) -> R<()> {
     Ok(())
 }
 
+/// Core's dependency-unit producer job (server-set job name; the bootstrap admits
+/// only known job names) publishes plugin dependency units instead of qualifying.
+pub fn dependency_units_producer(repository: &str) -> bool {
+    repository == CORE
+        && std::env::var("CI_JOB_NAME").is_ok_and(|j| depcache::producer_shard(&j).is_some())
+}
+
 fn body(args: &Args, slot: &mut Option<Q>) -> R<()> {
     *slot = Some(sp::deferred(|| Q::new(args))?);
     let q = slot.as_mut().unwrap();
     // Constructor validation establishes the immutable controller, exact
     // candidate and execution boundary before any regression command runs.
-    if q.repository == CORE && !q.evaluation_only {
+    let producer = dependency_units_producer(&q.repository);
+    if q.repository == CORE && !q.evaluation_only && !producer {
         q.core_regressions()?;
         q.core_formatting()?;
     }
-    if requires_native_oracle(&q.repository, args.external_conformance, &q.policy)? {
+    if !producer && requires_native_oracle(&q.repository, args.external_conformance, &q.policy)? {
         q.preparation("oracle-inputs", oracle::prepare)?;
     }
     q.preparation("canonical-inputs", |q| {
@@ -2580,9 +2643,50 @@ mod tests {
             step_build_jobs("final-binary", &argv, &scheduling).as_int(),
             Some(1)
         );
-        let release = sp::strings(&["cargo", "test", "--release"]);
+        let jobs = |name: &str, argv: &[&str]| {
+            step_build_jobs(name, &sp::strings(argv), &scheduling).as_int()
+        };
+        assert_eq!(jobs("root-runtime", &["cargo", "nextest", "run"]), Some(3));
         assert_eq!(
-            step_build_jobs("x", &release, &scheduling).as_int(),
+            jobs(
+                "product-inputs",
+                &["bash", "/t/scripts/ci-product-inputs.sh"]
+            ),
+            Some(3)
+        );
+        assert_eq!(
+            jobs(
+                "core-native-conformance",
+                &["bash", "/c/testing/conformance/run.sh"]
+            ),
+            Some(3)
+        );
+        for (name, argv) in [
+            ("final-binary", &["python3", "x"][..]),
+            ("product-inputs", &["bash", "x"]),
+            (
+                "product-inputs",
+                &["bash", "-c", "/t/scripts/ci-product-inputs.sh"],
+            ),
+            ("core-native-conformance", &["bash", "/c/other.sh"]),
+            (
+                "plugin-conformance",
+                &["bash", "/c/testing/conformance/run.sh"],
+            ),
+            (
+                "plugin-runtime-prepare",
+                &["bash", "-euo", "pipefail", "prepare.sh"],
+            ),
+            ("profiled", &["cargo", "build", "--profile", "dist"]),
+            ("bounded-loom", &["cargo", "test", "--release"]),
+            ("x", &["cargo", "test", "--release"]),
+            ("other", &["cargo", "build", "--release"]),
+        ] {
+            assert_eq!(jobs(name, argv), Some(1), "{name}");
+        }
+        let legacy = crate::json::parse(br#"{"build_jobs": 1}"#).unwrap();
+        assert_eq!(
+            step_build_jobs("root-clippy", &[], &legacy).as_int(),
             Some(1)
         );
         let unconfined = native_scheduling(64, None);
