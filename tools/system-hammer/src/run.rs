@@ -892,6 +892,80 @@ fn merged_errors(load: &Outcome, probe: &Outcome) -> BTreeMap<String, u64> {
 mod tests {
     use super::*;
 
+    /// SELFTEST (design mcp-issuer §3.4, §4): a case with `contains:` checks EVERY body, not one
+    /// in 97, and fails on any miss. A local far end answers one body in a hundred without the
+    /// marker; every answered body is checked, the misses are counted as `body_miss n/total`, and
+    /// the case is FAILED.
+    #[test]
+    fn a_contains_case_where_one_body_in_a_hundred_misses_is_failed() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = l.local_addr().unwrap();
+            let served = Arc::new(AtomicU64::new(0));
+            tokio::spawn(async move {
+                while let Ok((s, _)) = l.accept().await {
+                    let served = Arc::clone(&served);
+                    tokio::spawn(async move {
+                        let svc = hyper::service::service_fn(move |_req| {
+                            let n = served.fetch_add(1, Ordering::Relaxed);
+                            let body: &'static [u8] = if n % 100 == 99 {
+                                b"nothing to see"
+                            } else {
+                                b"ok marker"
+                            };
+                            async move {
+                                Ok::<_, std::convert::Infallible>(http::Response::new(
+                                    http_body_util::Full::new(bytes::Bytes::from_static(body)),
+                                ))
+                            }
+                        });
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(hyper_util::rt::TokioIo::new(s), svc)
+                            .await;
+                    });
+                }
+            });
+            let req = driver::Req {
+                method: http::Method::GET,
+                path: "/".into(),
+                headers: Vec::new(),
+                body: bytes::Bytes::new(),
+                expect_status: 200,
+                expect_contains: Some(b"marker".to_vec()),
+                weight: 1,
+            };
+            let p = plan(
+                addr,
+                Proto::H1,
+                vec![req],
+                Shape::Closed { concurrency: 4 },
+                0.0,
+                1.0,
+            );
+            let (out, _) = driver::run(p).await;
+            assert!(out.ok >= 200, "enough answers to hold misses: {}", out.ok);
+            assert!(out.body_miss >= 1, "the misses are seen: {out:?}");
+            assert_eq!(
+                out.body_total,
+                out.ok + out.body_miss,
+                "every answered body is checked"
+            );
+            assert_eq!(case_status(true, out.ok, out.body_miss), "failed");
+            assert_eq!(case_status(true, out.ok, 0), "ok");
+            assert_eq!(
+                body_miss_text(out.body_miss, out.body_total),
+                format!("{}/{}", out.body_miss, out.body_total)
+            );
+        });
+    }
+
     #[test]
     fn drift_compares_the_last_third_to_the_first() {
         assert_eq!(drift(&[100, 100, 100, 50, 50, 50]), -50.0);
