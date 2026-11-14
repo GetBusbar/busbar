@@ -47,10 +47,7 @@ fn migration_rows_stream_bounded_current_chunks_before_manifest() {
     );
     let manifest: Head = serde_json::from_slice(manifest.expose(&seal)).unwrap();
     assert_eq!(manifest.length as usize, assembled.len());
-    assert_eq!(
-        manifest.digest,
-        <[u8; 32]>::from(Sha256::digest(&assembled))
-    );
+    assert_eq!(manifest.digest, Sha256::digest(&assembled));
     assert!(rows.next().is_none());
     assert!(migration_rows(&Secret::new(br#"{"version":999}"#.to_vec()), [9; 16]).is_err());
 }

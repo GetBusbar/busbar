@@ -31,3 +31,6 @@ test-support = ["tls", "busbar-crypto-backend/test-support"]
 [dev-dependencies]
 # The suite runs against the facade as every crate sees it (busbar_contract::crypto, test-support on).
 busbar-contract = { path = "../busbar-contract", features = ["test-support"] }
+
+[lints]
+workspace = true

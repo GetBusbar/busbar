@@ -173,7 +173,7 @@ pub(in crate::config) async fn seed_bytes(
     bytes: &[u8],
 ) {
     let generation = crate::door::op_id().0;
-    let head = serde_json::to_vec(&serde_json::json!({"version":1,"generation":generation,"length":bytes.len(),"digest":<[u8;32]>::from(Sha256::digest(bytes))})).unwrap();
+    let head = serde_json::to_vec(&serde_json::json!({"version":1,"generation":generation,"length":bytes.len(),"digest":Sha256::digest(bytes)})).unwrap();
     let mut mutations = Vec::new();
     for (index, bytes) in bytes.chunks(busbar_contract::MAX_RECORD_BYTES).enumerate() {
         let mut key = b"chunk:".to_vec();

@@ -11,7 +11,9 @@ use busbar_core_connector::datagram::{
     Across, Answered, DatagramFraming, Leg, LegSink, LineStep, Pairing, PortAssociations,
     PublicationTask, SessionBatch,
 };
-use busbar_core_connector::framer::{instant_of, now_ns, Got};
+#[cfg(test)]
+use busbar_core_connector::framer::Got;
+use busbar_core_connector::framer::{instant_of, now_ns};
 use busbar_core_connector::publication::{Custody, Message, Messages};
 use busbar_core_connector::udp::{ReadyPort, MAX_DATAGRAM};
 use busbar_kernel::detached::{self, DetachedTasks};

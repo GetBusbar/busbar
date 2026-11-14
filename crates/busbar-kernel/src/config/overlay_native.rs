@@ -56,7 +56,7 @@ pub fn migration_rows(
         generation,
         length: u64::try_from(bytes.len())
             .map_err(|_| "migration target overlay length is unsupported")?,
-        digest: Sha256::digest(bytes).into(),
+        digest: Sha256::digest(bytes),
     };
     let head = Secret::new(
         serde_json::to_vec(&head).map_err(|_| "migration target overlay head encoding failed")?,
@@ -234,7 +234,7 @@ impl NativeOverlay {
                 bytes.extend_from_slice(&chunk);
             }
             if complete {
-                if <[u8; 32]>::from(Sha256::digest(&bytes)) != head.digest {
+                if Sha256::digest(&bytes) != head.digest {
                     return Err("config overlay digest mismatch".into());
                 }
                 return Ok((Some(raw), Some(bytes)));
@@ -447,13 +447,13 @@ impl NativeOverlay {
         let receipt = Receipt {
             version: 1,
             source_sha256,
-            overlay_sha256: Sha256::digest(&bytes).into(),
+            overlay_sha256: Sha256::digest(&bytes),
         };
         let receipt_bytes = serde_json::to_vec(&receipt).map_err(|error| error.to_string())?;
         let mut hash = Sha256::new();
         hash.update(b"busbar.overlay.file-import.v1\0");
         hash.update(&receipt_bytes);
-        let digest: [u8; 32] = hash.finalize().into();
+        let digest: [u8; 32] = hash.finalize();
         let generation: [u8; 16] = digest[..16].try_into().expect("fixed digest width");
         let mut operation = self.begin(false)?;
         if let Some(candidate) = operation.candidate.as_mut() {
@@ -576,7 +576,7 @@ impl NativeOverlay {
                 version: 1,
                 generation: op_id,
                 length: bytes.len() as u64,
-                digest: Sha256::digest(&bytes).into(),
+                digest: Sha256::digest(&bytes),
             };
             let head = serde_json::to_vec(&head).map_err(|error| error.to_string())?;
             let mut mutations = vec![Mutation::Put {
@@ -656,7 +656,7 @@ fn stage_chunks(generation: &[u8; 16], bytes: &[u8]) -> Vec<Request> {
             hash.update(b"busbar.overlay.chunk-stage.v1\0");
             hash.update(generation);
             hash.update((index as u64).to_be_bytes());
-            let digest: [u8; 32] = hash.finalize().into();
+            let digest: [u8; 32] = hash.finalize();
             let op_id = digest[..16].try_into().expect("fixed digest width");
             let key = chunk_key(generation, index as u64);
             Request {

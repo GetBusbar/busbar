@@ -297,7 +297,7 @@ pub fn check_result(result: *const DirectoryResult, field: &'static str) -> Resu
 /// An interleaved name/value list: an even count, a NULL pointer only with no entries.
 pub fn check_pairs(ptr: *const AbiStr, len: usize, field: &'static str) -> Result<(), Fault> {
     check::listed(ptr, len, field)?;
-    if len % 2 != 0 {
+    if !len.is_multiple_of(2) {
         return Err(fault(Rule::Contradiction, field));
     }
     if len / 2 > MAX_INDEXES {

@@ -259,7 +259,7 @@ unsafe fn preflight<'a>(input: &wire::BootstrapIn, allocation_bytes: usize) -> O
     hash.update(b"busbar.store.bootstrap.birth/1\0");
     hash.update(&input.generation.to_le_bytes());
     hash.update(&(settings.len() as u64).to_le_bytes());
-    hash.update(&settings[..]);
+    hash.update(settings);
     for blob in secrets {
         let secret = unsafe { bytes(*blob) }?;
         if blob.flags & BLOB_SECRET == 0 || overlap(blob.ptr, blob.len, input.result) {
@@ -267,7 +267,7 @@ unsafe fn preflight<'a>(input: &wire::BootstrapIn, allocation_bytes: usize) -> O
         }
         aggregate = aggregate.checked_add(secret.len())?;
         hash.update(&(secret.len() as u64).to_le_bytes());
-        hash.update(&secret[..]);
+        hash.update(secret);
     }
     if aggregate > allocation_bytes
         || overlap(input.settings.ptr, input.settings.len, input.result)

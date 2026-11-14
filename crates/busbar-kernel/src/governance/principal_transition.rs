@@ -1469,7 +1469,7 @@ pub async fn guard_startup_native(
     identity.update(serde_json::to_vec(&(store_sha256, required)).map_err(|e| error_text(&e))?);
     let binding = InitialBinding {
         instance: NATIVE_INSTANCE.into(),
-        digest: identity.finalize().into(),
+        digest: identity.finalize(),
     };
     loop {
         let (_, mutations) = fresh_mutations(&receipt)?;

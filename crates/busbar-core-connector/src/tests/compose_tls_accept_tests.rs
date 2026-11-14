@@ -6,7 +6,6 @@
 //! record boundary is deterministic.
 
 use std::collections::VecDeque;
-use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;

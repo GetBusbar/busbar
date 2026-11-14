@@ -612,7 +612,7 @@ async fn run(
     }
     let providers_override = argv.providers.as_deref().map(std::path::PathBuf::from);
     let config_path =
-        std::path::PathBuf::from(root::cli::resolve_config_path(cli_config.as_deref()));
+        std::path::PathBuf::from(root::cli::resolve_config_path(argv.config.as_deref()));
     let ignore_overlay = ignore_overlay_requested(std::env::args());
     if ignore_overlay {
         busbar_kernel::appbuild::IGNORE_OVERLAY_FLAG
@@ -1543,7 +1543,8 @@ async fn run(
     }
 
     let mut served = served;
-    let line_served = line_flag_passed().then(|| std::mem::take(&mut served));
+    let line_served = line_serve_requested(&root::cli::help_rows(), root::cli::argv())
+        .then(|| std::mem::take(&mut served));
 
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));

@@ -413,7 +413,7 @@ impl MeasurementOperation {
             hash.update(index.to_be_bytes());
             hash.update(count.micros().to_be_bytes());
         }
-        let hash: [u8; 32] = hash.finalize().into();
+        let hash: [u8; 32] = hash.finalize();
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(previous) = state.history.get(revision as usize - 1) {
             return if previous == &hash {

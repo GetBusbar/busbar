@@ -10,7 +10,7 @@ use serde_json::json;
 
 pub(super) fn digest(value: &serde_json::Value) -> [u8; 32] {
     let text = busbar_contract::secure::SecureString::from_args(format_args!("{value}"));
-    Sha256::digest(text.as_bytes()).into()
+    Sha256::digest(text.as_bytes())
 }
 
 pub(super) fn root_digest(cfg: &super::RootCfg, plugins: &super::PluginsCfg) -> [u8; 32] {

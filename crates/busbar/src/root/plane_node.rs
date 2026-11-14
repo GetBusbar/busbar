@@ -968,6 +968,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     #[expect(
         clippy::too_many_arguments,
         reason = "the unit's parts are handed down unbundled from its one owner"

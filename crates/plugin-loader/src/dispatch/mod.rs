@@ -89,14 +89,14 @@ pub use load::{
     rendering_of_macro, LinkedRow, LoadError, LoadedDoor, ManifestFacts,
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) use plugin::Called;
 pub use plugin::{
     Answered, Bind, ConnTable, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin,
     MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use plugin::{Called, Recall};
-#[cfg(not(any(test, feature = "test-support")))]
-pub(crate) use plugin::{Called, Recall};
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use validate::Violation;
 pub use worker::{

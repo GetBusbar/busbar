@@ -656,12 +656,10 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
     vars.insert("FREE_PORT_B".into(), ports.ports[3].to_string());
 
     // Steps that must run before boot (a service account the config's env needs).
-    let steps = match s.steps() {
-        Ok(v) => v,
-        Err(e) => return vec![failed(s, "-", e)],
-    };
-    let (pre, post): (Vec<Step>, Vec<Step>) = steps
-        .into_iter()
+    let (pre, post): (Vec<Step>, Vec<Step>) = s
+        .setup
+        .iter()
+        .cloned()
         .partition(|st| matches!(st, Step::RsaServiceAccount { .. }));
     if let Err(e) = run_steps(&pre, &mut vars, (listen, admin), mock.addr, &signing) {
         return vec![failed(s, "-", format!("setup: {e}"))];
