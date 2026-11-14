@@ -122,6 +122,10 @@ impl TransportFacts {
 pub fn stated(
     door_fn: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let st = crate::dispatch::load::statement_of(crate::dispatch::load::raw(door_fn))
         .map_err(|e| e.to_string())?;
     tail_facts(&st)
@@ -134,11 +138,20 @@ fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
     // SAFETY: a tail string is `'static` plugin data; `check_tail`/`check_claims` refused a NULL
     // pointer with a count before this reads it, and its length is capped before the slice is
     // formed.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let bytes = unsafe { crate::dispatch::validate::lent_str(s) }
         .ok_or_else(|| format!("the transport tail's {field} is longer than any string may be"))?;
-    std::str::from_utf8(bytes)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
+    let interned = std::str::from_utf8(bytes)
         .map(crate::intern_name)
-        .map_err(|_| format!("the transport tail's {field} is not UTF-8"))
+        .map_err(|_| format!("the transport tail's {field} is not UTF-8"));
+    interned
 }
 
 fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
@@ -146,6 +159,10 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     // a non-NULL kind tail is `'static` plugin data of its stated size.
     let tail: TransportTail =
         unsafe { crate::dispatch::plugin::kind_tail(st, "a transport", TRANSPORT_TAIL_FROZEN) }?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let broke = |f: Fault| format!("the transport tail breaks {:?} at {}", f.rule, f.field);
     check_tail(&tail).map_err(broke)?;
     // SAFETY: `check_tail` refused a NULL list with a count; both lists are `'static` plugin data.
@@ -210,23 +227,39 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
             extensions,
             busbar_contract::abi::transport::adopted_session::EXT_ADOPTED_SESSION,
         ) == Some(busbar_contract::abi::transport::adopted_session::SUPPORT_ADOPTED_SESSION);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the claims are copied out once, at bind"
+    )]
     let claims: Vec<&'static str> = names
         .iter()
         .map(|c| owned(*c, "claim"))
         .collect::<Result<_, _>>()?;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the first-line claims are listed once, at bind"
+    )]
     let lines = claims
         .iter()
         .zip(rows)
         .filter(|(_, row)| row.unit0_trigger == busbar_contract::abi::transport::UNIT0_FIRST_LINE)
         .map(|(name, _)| *name)
         .collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the upgrade claims are listed once, at bind"
+    )]
     let upgrades = claims
         .iter()
         .zip(rows)
         .filter(|(_, row)| row.unit0_trigger == busbar_contract::abi::transport::UNIT0_UPGRADE)
         .map(|(name, _)| *name)
         .collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the session claims are listed once, at bind"
+    )]
     let sessions = claims
         .iter()
         .zip(rows)
@@ -249,6 +282,10 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_status_rows(status, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_cover(status, faults).map_err(broke)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the status namespaces are read once, at bind"
+    )]
     let status_namespaces = rows
         .iter()
         .map(|row| {
@@ -271,18 +308,40 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     {
         return Err("listener-bindings requires an accepting framer".into());
     }
+    let name = owned(st.name, "Statement name")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the status rows are copied out once, at bind"
+    )]
+    let status_rows = status.iter().map(|r| (r.claim, r.lo, r.hi)).collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the composed-over names are copied out once, at bind"
+    )]
+    let composes_over = under
+        .iter()
+        .map(|s| owned(*s, "composes_over"))
+        .collect::<Result<_, _>>()?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the settings keys are copied out once, at bind"
+    )]
+    let settings_keys = settings
+        .iter()
+        .map(|s| owned(s.path, "settings"))
+        .collect::<Result<_, _>>()?;
     Ok(TransportFacts {
         status_namespaces,
         handoff_status,
         listener_bindings,
         adopts_session,
-        name: owned(st.name, "Statement name")?,
+        name,
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         accepts: tail.facts & busbar_contract::abi::transport::FACT_ACCEPTS != 0,
         dials: tail.facts & transport::FACT_DIALS != 0,
         detaches: tail.facts & transport::FACT_DETACHES != 0,
         adopts: tail.facts & transport::FACT_ADOPTS != 0,
-        status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
+        status_rows,
         offered,
         seals,
         role: tail.role,
@@ -290,14 +349,8 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         upgrades,
         sessions,
         lines,
-        composes_over: under
-            .iter()
-            .map(|s| owned(*s, "composes_over"))
-            .collect::<Result<_, _>>()?,
-        settings_keys: settings
-            .iter()
-            .map(|s| owned(s.path, "settings"))
-            .collect::<Result<_, _>>()?,
+        composes_over,
+        settings_keys,
         ported: rows.first().is_some_and(|row| {
             let port = busbar_contract::abi::shared::code::selector_form(
                 busbar_contract::SelectorForm::Port,
@@ -315,6 +368,10 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
 pub fn linked_facts(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let v = crate::dispatch::load::validate::<Transport>(crate::dispatch::load::raw(door))
         .map_err(|e| e.to_string())?;
     tail_facts(&v.statement)

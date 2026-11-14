@@ -443,13 +443,13 @@ mod typed_transport_cancellation {
         )
     }
 
-    fn cancelled<I: crate::dispatch::InFrame>(
+    fn cancelled<I: crate::dispatch::InFrame, L: ?Sized>(
         dispatcher: &Dispatcher,
         plugin: &Plugin<Transport>,
         control: &Arc<Control>,
         ticket: Ticket,
         mut reply: Reply<I, FramerOut>,
-        loan: &Arc<Vec<u8>>,
+        loan: &Arc<L>,
         slot: u32,
     ) {
         let release = Release(control.clone());

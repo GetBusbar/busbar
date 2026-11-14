@@ -37,9 +37,14 @@ pub struct ExportFacts {
 }
 
 fn owned(s: AbiStr) -> Option<String> {
-    crate::dispatch::plugin::str_bytes(s)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a Statement string is copied out once, at bind"
+    )]
+    let owned = crate::dispatch::plugin::str_bytes(s)
         .and_then(|b| std::str::from_utf8(b).ok())
-        .map(str::to_owned)
+        .map(str::to_owned);
+    owned
 }
 
 /// A `'static` Statement list of `len` entries at `ptr`, which the caller's check bounded and
@@ -66,6 +71,10 @@ fn route(r: &export::Route) -> Result<Route, String> {
         RouteMethod::Patch,
         RouteMethod::Delete,
     ];
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let method = methods
         .into_iter()
         .find(|m| m.as_str() == method)
@@ -85,6 +94,10 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     // lists of length 0); a non-NULL kind tail is `'static` plugin data of its stated size.
     let t: Tail =
         unsafe { crate::dispatch::plugin::kind_tail(st, "an export plugin", EXPORT_TAIL_FROZEN) }?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let why = |f: Fault| format!("the export tail breaks {:?} at {}", f.rule, f.field);
     validate::check_tail(&t).map_err(why)?;
     // SAFETY: `check_tail` refused a count behind NULL and bounded both counts; the lists are
@@ -97,13 +110,22 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     };
     // SAFETY: the loaded Statement owns the static route path bytes for this plugin lifetime.
     unsafe { validate::check_tail_entries(streams, routes) }.map_err(why)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the routes are copied out once, at bind"
+    )]
     let routes = routes.iter().map(route).collect::<Result<Vec<_>, _>>()?;
     // SAFETY: the loader's Statement check bounded `families` and refused it behind NULL.
     let declared = unsafe { listed(st.families, st.families_len) };
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the families are copied out once, at bind")
     let mut families = Vec::with_capacity(declared.len());
     for f in declared {
         // SAFETY: as above, for each family's label keys.
         let keys = unsafe { listed(f.label_keys, f.label_keys_len) };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the label keys are copied out once, at bind"
+        )]
         let keys = keys
             .iter()
             .map(|k| owned(*k))
@@ -135,12 +157,17 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     if recorder && !streams.contains(&(ExportStream::Metrics as u8)) {
         return Err("a recorder declaration requires the metrics stream".into());
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the streams are copied out once, at bind"
+    )]
+    let streams = streams.to_vec();
     Ok(ExportFacts {
         recorder,
         span_records,
         public_routes,
         persistent_routes,
-        streams: streams.to_vec(),
+        streams,
         routes,
         families,
         one_instance: st.marks & busbar_contract::abi::mechanism::door::MARK_ONE_INSTANCE != 0,

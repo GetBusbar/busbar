@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+use foldhash::HashSet;
 use std::mem::size_of;
 use std::net::IpAddr;
 use std::os::raw::c_void;
@@ -132,6 +134,10 @@ fn interned(text: &str) -> &'static str {
     if kept.len() >= CAUSE_TEXTS_MAX {
         return "";
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failure cause's text is interned once per process, the first time it is met"
+    )]
     let t: &'static str = Box::leak(text.to_owned().into_boxed_str());
     kept.insert(t);
     t
@@ -344,7 +350,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             let Some(member) = (unsafe { bytes(i.member.ptr.cast_mut(), i.member.len) }) else {
                 return Answered::fault();
             };
-            let Ok(member) = std::str::from_utf8(member).map(str::to_owned) else {
+            let Ok(member) = std::str::from_utf8(member) else {
                 return Answered::bare(Outcome::Refused, "the dial's registration is not text");
             };
             let need_timeout_ms = st.need_timeout(NeedId(i.need));
@@ -364,7 +370,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                             need: NeedId(i.need),
                             target: target.to_owned(),
                             within,
-                            member,
+                            member: member.to_owned(),
                             dial_timeout_ms,
                             head: None,
                             body: Zeroizing::new(Vec::new()),
@@ -380,23 +386,17 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             }
 
             let ticket = head.handle.ticket;
-            let wanted = (
-                NeedId(i.need),
-                target.to_owned(),
-                within,
-                member,
-                dial_timeout_ms,
-            );
-            let conn = match st.dialling(id, table, ticket, &wanted) {
+            let need = NeedId(i.need);
+            let conn = match st.dialling(ticket, (need, target, &within, member, dial_timeout_ms)) {
                 Some(conn) => conn,
                 None => {
                     let desc = OpenDesc {
-                        target: &wanted.1,
-                        within: &wanted.2,
-                        member: &wanted.3,
+                        target,
+                        within: &within,
+                        member,
                         ..OpenDesc::default()
                     };
-                    match table.open_request(id, wanted.0, &desc, false, dial_timeout_ms) {
+                    match table.open_request(id, need, &desc, false, dial_timeout_ms) {
                         Ok(conn) => conn,
                         Err(e) => return refusal(e),
                     }
@@ -413,6 +413,13 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                     Answered::ready(conn.0, 0)
                 }
                 Err(ConnError::Pending) => {
+                    let wanted = (
+                        need,
+                        target.to_owned(),
+                        within,
+                        member.to_owned(),
+                        dial_timeout_ms,
+                    );
                     lock(&st.dialling).insert(
                         ticket,
                         Dial {
@@ -436,18 +443,26 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
 type Wanted = (NeedId, String, Vec<IpAddr>, String, u64);
 
 impl ConnState {
+    /// The dial this ticket's earlier `ESTABLISH` left connecting, when it asked for exactly
+    /// `wanted` (compared borrowed: a re-poll copies nothing); another dial is closed.
     fn dialling(
         &self,
-        _id: InstanceId,
-        _table: &Arc<dyn DeclaredConns>,
         ticket: Ticket,
-        wanted: &Wanted,
+        wanted: (NeedId, &str, &[IpAddr], &str, u64),
     ) -> Option<ConnId> {
         if ticket.is_none() {
             return None;
         }
         let dial = lock(&self.dialling).remove(&ticket)?;
-        if &dial.wanted == wanted {
+        let (need, target, within, member, timeout) = &dial.wanted;
+        if (
+            *need,
+            target.as_str(),
+            within.as_slice(),
+            member.as_str(),
+            *timeout,
+        ) == wanted
+        {
             return Some(dial.conn);
         }
         let (owner, creating_table) = &dial.authority.conn;
@@ -462,11 +477,14 @@ impl ConnState {
     }
 
     fn take_dialling(&self, _table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) -> Closes {
-        let dials = {
-            let mut all = lock(&self.dialling);
-            let keys: Vec<Ticket> = all.keys().filter(|k| gone(k)).copied().collect();
-            keys.iter().filter_map(|k| all.remove(k)).collect()
-        };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a worker's or instance's dials are detached once, when it retires"
+        )]
+        let dials = lock(&self.dialling)
+            .extract_if(|k, _| gone(k))
+            .map(|(_, dial)| dial)
+            .collect();
         let waits = self.take_waits(|handle, _| gone(&handle.ticket));
         Closes {
             dials,
@@ -478,7 +496,12 @@ impl ConnState {
     /// Detach an instance's resources after CLOSE, leaving transport calls to the deferred owner.
     pub(crate) fn retire_all(&self) -> Closes {
         let mut closes = self.take_dialling(None, |_| true);
-        closes.streams = std::mem::take(&mut *self.streams()).into_values().collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an instance's streams are detached once, when it retires"
+        )]
+        let streams = std::mem::take(&mut *self.streams()).into_values().collect();
+        closes.streams = streams;
         lock(&self.facts).clear();
         lock(&self.kept).clear();
         closes
@@ -500,28 +523,22 @@ impl ConnState {
         &self,
         binding: &Arc<super::export_bindings::Generation>,
     ) -> Closes {
-        let streams: Vec<_> = {
-            let mut all = self.streams();
-            let keys: Vec<_> = all
-                .iter()
-                .filter(|(_, stream)| stream.authority.belongs_to(binding))
-                .map(|(key, _)| *key)
-                .collect();
-            keys.into_iter()
-                .filter_map(|key| all.remove(&key).map(|s| (key, s)))
-                .collect()
-        };
-        let dials = {
-            let mut all = lock(&self.dialling);
-            let keys: Vec<_> = all
-                .iter()
-                .filter(|(_, dial)| dial.authority.belongs_to(binding))
-                .map(|(key, _)| *key)
-                .collect();
-            keys.into_iter()
-                .filter_map(|key| all.remove(&key))
-                .collect()
-        };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a binding generation's streams are detached once, when it retires"
+        )]
+        let streams: Vec<_> = self
+            .streams()
+            .extract_if(|_, stream| stream.authority.belongs_to(binding))
+            .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a binding generation's dials are detached once, when it retires"
+        )]
+        let dials = lock(&self.dialling)
+            .extract_if(|_, dial| dial.authority.belongs_to(binding))
+            .map(|(_, dial)| dial)
+            .collect();
         {
             let mut facts = lock(&self.facts);
             for (key, _) in &streams {
@@ -533,9 +550,14 @@ impl ConnState {
                 .as_ref()
                 .is_some_and(|creating| Arc::ptr_eq(creating, binding))
         });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a binding generation's streams are detached once, when it retires"
+        )]
+        let streams = streams.into_iter().map(|(_, s)| s).collect();
         Closes {
             dials,
-            streams: streams.into_iter().map(|(_, s)| s).collect(),
+            streams,
             waits,
         }
     }
@@ -741,7 +763,7 @@ extern "C" fn upgrade_secure(
 }
 
 fn warn_unverified(ctx: HostCtx) {
-    static WARNED: OnceLock<Mutex<std::collections::HashSet<u64>>> = OnceLock::new();
+    static WARNED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
     let Some(wake) = super::handle::resolve(ctx) else {
         return;
     };
@@ -753,10 +775,8 @@ fn warn_unverified(ctx: HostCtx) {
     if !first {
         return;
     }
-    let instance = wake
-        .caller
-        .get()
-        .map_or_else(|| "<unbound>".to_owned(), |c| c.namespace().to_string());
+    let caller = wake.caller.get();
+    let instance: &str = caller.map_or("<unbound>", |c| c.namespace());
     tracing::warn!(
         diag = "BUSBAR-6016",
         instance = %instance,
@@ -765,7 +785,7 @@ fn warn_unverified(ctx: HostCtx) {
     );
 }
 
-type HeldFacts = HashMap<u64, Vec<Box<str>>>;
+type HeldFacts = foldhash::HashMap<u64, Vec<Box<str>>>;
 
 fn held_text(all: &mut HeldFacts, key: u64, text: Option<&str>) -> AbiStr {
     let Some(text) = text else {
@@ -920,11 +940,11 @@ pub(crate) struct ConnState {
     facts: Mutex<HeldFacts>,
     /// THE DIALS IN FLIGHT: an `ESTABLISH` on a ticket that answered PENDING while its dial
     /// connects, by ticket, closed on the instance's table when the ticket moves on without it.
-    dialling: Mutex<HashMap<Ticket, Dial>>,
+    dialling: Mutex<foldhash::HashMap<Ticket, Dial>>,
     /// Every ticketed service's answer ([`Kept`]), by ticket, then by the handle's issue order.
-    kept: Mutex<HashMap<Ticket, HashMap<u32, Kept>>>,
+    kept: Mutex<foldhash::HashMap<Ticket, foldhash::HashMap<u32, Kept>>>,
     /// Each pending read's original bound, by full completion identity, never restarted by poll.
-    waits: Mutex<HashMap<CompletionHandle, ReplyWait>>,
+    waits: Mutex<foldhash::HashMap<CompletionHandle, ReplyWait>>,
 }
 
 #[derive(Clone)]
@@ -940,8 +960,13 @@ struct ReplyWait {
 type ReplyTimer = futures::future::Shared<std::pin::Pin<Box<tokio::time::Sleep>>>;
 
 impl ReplyWait {
-    fn check(&self, waker: Option<&std::task::Waker>) -> Result<(), ConnError> {
-        if std::time::Instant::now() >= self.at {
+    /// Judge the wait at `now`, the call's one reading of the shared clock.
+    fn check(
+        &self,
+        now: std::time::Instant,
+        waker: Option<&std::task::Waker>,
+    ) -> Result<(), ConnError> {
+        if now >= self.at {
             return Err(ConnError::Timeout);
         }
         if let Some(waker) = waker.filter(|_| tokio::runtime::Handle::try_current().is_ok()) {
@@ -1011,16 +1036,32 @@ impl ConnState {
         needs: &[busbar_contract::abi::mechanism::rendering::ReadNeed],
     ) {
         let _ = self.context.set(ctx);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance's needs are declared once, at bind"
+        )]
         let _ = self
             .need_timeouts
             .set(needs.iter().map(|n| n.timeout_ms).collect());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance's needs are declared once, at bind"
+        )]
         let _ = self.response_keeps.set(
             needs
                 .iter()
                 .map(|n| ResponseKeep {
                     mode: n.keep_mode,
-                    kept: n.keep_response_headers.clone(),
-                    denied: n.deny_response_headers.clone(),
+                    kept: n
+                        .keep_response_headers
+                        .iter()
+                        .map(|h| crate::intern_name(h))
+                        .collect(),
+                    denied: n
+                        .deny_response_headers
+                        .iter()
+                        .map(|h| crate::intern_name(h))
+                        .collect(),
                 })
                 .collect(),
         );
@@ -1063,9 +1104,8 @@ impl ConnState {
         if timeout_ms == 0 {
             return Ok(());
         }
-        let Some(at) =
-            std::time::Instant::now().checked_add(std::time::Duration::from_millis(timeout_ms))
-        else {
+        let now = std::time::Instant::now();
+        let Some(at) = now.checked_add(std::time::Duration::from_millis(timeout_ms)) else {
             return Ok(());
         };
         handle._reserved = 0;
@@ -1089,17 +1129,15 @@ impl ConnState {
             .context
             .get()
             .and_then(|ctx| ticket_waker(*ctx, handle.ticket));
-        wait.check(waker.as_ref())
+        wait.check(now, waker.as_ref())
     }
 
     fn take_waits(&self, gone: impl Fn(&CompletionHandle, &ReplyWait) -> bool) -> Vec<ReplyWait> {
-        let mut all = lock(&self.waits);
-        let keys: Vec<_> = all
-            .iter()
-            .filter(|(h, w)| gone(h, w))
-            .map(|(h, _)| *h)
+        let waits = lock(&self.waits)
+            .extract_if(|h, w| gone(h, w))
+            .map(|(_, w)| w)
             .collect();
-        keys.iter().filter_map(|h| all.remove(h)).collect()
+        waits
     }
 
     fn streams(&self) -> MutexGuard<'_, HashMap<u64, Stream>> {
@@ -1135,9 +1173,9 @@ impl ConnState {
         let mut k = run();
         let a = k.answer;
         if a.outcome != Outcome::Pending {
-            let waits =
-                self.take_waits(|handle, _| handle.ticket == h.ticket && handle.seq == h.seq);
-            drop(waits);
+            // A wait is keyed by its handle with the padding zeroed (`wait_reply`).
+            let wait = lock(&self.waits).remove(&CompletionHandle { _reserved: 0, ..h });
+            drop(wait);
             k.delivered = a.needed_bytes == 0 && a.needed_items == 0;
             lock(&self.kept)
                 .entry(h.ticket)
@@ -1178,8 +1216,14 @@ impl ConnState {
         answer
     }
 
-    fn forget(&self, table: Option<&ArmedConns>, ticket: Ticket) -> (usize, Closes) {
-        let closes = self.take_dialling(table, |t| *t == ticket);
+    fn forget(&self, _table: Option<&ArmedConns>, ticket: Ticket) -> (usize, Closes) {
+        // The ticket's own dial, by key; its waits are keyed by (ticket, seq).
+        let dial = lock(&self.dialling).remove(&ticket);
+        let closes = Closes {
+            dials: dial.map_or_else(Vec::new, |dial| vec![dial]),
+            streams: Vec::new(),
+            waits: self.take_waits(|handle, _| handle.ticket == ticket),
+        };
         let kept = lock(&self.kept)
             .remove(&ticket)
             .map_or(0, |issued| issued.len());
@@ -1309,6 +1353,10 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
             drop(forget(id, ticket));
         }
         w.conn_state.drop_dialling(w.conn.get(), gone);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a faulted worker's kept answers are dropped once, when the watchdog replaces it"
+        )]
         lock(&w.conn_state.kept).retain(|t, _| !gone(t));
     }
 }
@@ -1318,11 +1366,16 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
         let st = &w.conn_state;
         st.drop_dialling(w.conn.get(), |_| true);
 
-        *lock(&st.facts) = HashMap::new();
-        *lock(&st.kept) = HashMap::new();
+        *lock(&st.facts) = foldhash::HashMap::default();
+        *lock(&st.kept) = foldhash::HashMap::default();
         let gone = std::mem::take(&mut *st.streams());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a purged instance's streams are detached once"
+        )]
+        let streams = gone.into_values().collect();
         drop(Closes {
-            streams: gone.into_values().collect(),
+            streams,
             waits: st.take_waits(|_, _| true),
             dials: Vec::new(),
         });
@@ -1423,8 +1476,23 @@ impl std::fmt::Debug for Authing {
 #[derive(Debug, Default)]
 struct ResponseKeep {
     mode: u32,
-    kept: Vec<String>,
-    denied: Vec<String>,
+    /// The keep list, interned once at bind: a reply judges against it borrowed.
+    kept: Vec<&'static str>,
+    /// The deny list, interned once at bind.
+    denied: Vec<&'static str>,
+}
+
+/// [`filter_reply_head`]'s working copies (the reason, the kept fields, one field name lowered),
+/// reused reply after reply on this thread.
+#[derive(Default)]
+struct HeadScratch {
+    reason: Vec<u8>,
+    kept: Vec<u8>,
+    lower: String,
+}
+
+std::thread_local! {
+    static HEAD_SCRATCH: std::cell::RefCell<HeadScratch> = std::cell::RefCell::default();
 }
 
 /// Compact only declared response fields, preserving duplicates/order and the reason.
@@ -1438,29 +1506,49 @@ fn filter_reply_head(
     if reason.start < field_len {
         return Err(Answered::fault());
     }
-    let reason_bytes = buf
-        .get(reason.clone())
-        .ok_or_else(Answered::fault)?
-        .to_vec();
+    HEAD_SCRATCH.with_borrow_mut(|scratch| {
+        let filtered = filter_reply_head_in(scratch, buf, field_len, reason, policy);
+        scratch.reason.zeroize();
+        scratch.kept.zeroize();
+        scratch.lower.zeroize();
+        filtered
+    })
+}
+
+fn filter_reply_head_in(
+    scratch: &mut HeadScratch,
+    buf: &mut [u8],
+    field_len: usize,
+    reason: std::ops::Range<usize>,
+    policy: Option<&ResponseKeep>,
+) -> Result<(usize, std::ops::Range<usize>), Answered> {
+    let HeadScratch {
+        reason: reason_bytes,
+        kept: kept_bytes,
+        lower,
+    } = scratch;
+    reason_bytes.extend_from_slice(buf.get(reason.clone()).ok_or_else(Answered::fault)?);
     let block = buf.get(..field_len).ok_or_else(Answered::fault)?;
-    let mut kept_bytes = Vec::new();
     if let Some(policy) = policy {
-        let kept: Vec<&str> = policy.kept.iter().map(String::as_str).collect();
-        let denied: Vec<&str> = policy.denied.iter().map(String::as_str).collect();
-        let nominations: Vec<_> = fields::lines(block)
-            .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
-            .map(|(_, v)| v)
-            .collect();
+        // A `connection` field nominates hop-by-hop fields; a head without one nominates none.
+        let nominates = fields::lines(block).any(|(n, _)| n.eq_ignore_ascii_case(b"connection"));
         for (name, value) in fields::lines(block) {
-            let lower = std::str::from_utf8(name)
-                .map_err(|_| Answered::fault())?
-                .to_ascii_lowercase();
-            let nominated = nominations.iter().copied();
+            lower.clear();
+            lower.push_str(std::str::from_utf8(name).map_err(|_| Answered::fault())?);
+            lower.make_ascii_lowercase();
+            let nominated = nominates
+                .then(|| {
+                    fields::lines(block)
+                        .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
+                        .map(|(_, v)| v)
+                })
+                .into_iter()
+                .flatten();
             if busbar_contract::abi::host::conn::connector::keeps_response_field(
                 policy.mode,
-                &kept,
-                &denied,
-                &lower,
+                &policy.kept,
+                &policy.denied,
+                lower,
                 nominated,
             ) {
                 kept_bytes.extend_from_slice(name);
@@ -1477,8 +1565,8 @@ fn filter_reply_head(
         .ok_or_else(Answered::fault)?;
     let old_end = field_len.max(reason.end);
     buf[..old_end].fill(0);
-    buf[..n].copy_from_slice(&kept_bytes);
-    buf[n..end].copy_from_slice(&reason_bytes);
+    buf[..n].copy_from_slice(kept_bytes);
+    buf[n..end].copy_from_slice(reason_bytes);
     Ok((n, n..end))
 }
 
@@ -1926,13 +2014,21 @@ extern "C" fn write_request(
                             body,
                             &[],
                             None,
-                            prepared.clone(),
+                            prepared,
                         ),
                         Some(_) if handle.is_none() => {
                             Conn::Failed(ConnError::CredentialUnavailable)
                         }
                         Some(binding) => {
-                            match auth_request(&binding, unit, &h, &target, &body, scope, &[]) {
+                            match auth_request(
+                                &binding,
+                                unit,
+                                &h,
+                                &target,
+                                &body,
+                                scope.as_deref(),
+                                &[],
+                            ) {
                                 None => Conn::Failed(ConnError::Refused),
                                 Some(request) => {
                                     let handle = handle.unwrap_or(binding.handle);
@@ -1949,7 +2045,7 @@ extern "C" fn write_request(
                                                 body,
                                                 &auth,
                                                 seal.as_deref(),
-                                                prepared.clone(),
+                                                prepared,
                                             )
                                         }
                                         Some(Fields::Refused) => {
@@ -1987,7 +2083,10 @@ extern "C" fn write_request(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a connection call names its table, binding, unit and every loan apart"
+)]
 fn open_with(
     table: &Arc<dyn DeclaredConns>,
     id: InstanceId,
@@ -2164,14 +2263,13 @@ fn completing(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn auth_request(
     binding: &busbar_contract::conn::ConnAuth,
     unit: Option<u64>,
     h: &Head,
     target: &str,
     body: &[u8],
-    scope: Option<Vec<u8>>,
+    scope: Option<&[u8]>,
     added: &[(Vec<u8>, Vec<u8>)],
 ) -> Option<FieldsRequest> {
     use busbar_contract::abi::auth::{AuthPoint, STYLE_NEEDS_HEADERS};
@@ -2235,7 +2333,7 @@ fn auth_request(
             Vec::new()
         },
         caller_credential,
-        extensions: busbar_contract::abi::auth::scope_extensions(scope.as_deref()),
+        extensions: busbar_contract::abi::auth::scope_extensions(scope),
         ..FieldsRequest::default()
     })
 }
@@ -2523,6 +2621,10 @@ fn process() -> &'static (String, String) {
         let user = std::env::var("USER")
             .or_else(|_| std::env::var("LOGNAME"))
             .unwrap_or_default();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the process identity is read once per process"
+        )]
         let program = std::env::current_exe()
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
