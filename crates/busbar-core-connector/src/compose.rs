@@ -469,10 +469,27 @@ impl std::fmt::Debug for Planned {
 
 impl Planned {
     /// The target names a host, the entry's `locate`, and the authority it named names one too.
-    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, mut dial: Dial) -> Result<Self, Failure> {
-        endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
-        let located = framer::locate(door.as_ref(), &dial.target)
-            .map_err(|e| Failure::Refused(e.to_string()))?;
+    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, dial: Dial) -> Result<Self, Failure> {
+        Self::locate_carried(door, via, dial, None)
+    }
+
+    /// [`Planned::locate`], with the entry's answer already `carried` for this dial's target
+    /// (the one the attempt's head was completed with): the target was parsed and the entry
+    /// asked once, so neither repeats. `None` locates as [`Planned::locate`] does.
+    pub fn locate_carried(
+        door: Arc<dyn FramerDoor>,
+        via: Via,
+        mut dial: Dial,
+        carried: Option<framer::Located>,
+    ) -> Result<Self, Failure> {
+        let located = match carried {
+            Some(located) => located,
+            None => {
+                endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
+                framer::locate(door.as_ref(), &dial.target)
+                    .map_err(|e| Failure::Refused(e.to_string()))?
+            }
+        };
         endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
         complete_opening(&mut dial, &located);
         Ok(Self {
