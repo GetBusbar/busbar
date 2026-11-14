@@ -53,8 +53,6 @@ pub const UNDECLARED_KIND: &str = "the caller does not declare that credential k
 
 pub const NO_DESTINATION: &str = "the caller was granted no such destination";
 
-pub const SNAPSHOT_NOT_READY: &str = "the snapshot is not ready";
-
 pub const SECOND_SHORT: &str = "a second short answer on one handle";
 
 pub const HANDLE_REBOUND: &str =

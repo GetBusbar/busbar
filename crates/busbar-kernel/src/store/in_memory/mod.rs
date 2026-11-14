@@ -515,15 +515,6 @@ impl HealthState {
         self.cell(pool, lane).cooldown_until()
     }
 
-    pub(crate) fn force_cell(&self, pool: &str, lane: usize, state: u64, until: u64, streak: u32) {
-        self.cell(pool, lane).restore(CellSnapshot {
-            state,
-            cooldown_until: until,
-            streak,
-            err: 0,
-        });
-    }
-
     pub(crate) fn arm_half_open(&self, pool: &str, lane: usize, cooldown: u64) {
         let c = self.cell(pool, lane);
         c.restore(CellSnapshot {

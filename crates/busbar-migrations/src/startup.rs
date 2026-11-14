@@ -134,39 +134,6 @@ pub struct StartupUpgrade {
 }
 
 impl StartupUpgrade {
-    pub async fn checked_source_fence(&self) -> Result<crate::CheckedNativeFence, Error> {
-        let native::Response::Begun(upgrade) =
-            self.native_upgrade.as_deref().ok_or(Error::InvalidState)?
-        else {
-            return Err(Error::Corrupt);
-        };
-        let reply = self
-            .prepared
-            .bootstrap(Arc::new(native::Request::CheckFence {
-                upgrade: upgrade.reference.clone(),
-            }))
-            .await
-            .map_err(native_error)?;
-        let native::Response::Fence(fence) = reply.as_ref() else {
-            return Err(Error::Corrupt);
-        };
-        if fence.upgrade != upgrade.reference.id
-            || fence.source != upgrade.source
-            || fence.snapshot != upgrade.snapshot
-            || fence.enforcement_digest == [0; 32]
-            || fence.observation_digest == [0; 32]
-        {
-            return Err(Error::FenceRequired);
-        }
-        Ok(crate::CheckedNativeFence {
-            source: fence.source.clone(),
-            upgrade: fence.upgrade,
-            snapshot: fence.snapshot,
-            enforcement: fence.enforcement_digest,
-            observation: fence.observation_digest,
-            route: self.route_digest.ok_or(Error::InvalidState)?,
-        })
-    }
     pub fn new(prepared: native::Prepared, bounds: native::Bounds) -> Self {
         Self {
             prepared,

@@ -11,13 +11,6 @@ use zeroize::Zeroizing;
 busbar_contract::own_seal!(SpoolOwner);
 
 impl NativeSnapshot {
-    /// The host-added interpreted table ordinal, available only after complete evidence admission.
-    pub fn interpreted_table(&self) -> Option<usize> {
-        self.interpretation
-            .as_ref()
-            .map(|view| view.chunks_table() as usize)
-    }
-
     /// Capture bounded facts from this same retained native source, and admit complete original
     /// coverage before exposing the resulting immutable archive to logical migration.
     #[allow(clippy::too_many_arguments)]
