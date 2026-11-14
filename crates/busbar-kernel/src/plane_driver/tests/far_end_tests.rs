@@ -1781,12 +1781,11 @@ async fn a_dial_whose_auth_refuses_or_fails_records_nothing_against_the_destinat
 
 #[test]
 fn the_head_wipes_its_auth_values() {
-    let mut head = Head(vec![
-        ("authorization".into(), b"Bearer sk-test".to_vec()),
-        ("content-type".into(), b"application/json".to_vec()),
-    ]);
+    let mut head = busbar_contract::conn::OwnedHead::default();
+    head.push("authorization".into(), b"Bearer sk-test".to_vec());
+    head.push("content-type".into(), b"application/json".to_vec());
     head.wipe();
-    assert!(head.0.iter().all(|(_, v)| v.iter().all(|b| *b == 0)));
+    assert!(head.view().iter().all(|(_, v)| v.iter().all(|b| *b == 0)));
 }
 
 #[test]
