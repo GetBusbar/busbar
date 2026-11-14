@@ -1345,17 +1345,6 @@ pub const METERING_OVERFLOW_KEY_ID: &str = "__busbar_pending_overflow__";
 
 pub const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
 
-pub fn accrue_pending(
-    pending: &mut HashMap<MeterKey, MeterCounts>,
-    key: MeterKey,
-    add: MeterCounts,
-    cap: usize,
-    warn: &CoalesceWarn,
-) {
-    accrue_pending_checked(pending, key, add, cap, warn)
-        .expect("metering accumulation exceeds Count range");
-}
-
 fn accrue_pending_checked(
     pending: &mut HashMap<MeterKey, MeterCounts>,
     key: MeterKey,
