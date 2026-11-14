@@ -108,17 +108,44 @@ impl Hash for Fields<'_> {
     }
 }
 
-// RED STUB (TRANSPORT-TLS T9b, rejected forms): a lookup hashes every field again, and two keys
-// with the same `hash` are taken for the same key.
+/// A lookup hashes only the key's `hash` (its fields were hashed once, by [`Pools::keyed`]); the
+/// map's own SipHash runs over that one `u64`.
 impl Hash for PoolKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Fields(self).hash(state);
+        state.write_u64(self.hash);
     }
 }
 
+/// Every field, not the hash alone: two keys whose hashes collide are still two keys, and a line
+/// is never lent across them.
 impl PartialEq for PoolKey {
     fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash
+        let PoolKey {
+            owner,
+            need,
+            door,
+            authority,
+            secure,
+            name,
+            class,
+            reach,
+            anchored_as,
+            trust,
+            sealed,
+            hash,
+        } = self;
+        *hash == other.hash
+            && *owner == other.owner
+            && *need == other.need
+            && *door == other.door
+            && *secure == other.secure
+            && *class == other.class
+            && *reach == other.reach
+            && *authority == other.authority
+            && *name == other.name
+            && *anchored_as == other.anchored_as
+            && *trust == other.trust
+            && *sealed == other.sealed
     }
 }
 
