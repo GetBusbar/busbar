@@ -74,7 +74,7 @@ impl SlotRow {
             unix_seconds: self.observed,
         };
         let decision = match self.verdict {
-            Verdict::Applied => Decision::Applied(Secret(Vec::new(), std::marker::PhantomData)),
+            Verdict::Applied => Decision::Applied(Secret::default()),
             Verdict::Conflict => Decision::ConditionConflict,
             Verdict::TimeGuard => Decision::TimeGuardFailed { observed_at },
         };

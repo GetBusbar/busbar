@@ -227,48 +227,35 @@ fn scan_semantic_errors_never_write() {
 }
 
 #[test]
-fn commit_short_replay_retains_observation_and_failure_uncertainty() {
+fn commit_answers_carry_no_result_bytes_and_keep_failure_uncertainty() {
     let decision = owned::Decision::Applied(Secret::<_, Own>::held(vec![4, 5]));
-    let mut short = [42];
-    let mut input = blank_in::<wire::CommitIn>();
-    input.result = HostBuf {
-        ptr: short.as_mut_ptr(),
-        cap: short.len(),
-    };
-    let out = commit(&input, observed(), Ok(&decision), &mut short).unwrap();
-    assert_eq!(short, [42]);
-    assert_eq!(
-        response::commit(Outcome::Failed, &input, &out, &short, 1000).unwrap_err(),
-        ResponseError::Short {
-            needed_items: 0,
-            needed_bytes: 2
-        }
-    );
-    let mut bytes = [42; 2];
-    input.result = HostBuf {
-        ptr: bytes.as_mut_ptr(),
-        cap: bytes.len(),
-    };
-    let out = commit(&input, observed(), Ok(&decision), &mut bytes).unwrap();
+    let input = blank_in::<wire::CommitIn>();
+    let out = commit(&input, observed(), Ok(&decision)).unwrap();
     assert_eq!(out.observed_at, 123);
-    let owned::Decision::Applied(value) =
-        response::commit(Outcome::Ready, &input, &out, &bytes, 1000).unwrap()
+    assert_eq!(out.code, wire::COMMIT_APPLIED);
+    let owned::Decision::Applied(value) = response::commit(Outcome::Ready, &input, &out).unwrap()
     else {
         panic!()
     };
-    assert_eq!(value.0, [4, 5]);
-    let out = commit::<Own>(&input, observed(), Err(owned::Failure::Unknown), &mut bytes).unwrap();
+    assert!(value.0.is_empty(), "stores never echo result bytes");
+    for (decision, code) in [
+        (owned::Decision::<Own>::Fenced, wire::COMMIT_FENCED),
+        (owned::Decision::Stale, wire::COMMIT_STALE),
+    ] {
+        let out = commit(&input, observed(), Ok(&decision)).unwrap();
+        assert_eq!(out.code, code);
+    }
+    let out = commit::<Own>(&input, observed(), Err(owned::Failure::Unknown)).unwrap();
     assert_eq!(
-        response::commit(Outcome::Failed, &input, &out, &bytes, 1000).unwrap_err(),
+        response::commit(Outcome::Failed, &input, &out).unwrap_err(),
         ResponseError::Failure(owned::Failure::Unknown)
     );
-    let out = commit::<Own>(&input, observed(), Err(owned::Failure::Refused), &mut bytes).unwrap();
+    let out = commit::<Own>(&input, observed(), Err(owned::Failure::Refused)).unwrap();
     assert_eq!(
-        response::commit(Outcome::Refused, &input, &out, &bytes, 1000).unwrap_err(),
+        response::commit(Outcome::Refused, &input, &out).unwrap_err(),
         ResponseError::Failure(owned::Failure::Refused)
     );
 }
-
 #[test]
 fn clock_and_commit_require_valid_agreed_observation() {
     let out = clock(Ok(observed())).unwrap();
@@ -281,12 +268,7 @@ fn clock_and_commit_require_valid_agreed_observation() {
         .unwrap_err(),
         EncodeError::Malformed
     );
-    let mut input = blank_in::<wire::CommitIn>();
-    let mut bytes = [42];
-    input.result = HostBuf {
-        ptr: bytes.as_mut_ptr(),
-        cap: 1,
-    };
+    let input = blank_in::<wire::CommitIn>();
     let decision: owned::Decision = owned::Decision::TimeGuardFailed {
         observed_at: observed(),
     };
@@ -295,10 +277,9 @@ fn clock_and_commit_require_valid_agreed_observation() {
         ..observed()
     };
     assert_eq!(
-        commit(&input, other, Ok(&decision), &mut bytes).unwrap_err(),
+        commit(&input, other, Ok(&decision)).unwrap_err(),
         EncodeError::Malformed
     );
-    assert_eq!(bytes, [42]);
 }
 
 #[test]
@@ -345,10 +326,6 @@ fn read_and_commit_validate_guard_before_writing() {
     assert_eq!(items[0].found, 99);
     assert_eq!(bytes, [42]);
     let mut commit_input = blank_in::<wire::CommitIn>();
-    commit_input.result = HostBuf {
-        ptr: bytes.as_mut_ptr(),
-        cap: bytes.len(),
-    };
     commit_input.candidate.time = wire::TimeGuard {
         flags: wire::TIME_BEFORE,
         _reserved: 0,
@@ -357,15 +334,15 @@ fn read_and_commit_validate_guard_before_writing() {
     };
     let applied = owned::Decision::Applied(Secret::new(vec![7]));
     assert_eq!(
-        commit(&commit_input, observed(), Ok(&applied), &mut bytes).unwrap_err(),
+        commit(&commit_input, observed(), Ok(&applied)).unwrap_err(),
         EncodeError::Malformed
     );
     let failed: owned::Decision = owned::Decision::TimeGuardFailed {
         observed_at: observed(),
     };
-    let out = commit(&commit_input, observed(), Ok(&failed), &mut bytes).unwrap();
+    let out = commit(&commit_input, observed(), Ok(&failed)).unwrap();
     assert!(matches!(
-        response::commit(Outcome::Ready, &commit_input, &out, &bytes, 1000).unwrap(),
+        response::commit(Outcome::Ready, &commit_input, &out).unwrap(),
         owned::Decision::TimeGuardFailed { .. }
     ));
     assert_eq!(bytes, [42]);
