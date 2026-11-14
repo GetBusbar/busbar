@@ -511,6 +511,24 @@ impl GovState {
         now: u64,
         era: RawRateEra,
     ) -> Result<(), CountError> {
+        self.record_counts_served_on(cost, key, None, pool, model, provider, units, now, era)
+    }
+
+    /// [`Self::record_counts_served_in_era`] over the budget chain the unit's admission resolved
+    /// and carried ([`crate::governance::FeeCharge::chain`]), where it carried one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_counts_served_on(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        chain: Option<&crate::cost::ChainPlan>,
+        pool: &str,
+        model: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, Count>,
+        now: u64,
+        era: RawRateEra,
+    ) -> Result<(), CountError> {
         if units.values().all(|v| v.is_zero()) {
             return Ok(());
         }
@@ -520,7 +538,7 @@ impl GovState {
         }
 
         let (_, pool) = split_plane_lane(pool);
-        let targets = match cost.chain_for(key) {
+        let targets = match cost.chain_carried(key, chain) {
             Ok(chain) => chain
                 .iter()
                 .filter(|b| b.applies_to_pool(pool))
@@ -1166,6 +1184,21 @@ impl GovState {
         now: u64,
         estimate_minor: Option<i64>,
     ) -> Result<(), LimitBlocked> {
+        self.check_observation_admission_on(cost, key, None, pool, now, estimate_minor)
+            .await
+    }
+
+    /// [`Self::check_observation_admission`] over the budget chain the unit resolved once for
+    /// its admission ([`crate::cost::CostModel::plan_chain`]), where it resolved one.
+    pub async fn check_observation_admission_on(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        chain: Option<&crate::cost::ChainPlan>,
+        pool: &str,
+        now: u64,
+        estimate_minor: Option<i64>,
+    ) -> Result<(), LimitBlocked> {
         use crate::persistence::observations::ObservationStore;
         use busbar_kernel_ledger::cost::NANOS_PER_CENT;
         if !ObservationStore::supports(&self.core) {
@@ -1178,7 +1211,7 @@ impl GovState {
             reason = "error: the refusal is built only when admission is blocked"
         )]
         let chain = cost
-            .chain_for(key)
+            .chain_carried(key, chain)
             .map_err(|g| LimitBlocked::MissingGroup(g.to_string()))?;
         #[expect(
             clippy::disallowed_methods,
@@ -1202,7 +1235,7 @@ impl GovState {
                 ))
             }
         }
-        let ordinary = self.ordinary_budget_state(cost, key, now);
+        let ordinary = self.ordinary_budget_state_on(cost, &chain, now);
         for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
             let window = budget_window(bucket.window, now);
             let total = store
@@ -1358,6 +1391,15 @@ impl GovState {
                 return Vec::new();
             }
         };
+        self.ordinary_budget_state_on(cost, &chain, now)
+    }
+
+    fn ordinary_budget_state_on(
+        &self,
+        cost: &crate::cost::CostModel,
+        chain: &crate::cost::Chain<'_>,
+        now: u64,
+    ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         let mut out = Vec::with_capacity(chain.len());
         for bucket in chain.iter() {
             let window = budget_window(bucket.window, now);
@@ -1480,7 +1522,7 @@ impl GovState {
         pool: &str,
         now: u64,
     ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(cost, key, pool, now, Some(0))
+        self.admit_checked(cost, key, pool, now, Some(0), None)
     }
 
     pub fn try_admit_estimated(
@@ -1510,6 +1552,7 @@ impl GovState {
             pool,
             now,
             cost.estimate_counts_minor(models, expected),
+            None,
         )
     }
 
@@ -1520,6 +1563,7 @@ impl GovState {
         pool: &str,
         now: u64,
         estimate: Option<i64>,
+        carried: Option<&crate::cost::ChainPlan>,
     ) -> Result<AdmitGrant, LimitBlocked> {
         let (plane, pool) = split_plane_lane(pool);
 
@@ -1528,7 +1572,7 @@ impl GovState {
             reason = "error: the refusal is built only when admission is blocked"
         )]
         let missing = |g: &str| LimitBlocked::MissingGroup(g.to_string());
-        let chain = cost.chain_for(key).map_err(missing)?;
+        let chain = cost.chain_carried(key, carried).map_err(missing)?;
 
         // Chains are a handful of buckets deep: the admission scratch lives on the stack.
         let mut buckets: ChainScratch<&crate::cost::ChainBucket<'_>> = ChainScratch::new();

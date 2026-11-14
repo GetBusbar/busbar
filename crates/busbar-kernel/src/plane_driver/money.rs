@@ -538,7 +538,7 @@ impl PlaneMoney {
         let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&money.pool);
         let chain = money
             .cost
-            .chain_for(&money.key)
+            .chain_carried(&money.key, money.charge.chain())
             .map_err(|_| Refusal::Unavailable)?;
         let targets = chain
             .iter()
@@ -968,7 +968,7 @@ impl PlaneMoney {
             *previous = previous.checked_add(*count).ok()?;
         }
         let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&m.pool);
-        let targets = match m.cost.chain_for(&m.key) {
+        let targets = match m.cost.chain_carried(&m.key, m.charge.chain()) {
             Ok(chain) => chain
                 .iter()
                 .filter(|bucket| bucket.applies_to_pool(pool))
@@ -1054,9 +1054,10 @@ impl PlaneMoney {
             tracing::error!("exact unit count overflow refused at settlement");
             return;
         };
-        if let Err(error) = self.gov.record_counts_served_in_era(
+        if let Err(error) = self.gov.record_counts_served_on(
             &m.cost,
             &m.key,
+            m.charge.chain(),
             &m.pool,
             &m.lane,
             provider,
