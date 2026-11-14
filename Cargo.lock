@@ -376,6 +376,7 @@ dependencies = [
  "dimpl",
  "futures",
  "libc",
+ "mime",
  "rcgen",
  "ring",
  "rustls",

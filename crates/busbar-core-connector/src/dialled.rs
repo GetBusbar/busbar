@@ -1133,27 +1133,20 @@ pub(crate) fn composed_body(
 }
 
 /// The `boundary` of a `multipart/form-data` content type (RFC 7578, RFC 2046 section 5.1.1),
+/// parsed by `mime` (quoted parameter values included), then held to the RFC 2046 `bchars` set and
+/// the 1..=70 length.
 fn form_boundary(content_type: &str) -> Option<String> {
-    let mut params = content_type.split(';');
-    if !params
-        .next()?
-        .trim()
-        .eq_ignore_ascii_case("multipart/form-data")
-    {
+    let parsed: mime::Mime = content_type.trim().parse().ok()?;
+    if parsed.essence_str() != "multipart/form-data" {
         return None;
     }
-    let boundary = params.find_map(|p| {
-        let (name, value) = p.split_once('=')?;
-        name.trim()
-            .eq_ignore_ascii_case("boundary")
-            .then(|| value.trim().trim_matches('"').to_string())
-    })?;
+    let boundary = parsed.get_param(mime::BOUNDARY)?.as_str();
 
     let fits = (1..=70).contains(&boundary.len())
         && boundary
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"'()+_,-./:=? ".contains(&b));
-    fits.then_some(boundary)
+    fits.then(|| boundary.to_owned())
 }
 
 #[cfg(test)]

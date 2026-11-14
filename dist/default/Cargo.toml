@@ -1099,6 +1099,8 @@ loom = "0.7"
 # transports rely on directly instead of reaching it by accident. Pure computation: no allocator,
 # no I/O, no platform surface beyond the SIMD it selects at runtime.
 memchr = "2"
+# Already in both lockfiles (hyper, axum): the content-type parameter grammar, quoted values included.
+mime = "0.3.17"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 # THE OAUTH 2.1 AUTHORIZATION SERVER (scope item A of 1.5.5).
