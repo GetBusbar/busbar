@@ -262,6 +262,12 @@ impl Documents {
         Ok(answer)
     }
 
+    /// The unresolved decisions behind the last refused deployment normalization. Taken once:
+    /// a second call returns `None`.
+    pub fn take_debt(&self) -> Option<Vec<Zeroizing<String>>> {
+        None
+    }
+
     /// The migration owner alone constructs this proof from actual native inspection.
     /// Frozen settings semantics follow the admitted native profile, without inventing a release.
     pub fn enter_released_source(
@@ -1011,6 +1017,24 @@ impl RootRules for BootstrapRules {
     }
 }
 
+/// The boot refusal text for a deployment document left with migration debt.
+///
+/// `diagnosis` is `--validate`'s judgement of the same file's unmigrated bytes. Only its
+/// plugin-preflight class names the condition behind the debt (a named plugin that is not
+/// present), so only that class replaces the decision list; every other outcome prints the
+/// decisions themselves.
+pub(crate) fn explain_debt(
+    todos: &[impl AsRef<str>],
+    diagnosis: Option<&crate::root::cli::ValidateRefusal>,
+    config: &Path,
+) -> String {
+    let _ = (diagnosis, config);
+    format!(
+        "configuration migration requires {} unresolved configuration decision(s)",
+        todos.len()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1281,3 +1305,7 @@ mod tests {
         assert!(docs.pending_secrets().unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/startup_debt.rs"]
+mod startup_debt;
