@@ -3,7 +3,7 @@
 
 //! THE PROXY ROUTE CHOICE: which proxy, if any, a dial goes through. The connector reads the
 
-use std::net::IpAddr;
+use hyper_util::client::proxy::matcher::Matcher;
 use std::sync::Arc;
 
 /// ONE PROXY ENDPOINT: where to connect, and the `Proxy-Authorization` value its userinfo became.
@@ -61,12 +61,21 @@ impl ProxyHop {
 }
 
 /// THE CHOICE: the secured slot, the plain slot, and the hosts exempt from both.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ProxyChoice {
     secured: Option<Arc<ProxyHop>>,
     plain: Option<Arc<ProxyHop>>,
-    exempt: NoProxy,
+    /// The exemption list, matched by hyper-util's `NO_PROXY` matcher (curl's rules, as reqwest):
+    /// `*` exempts every named host, an IP literal or CIDR block matches an IP-literal host, and a
+    /// domain matches exactly or as a `.`-boundary suffix, case-insensitively. The matcher answers
+    /// only whether a host is exempt; its proxy slot is the fixed [`EXEMPTION_PROBE`], and the
+    /// hops above are what a dial goes through.
+    exempt: Matcher,
 }
+
+/// The matcher's placeholder proxy: it intercepts exactly the hosts the exemption list does not
+/// name, so "intercepted" reads as "not exempt". Never dialled.
+const EXEMPTION_PROBE: &str = "http://exemption.invalid";
 
 impl ProxyChoice {
     /// The choice of a `secured` slot, a `plain` slot, and the exemption list `exempt` as its
@@ -75,14 +84,14 @@ impl ProxyChoice {
         Self {
             secured,
             plain,
-            exempt: NoProxy::parse(exempt),
+            exempt: Matcher::builder().all(EXEMPTION_PROBE).no(exempt).build(),
         }
     }
 
     /// The per-dial choice — `None` → direct (the host is exempt, or no proxy is set for the
     #[must_use]
     pub fn select(&self, secured_target: bool, target_host: &str) -> Option<Arc<ProxyHop>> {
-        if self.exempt.matches(target_host) {
+        if self.exempts(target_host) {
             return None;
         }
         if secured_target {
@@ -92,104 +101,22 @@ impl ProxyChoice {
         }
     }
 
-    /// Whether the exemption list excludes `target_host` from both slots.
+    /// Whether the exemption list excludes `target_host` (a v6 literal bare or bracketed) from both
+    /// slots. A host that is not a URI authority names nothing the list can exempt.
     #[must_use]
     pub fn exempts(&self, target_host: &str) -> bool {
-        self.exempt.matches(target_host)
+        let bracketed;
+        let authority = if target_host.parse::<std::net::Ipv6Addr>().is_ok() {
+            bracketed = format!("[{target_host}]");
+            bracketed.as_str()
+        } else {
+            target_host
+        };
+        http::Uri::builder()
+            .scheme("http")
+            .authority(authority)
+            .path_and_query("/")
+            .build()
+            .is_ok_and(|uri| self.exempt.intercept(&uri).is_none())
     }
-}
-
-/// Parsed `NO_PROXY` entries, reqwest's full rule set (hyper-util `matcher::NoProxy`, which
-/// documents itself as curl's rules): `*` matches everything; an IP literal matches exactly;
-/// a CIDR block (`10.0.0.0/8`, `fd00::/8`) matches by containment; anything else is a domain
-/// matched exactly or as a `.`-boundary suffix. Like reqwest, an IP-literal target host is
-/// checked ONLY against the IP/CIDR entries and a domain host ONLY against the domain
-/// entries.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NoProxy {
-    entries: Vec<NoProxyEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum NoProxyEntry {
-    MatchAll,
-    /// Lowercased, leading dot stripped (`.google.com` ≡ `google.com`, per curl/reqwest).
-    Domain(String),
-    Ip(IpAddr),
-    /// Network address + prefix length, validated ≤32 (v4) / ≤128 (v6) at parse.
-    Cidr(IpAddr, u8),
-}
-
-impl NoProxy {
-    /// Comma-separated entries, whitespace trimmed, empties dropped. Entry classification
-    fn parse(raw: &str) -> Self {
-        let mut entries = Vec::new();
-        for part in raw.split(',') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            if part == "*" {
-                entries.push(NoProxyEntry::MatchAll);
-                continue;
-            }
-            if let Some((addr, len)) = part.split_once('/') {
-                if let (Ok(addr), Ok(len)) = (addr.parse::<IpAddr>(), len.parse::<u8>()) {
-                    let max = if addr.is_ipv4() { 32 } else { 128 };
-                    if len <= max {
-                        entries.push(NoProxyEntry::Cidr(addr, len));
-                        continue;
-                    }
-                }
-            } else if let Ok(addr) = part.parse::<IpAddr>() {
-                entries.push(NoProxyEntry::Ip(addr));
-                continue;
-            }
-            entries.push(NoProxyEntry::Domain(
-                part.trim_start_matches('.').to_ascii_lowercase(),
-            ));
-        }
-        NoProxy { entries }
-    }
-
-    fn matches(&self, target_host: &str) -> bool {
-        let bare = target_host.trim_start_matches('[').trim_end_matches(']');
-        let ip: Option<IpAddr> = bare.parse().ok();
-        let host = target_host.to_ascii_lowercase();
-        self.entries.iter().any(|entry| match entry {
-            NoProxyEntry::MatchAll => true,
-            NoProxyEntry::Ip(a) => ip == Some(*a),
-            NoProxyEntry::Cidr(net, len) => ip.is_some_and(|h| cidr_contains(net, *len, &h)),
-            NoProxyEntry::Domain(d) => {
-                ip.is_none()
-                    && (host == *d
-                        || (host.len() > d.len()
-                            && host.ends_with(d.as_str())
-                            && host.as_bytes()[host.len() - d.len() - 1] == b'.'))
-            }
-        })
-    }
-}
-
-/// CIDR containment by prefix-length bit compare over octets — the ~10 lines that make an
-fn cidr_contains(net: &IpAddr, prefix: u8, addr: &IpAddr) -> bool {
-    match (net, addr) {
-        (IpAddr::V4(n), IpAddr::V4(a)) => octets_prefix_eq(&n.octets(), &a.octets(), prefix),
-        (IpAddr::V6(n), IpAddr::V6(a)) => octets_prefix_eq(&n.octets(), &a.octets(), prefix),
-        _ => false,
-    }
-}
-
-/// The first `prefix` bits of `net` and `addr` are equal. `prefix` is pre-validated against
-fn octets_prefix_eq(net: &[u8], addr: &[u8], prefix: u8) -> bool {
-    let whole = usize::from(prefix / 8);
-    let rem = prefix % 8;
-    if net[..whole] != addr[..whole] {
-        return false;
-    }
-    if rem == 0 {
-        return true;
-    }
-    let mask = 0xffu8 << (8 - rem);
-    (net[whole] & mask) == (addr[whole] & mask)
 }
