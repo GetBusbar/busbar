@@ -188,9 +188,31 @@ fn retired_worker_environment_never_overrides_the_configured_dispatcher() {
             WORKERS + 1,
             "retired environment cannot override configured workers"
         );
+        let notice = format!(
+            "[warn] {}: BUSBAR_WORKER_THREADS is set but ignored",
+            busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner()
+        );
+        let notices: Vec<&str> = out
+            .lines()
+            .filter(|line| line.starts_with(&notice) && line.contains("advanced.worker_threads"))
+            .collect();
+        assert_eq!(
+            notices.len(),
+            1,
+            "decision 160: retired runtime input is ignored and reported, never honoured: {out}"
+        );
         assert!(
-            !out.contains("BUSBAR_WORKER_THREADS"),
-            "retired runtime input is ignored, not deprecated: {out}"
+            out.lines()
+                .filter(|line| line.contains("BUSBAR_WORKER_THREADS"))
+                .all(|line| !line.contains("DEPRECATED") && !line.contains("honored")),
+            "decision 160: retired runtime input is ignored and reported, never honoured: {out}"
+        );
+        let listening = out
+            .find("busbar listening")
+            .expect("boot() waited for the listener line");
+        assert!(
+            out.find(notices[0]).is_some_and(|at| at < listening),
+            "the notice prints before the listener: {out}"
         );
     }
 }

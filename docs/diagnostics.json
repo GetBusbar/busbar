@@ -499,7 +499,7 @@
     "title": "A deprecated environment variable is set and still honored — RETIRED",
     "severity": "actionable",
     "summary": "RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.",
-    "action": "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md.",
+    "action": "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.",
     "since": "1.5.0",
     "retired": true
   },

@@ -411,6 +411,11 @@ fn main() {
     for w in warnings {
         eprintln!("{w}");
     }
+    // Retired 1.5.x launch variables are never read; a set one is reported (BUSBAR-3029) here, where
+    // 1.5.5 printed its deprecation line, before the config load that can refuse.
+    for w in root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
+        eprintln!("{w}");
+    }
     #[cfg(not(unix))]
     let worker_threads = WORKERS.0;
 
