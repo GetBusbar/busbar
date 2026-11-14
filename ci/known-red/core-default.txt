@@ -1,5 +1,3 @@
-busbar-default::bin/busbar distribution::admin_application_admin_stuck_key_sentinel::a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar distribution::admin_configuration_contracts::test_admin_v1_put_auth_refuses_clearing_a_protected_chain	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::admin_cross_plane::openapi::openapi_json_matches_committed_file	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::admin_installed_schema::installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stale_bytes	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::admin_installed_schema::plugin_configuration_inactive_signed_archives_report_declarations_without_loading_code	CDT-KNOWN-RED	stable
