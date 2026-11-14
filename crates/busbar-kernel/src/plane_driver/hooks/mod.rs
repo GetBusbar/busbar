@@ -1300,6 +1300,10 @@ impl ProjectArena {
 #[path = "tests/project_arena_custody_tests.rs"]
 mod project_arena_custody_tests;
 
+#[cfg(test)]
+#[path = "tests/project_copy_tests.rs"]
+mod project_copy_tests;
+
 const SIGNALS_CAP: usize = 16;
 const MESSAGES_CAP: usize = 64;
 
@@ -1433,7 +1437,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             system: opt(o.prompt.system),
             turns,
             end_user: opt(o.end_user),
-            rewritten: span(o.rewritten),
+            rewritten: span(o.rewritten).inspect(|_| {
+                busbar_contract::stage_probe::tick(
+                    busbar_contract::stage_probe::Derive::ProjectCopy,
+                );
+            }),
             projected: span(o.body),
             rewrite_not_applicable: v.flags
                 & busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
@@ -1612,9 +1620,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
                     match self.project(Some(&bytes), true) {
-                        Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => {
-                            if let Some(body) = &next.rewritten {
-                                self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
+                        Ok(mut next) if next.rewritten.is_some() || rw.messages.is_empty() => {
+                            if let Some(body) = next.rewritten.take() {
+                                self.lock().body = Some(bytes::Bytes::from(body));
                             }
                             view = next;
                         }
