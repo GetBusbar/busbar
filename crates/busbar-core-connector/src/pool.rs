@@ -4,6 +4,7 @@
 //! THE PER-WORKER POOLS (`BUSBAR-1.6.0.md` THE DESIGN, connections: the connector owns "per-worker
 
 use std::collections::HashMap;
+use std::hash::{BuildHasher, Hash, Hasher, RandomState};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -38,7 +39,10 @@ impl Default for PoolPosture {
 }
 
 /// What a pooled connection was dialled for; an open reuses it only for the same.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Built with `hash: 0` and sealed by [`Pools::keyed`], which hashes every field once; the map
+/// then hashes only that `u64`. Two keys are the same only when every field is.
+#[derive(Debug, Clone)]
 pub(crate) struct PoolKey {
     /// The instance whose open dialled it: a line is never lent to another instance.
     pub(crate) owner: InstanceId,
@@ -67,7 +71,58 @@ pub(crate) struct PoolKey {
     /// The seal of trust anchors the dial was held to (`None`: none): a line verified under one
     /// seal is never lent to an open held to another, even of the same destination sealed again.
     pub(crate) sealed: Option<Same<Sealed>>,
+    /// Every other field, hashed once by [`Pools::keyed`] with the pools' own `RandomState`.
+    pub(crate) hash: u64,
 }
+
+/// Every field of a key but its `hash`: what [`Pools::keyed`] hashes, once per key.
+struct Fields<'a>(&'a PoolKey);
+
+impl Hash for Fields<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let PoolKey {
+            owner,
+            need,
+            door,
+            authority,
+            secure,
+            name,
+            class,
+            reach,
+            anchored_as,
+            trust,
+            sealed,
+            hash: _,
+        } = self.0;
+        owner.hash(state);
+        need.hash(state);
+        door.hash(state);
+        authority.hash(state);
+        secure.hash(state);
+        name.hash(state);
+        class.hash(state);
+        reach.hash(state);
+        anchored_as.hash(state);
+        trust.hash(state);
+        sealed.hash(state);
+    }
+}
+
+// RED STUB (TRANSPORT-TLS T9b, rejected forms): a lookup hashes every field again, and two keys
+// with the same `hash` are taken for the same key.
+impl Hash for PoolKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Fields(self).hash(state);
+    }
+}
+
+impl PartialEq for PoolKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash
+    }
+}
+
+impl Eq for PoolKey {}
 
 /// One trust a dial was held to (a client config, a seal of anchors), by identity: two are the
 /// same only when they are one. The key holds it, so its address is never reused while a line
@@ -113,6 +168,8 @@ pub(crate) struct Pools {
     epoch: Instant,
     /// When the earliest idle line's time runs out, in nanoseconds since [`Self::epoch`]
     reap_due: AtomicU64,
+    /// The process's key hasher: [`Self::keyed`] hashes each key's fields with it once.
+    keys: RandomState,
 }
 
 impl std::fmt::Debug for Pools {
@@ -141,7 +198,14 @@ impl Pools {
             shards: (0..count).map(|_| Mutex::new(HashMap::new())).collect(),
             epoch: Instant::now(),
             reap_due: AtomicU64::new(u64::MAX),
+            keys: RandomState::new(),
         }
+    }
+
+    /// `key` sealed for the pools: its fields hashed once, here, into its `hash`.
+    pub(crate) fn keyed(&self, mut key: PoolKey) -> PoolKey {
+        key.hash = self.keys.hash_one(Fields(&key));
+        key
     }
 
     /// The applied posture, copied before any connection or plugin is driven.

@@ -3066,7 +3066,7 @@ impl Connector {
         let pooled = (poolable && self.pools.keeps() && desc.within.is_empty()).then(|| {
             (
                 self.pools.shard(),
-                PoolKey {
+                self.pools.keyed(PoolKey {
                     owner: caller,
                     need,
                     door: Arc::as_ptr(&door).cast::<()>() as usize,
@@ -3078,7 +3078,8 @@ impl Connector {
                     anchored_as,
                     trust,
                     sealed,
-                },
+                    hash: 0,
+                }),
             )
         });
         let mut planned = planned;
