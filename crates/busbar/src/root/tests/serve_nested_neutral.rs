@@ -153,3 +153,43 @@ async fn a_rendered_nested_refusal_is_opaque_and_obeys_the_same_body_bound() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_whole_nested_refusal_head_keeps_its_rendered_fields_and_states_no_length() {
+    use busbar_kernel::host_services::NestReply;
+    use busbar_kernel::plane_driver::CallerEnd as _;
+    let (caller, reply) = super::super::IngressCaller::new();
+    let fields = vec![
+        (b"content-type".to_vec(), b"text/plain".to_vec()),
+        (b"retry-after".to_vec(), b"1".to_vec()),
+    ];
+    let sent = fields.clone();
+    let body = b"refused:429:over_budget";
+    let unit = async move {
+        // The HTTP length rule belongs to the HTTP door's caller; a nested caller's head stays
+        // the opaque field bytes the refusal rendered.
+        caller.head_whole(429, sent, body.len());
+        assert!(caller.write(body).await);
+        None
+    };
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        reply.answer_nested(Box::pin(unit)),
+    )
+    .await
+    .expect("the nested whole answer is collected");
+    let NestReply::Answered {
+        status,
+        fields: got,
+        body: collected,
+    } = reply
+    else {
+        panic!("reply not answered")
+    };
+    assert_eq!(status, 429);
+    assert_eq!(got, fields, "no framing field is added on a nested caller");
+    assert!(!got
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(b"content-length")));
+    assert_eq!(collected, body);
+}

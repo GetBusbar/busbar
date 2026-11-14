@@ -1589,6 +1589,26 @@ pub(in crate::root) async fn serve_governed_test<I>(
     serve(io, framer, Router::new(), secured, timeout, stop).await;
 }
 
+/// One response op the admitted request actor sent, as the connection writer receives it.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::root) enum WireOp {
+    Head {
+        status: u32,
+        fields: Vec<u8>,
+        end: bool,
+    },
+    Data {
+        bytes: Bytes,
+        end: bool,
+    },
+    Trailers,
+    Refuse {
+        status: u32,
+        head_sent: bool,
+    },
+}
+
 /// Exercise the production admitted request actor with decoded body frames.
 #[cfg(test)]
 pub(in crate::root) async fn serve_admitted_body_test(
@@ -1596,6 +1616,23 @@ pub(in crate::root) async fn serve_admitted_body_test(
     admission: busbar_kernel::inbound::RequestAdmission,
     pieces: Vec<Result<Bytes, &'static str>>,
 ) -> Option<u32> {
+    serve_admitted_wire_test(routes, admission, pieces)
+        .await
+        .iter()
+        .rev()
+        .find_map(|op| match op {
+            WireOp::Head { status, .. } | WireOp::Refuse { status, .. } => Some(*status),
+            _ => None,
+        })
+}
+
+/// The same production admitted request actor, returning every response op it sent in order.
+#[cfg(test)]
+pub(in crate::root) async fn serve_admitted_wire_test(
+    routes: Arc<crate::root::serve::DataRoutes>,
+    admission: busbar_kernel::inbound::RequestAdmission,
+    pieces: Vec<Result<Bytes, &'static str>>,
+) -> Vec<WireOp> {
     let (body_tx, body_rx) = mpsc::unbounded_channel();
     for piece in pieces {
         body_tx.send(piece.map_err(BodyError::from)).unwrap();
@@ -1604,30 +1641,40 @@ pub(in crate::root) async fn serve_admitted_body_test(
     let (tx, mut rx) = mpsc::unbounded_channel();
     let emitter = Emitter { stream: 1, tx };
     let collect = async move {
-        let mut status = None;
+        let mut wire = Vec::new();
         while let Some((_, op)) = rx.recv().await {
             match op {
                 Op::Head {
-                    status: stated,
+                    status,
+                    fields,
+                    end,
                     done,
-                    ..
                 } => {
-                    status = Some(stated);
+                    wire.push(WireOp::Head {
+                        status,
+                        fields,
+                        end,
+                    });
                     let _ = done.send(true);
                 }
-                Op::Data { done, .. } | Op::Trailers { done, .. } => {
+                Op::Data { bytes, end, done } => {
+                    wire.push(WireOp::Data { bytes, end });
                     let _ = done.send(true);
                 }
-                Op::Refuse { status: stated, .. } => {
-                    status = Some(stated);
+                Op::Trailers { done, .. } => {
+                    wire.push(WireOp::Trailers);
+                    let _ = done.send(true);
+                }
+                Op::Refuse { status, head_sent } => {
+                    wire.push(WireOp::Refuse { status, head_sent });
                 }
                 Op::Ended { .. } => break,
                 _ => {}
             }
         }
-        status
+        wire
     };
-    let (_, status) = tokio::join!(
+    let (_, wire) = tokio::join!(
         serve_data(
             routes,
             admission,
@@ -1645,7 +1692,7 @@ pub(in crate::root) async fn serve_admitted_body_test(
         ),
         collect
     );
-    status
+    wire
 }
 
 #[allow(clippy::too_many_arguments)]

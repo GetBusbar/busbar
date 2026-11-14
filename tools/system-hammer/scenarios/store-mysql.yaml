@@ -1,0 +1,37 @@
+name: store-mysql
+group: stores
+description: openai>openai with keys auth, the mysql store plugin against mysql in docker.
+plugins: [busbar-store-mysql]
+docker:
+  - { var: MY_PORT, image: "mysql:8", port: 3306, env: { MYSQL_ROOT_PASSWORD: hammer, MYSQL_DATABASE: busbar }, ready_log: "ready for connections. Version", ready_count: 2 }
+config: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m-openai: { provider: openai }
+  plugins:
+    enabled: true
+    dir: "{WORK}/plugins"
+    trust: { allow_unsigned: true }
+  store: { module: mysql, settings: { url: "mysql://root:hammer@127.0.0.1:{MY_PORT}/busbar" } }
+providers: |
+  openai: { protocol: openai, base_url: "{MOCK}" }
+setup:
+  - mint_key: { as: KEY, group: bench }
+llm_matrix:
+  - { ingress: [openai], egress: [openai], key: "{KEY}", shape: { closed: 32 } }

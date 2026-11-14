@@ -2068,3 +2068,45 @@ fn validate_accepts_a_reference_at_a_planes_declared_wildcard_path() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn validate_refuses_every_public_url_that_boot_refuses() {
+    for (url, needle) in [
+        (
+            "ftp://127.0.0.1",
+            "public_url must be an absolute http(s) URL (got 'ftp://127.0.0.1')",
+        ),
+        ("https://", "public_url 'https://' has no host"),
+        (
+            "http://example.com",
+            "public_url must use https for a public host (got 'http://example.com')",
+        ),
+        (
+            "https://127.0.0.1/v1",
+            "public_url must be a bare origin (scheme://host[:port]) with no path",
+        ),
+        (
+            "https://169.254.169.254",
+            "targets a blocked cloud-metadata host '169.254.169.254'",
+        ),
+    ] {
+        let dir = fixture_dir("public-url");
+        write_configs(&dir, &format!("public_url: \"{url}\"\n"));
+        let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        assert_eq!(
+            code, 1,
+            "{url}: --validate must refuse what boot refuses; stdout={stdout} stderr={stderr}"
+        );
+        assert!(stderr.contains(needle), "{url}: names the rule: {stderr}");
+        assert!(!stdout.contains("ok: config valid"), "{url}: {stdout}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let dir = fixture_dir("public-url-ok");
+    write_configs(&dir, "public_url: \"https://busbar.example.com\"\n");
+    assert_eq!(
+        run_busbar(&dir, &["--validate"]).0,
+        0,
+        "a bare https origin still validates"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

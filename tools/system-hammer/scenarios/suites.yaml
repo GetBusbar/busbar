@@ -1,0 +1,58 @@
+# Named lists of scenarios. `default` is the per-commit suite (<= 10 min on one CI runner with the
+# short windows); `full` adds the 72-case dialect matrix, the h2c/open-loop LLM shapes and every
+# scenario that needs plugin tarballs (--plugins-dir) or docker.
+prove: [llm-openai-openai, stub-plugins]
+default:
+  - stub-plugins
+  - llm-openai-openai
+  - llm-core
+  - llm-bodies
+  - llm-tools
+  - plane-mcp
+  - plane-a2a
+  - plane-streams
+  - plane-decisions
+  - auth
+  - hooks
+  - hooks-webrequest
+  - store-memory
+  - store-sqlite
+  - store-postgres
+  - store-valkey
+  - store-mysql
+  - export-prometheus
+  - export-otlp
+  - export-file
+  - secrets
+  - secrets-vault
+  - admin-ops
+  - production-mix
+full:
+  - stub-plugins
+  - llm-openai-openai
+  - llm-matrix
+  - llm-bodies
+  - llm-tools
+  - llm-h2c
+  - plane-mcp
+  - plane-a2a
+  - plane-streams
+  - plane-decisions
+  - auth
+  - hooks
+  - hooks-webrequest
+  - store-memory
+  - store-sqlite
+  - store-postgres
+  - store-valkey
+  - store-mysql
+  - export-prometheus
+  - export-otlp
+  - export-file
+  - export-webhook
+  - secrets
+  - secrets-vault
+  - admin-ops
+  - production-mix
+stores: [store-memory, store-sqlite, store-postgres, store-valkey, store-mysql]
+planes: [plane-mcp, plane-a2a, plane-streams, plane-decisions]

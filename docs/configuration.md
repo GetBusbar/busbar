@@ -698,7 +698,7 @@ per_request_fee: 0
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `rate_card` | map | absent (usage-based pricing off) | Rates keyed by configured model and plugin-declared unit. Startup and `--validate` warn about missing model entries and open-unit rates on each lane. Quantities are still recorded; a missing rate on a present card is unpriced, not free. Configure an explicit `0` for a free unit. Existing `*_utok` fields retain their zero defaults when omitted. Invalid rates, unknown model names and undeclared unit names remain errors. Rates use MICRO-units (1e-6 abstract cost unit); `*_utok` values must be exactly representable in whole nano-units, with at most three decimal places. |
+| `rate_card` | map | absent (usage-based pricing off) | Rates keyed by configured model and plugin-declared unit. A present card must name every configured model: otherwise startup, `--validate` and `PUT /config/settings` refuse with a paste-ready zeroed stub of exactly the missing models (the card is AUTHORITATIVE and COMPLETE). A named model missing an open-unit rate only warns; quantities are still recorded and that unit is unpriced, not free. Configure an explicit `0` for a free unit. Existing `*_utok` fields retain their zero defaults when omitted. Invalid rates, unknown model names and undeclared unit names remain errors. Rates use MICRO-units (1e-6 abstract cost unit); `*_utok` values must be exactly representable in whole nano-units, with at most three decimal places. |
 | `units` | map, per entry | `{}` | Rates for OPEN (non-reserved) billable classes, alongside a model's four `*_utok` tiers: `{ <class>: <rate> }`, same MICRO-units-per-unit scale. The wire form is a non-negative integer, or an exact decimal STRING (`"0.5"`); a bare YAML/JSON float is refused — it has already lost precision through a binary double by the time serde sees it. A rate finer than 0.001 micro-units per unit, negative, or past ~1.8e16 is refused at parse ("finer than one nano-unit, the finest rate the card holds; round it to three decimal places"). A reserved class name (`input`, `output`, `cache_read`, `cache_write`) under `units:` is refused — it already has its own `*_utok` field. An unpriced class under a card that IS configured for the model REFUSES at the point it is hit, rather than silently billing `0` (see [Virtual keys and enforcement](#virtual-keys-and-enforcement)). |
 | `per_request_fee` | integer | `0` | Flat charge per request in MINOR units (hundredths of the abstract cost unit, the same unit as a `budget` limit), charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
 
@@ -776,9 +776,11 @@ it); the field-by-field grammar for each is documented in
 body bytes an A2A hop relayed both ways), and
 [voice.md](voice.md) (`streams.rate_card`). The same rule applies to every plane:
 its plugin declares the units it measures, and the host checks its configured lanes against
-those declarations. Missing rates produce warnings naming the lane and units. A missing card
-disables usage-based pricing for that plane; an incomplete present card leaves the missing
-units unpriced. Neither case discards recorded quantities. An explicit zero rate makes a unit
+those declarations. A present card must carry an entry for every configured
+lane (for example every agent under `agents:`); one silent about a lane fails boot and every apply
+with a paste-ready stub. Missing unit rates on a named lane produce warnings naming the lane and
+units. A missing card disables usage-based pricing for that plane; a named lane missing a unit
+rate leaves that unit unpriced. Neither case discards recorded quantities. An explicit zero rate makes a unit
 free. Spend-budget admission and complete cost calculations still require the relevant rates;
 a warning does not authorize treating an unknown cost as zero. `GET /usage`, `/groups/{name}/usage` and `/keys/{id}/usage` surface that refusal as
 `409 unpriced_class` (`{"error":{"code":"unpriced_class","message":"usage cannot be priced: the
@@ -1922,6 +1924,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | Groups tree faults | A `parent` that does not exist (paste-ready stub) or a cycle (the path is printed); any acyclic depth is accepted |
 | Malformed group limit | A limit without exactly one metric key, a windowed metric without `per:`, or `concurrent` with a `per:` |
 | Breaker `max_cooldown < base_cooldown` | Cooldown ceiling below the base |
+| Rate card incomplete | rate_card (or a plane's rate_card) present but missing an entry for a configured model or lane (a paste-ready zeroed stub of the missing entries is printed) |
 | Rate card names an unknown model or class | A `rate_card` key that is not a configured model, or a `units:` key the plane does not declare |
 | `auth.chain` names an unknown module | Every chain entry must be the built-in `keys` or a loaded `kind: auth` plugin |
 | `role_bindings` faults | A binding under a module not in any chain, or a bound `group` that does not exist in `groups:` |

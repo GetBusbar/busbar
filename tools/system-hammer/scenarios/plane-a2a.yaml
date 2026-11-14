@@ -1,0 +1,49 @@
+name: plane-a2a
+group: planes
+description: A2A tasks (message/send) through the a2a plane to one pinned, approved agent.
+config: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  store: { module: memory }
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m-openai: { provider: openai }
+  agents:
+    probe:
+      url: "{MOCK}/"
+      allow_private: true
+      pin: { mechanism: jws_issuer_key, key: "{CARD_ISSUER_KEY}" }
+providers: |
+  openai: { protocol: openai, base_url: "{MOCK}" }
+setup:
+  - mint_key: { as: KEY, group: bench }
+  - http: { listener: admin, path: /api/v1/admin/agents/probe/connect, save: { FP: fingerprint } }
+  - http: { listener: admin, path: /api/v1/admin/agents/probe/approve, body: '{"fingerprint":"{FP}"}' }
+  - audience_token: { as: AT, from: "{KEY}", aud: "http://{LISTEN}/a2a" }
+cases:
+  - name: message/send
+    shape: { closed: 32 }
+    requests:
+      - path: /a2a/agents/probe
+        headers: { authorization: "Bearer {AT}", content-type: application/json }
+        body: '{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","messageId":"msg-0001","parts":[{"text":"ping"}]}}}'
+        contains: TASK_STATE_COMPLETED
+    direct:
+      listener: mock
+      path: /
+      headers: { content-type: application/json }
+      body: '{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","messageId":"msg-0001","parts":[{"text":"ping"}]}}}'

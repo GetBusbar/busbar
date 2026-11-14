@@ -1,0 +1,64 @@
+name: plane-mcp
+group: planes
+description: MCP tool calls through the mcp plane to one registered server (tools/call, tools/list).
+config: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  store: { module: memory }
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m-openai: { provider: openai }
+  mcp:
+    canonical_uri: "http://{LISTEN}/mcp"
+    authorization_servers: ["http://{ADMIN}"]
+    scopes_supported: ["mcp:tools:list", "mcp:tools:call"]
+  tools:
+    probe:
+      url: "{MOCK_TLS}/mcp"
+      allow_private: true
+      tls: { ca_cert_pem: {MOCK_CA_PEM_JSON} }
+      pin: { mechanism: cert_spki, key: "{MOCK_SPKI}" }
+      tools_allow:
+        ping:
+          schema_hash: "sha256:{MCP_SCHEMA_HASH}"
+          description: "Returns the label it was given."
+providers: |
+  openai: { protocol: openai, base_url: "{MOCK}" }
+setup:
+  - mint_key: { as: KEY, group: bench }
+  - http: { listener: admin, path: /api/v1/admin/tools/probe/connect }
+  - audience_token: { as: AT, from: "{KEY}", aud: "http://{LISTEN}/mcp" }
+cases:
+  - name: tools/call
+    shape: { closed: 32 }
+    requests:
+      - path: /mcp
+        headers: { authorization: "Bearer {AT}", content-type: application/json, mcp-method: tools/call, mcp-protocol-version: "2026-07-28", Mcp-Name: probe_ping }
+        body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"probe_ping","arguments":{"label":"hammer"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+        contains: "ping: hammer"
+    direct:
+      listener: mock
+      path: /mcp
+      headers: { content-type: application/json }
+      body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ping","arguments":{"label":"hammer"}}}'
+  - name: tools/list
+    shape: { closed: 32 }
+    requests:
+      - path: /mcp
+        headers: { authorization: "Bearer {AT}", content-type: application/json, mcp-method: tools/list, mcp-protocol-version: "2026-07-28" }
+        body: '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+        contains: probe_ping

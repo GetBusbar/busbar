@@ -1,0 +1,63 @@
+name: hooks-webrequest
+group: hooks
+description: The webrequest gate (dynamic busbar-hook-webrequest plugin) calling the mock sidecar on every request.
+plugins: [busbar-hook-webrequest]
+config: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  store: { module: memory }
+  plugins:
+    enabled: true
+    dir: "{WORK}/plugins"
+    trust: { allow_unsigned: true }
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m-openai: { provider: openai }
+  hooks:
+    wr:
+      module: busbar-webrequest
+      kind: gate
+      timeout_ms: 2000
+      on_error: nothing
+      settings: { url: "{MOCK}/sidecar", timeout_ms: 2000 }
+  pools:
+    p-plain:
+      members:
+        - model: m-openai
+    p-hooked:
+      hooks: [wr]
+      members:
+        - model: m-openai
+providers: |
+  openai: { protocol: openai, base_url: "{MOCK}" }
+setup:
+  - mint_key: { as: KEY, group: bench }
+cases:
+  - name: pool, no hook (baseline)
+    shape: { closed: 32 }
+    requests:
+      - path: /v1/chat/completions
+        headers: { authorization: "Bearer {KEY}", content-type: application/json }
+        body: '{"model":"p-plain","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        contains: hammer-ok
+  - name: webrequest gate
+    shape: { closed: 32 }
+    requests:
+      - path: /v1/chat/completions
+        headers: { authorization: "Bearer {KEY}", content-type: application/json }
+        body: '{"model":"p-hooked","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        contains: hammer-ok
