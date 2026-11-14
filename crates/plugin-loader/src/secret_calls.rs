@@ -129,6 +129,10 @@ struct Loader {
 
 impl Loader {
     fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the secret module that could not be loaded"
+        )]
         let sink: Arc<dyn EnvelopeSink> = match self.logs {
             Some(logs) => Arc::new(
                 logs()
@@ -137,6 +141,7 @@ impl Loader {
             ),
             None => Arc::new(NoSink),
         };
+        // busbar:expect(bp::into_alloc, reason = "boot: a loaded secret instance keeps its label")
         let bind = Bind {
             instance: Arc::from(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
@@ -145,8 +150,13 @@ impl Loader {
 
             conns: ConnTable::serving((self.conns)()),
         };
-        crate::boot::open_candidate::<Secret>(c, bind)
-            .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the secret module that could not be loaded"
+        )]
+        let loaded = crate::boot::open_candidate::<Secret>(c, bind)
+            .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name));
+        loaded
     }
 
     fn placed(&self, c: &Candidate, opened: LoadedSecret) -> LoadedSecret {
