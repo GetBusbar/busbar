@@ -617,27 +617,20 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
         Ok(m) => m,
         Err(e) => return vec![failed(s, "-", format!("mock: {e}"))],
     };
-    let (listen, admin, pa, pb) = match (|| {
-        Ok::<_, String>((
-            gateway::free_port()?,
-            gateway::free_port()?,
-            gateway::free_port()?,
-            gateway::free_port()?,
-        ))
-    })() {
-        Ok((l, a, pa, pb)) => (
-            SocketAddr::from(([127, 0, 0, 1], l)),
-            SocketAddr::from(([127, 0, 0, 1], a)),
-            pa,
-            pb,
-        ),
+    // listen, admin, FREE_PORT_A, FREE_PORT_B: held until the gateway is spawned.
+    let ports = match gateway::Ports::reserve(4) {
+        Ok(p) => p,
         Err(e) => return vec![failed(s, "-", e)],
     };
+    let listen: SocketAddr = ([127, 0, 0, 1], ports.ports[0]).into();
+    let admin: SocketAddr = ([127, 0, 0, 1], ports.ports[1]).into();
     let signing = match gateway::signing_key(&env.bin) {
         Ok(k) => k,
         Err(e) => return vec![failed(s, "-", e)],
     };
-    let _ = std::fs::write(work.join("signing.key"), &signing);
+    if let Err(e) = std::fs::write(work.join("signing.key"), &signing) {
+        return vec![failed(s, "-", format!("signing.key: {e}"))];
+    }
     let token = match admin_token() {
         Ok(t) => t,
         Err(e) => return vec![failed(s, "-", e)],
@@ -659,8 +652,8 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
     vars.insert("CARD_ISSUER_KEY".into(), mock::card_issuer_key());
     vars.insert("MCP_SCHEMA_HASH".into(), mock::MCP_PING_SCHEMA_HASH.into());
     vars.insert("ADMIN_TOKEN".into(), token.clone());
-    vars.insert("FREE_PORT_A".into(), pa.to_string());
-    vars.insert("FREE_PORT_B".into(), pb.to_string());
+    vars.insert("FREE_PORT_A".into(), ports.ports[2].to_string());
+    vars.insert("FREE_PORT_B".into(), ports.ports[3].to_string());
 
     // Steps that must run before boot (a service account the config's env needs).
     let steps = match s.steps() {
@@ -959,6 +952,23 @@ fn merged_errors(load: &Outcome, probe: &Outcome) -> BTreeMap<String, u64> {
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    /// codeaudit r1 error-handling-5: a failed system RNG fill must never be discarded, or the
+    /// admin token degrades to `hammer-admin-` plus 32 zeros.
+    #[test]
+    fn rng_fill_result_is_never_discarded() {
+        let src = include_str!("run.rs");
+        assert!(!src
+            .lines()
+            .any(|l| l.trim_start().starts_with("let _ =") && l.contains("SecureRandom::fill")));
+    }
+
+    /// An empty request list would make the driver's `seq % n` divide by zero in every worker,
+    /// and the swallowed panics would read as a clean 0-rps run. It must be rejected up front.
+    #[test]
+    fn a_case_with_no_requests_is_rejected_before_the_driver() {
+        assert!(reqs(&[], &BTreeMap::new()).is_err());
+    }
 
     /// codeaudit r1 error-handling-7: a CPU reading that was never taken (sampler missing,
     /// thread failed, skipped/failed case) is absent from the report, not a real-looking 0.0.
