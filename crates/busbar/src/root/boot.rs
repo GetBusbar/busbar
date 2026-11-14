@@ -413,7 +413,7 @@ pub fn plugins_fetch(
 
 fn config_path() -> std::path::PathBuf {
     std::path::PathBuf::from(crate::root::cli::resolve_config_path(
-        crate::root::cli::config_path_flag().as_deref(),
+        crate::root::cli::argv().config.as_deref(),
     ))
 }
 
@@ -1105,8 +1105,7 @@ pub fn dropped_registry() -> Option<&'static crate::root::loader::PluginRegistry
 }
 
 fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
-    let path =
-        crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
+    let path = crate::root::cli::resolve_config_path(crate::root::cli::argv().config.as_deref());
     let raw = std::fs::read_to_string(path).ok()?;
     let text = busbar_kernel::config::interpolate_env_with(
         &raw,
@@ -1255,8 +1254,7 @@ pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     .map(|(instance, plane)| (instance, std::sync::Arc::new(plane)))
     .collect::<Vec<(String, DoorPlane)>>();
 
-    let path =
-        crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
+    let path = crate::root::cli::resolve_config_path(crate::root::cli::argv().config.as_deref());
     if let Some(doc) = document(std::path::Path::new(&path)) {
         let seats = doors.iter().map(|c| {
             (

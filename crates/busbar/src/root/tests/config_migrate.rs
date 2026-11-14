@@ -228,11 +228,7 @@ fn migration_paths_do_not_consume_later_provider_options() {
     ] {
         let args = [option, path, "--providers", "selected-catalog.yaml"];
         assert_eq!(
-            crate::root::cli::value_flag(
-                args.into_iter().map(str::to_owned),
-                crate::root::cli::OPTION_PROVIDERS,
-                None,
-            ),
+            crate::root::cli::Argv::parse(args).providers,
             Some("selected-catalog.yaml".to_owned()),
             "the literal migration path {path} is not a providers option"
         );
