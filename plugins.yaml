@@ -317,7 +317,7 @@ plugins:
     description: "First-party signed kind:auth plugin cdylib: the built-in admin-tokens admin-auth module (the single operator admin token, compared in constant time), packaged as a droppable busbar plugin."
     declares: "auth-admin-tokens/declares.json"
     # The built-in operator admin-auth module, moved out of busbar (owner move-out ruling; ARCHITECT
-    # 2026-09-27). busbar LINKS it at a pinned rev (busbar-kernel, feature `auth-admin-tokens`); its
+    # 2026-09-27). busbar LINKS it at a pinned rev (busbar-kernel, row `auth-admin-tokens`); its
     # first release is cut with the core version that pins it.
     released: false
   - repo: busbar-hook-webrequest

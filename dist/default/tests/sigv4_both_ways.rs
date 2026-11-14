@@ -29,12 +29,7 @@
 //! the secret access key beside the token. 1.5.5 minted the credential whatever
 //! the chain (v1.5.5 `crates/busbar/src/admin/mod.rs:919`, `:997-1000`, `:1103-1108`, `:1118`).
 #![cfg(unix)]
-#![cfg(all(
-    linked_section_pools,
-    feature = "root-admin",
-    feature = "auth-admin-tokens",
-    feature = "auth-sigv4"
-))]
+#![cfg(all(linked_section_pools, feature = "root-admin"))]
 
 mod common;
 
