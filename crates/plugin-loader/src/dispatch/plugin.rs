@@ -3425,6 +3425,10 @@ impl From<Crossed> for Called {
 mod open_reason_tests;
 
 #[cfg(test)]
+#[path = "../tests/transport_answer_lease_tests.rs"]
+mod transport_answer_lease_tests;
+
+#[cfg(test)]
 #[path = "../tests/lifecycle_worker_tests.rs"]
 mod lifecycle_worker_tests;
 
