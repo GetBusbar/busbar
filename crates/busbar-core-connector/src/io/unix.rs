@@ -59,7 +59,10 @@ pub fn register<T: AsFd>(io: T) -> io::Result<Registered<T>> {
     // is neither dropped nor changed while registered: it leaves only through `into_inner`
     // ([`Registered::deregister`]) or the `AsyncFd`'s drop, and both take the descriptor off the
     // reactor before `io` is returned or dropped.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "the registration above is the one unsafe call; its safety is argued above"
+    )]
     let registered =
         unsafe { AsyncFd::register_with_interest(owned, Interest::READABLE | Interest::WRITABLE) };
     registered.map(Registered).map_err(io::Error::from)

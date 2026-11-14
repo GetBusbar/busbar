@@ -3,7 +3,6 @@
 
 //! THE DESTINATION GUARD: the one check every outbound connection asks, whatever dials it. It is
 
-use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, PoisonError, RwLock};
 
@@ -16,6 +15,7 @@ use busbar_contract::net::{
     is_link_local_v6, judged_host, METADATA_HOSTS,
 };
 use busbar_kernel::config::Destinations;
+use foldhash::HashMap;
 
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
@@ -185,7 +185,12 @@ fn norm(host: &str) -> Option<String> {
 /// An `advanced.allow_destinations` entry as [`strict`] reads it: unbracketed, lowercased, one
 fn fold(entry: &str) -> String {
     let h = entry.trim_start_matches('[').trim_end_matches(']');
-    h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the destination lists are read once per config commit, off every request path"
+    )]
+    let folded = h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase();
+    folded
 }
 
 /// The host length of an address's family.
@@ -223,10 +228,18 @@ fn is_name(n: &str) -> bool {
 
 /// One `advanced.allow_destinations` entry, or the boot refusal naming it.
 fn strict(i: usize, entry: &str) -> Result<Entry, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the destination lists are read once per config commit, off every request path"
+    )]
     let shown = match entry.rfind('@') {
         Some(at) => format!("<redacted>@{}", &entry[at + 1..]),
         None => entry.to_owned(),
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the destination lists are read once per config commit, off every request path"
+    )]
     let bad = || {
         format!("{ALLOW_KEY}[{i}]: `{shown}` is not a host, a `*.domain` wildcard, an IP or a CIDR")
     };
@@ -239,6 +252,10 @@ fn strict(i: usize, entry: &str) -> Result<Entry, String> {
             return Err(bad());
         }
         if masked(ip, len) != ip {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the destination lists are read once per config commit, off every request path"
+            )]
             return Err(format!(
                 "{ALLOW_KEY}[{i}]: `{shown}` sets address bits past its prefix length; write the \
                  network address"
@@ -249,11 +266,16 @@ fn strict(i: usize, entry: &str) -> Result<Entry, String> {
     if let Ok(ip) = e.parse::<IpAddr>() {
         return Ok(Entry::Net(ip, full(ip)));
     }
-    match e.strip_prefix("*.") {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the destination lists are read once per config commit, off every request path"
+    )]
+    let entry = match e.strip_prefix("*.") {
         Some(domain) if is_name(domain) => Ok(Entry::Under(format!(".{domain}"))),
         None if is_name(e) => Ok(Entry::Host(e.to_owned())),
         _ => Err(bad()),
-    }
+    };
+    entry
 }
 
 /// `ip` with every bit past `len` cleared.
@@ -291,7 +313,7 @@ struct Metadata {
 
 impl Metadata {
     fn from_config(d: &Destinations) -> Metadata {
-        let mut by_host: HashMap<String, Vec<Entry>> = HashMap::new();
+        let mut by_host: HashMap<String, Vec<Entry>> = HashMap::default();
         for (url, own) in &d.url_allow {
             let read = busbar_kernel_egress::trust::net::split_url(url).ok();
             if let Some(host) = read.and_then(|(_, host, _, _)| norm(&host)) {
@@ -301,11 +323,21 @@ impl Metadata {
                     .extend(own.iter().filter_map(|e| legacy(e)));
             }
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the destination lists are read once per config commit, off every request path"
+        )]
+        let everywhere = d.legacy_allow.iter().filter_map(|e| legacy(e)).collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the destination lists are read once per config commit, off every request path"
+        )]
+        let blocked = d.blocked.iter().filter_map(|e| legacy(e)).collect();
         Metadata {
             allow_all: d.allow_all_metadata,
-            everywhere: d.legacy_allow.iter().filter_map(|e| legacy(e)).collect(),
+            everywhere,
             by_host,
-            blocked: d.blocked.iter().filter_map(|e| legacy(e)).collect(),
+            blocked,
         }
     }
 
@@ -356,14 +388,19 @@ impl Default for Guard {
 impl Guard {
     /// The guard a deployment states.
     pub fn from_config(d: &Destinations) -> Result<Guard, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the destination lists are read once per config commit, off every request path"
+        )]
+        let allow = d
+            .allow
+            .iter()
+            .enumerate()
+            .map(|(i, e)| strict(i, e))
+            .collect::<Result<_, _>>()?;
         Ok(Guard {
             block_private: d.block_private_addresses,
-            allow: d
-                .allow
-                .iter()
-                .enumerate()
-                .map(|(i, e)| strict(i, e))
-                .collect::<Result<_, _>>()?,
+            allow,
             metadata: Arc::new(RwLock::new(Arc::new(Metadata::from_config(d)))),
         })
     }
@@ -415,6 +452,10 @@ impl Guard {
         strict: bool,
         reach: bool,
     ) -> Result<Option<IpAddr>, Refusal> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refusal names the host it refused"
+        )]
         let refuse = |verdict| {
             Err(Refusal {
                 verdict,
@@ -427,6 +468,7 @@ impl Guard {
             return refuse(DEST_NO_HOST);
         };
         let m = self.metadata();
+        // busbar:expect(bp::state_scan, reason = "config: the operator's allow_destinations list, fixed per config commit; no request grows it")
         let allowed = self.allow.iter().any(|e| e.names(&name));
         let lifted = allowed || m.lifts(&name, None, class);
         if METADATA_HOSTS.iter().any(|h| name == *h) && !lifted {
@@ -468,6 +510,10 @@ impl Guard {
         reach: bool,
     ) -> Result<(), Refusal> {
         if addrs.is_empty() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a refusal names the host it refused"
+            )]
             return Err(Refusal {
                 verdict: DEST_NO_ADDRESSES,
                 host: host.to_owned(),
@@ -489,6 +535,10 @@ impl Guard {
         reach: bool,
     ) -> Result<(), Refusal> {
         let Some(name) = norm(host) else {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a refusal names the host it refused"
+            )]
             return Err(Refusal {
                 verdict: DEST_NO_HOST,
                 host: host.to_owned(),
@@ -504,6 +554,7 @@ impl Guard {
 
         let denied = metadata || listed(&m.blocked);
         let allowlisted = if denied {
+            // busbar:expect(bp::state_scan, reason = "config: the operator's allow_destinations list, fixed per config commit; no request grows it")
             self.allow.iter().any(|e| e.pins(addr))
         } else {
             listed(&self.allow)
@@ -519,6 +570,10 @@ impl Guard {
         if admitted {
             return Ok(());
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refusal names the host it refused"
+        )]
         let refuse = |verdict| {
             Err(Refusal {
                 verdict,
@@ -561,10 +616,12 @@ impl Resolve for SystemResolver {
             crate::compose::MAX_PENDING_LOOKUPS,
             &RESOLVING,
             |host: &str| {
-                (host, 0)
-                    .to_socket_addrs()
-                    .map(|a| a.map(|s| s.ip()).collect())
-                    .map_err(|e| e.to_string())
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a failed lookup is answered with its sentence"
+                )]
+                let found = (host, 0).to_socket_addrs().map_err(|e| e.to_string());
+                found.map(|a| a.map(|s| s.ip()).collect())
             },
         );
     }
@@ -585,6 +642,10 @@ pub(crate) fn resolve_capped<F>(
 {
     use std::sync::Mutex;
     let Some(place) = crate::hostio::LookupPlace::take(cap, in_flight) else {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a lookup refused at the in-flight cap is answered with its sentence"
+        )]
         done(Err(format!("name lookup: {cap} lookups already in flight")));
         return;
     };

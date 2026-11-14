@@ -7,6 +7,11 @@ use super::*;
 use std::future::Future;
 use std::pin::Pin;
 
+thread_local! {
+    /// The calling thread's reused list of custodies one publish lets go ([`Pairing::publish`]).
+    static RETIRED: std::cell::Cell<Vec<Custody>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
 /// What host publication completed before an episode stopped. Handed-on bytes cannot be unsent.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PublicationOutcome {
@@ -52,7 +57,8 @@ pub(super) struct PublicationState {
 impl PublicationState {
     pub(super) fn stop(&mut self) -> (Queue, Queue) {
         if self.running
-            || self.recall.iter().any(|recall| *recall)
+            || self.recall[0]
+            || self.recall[1]
             || !self.queue.is_empty()
             || !self.inputs.is_empty()
             || self.retained_input != 0
@@ -514,7 +520,9 @@ impl Pairing {
         let producer = std::mem::take(&mut yielded.producer);
 
         drop(yielded);
-        let mut retired = Vec::new();
+        // The thread's reused list of custodies let go once the lock is: a re-entrant publish gets
+        // a list of its own.
+        let mut retired = RETIRED.take();
         let (pieces, owners, schedule, caller) = {
             let mut state = self.lock();
             let mut session = Vec::new();
@@ -595,7 +603,8 @@ impl Pairing {
             let schedule = !state.publications.running
                 && !state.closed
                 && (!state.publications.queue.is_empty()
-                    || state.publications.recall.iter().any(|recall| *recall));
+                    || state.publications.recall[0]
+                    || state.publications.recall[1]);
             if schedule {
                 state.publications.running = true;
             }
@@ -616,7 +625,8 @@ impl Pairing {
             );
             (session, owners, schedule, state.caller.clone())
         };
-        drop(retired);
+        retired.clear();
+        RETIRED.set(retired);
         self.published.notify_waiters();
         if schedule {
             self.schedule_publication(caller);

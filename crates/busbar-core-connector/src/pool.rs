@@ -3,12 +3,13 @@
 
 //! THE PER-WORKER POOLS (`BUSBAR-1.6.0.md` THE DESIGN, connections: the connector owns "per-worker
 
-use std::collections::HashMap;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use busbar_contract::conn::{InstanceId, NeedId};
+use foldhash::HashMap;
 
 use crate::line::Line;
 use crate::tls::client::Sealed;
@@ -105,6 +106,45 @@ struct Entry {
 
 type Shard = Mutex<HashMap<PoolKey, Vec<Entry>>>;
 
+thread_local! {
+    /// The calling thread's reused list of lines leaving the pool ([`Spent`]).
+    static SPENT: Cell<Vec<Arc<Line>>> = const { Cell::new(Vec::new()) };
+}
+
+/// The lines one pool op takes out, closed once no pool lock is held: the calling thread's reused
+/// list, handed back empty for its next op (a re-entrant op gets a list of its own).
+struct Spent(Vec<Arc<Line>>);
+
+impl Spent {
+    fn take() -> Self {
+        Self(SPENT.take())
+    }
+
+    fn push(&mut self, line: Arc<Line>) {
+        self.0.push(line);
+    }
+
+    fn extend(&mut self, lines: impl IntoIterator<Item = Arc<Line>>) {
+        self.0.extend(lines);
+    }
+
+    /// Close every line taken out that nobody holds.
+    fn close(mut self) {
+        for line in self.0.drain(..) {
+            if line.users() == 0 {
+                line.close();
+            }
+        }
+    }
+}
+
+impl Drop for Spent {
+    fn drop(&mut self) {
+        self.0.clear();
+        SPENT.set(std::mem::take(&mut self.0));
+    }
+}
+
 /// The pools, one per shard.
 pub(crate) struct Pools {
     posture: RwLock<PoolPosture>,
@@ -136,10 +176,20 @@ impl Pools {
     /// The pools for `posture`.
     pub(crate) fn new(posture: PoolPosture) -> Self {
         let count = shard_count();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the pools are made once, with the connector"
+        )]
+        let shards = (0..count).map(|_| Mutex::new(HashMap::default())).collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the pools are made once, with the connector"
+        )]
+        let epoch = Instant::now();
         Self {
             posture: RwLock::new(posture),
-            shards: (0..count).map(|_| Mutex::new(HashMap::new())).collect(),
-            epoch: Instant::now(),
+            shards,
+            epoch,
             reap_due: AtomicU64::new(u64::MAX),
         }
     }
@@ -159,6 +209,7 @@ impl Pools {
 
     /// Bootstrap recovery replaces the posture without replacing the connector or its active
     pub(crate) fn reconfigure(&self, posture: PoolPosture) {
+        // busbar:expect(bp::fresh_buffer, reason = "config: the posture is replaced only by bootstrap recovery or a config commit")
         let mut gone = Vec::new();
         {
             let mut applied = self.posture.write().expect("pool posture");
@@ -204,24 +255,26 @@ impl Pools {
             return;
         }
         let timeout = posture.idle_timeout;
-        let mut spent = Vec::new();
+        let mut spent = Spent::take();
         let mut next: Option<Instant> = None;
         for shard in &*self.shards {
             let mut map = shard.lock().expect("pool");
             map.retain(|_, entries| {
-                entries.retain(|e| match e.idle {
-                    Some(since) if now.duration_since(since) >= timeout => {
-                        spent.push(Arc::clone(&e.line));
-                        false
-                    }
-                    Some(since) => {
-                        if let Some(ends) = since.checked_add(timeout) {
-                            next = Some(next.map_or(ends, |n| n.min(ends)));
+                let mut i = entries.len();
+                while i > 0 {
+                    i -= 1;
+                    match entries[i].idle {
+                        Some(since) if now.duration_since(since) >= timeout => {
+                            spent.push(entries.swap_remove(i).line);
                         }
-                        true
+                        Some(since) => {
+                            if let Some(ends) = since.checked_add(timeout) {
+                                next = Some(next.map_or(ends, |n| n.min(ends)));
+                            }
+                        }
+                        None => {}
                     }
-                    None => true,
-                });
+                }
                 !entries.is_empty()
             });
         }
@@ -230,11 +283,7 @@ impl Pools {
                 .fetch_min(self.since_epoch(next), Ordering::AcqRel);
         }
         drop(posture);
-        for line in spent {
-            if line.users() == 0 {
-                line.close();
-            }
-        }
+        spent.close();
     }
 
     /// Whether anything is ever kept.
@@ -278,7 +327,7 @@ impl Pools {
         }
         let now = Instant::now();
         self.reap_if_due(now);
-        let mut spent = Vec::new();
+        let mut spent = Spent::take();
 
         let mut below = usize::MAX;
         let lent = loop {
@@ -302,7 +351,7 @@ impl Pools {
                     }
                     let (idle, users) = (entries[i].idle, entries[i].line.users());
                     match idle {
-                        None if users == 0 => spent.push(entries.remove(i).line),
+                        None if users == 0 => spent.push(entries.swap_remove(i).line),
                         None if entries[i].line.multiplexes() => {
                             let line = Arc::clone(&entries[i].line);
                             line.lend();
@@ -315,7 +364,7 @@ impl Pools {
                             claimed = Some((i, Arc::clone(&entries[i].line)));
                             break;
                         }
-                        Some(_) => spent.push(entries.remove(i).line),
+                        Some(_) => spent.push(entries.swap_remove(i).line),
                     }
                 }
                 if entries.is_empty() {
@@ -345,7 +394,7 @@ impl Pools {
                             break Some(idle);
                         }
 
-                        entries.remove(i);
+                        entries.swap_remove(i);
                     }
                     if entries.is_empty() {
                         map.remove(key);
@@ -355,11 +404,7 @@ impl Pools {
             spent.push(idle);
             below = at;
         };
-        for line in spent {
-            if line.users() == 0 {
-                line.close();
-            }
-        }
+        spent.close();
         lent
     }
 
@@ -373,7 +418,7 @@ impl Pools {
             return;
         }
         let now = Instant::now();
-        let mut spent = Vec::new();
+        let mut spent = Spent::take();
         {
             let mut map = self.shards[shard].lock().expect("pool");
             if line.users() > 0 {
@@ -393,54 +438,55 @@ impl Pools {
                     entries[i].idle = Some(now);
                     self.idled(now, posture.idle_timeout);
                 }
-                (Some(i), false) => spent.push(entries.remove(i).line),
+                (Some(i), false) => spent.push(entries.swap_remove(i).line),
                 (None, _) => spent.push(Arc::clone(line)),
             }
 
+            // One pass expires every idle line whose time ran out and counts those still idle.
             let timeout = posture.idle_timeout;
-            entries.retain(|e| {
-                let expired = e
-                    .idle
-                    .is_some_and(|since| now.duration_since(since) >= timeout);
-                if expired {
-                    spent.push(Arc::clone(&e.line));
+            let mut idle = 0_usize;
+            let mut i = entries.len();
+            while i > 0 {
+                i -= 1;
+                match entries[i].idle {
+                    Some(since) if now.duration_since(since) >= timeout => {
+                        spent.push(entries.swap_remove(i).line);
+                    }
+                    Some(_) => idle += 1,
+                    None => {}
                 }
-                !expired
-            });
-            let mut idle: Vec<(Instant, usize)> = entries
-                .iter()
-                .enumerate()
-                .filter_map(|(i, e)| e.idle.map(|since| (since, i)))
-                .collect();
+            }
+            // Over the shard's budget, the longest idle leave first.
             let per_shard = self.per_shard(posture);
-            if idle.len() > per_shard {
-                idle.sort();
-                let mut drop: Vec<usize> = idle[..idle.len() - per_shard]
+            while idle > per_shard {
+                let oldest = entries
                     .iter()
-                    .map(|(_, i)| *i)
-                    .collect();
-                drop.sort_unstable_by(|a, b| b.cmp(a));
-                for i in drop {
-                    spent.push(entries.remove(i).line);
-                }
+                    .enumerate()
+                    .filter_map(|(i, e)| e.idle.map(|since| (since, i)))
+                    .min();
+                let Some((_, i)) = oldest else {
+                    break;
+                };
+                spent.push(entries.swap_remove(i).line);
+                idle -= 1;
             }
             if entries.is_empty() {
                 map.remove(key);
             }
         }
         drop(applied);
-        for line in spent {
-            if line.users() == 0 {
-                line.close();
-            }
-        }
+        spent.close();
         self.reap_if_due(now);
     }
 
     /// `owner` is gone: every line dialled for it leaves the pool, and each nobody holds is
     pub(crate) fn forget(&self, owner: InstanceId) {
-        let mut gone = Vec::new();
+        let mut gone = Spent::take();
         for shard in &*self.shards {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an owner leaves the pool only when its instance is unloaded"
+            )]
             shard.lock().expect("pool").retain(|key, entries| {
                 if key.owner != owner {
                     return true;
@@ -449,11 +495,7 @@ impl Pools {
                 false
             });
         }
-        for line in gone {
-            if line.users() == 0 {
-                line.close();
-            }
-        }
+        gone.close();
     }
 
     /// Drop `line` from the pool for `key` on `shard` (it failed its exchange's open); closed when
@@ -461,7 +503,10 @@ impl Pools {
         {
             let mut map = self.shards[shard].lock().expect("pool");
             if let Some(entries) = map.get_mut(key) {
-                entries.retain(|e| !Arc::ptr_eq(&e.line, line));
+                // A line is held once per key: the dial that made it.
+                if let Some(i) = entries.iter().position(|e| Arc::ptr_eq(&e.line, line)) {
+                    entries.swap_remove(i);
+                }
                 if entries.is_empty() {
                     map.remove(key);
                 }

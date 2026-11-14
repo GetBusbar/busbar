@@ -1791,7 +1791,7 @@ impl Connector {
                     // This hop comes only from the operator's parsed proxy configuration. The
                     // application's target already passed its own class and security checks.
                     let proxy_judged = self.judge_into(
-                        &spec.endpoint(),
+                        spec.endpoint(),
                         false,
                         EGRESS_OPERATOR_INFRASTRUCTURE,
                         true,
@@ -2014,7 +2014,7 @@ impl Connector {
             // The configured CONNECT hop is operator infrastructure; its plaintext socket does
             // not change the separately judged application's TLS requirement.
             return match self.judge_into(
-                &proxy_authority,
+                proxy_authority,
                 false,
                 EGRESS_OPERATOR_INFRASTRUCTURE,
                 true,

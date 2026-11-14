@@ -135,7 +135,7 @@ pub struct Listening {
 impl std::fmt::Debug for Listening {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let entry = match &self.mode {
-            Mode::Framed(d) => Some(d.facts().name.clone()),
+            Mode::Framed(d) => Some(d.facts().name.as_str()),
             _ => None,
         };
         f.debug_struct("Listening")
@@ -156,6 +156,10 @@ pub(crate) type Bound = (u64, Driven, Option<u64>, SocketAddr);
 pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<Bound> {
     let mut side = Driven::of(via.door.as_ref())
         .ok_or_else(|| other("the transport is no carrier the host drives".into()))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a listener is bound at boot or at a config commit; the host admits its bind once"
+    )]
     via.io
         .admit(side.ticket(), Admission::Bind(bind.to_owned()));
     let mut addr = vec![0_u8; usize::try_from(MAX_ADDR).unwrap_or(256)];

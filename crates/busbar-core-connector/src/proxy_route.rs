@@ -12,6 +12,11 @@ pub struct ProxyHop {
     host: String,
     port: u16,
     auth: Option<String>,
+    /// The proxy's own `host:port` ([`Self::endpoint`]), spelled once with the hop.
+    endpoint: String,
+    /// What a CONNECT request carries after its `Host` line: the `Proxy-Authorization` line where
+    /// set, then the blank line. Spelled once with the hop.
+    connect_tail: String,
 }
 
 impl std::fmt::Debug for ProxyHop {
@@ -28,7 +33,30 @@ impl ProxyHop {
     /// The endpoint `host:port`, presenting `auth` (the whole `Proxy-Authorization` value) when set.
     #[must_use]
     pub fn new(host: String, port: u16, auth: Option<String>) -> Self {
-        Self { host, port, auth }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the hop is parsed once from the proxy environment; its endpoint is spelled once"
+        )]
+        let endpoint = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the hop is parsed once from the proxy environment; its CONNECT tail is spelled once"
+        )]
+        let connect_tail = match &auth {
+            Some(auth) => format!("Proxy-Authorization: {auth}\r\n\r\n"),
+            None => "\r\n".to_owned(),
+        };
+        Self {
+            host,
+            port,
+            auth,
+            endpoint,
+            connect_tail,
+        }
     }
 
     /// The proxy's host.
@@ -51,12 +79,15 @@ impl ProxyHop {
 
     /// The proxy's own `host:port`, as a dial reaches it (a v6 host bracketed).
     #[must_use]
-    pub fn endpoint(&self) -> String {
-        if self.host.contains(':') && !self.host.starts_with('[') {
-            format!("[{}]:{}", self.host, self.port)
-        } else {
-            format!("{}:{}", self.host, self.port)
-        }
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    /// What a CONNECT request carries after its `Host` line: the `Proxy-Authorization` line where
+    /// set, then the blank line.
+    #[must_use]
+    pub(crate) fn connect_tail(&self) -> &str {
+        &self.connect_tail
     }
 }
 
@@ -123,6 +154,7 @@ enum NoProxyEntry {
 impl NoProxy {
     /// Comma-separated entries, whitespace trimmed, empties dropped. Entry classification
     fn parse(raw: &str) -> Self {
+        // busbar:expect(bp::fresh_buffer, reason = "config: the NO_PROXY list is parsed once from the proxy environment")
         let mut entries = Vec::new();
         for part in raw.split(',') {
             let part = part.trim();
@@ -145,9 +177,12 @@ impl NoProxy {
                 entries.push(NoProxyEntry::Ip(addr));
                 continue;
             }
-            entries.push(NoProxyEntry::Domain(
-                part.trim_start_matches('.').to_ascii_lowercase(),
-            ));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: each NO_PROXY domain is lower-cased once, as the list is parsed"
+            )]
+            let domain = part.trim_start_matches('.').to_ascii_lowercase();
+            entries.push(NoProxyEntry::Domain(domain));
         }
         NoProxy { entries }
     }
@@ -155,17 +190,20 @@ impl NoProxy {
     fn matches(&self, target_host: &str) -> bool {
         let bare = target_host.trim_start_matches('[').trim_end_matches(']');
         let ip: Option<IpAddr> = bare.parse().ok();
-        let host = target_host.to_ascii_lowercase();
+        let host = target_host.as_bytes();
+        // busbar:expect(bp::state_scan, reason = "config: the operator's NO_PROXY list, fixed at boot and a handful of entries long; no request grows it")
         self.entries.iter().any(|entry| match entry {
             NoProxyEntry::MatchAll => true,
             NoProxyEntry::Ip(a) => ip == Some(*a),
             NoProxyEntry::Cidr(net, len) => ip.is_some_and(|h| cidr_contains(net, *len, &h)),
             NoProxyEntry::Domain(d) => {
+                // `d` is lower-cased at parse; the host is compared ASCII-case-insensitively in place.
+                let d = d.as_bytes();
                 ip.is_none()
-                    && (host == *d
+                    && (host.eq_ignore_ascii_case(d)
                         || (host.len() > d.len()
-                            && host.ends_with(d.as_str())
-                            && host.as_bytes()[host.len() - d.len() - 1] == b'.'))
+                            && host[host.len() - d.len()..].eq_ignore_ascii_case(d)
+                            && host[host.len() - d.len() - 1] == b'.'))
             }
         })
     }
