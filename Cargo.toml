@@ -29,14 +29,11 @@ async-trait = "0.1"
 aws-lc-sys = { version = "=0.47.0", default-features = false }
 axum = "0.8"
 base64 = "0.22"
-bumpalo = "3"
 bytes = "1"
 core_affinity = "0.8"
 crc32fast = "1"
 # ring only: no aws-lc-rs and no RustCrypto suite.
 dimpl = { version = "=0.7.4", default-features = false }
-# Dev-only; default features off drops the plotting stack.
-criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 # 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
 ed25519-dalek = { version = "3", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
