@@ -5,6 +5,7 @@
 //! writes it. A terminal snapshot owns exact raw operation identities until their durable ACKs.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_contract::Count;
@@ -104,7 +105,23 @@ pub trait UnitCheckpointSink: Send + Sync {
 pub(super) struct UnitCheckpointBook {
     sink: OnceLock<Arc<dyn UnitCheckpointSink>>,
     pending: Mutex<BTreeMap<[u8; 16], Pending>>,
+    /// How many `pending` entries are `recovered`, changed only while `pending` is locked: the
+    /// admission check reads it under that lock and skips its scan of the book when it is zero,
+    /// which is every unit outside startup recovery or a failed hot-accounting apply.
+    recovered: AtomicUsize,
     flushing: tokio::sync::Mutex<()>,
+}
+
+impl UnitCheckpointBook {
+    /// Keep [`Self::recovered`] in step with one insert or removal on the locked book.
+    fn counted(&self, added: Option<&Pending>, removed: Option<&Pending>) {
+        if added.is_some_and(|p| p.recovered) {
+            self.recovered.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+        if removed.is_some_and(|p| p.recovered) {
+            self.recovered.fetch_sub(1, AtomicOrdering::Relaxed);
+        }
+    }
 }
 
 struct Pending {
@@ -151,17 +168,18 @@ impl GovState {
                         .checked_add(1)
                         .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
                 }
-                if pending
-                    .insert(
-                        snapshot.id,
-                        Pending {
-                            snapshot,
-                            persisted,
-                            recovered: true,
-                        },
-                    )
-                    .is_some()
-                {
+                let id = snapshot.id;
+                let replaced = pending.insert(
+                    id,
+                    Pending {
+                        snapshot,
+                        persisted,
+                        recovered: true,
+                    },
+                );
+                self.unit_checkpoints
+                    .counted(pending.get(&id), replaced.as_ref());
+                if replaced.is_some() {
                     return Err(error("duplicate running unit checkpoint"));
                 }
             }
@@ -189,19 +207,27 @@ impl GovState {
     }
 
     pub(super) fn unresolved_unit_target(&self, bucket: &str, window: u64) -> bool {
-        self.unit_checkpoints
+        let pending = self
+            .unit_checkpoints
             .pending
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .any(|entry| {
-                entry.recovered
-                    && entry
-                        .snapshot
-                        .targets
-                        .iter()
-                        .any(|target| target.bucket == bucket && target.window == window)
-            })
+            .unwrap_or_else(|p| p.into_inner());
+        if self
+            .unit_checkpoints
+            .recovered
+            .load(AtomicOrdering::Relaxed)
+            == 0
+        {
+            return false;
+        }
+        pending.values().any(|entry| {
+            entry.recovered
+                && entry
+                    .snapshot
+                    .targets
+                    .iter()
+                    .any(|target| target.bucket == bucket && target.window == window)
+        })
     }
 
     /// Synchronous shutdown barrier: reports and an active native flush retain
@@ -249,6 +275,7 @@ impl GovState {
             }
             Some(_) => {}
             None => {
+                // Never recovered: the book's recovered count is unchanged.
                 pending.insert(
                     snapshot.id,
                     Pending {
@@ -291,14 +318,17 @@ impl GovState {
                 "terminal unit hot accounting failed; exact durable custody retained");
         }
         let persisted = pending.get(&snapshot.id).and_then(|p| p.persisted);
-        pending.insert(
-            snapshot.id,
+        let id = snapshot.id;
+        let replaced = pending.insert(
+            id,
             Pending {
                 snapshot,
                 persisted,
                 recovered,
             },
         );
+        self.unit_checkpoints
+            .counted(pending.get(&id), replaced.as_ref());
         true
     }
 
@@ -400,11 +430,15 @@ impl GovState {
             self.refresh_recovered_unit_targets(&snapshot).await?;
         }
         sink.remove(&snapshot).await?;
-        self.unit_checkpoints
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&id);
+        {
+            let mut pending = self
+                .unit_checkpoints
+                .pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let removed = pending.remove(&id);
+            self.unit_checkpoints.counted(None, removed.as_ref());
+        }
         for event in events {
             self.forget_confirmed_recovery(event.operation_id);
         }

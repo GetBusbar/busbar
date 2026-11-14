@@ -220,6 +220,27 @@ fn chain_break(seq: u64, previous: [u8; 32], before: u64, after: u64) -> Record 
 }
 
 #[test]
+fn records_seal_keeps_its_sha256_recipe() {
+    // The seal moved to ring's SHA-256 for speed; the recipe and its bytes are unchanged.
+    fn portable(previous: [u8; 32], bytes: &[u8]) -> [u8; 32] {
+        use sha2::Digest as _;
+        let mut hash = sha2::Sha256::new();
+        hash.update(b"busbar.journal.original-proof/1\0");
+        hash.update(previous);
+        hash.update((bytes.len() as u64).to_be_bytes());
+        hash.update(bytes);
+        hash.finalize().into()
+    }
+    let mut seal = [0u8; 32];
+    for len in [0usize, 1, 23, 55, 56, 63, 64, 65, 300, 4096, 70_000] {
+        let body: Vec<u8> = (0..len).map(|i| (i * 31 + len) as u8).collect();
+        let next = extend_records_seal(seal, &body);
+        assert_eq!(next, portable(seal, &body), "seal differs at {len} bytes");
+        seal = next;
+    }
+}
+
+#[test]
 fn historical_snapshot_preserves_original_prefix_and_quarantine_bridge() {
     use historical::{HistoricalSnapshot, SnapshotBudget};
     let first = record(8, [19; 32], vec![1]);
