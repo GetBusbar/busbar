@@ -100,17 +100,18 @@ impl Stub {
 /// A TLS far end serving its `n`th accepted connection under `leaves[n]` (the last leaf for every
 /// later one), agreeing `h2` when `h2`.
 async fn stub(leaves: &[(Vec<u8>, Vec<u8>)], h2: bool) -> Stub {
-    crate::tls::install_crypto_provider();
     let acceptors: Vec<tokio_rustls::TlsAcceptor> = leaves
         .iter()
         .map(|(leaf, key)| {
-            let mut server = rustls::ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(
-                    vec![rustls_pki_types::CertificateDer::from(leaf.clone())],
-                    rustls_pki_types::PrivateKeyDer::try_from(key.clone()).unwrap(),
-                )
-                .unwrap();
+            let mut server = std::sync::Arc::unwrap_or_clone(
+                busbar_contract::crypto::tls::server_config(|b| {
+                    b.with_no_client_auth().with_single_cert(
+                        vec![rustls_pki_types::CertificateDer::from(leaf.clone())],
+                        rustls_pki_types::PrivateKeyDer::try_from(key.clone()).unwrap(),
+                    )
+                })
+                .unwrap(),
+            );
             if h2 {
                 server.alpn_protocols = vec![b"h2".to_vec()];
             }

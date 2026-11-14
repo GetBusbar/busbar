@@ -106,15 +106,18 @@ pub(crate) struct TicketCustody {
     sweep_reads: std::sync::atomic::AtomicU64,
 }
 
-/// The node's ticket custody. `tickets` is the map; `by_key` partitions it per key id as
-/// `(expires_at, ticket id)`, and `pending` names each unit's one ticket not yet ready. Only
-/// [`TicketEntries::insert`], [`TicketEntries::remove`], [`TicketEntries::take_pending`] and
-/// [`TicketEntries::take_all`] change them, and each keeps the three in step.
+/// The node's ticket custody. `tickets` is the map; `due` orders it by expiry for the sweep;
+/// `by_key` partitions it per key id as `(expires_at, ticket id)`, and `pending` names each unit's
+/// one ticket not yet ready. Only [`TicketEntries::insert`], [`TicketEntries::remove`],
+/// [`TicketEntries::take_pending`] and [`TicketEntries::take_all`] change them, and each keeps
+/// the four in step.
 #[derive(Default)]
 struct TicketEntries {
     tickets: BTreeMap<String, TicketEntry>,
     /// Every held ticket by its expiry (unix seconds), so the sweep reads only the due ones.
     due: std::collections::BTreeSet<(u64, String)>,
+    by_key: foldhash::HashMap<Box<str>, std::collections::BTreeSet<(u64, Box<str>)>>,
+    pending: foldhash::HashMap<busbar_contract::UnitKey, Box<str>>,
     cursor: Option<String>,
     /// When the round-robin backstop last ran.
     backstop_at: Option<std::time::Instant>,
@@ -122,24 +125,87 @@ struct TicketEntries {
 }
 
 impl TicketEntries {
-    fn insert(&mut self, id: String, entry: TicketEntry) {
+    /// Hold `entry` under `id`, indexed by its expiry, its key and, when not ready, by its unit. A
+    /// ticket the map already held under `id` is answered, unindexed, for the caller to drop
+    /// outside the lock.
+    fn insert(&mut self, id: String, entry: TicketEntry) -> Option<TicketEntry> {
+        let replaced = self.remove(&id);
+        let ticket: Box<str> = id.as_str().into();
         self.due.insert((entry.expires_at, id.clone()));
-        if let Some(replaced) = self.tickets.insert(id.clone(), entry) {
-            if replaced.expires_at != self.tickets[&id].expires_at {
-                self.due.remove(&(replaced.expires_at, id));
-            }
+        self.by_key
+            .entry(entry.source.key.id.as_str().into())
+            .or_default()
+            .insert((entry.expires_at, ticket.clone()));
+        if !entry.ready {
+            self.pending.insert(entry.source.unit, ticket);
         }
+        self.tickets.insert(id, entry);
+        replaced
     }
 
+    /// Release the ticket `id`, out of every index.
     fn remove(&mut self, id: &str) -> Option<TicketEntry> {
         let entry = self.tickets.remove(id)?;
         self.due.remove(&(entry.expires_at, id.to_owned()));
+        let key = entry.source.key.id.as_str();
+        if let Some(held) = self.by_key.get_mut(key) {
+            held.remove(&(entry.expires_at, Box::from(id)));
+            if held.is_empty() {
+                self.by_key.remove(key);
+            }
+        }
+        if self
+            .pending
+            .get(&entry.source.unit)
+            .is_some_and(|pending| &**pending == id)
+        {
+            self.pending.remove(&entry.source.unit);
+        }
         Some(entry)
     }
 
+    /// Release `unit`'s one ticket not yet ready, if it holds one.
+    fn take_pending(&mut self, unit: busbar_contract::UnitKey) -> Option<TicketEntry> {
+        let id = self.pending.get(&unit)?.clone();
+        self.remove(&id)
+    }
+
+    /// Release every ticket.
     fn take_all(&mut self) -> BTreeMap<String, TicketEntry> {
         self.due.clear();
+        self.by_key.clear();
+        self.pending.clear();
         std::mem::take(&mut self.tickets)
+    }
+
+    /// Whether one more ticket for `key_id` may be held at `now` (Unix seconds): refused when the
+    /// key already holds `per_key` (retry when its own earliest ticket has expired and one sweep
+    /// cycle has passed), or when the node holds [`TICKET_CUSTODY_CAP`] (retry after one cycle).
+    fn admits(
+        &self,
+        key_id: &str,
+        per_key: usize,
+        now: u64,
+    ) -> Result<(), busbar_kernel::governance::TicketRefusal> {
+        use busbar_kernel::governance::TicketRefusal;
+        let held = self.by_key.get(key_id);
+        if held.map_or(0, std::collections::BTreeSet::len) >= per_key {
+            let earliest = held
+                .and_then(std::collections::BTreeSet::first)
+                .map_or(now, |(expires_at, _)| *expires_at);
+            let retry = earliest
+                .saturating_sub(now)
+                .saturating_add(TICKET_SWEEP_CYCLE_SECS);
+            return Err(TicketRefusal::KeySaturated {
+                retry_after_secs: u32::try_from(retry).unwrap_or(u32::MAX).max(1),
+            });
+        }
+        if self.tickets.len() >= TICKET_CUSTODY_CAP {
+            return Err(TicketRefusal::NodeSaturated {
+                retry_after_secs: TICKET_SWEEP_CYCLE_SECS as u32,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -201,15 +267,16 @@ impl Drop for TicketSourceOwner {
                 .entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let ids: Vec<_> = entries
-                .tickets
-                .iter()
-                .filter(|(_, e)| !e.ready && Arc::ptr_eq(&e.source, &self.source))
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.into_iter()
-                .filter_map(|id| entries.remove(&id))
-                .collect::<Vec<_>>()
+            let owned = entries
+                .pending
+                .get(&self.source.unit)
+                .and_then(|id| entries.tickets.get(&**id))
+                .is_some_and(|e| Arc::ptr_eq(&e.source, &self.source));
+            if owned {
+                entries.take_pending(self.source.unit)
+            } else {
+                None
+            }
         };
         drop(pending);
     }
@@ -348,12 +415,22 @@ impl TicketCustody {
             drop(reservation);
             return Err(TicketRefusal::NotKept);
         }
-        entries.version = entries
-            .version
-            .checked_add(1)
-            .ok_or(TicketRefusal::NotKept)?;
-        let version = entries.version;
-        entries.insert(
+        if let Err(refusal) = entries.admits(
+            source.key.id.as_str(),
+            source.per_key,
+            busbar_kernel::store::now(),
+        ) {
+            drop(entries);
+            drop(reservation);
+            return Err(refusal);
+        }
+        let Some(version) = entries.version.checked_add(1) else {
+            drop(entries);
+            drop(reservation);
+            return Err(TicketRefusal::NotKept);
+        };
+        entries.version = version;
+        let replaced = entries.insert(
             identity.id().to_owned(),
             TicketEntry {
                 reservation,
@@ -379,9 +456,9 @@ impl TicketCustody {
                 Some(id) if acknowledged_completed => {
                     let ready = entries.take_pending(key).map(|mut entry| {
                         entry.ready = true;
-                    }
-                } else if let Some(entry) = entries.remove(&id) {
-                    removed.push(entry);
+                        entry
+                    });
+                    ready.and_then(|entry| entries.insert(id, entry))
                 }
                 Some(_) => entries.take_pending(key),
                 None => None,
@@ -620,10 +697,9 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
                 .sources
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .values()
-                .find(|s| {
-                    s.unit.get() == unit
-                        && *s.instance == *caller.namespace().as_ref()
+                .get(&unit_key)
+                .filter(|s| {
+                    *s.instance == *caller.namespace().as_ref()
                         && s.key.as_ref() == principal.as_ref()
                 })
                 .cloned();
@@ -1142,7 +1218,7 @@ pub struct DoorLive {
 /// The model catalog, in the map type the configuration (`RootCfg::models`) holds it as.
 pub type ModelCatalog = std::collections::HashMap<String, busbar_contract::config::ModelCfg>;
 
-pub struct ApplyReach {
+pub(crate) struct ApplyReach {
     providers: BTreeMap<String, crate::root::door_steps::ProviderRoute>,
     auths: Arc<crate::root::door_steps::OutboundAuths>,
     conns: Arc<dyn busbar_contract::conn::PollConns>,
@@ -1351,8 +1427,8 @@ impl DoorApply {
 
     async fn refreshed(
         &self,
-        section: &serde_yaml::Value,
-        handed: &serde_yaml::Value,
+        section: &busbar_contract::yaml::Value,
+        handed: &busbar_contract::yaml::Value,
         owned: &[u8],
         generation: u64,
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
@@ -1367,14 +1443,11 @@ impl DoorApply {
         } else {
             handed_settings(settings_path(&self.served_facts), handed)?
         };
-        crate::root::loader::dispatch::kinds::plane::refresh_door_on(
-            &self.plugin,
-            &self.dispatcher,
-            &settings,
-            owned,
-            generation,
-        )?;
-        let binding = self.plugin.connection_binding();
+        // Every step that can refuse the section without the plugin's next generation runs
+        // BEFORE the plugin refreshes: a READY refresh installs the instance's next connection
+        // binding, which only `bind_fetches` below completes, so a refusal after it (a member
+        // secret gone, say) would leave the retained generation serving through a binding whose
+        // member routes are never bound, and its calls would wait on them forever.
         let (table, catalog_entry) = routes_of(
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
@@ -1414,6 +1487,10 @@ impl DoorApply {
             }
             None => None,
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane is refreshed once per configuration apply"
+        )]
         let observations = observations::parse(
             self.plugin
                 .service_caller()
@@ -1424,6 +1501,10 @@ impl DoorApply {
             &pools,
         )?;
         if !observations.is_empty() && !self.observations_supported {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: a plane is refreshed once per configuration apply"
+            )]
             return Err("usage observations require an atomic durable store"
                 .to_owned()
                 .into());
@@ -1432,7 +1513,7 @@ impl DoorApply {
             &self.plugin,
             &self.dispatcher,
             &settings,
-            &owned,
+            owned,
             generation,
         )?;
         let binding = self.plugin.connection_binding();
@@ -1467,28 +1548,6 @@ impl DoorApply {
                 &routes,
                 &self.units,
             );
-        }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a plane is refreshed once per configuration apply"
-        )]
-        let observations = observations::parse(
-            self.plugin
-                .service_caller()
-                .ok_or_else(|| "unbound plane caller".to_owned())?
-                .namespace(),
-            section,
-            &facts,
-            &pools,
-        )?;
-        if !observations.is_empty() && !self.observations_supported {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "config: a plane is refreshed once per configuration apply"
-            )]
-            return Err("usage observations require an atomic durable store"
-                .to_owned()
-                .into());
         }
         // busbar:expect(bp::clone_alloc, reason = "config: a plane is refreshed once per configuration apply")
         Ok(DoorLive {
@@ -2010,36 +2069,6 @@ impl LeaseTick {
     clippy::too_many_arguments,
     reason = "composition takes every boot part it wires together"
 )]
-pub async fn compose_served(
-    gov: Option<Arc<busbar_kernel::governance::GovState>>,
-    doors: &[(String, DoorPlane)],
-    dispatcher: &Arc<Dispatcher>,
-    late: &LateServices,
-    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    public_url: Option<&str>,
-    reach: &crate::root::door_steps::DoorReach<'_>,
-    host: Option<busbar_kernel::plane_driver::GenerationHost>,
-    tables: &ServeTables,
-) -> Result<Served, String> {
-    compose_served_checked(
-        gov,
-        doors,
-        dispatcher,
-        late,
-        sections,
-        public_url,
-        reach,
-        host,
-        tables,
-        &|_| datagram_binds(doors, sections),
-    )
-    .await
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
 pub async fn compose_served_checked(
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
@@ -2393,7 +2422,7 @@ pub fn door_pools(
 }
 
 #[must_use]
-pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
+pub(crate) fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
     #[expect(
         clippy::disallowed_methods,
         reason = "config: door pools are resolved once per configuration"
@@ -2415,7 +2444,7 @@ fn section_with_pools(
         &'static str,
         BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
-) -> serde_yaml::Value {
+) -> busbar_contract::yaml::Value {
     // busbar:expect(bp::clone_alloc, reason = "config: the section is composed once per configuration")
     let mut section = written.clone();
     for (owner, stated) in pools {
@@ -2469,14 +2498,14 @@ pub fn pools_into(
     };
     let mut map = busbar_contract::yaml::Pairs::new();
     for (name, pool) in stated {
-        let mut entry = serde_yaml::Mapping::new();
+        let mut entry = busbar_contract::yaml::Pairs::new();
         #[expect(
             clippy::disallowed_methods,
             reason = "config: the pools are written once per configuration"
         )]
-        entry.insert(
-            POOL_MEMBERS_KEY.into(),
-            serde_yaml::Value::Sequence(
+        entry.insert_key(
+            POOL_MEMBERS_KEY,
+            busbar_contract::yaml::Value::Array(
                 pool.members
                     .iter()
                     .zip(0u64..)
@@ -2493,9 +2522,9 @@ pub fn pools_into(
             clippy::disallowed_methods,
             reason = "config: the pools are written once per configuration"
         )]
-        entry.insert(
-            POOL_REPEATABLE_KEY.into(),
-            serde_yaml::Value::Sequence(
+        entry.insert_key(
+            POOL_REPEATABLE_KEY,
+            busbar_contract::yaml::Value::Array(
                 pool.repeatable.iter().map(|m| m.as_str().into()).collect(),
             ),
         );
@@ -2543,10 +2572,10 @@ pub fn plane_settings(section: &busbar_contract::yaml::Value) -> busbar_contract
             )]
             let name = member
                 .get(POOL_MEMBER_NAME_KEY)
-                .and_then(serde_yaml::Value::as_str)
+                .and_then(busbar_contract::yaml::Value::as_str)
                 .map(str::to_owned);
             if let Some(name) = name {
-                *member = serde_yaml::Value::String(name);
+                *member = busbar_contract::yaml::Value::Text(name);
             }
         }
     }
@@ -2630,7 +2659,7 @@ pub(crate) async fn compose_planes_over(
     // busbar:expect(bp::fresh_buffer, reason = "config: planes are composed once per configuration")
     let mut staged_tables = Vec::new();
     if let Some(proof) = &first_start {
-        use sha2::{Digest, Sha256};
+        use busbar_contract::crypto::Sha256;
         // busbar:expect(bp::fresh_buffer, reason = "config: planes are composed once per configuration")
         let mut plan = Vec::new();
         for (instance, plugin) in doors {
@@ -3037,16 +3066,11 @@ where
 const SESSION_KEY: &str = "session";
 const MODEL_KEY: &str = "model";
 
-#[must_use]
-pub fn catalog_routes(section: &serde_yaml::Value, catalog: &ModelCatalog) -> serde_yaml::Value {
-    fold_catalog_routes(section, catalog).0
-}
-
 fn fold_catalog_routes(
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     catalog: &ModelCatalog,
-) -> (serde_yaml::Value, Option<String>) {
-    use serde_yaml::{Mapping, Value};
+) -> (busbar_contract::yaml::Value, Option<String>) {
+    use busbar_contract::yaml::{Pairs, Value};
     // busbar:expect(bp::clone_alloc, reason = "config: catalog routes are folded once per configuration")
     let mut routes = section.clone();
     let named = section
@@ -3071,9 +3095,9 @@ fn fold_catalog_routes(
     if let Some(ms) = entry.attempt_timeout_ms {
         folded.insert_key("attempt_timeout_ms", ms.into());
     }
-    let mut models = Mapping::new();
-    models.insert(model.into(), Value::Mapping(folded));
-    map.insert(models_key, Value::Mapping(models));
+    let mut models = Pairs::new();
+    models.insert_key(model, Value::Map(folded));
+    map.insert_key(models_key, Value::Map(models));
     #[expect(
         clippy::disallowed_methods,
         reason = "config: catalog routes are folded once per configuration"
@@ -3083,9 +3107,9 @@ fn fold_catalog_routes(
 }
 
 fn routes_of(
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     catalog: Option<&ModelCatalog>,
-) -> (serde_yaml::Value, Option<String>) {
+) -> (busbar_contract::yaml::Value, Option<String>) {
     // busbar:expect(bp::clone_alloc, reason = "config: catalog routes are folded once per configuration")
     catalog.map_or_else(
         || (section.clone(), None),
@@ -3140,13 +3164,17 @@ fn seal_live(
     units: &Arc<busbar_kernel::host_units::UnitRecords>,
 ) -> Result<DoorLive, String> {
     let models_plane = served_facts.section == busbar_contract::section::RESERVED_POOLS_KEY;
-    let card_plane = if models_plane { "" } else { plugin.name() };
     #[expect(
         clippy::disallowed_methods,
         reason = "config: a plane's live state is sealed once per configuration"
     )]
     let mut facts = door_facts(
-        card_plane,
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse(if models_plane {
+            ""
+        } else {
+            plugin.name()
+        })
+        .map_err(|e| format!("plane {}: {e}", plugin.name()))?,
         scope_kinds,
         &served_facts.billable_classes,
         &served_facts.fee_units,
@@ -3358,7 +3386,7 @@ fn arm_probes(
 /// The sections the plane owns, as the JSON object it is handed (no bytes when it owns none).
 fn owned_sections(
     facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<Vec<u8>, String> {
     #[expect(
         clippy::disallowed_types,
@@ -3454,8 +3482,8 @@ fn walked_section(
     // busbar:expect(bp::clone_alloc, reason = "config: the walked section is composed once per configuration")
     match models {
         Some(models) if facts.section == RESERVED_POOLS_KEY => {
-            let mut uniform = serde_yaml::Mapping::new();
-            uniform.insert(RESERVED_MODELS_KEY.into(), models.clone());
+            let mut uniform = busbar_contract::yaml::Pairs::new();
+            uniform.insert_key(RESERVED_MODELS_KEY, models.clone());
             // busbar:expect(bp::clone_alloc, reason = "config: the walked section is composed once per configuration")
             let mut pools = section.clone();
             if let Some(policy) = pools
@@ -3686,67 +3714,6 @@ pub type DataMounts = (
     Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 );
 
-pub fn data_mounts(
-    served: Served,
-    data_chain: &[ChainAuth],
-    core: &[(
-        String,
-        busbar_contract::abi::mechanism::route::RouteMethod,
-        busbar_contract::abi::mechanism::route::RouteAuth,
-    )],
-    upgrades: &[&str],
-    offers: &[TransportOffer],
-) -> Result<DataMounts, String> {
-    door_mounts(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        data_chain,
-        core,
-        upgrades,
-        offers,
-    )
-    .and_then(|m| {
-        busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
-        Ok((m.routes, m.sessions, m.refusals, m.refuse_by_path))
-    })
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
-pub fn data_mounts_with_listeners(
-    served: Served,
-    app: &busbar_kernel::state::App,
-    plan: &ListenerPlan,
-    at: &str,
-    data_chain: &[ChainAuth],
-    core: &[(String, RouteMethod, RouteAuth)],
-    upgrades: &[&str],
-    offers: &[TransportOffer],
-) -> Result<DataMounts, String> {
-    let mounts = door_mounts_planned(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        data_chain,
-        core,
-        upgrades,
-        offers,
-        Some((plan, app, at)),
-    )?;
-    busbar_kernel::plane_routes::pair_door_refusals(
-        &mounts.routes,
-        &mounts.sessions,
-        &mounts.refusals,
-    )?;
-    Ok((
-        mounts.routes,
-        mounts.sessions,
-        mounts.refusals,
-        mounts.refuse_by_path,
-    ))
-}
-
 /// Prepare both the compatibility operator mounts and their neutral governed dispatcher.
 #[expect(
     clippy::too_many_arguments,
@@ -3971,17 +3938,6 @@ impl ListenerPlan {
             return Err("listen: its declared claim requires an accepting stream framer".into());
         }
         Ok(claim)
-    }
-
-    pub fn hold_refusals(&self, at: &str, refusals: Vec<PlaneRefusalSpec>) {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: refusals are held once per configuration"
-        )]
-        self.refusals
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(at.to_string(), refusals);
     }
 
     pub fn share_claim_doors(&self, served: &mut Served) -> Result<(), String> {
@@ -7281,7 +7237,7 @@ impl<'d> DoorFar<'d, '_> {
                 let egress = self.egress?;
                 let pool = self
                     .steps
-                    .with_routed(|routed| egress_pool(self.steps.plane(), routed))?;
+                    .with_routed(|routed| egress_pool(self.steps.lane_prefix(), routed))?;
                 let described = self.shown.and_then(|s| s.described.get(&pool).cloned());
                 let mut far = egress.unit(UnitRoute {
                     allowed_member: self.steps.child_member(),
@@ -7323,7 +7279,7 @@ impl FarEnd for DoorFar<'_, '_> {
 
     fn scope(&self, _token: &Pass<Route>) -> Option<RoutedScope> {
         self.steps.with_routed(|routed| RoutedScope {
-            pool: egress_pool(self.steps.plane(), routed),
+            pool: egress_pool(self.steps.lane_prefix(), routed),
             container: match routed {
                 (label, _) if !label.is_empty() => label.clone(),
                 (_, members) => members.first().cloned().unwrap_or_default(),

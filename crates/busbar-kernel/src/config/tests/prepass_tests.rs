@@ -18,7 +18,7 @@ fn native_document_uses_admitted_source_declarations() {
             "credentials:\n  at_rest:\n    key: {{ {word}: descriptor }}\nidentity-providers:\n  external:\n    module: arbitrary-auth\n    token: {{ {word}: another }}\n"
         );
         let read = |sources: &Sugars| {
-            deploy_with_sources(serde_yaml::Deserializer::from_str(&raw), sources)
+            busbar_contract::yaml::with_deserializer(&raw, |d| deploy_with_sources(d, sources))
         };
         let parsed = read(&sources).unwrap();
         let key = parsed.credentials.at_rest.unwrap().key;

@@ -1001,7 +1001,7 @@ fn omitted_cache_write_rate_prices_at_input() {
     // 50 input, 20 cache-write, 9 output, scaled so each figure is whole cents.
     let t = toks4(50_000_000, 9_000_000, 0, 20_000_000);
     let price = |yaml: &str| {
-        let entry: RateEntryCfg = serde_yaml::from_str(yaml).expect("a rate entry");
+        let entry: RateEntryCfg = busbar_contract::yaml::from_str(yaml).expect("a rate entry");
         let c = BTreeMap::from([("m".to_string(), entry)]);
         let cm = resolve_card_fee(Some(&c), 0);
         let money = bucket_money(&cm, [("m", &t)], 0)
@@ -1035,7 +1035,8 @@ fn omitted_cache_write_rate_prices_at_input() {
 
     // A card that omits the key serializes with the key absent, and reads back omitted.
     let omitted: RateEntryCfg =
-        serde_yaml::from_str("{input_utok: 2.5, output_utok: 10}").expect("a rate entry");
+        busbar_contract::yaml::from_str("{input_utok: 2.5, output_utok: 10}")
+            .expect("a rate entry");
     let bytes = serde_json::to_value(&omitted).expect("serializes");
     assert!(
         bytes.get("cache_write_utok").is_none(),

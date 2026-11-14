@@ -71,11 +71,11 @@ impl DoorPools {
             clippy::disallowed_methods,
             reason = "config: a section's keys are spelled once per generation"
         )]
-        let key = |k: &serde_yaml::Value| k.as_str().map(str::to_owned);
+        let key = |k: &busbar_contract::yaml::Value| k.as_str().map(str::to_owned);
 
         let models = map
-            .get(RESERVED_MODELS_KEY)
-            .and_then(serde_yaml::Value::as_mapping);
+            .get_key(RESERVED_MODELS_KEY)
+            .and_then(busbar_contract::yaml::Value::as_mapping);
         #[expect(
             clippy::disallowed_methods,
             reason = "config: a section's entries are gathered once per generation"
@@ -436,7 +436,7 @@ fn members(pool: &busbar_contract::yaml::Value) -> Result<Vec<(String, u32)>, St
         let Some(name) = m
             .get(POOL_MEMBER_NAME_KEY)
             .or_else(|| m.get(POOL_MEMBER_MODEL_KEY))
-            .and_then(serde_yaml::Value::as_str)
+            .and_then(busbar_contract::yaml::Value::as_str)
         else {
             return Err(format!(
                 "member {i} names no entry (expected `{POOL_MEMBER_NAME_KEY}` or `{POOL_MEMBER_MODEL_KEY}`)"
@@ -2205,7 +2205,9 @@ pub fn listener_needs(
     crate::root::boot::configured_listener_needs(cfg, &sections)
 }
 
-fn raw_sections(cfg: &busbar_kernel::config::RootCfg) -> BTreeMap<&'static str, serde_yaml::Value> {
+fn raw_sections(
+    cfg: &busbar_kernel::config::RootCfg,
+) -> BTreeMap<&'static str, busbar_contract::yaml::Value> {
     #[expect(
         clippy::disallowed_methods,
         reason = "config: a generation's raw sections are gathered once, as it is built"
@@ -2559,7 +2561,7 @@ pub fn kernel_sections(
                 clippy::disallowed_methods,
                 reason = "config: a provider's table is projected once, when the configuration is built"
             )]
-            m.insert(
+            m.insert_key(
                 Value::from(key.clone()),
                 provider_yaml(value, &format!("providers.{name}.{key}"))?,
             );
@@ -2614,8 +2616,8 @@ pub fn kernel_sections(
             .members
             .iter()
             .map(|member| {
-                let mut m = Mapping::new();
-                m.insert(
+                let mut m = Pairs::new();
+                m.insert_key(
                     Value::from(POOL_MEMBER_MODEL_KEY),
                     Value::from(member.model.clone()),
                 );
@@ -2699,16 +2701,18 @@ pub fn kernel_sections(
     Ok(out)
 }
 
-fn section_map<const N: usize>(entries: [(&str, serde_yaml::Value); N]) -> serde_yaml::Value {
+fn section_map<const N: usize>(
+    entries: [(&str, busbar_contract::yaml::Value); N],
+) -> busbar_contract::yaml::Value {
     #[expect(
         clippy::disallowed_methods,
         reason = "config: a section map is projected once, when the configuration is built"
     )]
     let map = entries
         .into_iter()
-        .map(|(key, value)| (serde_yaml::Value::from(key), value))
+        .map(|(key, value)| (busbar_contract::yaml::Value::from(key), value))
         .collect();
-    serde_yaml::Value::Mapping(map)
+    busbar_contract::yaml::Value::Map(map)
 }
 
 fn provider_yaml(
@@ -4060,15 +4064,18 @@ fn upstream_credential(
         })?;
     let settings = placement_settings(header.as_deref());
 
-    let credential =
-        busbar_kernel::config::secret::resolve_text_refusing(reach.secrets.as_ref(), &secret, scope)
-            .map_err(|e| {
-                format!(
-                    "member '{member_name}': busbar's own upstream credential for it cannot \
+    let credential = busbar_kernel::config::secret::resolve_text_refusing(
+        reach.secrets.as_ref(),
+        &secret,
+        scope,
+    )
+    .map_err(|e| {
+        format!(
+            "member '{member_name}': busbar's own upstream credential for it cannot \
                      resolve: {}",
-                    e.text
-                )
-            })?;
+            e.text
+        )
+    })?;
     let (auth, decl) = reach.auths.serving(style, &settings)?.ok_or_else(|| {
         format!(
             "member '{member_name}': no linked or dropped-in auth plugin serves the style \
@@ -4314,8 +4321,12 @@ impl PerHop {
 
     /// Refresh now, on the calling thread (a test's lever and the refresher's one step).
     fn refresh(&self, scope: &busbar_contract::config_time::ConfigScope) -> Attempt {
-        self.refresh_with(scope, std::time::Instant::now(), busbar_kernel::retry::unit())
-            .0
+        self.refresh_with(
+            scope,
+            std::time::Instant::now(),
+            busbar_kernel::retry::unit(),
+        )
+        .0
     }
 
     /// One attempt at `now` with the draw `unit`: what it did and when the next is due.
@@ -4397,7 +4408,10 @@ impl PerHop {
                 busbar_kernel::audit_ring::OUTCOME_APPLIED,
             );
         }
-        let (prior, due) = (streak.prior, next_due(self.lent.lease, Next::Renew, None, now, unit));
+        let (prior, due) = (
+            streak.prior,
+            next_due(self.lent.lease, Next::Renew, None, now, unit),
+        );
         *streak = Streak {
             prior,
             due: Some(due),
@@ -4434,7 +4448,13 @@ impl PerHop {
                     streak.dropped = true;
                     self.lapsed
                         .store(true, std::sync::atomic::Ordering::Relaxed);
-                    let due = next_due(self.lent.lease, Next::Retry(streak.failures), None, now, unit);
+                    let due = next_due(
+                        self.lent.lease,
+                        Next::Retry(streak.failures),
+                        None,
+                        now,
+                        unit,
+                    );
                     streak.due = Some(due);
                     self.report.diag(
                         &busbar_kernel::diagnostics::UPSTREAM_CREDENTIAL_LAPSED,
@@ -4606,10 +4626,7 @@ impl PerHop {
         if now < held.expires_at || busbar_kernel::refresh::stopping() {
             return;
         }
-        if self
-            .lapsed
-            .swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
+        if self.lapsed.swap(true, std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         let failures = self

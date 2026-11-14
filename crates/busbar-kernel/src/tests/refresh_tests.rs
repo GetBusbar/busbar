@@ -73,7 +73,9 @@ fn a_hung_refresh_never_holds_back_another_items_renewal() {
     *hung.gate.lock().unwrap() = Some(gate);
     *hung.entered.lock().unwrap() = Some(entered_tx);
     refresher.keep(weak(&hung), Instant::now());
-    entered.recv_timeout(Duration::from_secs(10)).expect("the hung item runs");
+    entered
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the hung item runs");
 
     let healthy = Counting::new(Duration::from_millis(20));
     refresher.keep(weak(&healthy), Instant::now());
@@ -93,7 +95,9 @@ fn due_items_run_earliest_deadline_first() {
     *blocker.gate.lock().unwrap() = Some(gate);
     *blocker.entered.lock().unwrap() = Some(entered_tx);
     refresher.keep(weak(&blocker), Instant::now());
-    entered.recv_timeout(Duration::from_secs(10)).expect("the one worker is busy");
+    entered
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the one worker is busy");
 
     let now = Instant::now();
     let order = Arc::new(Mutex::new(Vec::new()));
@@ -144,11 +148,12 @@ fn a_fingerprint_is_keyed_and_part_aware() {
     let two = fingerprint([b"a".as_slice(), b"bc".as_slice()]);
     assert_ne!(one, two, "part boundaries count");
     assert_eq!(one, fingerprint([b"ab".as_slice(), b"c".as_slice()]));
-    let plain: [u8; 32] = {
-        use sha2::Digest as _;
-        sha2::Sha256::digest(b"abc").into()
-    };
-    assert_ne!(fingerprint([b"abc".as_slice()]), plain, "never the bare digest");
+    let plain: [u8; 32] = crate::hashing::Sha256::digest(b"abc");
+    assert_ne!(
+        fingerprint([b"abc".as_slice()]),
+        plain,
+        "never the bare digest"
+    );
 }
 
 #[test]

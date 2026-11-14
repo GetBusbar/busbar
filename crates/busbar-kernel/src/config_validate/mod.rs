@@ -2139,12 +2139,7 @@ fn validate_providers_with(
         let base_url = &provider_cfg.base_url;
         let concrete_target = !is_env_placeholder(base_url);
         if let Some(host) = concrete_target
-            .then(|| {
-                metadata_blocked(
-                    base_url,
-                    &cfg.blocked_metadata_hosts,
-                )
-            })
+            .then(|| metadata_blocked(base_url, &cfg.blocked_metadata_hosts))
             .flatten()
         {
             let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
@@ -2160,10 +2155,7 @@ fn validate_providers_with(
                 )).into());
             } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
-                if let Some(host) = metadata_blocked(
-                    &composed,
-                    &cfg.blocked_metadata_hosts,
-                ) {
+                if let Some(host) = metadata_blocked(&composed, &cfg.blocked_metadata_hosts) {
                     let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
                     errors.push(coded::config_provider_destination_blocked(format!(
                         "provider '{provider_name}' base_url+path '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
@@ -2179,10 +2171,7 @@ fn validate_providers_with(
                 )).into());
             } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
-                if let Some(host) = metadata_blocked(
-                    &composed,
-                    &cfg.blocked_metadata_hosts,
-                ) {
+                if let Some(host) = metadata_blocked(&composed, &cfg.blocked_metadata_hosts) {
                     let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
                     errors.push(coded::config_provider_destination_blocked(format!(
                         "provider '{provider_name}' base_url+path_base '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"

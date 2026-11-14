@@ -307,7 +307,11 @@ fn a_failed_reopen_after_rotation_keeps_the_old_handle_and_lease() {
     let first = b.per.handle_at(b.minted).expect("bound");
     let ends = expires_at(&b.per).expect("held");
     assert_eq!(b.per.refresh(&scope()), Attempt::Refused);
-    assert_eq!(b.per.handle_at(Instant::now()), Some(first), "the old handle");
+    assert_eq!(
+        b.per.handle_at(Instant::now()),
+        Some(first),
+        "the old handle"
+    );
     assert_eq!(
         expires_at(&b.per),
         Some(ends),
@@ -326,10 +330,14 @@ fn a_failed_reopen_after_rotation_keeps_the_old_handle_and_lease() {
 // T-A4
 #[test]
 fn a_refresh_failure_emits_8026_once_per_streak_window_and_audits_degraded() {
-    let b = bound("ta4-member", &[Ok("ta4-SECRET-VALUE"), Err(ERROR_KIND_UNAVAILABLE)]);
+    let b = bound(
+        "ta4-member",
+        &[Ok("ta4-SECRET-VALUE"), Err(ERROR_KIND_UNAVAILABLE)],
+    );
     let t0 = Instant::now();
     for s in [0, 1, 2, 30] {
-        b.per.refresh_with(&scope(), t0 + Duration::from_secs(s), 0.5);
+        b.per
+            .refresh_with(&scope(), t0 + Duration::from_secs(s), 0.5);
     }
     let warned = b.report.coded(8026);
     assert_eq!(warned.len(), 1, "one per streak window: {}", b.report.all());
@@ -387,10 +395,11 @@ fn a_lapse_emits_8027_once_and_audits_rejected() {
     assert_eq!(lapsed.len(), 1, "once per lapse: {}", b.report.all());
     assert_eq!(lapsed[0].level, tracing::Level::ERROR);
     assert_eq!(lapsed[0].field("cause"), Some("lease-expired"));
-    assert!(b
-        .report
-        .audits()
-        .contains(&("upstream_credential.refresh".into(), "member:ta5".into(), "rejected")));
+    assert!(b.report.audits().contains(&(
+        "upstream_credential.refresh".into(),
+        "member:ta5".into(),
+        "rejected"
+    )));
 }
 
 // T-A6
@@ -398,12 +407,20 @@ fn a_lapse_emits_8027_once_and_audits_rejected() {
 fn recovery_after_failures_audits_applied_and_resets_the_schedule() {
     let b = bound(
         "ta6",
-        &[Ok("v1"), Err(ERROR_KIND_UNAVAILABLE), Err(ERROR_KIND_UNAVAILABLE), Ok("v1")],
+        &[
+            Ok("v1"),
+            Err(ERROR_KIND_UNAVAILABLE),
+            Err(ERROR_KIND_UNAVAILABLE),
+            Ok("v1"),
+        ],
     );
     let t0 = Instant::now();
     b.per.refresh_with(&scope(), t0, 0.5);
-    b.per.refresh_with(&scope(), t0 + Duration::from_secs(1), 0.5);
-    let (attempt, due) = b.per.refresh_with(&scope(), t0 + Duration::from_secs(2), 0.5);
+    b.per
+        .refresh_with(&scope(), t0 + Duration::from_secs(1), 0.5);
+    let (attempt, due) = b
+        .per
+        .refresh_with(&scope(), t0 + Duration::from_secs(2), 0.5);
     assert_eq!(attempt, Attempt::Renewed);
     assert_eq!(
         due,
@@ -413,7 +430,8 @@ fn recovery_after_failures_audits_applied_and_resets_the_schedule() {
     assert_eq!(b.report.infos().len(), 1, "one recovery line");
     assert_eq!(b.report.audits().last().map(|a| a.2), Some("applied"));
     b.secrets.then(&[Err(ERROR_KIND_UNAVAILABLE)]);
-    b.per.refresh_with(&scope(), t0 + Duration::from_secs(3), 0.5);
+    b.per
+        .refresh_with(&scope(), t0 + Duration::from_secs(3), 0.5);
     assert_eq!(
         b.per.refreshing.lock().unwrap().failures,
         1,
@@ -435,8 +453,16 @@ fn retry_schedule_is_jittered_exponential_capped_and_fits_two_attempts_before_ex
     assert_eq!(at(Next::Confirm, 0.7), Duration::from_secs(1));
     // Failure n: full jitter under min(2^(n-1) s, cap), cap = clamp(60/8, 1, 30) = 7.5 s.
     for (n, ceiling) in [(1, 1_000), (2, 2_000), (3, 4_000), (4, 7_500), (9, 7_500)] {
-        assert_eq!(at(Next::Retry(n), 1.0), Duration::from_millis(ceiling), "n={n}");
-        assert_eq!(at(Next::Retry(n), 0.0), busbar_kernel::retry::FLOOR, "n={n}");
+        assert_eq!(
+            at(Next::Retry(n), 1.0),
+            Duration::from_millis(ceiling),
+            "n={n}"
+        );
+        assert_eq!(
+            at(Next::Retry(n), 0.0),
+            busbar_kernel::retry::FLOOR,
+            "n={n}"
+        );
     }
     // Near expiry a wait that would reach it is halved toward it: never past it, never a spin.
     let close = Some(now + Duration::from_secs(3));
@@ -449,15 +475,24 @@ fn retry_schedule_is_jittered_exponential_capped_and_fits_two_attempts_before_ex
     );
     // Past expiry: steady, uniform in [cap/2, cap].
     let past = Some(now - Duration::from_secs(1));
-    assert_eq!(next_due(lease, Next::Retry(3), past, now, 0.0) - now, Duration::from_millis(3_750));
-    assert_eq!(next_due(lease, Next::Retry(3), None, now, 1.0) - now, Duration::from_millis(7_500));
+    assert_eq!(
+        next_due(lease, Next::Retry(3), past, now, 0.0) - now,
+        Duration::from_millis(3_750)
+    );
+    assert_eq!(
+        next_due(lease, Next::Retry(3), None, now, 1.0) - now,
+        Duration::from_millis(7_500)
+    );
     // The cap is clamped to [1 s, 30 s]; the renewal never waits more than five minutes.
     let long = Duration::from_secs(3600);
     assert_eq!(
         next_due(long, Next::Retry(40), None, now, 1.0) - now,
         Duration::from_secs(30)
     );
-    assert_eq!(next_due(long, Next::Renew, None, now, 0.5) - now, Duration::from_secs(300));
+    assert_eq!(
+        next_due(long, Next::Renew, None, now, 0.5) - now,
+        Duration::from_secs(300)
+    );
     let short = Duration::from_millis(1);
     assert_eq!(
         next_due(short, Next::Renew, None, now, 0.5) - now,
@@ -475,7 +510,10 @@ fn retry_schedule_is_jittered_exponential_capped_and_fits_two_attempts_before_ex
         attempts += 1;
         t = next;
     }
-    assert!(attempts >= 2, "at least two attempts before expiry: {attempts}");
+    assert!(
+        attempts >= 2,
+        "at least two attempts before expiry: {attempts}"
+    );
 }
 
 // B1: the owner-signed rule.
@@ -487,20 +525,39 @@ fn a_definitive_answer_drops_after_one_confirming_reread_and_an_outage_keeps() {
         let now = Instant::now();
         let (attempt, due) = b.per.refresh_with(&scope(), now, 0.5);
         assert_eq!(attempt, Attempt::Confirming { error_kind: kind });
-        assert_eq!(due, now + Duration::from_secs(1), "re-read after one second");
-        assert_eq!(b.per.handle_at(Instant::now()), Some(first), "kept meanwhile");
+        assert_eq!(
+            due,
+            now + Duration::from_secs(1),
+            "re-read after one second"
+        );
+        assert_eq!(
+            b.per.handle_at(Instant::now()),
+            Some(first),
+            "kept meanwhile"
+        );
         let (attempt, _) = b.per.refresh_with(&scope(), due, 0.5);
         assert_eq!(attempt, Attempt::Dropped { error_kind: kind });
         assert_eq!(b.per.handle_at(Instant::now()), None, "dropped at once");
-        assert_eq!(b.report.coded(8027)[0].field("cause"), Some("revoked-at-source"));
+        assert_eq!(
+            b.report.coded(8027)[0].field("cause"),
+            Some("revoked-at-source")
+        );
         assert_eq!(b.report.audits().last().map(|a| a.2), Some("rejected"));
     }
 
     let mixed = bound(
         "b1-mixed",
-        &[Ok("v1"), Err(ERROR_KIND_DENIED), Err(ERROR_KIND_NOT_FOUND), Ok("v1")],
+        &[
+            Ok("v1"),
+            Err(ERROR_KIND_DENIED),
+            Err(ERROR_KIND_NOT_FOUND),
+            Ok("v1"),
+        ],
     );
-    assert!(matches!(mixed.per.refresh(&scope()), Attempt::Confirming { .. }));
+    assert!(matches!(
+        mixed.per.refresh(&scope()),
+        Attempt::Confirming { .. }
+    ));
     assert_eq!(
         mixed.per.refresh(&scope()),
         Attempt::Confirming {
@@ -514,18 +571,34 @@ fn a_definitive_answer_drops_after_one_confirming_reread_and_an_outage_keeps() {
     let first = blip.per.handle_at(blip.minted).expect("bound");
     blip.per.refresh(&scope());
     assert_eq!(blip.per.refresh(&scope()), Attempt::Renewed);
-    assert_eq!(blip.per.handle_at(Instant::now()), Some(first), "a blip never drops");
+    assert_eq!(
+        blip.per.handle_at(Instant::now()),
+        Some(first),
+        "a blip never drops"
+    );
     assert!(blip.report.coded(8027).is_empty());
 
     let outage = bound(
         "b1-outage",
-        &[Ok("v1"), Err(ERROR_KIND_UNAVAILABLE), Err(ERROR_KIND_INTERNAL), Err(ERROR_KIND_INVALID)],
+        &[
+            Ok("v1"),
+            Err(ERROR_KIND_UNAVAILABLE),
+            Err(ERROR_KIND_INTERNAL),
+            Err(ERROR_KIND_INVALID),
+        ],
     );
     let first = outage.per.handle_at(outage.minted).expect("bound");
     for _ in 0..3 {
-        assert!(matches!(outage.per.refresh(&scope()), Attempt::Failed { .. }));
+        assert!(matches!(
+            outage.per.refresh(&scope()),
+            Attempt::Failed { .. }
+        ));
     }
-    assert_eq!(outage.per.handle_at(Instant::now()), Some(first), "outages keep it");
+    assert_eq!(
+        outage.per.handle_at(Instant::now()),
+        Some(first),
+        "outages keep it"
+    );
 }
 
 // M4
@@ -560,7 +633,11 @@ fn a_flapping_source_reuses_the_previous_handle() {
         assert_eq!(b.per.refresh(&scope()), Attempt::Rotated);
         assert_eq!(b.per.handle_at(Instant::now()), Some(expect));
     }
-    assert_eq!(b.auth.opens(), 2, "two values, two opens, however often they flip");
+    assert_eq!(
+        b.auth.opens(),
+        2,
+        "two values, two opens, however often they flip"
+    );
 }
 
 // M5: many members on one source report once a minute, the rest counted.
@@ -589,5 +666,9 @@ fn members_failing_on_one_source_report_once_and_count_the_others() {
     members[1].refresh_with(&scope(), t0 + Duration::from_secs(61), 0.5);
     let again = report.coded(8026);
     assert_eq!(again.len(), 2);
-    assert_eq!(again[1].field("others"), Some("4"), "the held-back members are counted");
+    assert_eq!(
+        again[1].field("others"),
+        Some("4"),
+        "the held-back members are counted"
+    );
 }
