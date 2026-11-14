@@ -979,6 +979,7 @@ async fn run(
         }
 
         let mut fresh_record_bootstrap = None;
+        let mut judged_effective = None;
         if let Some(command) = principal_transition.as_ref() {
             command
                 .validate_overlay_mode(config_locked, overlay_doc.is_some())
@@ -996,12 +997,15 @@ async fn run(
             if let Some(doc) = overlay_doc.as_ref() {
                 config::overlay::merge_into(&mut effective, doc.clone());
             }
-            config_validate::validate(&effective).unwrap_or_else(|errors| {
-                die(format!(
-                    "principal transition effective configuration errors: {}",
-                    errors.join("; ")
-                ))
-            });
+            // The one semantic judgement of this boot's effective configuration, made exactly as
+            // construction makes it. A serving transition hands it to construction below.
+            let judged = config_validate::judge_effective(&effective, &deploy.plugins)
+                .unwrap_or_else(|errors| {
+                    die(format!(
+                        "principal transition effective configuration errors: {}",
+                        errors.join("; ")
+                    ))
+                });
             let result = root::principal_transition::execute(
                 command,
                 &effective,
@@ -1030,6 +1034,7 @@ async fn run(
             if config_locked {
                 overlay_path = None;
             }
+            judged_effective = Some((effective, judged));
         }
 
         Some((
@@ -1046,6 +1051,7 @@ async fn run(
             base_hook_names,
             base_group_names,
             fresh_record_bootstrap,
+            judged_effective,
         ))
     }))
     .await;
@@ -1063,6 +1069,7 @@ async fn run(
         base_hook_names,
         base_group_names,
         fresh_record_bootstrap,
+        judged_effective,
     )) = bootstrap
     else {
         return;
@@ -1262,6 +1269,7 @@ async fn run(
         root::startup_upgrade::continuation::Preparation {
             startup: store_admission,
             config: cfg,
+            judged,
             plugins: plugins_cfg,
             overlay: overlay_path,
             deploy,
