@@ -1,0 +1,75 @@
+name: llm-h2c
+group: llm
+description: openai to openai over h2c (prior knowledge) and HTTP/1.1 at c=128.
+config: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    responses: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    anthropic: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    gemini: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    cohere: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    bedrock: { api_key: { env: HAMMER_BEDROCK_KEY } }
+  models:
+    m-openai: { provider: openai }
+    m-responses: { provider: responses }
+    m-anthropic: { provider: anthropic }
+    m-gemini: { provider: gemini }
+    m-cohere: { provider: cohere }
+    m-bedrock: { provider: bedrock }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  store: { module: memory }
+config_1_5: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    responses: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    anthropic: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    gemini: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    cohere: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+    bedrock: { api_key: { env: HAMMER_BEDROCK_KEY } }
+  models:
+    m-openai: { provider: openai }
+    m-responses: { provider: responses }
+    m-anthropic: { provider: anthropic }
+    m-gemini: { provider: gemini }
+    m-cohere: { provider: cohere }
+    m-bedrock: { provider: bedrock }
+providers: |
+  openai: { protocol: openai, base_url: "{MOCK}" }
+  responses: { protocol: responses, base_url: "{MOCK}" }
+  anthropic: { protocol: anthropic, base_url: "{MOCK}" }
+  gemini: { protocol: gemini, base_url: "{MOCK}" }
+  cohere: { protocol: cohere, base_url: "{MOCK}" }
+  bedrock: { protocol: bedrock, base_url: "{MOCK}" }
+setup:
+  - mint_key: { as: KEY, group: bench }
+llm_matrix:
+  - { ingress: [openai], egress: [openai], key: "{KEY}", proto: h2c, shape: { closed: 128 } }
+  - { ingress: [openai], egress: [openai], key: "{KEY}", proto: h1, shape: { closed: 128 } }
+  - { ingress: [openai], egress: [openai], key: "{KEY}", shape: { open: 500, connections: 64 } }

@@ -1,0 +1,44 @@
+name: plane-streams
+group: planes
+description: The streams (realtime) plane session mint (POST /v1/realtime/client_secrets).
+config: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  store: { module: memory }
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m-openai: { provider: openai }
+  streams:
+    media: { listen: "127.0.0.1:{FREE_PORT_A}" }
+    session:
+      model: m-openai
+providers: |
+  openai: { protocol: openai, base_url: "{MOCK}" }
+setup:
+  - mint_key: { as: KEY, group: bench }
+  - audience_token: { as: AT, from: "{KEY}", aud: "http://{LISTEN}/v1/realtime" }
+cases:
+  - name: client_secrets mint
+    shape: { closed: 32 }
+    requests:
+      - path: /v1/realtime/client_secrets
+        headers: { authorization: "Bearer {AT}", content-type: application/json }
+        body: "{}"
+    direct:
+      listener: mock
+      path: /v1/realtime/client_secrets
+      body: "{}"
