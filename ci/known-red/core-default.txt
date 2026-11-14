@@ -42,7 +42,6 @@ busbar-default::bin/busbar root::door_steps::tests::a_models_protocol_override_i
 busbar-default::bin/busbar root::door_steps::tests::a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::door_steps::tests::kernel_sections_preserve_numeric_scalars_in_every_projected_section	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::door_steps::tests::kernel_sections_refuse_unrepresentable_provider_numbers_before_application	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::inbound_tests::close_tests::retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_lock	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::linked::tests::the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::listener::framed::empty_response_tests::bodyful_rendered_refusal_states_its_length	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::registry::tests::a_linked_transport_row_logs_to_its_own_plugin_log_file	CDT-KNOWN-RED	stable
@@ -111,8 +110,6 @@ busbar-default::bin/busbar root::serve::plane_streaming::session_door::physical_
 busbar-default::bin/busbar root::serve::serve_datagram::raw_udp_ingress_tests::raw_output_credit_readiness_drops_before_acceptance_and_resumes_without_replay	CDT-KNOWN-RED	flaky
 busbar-default::bin/busbar root::serve::source_env::config_validation::test_validate_rejects_empty_canonical_builtin_secret_ref	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::source_file::test_validate_rejects_empty_canonical_file_secret_ref	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::actual_store_compatibility_replay_preserves_the_resolved_verdict	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route	CDT-KNOWN-RED	stable
 busbar-default::boot_lines_neutrality boot_lines_match_1_5_5_shape	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_accepts_a_reference_at_a_planes_declared_wildcard_path	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_ok_on_a_config_in_the_planes_second_dialect	CDT-KNOWN-RED	stable
