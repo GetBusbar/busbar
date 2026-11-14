@@ -246,7 +246,7 @@
     {
       "repo": "busbar-export-otlp",
       "url": "https://github.com/GetBusbar/busbar-export-otlp",
-      "commit": "8e0118e650aa9995097b427182d7f8cb516c592a",
+      "commit": "bd9ba11ffffb74c8765f1531d9c664ce4c7423a5",
       "package": "busbar-export-otlp-plugin",
       "kind": "export",
       "alias": "otlp",
