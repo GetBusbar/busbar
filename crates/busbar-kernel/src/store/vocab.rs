@@ -126,15 +126,17 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// FNV-1a 64 over the string's bytes (fnv's `FnvHasher`, the published offset basis and prime).
-pub fn fnv1a_u64(s: &str) -> u64 {
-    fnv1a_bytes(s.as_bytes())
+/// A 64-bit hash of the string's bytes for in-memory keys; see [`key_hash_bytes`].
+pub fn key_hash_u64(s: &str) -> u64 {
+    key_hash_bytes(s.as_bytes())
 }
 
-/// FNV-1a 64 over `bytes`; in-memory keys only (shards, sticky routing, the gate's session key).
-pub fn fnv1a_bytes(bytes: &[u8]) -> u64 {
-    use std::hash::Hasher as _;
-    let mut hasher = fnv::FnvHasher::default();
+/// A 64-bit hash of `bytes` for in-memory keys only (shards, sticky routing, the gate's session
+/// key): foldhash with a fixed seed, the one sanctioned hasher (LR-113, ruling 311). Stable within
+/// a build; never persisted or sent.
+pub fn key_hash_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let mut hasher = foldhash::fast::FixedState::with_seed(0).build_hasher();
     hasher.write(bytes);
     hasher.finish()
 }
