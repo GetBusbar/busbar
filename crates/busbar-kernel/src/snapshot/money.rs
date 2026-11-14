@@ -74,102 +74,93 @@ pub(super) async fn refresh_governance_gauges(
     } else {
         KEY_GAUGE_LIMIT_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
     }
-    for key in keys.iter().take(key_gauge_limit) {
-        let usage = match gov.viewed_usage_for_async(cost, &key.id, now).await {
-            Ok(Some(u)) => u,
-            Ok(None) => continue,
-            Err(e) => {
-                diag_debug!(METRICS_SCRAPE_KEY_USAGE_READ_FAILED, key = %key.id, error = %e, "metrics scrape: usage read failed; skipping key");
-                return Err("the current key usage snapshot is unavailable");
-            }
-        };
+    let keys = &keys[..keys.len().min(key_gauge_limit)];
+    let ids: Vec<(&str, &str)> = keys
+        .iter()
+        .map(|key| (key.id.as_str(), crate::governance::WINDOW_TOTAL))
+        .collect();
+    let views = match gov.scrape_usage_async(cost, &ids, now).await {
+        Ok(views) => views,
+        Err(e) => {
+            diag_debug!(METRICS_SCRAPE_KEY_USAGE_READ_FAILED, error = %e, "metrics scrape: usage read failed; skipping keys");
+            return Err("the current key usage snapshot is unavailable");
+        }
+    };
+    for (key, view) in keys.iter().zip(views) {
+        let labels: Vec<metrics::Label> = metric_labels(key)
+            .map(|(k, v)| metrics::Label::new(k.clone(), v.clone()))
+            .collect();
+        let mut base = Vec::with_capacity(labels.len() + 1);
+        base.push(metrics::Label::new("key", key.id.clone()));
+        base.extend(labels.iter().cloned());
+        set_gauge(
+            metrics::gauge!(KEY_SPEND_CENTS, base.clone()),
+            view.usage.spend_cents,
+        );
+        set_count_gauge(metrics::gauge!(KEY_TOKENS_TOTAL, base), view.usage.tokens);
 
-        let base_labels = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
-            let mut labels: Vec<metrics::Label> = vec![metrics::Label::new("key", key.id.clone())];
-            for (k, v) in metric_labels(key) {
-                labels.push(metrics::Label::new(k.clone(), v.clone()));
+        for (model, tokens) in view.models {
+            for (tier, v) in crate::governance::token_series(&model, &tokens) {
+                let mut series = Vec::with_capacity(labels.len() + 3);
+                series.push(metrics::Label::new("bucket", key.id.clone()));
+                series.extend(labels.iter().cloned());
+                series.push(metrics::Label::new("model", model.clone()));
+                series.push(metrics::Label::new("tier", tier));
+                set_count_gauge(metrics::gauge!(BUCKET_TOKENS, series), v);
             }
+        }
+    }
+
+    let buckets: Vec<_> = cost
+        .groups()
+        .iter()
+        .flat_map(|group| group.buckets.iter().map(move |bucket| (group, bucket)))
+        .collect();
+    let ids: Vec<(&str, &str)> = buckets
+        .iter()
+        .map(|(_, bucket)| (bucket.bucket_id.as_str(), bucket.window))
+        .collect();
+    let views = match gov.scrape_usage_async(cost, &ids, now).await {
+        Ok(views) => views,
+        Err(e) => {
+            diag_debug!(METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED, error = %e, "metrics scrape: group ledger read failed; skipping");
+            return Err("the current group usage snapshot is unavailable");
+        }
+    };
+    for ((group, bucket), view) in buckets.into_iter().zip(views) {
+        let dims = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
+            let mut labels = vec![
+                metrics::Label::new("bucket", bucket.bucket_id.clone()),
+                metrics::Label::new("group", group.name.clone()),
+                metrics::Label::new("window", bucket.window),
+            ];
             for (k, v) in extra {
                 labels.push(metrics::Label::new(*k, v.clone()));
             }
             labels
         };
+        let derived = view.usage;
         set_gauge(
-            metrics::gauge!(KEY_SPEND_CENTS, base_labels(&[])),
-            usage.spend_cents,
-        );
-        set_count_gauge(
-            metrics::gauge!(KEY_TOKENS_TOTAL, base_labels(&[])),
-            usage.tokens,
+            metrics::gauge!(BUCKET_SPEND_CENTS, dims(&[])),
+            derived.spend_cents,
         );
 
-        for (model, tokens) in gov
-            .bucket_model_tokens_async(&key.id, crate::governance::WINDOW_TOTAL, now)
-            .await
-            .map_err(|_| "the current key token snapshot is unavailable")?
-        {
-            for (tier, v) in crate::governance::token_series(&model, &tokens) {
-                let mut labels: Vec<metrics::Label> =
-                    vec![metrics::Label::new("bucket", key.id.clone())];
-                for (k, val) in metric_labels(key) {
-                    labels.push(metrics::Label::new(k.clone(), val.clone()));
-                }
-                labels.push(metrics::Label::new("model", model.clone()));
-                labels.push(metrics::Label::new("tier", tier));
-                set_count_gauge(metrics::gauge!(BUCKET_TOKENS, labels), v);
-            }
-        }
-    }
-
-    for group in cost.groups() {
-        for bucket in &group.buckets {
-            let derived = match gov
-                .viewed_bucket_usage_async(cost, &bucket.bucket_id, bucket.window, true, now)
-                .await
-            {
-                Ok(u) => u,
-                Err(e) => {
-                    diag_debug!(METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED, bucket = %bucket.bucket_id, error = %e, "metrics scrape: group ledger read failed; skipping");
-                    return Err("the current group usage snapshot is unavailable");
-                }
-            };
-            let dims = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
-                let mut labels = vec![
-                    metrics::Label::new("bucket", bucket.bucket_id.clone()),
-                    metrics::Label::new("group", group.name.clone()),
-                    metrics::Label::new("window", bucket.window),
-                ];
-                for (k, v) in extra {
-                    labels.push(metrics::Label::new(*k, v.clone()));
-                }
-                labels
-            };
+        if let Some(cap) = bucket.budget_cap {
+            let remaining = cap.saturating_sub(derived.spend_cents).max(0);
             set_gauge(
-                metrics::gauge!(BUCKET_SPEND_CENTS, dims(&[])),
-                derived.spend_cents,
+                metrics::gauge!(BUCKET_BUDGET_REMAINING_CENTS, dims(&[])),
+                remaining,
             );
-
-            if let Some(cap) = bucket.budget_cap {
-                let remaining = cap.saturating_sub(derived.spend_cents).max(0);
-                set_gauge(
-                    metrics::gauge!(BUCKET_BUDGET_REMAINING_CENTS, dims(&[])),
-                    remaining,
+        }
+        for (model, tokens) in view.models {
+            for (tier, v) in crate::governance::token_series(&model, &tokens) {
+                set_count_gauge(
+                    metrics::gauge!(
+                        BUCKET_TOKENS,
+                        dims(&[("model", model.clone()), ("tier", tier)])
+                    ),
+                    v,
                 );
-            }
-            for (model, tokens) in gov
-                .bucket_model_tokens_async(&bucket.bucket_id, bucket.window, now)
-                .await
-                .map_err(|_| "the current group token snapshot is unavailable")?
-            {
-                for (tier, v) in crate::governance::token_series(&model, &tokens) {
-                    set_count_gauge(
-                        metrics::gauge!(
-                            BUCKET_TOKENS,
-                            dims(&[("model", model.clone()), ("tier", tier)])
-                        ),
-                        v,
-                    );
-                }
             }
         }
     }

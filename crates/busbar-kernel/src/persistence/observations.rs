@@ -407,6 +407,20 @@ impl ObservationStore {
     pub async fn budget(&self, id: &str) -> Result<BudgetTotal, Error> {
         decode_default(&self.read(&[address(b'b', id.as_bytes())]).await?[0])
     }
+    /// Read many budgets' totals, one store read per `scan_items` budgets.
+    pub async fn budgets(&self, ids: &[&str]) -> Result<Vec<BudgetTotal>, Error> {
+        let mut totals = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(self.store.limits().scan_items.max(1)) {
+            let addresses: Vec<_> = chunk
+                .iter()
+                .map(|id| address(b'b', id.as_bytes()))
+                .collect();
+            for value in &self.read(&addresses).await? {
+                totals.push(decode_default(value)?);
+            }
+        }
+        Ok(totals)
+    }
     /// Read original-rate-time raw metering totals for one approved subject.
     pub async fn dated_total(&self, scope: &BoundScope, subject: u32) -> Result<DatedTotal, Error> {
         let row = self.authorized(scope).await?;
