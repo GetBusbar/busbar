@@ -25,6 +25,9 @@
 //!   keeps them: a tagged node is a [`Value::Tag`] whose number names the tag through this
 //!   module's registry ([`tag_id`], [`tag_name`]), as serde_yaml's `Value::Tagged` named it. Read
 //!   on into an enum, `!Variant` selects the variant; written out, the tag is written back.
+//! - A typed enum is written as serde_yaml wrote it: a unit variant as its plain name (`Variant`),
+//!   a newtype, tuple or struct variant as `!Variant` over its payload (`!Size 127`, `!Rgb` over
+//!   a sequence, `!Color` over a mapping), never serde-saphyr's `Variant: payload` mapping.
 
 #![forbid(unsafe_code)]
 
@@ -766,7 +769,8 @@ impl<'de> serde::de::Visitor<'de> for FindTagInside {
 
 /// Write `value` as a YAML document. Every tagged [`Value`] in it, at any depth (the whole value,
 /// or one inside a struct field, an `Option`, a map or a sequence), writes its application tag
-/// back (`!Name value`), as serde_yaml wrote a `Value::Tagged`.
+/// back (`!Name value`), as serde_yaml wrote a `Value::Tagged`; every enum variant with content
+/// is written as serde_yaml wrote it, `!Variant` over the content (a unit variant: `Variant`).
 pub fn to_string<T: Serialize + ?Sized>(value: &T) -> Result<String, Error> {
     Ok(serde_saphyr::to_string(&Tagging(value))?)
 }
@@ -796,7 +800,8 @@ impl<T: Serialize + ?Sized> Serialize for Tagging<'_, T> {
 /// unchanged, wrapping every nested element, field, key and value in [`Tagging`] so the rule
 /// holds at any depth, except ciborium's tagged item (`@@TAG@@::@@TAGGED@@(id, value)`): a tag
 /// the registry handed out is written through serde-saphyr's `Tagged` (`!Name value`), any other
-/// (a genuine CBOR tag) as its value alone.
+/// (a genuine CBOR tag) as its value alone; and an enum's newtype, tuple or struct variant, written
+/// through `Tagged` as `!Variant` over its content, which selects the variant (serde_yaml's form).
 struct TagWriter<S>(S);
 
 macro_rules! pass_through {
@@ -818,7 +823,7 @@ impl<S: serde::Serializer> serde::Serializer for TagWriter<S> {
     type SerializeTupleVariant = TagWriterVariant<S>;
     type SerializeMap = TagWriter<S::SerializeMap>;
     type SerializeStruct = TagWriter<S::SerializeStruct>;
-    type SerializeStructVariant = TagWriter<S::SerializeStructVariant>;
+    type SerializeStructVariant = TagWriterStructVariant<S>;
 
     pass_through! {
         serialize_bool(bool),
@@ -869,6 +874,7 @@ impl<S: serde::Serializer> serde::Serializer for TagWriter<S> {
         self.0.serialize_newtype_struct(name, &Tagging(value))
     }
 
+    /// serde_yaml's form: `!Variant payload`.
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
         self,
         name: &'static str,
@@ -876,8 +882,21 @@ impl<S: serde::Serializer> serde::Serializer for TagWriter<S> {
         variant: &'static str,
         value: &T,
     ) -> Result<S::Ok, S::Error> {
-        self.0
-            .serialize_newtype_variant(name, variant_index, variant, &Tagging(value))
+        match variant_tag(variant) {
+            Some(tag) => serde_saphyr::Tagged(
+                NewtypeVariant {
+                    name,
+                    index: variant_index,
+                    variant,
+                    value,
+                },
+                Some(tag),
+            )
+            .serialize(self.0),
+            None => self
+                .0
+                .serialize_newtype_variant(name, variant_index, variant, &Tagging(value)),
+        }
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, S::Error> {
@@ -910,6 +929,17 @@ impl<S: serde::Serializer> serde::Serializer for TagWriter<S> {
                 written: None,
             });
         }
+        // serde_yaml's form: `!Variant` and the fields as a sequence.
+        if let Some(tag) = variant_tag(variant) {
+            return Ok(TagWriterVariant::Enum {
+                serializer: self.0,
+                tag,
+                name,
+                index: variant_index,
+                variant,
+                fields: Vec::with_capacity(len.min(4096)),
+            });
+        }
         self.0
             .serialize_tuple_variant(name, variant_index, variant, len)
             .map(TagWriterVariant::Through)
@@ -927,6 +957,7 @@ impl<S: serde::Serializer> serde::Serializer for TagWriter<S> {
         self.0.serialize_struct(name, len).map(TagWriter)
     }
 
+    /// serde_yaml's form: `!Variant` and the fields as a mapping.
     fn serialize_struct_variant(
         self,
         name: &'static str,
@@ -934,9 +965,20 @@ impl<S: serde::Serializer> serde::Serializer for TagWriter<S> {
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant, S::Error> {
+        if let Some(tag) = variant_tag(variant) {
+            return Ok(TagWriterStructVariant::Enum {
+                serializer: self.0,
+                tag,
+                name,
+                index: variant_index,
+                variant,
+                len,
+                fields: Vec::with_capacity(len.min(4096)),
+            });
+        }
         self.0
             .serialize_struct_variant(name, variant_index, variant, len)
-            .map(TagWriter)
+            .map(|inner| TagWriterStructVariant::Through(TagWriter(inner)))
     }
 
     fn collect_str<T: fmt::Display + ?Sized>(self, value: &T) -> Result<S::Ok, S::Error> {
@@ -1038,8 +1080,9 @@ impl<C: serde::ser::SerializeStructVariant> serde::ser::SerializeStructVariant f
     }
 }
 
-/// [`TagWriter`]'s tuple variant: any other tuple variant passed through, or ciborium's tagged
-/// item, whose fields are the tag number and then the value.
+/// [`TagWriter`]'s tuple variant: any other tuple variant passed through, ciborium's tagged
+/// item (whose fields are the tag number and then the value), or an enum's tuple variant written
+/// as serde_yaml wrote it, `!Variant` over the fields (gathered, then written in one go).
 enum TagWriterVariant<S: serde::Serializer> {
     Through(S::SerializeTupleVariant),
     Tag {
@@ -1049,6 +1092,14 @@ enum TagWriterVariant<S: serde::Serializer> {
         id: Option<u64>,
         /// The result of writing the value (field 1).
         written: Option<S::Ok>,
+    },
+    Enum {
+        serializer: S,
+        tag: String,
+        name: &'static str,
+        index: u32,
+        variant: &'static str,
+        fields: Vec<Content>,
     },
 }
 
@@ -1060,6 +1111,10 @@ impl<S: serde::Serializer> serde::ser::SerializeTupleVariant for TagWriterVarian
         let (serializer, id, written) = match self {
             Self::Through(inner) => {
                 return serde::ser::SerializeTupleVariant::serialize_field(inner, &Tagging(value))
+            }
+            Self::Enum { fields, .. } => {
+                fields.push(capture::<S::Error, _>(value)?);
+                return Ok(());
             }
             Self::Tag {
                 serializer,
@@ -1094,7 +1149,640 @@ impl<S: serde::Serializer> serde::ser::SerializeTupleVariant for TagWriterVarian
             Self::Tag { written, .. } => written.ok_or_else(|| {
                 <S::Error as serde::ser::Error>::custom("a tagged item is missing its value")
             }),
+            Self::Enum {
+                serializer,
+                tag,
+                name,
+                index,
+                variant,
+                fields,
+            } => serde_saphyr::Tagged(
+                TupleVariant {
+                    name,
+                    index,
+                    variant,
+                    fields: &fields,
+                },
+                Some(tag),
+            )
+            .serialize(serializer),
         }
+    }
+}
+
+/// [`TagWriter`]'s struct variant: passed through when its name cannot be a tag, otherwise
+/// written as serde_yaml wrote it, `!Variant` over the fields (gathered, then written in one go).
+enum TagWriterStructVariant<S: serde::Serializer> {
+    Through(TagWriter<S::SerializeStructVariant>),
+    Enum {
+        serializer: S,
+        tag: String,
+        name: &'static str,
+        index: u32,
+        variant: &'static str,
+        len: usize,
+        /// Each field in order; `None` for a skipped one.
+        fields: Vec<(&'static str, Option<Content>)>,
+    },
+}
+
+impl<S: serde::Serializer> serde::ser::SerializeStructVariant for TagWriterStructVariant<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), S::Error> {
+        match self {
+            Self::Through(inner) => {
+                serde::ser::SerializeStructVariant::serialize_field(inner, key, value)
+            }
+            Self::Enum { fields, .. } => {
+                fields.push((key, Some(capture::<S::Error, _>(value)?)));
+                Ok(())
+            }
+        }
+    }
+
+    fn skip_field(&mut self, key: &'static str) -> Result<(), S::Error> {
+        match self {
+            Self::Through(inner) => serde::ser::SerializeStructVariant::skip_field(inner, key),
+            Self::Enum { fields, .. } => {
+                fields.push((key, None));
+                Ok(())
+            }
+        }
+    }
+
+    fn end(self) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Through(inner) => serde::ser::SerializeStructVariant::end(inner),
+            Self::Enum {
+                serializer,
+                tag,
+                name,
+                index,
+                variant,
+                len,
+                fields,
+            } => serde_saphyr::Tagged(
+                StructVariant {
+                    name,
+                    index,
+                    variant,
+                    len,
+                    fields: &fields,
+                },
+                Some(tag),
+            )
+            .serialize(serializer),
+        }
+    }
+}
+
+/// The tag serde_yaml wrote for an enum variant with content, `!Variant`, when serde-saphyr can
+/// write the variant under it: a variant whose name could not be a plain tag (empty, holding `:`
+/// or `!`, or a YAML core type name such as `str`) is written in serde-saphyr's own form.
+fn variant_tag(variant: &str) -> Option<String> {
+    let plain = !variant.is_empty()
+        && !variant.contains([':', '!'])
+        && !matches!(
+            variant,
+            "null" | "bool" | "int" | "float" | "map" | "seq" | "str"
+        );
+    plain.then(|| format!("!{variant}"))
+}
+
+/// A newtype variant, written under its `!Variant` tag: serde-saphyr's tagged-variant form, the
+/// tag selecting the variant and the payload written under it.
+struct NewtypeVariant<'v, T: ?Sized> {
+    name: &'static str,
+    index: u32,
+    variant: &'static str,
+    value: &'v T,
+}
+
+impl<T: Serialize + ?Sized> Serialize for NewtypeVariant<'_, T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_newtype_variant(
+            self.name,
+            self.index,
+            self.variant,
+            &Tagging(self.value),
+        )
+    }
+}
+
+/// A tuple variant's gathered fields, written under its `!Variant` tag as a sequence.
+struct TupleVariant<'f> {
+    name: &'static str,
+    index: u32,
+    variant: &'static str,
+    fields: &'f [Content],
+}
+
+impl Serialize for TupleVariant<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTupleVariant;
+        let mut tuple = serializer.serialize_tuple_variant(
+            self.name,
+            self.index,
+            self.variant,
+            self.fields.len(),
+        )?;
+        for field in self.fields {
+            tuple.serialize_field(&Tagging(field))?;
+        }
+        tuple.end()
+    }
+}
+
+/// A struct variant's gathered fields, written under its `!Variant` tag as a mapping.
+struct StructVariant<'f> {
+    name: &'static str,
+    index: u32,
+    variant: &'static str,
+    len: usize,
+    fields: &'f [(&'static str, Option<Content>)],
+}
+
+impl Serialize for StructVariant<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStructVariant;
+        let mut fields =
+            serializer.serialize_struct_variant(self.name, self.index, self.variant, self.len)?;
+        for (key, value) in self.fields {
+            match value {
+                Some(value) => fields.serialize_field(*key, &Tagging(value))?,
+                None => fields.skip_field(*key)?,
+            }
+        }
+        fields.end()
+    }
+}
+
+/// One serialized value, recorded call by call so it can be written later exactly as it would
+/// have been written then (names, length hints and skipped fields included). A tuple or struct
+/// variant's fields are gathered this way: serde hands them over one at a time, while
+/// serde-saphyr writes a tagged node from one value.
+enum Content {
+    Bool(bool),
+    I64(i64),
+    I128(i128),
+    U64(u64),
+    U128(u128),
+    F32(f32),
+    F64(f64),
+    Char(char),
+    Str(String),
+    Bytes(Vec<u8>),
+    None,
+    Some(Box<Content>),
+    Unit,
+    UnitStruct(&'static str),
+    UnitVariant(&'static str, u32, &'static str),
+    NewtypeStruct(&'static str, Box<Content>),
+    NewtypeVariant(&'static str, u32, &'static str, Box<Content>),
+    Seq(Option<usize>, Vec<Content>),
+    Tuple(Vec<Content>),
+    TupleStruct(&'static str, Vec<Content>),
+    TupleVariant(&'static str, u32, &'static str, Vec<Content>),
+    Map(Option<usize>, Vec<(Content, Content)>),
+    Struct(&'static str, usize, Vec<(&'static str, Option<Content>)>),
+    StructVariant(
+        &'static str,
+        u32,
+        &'static str,
+        usize,
+        Vec<(&'static str, Option<Content>)>,
+    ),
+}
+
+/// `value` recorded as [`Content`].
+fn capture<E: serde::ser::Error, T: Serialize + ?Sized>(value: &T) -> Result<Content, E> {
+    value.serialize(Capture(std::marker::PhantomData))
+}
+
+impl Serialize for Content {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{
+            SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
+            SerializeTupleStruct, SerializeTupleVariant,
+        };
+        match self {
+            Self::Bool(v) => s.serialize_bool(*v),
+            Self::I64(v) => s.serialize_i64(*v),
+            Self::I128(v) => s.serialize_i128(*v),
+            Self::U64(v) => s.serialize_u64(*v),
+            Self::U128(v) => s.serialize_u128(*v),
+            Self::F32(v) => s.serialize_f32(*v),
+            Self::F64(v) => s.serialize_f64(*v),
+            Self::Char(v) => s.serialize_char(*v),
+            Self::Str(v) => s.serialize_str(v),
+            Self::Bytes(v) => s.serialize_bytes(v),
+            Self::None => s.serialize_none(),
+            Self::Some(v) => s.serialize_some(&**v),
+            Self::Unit => s.serialize_unit(),
+            Self::UnitStruct(name) => s.serialize_unit_struct(*name),
+            Self::UnitVariant(name, index, variant) => {
+                s.serialize_unit_variant(*name, *index, *variant)
+            }
+            Self::NewtypeStruct(name, v) => s.serialize_newtype_struct(*name, &**v),
+            Self::NewtypeVariant(name, index, variant, v) => {
+                s.serialize_newtype_variant(*name, *index, *variant, &**v)
+            }
+            Self::Seq(len, items) => {
+                let mut seq = s.serialize_seq(*len)?;
+                for item in items {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+            Self::Tuple(items) => {
+                let mut tuple = s.serialize_tuple(items.len())?;
+                for item in items {
+                    tuple.serialize_element(item)?;
+                }
+                tuple.end()
+            }
+            Self::TupleStruct(name, items) => {
+                let mut tuple = s.serialize_tuple_struct(*name, items.len())?;
+                for item in items {
+                    tuple.serialize_field(item)?;
+                }
+                tuple.end()
+            }
+            Self::TupleVariant(name, index, variant, items) => {
+                let mut tuple = s.serialize_tuple_variant(*name, *index, *variant, items.len())?;
+                for item in items {
+                    tuple.serialize_field(item)?;
+                }
+                tuple.end()
+            }
+            Self::Map(len, entries) => {
+                let mut map = s.serialize_map(*len)?;
+                for (key, value) in entries {
+                    map.serialize_entry(key, value)?;
+                }
+                map.end()
+            }
+            Self::Struct(name, len, fields) => {
+                let mut record = s.serialize_struct(*name, *len)?;
+                for (key, value) in fields {
+                    match value {
+                        Some(value) => record.serialize_field(*key, value)?,
+                        None => record.skip_field(*key)?,
+                    }
+                }
+                record.end()
+            }
+            Self::StructVariant(name, index, variant, len, fields) => {
+                let mut record = s.serialize_struct_variant(*name, *index, *variant, *len)?;
+                for (key, value) in fields {
+                    match value {
+                        Some(value) => record.serialize_field(*key, value)?,
+                        None => record.skip_field(*key)?,
+                    }
+                }
+                record.end()
+            }
+        }
+    }
+}
+
+/// The serializer that records a value as [`Content`], failing with the caller's error type.
+struct Capture<E>(std::marker::PhantomData<fn() -> E>);
+
+/// What a [`CaptureSeq`] makes.
+enum SeqKind {
+    Seq(Option<usize>),
+    Tuple,
+    TupleStruct(&'static str),
+    TupleVariant(&'static str, u32, &'static str),
+}
+
+/// [`Capture`]'s sequence-like compounds: the items so far, and what they will make.
+struct CaptureSeq<E> {
+    kind: SeqKind,
+    items: Vec<Content>,
+    error: std::marker::PhantomData<fn() -> E>,
+}
+
+impl<E> CaptureSeq<E> {
+    fn new(kind: SeqKind, len: usize) -> Self {
+        Self {
+            kind,
+            items: Vec::with_capacity(len.min(4096)),
+            error: std::marker::PhantomData,
+        }
+    }
+
+    fn push<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), E>
+    where
+        E: serde::ser::Error,
+    {
+        self.items.push(capture::<E, _>(value)?);
+        Ok(())
+    }
+
+    fn finish(self) -> Content {
+        match self.kind {
+            SeqKind::Seq(len) => Content::Seq(len, self.items),
+            SeqKind::Tuple => Content::Tuple(self.items),
+            SeqKind::TupleStruct(name) => Content::TupleStruct(name, self.items),
+            SeqKind::TupleVariant(name, index, variant) => {
+                Content::TupleVariant(name, index, variant, self.items)
+            }
+        }
+    }
+}
+
+impl<E: serde::ser::Error> serde::ser::SerializeSeq for CaptureSeq<E> {
+    type Ok = Content;
+    type Error = E;
+    fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), E> {
+        self.push(value)
+    }
+    fn end(self) -> Result<Content, E> {
+        Ok(self.finish())
+    }
+}
+
+impl<E: serde::ser::Error> serde::ser::SerializeTuple for CaptureSeq<E> {
+    type Ok = Content;
+    type Error = E;
+    fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), E> {
+        self.push(value)
+    }
+    fn end(self) -> Result<Content, E> {
+        Ok(self.finish())
+    }
+}
+
+impl<E: serde::ser::Error> serde::ser::SerializeTupleStruct for CaptureSeq<E> {
+    type Ok = Content;
+    type Error = E;
+    fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), E> {
+        self.push(value)
+    }
+    fn end(self) -> Result<Content, E> {
+        Ok(self.finish())
+    }
+}
+
+impl<E: serde::ser::Error> serde::ser::SerializeTupleVariant for CaptureSeq<E> {
+    type Ok = Content;
+    type Error = E;
+    fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), E> {
+        self.push(value)
+    }
+    fn end(self) -> Result<Content, E> {
+        Ok(self.finish())
+    }
+}
+
+/// [`Capture`]'s map compound.
+struct CaptureMap<E> {
+    len: Option<usize>,
+    entries: Vec<(Content, Content)>,
+    key: Option<Content>,
+    error: std::marker::PhantomData<fn() -> E>,
+}
+
+impl<E: serde::ser::Error> serde::ser::SerializeMap for CaptureMap<E> {
+    type Ok = Content;
+    type Error = E;
+    fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<(), E> {
+        self.key = Some(capture::<E, _>(key)?);
+        Ok(())
+    }
+    fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), E> {
+        let key = self
+            .key
+            .take()
+            .ok_or_else(|| E::custom("a map value was written before its key"))?;
+        self.entries.push((key, capture::<E, _>(value)?));
+        Ok(())
+    }
+    fn end(self) -> Result<Content, E> {
+        Ok(Content::Map(self.len, self.entries))
+    }
+}
+
+/// What a [`CaptureStruct`] makes.
+enum StructKind {
+    Struct(&'static str, usize),
+    Variant(&'static str, u32, &'static str, usize),
+}
+
+/// [`Capture`]'s struct and struct-variant compounds.
+struct CaptureStruct<E> {
+    kind: StructKind,
+    fields: Vec<(&'static str, Option<Content>)>,
+    error: std::marker::PhantomData<fn() -> E>,
+}
+
+impl<E> CaptureStruct<E> {
+    fn new(kind: StructKind, len: usize) -> Self {
+        Self {
+            kind,
+            fields: Vec::with_capacity(len.min(4096)),
+            error: std::marker::PhantomData,
+        }
+    }
+
+    fn finish(self) -> Content {
+        match self.kind {
+            StructKind::Struct(name, len) => Content::Struct(name, len, self.fields),
+            StructKind::Variant(name, index, variant, len) => {
+                Content::StructVariant(name, index, variant, len, self.fields)
+            }
+        }
+    }
+}
+
+impl<E: serde::ser::Error> serde::ser::SerializeStruct for CaptureStruct<E> {
+    type Ok = Content;
+    type Error = E;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), E> {
+        self.fields.push((key, Some(capture::<E, _>(value)?)));
+        Ok(())
+    }
+    fn skip_field(&mut self, key: &'static str) -> Result<(), E> {
+        self.fields.push((key, None));
+        Ok(())
+    }
+    fn end(self) -> Result<Content, E> {
+        Ok(self.finish())
+    }
+}
+
+impl<E: serde::ser::Error> serde::ser::SerializeStructVariant for CaptureStruct<E> {
+    type Ok = Content;
+    type Error = E;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), E> {
+        self.fields.push((key, Some(capture::<E, _>(value)?)));
+        Ok(())
+    }
+    fn skip_field(&mut self, key: &'static str) -> Result<(), E> {
+        self.fields.push((key, None));
+        Ok(())
+    }
+    fn end(self) -> Result<Content, E> {
+        Ok(self.finish())
+    }
+}
+
+macro_rules! capture_scalars {
+    ($($method:ident($ty:ty) => $variant:ident),+ $(,)?) => {
+        $(
+            fn $method(self, v: $ty) -> Result<Content, E> {
+                Ok(Content::$variant(v.into()))
+            }
+        )+
+    };
+}
+
+impl<E: serde::ser::Error> serde::Serializer for Capture<E> {
+    type Ok = Content;
+    type Error = E;
+    type SerializeSeq = CaptureSeq<E>;
+    type SerializeTuple = CaptureSeq<E>;
+    type SerializeTupleStruct = CaptureSeq<E>;
+    type SerializeTupleVariant = CaptureSeq<E>;
+    type SerializeMap = CaptureMap<E>;
+    type SerializeStruct = CaptureStruct<E>;
+    type SerializeStructVariant = CaptureStruct<E>;
+
+    capture_scalars! {
+        serialize_bool(bool) => Bool,
+        serialize_i8(i8) => I64,
+        serialize_i16(i16) => I64,
+        serialize_i32(i32) => I64,
+        serialize_i64(i64) => I64,
+        serialize_i128(i128) => I128,
+        serialize_u8(u8) => U64,
+        serialize_u16(u16) => U64,
+        serialize_u32(u32) => U64,
+        serialize_u64(u64) => U64,
+        serialize_u128(u128) => U128,
+        serialize_f32(f32) => F32,
+        serialize_f64(f64) => F64,
+        serialize_char(char) => Char,
+        serialize_str(&str) => Str,
+        serialize_bytes(&[u8]) => Bytes,
+    }
+
+    fn serialize_none(self) -> Result<Content, E> {
+        Ok(Content::None)
+    }
+
+    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<Content, E> {
+        Ok(Content::Some(Box::new(capture::<E, _>(value)?)))
+    }
+
+    fn serialize_unit(self) -> Result<Content, E> {
+        Ok(Content::Unit)
+    }
+
+    fn serialize_unit_struct(self, name: &'static str) -> Result<Content, E> {
+        Ok(Content::UnitStruct(name))
+    }
+
+    fn serialize_unit_variant(
+        self,
+        name: &'static str,
+        index: u32,
+        variant: &'static str,
+    ) -> Result<Content, E> {
+        Ok(Content::UnitVariant(name, index, variant))
+    }
+
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(
+        self,
+        name: &'static str,
+        value: &T,
+    ) -> Result<Content, E> {
+        Ok(Content::NewtypeStruct(
+            name,
+            Box::new(capture::<E, _>(value)?),
+        ))
+    }
+
+    fn serialize_newtype_variant<T: Serialize + ?Sized>(
+        self,
+        name: &'static str,
+        index: u32,
+        variant: &'static str,
+        value: &T,
+    ) -> Result<Content, E> {
+        Ok(Content::NewtypeVariant(
+            name,
+            index,
+            variant,
+            Box::new(capture::<E, _>(value)?),
+        ))
+    }
+
+    fn serialize_seq(self, len: Option<usize>) -> Result<CaptureSeq<E>, E> {
+        Ok(CaptureSeq::new(SeqKind::Seq(len), len.unwrap_or(0)))
+    }
+
+    fn serialize_tuple(self, len: usize) -> Result<CaptureSeq<E>, E> {
+        Ok(CaptureSeq::new(SeqKind::Tuple, len))
+    }
+
+    fn serialize_tuple_struct(self, name: &'static str, len: usize) -> Result<CaptureSeq<E>, E> {
+        Ok(CaptureSeq::new(SeqKind::TupleStruct(name), len))
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        name: &'static str,
+        index: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<CaptureSeq<E>, E> {
+        Ok(CaptureSeq::new(
+            SeqKind::TupleVariant(name, index, variant),
+            len,
+        ))
+    }
+
+    fn serialize_map(self, len: Option<usize>) -> Result<CaptureMap<E>, E> {
+        Ok(CaptureMap {
+            len,
+            entries: Vec::with_capacity(len.unwrap_or(0).min(4096)),
+            key: None,
+            error: std::marker::PhantomData,
+        })
+    }
+
+    fn serialize_struct(self, name: &'static str, len: usize) -> Result<CaptureStruct<E>, E> {
+        Ok(CaptureStruct::new(StructKind::Struct(name, len), len))
+    }
+
+    fn serialize_struct_variant(
+        self,
+        name: &'static str,
+        index: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<CaptureStruct<E>, E> {
+        Ok(CaptureStruct::new(
+            StructKind::Variant(name, index, variant, len),
+            len,
+        ))
     }
 }
 
