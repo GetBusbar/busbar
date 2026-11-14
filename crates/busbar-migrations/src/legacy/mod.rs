@@ -3,17 +3,13 @@
 
 //! Logical conversion of admitted historical facts into current native records.
 //! Physical field names, units and layouts are interpreted by source owners.
-use busbar_contract::records::{
-    CredentialMeta, MeteringRow, ModelTokens, UsageLedger, VirtualKey, RESERVED_UNITS,
-};
+use busbar_contract::records::{CredentialMeta, MeteringRow, UsageLedger, VirtualKey};
 pub mod archive;
 pub mod fact_transform;
 pub mod group;
 pub mod overlay;
 pub mod projection;
 pub mod transform;
-
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -57,24 +53,6 @@ pub enum HistoricalRow<'a> {
         bucket: String,
         window: u64,
         ledger: UsageLedger,
-    },
-    MeteringUnit {
-        bucket: u64,
-        key_id: String,
-        provider: String,
-        model: String,
-        priced_from_ms: u64,
-        key_group_at_use: Option<String>,
-        pricing_version: Option<String>,
-        unit: String,
-        count: i128,
-    },
-    UsageUnit {
-        bucket: String,
-        window: u64,
-        model: String,
-        unit: String,
-        count: i128,
     },
     Usage(UsageCell),
     Metering {
@@ -177,91 +155,6 @@ pub fn canonical_usage(
 pub fn canonical_metering(bucket: u64, row: &MeteringRow) -> Result<CanonicalRows, Error> {
     busbar_kernel::persistence::import_target::records::ledger::migration_metering(bucket, row)
         .map_err(|_| Error::Invalid)
-}
-
-/// Merge open-unit sidecars into a completely assembled usage group. Counts
-/// already carry scale six in the admitted logical fact. Reserved-unit
-/// sidecars are refused because they would alias native token columns.
-pub fn attach_usage_units(
-    bucket: &str,
-    window: u64,
-    ledger: &UsageLedger,
-    units: &[HistoricalRow<'_>],
-) -> Result<UsageLedger, Error> {
-    let mut out = ledger.clone();
-    let mut seen = std::collections::BTreeSet::new();
-    for unit in units {
-        let HistoricalRow::UsageUnit {
-            bucket: source_bucket,
-            window: source_window,
-            model,
-            unit,
-            count,
-        } = unit
-        else {
-            return Err(Error::Type);
-        };
-        if source_bucket != bucket
-            || *source_window != window
-            || RESERVED_UNITS.contains(&unit.as_str())
-            || !seen.insert((model.as_str(), unit.as_str()))
-        {
-            return Err(Error::Invalid);
-        }
-        if let Some(existing) = out.models.iter_mut().find(|m| m.model == *model) {
-            if existing.usage_units.insert(unit.clone(), *count).is_some() {
-                return Err(Error::Invalid);
-            }
-        } else {
-            out.models.push(ModelTokens {
-                scale: 6,
-                model: model.clone(),
-                usage_units: BTreeMap::from([(unit.clone(), *count)]),
-            });
-        }
-    }
-    out.models.sort_by(|a, b| a.model.cmp(&b.model));
-    Ok(out)
-}
-
-pub fn attach_metering_units(
-    bucket: u64,
-    row: &MeteringRow,
-    units: &[HistoricalRow<'_>],
-) -> Result<MeteringRow, Error> {
-    let mut out = row.clone();
-    for unit in units {
-        let HistoricalRow::MeteringUnit {
-            bucket: source_bucket,
-            key_id,
-            provider,
-            model,
-            priced_from_ms,
-            key_group_at_use,
-            pricing_version,
-            unit,
-            count,
-        } = unit
-        else {
-            return Err(Error::Type);
-        };
-        if *source_bucket != bucket
-            || key_id != &row.key_id
-            || provider != &row.provider
-            || model != &row.model
-            || *priced_from_ms != row.priced_from_ms
-            || key_group_at_use
-                .as_ref()
-                .is_some_and(|v| v != &row.key_group_at_use)
-            || pricing_version
-                .as_ref()
-                .is_some_and(|v| v != &row.pricing_version)
-            || out.usage_units.insert(unit.clone(), *count).is_some()
-        {
-            return Err(Error::Invalid);
-        }
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

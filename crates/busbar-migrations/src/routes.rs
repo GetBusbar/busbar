@@ -976,6 +976,14 @@ mod binding_tests {
                 body: Secret::new(b"body".to_vec()),
                 append: Some(false),
             },
+            HistoricalFact::UsageUnit {
+                bucket: "bucket".into(),
+                window: 0,
+                model: "m".into(),
+                unit: "seconds".into(),
+                count: 9,
+                role: lifecycle::source::AccountingRole::Fragment,
+            },
         ] {
             assert!(matches!(
                 crate::source_facts::try_test_archive(vec![fact], 65536),
