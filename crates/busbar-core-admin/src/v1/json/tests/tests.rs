@@ -305,6 +305,26 @@ fn served_openapi_equals_committed_file() {
 
 #[cfg(feature = "openapi-schema")]
 #[test]
+fn restart_unreachable_is_documented_on_every_restart_scoped_route() {
+    let doc = openapi_doc();
+    for (path, method) in [
+        ("/api/v1/admin/config/settings", "put"),
+        ("/api/v1/admin/export/{name}", "put"),
+        ("/api/v1/admin/export/{name}", "delete"),
+        ("/api/v1/admin/export/{name}/settings", "patch"),
+    ] {
+        let description = doc["paths"][path][method]["responses"]["409"]["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{method} {path} documents a 409"));
+        assert!(
+            description.contains("restart-only change on an in-memory Store"),
+            "{method} {path} 409 names the in-memory Store refusal: {description}"
+        );
+    }
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
 fn restart_request_body_is_documented_optional() {
     let doc = openapi_doc();
     let required = &doc["paths"]["/api/v1/admin/restart"]["post"]["requestBody"]["required"];

@@ -797,3 +797,357 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let _ = server.await;
     println!("{WITNESS}");
 }
+
+/// Run the calling test body once, in a fresh child process (each actual node keeps its own
+/// production Config budget and process-wide rate history). Returns `true` in the parent, after
+/// the child printed `witness` and exited cleanly; the caller then returns.
+pub(super) fn ran_in_child(child: &str, witness: &str) -> bool {
+    if std::env::var_os(child).is_some() {
+        return false;
+    }
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let name = std::thread::current().name().unwrap().to_owned();
+    let mut process = Child(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture"])
+            .env(child, "1")
+            .env_remove("BUSBAR_WORKER_THREADS")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("start the isolated actual-root test"),
+    );
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = process.0.try_wait().unwrap() {
+            use std::io::Read;
+            let mut output = String::new();
+            process
+                .0
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_string(&mut output)
+                .unwrap();
+            assert!(
+                status.success(),
+                "actual-root child failed: {status}: {output}"
+            );
+            assert!(
+                output.contains(witness),
+                "exact child did not complete its assertions: {output}"
+            );
+            return true;
+        }
+        assert!(Instant::now() < until, "actual-root child timed out");
+        std::thread::park_timeout(Duration::from_millis(5));
+    }
+}
+
+/// One actual admin application whose configured Store reports `durability: Ephemeral`, as the
+/// in-memory Store does (BUSBAR-8016). The overlay and the boot Store are that Store.
+pub(super) struct EphemeralAdmin {
+    pub(super) addr: std::net::SocketAddr,
+    pub(super) handle: Arc<busbar_kernel::state::AppHandle>,
+    pub(super) overlay: Arc<OverlayStore>,
+    pub(super) config_path: std::path::PathBuf,
+    pub(super) directory: std::path::PathBuf,
+    pub(super) document: Value,
+    server: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for EphemeralAdmin {
+    fn drop(&mut self) {
+        self.server.abort();
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+pub(super) async fn ephemeral_admin(
+    tag: &str,
+    rules: impl FnOnce(
+        Arc<dyn busbar_kernel::appbuild::RootRules>,
+    ) -> Arc<dyn busbar_kernel::appbuild::RootRules>,
+) -> EphemeralAdmin {
+    crate::dist_root_install::install();
+    let directory = plugins::scratch(tag);
+    let library_path = plugins::application_store_library();
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual Store statement reads")
+        .expect("the actual Store declares its mechanism");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual Store statement parses")
+        .name;
+    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
+    manifest.statement = Some(hex::encode(statement));
+    let archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &std::fs::read(library_path).unwrap(),
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive).unwrap();
+    let plugin_config = plugins::trusted_config(&directory);
+    let document = json!({
+        "providers": {}, "models": {},
+        "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": plugins::application_store_settings(&directory)},
+        "plugins": plugins::config_document(&plugin_config),
+        "limits": {"request_body_max_bytes": BASE_CAP},
+        "advanced": {"allow_destinations": ["127.0.0.1"]},
+    });
+    let config_path = directory.join("config.yaml");
+    let providers_path = directory.join("providers.yaml");
+    let base_bytes = serde_json::to_vec_pretty(&document).unwrap();
+    std::fs::write(&config_path, &base_bytes).unwrap();
+    let catalog_base = "spare:\n  protocol: openai\n  base_url: https://base.example.com\n";
+    std::fs::write(&providers_path, catalog_base).unwrap();
+    let mut deploy =
+        busbar_kernel::config::deploy_from_yaml_str(std::str::from_utf8(&base_bytes).unwrap())
+            .expect("the operator file passes the actual boot reader");
+    deploy.document_source_fingerprints = Some(
+        busbar_kernel::config::document_patch::SourceFingerprints::from_sources(
+            std::str::from_utf8(&base_bytes).unwrap(),
+            catalog_base,
+        ),
+    );
+    let defs = busbar_kernel::config::providers::catalog_from_str(catalog_base).unwrap();
+    let config = busbar_kernel::config::resolve(&deploy, &defs).unwrap();
+    let boot_rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
+        .expect("the actual configured Store opens");
+    let anchor = crate::root::real_store::core_over(Arc::new(
+        crate::root::real_store::EphemeralInfo(opened),
+    ))
+    .await;
+    let overlay = OverlayStore::from_core(anchor.clone())
+        .expect("the in-memory Store still carries the config overlay");
+    assert_eq!(
+        overlay.core_store_handle().unwrap().info().durability,
+        busbar_contract::persistence::Durability::Ephemeral
+    );
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        config,
+        plugin_config,
+        Some(overlay.clone()),
+        Default::default(),
+        Default::default(),
+        (Some(config_path.clone()), Some(providers_path)),
+        None,
+        &boot_rules,
+        Some(anchor),
+        true,
+    )
+    .await
+    .expect("the actual root builds the admin application on an in-memory Store");
+    app.providers_override = None;
+    busbar_kernel::config::readback::ConfiguredView::capture_documents(&mut app, &deploy, &defs);
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("actual Store rate history boots");
+    limits.keep().await.expect("actual boot limits activate");
+    if let Some(rotate) = rotate {
+        rotate.await;
+    }
+    app.root_rules = rules(app.root_rules.clone());
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual Store hydrates before writes");
+    let (_data, admin, handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, admin).await.unwrap() });
+    EphemeralAdmin {
+        addr,
+        handle,
+        overlay,
+        config_path,
+        directory,
+        document,
+        server,
+    }
+}
+
+/// UPG-A30c (F4 guard): an export a config.yaml edit added and a reload installed is reported as
+/// restart-pending, but it is not this request's contribution, so a live document edit on an
+/// in-memory Store is still admitted.
+#[tokio::test]
+async fn test_admin_v1_config_document_live_edit_not_blamed_for_config_yaml_export_on_ephemeral_store(
+) {
+    const CHILD: &str = "BUSBAR_ADMIN_DOCUMENT_EPHEMERAL_EXPORT_CHILD";
+    const WITNESS: &str = "ephemeral document export assertions completed";
+    if ran_in_child(CHILD, WITNESS) {
+        return;
+    }
+    let fixture = ephemeral_admin("admin-document-ephemeral-export", |rules| rules).await;
+    let client = reqwest::Client::new();
+    let addr = fixture.addr;
+    let endpoint = format!("http://{addr}/api/v1/admin/config/settings");
+    let mut document = fixture.document.clone();
+    document["export"] = json!({"x": {
+        "module": "request-log-file",
+        "settings": {"path": fixture.directory.join("x.jsonl").to_string_lossy()},
+    }});
+    std::fs::write(
+        &fixture.config_path,
+        serde_json::to_vec_pretty(&document).unwrap(),
+    )
+    .unwrap();
+    let reload = client
+        .post(format!("http://{addr}/api/v1/admin/config/reload"))
+        .send()
+        .await
+        .unwrap();
+    let status = reload.status();
+    let text = reload.text().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "config.yaml export reload: {text}");
+    let response = put(
+        &client,
+        &endpoint,
+        fixture.handle.load().config_version,
+        &patch("/limits/request_body_max_bytes", json!(1_048_576)),
+    )
+    .await;
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "a live edit is admitted: {body}");
+    assert_eq!(body["applied"], json!(true), "{body}");
+    assert!(
+        body["reload_to_apply"]
+            .as_array()
+            .is_some_and(|paths| paths.contains(&json!("export.x"))),
+        "the pending config.yaml export is still reported: {body}"
+    );
+    drop(fixture);
+    println!("{WITNESS}");
+}
+
+/// The shape `door_steps::Rules` returns for a written, unopened plane section, keyed on a valid
+/// live value so a test can make the build report it.
+struct PlaneOnMarker {
+    inner: Arc<dyn busbar_kernel::appbuild::RootRules>,
+}
+
+const PLANE_MARKER: usize = 2_097_152;
+
+impl busbar_kernel::appbuild::RootRules for PlaneOnMarker {
+    fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        self.inner.check(cfg)
+    }
+    fn normalize_document(
+        &self,
+        kind: busbar_kernel::appbuild::ConfigDocument,
+        path: &std::path::Path,
+        raw: &str,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+        self.inner.normalize_document(kind, path, raw)
+    }
+    fn check_built(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+        self.inner.check_built(app)
+    }
+    fn mounted_plugin_paths(
+        &self,
+        app: &busbar_kernel::state::App,
+    ) -> Option<std::collections::HashSet<String>> {
+        self.inner.mounted_plugin_paths(app)
+    }
+    fn planes_awaiting_restart(&self, cfg: &busbar_kernel::config::RootCfg) -> Vec<&'static str> {
+        if cfg.limits.request_body_max_bytes == PLANE_MARKER {
+            vec!["zz-unopened-plane"]
+        } else {
+            Vec::new()
+        }
+    }
+    fn destinations_applied(&self, destinations: &busbar_kernel::config::Destinations) {
+        self.inner.destinations_applied(destinations)
+    }
+    fn claim_ticket_admission(
+        &self,
+        identity: &busbar_kernel::host_services::VerifiedTicketIdentity,
+    ) -> busbar_kernel::host_services::TicketClaimDisposition {
+        self.inner.claim_ticket_admission(identity)
+    }
+    fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
+        self.inner.unloaded_plane_refusal(keys)
+    }
+}
+
+/// UPG-A30c: a write that leaves a door plane awaiting a restart is refused on an in-memory Store,
+/// on both the document and the typed form, because the restart that opens the plane erases it.
+#[tokio::test]
+async fn test_admin_v1_config_settings_unopened_plane_write_refused_on_ephemeral_store() {
+    const CHILD: &str = "BUSBAR_ADMIN_SETTINGS_EPHEMERAL_PLANE_CHILD";
+    const WITNESS: &str = "ephemeral unopened plane assertions completed";
+    if ran_in_child(CHILD, WITNESS) {
+        return;
+    }
+    let fixture = ephemeral_admin("admin-settings-ephemeral-plane", |inner| {
+        Arc::new(PlaneOnMarker { inner }) as Arc<dyn busbar_kernel::appbuild::RootRules>
+    })
+    .await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("http://{}/api/v1/admin/config/settings", fixture.addr);
+    for (form, body) in [
+        (
+            "document",
+            patch("/limits/request_body_max_bytes", json!(PLANE_MARKER)),
+        ),
+        (
+            "typed",
+            json!({"limits": {"request_body_max_bytes": PLANE_MARKER}}),
+        ),
+    ] {
+        let before = fixture.handle.load();
+        let response = put(&client, &endpoint, before.config_version, &body).await;
+        let status = response.status();
+        let refusal: Value = response.json().await.unwrap();
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "{form}: an unopened plane write on an in-memory Store is refused: {refusal}"
+        );
+        assert_eq!(refusal["error"]["code"], "conflict", "{form}: {refusal}");
+        assert!(
+            refusal["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("zz-unopened-plane")),
+            "{form}: the refusal names the plane: {refusal}"
+        );
+        assert!(
+            Arc::ptr_eq(&before, &fixture.handle.load()),
+            "{form}: no generation installed"
+        );
+        assert!(
+            busbar_kernel::config::overlay::read_async(&fixture.overlay)
+                .await
+                .is_none_or(|doc| doc.root.is_none() && doc.document_patch.is_none()),
+            "{form}: nothing was written to the overlay"
+        );
+    }
+    let response = put(
+        &client,
+        &endpoint,
+        fixture.handle.load().config_version,
+        &patch("/limits/request_body_max_bytes", json!(PLANE_MARKER + 1)),
+    )
+    .await;
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "control: a live edit applies: {body}"
+    );
+    assert_eq!(body["applied"], json!(true), "{body}");
+    drop(fixture);
+    println!("{WITNESS}");
+}

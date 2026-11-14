@@ -106,6 +106,25 @@ fn lookup_by_code_works() {
 }
 
 #[test]
+fn the_ephemeral_store_diagnostic_covers_admin_config_changes() {
+    let entry = Catalogue::NEUTRAL
+        .by_code(8016)
+        .expect("BUSBAR-8016 is catalogued");
+    assert!(
+        entry.summary.contains("Admin-API config changes")
+            && entry.summary.contains("restart-only ones")
+            && entry.summary.contains("are refused"),
+        "8016 tells the operator what an in-memory Store does to admin config changes: {}",
+        entry.summary
+    );
+    assert!(
+        entry.action.contains("edit config.yaml and restart"),
+        "8016 names the route for a restart-only change: {}",
+        entry.action
+    );
+}
+
+#[test]
 fn the_error_map_class_code_no_release_emitted_is_not_catalogued() {
     assert!(
         Catalogue::NEUTRAL.by_code(3022).is_none(),
