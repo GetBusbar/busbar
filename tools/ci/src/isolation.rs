@@ -1,9 +1,11 @@
-//! Host-side Linux job storage and user-namespace contract for the bootstrap.
+//! Host-side Linux job storage and user-namespace contract for the bootstrap
+//! and the native step runner's per-command checks.
 //!
 //! Same contract as `scripts/architecture/linux_job_isolation.py` (which the
-//! step runner keeps using for per-command checks): `prepare` provisions a fresh
+//! architecture step's confinement still imports): `prepare` provisions a fresh
 //! bounded filesystem before staging; `dispose` unmounts it only after every
 //! candidate container is gone. No lazy or forced unmount conceals busy mounts.
+//! `prepare_writable` and the swap-bound proofs are the per-invocation half.
 use crate::json::{self, Value, object};
 use crate::proc::{self, Result, require};
 use std::fs::{self, OpenOptions};
@@ -784,6 +786,214 @@ pub fn dispose(config: &Value) -> Result<()> {
     fs::remove_dir(&root).map_err(|e| e.to_string())
 }
 
+/// `validate_storage(config, writable_paths)`: every writable bind is a real
+/// directory on the job filesystem, never the root itself or another device.
+pub fn validate_storage_paths(config: &Value, writable: &[PathBuf]) -> Result<Value> {
+    let observation = validate_storage(config)?;
+    let root = PathBuf::from(config.at("storage_root").as_str().unwrap_or(""));
+    for path in writable {
+        require(
+            path.is_dir()
+                && *path == crate::native::sp::resolve(path)
+                && !path.is_symlink()
+                && *path != root
+                && path.starts_with(&root),
+            "writable bind escapes job storage quota",
+        )?;
+        let device = fs::metadata(path).map_err(|e| e.to_string())?.dev();
+        let root_device = fs::metadata(&root).map_err(|e| e.to_string())?.dev();
+        require(
+            device == root_device,
+            "writable bind uses another filesystem",
+        )?;
+    }
+    Ok(observation)
+}
+
+/// `prepare_writable`: grant the remapped candidate ownership of its writable
+/// binds without following candidate links or reowning hard-linked files.
+pub fn prepare_writable(config: &Value, writable: &[PathBuf], uid: u64, gid: u64) -> Result<Value> {
+    let observation = validate_storage_paths(config, writable)?;
+    let uid_map = config.at("uid_map");
+    let gid_map = config.at("gid_map");
+    let span = |map: &Value| map.index(2).as_u64().unwrap_or(0);
+    let start = |map: &Value| map.index(1).as_u64().unwrap_or(0);
+    require(
+        0 < uid && uid < span(uid_map) && 0 < gid && gid < span(gid_map),
+        "candidate identity outside subordinate map",
+    )?;
+    let (mapped_uid, mapped_gid) = ((start(uid_map) + uid) as u32, (start(gid_map) + gid) as u32);
+    fn walk(directory: &Path, uid: u32, gid: u32) -> Result<()> {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return Ok(());
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let kind = metadata.file_type();
+            if kind.is_file() || kind.is_dir() {
+                if (metadata.uid(), metadata.gid()) != (uid, gid) {
+                    require(
+                        !kind.is_file() || metadata.nlink() == 1,
+                        "hard-linked candidate output cannot be reowned",
+                    )?;
+                    std::os::unix::fs::lchown(&path, Some(uid), Some(gid))
+                        .map_err(|e| e.to_string())?;
+                }
+                if kind.is_dir() {
+                    walk(&path, uid, gid)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    for path in writable {
+        std::os::unix::fs::lchown(path, Some(mapped_uid), Some(mapped_gid))
+            .map_err(|e| e.to_string())?;
+        walk(path, mapped_uid, mapped_gid)?;
+    }
+    Ok(observation)
+}
+
+/// `validate_userns(config, daemon, inspected)`.
+pub fn validate_userns_inspected(
+    config: &Value,
+    daemon: &Value,
+    inspected: &Value,
+) -> Result<Value> {
+    let rows = validate_userns(config, daemon)?;
+    require(
+        inspected
+            .at("HostConfig")
+            .get("UsernsMode")
+            .is_none_or(|mode| mode.as_str() == Some("")),
+        "candidate must inherit the remapped user namespace",
+    )?;
+    Ok(rows)
+}
+
+fn bounded_proc(name: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut data = Vec::new();
+    fs::File::open(format!("/proc/{name}"))
+        .map_err(|e| e.to_string())?
+        .take(65537)
+        .read_to_end(&mut data)
+        .map_err(|e| e.to_string())?;
+    require(data.len() <= 65536, "kernel swap evidence exceeds bound")?;
+    Ok(data)
+}
+
+fn byte_lines(data: &[u8]) -> Vec<&[u8]> {
+    // bytes.splitlines(): \n, \r\n and \r terminate lines.
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == b'\n' || data[i] == b'\r' {
+            lines.push(&data[start..i]);
+            if data[i] == b'\r' && data.get(i + 1) == Some(&b'\n') {
+                i += 1;
+            }
+            start = i + 1;
+        }
+        i += 1;
+    }
+    if start < data.len() {
+        lines.push(&data[start..]);
+    }
+    lines
+}
+
+fn fields(line: &[u8]) -> Vec<&[u8]> {
+    line.split(|b| b.is_ascii_whitespace() || *b == 0x0b || *b == 0x0c)
+        .filter(|f| !f.is_empty())
+        .collect()
+}
+
+/// `kernel_no_swap()`: zero host swap capacity, with the observed evidence.
+pub fn kernel_no_swap() -> Result<Value> {
+    let swaps = bounded_proc("swaps")?;
+    let meminfo = bounded_proc("meminfo")?;
+    kernel_no_swap_from(&swaps, &meminfo)
+}
+
+pub fn kernel_no_swap_from(swaps: &[u8], meminfo: &[u8]) -> Result<Value> {
+    let rows = byte_lines(swaps);
+    let totals: Vec<&[u8]> = byte_lines(meminfo)
+        .into_iter()
+        .filter(|line| line.starts_with(b"SwapTotal:"))
+        .collect();
+    let header: [&[u8]; 5] = [b"Filename", b"Type", b"Size", b"Used", b"Priority"];
+    let total: [&[u8]; 3] = [b"SwapTotal:", b"0", b"kB"];
+    require(
+        rows.len() == 1
+            && fields(rows[0]) == header
+            && totals.len() == 1
+            && fields(totals[0]) == total,
+        "runtime swap is unbounded: kernel has swap capacity or invalid evidence",
+    )?;
+    let ascii = |data: &[u8]| -> Result<String> {
+        require(
+            data.is_ascii(),
+            "'ascii' codec can't decode kernel swap evidence",
+        )?;
+        Ok(String::from_utf8_lossy(data).into_owned())
+    };
+    Ok(object([
+        ("mechanism", "kernel-zero-swap-capacity".into()),
+        ("effective_swap_bytes", 0u64.into()),
+        ("proc_swaps", ascii(swaps)?.into()),
+        ("proc_swaps_sha256", crate::sha256::hex(swaps).into()),
+        ("swap_total_entry", ascii(totals[0])?.into()),
+        (
+            "swap_total_entry_sha256",
+            crate::sha256::hex(totals[0]).into(),
+        ),
+    ]))
+}
+
+/// `validate_swap_bound(daemon, host, required_memory)`.
+pub fn validate_swap_bound(daemon: &Value, host: &Value, required: u64) -> Result<Value> {
+    require(
+        required > 0 && host.at("Memory").is_int() && host.at("Memory").as_u64() == Some(required),
+        "runtime Memory differs from the protected RAM bound",
+    )?;
+    let observed = host.at("MemorySwap");
+    let swap_limit = daemon.at("SwapLimit").as_bool();
+    let mut proof =
+        if swap_limit == Some(true) && observed.is_int() && observed.as_u64() == Some(required) {
+            object([
+                ("mechanism", "docker-memory-swap-limit".into()),
+                ("effective_swap_bytes", 0u64.into()),
+            ])
+        } else if swap_limit == Some(false)
+            && observed.is_int()
+            && (observed.as_u64() == Some(required) || observed.as_int() == Some(-1))
+        {
+            let mut proof = kernel_no_swap()?;
+            proof.set("daemon_swap_limit", false.into());
+            proof
+        } else {
+            return Err(
+                "runtime MemorySwap/SwapLimit do not prove the protected no-swap request".into(),
+            );
+        };
+    proof.set("requested_memory_swap_bytes", required.into());
+    proof.set("observed_memory_swap_bytes", observed.clone());
+    Ok(proof)
+}
+
+/// `recheck_swap_bound(proof)`: reobserve host backing after disposal.
+pub fn recheck_swap_bound(proof: &mut Value) -> Result<()> {
+    if proof.at("mechanism").as_str() == Some("kernel-zero-swap-capacity") {
+        proof.set("after_disposal", kernel_no_swap()?);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -992,5 +1202,51 @@ mod tests {
             json::parse(br#"{"SecurityOptions":["name=seccomp,profile=builtin"]}"#).unwrap();
         assert!(validate_userns(&value, &plain).is_err());
         assert!(validate_userns(&value, &json::parse(b"{}").unwrap()).is_err());
+    }
+
+    #[test]
+    fn supported_swap_limit_requires_the_exact_protected_bound() {
+        let daemon = json::parse(br#"{"SwapLimit": true}"#).unwrap();
+        let host = json::parse(br#"{"Memory": 1073741824, "MemorySwap": 1073741824}"#).unwrap();
+        let proof = validate_swap_bound(&daemon, &host, 1 << 30).unwrap();
+        assert_eq!(
+            json::dumps(&proof, false),
+            "{\"mechanism\": \"docker-memory-swap-limit\", \"effective_swap_bytes\": 0, \"requested_memory_swap_bytes\": 1073741824, \"observed_memory_swap_bytes\": 1073741824}"
+        );
+        let doubled = json::parse(br#"{"Memory": 1073741824, "MemorySwap": 2147483648}"#).unwrap();
+        assert_eq!(
+            validate_swap_bound(&daemon, &doubled, 1 << 30).unwrap_err(),
+            "runtime MemorySwap/SwapLimit do not prove the protected no-swap request"
+        );
+        let unlimited = json::parse(br#"{"Memory": 1073741824, "MemorySwap": -1}"#).unwrap();
+        assert!(validate_swap_bound(&daemon, &unlimited, 1 << 30).is_err());
+        let other = json::parse(br#"{"Memory": 1, "MemorySwap": 1}"#).unwrap();
+        assert_eq!(
+            validate_swap_bound(&daemon, &other, 1 << 30).unwrap_err(),
+            "runtime Memory differs from the protected RAM bound"
+        );
+    }
+
+    #[test]
+    fn unsupported_swap_requires_zero_kernel_backing_evidence() {
+        let swaps = b"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n";
+        let meminfo = b"MemTotal:       8000000 kB\nSwapTotal:             0 kB\nSwapFree: 0 kB\n";
+        let proof = kernel_no_swap_from(swaps, meminfo).unwrap();
+        assert_eq!(
+            proof.at("mechanism").as_str(),
+            Some("kernel-zero-swap-capacity")
+        );
+        assert_eq!(
+            proof.at("swap_total_entry").as_str(),
+            Some("SwapTotal:             0 kB")
+        );
+        assert_eq!(
+            proof.at("proc_swaps_sha256").as_str(),
+            Some(crate::sha256::hex(swaps).as_str())
+        );
+        let swapping = b"Filename Type Size Used Priority\n/swapfile file 1024 0 -2\n";
+        assert!(kernel_no_swap_from(swapping, meminfo).is_err());
+        let backed = b"SwapTotal:       1024 kB\n";
+        assert!(kernel_no_swap_from(swaps, backed).is_err());
     }
 }
