@@ -963,6 +963,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn journal_inventory_row_is_refused() {
+        let key = [JOURNAL_INVENTORY_PREFIX, &7u64.to_be_bytes()].concat();
+        let backend = Arc::new(Backend::default());
+        let owner = BootIdentity::new(Arc::new(attach(backend).await)).unwrap();
+        assert!(owner
+            .records
+            .decide(
+                vec![predicate(NODE_SCHEMA, key.clone(), None)],
+                vec![put(NODE_SCHEMA, key, b"arbitrary".to_vec())]
+            )
+            .await
+            .unwrap());
+        assert!(owner.registered().await.is_err());
+    }
+
+    #[tokio::test]
     async fn new_holder_never_reuses_a_live_or_released_historical_node() {
         let backend = Arc::new(Backend::default());
         let core = Arc::new(attach(backend).await);
