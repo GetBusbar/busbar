@@ -53,6 +53,23 @@ pub trait EngineHost: Send + Sync {
         identity: bool,
     ) -> crate::audit::amend::ReadConfirmation<'a>;
 
+    /// Record that every hook in `hooks` is handed the content, confirmed before any of them is.
+    /// A host that can commit the set together overrides this; the default records them in order.
+    fn hook_reads<'a>(
+        &'a self,
+        hooks: &'a [&'a str],
+        principal: Option<&'a str>,
+        op: &'a str,
+        identity: bool,
+    ) -> crate::audit::amend::ReadConfirmation<'a> {
+        Box::pin(async move {
+            for hook in hooks {
+                self.hook_read(*hook, principal, op, identity).await?;
+            }
+            Ok(())
+        })
+    }
+
     fn plane_gates_of(
         &self,
         plane_key: &str,
@@ -139,6 +156,22 @@ impl EngineHost for EngineHostImpl {
         Box::pin(crate::audit::amend::hook_read(
             &self.app.amendments,
             name,
+            principal,
+            op,
+            identity,
+        ))
+    }
+
+    fn hook_reads<'a>(
+        &'a self,
+        names: &'a [&'a str],
+        principal: Option<&'a str>,
+        op: &'a str,
+        identity: bool,
+    ) -> crate::audit::amend::ReadConfirmation<'a> {
+        Box::pin(crate::audit::amend::hook_reads(
+            &self.app.amendments,
+            names,
             principal,
             op,
             identity,

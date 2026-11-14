@@ -2055,6 +2055,16 @@ impl busbar_kernel::plane_driver::CallerFacts for GovCaller {
     ) -> busbar_kernel::audit::amend::ReadConfirmation<'a> {
         self.host.hook_read(hook, principal, dialect, identity)
     }
+
+    fn hook_reads<'a>(
+        &'a self,
+        hooks: &'a [&'a str],
+        principal: Option<&'a str>,
+        dialect: &'a str,
+        identity: bool,
+    ) -> busbar_kernel::audit::amend::ReadConfirmation<'a> {
+        self.host.hook_reads(hooks, principal, dialect, identity)
+    }
 }
 
 struct LiveHooks {

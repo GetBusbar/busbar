@@ -565,7 +565,7 @@ async fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     let shedding = double(Delivered::Shed, None);
     let (s, _) = opened("q128b-u31-36-shed", Arc::clone(&shedding)).await;
     start_one(&s);
-    deliver_one(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
+    deliver_event(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
     assert_eq!(
         reads_under(&s, "q128b-u31-36-shed"),
         0,
@@ -576,7 +576,7 @@ async fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     let queueing = double(Delivered::Queued, None);
     let (s, confirmed) = opened("q128b-u31-36-queued", Arc::clone(&queueing)).await;
     start_one(&s);
-    deliver_one(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
+    deliver_event(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
     tokio::time::timeout(std::time::Duration::from_secs(1), confirmed.notified())
         .await
         .unwrap();
@@ -592,7 +592,7 @@ async fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
 async fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     let paused = double(Delivered::Queued, Some((false, 1, String::new())));
     let (s, _) = opened("q128b-u31-37", Arc::clone(&paused)).await;
-    deliver_one(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
+    deliver_event(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
     assert_eq!(
         reads_under(&s, "q128b-u31-37-early"),
         0,
@@ -600,7 +600,7 @@ async fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     );
     assert_eq!(paused.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
     start_one(&s);
-    deliver_one(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
+    deliver_event(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
     assert_eq!(
         reads_under(&s, "q128b-u31-37-late"),
         0,
@@ -1005,4 +1005,90 @@ fn export_restart_metadata_compares_boot_membership_module_and_effective_project
         narrow_boot,
         Some(&narrowed)
     ));
+}
+
+/// Seals and confirmations in the order the sink saw them: `S` per staged original, `C` per
+/// awaited confirmation. A run of `S` with no `C` between is one unit the sink can commit at once.
+#[derive(Default, Clone)]
+struct SealOrder(Arc<std::sync::Mutex<Vec<char>>>);
+impl busbar_kernel_audit::amend::AmendSink for SealOrder {
+    fn sealed(
+        &self,
+        _: &busbar_kernel_audit::amend::Amendment,
+    ) -> Result<
+        busbar_kernel_audit::amend::AmendCommit,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
+        self.0.lock().unwrap().push('S');
+        let order = self.clone();
+        Ok(Box::pin(async move {
+            order.0.lock().unwrap().push('C');
+            Ok(())
+        }))
+    }
+}
+
+impl SealOrder {
+    /// Commit units: maximal runs of seals with no confirmation between them.
+    fn units(&self) -> usize {
+        let order = self.0.lock().unwrap();
+        order
+            .iter()
+            .enumerate()
+            .filter(|(at, c)| **c == 'S' && (*at == 0 || order[at - 1] == 'C'))
+            .count()
+    }
+    fn confirmed(&self) -> usize {
+        self.0.lock().unwrap().iter().filter(|c| **c == 'C').count()
+    }
+}
+
+/// W2: one event handed to three sinks is one amendment per sink, staged as one unit and
+/// confirmed by one await, so the event costs one durable commit, not three.
+#[tokio::test]
+async fn export_three_sinks_one_commit_per_event() {
+    let order = SealOrder::default();
+    let reads = Arc::new(crate::audit::amend::NodeAmendments::new());
+    reads
+        .bind(
+            Some(Arc::new(order.clone())),
+            0,
+            &crate::teller::Kernel::new().durability_token(),
+        )
+        .await
+        .unwrap();
+    let sinks: Vec<PluginSink> = (0..3)
+        .map(|n| PluginSink {
+            name: format!("w2-sink-{n}"),
+            module: format!("w2-sink-{n}"),
+            sink: double(Delivered::Queued, None),
+            scrape: false,
+            projection: Projection::for_test(&[ExportStream::Logs], &[]),
+            span_record: false,
+            admission: OnceLock::new(),
+            reads: OnceLock::from(Arc::clone(&reads)),
+        })
+        .collect();
+    for s in &sinks {
+        start_one(s);
+    }
+    deliver_event_to(&sinks, ExportStream::Logs, "w2-one-event", &mut payload);
+    for _ in 0..1000 {
+        if order.confirmed() == 3 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(order.confirmed(), 3, "each sink's access is confirmed");
+    assert_eq!(
+        sinks.iter().map(|s| reads_under(s, "w2-one-event")).max(),
+        Some(3),
+        "one amendment per sink"
+    );
+    assert_eq!(
+        order.units(),
+        1,
+        "one event's three sink amendments are one commit unit, seen as {:?}",
+        order.0.lock().unwrap()
+    );
 }

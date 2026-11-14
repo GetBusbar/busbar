@@ -706,7 +706,7 @@ impl HookBinder for EntryGates {
             rewrites: Vec::new(),
             key: None,
             scan: None,
-            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {
+            reads: Arc::new(|_: &[&str], _: Option<&str>, _: &str, _: bool| {
                 Box::pin(async { Ok(()) })
             }),
         })
