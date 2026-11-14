@@ -17,6 +17,7 @@ pub mod door_steps;
 pub mod doors;
 pub mod durability;
 pub mod egress_ports;
+pub mod exit;
 pub mod exports;
 pub mod hooks;
 pub mod inbound;

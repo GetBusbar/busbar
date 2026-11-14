@@ -301,6 +301,20 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
                     .expect("native creation-witness commit"),
                 busbar_kernel::persistence::scoped::Outcome::Applied
             );
+            // The witness writer owns the unpublished first start: hand it over before it drops,
+            // as the binary does on exit, so the next process takes over at once instead of
+            // waiting out the stall window (FIRST-START-TAKEOVER §2.4, §2.7).
+            if let Some(first_start) = startup
+                .store()
+                .expect("admitted witness Store")
+                .first_start()
+            {
+                assert_eq!(
+                    first_start.abandon().await,
+                    Ok(busbar_kernel::persistence::first_start::Abandoned::Retired),
+                    "the witness writer hands its first start over"
+                );
+            }
         });
     drop(axis);
     let receipt = serde_json::json!({

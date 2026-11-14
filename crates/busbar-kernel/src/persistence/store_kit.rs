@@ -21,7 +21,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::persistence::{control, Address, PersistenceBackend, Read, ReadResult};
+use busbar_contract::persistence::{
+    control, Address, NamespaceId, PersistenceBackend, Read, ReadResult,
+};
 
 use super::facade::{CoreStore, Limits};
 use super::first_start::{self, Abandoned, Binding, FirstStart};
@@ -66,6 +68,91 @@ pub async fn run<F: Fixture>(fixture: &F) {
     t1_staggered_boot(fixture).await;
     t2_waiter_restart(fixture).await;
     t11_abandon_hands_over(fixture).await;
+}
+
+/// A store that holds its data across processes can also seed a raw record with its own driver,
+/// as its `migrate` does before admission. Only durable stores implement it; `run_durable` runs
+/// the cases that need it.
+#[async_trait::async_trait]
+pub trait DurableFixture: Fixture {
+    async fn seed(&self, dataset: &Self::Dataset, namespace: NamespaceId, key: &[u8], value: &[u8]);
+}
+
+/// Every case `run_durable` executes, in order.
+pub const DURABLE_CASES: &[&str] = &["t17_import_rows_do_not_block_initialize"];
+
+/// The durable-only cases, each on its own fresh dataset. Run beside `run`.
+pub async fn run_durable<F: DurableFixture>(fixture: &F) {
+    println!("{MARK} durable cases {}", DURABLE_CASES.len());
+    t17_import_rows_do_not_block_initialize(fixture).await;
+}
+
+/// T17 (FIRST-START-TAKEOVER §2.9 (b)): Initialize's emptiness proof ignores records in the
+/// import namespace, which survive it untouched; a record in any other namespace still refuses it.
+pub async fn t17_import_rows_do_not_block_initialize<F: DurableFixture>(fixture: &F) {
+    const CASE: &str = "t17_import_rows_do_not_block_initialize";
+    let import = |key: &[u8]| Address {
+        namespace: control::IMPORT_NAMESPACE.0,
+        key: key.to_vec(),
+    };
+    let dataset = fixture.fresh().await;
+    fixture
+        .seed(&dataset, control::IMPORT_NAMESPACE, &[0], b"kit-summary")
+        .await;
+    fixture
+        .seed(
+            &dataset,
+            control::IMPORT_NAMESPACE,
+            b"kit-row",
+            b"kit-value",
+        )
+        .await;
+    let h = fixture.open(&dataset).await;
+    let started = std::time::Instant::now();
+    let store = admitted(
+        CASE,
+        "Initialize over import rows",
+        &mut startup(CASE, &h, true),
+    )
+    .await;
+    println!(
+        "{MARK} {CASE}: Initialize over import rows took {} ms",
+        started.elapsed().as_millis()
+    );
+    owner(CASE, "the initializing Startup", &store);
+    assert_eq!(
+        rows(CASE, &h, vec![import(&[0]), import(b"kit-row")]).await,
+        vec![Some(b"kit-summary".to_vec()), Some(b"kit-value".to_vec())],
+        "{CASE}: Initialize changed the import rows"
+    );
+
+    let dataset = fixture.fresh().await;
+    fixture
+        .seed(&dataset, NamespaceId(*b"busbar.kit.other"), b"k", b"v")
+        .await;
+    let h = fixture.open(&dataset).await;
+    let mut refused = startup(CASE, &h, true);
+    for step in 0..=STEPS {
+        assert!(
+            step < STEPS,
+            "{CASE}: Initialize over another record did not settle"
+        );
+        match refused.advance().await {
+            Ok(Progress::Admitted) => {
+                panic!("{CASE}: Initialize applied over a record outside the import namespace")
+            }
+            Ok(Progress::Advanced) => {}
+            Ok(Progress::Pending) => tokio::time::sleep(WAIT).await,
+            Ok(Progress::Reconcile) | Err(_) => break,
+            other => panic!("{CASE}: Initialize over another record answered {other:?}"),
+        }
+    }
+    assert_eq!(
+        rows(CASE, &h, birth_rows()).await,
+        vec![None, None, None],
+        "{CASE}: a refused Initialize wrote root, manifest or birth"
+    );
+    passed(CASE);
 }
 
 /// K1: first start over an empty dataset publishes; a second writer is admitted with no first
