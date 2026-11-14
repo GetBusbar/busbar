@@ -52,11 +52,9 @@ tracing-subscriber = { workspace = true }
 tracing-log = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
-foldhash = { workspace = true }
 ed25519-dalek = { workspace = true }
 async-trait = { workspace = true }
 arc-swap = { workspace = true }
-foldhash = { workspace = true }
 httpdate = { workspace = true }
 
 [features]

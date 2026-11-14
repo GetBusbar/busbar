@@ -59,7 +59,6 @@ lexopt = { workspace = true }
 metrics = { workspace = true }
 core_affinity = { workspace = true }
 socket2 = { workspace = true }
-foldhash = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }

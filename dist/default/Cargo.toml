@@ -205,7 +205,6 @@ metrics = { workspace = true }
 core_affinity = { workspace = true }
 socket2 = { workspace = true }
 # The shared fast-hash aliases (foldhash::HashMap / HashSet) core's request path uses.
-foldhash = { workspace = true }
 
 # Global allocator: jemalloc on EVERY target EXCEPT windows-msvc — a property of the BINARY (only
 # one crate in a link may declare a global allocator), which is why these stay here when everything
@@ -1041,7 +1040,6 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # FNV-1a 64 for in-memory keys (shards, sticky routing, session keys, breaker jitter); already locked.
 fnv = "1.0.7"
 futures = "0.3"
-foldhash = "0.2"
 getrandom = "0.3"
 hex = "0.4.3"
 http = "1"
