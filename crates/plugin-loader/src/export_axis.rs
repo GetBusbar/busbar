@@ -9,20 +9,12 @@ use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::export_calls::{ExportCalls, PreparedExport, Probed, DEFAULT_INFLIGHT};
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
-use crate::dispatch::{
-    load_dropped_bytes, load_linked, Bind, ConnTable, Dispatcher, EnvelopeSink, LinkedRow, NoSink,
-    Plugin, PluginLogConfig,
-};
+use crate::dispatch::{Bind, ConnTable, Dispatcher, EnvelopeSink, NoSink, Plugin, PluginLogConfig};
 use crate::export_door::{self, ExportInstance};
-use crate::registry::LoadablePlugin;
+use crate::registry::{open_loadable, LoadablePlugin, RowRefusal};
 use crate::PluginRegistry;
 
 const SECTION: &str = busbar_contract::plugin::Kind::Export.root();
-
-enum Image {
-    Linked(LinkedRow),
-    Dropped(Vec<u8>),
-}
 
 pub const NO_DOOR: &str = "it states no export door (the 1.5.5 JSON export contract, which this host does not load) — rebuild the plugin against the 1.6.0 SDK";
 
@@ -133,19 +125,18 @@ impl<'r> ExportRows<'r> {
             sink,
             dispatcher: self.dispatcher.adopter(),
 
-            conns: if opening.is_some() {
-                ConnTable::serving(self.conns.clone())
-            } else {
-                ConnTable::Probe
-            },
+                conns: if opening.is_some() {
+                    ConnTable::serving(self.conns.clone())
+                } else {
+                    ConnTable::Probe
+                },
+            })
         };
-        let loaded = match &image {
-            Image::Linked(r) => load_linked::<Export>(r, bind),
-            Image::Dropped(stated) => {
-                load_dropped_bytes::<Export>(&row.lib_bytes, name, stated, bind)
-            }
-        };
-        loaded.map_err(refused)
+        open_loadable::<Export>(row, name, bind).map_err(|e| match e {
+            RowRefusal::Stated(e) | RowRefusal::Bind(e) => e,
+            RowRefusal::NoDoor => format!("export plugin '{name}': {NO_DOOR}"),
+            RowRefusal::Load(e) => format!("export plugin '{name}': {e}"),
+        })
     }
 
     #[must_use]

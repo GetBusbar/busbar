@@ -2981,7 +2981,7 @@ impl OutboundAuths {
         crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
     > {
         use crate::root::loader::dispatch::kinds::auth::Auth;
-        use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
+        use crate::root::loader::dispatch::{load_linked, LinkedRow};
         #[cfg(test)]
         self.bound
             .lock()
@@ -2996,15 +2996,9 @@ impl OutboundAuths {
             }
             AuthRowDoor::Dropped(i) => {
                 let row = self.dropped?.loadable().get(i)?;
-                let Ok(Some(stated)) = row.manifest.stated_rendering() else {
-                    return None;
-                };
-                load_dropped_bytes::<Auth>(
-                    &row.lib_bytes,
-                    name,
-                    &stated,
-                    self.bind_with(name, conns),
-                )
+                crate::root::loader::registry::open_loadable::<Auth>(row, name, || {
+                    Ok(self.bind_with(name, conns))
+                })
                 .ok()
             }
         }

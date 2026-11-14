@@ -11,10 +11,8 @@ use busbar_contract::conn::admissions::AdmissionAuthority;
 
 use crate::auth_door::{AuthInstance, AuthSink};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
-use crate::dispatch::{
-    load_dropped_bytes, load_linked, Bind, ConnTable, Dispatcher, LinkedRow, Plugin,
-};
-use crate::registry::LoadablePlugin;
+use crate::dispatch::{Bind, ConnTable, Dispatcher, LinkedRow, Plugin};
+use crate::registry::{open_loadable, LoadablePlugin, RowRefusal};
 use crate::PluginRegistry;
 
 const AUTH: &str = "auth";

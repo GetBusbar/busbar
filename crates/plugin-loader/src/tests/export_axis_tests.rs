@@ -322,6 +322,29 @@ fn a_check_on_a_row_that_will_not_load_answers_why() {
     );
 }
 
+#[test]
+fn a_row_with_no_door_is_refused_before_its_log_sink_opens() {
+    use crate::dispatch::log_file::tests::{config, scratch};
+    let row = "export-doorless";
+    let registry = both_ways::dropped(row, manifest(row), b"not a library");
+    let dir = scratch("export-doorless");
+    let logs = config(&dir, crate::dispatch::LogLevel::Trace);
+    let rows = ExportRows::new(&registry, dispatcher())
+        .with_disk(crate::dispatch::test_disk_authority())
+        .with_logs(&logs);
+    let settings = crate::export_axis::test_opening(&serde_json::json!({}));
+    let error = rows
+        .open(row, "export.doorless", &settings)
+        .err()
+        .expect("a row with no door is refused");
+    assert_eq!(error, format!("export plugin '{row}': {NO_DOOR}"));
+    let files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("the scratch directory")
+        .collect();
+    assert!(files.is_empty(), "no log file slot is opened: {files:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 extern "C" fn pl_src_1_unopened_door() -> *const busbar_contract::abi::mechanism::door::Door {
     std::ptr::null()
 }
