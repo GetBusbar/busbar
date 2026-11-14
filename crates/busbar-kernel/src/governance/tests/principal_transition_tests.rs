@@ -2499,3 +2499,41 @@ fn linked_product_digest_ignores_a_file_renamed_over_the_executable_path() {
     std::fs::rename(&junk, &path).expect("rename the replacement over the executable path");
     assert_eq!(executable_sha256().expect("running image digest"), expected);
 }
+
+#[test]
+fn a_failed_running_image_digest_is_retried_not_kept() {
+    let cell = DigestCell::new();
+    assert_eq!(
+        once_digest(&cell, || Err("transient".to_owned())),
+        Err("transient".to_owned())
+    );
+    assert_eq!(
+        once_digest(&cell, || Ok("digest".to_owned())),
+        Ok("digest".to_owned()),
+        "a transient failure must not refuse every later linked principal transition"
+    );
+    assert_eq!(
+        once_digest(&cell, || Err("later".to_owned())),
+        Ok("digest".to_owned()),
+        "a computed digest is kept"
+    );
+}
+
+#[test]
+fn an_unreadable_running_image_refusal_names_it_and_why() {
+    let refusal = executable_refusal(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert!(refusal.contains(RUNNING_EXECUTABLE), "{refusal}");
+    assert!(refusal.contains("linked auth principal"), "{refusal}");
+    assert!(refusal.contains("permission denied"), "{refusal}");
+}
+
+#[test]
+fn the_shared_sha256_hex_check_accepts_only_64_lowercase_hex_chars() {
+    let empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    assert!(super::hash(empty_sha256));
+    assert!(!super::hash(&empty_sha256.to_ascii_uppercase()));
+    assert!(!super::hash(&empty_sha256[..63]));
+    assert!(!super::hash(&format!("{empty_sha256}0")));
+    assert!(!super::hash(&empty_sha256.replace('e', "g")));
+    assert!(!super::hash(""));
+}
