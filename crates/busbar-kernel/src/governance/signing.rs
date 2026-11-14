@@ -149,7 +149,7 @@ impl TokenSigner {
     }
 
     pub fn secret_bytes(&self) -> [u8; 32] {
-        *self.key.to_seed()
+        *self.key.seed()
     }
 
     pub fn verifying_key(&self) -> VerifyingKey {
@@ -157,7 +157,7 @@ impl TokenSigner {
     }
 
     pub fn derived_subkey_seed(&self, domain: &str) -> [u8; 32] {
-        subkey_seed(&self.key.to_seed(), domain)
+        subkey_seed(self.key.seed(), domain)
     }
 
     pub fn sign_with_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {

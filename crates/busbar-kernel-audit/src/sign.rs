@@ -190,9 +190,9 @@ impl AuditSigningKey {
     /// A 32-BYTE SECRET DERIVED FROM THIS KEY under `label`: HMAC-SHA256 keyed by the seed, over
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> [u8; 32] {
-        let seed = self.inner.to_seed();
+        let seed = self.inner.seed();
         // A 32-byte key: no backend refuses it (FIPS's floor is 14 bytes).
-        let out = busbar_contract::crypto::hmac_sha256(&*seed, label);
+        let out = busbar_contract::crypto::hmac_sha256(seed, label);
         match out {
             Ok(mac) => mac,
             Err(e) => panic!("crypto backend refused HMAC-SHA256 under a 32-byte key: {e}"),

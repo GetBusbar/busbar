@@ -7,15 +7,23 @@
 /// must be canonical (AWS-LC checks `S < L`; the small-order table is `weak.rs`).
 pub mod ed25519 {
     use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _, UnparsedPublicKey, ED25519};
-    use zeroize::Zeroizing;
+    use zeroize::{Zeroize, ZeroizeOnDrop};
 
     use crate::Error;
 
     /// An Ed25519 private key and its 32-byte seed.
     pub struct SigningKey {
         pair: Ed25519KeyPair,
-        seed: Zeroizing<[u8; 32]>,
+        seed: [u8; 32],
     }
+
+    impl Drop for SigningKey {
+        fn drop(&mut self) {
+            self.seed.zeroize();
+        }
+    }
+
+    impl ZeroizeOnDrop for SigningKey {}
 
     impl core::fmt::Debug for SigningKey {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -26,25 +34,23 @@ pub mod ed25519 {
     impl SigningKey {
         /// A fresh key from the random number generator.
         pub fn generate() -> Result<Self, Error> {
-            let mut seed = Zeroizing::new([0_u8; 32]);
-            crate::rand::fill(&mut seed[..])?;
-            Self::from_seed(&seed)
+            let mut seed = [0_u8; 32];
+            let key = crate::rand::fill(&mut seed[..]).and_then(|()| Self::from_seed(&seed));
+            seed.zeroize();
+            key
         }
 
         /// The key whose RFC 8032 seed is `seed`.
         pub fn from_seed(seed: &[u8; 32]) -> Result<Self, Error> {
             let pair = Ed25519KeyPair::from_seed_unchecked(seed)
                 .map_err(|_| Error::Invalid("Ed25519 seed"))?;
-            Ok(Self {
-                pair,
-                seed: Zeroizing::new(*seed),
-            })
+            Ok(Self { pair, seed: *seed })
         }
 
-        /// The 32-byte seed.
+        /// The 32-byte seed, borrowed: no copy leaves the key (it is wiped when the key drops).
         #[must_use]
-        pub fn to_seed(&self) -> Zeroizing<[u8; 32]> {
-            self.seed.clone()
+        pub fn seed(&self) -> &[u8; 32] {
+            &self.seed
         }
 
         /// The signature of `msg`.
@@ -75,7 +81,9 @@ pub mod ed25519 {
             if crate::weak::decodes(bytes) {
                 Ok(Self(*bytes))
             } else {
-                Err(Error::Invalid("Ed25519 public key is not a canonical curve point"))
+                Err(Error::Invalid(
+                    "Ed25519 public key is not a canonical curve point",
+                ))
             }
         }
 
@@ -304,12 +312,17 @@ pub mod rsa {
         }
     }
 
-impl SigningKey {
+    impl SigningKey {
         /// An RSASSA-PSS SHA-256 signature (PS256) of `msg`.
         pub fn sign_pss_sha256(&self, msg: &[u8]) -> Result<Vec<u8>, Error> {
             let mut sig = vec![0_u8; self.modulus_len()];
             self.0
-                .sign(&signature::RSA_PSS_SHA256, &SystemRandom::new(), msg, &mut sig)
+                .sign(
+                    &signature::RSA_PSS_SHA256,
+                    &SystemRandom::new(),
+                    msg,
+                    &mut sig,
+                )
                 .map_err(|_| Error::Invalid("RSA signing"))?;
             Ok(sig)
         }
