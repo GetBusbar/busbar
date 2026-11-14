@@ -95,15 +95,7 @@ pub(crate) async fn exchange(
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let unattributed = super::self_keys::unattributed_binding(&app, provider);
-    let keys = DeterministicEd25519Keys::new(
-        gov,
-        provider.to_string(),
-        unattributed,
-        team,
-        pools,
-        provisioner,
-    );
+    let keys = DeterministicEd25519Keys::new(gov, provider.to_string(), team, pools, provisioner);
     match issue_key(&keys, principal, ttl, false).await {
         Ok(issued) => {
             let base_url = app.public_url.as_deref().unwrap_or("");
@@ -169,38 +161,6 @@ struct ExchangeOk<'a> {
     exp: u64,
     group: &'a str,
     key_id: &'a str,
-}
-
-/// The exchange's 403 message for each self-serve refusal: true for its cause.
-pub(crate) fn self_mint_refusal_message(
-    refusal: crate::governance::SelfMintRefusal,
-) -> &'static str {
-    use crate::governance::SelfMintRefusal;
-    match refusal {
-        SelfMintRefusal::Disabled => {
-            "this identity's self-serve key was disabled by an administrator"
-        }
-        SelfMintRefusal::Revoked => {
-            "this identity's self-serve key was revoked by an administrator"
-        }
-        SelfMintRefusal::TransitionHeld => {
-            "this identity's self-serve key is held: an administrator's disable or revocation \
-             carried over through an identity change"
-        }
-        SelfMintRefusal::OtherProvider => {
-            "this subject's self-serve key is bound to a different identity provider; sign in with \
-             that provider"
-        }
-        SelfMintRefusal::Unattributed => {
-            "this subject's self-serve key predates identity-provider tracking and more than one \
-             identity provider is configured; an administrator must confirm which provider it \
-             belongs to"
-        }
-        SelfMintRefusal::ForeignKeyInGroup => {
-            "this subject's self-serve group holds a key that cannot be verified as issued to this \
-             subject; an administrator must move it out"
-        }
-    }
 }
 
 fn refusal(e: ExchangeError) -> Response {

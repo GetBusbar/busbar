@@ -432,11 +432,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         assert!(r.is_err(), "{r:?}");
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::claim_work;
 
     #[test]
     fn refuses_existing_work_dir_and_keeps_its_contents() {
