@@ -30,7 +30,6 @@ busbar-default::bin/busbar root::boot::tests::explicit_same_address_needs_share_
 busbar-default::bin/busbar root::boot::tests::the_release_feature_set_excludes_test_harness	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::cli::tests::the_default_distributions_help_is_byte_identical	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::config_migrate::tests::credential_owner_migration_resolves_outer_source_once_and_keeps_inline_reference	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::config_migrate::tests::current_export_declared_references_are_validated_without_inventing_migration_debt	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::connector::tests::a_provider_carve_out_does_not_admit_metadata_for_a_default_or_open_web_dial	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::connector::tests::a_provider_carve_out_does_not_admit_metadata_for_another_provider_host	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::connector::tests::a_provider_without_an_allowlist_entry_is_refused_a_private_address	CDT-KNOWN-RED	stable
@@ -141,10 +140,8 @@ busbar-default::mcp_stdio_serve a_governed_deployment_refuses_a_wrong_audience_c
 busbar-default::mcp_stdio_serve a_keyless_admitted_credential_with_no_grant_is_refused	CDT-KNOWN-RED	stable
 busbar-default::mcp_stdio_serve a_stdin_read_error_is_not_a_successful_eof	CDT-KNOWN-RED	stable
 busbar-default::mcp_stdio_serve an_ungranted_tool_is_refused_per_call_on_the_line	CDT-KNOWN-RED	stable
-busbar-default::migration_corpus a_migration_with_nothing_to_decide_emits_no_comment_banner	CDT-KNOWN-RED	stable
 busbar-default::otlp_span_records real_producer_span_records_survive_both_otlp_doors	CDT-KNOWN-RED	stable
 busbar-default::plane_blackbox every_linked_doors_black_box_cases_run_against_the_real_binary	CDT-KNOWN-RED	stable
 busbar-default::plane_driver cases::upstream_only_output_never_reaches_the_caller_on_a_response_leg	CDT-KNOWN-RED	stable
 busbar-default::startup_upgrade_sqlite ordinary_startup_upgrades_released_sqlite_and_restart_does_not_reapply	CDT-KNOWN-RED	stable
 busbar-default::transport_dropped_in_serves a_dropped_in_transport_registers_through_the_one_fold_and_serves	CDT-KNOWN-RED	stable
-busbar-default::upgrade_1_5_5_env_secret_fields a_1_5_5_config_reading_export_secrets_from_the_environment_boots_and_serves	CDT-KNOWN-RED	stable
