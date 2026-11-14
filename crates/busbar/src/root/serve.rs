@@ -101,9 +101,40 @@ pub(crate) struct TicketCustody {
 #[derive(Default)]
 struct TicketEntries {
     tickets: BTreeMap<String, TicketEntry>,
+    /// Every held ticket by its expiry (unix seconds), so the sweep reads only the due ones.
+    due: std::collections::BTreeSet<(u64, String)>,
     cursor: Option<String>,
+    /// When the round-robin backstop last ran.
+    backstop_at: Option<std::time::Instant>,
     version: u64,
 }
+
+impl TicketEntries {
+    fn insert(&mut self, id: String, entry: TicketEntry) {
+        self.due.insert((entry.expires_at, id.clone()));
+        if let Some(replaced) = self.tickets.insert(id.clone(), entry) {
+            if replaced.expires_at != self.tickets[&id].expires_at {
+                self.due.remove(&(replaced.expires_at, id));
+            }
+        }
+    }
+
+    fn remove(&mut self, id: &str) -> Option<TicketEntry> {
+        let entry = self.tickets.remove(id)?;
+        self.due.remove(&(entry.expires_at, id.to_owned()));
+        Some(entry)
+    }
+
+    fn take_all(&mut self) -> BTreeMap<String, TicketEntry> {
+        self.due.clear();
+        std::mem::take(&mut self.tickets)
+    }
+}
+
+const TICKET_SKEW_SECS: u64 = busbar_kernel::config::limits::DEFAULT_TICKET_SKEW_SECS;
+const TICKET_BACKSTOP: std::time::Duration =
+    std::time::Duration::from_secs(busbar_kernel::config::limits::DEFAULT_TICKET_BACKSTOP_SECS);
+const _: () = assert!(TICKET_SKEW_SECS <= 60, "ticket skew stays within [0, 60] s");
 
 struct TicketEntry {
     reservation: busbar_kernel::plane_driver::TicketReservation,
@@ -163,7 +194,7 @@ impl Drop for TicketSourceOwner {
                 .map(|(id, _)| id.clone())
                 .collect();
             ids.into_iter()
-                .filter_map(|id| entries.tickets.remove(&id))
+                .filter_map(|id| entries.remove(&id))
                 .collect::<Vec<_>>()
         };
         drop(pending);
@@ -304,7 +335,7 @@ impl TicketCustody {
             .checked_add(1)
             .ok_or(TicketRefusal::NotKept)?;
         let version = entries.version;
-        entries.tickets.insert(
+        entries.insert(
             identity.id().to_owned(),
             TicketEntry {
                 reservation,
@@ -336,7 +367,7 @@ impl TicketCustody {
                     if let Some(entry) = entries.tickets.get_mut(&id) {
                         entry.ready = true;
                     }
-                } else if let Some(entry) = entries.tickets.remove(&id) {
+                } else if let Some(entry) = entries.remove(&id) {
                     removed.push(entry);
                 }
             }
@@ -374,7 +405,7 @@ impl TicketCustody {
             if !entry.ready || entry.version != version || !entry.reservation.matches(identity) {
                 return None;
             }
-            entries.tickets.remove(identity.id())
+            entries.remove(identity.id())
         };
         removed.map(|entry| entry.reservation)
     }
@@ -387,56 +418,120 @@ impl TicketCustody {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.closed
                 .store(true, std::sync::atomic::Ordering::Release);
-            std::mem::take(&mut entries.tickets)
+            entries.take_all()
         };
         drop(entries);
     }
 
+    /// Release custody of tickets the store no longer holds live (WASTE-CORE-LIFECYCLE W4). Each
+    /// tick reads only the tickets within `TICKET_SKEW_SECS` of their expiry by the local clock;
+    /// every `TICKET_BACKSTOP` a round-robin batch is read as well, which is how a ticket spent or
+    /// deleted by another node leaves custody. Reads are batched per store. The store's clock alone
+    /// decides expiry, and an unavailable or malformed observation releases nothing.
     pub(crate) async fn sweep(&self) {
         let snapshots = {
             let mut entries = self
                 .entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            use std::ops::Bound::{Excluded, Unbounded};
-            let cursor = entries.cursor.clone();
-            let after = cursor
-                .as_ref()
-                .map_or(Unbounded, |id| Excluded(id.as_str()));
+            let horizon = busbar_kernel::store::now().saturating_add(TICKET_SKEW_SECS);
             let mut chosen: Vec<_> = entries
-                .tickets
-                .range::<str, _>((after, Unbounded))
+                .due
+                .iter()
+                .take_while(|(expires_at, _)| *expires_at <= horizon)
                 .take(TICKET_SWEEP_BATCH)
-                .map(|(id, e)| (id.clone(), e.version, e.expires_at, Arc::clone(&e.store)))
-                .collect();
-            if let Some(cursor) = cursor.as_ref() {
-                let remaining = TICKET_SWEEP_BATCH - chosen.len();
-                chosen.extend(
+                .filter_map(|(_, id)| {
                     entries
                         .tickets
-                        .range::<str, _>((Unbounded, std::ops::Bound::Included(cursor.as_str())))
-                        .take(remaining)
-                        .map(|(id, e)| (id.clone(), e.version, e.expires_at, Arc::clone(&e.store))),
-                );
+                        .get(id)
+                        .map(|e| (id.clone(), e.version, e.expires_at, Arc::clone(&e.store)))
+                })
+                .collect();
+            let now = std::time::Instant::now();
+            let backstop = entries
+                .backstop_at
+                .is_none_or(|at| now.saturating_duration_since(at) >= TICKET_BACKSTOP);
+            if backstop {
+                entries.backstop_at = Some(now);
+                use std::ops::Bound::{Excluded, Unbounded};
+                let cursor = entries.cursor.clone();
+                let after = cursor
+                    .as_ref()
+                    .map_or(Unbounded, |id| Excluded(id.as_str()));
+                let mut cycle: Vec<_> = entries
+                    .tickets
+                    .range::<str, _>((after, Unbounded))
+                    .take(TICKET_SWEEP_BATCH)
+                    .map(|(id, e)| (id.clone(), e.version, e.expires_at, Arc::clone(&e.store)))
+                    .collect();
+                if let Some(cursor) = cursor.as_ref() {
+                    let remaining = TICKET_SWEEP_BATCH - cycle.len();
+                    cycle.extend(
+                        entries
+                            .tickets
+                            .range::<str, _>((
+                                Unbounded,
+                                std::ops::Bound::Included(cursor.as_str()),
+                            ))
+                            .take(remaining)
+                            .map(|(id, e)| {
+                                (id.clone(), e.version, e.expires_at, Arc::clone(&e.store))
+                            }),
+                    );
+                }
+                entries.cursor = cycle.last().map(|(id, ..)| id.clone());
+                for ticket in cycle {
+                    if !chosen.iter().any(|(id, ..)| *id == ticket.0) {
+                        chosen.push(ticket);
+                    }
+                }
             }
-            entries.cursor = chosen.last().map(|(id, ..)| id.clone());
             chosen
         };
         if snapshots.is_empty() {
             return;
         }
-        let mut dead = Vec::new();
+        // One batched observation per store.
+        let mut by_store: Vec<(
+            Arc<busbar_kernel::persistence::facade::CoreStore>,
+            Vec<(String, u64, u64)>,
+        )> = Vec::new();
         for (id, version, expiry, store) in snapshots {
-            // An unavailable or malformed observation cannot release custody.
-            // The native owner evaluates expiry against the Store's clock.
+            match by_store
+                .iter_mut()
+                .find(|(held, _)| Arc::ptr_eq(held, &store))
+            {
+                Some((_, tickets)) => tickets.push((id, version, expiry)),
+                None => by_store.push((store, vec![(id, version, expiry)])),
+            }
+        }
+        let mut dead = Vec::new();
+        for (store, tickets) in by_store {
+            let items: Vec<_> = tickets
+                .iter()
+                .map(|(id, _, expiry)| (id.clone(), *expiry))
+                .collect();
             #[cfg(test)]
             self.sweep_reads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if matches!(
-                busbar_kernel::governance::ticket_record_live(store, &id, expiry).await,
-                Ok(false)
-            ) {
-                dead.push((id, version));
+            match busbar_kernel::governance::ticket_records_live(store, &items).await {
+                Ok(verdicts) if verdicts.len() == tickets.len() => {
+                    for ((id, version, _), verdict) in tickets.into_iter().zip(verdicts) {
+                        // A malformed ticket retains only itself.
+                        if matches!(verdict, Ok(false)) {
+                            dead.push((id, version));
+                        }
+                    }
+                }
+                Ok(_) => tracing::warn!(
+                    audit = "ticket_custody_sweep_retained",
+                    "ticket custody observation answered the wrong count; custody retained"
+                ),
+                Err(error) => tracing::warn!(
+                    audit = "ticket_custody_sweep_retained",
+                    error = %error.0,
+                    "ticket custody observation failed; custody retained"
+                ),
             }
         }
         let removed = {
@@ -451,7 +546,7 @@ impl TicketCustody {
                         .get(&id)
                         .is_some_and(|e| e.version == version)
                     {
-                        entries.tickets.remove(&id)
+                        entries.remove(&id)
                     } else {
                         None
                     }

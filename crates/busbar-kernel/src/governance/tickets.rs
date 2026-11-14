@@ -198,11 +198,12 @@ fn record_body_len(bytes: &Secret<Vec<u8>>, expires_at: u64) -> Option<usize> {
     (bytes.len() >= 9 && bytes[0] == 1 && bytes[1..9] == expires_at.to_be_bytes())
         .then(|| bytes.len() - 9)
 }
-async fn native_record(
-    core: &CoreStore,
+/// The three native addresses one ticket is observed through: its record, its spent marker and
+/// its expiry index row.
+fn ticket_addresses(
     id: &str,
     expires_at: u64,
-) -> RecordStoreResult<Option<Secret<Vec<u8>>>> {
+) -> RecordStoreResult<[busbar_contract::persistence::Address; 3]> {
     if !valid_ticket_id(id) {
         return Err(RecordStoreError("invalid native ticket identity".into()));
     }
@@ -210,6 +211,54 @@ async fn native_record(
         crate::persistence::scoped::migration_address(true, OWNER, kind, id.as_bytes())
             .map_err(|_| RecordStoreError("invalid native ticket scope".into()))
     };
+    Ok([
+        address(TICKET_RECORD_KIND)?,
+        address(TICKET_SPENT_KIND)?,
+        crate::persistence::scoped::migration_address(
+            true,
+            OWNER,
+            EXPIRY_SCHEMA,
+            &expiry_key(id, expires_at),
+        )
+        .map_err(|_| RecordStoreError("invalid native ticket index scope".into()))?,
+    ])
+}
+
+/// Judge one ticket's three observed values (record, spent, index), already known to be within
+/// its expiry at the store's clock.
+fn judge_ticket(
+    expires_at: u64,
+    active: Option<Secret<Vec<u8>>>,
+    spent: Option<Secret<Vec<u8>>>,
+    index: Option<Secret<Vec<u8>>>,
+) -> RecordStoreResult<Option<Secret<Vec<u8>>>> {
+    if index
+        .as_ref()
+        .is_some_and(|value| value.expose(&crate::seal::lend()) != &[1])
+        || spent
+            .as_ref()
+            .is_some_and(|value| record_body_len(value, expires_at) != Some(0))
+    {
+        return Err(RecordStoreError("invalid native ticket metadata".into()));
+    }
+    let Some(record) = active else {
+        return Ok(None);
+    };
+    if record_body_len(&record, expires_at).is_none() || index.is_none() {
+        return Err(RecordStoreError("invalid native ticket record".into()));
+    }
+    if spent.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(record))
+}
+
+async fn native_record(
+    core: &CoreStore,
+    id: &str,
+    expires_at: u64,
+) -> RecordStoreResult<Option<Secret<Vec<u8>>>> {
+    let addresses = ticket_addresses(id, expires_at)?;
     let time = TimeGuard {
         not_before: None,
         before: expires_at.checked_add(1),
@@ -218,17 +267,7 @@ async fn native_record(
         .backend()
         .read(Arc::new(Read {
             dataset: core.info().dataset,
-            addresses: vec![
-                address(TICKET_RECORD_KIND)?,
-                address(TICKET_SPENT_KIND)?,
-                crate::persistence::scoped::migration_address(
-                    true,
-                    OWNER,
-                    EXPIRY_SCHEMA,
-                    &expiry_key(id, expires_at),
-                )
-                .map_err(|_| RecordStoreError("invalid native ticket index scope".into()))?,
-            ],
+            addresses: addresses.to_vec(),
             time: Some(time),
         }))
         .await
@@ -258,25 +297,7 @@ async fn native_record(
     let index = values.pop().expect("validated count");
     let spent = values.pop().expect("validated count");
     let active = values.pop().expect("validated count");
-    if index
-        .as_ref()
-        .is_some_and(|value| value.expose(&crate::seal::lend()) != &[1])
-        || spent
-            .as_ref()
-            .is_some_and(|value| record_body_len(value, expires_at) != Some(0))
-    {
-        return Err(RecordStoreError("invalid native ticket metadata".into()));
-    }
-    let Some(record) = active else {
-        return Ok(None);
-    };
-    if record_body_len(&record, expires_at).is_none() || index.is_none() {
-        return Err(RecordStoreError("invalid native ticket record".into()));
-    }
-    if spent.is_some() {
-        return Ok(None);
-    }
-    Ok(Some(record))
+    judge_ticket(expires_at, active, spent, index)
 }
 
 /// A truthful native reservation observation for host custody maintenance.
@@ -289,6 +310,91 @@ pub async fn ticket_record_live(
     native_record(&core, id, expected_expiry)
         .await
         .map(|record| record.is_some())
+}
+
+/// Tickets observed per batched `Read` (three addresses each), bounded by the store's page budget.
+fn tickets_per_read(core: &CoreStore) -> usize {
+    (core.limits().scan_items / 3).max(1)
+}
+
+/// [`ticket_record_live`] for many tickets of one store, with one `Read` per chunk instead of one
+/// per ticket (WASTE-CORE-LIFECYCLE W4). The `Read` carries no `TimeGuard` (one guard cannot fit
+/// distinct expiries); each ticket is judged by the store's own observation instead:
+/// `observed_at > expires_at` is expired, exactly where the single-ticket guard
+/// `before: expires_at + 1` fails. A chunk is accepted only as well-formed `Values` with this
+/// store's clock authority and three values per ticket; anything else is the outer `Err`, which
+/// releases nothing. Inside an accepted chunk a malformed ticket is an `Err` for that ticket only.
+pub async fn ticket_records_live(
+    core: Arc<CoreStore>,
+    items: &[(String, u64)],
+) -> RecordStoreResult<Vec<RecordStoreResult<bool>>> {
+    let mut verdicts = Vec::with_capacity(items.len());
+    for chunk in items.chunks(tickets_per_read(&core)) {
+        let mut addresses = Vec::with_capacity(chunk.len() * 3);
+        let mut judged = Vec::with_capacity(chunk.len());
+        for (id, expires_at) in chunk {
+            match ticket_addresses(id, *expires_at) {
+                Ok(three) => {
+                    addresses.extend(three);
+                    judged.push(Ok(*expires_at));
+                }
+                Err(error) => judged.push(Err(error)),
+            }
+        }
+        if addresses.is_empty() {
+            verdicts.extend(judged.into_iter().map(|judged| judged.map(|_| false)));
+            continue;
+        }
+        let observed = core
+            .backend()
+            .read(Arc::new(Read {
+                dataset: core.info().dataset,
+                addresses,
+                time: None,
+            }))
+            .await
+            .map_err(|_| RecordStoreError("native ticket observation unavailable".into()))?;
+        let ReadResult::Values {
+            observed_at,
+            values,
+        } = observed
+        else {
+            return Err(RecordStoreError(
+                "invalid native ticket batch observation".into(),
+            ));
+        };
+        let readable = judged.iter().filter(|judged| judged.is_ok()).count();
+        if observed_at.authority != core.info().clock_authority || values.len() != readable * 3 {
+            return Err(RecordStoreError(
+                "invalid native ticket batch observation".into(),
+            ));
+        }
+        let mut values = values.into_iter();
+        for judged in judged {
+            let expires_at = match judged {
+                Ok(expires_at) => expires_at,
+                Err(error) => {
+                    verdicts.push(Err(error));
+                    continue;
+                }
+            };
+            let (Some(active), Some(spent), Some(index)) =
+                (values.next(), values.next(), values.next())
+            else {
+                return Err(RecordStoreError(
+                    "invalid native ticket batch observation".into(),
+                ));
+            };
+            if observed_at.unix_seconds > expires_at {
+                verdicts.push(Ok(false));
+                continue;
+            }
+            verdicts.push(
+                judge_ticket(expires_at, active, spent, index).map(|record| record.is_some()),
+            );
+        }
+    }
+    Ok(verdicts)
 }
 
 impl GovState {
