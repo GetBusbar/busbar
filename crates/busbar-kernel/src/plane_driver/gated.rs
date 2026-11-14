@@ -224,7 +224,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
-                    let next = match self.project(Some(&bytes), true) {
+                    let mut next = match self.project(Some(&bytes), true) {
                         Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => next,
 
                         Ok(next) if next.rewrite_not_applicable => {
@@ -251,8 +251,8 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     if next.pool != entry && !(scoped && next.pool.is_empty()) {
                         return Err(Stopped::Unreadable);
                     }
-                    if let Some(body) = &next.rewritten {
-                        self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
+                    if let Some(body) = next.rewritten.take() {
+                        self.lock().body = Some(bytes::Bytes::from(body));
                     }
                     view = next;
                 }

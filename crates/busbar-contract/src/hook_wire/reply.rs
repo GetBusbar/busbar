@@ -241,6 +241,7 @@ use crate::hooks::RewriteReply;
 
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
 pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
+    crate::stage_probe::tick(crate::stage_probe::Derive::ProjectCopy);
     let messages: Vec<serde_json::Value> = value.get("messages")?.as_array()?.clone();
     if messages.is_empty() {
         return None;
@@ -248,6 +249,26 @@ pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     let tools = match value.get("tools") {
         None | Some(serde_json::Value::Null) => Vec::new(),
         Some(t) => t.as_array()?.clone(),
+    };
+    Some(RewriteReply { messages, tools })
+}
+
+/// [`parse_rewrite`] for an owned value: the same fail-closed shape, with `messages` and `tools`
+/// moved out of the value instead of copied.
+pub fn take_rewrite(value: serde_json::Value) -> Option<RewriteReply> {
+    let serde_json::Value::Object(mut fields) = value else {
+        return None;
+    };
+    let serde_json::Value::Array(messages) = fields.remove("messages")? else {
+        return None;
+    };
+    if messages.is_empty() {
+        return None;
+    }
+    let tools = match fields.remove("tools") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(tools)) => tools,
+        Some(_) => return None,
     };
     Some(RewriteReply { messages, tools })
 }
