@@ -18,7 +18,7 @@ pub fn set_worker_id(id: usize) {
     WORKER_ID.with(|w| w.set(id));
 }
 
-pub fn worker_id() -> usize {
+pub(crate) fn worker_id() -> usize {
     WORKER_ID.with(|w| w.get())
 }
 

@@ -33,14 +33,12 @@ thread_local! {
     static IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[allow(dead_code)]
 #[cfg(test)]
 fn set_now_for_test(t: u64) {
     TEST_NOW.with(|c| c.set(t));
     IN_TEST.with(|c| c.set(true));
 }
 
-#[allow(dead_code)]
 #[cfg(test)]
 fn now_for_test() -> u64 {
     if IN_TEST.with(|c| c.get()) {

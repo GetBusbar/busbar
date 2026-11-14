@@ -1323,7 +1323,7 @@ impl SessionSlot<'_> {
         crate::root::serve::report_of(money.as_ref(), self.key, facts)
     }
 
-    #[cfg(any(test, distribution_root))]
+    #[cfg(test)]
     pub async fn finish(mut self, post: &NodeEndPost) -> Result<(), String> {
         let confirmation = self.finish_inner(post, None, Evidence::default());
         await_terminal(confirmation).await?;
@@ -1824,7 +1824,7 @@ pub struct Parent {
 }
 
 impl Parent {
-    #[cfg(any(test, distribution_root))]
+    #[cfg(test)]
     #[must_use]
     pub fn key(&self) -> UnitKey {
         self.key

@@ -58,7 +58,6 @@ pub struct DurableOpts {
     /// `config.yaml` and nothing here narrows it. An operator deploying on Windows who needs the
     /// unix guarantee must set the ACL on that directory themselves. Stated here rather than left
     /// implicit because "we write it 0600" reads as a cross-platform claim and is not one.
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub mode: Option<u32>,
     /// Refuse to adopt a pre-existing temp (`O_CREAT | O_EXCL`) — the signing-key anti-pre-plant
     /// posture. When set, the primitive still PRE-REMOVES a stale temp of its OWN about-to-use name

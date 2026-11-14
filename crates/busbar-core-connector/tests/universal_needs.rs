@@ -8,10 +8,9 @@ use std::sync::OnceLock;
 use busbar_contract::conn::{ConnError, PieceKind};
 use busbar_contract::crypto::testing::rcgen;
 
-#[allow(unused_imports)]
 use busbar_core_connector::{carrier, compose, framer, hostio};
 
-#[allow(dead_code, unsafe_code, unused_imports)]
+#[allow(unsafe_code)]
 #[path = "../src/tests/support.rs"]
 mod support;
 

@@ -39,14 +39,13 @@ fn debug_display_and_to_string_are_the_1_5_5_bytes() {
 #[test]
 fn embedded_in_a_derived_debug_struct_is_redacted() {
     #[derive(Debug)]
-    #[allow(dead_code)]
     struct Holder {
-        id: String,
-        token: Secret<String>,
+        _id: String,
+        _token: Secret<String>,
     }
     let h = Holder {
-        id: "acct-1".into(),
-        token: Secret::new("token-abc-XYZ".to_string()),
+        _id: "acct-1".into(),
+        _token: Secret::new("token-abc-XYZ".to_string()),
     };
     let dbg = format!("{h:?}");
     assert!(

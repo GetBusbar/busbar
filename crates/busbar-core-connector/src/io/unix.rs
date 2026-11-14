@@ -37,7 +37,7 @@ pub struct Ready<'a, T: AsFd>(AsyncFdReadyGuard<'a, Owned<T>>);
 
 impl<T: AsFd> Ready<'_, T> {
     /// The direction answered `WouldBlock`: wait for a fresh edge before the next attempt.
-    pub fn clear_ready(mut self) {
+    pub(crate) fn clear_ready(mut self) {
         self.0.clear_ready();
     }
 }

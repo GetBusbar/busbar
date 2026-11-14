@@ -1362,7 +1362,6 @@ macro_rules! plugin_door {
         }
 
         /// This plugin's door as the door macro built it.
-        #[allow(dead_code)]
         pub const MACRO_DOOR: $crate::abi::sdk::door::MacroDoor =
             // SAFETY: `door` is the function this macro expanded just above: it answers the
             // `'static`, fully initialised `Door` the SDK laid out as `const` items. The Statement's

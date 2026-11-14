@@ -186,9 +186,9 @@ fn elide_quoted_value(message: &str) -> String {
 
 /// What one lease holds: bytes, zeroized on drop when secret.
 enum Lease {
-    Bytes(#[allow(dead_code)] Box<[u8]>),
-    Secret(#[allow(dead_code)] Zeroizing<Vec<u8>>),
-    Kept(#[allow(dead_code)] Box<dyn std::any::Any + Send + Sync>),
+    Bytes { _held: Box<[u8]> },
+    Secret { _held: Zeroizing<Vec<u8>> },
+    Kept(Box<dyn std::any::Any + Send + Sync>),
 }
 
 /// The answers an instance handed the host, each held under its lease until `release`. ONE
@@ -256,7 +256,7 @@ impl Leases {
             fmt,
             ..Blob::ZERO
         };
-        self.hold(head, Lease::Bytes(held));
+        self.hold(head, Lease::Bytes { _held: held });
         blob
     }
 
@@ -273,7 +273,7 @@ impl Leases {
             flags: BLOB_SECRET,
         };
 
-        self.hold(head, Lease::Secret(held));
+        self.hold(head, Lease::Secret { _held: held });
         blob
     }
 
@@ -287,7 +287,7 @@ impl Leases {
             ptr: held.as_ptr(),
             len: held.len(),
         };
-        self.hold(head, Lease::Bytes(held));
+        self.hold(head, Lease::Bytes { _held: held });
         s
     }
 
@@ -646,7 +646,7 @@ impl<S: HeldSlot> SafeSlot for Opened<S> {
 }
 
 macro_rules! life_slot {
-    ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
+    ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:pat_param| $body:block) => {
         $(#[$doc])*
         #[derive(Debug)]
         pub struct $name<L>(PhantomData<L>);
@@ -658,7 +658,7 @@ macro_rules! life_slot {
             fn call(
                 $inst: Instance<'_, Held<L>, L::Kind>,
                 $input: Lent<'_, $in>,
-                #[allow(unused_mut)] mut $o: Out<'_, $out>,
+                $o: Out<'_, $out>,
             ) -> Outcome {
                 $body
             }
@@ -668,7 +668,7 @@ macro_rules! life_slot {
 
 life_slot!(
     /// `validate`: [`Life::validate`].
-    Validate(ValidateIn => OutHead) |_, input, out| {
+    Validate(ValidateIn => OutHead) |_, input, mut out| {
         match L::validate_with_extensions(
             input.field(|i| &i.settings).bytes(),
             input.field(|i| &i.head.extensions).bytes(),
@@ -684,7 +684,7 @@ life_slot!(
     /// it answers. A PENDING step installs the instance NOW, its parked state on the ticket (the
     /// box is retained across the pend); the RESUME runs the step again on that instance, and a
     /// RESUME with no instance or nothing parked is FAULT (an open never runs afresh on it).
-    Open(OpenIn => OpenOut) |instance, input, out| {
+    Open(OpenIn => OpenOut) |instance, input, mut out| {
         let host = input.host().map(|loan| Host::of(instance.host(loan)));
         let ticket = instance.ticket();
         if instance.resuming() {
@@ -754,7 +754,7 @@ life_slot!(
 
 life_slot!(
     /// `refresh`: [`Life::refresh`]; what it counted rides the reply's envelope.
-    Refresh(RefreshIn => OutHead) |instance, input, out| {
+    Refresh(RefreshIn => OutHead) |instance, input, mut out| {
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
@@ -785,7 +785,7 @@ life_slot!(
 life_slot!(
     /// `ready`: [`Life::ready`], over the host tables the call hands it (a door names it with
     /// `lifecycle: life(L, ready)`).
-    Ready(ReadyIn => OutHead) |instance, input, out| {
+    Ready(ReadyIn => OutHead) |instance, input, mut out| {
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
@@ -812,7 +812,7 @@ life_slot!(
 
 life_slot!(
     /// `tick`: [`Life::tick`].
-    Tick(TickIn => TickOut) |instance, input, out| {
+    Tick(TickIn => TickOut) |instance, input, mut out| {
         let next = instance.get().map_or(0, |h| h.life.tick(input.now_ns));
         out.set(|o| &o.next_tick_ns, next);
         Outcome::Ready
@@ -826,7 +826,7 @@ life_slot!(
 
 life_slot!(
     /// `cancel`: [`Life::cancel`], then the SDK drops what the canceled ticket parked.
-    Cancel(CancelIn => CancelOut) |instance, input, out| {
+    Cancel(CancelIn => CancelOut) |instance, input, mut out| {
         let disposition = instance.get().map_or(L::CANCEL, |h| h.life.cancel(input.ticket));
         out.set(|o| &o.disposition, disposition);
         Outcome::Ready
@@ -836,7 +836,7 @@ life_slot!(
 life_slot!(
     /// `release`: the lease's bytes go (zeroized when secret); an unknown lease is REFUSED, in
     /// [`NO_SUCH_LEASE`]'s words.
-    Release(ReleaseIn => OutHead) |instance, input, out| {
+    Release(ReleaseIn => OutHead) |instance, input, mut out| {
         match instance.get().map(|h| h.leases.release(input.lease)) {
             Some(Outcome::Ready) => Outcome::Ready,
             _ => out.fail(Refusal::refused(NO_SUCH_LEASE)),

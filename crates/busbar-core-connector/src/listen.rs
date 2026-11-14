@@ -338,7 +338,7 @@ impl Listening {
     }
 
     /// The next admitted socket of a STREAM listener ([`Listening::bind_stream`]), as it arrived:
-    pub fn poll_accept_stream(&mut self, cx: &mut Context<'_>) -> Poll<Handed> {
+    pub(crate) fn poll_accept_stream(&mut self, cx: &mut Context<'_>) -> Poll<Handed> {
         loop {
             let (got, peer, slot) = std::task::ready!(self.poll_conn(cx));
             let stream = match got {

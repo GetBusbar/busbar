@@ -315,7 +315,7 @@ pub fn admit_secrets<'a>(
     })
 }
 
-pub fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
+pub(crate) fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
     super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
 }
 
@@ -517,7 +517,7 @@ pub fn discover(registry: &PluginRegistry) -> Result<Vec<Candidate>, String> {
     discovered(registry, |_| true)
 }
 
-pub fn listener_candidates(linked: &Linked) -> Result<Vec<Candidate>, String> {
+pub(crate) fn listener_candidates(linked: &Linked) -> Result<Vec<Candidate>, String> {
     listener_candidates_from(linked, dropped_registry())
 }
 
@@ -1452,7 +1452,7 @@ pub type WatchedBook = (super::durability::NodeBook, Option<NodeLeaseTask>);
 /// Construction retains the actual owners before every asynchronous crossing.
 /// A pending native original suspends this same preparation; it never restarts
 /// node allocation, global price binding, or application construction.
-pub struct BookPreparation {
+pub(crate) struct BookPreparation {
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
     governance: Arc<busbar_kernel::governance::GovState>,
     identity: Arc<busbar_kernel::persistence::boot_identity::BootIdentity>,

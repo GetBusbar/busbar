@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![allow(dead_code)]
-
 use busbar_kernel::config::PluginsCfg;
 use busbar_plugin_loader::sign::{SigningKey, TrustPolicy};
 

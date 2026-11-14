@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 
 pub const LABEL: &[u8] = b"busbar credential-at-rest v1";
 
-pub const KID_LABEL: &[u8] = b"busbar credential-at-rest kid v1";
+pub(crate) const KID_LABEL: &[u8] = b"busbar credential-at-rest kid v1";
 
 pub const NO_KEY_REFUSAL: &str = "a recoverable credential cannot be minted: no at-rest key is \
      configured, so it could not be stored sealed. Set credentials.at_rest.key to a secret \

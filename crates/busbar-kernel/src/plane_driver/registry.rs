@@ -311,7 +311,7 @@ pub struct BuildCtx<'a> {
     pub providers: Option<&'a crate::config::ResolvedProviders>,
 }
 
-pub type BootHook = fn(&dyn PlaneBootCtx) -> Result<(), String>;
+pub(crate) type BootHook = fn(&dyn PlaneBootCtx) -> Result<(), String>;
 
 /// BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side and handed to the A2A [`PlaneDecl::start`]
 /// hook as PUBLIC values ONLY — the `kid` and the base64 Ed25519 SPKI an operator hands a counterparty
@@ -376,7 +376,7 @@ macro_rules! plane_behaviour {
 }
 
 #[cfg(feature = "openapi-schema")]
-pub type OpenapiSchemasHook = fn(
+pub(crate) type OpenapiSchemasHook = fn(
     &PlaneDecl,
     &mut schemars::SchemaGenerator,
     &mut schemars::SchemaGenerator,
@@ -384,7 +384,7 @@ pub type OpenapiSchemasHook = fn(
 );
 
 #[cfg(not(feature = "openapi-schema"))]
-pub type OpenapiSchemasHook = fn(&PlaneDecl, std::convert::Infallible);
+pub(crate) type OpenapiSchemasHook = fn(&PlaneDecl, std::convert::Infallible);
 
 #[cfg(feature = "openapi-schema")]
 pub(crate) const fn stated_schemas_hook() -> Option<OpenapiSchemasHook> {
@@ -523,7 +523,6 @@ plane_behaviour! {
     /// here, so the document can never silently omit a mounted verb.
     // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test; a
     // default `--no-default-features` build has neither, so the field is genuinely unread there.
-    #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
     openapi: Option<fn(&PlaneDecl) -> serde_json::Value>,
 
     /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of

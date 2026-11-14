@@ -30,6 +30,7 @@ const JOURNAL: NamespaceId = NamespaceId(*b"busbar.journal4\0");
 const HEAD_MAGIC: &[u8; 8] = b"BBJHEAD1";
 const OWNER_MAGIC: &[u8; 8] = b"BBJOWN01";
 
+#[cfg(test)]
 pub(crate) mod historical;
 mod transfer;
 #[cfg(test)]
@@ -50,7 +51,8 @@ pub(crate) enum Error {
     Authority,
     /// Needs explicit historical verification rather than contiguous replay.
     UnsupportedHistory,
-    Verification(JournalBreak),
+    /// A frame failed WAL verification; callers fold it to corruption, so the break itself is not kept.
+    Verification(()),
     IncompleteReplay,
 }
 type Result<T> = std::result::Result<T, Error>;
@@ -142,20 +144,24 @@ impl VerifiedHead {
             bytes[16..32].try_into().ok()?,
         ))
     }
+    #[cfg(test)]
     pub(crate) fn sequence(&self) -> u64 {
         self.head.sequence
     }
+    #[cfg(test)]
     pub(crate) fn hash(&self) -> [u8; 32] {
         self.head.hash
     }
 }
 
+#[cfg(test)]
 /// A completely verified, bounded historical view of one selected immutable
 /// prefix. The private head binds it to the selected dataset/node and custody.
 pub(crate) struct VerifiedSnapshot {
     head: VerifiedHead,
     history: historical::HistoricalSnapshot,
 }
+#[cfg(test)]
 impl VerifiedSnapshot {
     pub(crate) fn head(&self) -> &VerifiedHead {
         &self.head
@@ -259,6 +265,7 @@ impl<'a> StoreJournal<'a> {
         })
     }
 
+    #[cfg(test)]
     /// Verify every original frame in the selected prefix using the historical
     /// WAL rules, including retained prefixes and carried quarantine bridges.
     /// The explicit snapshot budget is a host memory admission policy; it does
@@ -293,7 +300,7 @@ impl<'a> StoreJournal<'a> {
             if total > budget.bytes {
                 return Err(Error::Budget);
             }
-            let decoded = JournalRecord::decode(bytes).map_err(Error::Verification)?;
+            let decoded = JournalRecord::decode(bytes).map_err(|_| Error::Verification(()))?;
             records.push(Record::new(decoded.node, decoded.node_seq, bytes.clone()));
         }
         let history = historical::HistoricalSnapshot::verify(self.node, records, budget)?;
@@ -468,10 +475,10 @@ fn checked_record(node: u64, bytes: &[u8], previous: Head) -> Result<JournalReco
     Ok(decoded)
 }
 fn decode_record(node: u64, bytes: &[u8]) -> Result<JournalRecord> {
-    let decoded = JournalRecord::decode(bytes).map_err(Error::Verification)?;
+    let decoded = JournalRecord::decode(bytes).map_err(|_| Error::Verification(()))?;
     // Reuse the original verifier and digest recipe, including reserved bytes.
     busbar_kernel_wal::journal::verify(std::slice::from_ref(&decoded))
-        .map_err(Error::Verification)?;
+        .map_err(|_| Error::Verification(()))?;
     if decoded.node != node || decoded.node_seq == 0 || decoded.encode() != bytes {
         return Err(Error::Corrupt);
     }

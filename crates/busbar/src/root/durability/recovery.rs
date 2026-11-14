@@ -9,7 +9,7 @@ use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, RecordClas
 
 use super::Durability;
 
-pub const OPERATOR_BREAK_TAG: &str = "operator-chain-break";
+pub(crate) const OPERATOR_BREAK_TAG: &str = "operator-chain-break";
 
 /// One deliberate operator break the chain carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +35,7 @@ fn operator_break_of(record: &JournalRecord) -> Option<OperatorBreak> {
 }
 
 impl Durability {
-    pub async fn operator_breaks(
+    pub(crate) async fn operator_breaks(
         &self,
     ) -> std::io::Result<Result<Vec<OperatorBreak>, busbar_kernel_wal::JournalBreak>> {
         Ok(self

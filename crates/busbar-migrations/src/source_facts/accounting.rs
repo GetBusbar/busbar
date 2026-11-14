@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 fn invalid(_: crate::legacy::Error) -> Error {
     Error::Verification
 }
-pub struct VerifiedAccounting {
+pub(crate) struct VerifiedAccounting {
     pub usage: Vec<(String, u64, UsageLedger)>,
     pub metering: Vec<(u64, MeteringRow)>,
 }

@@ -126,9 +126,7 @@ fn pool_table_preserves_shorthand_reserved_keys_and_custom_serde() {
     // which is callable without installing a plane and owns reserved-key extraction.
     #[derive(serde::Deserialize)]
     struct PoolsInput(
-        #[serde(deserialize_with = "pools_input")]
-        #[allow(dead_code)]
-        busbar_contract::section::Section<PoolCfg>,
+        #[serde(deserialize_with = "pools_input")] busbar_contract::section::Section<PoolCfg>,
     );
     fn pools_input<'de, D: serde::Deserializer<'de>>(
         deserializer: D,

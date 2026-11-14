@@ -245,7 +245,8 @@ pub struct RootUnit {
 #[cfg(any(test, distribution_root))]
 pub struct BookCtx<'a> {
     pub book: &'a crate::root::durability::NodeBook,
-
+    /// The app the book was opened for: what the mounted owner tests' steps read.
+    #[cfg(test)]
     pub app: &'a busbar_kernel::state::App,
 }
 
@@ -311,7 +312,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::persistence::axis::Persis
 static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
     std::sync::OnceLock::new();
 
-pub fn link_secrets(
+pub(crate) fn link_secrets(
     doors: &[busbar_contract::abi::mechanism::door::DoorFn],
     declares: &[(busbar_contract::abi::mechanism::door::DoorFn, &str)],
 ) -> Result<&'static crate::root::loader::secret_calls::SecretRows, String> {
@@ -449,7 +450,7 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
         .collect()
 }
 
-pub const PLANE_CARRIED_SERIES: &[(&str, &[&str])] = &[
+pub(crate) const PLANE_CARRIED_SERIES: &[(&str, &[&str])] = &[
     (
         "busbar_requests_total",
         &["ingress_protocol", "pool", "outcome"],
@@ -548,7 +549,7 @@ pub(crate) fn logs() -> &'static crate::root::loader::dispatch::PluginLogConfig 
     crate::root::boot::plugin_logs()
 }
 
-pub const HOST_SERIES: &[&str] = &[
+pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
     busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
     busbar_kernel::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL,
@@ -694,7 +695,7 @@ fn catalogue_registry(
         .link(rows)
 }
 
-pub fn door_declared_diagnostics(
+pub(crate) fn door_declared_diagnostics(
     doors: &[(
         &'static str,
         busbar_contract::abi::mechanism::door::DoorFn,

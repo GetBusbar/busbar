@@ -30,7 +30,7 @@ const BODY_VERSION: u8 = 1;
 
 pub const CHAIN_OVERHEAD: usize = 1 + 8 + 1 + 64 + 1 + 64;
 
-pub const POSITIONS_CAP: usize = 65_536;
+pub(crate) const POSITIONS_CAP: usize = 65_536;
 
 const CLAIM_SECS: u64 = 60;
 

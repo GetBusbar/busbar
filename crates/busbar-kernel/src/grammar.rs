@@ -41,7 +41,7 @@ pub fn family(selector: &Selector) -> SelectorFamily {
     }
 }
 
-pub const SPECIFICITY_BAND: u32 = 1_000_000;
+pub(crate) const SPECIFICITY_BAND: u32 = 1_000_000;
 
 #[must_use]
 pub fn specificity(selector: &Selector) -> u32 {

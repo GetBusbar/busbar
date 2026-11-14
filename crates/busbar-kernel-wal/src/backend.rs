@@ -326,7 +326,7 @@ impl FileSegment {
     }
 
     /// Open the file at `path` for reading only, or `None` when there is no such file.
-    pub fn open_existing(path: &Path) -> io::Result<Option<Self>> {
+    pub(crate) fn open_existing(path: &Path) -> io::Result<Option<Self>> {
         match std::fs::File::open(path) {
             Ok(file) => Ok(Some(FileSegment { file })),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),

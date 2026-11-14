@@ -658,25 +658,26 @@ const HIST_PARK_PER_SLOT: usize = 2;
 
 const KEY_SEP: char = '\u{1f}';
 
-pub const OUTCOMES: [&str; 4] = ["ok", "exhausted", "client_error", "error"];
+pub(crate) const OUTCOMES: [&str; 4] = ["ok", "exhausted", "client_error", "error"];
 
 pub const POOL_LABEL_UNRESOLVED: &str = "unresolved";
 
 pub const DISPOSITION_TRANSIENT: &str =
     busbar_contract::upstream::Disposition::TransientUpstream.label();
 
-pub const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
+pub(crate) const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
 
-pub const DISPOSITION_HARD_DOWN: &str = busbar_contract::upstream::Disposition::HardDown.label();
+pub(crate) const DISPOSITION_HARD_DOWN: &str =
+    busbar_contract::upstream::Disposition::HardDown.label();
 
-pub const DISPOSITIONS: [&str; 4] = [
+pub(crate) const DISPOSITIONS: [&str; 4] = [
     DISPOSITION_TRANSIENT,
     DISPOSITION_ATTEMPT_TIMEOUT,
     DISPOSITION_HARD_DOWN,
     busbar_contract::protocol::DISPOSITION_CONTEXT_LENGTH,
 ];
 
-pub const REASONS: [&str; 6] = [
+pub(crate) const REASONS: [&str; 6] = [
     DISPOSITION_TRANSIENT,
     DISPOSITION_ATTEMPT_TIMEOUT,
     DISPOSITION_HARD_DOWN,

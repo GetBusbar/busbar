@@ -117,10 +117,10 @@ pub fn default_probe_timeout_secs() -> u64 {
     DEFAULT_PROBE_TIMEOUT_SECS
 }
 
-pub fn default_migration_index_bytes() -> usize {
+pub(crate) fn default_migration_index_bytes() -> usize {
     256 * 1024 * 1024
 }
-pub fn default_migration_value_bytes() -> usize {
+pub(crate) fn default_migration_value_bytes() -> usize {
     64 * 1024 * 1024
 }
 

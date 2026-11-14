@@ -1112,7 +1112,7 @@ impl Drop for Detached {
 }
 
 /// The most ticketed ops one framing may have parked at once: each holds a ticket of the host's,
-pub const MAX_PARKED: usize = 256;
+pub(crate) const MAX_PARKED: usize = 256;
 
 /// How many idle tickets a framing keeps for its next ticketed ops; one let go past it.
 const IDLE_TICKETS: usize = 1;
@@ -1152,7 +1152,7 @@ impl AuthBinding {
 
     /// Whether the framer may call the auth service on this binding.
     #[must_use]
-    pub const fn calls_auth(&self) -> bool {
+    pub(crate) const fn calls_auth(&self) -> bool {
         self.points != 0 || !self.auth.is_none() || self.line_points != 0
     }
 
@@ -1231,7 +1231,7 @@ impl GuestLines {
 }
 
 /// THE REFUSAL OF A GUEST LIST LENT TO A DIALLED FRAMING: a guest list is a listener's, lent only
-pub const LINES_ON_DIAL: &str = "a dialled framing is lent no guest list";
+pub(crate) const LINES_ON_DIAL: &str = "a dialled framing is lent no guest list";
 
 #[derive(Default)]
 struct EmitHead {

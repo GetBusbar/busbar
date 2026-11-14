@@ -9,7 +9,6 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
 use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
@@ -1506,7 +1505,7 @@ impl DoorApply {
 }
 
 #[must_use]
-pub fn applied_section(
+pub(crate) fn applied_section(
     app: &busbar_kernel::state::App,
     plane: &str,
     section_key: &str,
@@ -2176,7 +2175,7 @@ pub(crate) fn need_binds(
         binds.push(crate::root::loader::boot::InboundBind {
             owner: crate::root::loader::boot::BindOwner::Need {
                 instance: instance.to_string(),
-                kind: KindCode::Plane,
+                kind: busbar_contract::abi::mechanism::KindCode::Plane,
                 need: claim.need,
             },
             transport: needs[claim.need as usize].transport.clone(),
@@ -3616,11 +3615,11 @@ const NEST_REPLY_MAX: usize = 16 << 20;
 
 pub const NEST_UNSERVED: &str = "no plane serves the nested unit's claim";
 
-pub const NEST_PARENT_GONE: &str = "the nested unit's parent is not in flight";
+pub(crate) const NEST_PARENT_GONE: &str = "the nested unit's parent is not in flight";
 
 pub const NEST_UNREAD: &str = "the nested unit's reply could not be read";
 
-pub struct DoorNests {
+pub(crate) struct DoorNests {
     routes: NestRoutes,
     runtime: tokio::runtime::Handle,
     detached: Option<Arc<busbar_kernel::detached::DetachedTasks>>,
@@ -5447,7 +5446,7 @@ pub fn door_routes(
     door_mounts(served, pin, data_chain, core, &[], &[]).map(|m| m.routes)
 }
 
-pub struct DoorMounts {
+pub(crate) struct DoorMounts {
     /// The governed dispatcher retained with the same sealed listener generation.
     pub data: Arc<DataRoutes>,
     pub routes: Vec<PlaneRouteSpec>,
@@ -6172,7 +6171,10 @@ impl DataRoutes {
     /// Resume one Store page per opened plane through the ordinary unit machinery. Recovery
     /// carries host-owned identity only: no caller credential is reconstructed or lent.
     /// The scheduler owns cadence/shutdown; each individual poll has a finite deadline.
-    pub async fn recover_work(self: &Arc<Self>, app: Arc<busbar_kernel::state::App>) -> usize {
+    pub(crate) async fn recover_work(
+        self: &Arc<Self>,
+        app: Arc<busbar_kernel::state::App>,
+    ) -> usize {
         use busbar_kernel::guest::{Claimant, Matched};
         if app.governance.is_none() {
             return 0;
@@ -7843,7 +7845,10 @@ impl IngressReply {
     }
 
     #[must_use]
-    pub fn with_trailers(mut self, trailers: oneshot::Receiver<axum::http::HeaderMap>) -> Self {
+    pub(crate) fn with_trailers(
+        mut self,
+        trailers: oneshot::Receiver<axum::http::HeaderMap>,
+    ) -> Self {
         self.trailers = Some(trailers);
         self
     }
@@ -7930,7 +7935,7 @@ impl IngressReply {
         .await
     }
 
-    pub async fn answer_with(
+    pub(crate) async fn answer_with(
         self,
         unit: DrivenUnit,
         unrendered: impl FnOnce(Option<Rendered>) -> Response,
@@ -8075,13 +8080,6 @@ async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Bytes
         }
     }
     whole.into_bytes()
-}
-
-/// A nested reply is opaque and bounded while its producer is still running. Owning the
-/// producer here makes an over-limit reply or a dropped collector cancel it synchronously.
-#[cfg(test)]
-async fn collect_nested(body: mpsc::Receiver<Bytes>, unit: DrivenUnit) -> Option<Vec<u8>> {
-    collect_nested_bound(body, unit, NEST_REPLY_MAX).await
 }
 
 async fn collect_nested_bound(

@@ -249,8 +249,8 @@ pub(crate) async fn install_plugin(
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct InspectPluginReq {
-    #[allow(dead_code)]
-    file: String,
+    #[serde(rename = "file")]
+    _file: String,
     tarball_b64: String,
 }
 
@@ -3215,7 +3215,6 @@ pub(crate) async fn hook_status(
     ok_json(StatusCode::OK, &body)
 }
 
-#[allow(dead_code)]
 pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     (
         "/info",
@@ -3264,11 +3263,9 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
 ];
 
 #[cfg(feature = "openapi-schema")]
-#[cfg_attr(not(test), allow(dead_code))]
 const OPENAPI_ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 
 #[cfg(feature = "openapi-schema")]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn openapi_doc() -> serde_json::Value {
     let mut paths = serde_json::Map::new();
     for (path, summary) in V1_GET_PATHS {
@@ -4621,7 +4618,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 }
 
 #[cfg(feature = "openapi-schema")]
-#[cfg_attr(not(test), allow(dead_code))]
 fn openapi_operation_id(method: &str, path: &str) -> String {
     const PREFIX: &str = "/api/v1/admin";
     let trimmed = path.strip_prefix(PREFIX).unwrap_or(path);
@@ -4641,7 +4637,6 @@ fn openapi_operation_id(method: &str, path: &str) -> String {
 }
 
 #[cfg(feature = "openapi-schema")]
-#[cfg_attr(not(test), allow(dead_code))]
 fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {

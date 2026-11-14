@@ -220,7 +220,7 @@ impl<'a> ProbeGuard<'a> {
 
     /// Hand the probe on and yield the epoch it was won at, so the dispatch that takes it can arm
     #[must_use]
-    pub fn take_epoch(&mut self) -> u64 {
+    pub(crate) fn take_epoch(&mut self) -> u64 {
         self.armed = false;
         self.epoch
     }

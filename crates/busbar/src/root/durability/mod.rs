@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 
-#[cfg(test)]
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditKeySet, AuditRecord,
@@ -11,7 +10,6 @@ use busbar_kernel_audit::{
 };
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, RecordClass};
 
-#[cfg(test)]
 use busbar_kernel::persistence::journal::runtime::StagedRun;
 use busbar_kernel::persistence::journal::runtime::{BufferBudget, RuntimeJournal};
 use std::sync::Arc;
@@ -202,11 +200,6 @@ impl Durability {
         true
     }
     #[cfg(test)]
-    #[must_use]
-    pub fn refuses_money(&self) -> Option<String> {
-        self.journal.refuses_money()
-    }
-    #[cfg(test)]
     pub fn stage_entries(&self, entries: &[Entry]) -> Result<Arc<StagedRun>, String> {
         self.journal
             .stage_run(entries)
@@ -333,7 +326,7 @@ pub struct ClaimStamp {
 
 /// An idempotency claim a unit took.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaimTaken {
+pub(crate) struct ClaimTaken {
     /// The claim — the idempotency key.
     pub claim: String,
     /// The balance.
@@ -422,7 +415,9 @@ fn open_claims(records: &[JournalRecord]) -> (Vec<ClaimTaken>, u64) {
     (open, incarnation)
 }
 
-pub fn audit_body(record: &AuditRecord) -> Result<Vec<u8>, busbar_kernel_audit::FieldTooLong> {
+pub(crate) fn audit_body(
+    record: &AuditRecord,
+) -> Result<Vec<u8>, busbar_kernel_audit::FieldTooLong> {
     journal_body(record)
 }
 

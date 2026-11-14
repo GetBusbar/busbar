@@ -34,7 +34,7 @@ use super::shape::{self, Allowed, Level, Member};
 
 pub const USAGE: NamespaceId = NamespaceId(*b"busbar.usage.v1\0");
 pub const METERING: NamespaceId = NamespaceId(*b"busbar.meter.v1\0");
-pub const LOGICAL_RECEIPTS: NamespaceId = NamespaceId(*b"busbar.logical1\0");
+pub(crate) const LOGICAL_RECEIPTS: NamespaceId = NamespaceId(*b"busbar.logical1\0");
 
 pub struct Ledger<'a> {
     store: &'a CoreStore,

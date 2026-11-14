@@ -582,12 +582,6 @@ pub use router::{
     REQUEST_ACTIVITY_TICKS,
 };
 
-#[allow(unused_imports)]
-pub(crate) use router::base_data_router;
-
-#[cfg(not(any(test, feature = "test-support")))]
-#[allow(unused_imports)]
-pub(crate) use router::build_router_with_limits;
 #[cfg(any(test, feature = "test-support"))]
 pub use router::build_router_with_limits;
 

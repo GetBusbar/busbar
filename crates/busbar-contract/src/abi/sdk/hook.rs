@@ -922,7 +922,7 @@ impl<P: HookOpen> Life for HookLife<P> {
 /// A hook op: `$in`/`$out` over `Held<HookLife<P>>`, its body handed the held state.
 macro_rules! hook_op {
     ($(#[$m:meta])* $name:ident, $in:ty, $out:ty,
-     |$held:ident, $i:ident, $input:ident, $o:ident| $body:expr) => {
+     |$held:ident, $i:ident, $input:ident, $o:pat_param| $body:expr) => {
         $(#[$m])*
         #[derive(Debug)]
         pub struct $name<P>(PhantomData<P>);
@@ -956,7 +956,7 @@ hook_op!(
     Decide,
     DecideIn,
     DecideOut,
-    |held, i, input, out| {
+    |held, i, input, mut out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
@@ -998,7 +998,7 @@ hook_op!(
     Transform,
     DecideIn,
     TransformOut,
-    |held, i, input, out| {
+    |held, i, input, mut out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
@@ -1040,7 +1040,7 @@ hook_op!(
     Notify,
     NotifyIn,
     OutHead,
-    |held, i, input, out| {
+    |held, i, input, mut out| {
         if check_notify_in(&input).is_err() {
             return Outcome::Fault;
         }
@@ -1101,7 +1101,7 @@ hook_op!(
     Status,
     InHead,
     StatusOut,
-    |held, _i, _input, out| {
+    |held, _i, _input, mut out| {
         // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
         let bytes = match status_bytes(held.life().hook().status()) {
             Ok(bytes) => bytes,
@@ -1120,7 +1120,7 @@ hook_op!(
     Describe,
     InHead,
     DescribeOut,
-    |held, _i, _input, out| {
+    |held, _i, _input, mut out| {
         // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
         let bytes = match describe_bytes(&held.life().hook().describe()) {
             Ok(bytes) => bytes,

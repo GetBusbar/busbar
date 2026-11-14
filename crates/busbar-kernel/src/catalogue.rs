@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![allow(unused_imports)]
 #[cfg(test)]
 #[path = "tests/catalogue_tests.rs"]
 mod catalogue_tests;

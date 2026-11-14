@@ -204,7 +204,7 @@ pub struct AdvancedCfg {
 
 pub const DEFAULT_BLOCK_PRIVATE_ADDRESSES: bool = true;
 
-pub fn default_block_private_addresses() -> bool {
+pub(crate) fn default_block_private_addresses() -> bool {
     DEFAULT_BLOCK_PRIVATE_ADDRESSES
 }
 

@@ -18,10 +18,10 @@ pub(crate) use environment::ignored_launch_env;
 
 mod index_field {
     pub const PLUGINS: &str = "plugins";
-    pub const REPO: &str = "repo";
-    pub const FORMER_REPOS: &str = "former_repos";
+    pub(crate) const REPO: &str = "repo";
+    pub(crate) const FORMER_REPOS: &str = "former_repos";
     pub const KIND: &str = "kind";
-    pub const ANSWERS_TO: &str = "answers_to";
+    pub(crate) const ANSWERS_TO: &str = "answers_to";
     pub const RELEASES: &str = "releases";
     pub const TAG: &str = "tag";
     pub const ABI_VERSION_KEY: &str = "abi_version";
@@ -44,7 +44,7 @@ fn default_index() -> String {
     )
 }
 
-pub const INDEX_ENV: &str = "BUSBAR_PLUGIN_INDEX";
+pub(crate) const INDEX_ENV: &str = "BUSBAR_PLUGIN_INDEX";
 
 /// The release downloader the migrate host fetches the index and plugin assets with.
 fn release_download(url: &str) -> Result<Vec<u8>, String> {

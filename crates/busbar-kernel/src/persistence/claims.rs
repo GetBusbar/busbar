@@ -112,6 +112,7 @@ impl<'a> Claims<'a> {
         Self { store, owner, kind }
     }
 
+    #[cfg(test)]
     /// Start a fresh maintenance pass at the beginning of this authorized scope.
     /// The owner schedules calls;
     /// this cursor does no background work and is not an authorization decision.
@@ -367,6 +368,7 @@ impl<'a> Claims<'a> {
     }
 }
 
+#[cfg(test)]
 /// One pass uses advancing keys, not a pinned scan generation: deleting a page
 /// itself changes membership. Inserts behind the cursor belong to the next pass.
 /// Live rows cannot repeatedly hide expired rows farther along the key range.
@@ -420,6 +422,7 @@ impl SweepState {
     }
 }
 
+#[cfg(test)]
 fn build_sweep<'a>(store: &'a CoreStore, owner: &str, kind: &str) -> Result<Sweep<'a>, Error> {
     Ok(Sweep {
         store,
@@ -450,6 +453,7 @@ pub enum SweepOutcome {
     Busy(PendingId),
 }
 
+#[cfg(test)]
 impl Sweep<'_> {
     /// Advance one bounded page while retaining original pending custody.
     pub async fn advance(&mut self) -> Result<SweepOutcome, Error> {

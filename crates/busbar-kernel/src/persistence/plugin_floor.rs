@@ -157,7 +157,7 @@ impl PluginFloor {
             plugin_floor,
             release_floor,
             dataset: self.core.info().dataset,
-            scope_generations: [
+            _scope_generations: [
                 decode_generation(&values[2])?,
                 decode_generation(&values[3])?,
             ],
@@ -330,7 +330,8 @@ pub struct AdmissionProof {
     plugin_floor: Option<String>,
     release_floor: u64,
     dataset: busbar_contract::persistence::DatasetId,
-    scope_generations: [u64; 2],
+    /// Decoded (and so validated) at admission; read back only by tests.
+    _scope_generations: [u64; 2],
 }
 impl AdmissionProof {
     pub fn release_keys_floor(&self) -> u64 {
@@ -339,8 +340,9 @@ impl AdmissionProof {
     pub fn dataset(&self) -> busbar_contract::persistence::DatasetId {
         self.dataset
     }
-    pub fn scope_generations(&self) -> [u64; 2] {
-        self.scope_generations
+    #[cfg(test)]
+    pub(crate) fn scope_generations(&self) -> [u64; 2] {
+        self._scope_generations
     }
     pub fn check(
         &self,

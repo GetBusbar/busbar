@@ -14,12 +14,7 @@ use crate::preflight::{
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
-#[allow(unused_imports)]
-use crate::{
-    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
-    export, governance, hooks, ingress, ir, json, oauth_as, observability, operation,
-    plugin_routes, profile, ratelimit, snapshot, state, store, telemetry, trust,
-};
+use crate::{admin, config, config_validate, governance, hooks, ratelimit, state, telemetry};
 use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
@@ -167,7 +162,7 @@ pub fn load_config_from_disk_judged(
 
 /// Compose the durable document layer before the same parser boot uses. The Store anchor is
 /// selected from the base configuration before calling this for a persisted patch.
-pub fn load_config_from_disk_with_document_patch(
+pub(crate) fn load_config_from_disk_with_document_patch(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
     ignore_overlay: bool,

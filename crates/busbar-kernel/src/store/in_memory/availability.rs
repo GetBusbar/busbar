@@ -63,7 +63,7 @@ impl HealthState {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn classify_lane(&self, lane: usize, now: u64) -> Result<(), Unavailable> {
         self.classify_lane_from_verdict(lane, self.lane_breaker_verdict(lane, now))
     }
@@ -89,7 +89,7 @@ impl HealthState {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn lane_breaker_state(&self, lane: usize, now: u64) -> BreakerState {
         self.lane_breaker_state_from_verdict(lane, self.lane_breaker_verdict(lane, now), now)
     }

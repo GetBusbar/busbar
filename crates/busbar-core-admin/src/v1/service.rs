@@ -353,23 +353,11 @@ pub fn derive_spend_micros_row_classes_at_card<C: Copy + Into<Count>>(
     metered_row(cost, model, b, classes).spend_micros_in_view(arrived_ms, view)
 }
 
-pub fn derive_spend_micros_row_classes_at_entry<C: Copy + Into<Count>>(
-    seq: busbar_kernel::cost::EntryKey,
-    card: &busbar_kernel::cost::RateCard,
-    cost: &busbar_kernel::cost::CostModel,
-    model: &str,
-    b: &UsageBreakdown,
-    classes: &std::collections::BTreeMap<String, C>,
-) -> Result<i64, busbar_kernel::cost::MoneyError> {
-    metered_row(cost, model, b, classes).spend_micros_at_card_seq(seq, card)
-}
-
 #[cfg(any(test, feature = "test-support"))]
 pub mod read_path_money {
     pub use super::{
         derive_spend_micros_row, derive_spend_micros_row_at_card, derive_spend_micros_row_classes,
-        derive_spend_micros_row_classes_at_card, derive_spend_micros_row_classes_at_entry,
-        row_lane, row_priced_at_ms,
+        derive_spend_micros_row_classes_at_card, row_lane, row_priced_at_ms,
     };
 
     pub use crate::v1::contract::UsageBreakdown;

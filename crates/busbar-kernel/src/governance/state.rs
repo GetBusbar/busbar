@@ -27,9 +27,9 @@ pub use ledger_adjust::{
     ADJUST_UP_BUCKET,
 };
 
-pub const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile degraded)";
+pub(crate) const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile degraded)";
 
-pub const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
+pub(crate) const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
 
 /// Typed commit boundary for credential mutations. Store failures carry no claim of rejection;
 /// Applied identifies a completed durable write whose cache reconciliation failed.

@@ -336,10 +336,10 @@ impl LoadedPersistence {
         // Every refusal is behind us: the store is called now (the CI work-budget gate).
         busbar_contract::work_count::tally(busbar_contract::work_count::Work::StoreRoundTrip);
         let _recycle = Recycle(&self.dispatcher, ticket);
-        let retained = Arc::new(Retained(
-            UnsafeCell::new(request),
-            Some(self._session.clone()),
-        ));
+        let retained = Arc::new(Retained {
+            cell: UnsafeCell::new(request),
+            _session: Some(self._session.clone()),
+        });
         let until = deadline();
         for attempt in 0..2 {
             let frame = retained.frame();
@@ -574,13 +574,13 @@ unsafe impl<R: Request> Send for Retained<R> {}
 unsafe impl<R: Request> Sync for Retained<R> {}
 impl<R: Request> Retained<R> {
     fn get(&self) -> &R {
-        unsafe { &*self.0.get() }
+        unsafe { &*self.cell.get() }
     }
     fn frame(&self) -> Frame<R::I, R::O> {
-        unsafe { &mut *self.0.get() }.frame()
+        unsafe { &mut *self.cell.get() }.frame()
     }
     fn grow(&self, items: u64, bytes: u64, limits: Limits) -> Result<(), ()> {
-        unsafe { &mut *self.0.get() }.grow(items, bytes, limits)
+        unsafe { &mut *self.cell.get() }.grow(items, bytes, limits)
     }
 }
 

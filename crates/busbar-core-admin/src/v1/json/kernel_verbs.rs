@@ -22,19 +22,16 @@ pub(crate) const SINCE: &str = "1.6.0";
 /// figure that silently lost its last digits would still look like money.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct Amount(#[schemars(regex(pattern = r"^-?[0-9]+$"))] String);
 
 /// A 32-byte digest as 64 lower-case hex characters.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct Hash(#[schemars(regex(pattern = r"^[0-9a-f]{64}$"))] String);
 
 /// `GET /ledger/totals`: what the ledger's lines come to, per bucket, day, lane and provider.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerTotals {
     /// The rows, in bucket, day, lane and provider order. A row a `refused` entry names is absent.
     rows: Vec<LedgerTotalsRow>,
@@ -49,7 +46,6 @@ pub(crate) struct LedgerTotals {
 /// `bucket` and `day` — is withheld from the view that names this.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerRefusedBalance {
     /// The balance's bucket.
     bucket: String,
@@ -69,7 +65,6 @@ pub(crate) struct LedgerRefusedBalance {
 /// on one endpoint is looked up on the other by the same four-part name.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerTotalsRow {
     /// Whose budget the usage was attributed to.
     bucket: String,
@@ -92,7 +87,6 @@ pub(crate) struct LedgerTotalsRow {
 /// `GET /ledger/checkpoints`: the sealed checkpoint figures, oldest first.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerCheckpoints {
     checkpoints: Vec<LedgerCheckpoint>,
 }
@@ -102,7 +96,6 @@ pub(crate) struct LedgerCheckpoints {
 /// reported and its bytes are not.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerCheckpoint {
     checkpoint_seq: u64,
     node: u64,
@@ -122,7 +115,6 @@ pub(crate) struct LedgerCheckpoint {
 /// One node's journal head, as a checkpoint sealed it.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerChainHead {
     node: u64,
     node_seq: u64,
@@ -132,7 +124,6 @@ pub(crate) struct LedgerChainHead {
 /// One sealed balance, as the checkpoint holds it. Every money figure is an [`Amount`].
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerTotalsCell {
     bucket: String,
     dimension: String,
@@ -160,7 +151,6 @@ pub(crate) struct LedgerTotalsCell {
 /// release's rows, and every row on which they do not.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerReconciliation {
     /// True when every row reconciles. `discrepancies` and `refused` are then empty.
     holds: bool,
@@ -174,7 +164,6 @@ pub(crate) struct LedgerReconciliation {
 /// because they fail separately.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerDiscrepancy {
     bucket: String,
     day: u64,
@@ -190,7 +179,6 @@ pub(crate) struct LedgerDiscrepancy {
 /// The spend residual of one row.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerResidual {
     /// Where the value the ledger drew is now.
     accounted: Amount,
@@ -205,7 +193,6 @@ pub(crate) struct LedgerResidual {
 /// `migrated` is a field of its own rather than inferred from a null marker.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerMigration {
     migrated: bool,
     marker: Option<LedgerMigrationMarker>,
@@ -214,7 +201,6 @@ pub(crate) struct LedgerMigration {
 /// The marker the first boot after the upgrade sealed.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct LedgerMigrationMarker {
     /// The checkpoint the migration sealed.
     checkpoint_seq: u64,
@@ -234,7 +220,6 @@ pub(crate) struct LedgerMigrationMarker {
 /// One signed head of the audit record chain.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AuditChainSignedHead {
     /// The chain position this head seals.
     seq: u64,
@@ -251,7 +236,6 @@ pub(crate) struct AuditChainSignedHead {
 /// `GET /audit/head`: where the audit record chain is now, and the recipe a verifier applies.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AuditChainHeadView {
     /// The name of the published digest recipe.
     recipe: String,
@@ -269,7 +253,6 @@ pub(crate) struct AuditChainHeadView {
 /// field its digest was taken over, plus the head this node published at or before `to`.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AuditChainRangeView {
     recipe: String,
     signature_domain: String,
@@ -301,7 +284,6 @@ pub(crate) struct AuditChainRangeView {
 
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 struct AuditRangeGapView {
     from: String,
     to: String,
@@ -309,7 +291,6 @@ struct AuditRangeGapView {
 
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 struct AuditRetentionView {
     ring_from: Option<String>,
     ring_to: Option<String>,
@@ -323,7 +304,6 @@ struct AuditRetentionView {
 /// name), then the record's digest and signature.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AuditChainRecordView {
     #[serde(flatten)]
     fields: BTreeMap<String, AuditRecipeValue>,
@@ -336,10 +316,9 @@ pub(crate) struct AuditChainRecordView {
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
 #[serde(untagged)]
-#[allow(dead_code)]
 pub(crate) enum AuditRecipeValue {
-    Scalar(AuditRecipeScalar),
-    Group(Vec<AuditRecipeElement>),
+    _Scalar(AuditRecipeScalar),
+    _Group(Vec<AuditRecipeElement>),
 }
 
 /// One recipe scalar, always a JSON string: a text field is its text, and a number field (an
@@ -348,23 +327,20 @@ pub(crate) enum AuditRecipeValue {
 /// published recipe page's kind column, not the JSON type.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AuditRecipeScalar(String);
 
 /// One element of a repeated group: a single value, or an object of the group's members.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
 #[serde(untagged)]
-#[allow(dead_code)]
 pub(crate) enum AuditRecipeElement {
-    Scalar(AuditRecipeScalar),
-    Members(BTreeMap<String, AuditRecipeScalar>),
+    _Scalar(AuditRecipeScalar),
+    _Members(BTreeMap<String, AuditRecipeScalar>),
 }
 
 /// `GET /audit/keys`: the public keys the chain is signed with.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AuditChainKeysView {
     recipe: String,
     signature_domain: String,
@@ -376,7 +352,6 @@ pub(crate) struct AuditChainKeysView {
 /// One published verifying key. Public halves only.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AuditChainKeyView {
     key_id: String,
     algorithm: String,
@@ -389,33 +364,38 @@ pub(crate) struct AuditChainKeyView {
 /// were priced with, and the pool the unit was dispatched through.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AdjustReq {
     /// The key whose counts are corrected.
-    key: String,
+    #[serde(rename = "key")]
+    _key: String,
     /// The lane (model) the counts were earned on.
-    lane: String,
+    #[serde(rename = "lane")]
+    _lane: String,
     /// The rate-card history entry key the counts were priced with, as 40 hexadecimal digits.
     #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$"))]
-    entry: String,
+    #[serde(rename = "entry")]
+    _entry: String,
     /// The corrected unit's card epoch: its arrival instant, unix milliseconds. The correction
     /// lands in the budget windows, the card entry and the metering day holding it, never in those
     /// current when it is made, and `entry` must be the entry in force at it.
-    card_epoch_ms: u64,
+    #[serde(rename = "card_epoch_ms")]
+    _card_epoch_ms: u64,
     /// The signed delta per billable class: whole counts, never a money figure. At least one class.
-    delta: BTreeMap<String, i64>,
+    #[serde(rename = "delta")]
+    _delta: BTreeMap<String, i64>,
     /// Why. Required and non-blank.
-    reason: String,
+    #[serde(rename = "reason")]
+    _reason: String,
     /// The pool the corrected unit was dispatched through. Required, and it must name a pool this
     /// node has configured: a pool-scoped group budget for that pool takes the correction as well
     /// as the group-wide budgets do.
-    pool: String,
+    #[serde(rename = "pool")]
+    _pool: String,
 }
 
 /// `POST /adjust`'s answer: the correction as applied.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AdjustView {
     /// Always true: a refused correction is a `400`, and nothing of it is applied.
     applied: bool,
@@ -438,42 +418,44 @@ pub(crate) struct AdjustView {
 /// history. It out-ranks the entry it corrects and rewrites nothing.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AmendRateHistoryReq {
     /// The start of the corrected window, in the history's instant scale (milliseconds).
-    effective_from: u64,
+    #[serde(rename = "effective_from")]
+    _effective_from: u64,
     /// The end of the corrected window; when present it must lie strictly after
     /// `effective_from`. Absent or null: open-ended.
-    #[serde(default)]
-    effective_until: Option<u64>,
+    #[serde(default, rename = "effective_until")]
+    _effective_until: Option<u64>,
     /// Why. Required and non-empty; the record keeps its SHA-256, not the text.
-    reason: String,
+    #[serde(rename = "reason")]
+    _reason: String,
     /// The corrected flat per-request fee. Never negative.
-    #[serde(default)]
-    per_request_fee: Option<u64>,
+    #[serde(default, rename = "per_request_fee")]
+    _per_request_fee: Option<u64>,
     /// The corrected rates. A correction must move at least one figure: a rate here or the fee.
-    #[serde(default)]
-    rates: Vec<AmendRateRow>,
+    #[serde(default, rename = "rates")]
+    _rates: Vec<AmendRateRow>,
 }
 
 /// One corrected rate.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AmendRateRow {
     /// The lane the rate is written against.
-    lane: String,
+    #[serde(rename = "lane")]
+    _lane: String,
     /// The billable class.
-    class: String,
+    #[serde(rename = "class")]
+    _class: String,
     /// The rate, in micro-units per unit. Finite and non-negative.
-    micro_per_unit: f64,
+    #[serde(rename = "micro_per_unit")]
+    _micro_per_unit: f64,
 }
 
 /// `POST /ledger/amend-rate-history`'s answer: the history entry an invoice will cite. It names no
 /// figure — the corrected rates go into the card, never into the answer.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct AmendRateHistoryView {
     /// The history sequence number the correction was appended at.
     history_seq: u64,
@@ -489,7 +471,6 @@ pub(crate) struct AmendRateHistoryView {
 /// verification is still a `200`; `ok` is the answer.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct VerifyView {
     /// How many sealed checkpoints the node holds.
     checkpoints: u64,
@@ -513,7 +494,6 @@ pub(crate) struct VerifyView {
 /// The checkpoint `verify` measured against.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct VerifySince {
     checkpoint_seq: u64,
     node: u64,
@@ -524,7 +504,6 @@ pub(crate) struct VerifySince {
 /// `GET /plane-facts`: what a plane this node serves declares about itself.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct PlaneFactsView {
     /// The plane's registry key.
     plane: String,
@@ -548,7 +527,6 @@ pub(crate) struct PlaneFactsView {
 /// One billable class a plane ledgers.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct PlaneFactsClass {
     class: String,
     family: String,
@@ -557,7 +535,6 @@ pub(crate) struct PlaneFactsClass {
 /// One metric family a plane emits.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct PlaneFactsMetric {
     name: String,
     kind: String,
@@ -567,7 +544,6 @@ pub(crate) struct PlaneFactsMetric {
 /// One operation class a plane serves one level down.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct PlaneFactsServed {
     op: String,
     name: String,
@@ -576,28 +552,30 @@ pub(crate) struct PlaneFactsServed {
 /// `POST /plane-record-write`: one plane record, upserted by `(kind, id)`.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct PlaneRecordWriteReq {
     /// The key of a plane this node serves.
-    plane: String,
+    #[serde(rename = "plane")]
+    _plane: String,
     /// The record kind.
-    kind: String,
+    #[serde(rename = "kind")]
+    _kind: String,
     /// The record's identity within its kind.
-    id: String,
+    #[serde(rename = "id")]
+    _id: String,
     /// The parent the record hangs off, for a child kind.
-    #[serde(default)]
-    parent: Option<String>,
+    #[serde(default, rename = "parent")]
+    _parent: Option<String>,
     /// Whether retention may drop the record once it is old (default false).
-    #[serde(default)]
-    terminal: Option<bool>,
+    #[serde(default, rename = "terminal")]
+    _terminal: Option<bool>,
     /// The record's row, stored as its JSON bytes and never decoded by the store.
-    body: serde_json::Value,
+    #[serde(rename = "body")]
+    _body: serde_json::Value,
 }
 
 /// `POST /plane-record-write`'s answer: what was written, and when.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct PlaneRecordWriteView {
     plane: String,
     kind: String,
@@ -611,7 +589,6 @@ pub(crate) struct PlaneRecordWriteView {
 /// One trust key of the kernel's trust book and its state.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct TrustKeyView {
     /// The key, `<instance>/<counterparty>[/<item>]`: what `POST /trust/approve` and `/revoke` name.
     key: String,
@@ -635,7 +612,6 @@ pub(crate) struct TrustKeyView {
 /// `GET /trust`: every trust key and its state.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct TrustListView {
     /// Ordered by instance, counterparty and item, each counterparty before its items.
     keys: Vec<TrustKeyView>,
@@ -644,32 +620,32 @@ pub(crate) struct TrustListView {
 /// `POST /trust/approve` and `/trust/revoke`: the trust key decided.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct TrustKeyReq {
     /// `<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.
-    key: String,
+    #[serde(rename = "key")]
+    _key: String,
     /// Optional compare-and-set guard against this key's current `seen` digest, for both approve
     /// and revoke. Supply the exact digest reviewed from `GET /trust`, not `approved`. A changed
     /// or absent sighting returns 409 without changing the decision. Omission keeps key-only
     /// behavior; an explicitly supplied null, empty string or non-string is invalid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String", regex(pattern = r"\S"))]
-    expected_digest: Option<String>,
+    #[serde(rename = "expected_digest")]
+    _expected_digest: Option<String>,
 }
 
 /// `POST /commit-upgrade`: the release the fleet commits to.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct CommitUpgradeReq {
     /// The release this node runs. Any other is refused.
-    version: String,
+    #[serde(rename = "version")]
+    _version: String,
 }
 
 /// `POST /commit-upgrade`'s answer: the committed release and the journal record that seals it.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct CommitUpgradeView {
     committed: String,
     /// The arrival second.
@@ -683,10 +659,10 @@ pub(crate) struct CommitUpgradeView {
 /// `POST /store-restore`: the backup to restore. There is no default and no empty one.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct StoreRestoreReq {
     /// The backup the operator names. A request that names none is refused before the ceremony.
-    backup_ref: String,
+    #[serde(rename = "backup_ref")]
+    _backup_ref: String,
 }
 
 #[cfg(feature = "openapi-schema")]

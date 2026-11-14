@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 pub const TOKEN_PREFIX: &str = "bbk_";
 
-pub const TICKET_AUDIENCE: &str = "busbar:ticket";
+pub(crate) const TICKET_AUDIENCE: &str = "busbar:ticket";
 
 const ED25519_KEY_INFO_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
@@ -359,7 +359,7 @@ impl TokenVerifier {
         self.verify_body(body, now, expected_aud)
     }
 
-    pub fn verify_body(
+    pub(crate) fn verify_body(
         &self,
         body: &str,
         now: u64,

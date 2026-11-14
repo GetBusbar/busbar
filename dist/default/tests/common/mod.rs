@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#![allow(dead_code)]
-
 pub mod boot;
 pub mod chat_spend;
 pub mod credentials;
