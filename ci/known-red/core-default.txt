@@ -86,8 +86,6 @@ busbar-default::bin/busbar root::serve::plane_mcp_door::door_boundary::connect_a
 busbar-default::bin/busbar root::serve::plane_mcp_door::door_boundary::connect_after_an_apply_that_keeps_the_member_presents_its_binding	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::door_boundary::connect_fetches_with_the_members_binding_and_never_for_a_passthrough_member	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::secret_source::tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_its_source	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::serve::plane_mcp_door::spent_ledger::a_node_refuses_its_own_replay_with_no_durable_store_configured	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::serve::plane_mcp_door::spent_ledger::two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_posture	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::tool_door::a_token_exchange_registration_presents_the_token_exchanged_for_the_callers_down_scope	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::tools_door::a_grant_for_another_server_is_refused_before_its_server_or_token_endpoint_is_touched	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::plane_mcp_door::tools_door::each_member_presents_only_the_credential_its_registration_plans	CDT-KNOWN-RED	stable
