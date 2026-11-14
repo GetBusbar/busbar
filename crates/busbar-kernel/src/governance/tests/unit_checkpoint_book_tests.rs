@@ -228,7 +228,9 @@ async fn admission_with_one_recovered_unit_ignores_live_book() {
     );
 }
 
+/// Rebuilds every derived structure from the map, then checks admission's answer against a walk.
 fn assert_index_matches(gov: &GovState) {
+    gov.check_unit_checkpoint_book();
     for bucket in [
         "group:A@total",
         "group:B@total",
@@ -367,6 +369,88 @@ async fn recovered_index_matches_book_after_every_mutation() {
         "recovered custody settled"
     );
     assert_eq!(admit(&a), Ok(()), "A admits again once its custody settles");
+    assert_eq!(
+        gov.check_unit_checkpoint_book(),
+        0,
+        "no recovered entry left"
+    );
+}
+
+/// Every book mutation keeps the recovered index and the unit index exact.
+#[tokio::test(flavor = "multi_thread")]
+async fn book_mutations_keep_derived_indexes_exact() {
+    use super::book::Pending;
+    let (gov, _sink) = gov(Vec::new()).await;
+    let cost = cost(&["A", "B", "C", "D"]);
+    let c = key("C");
+    let admit = || {
+        gov.try_admit_estimated_counts(&cost, &c, "", AT, &[], &Default::default())
+            .map(drop)
+    };
+    let book = gov.unit_checkpoint_book();
+    let blocked_c = recovered(10, "group:C@total");
+
+    book.lock()
+        .insert(id(10), Pending::recovered(blocked_c.clone(), Some(0)));
+    assert_index_matches(&gov);
+    assert_eq!(admit(), Err(budget_refusal("C")));
+
+    // Live over recovered unblocks; recovered over live blocks again.
+    let live_c = unit(10, 10, &[("group:C@total", 0)], &[]);
+    assert!(book.lock().insert(id(10), Pending::live(live_c)).is_some());
+    assert_index_matches(&gov);
+    assert_eq!(admit(), Ok(()));
+    assert!(book
+        .lock()
+        .insert(id(10), Pending::recovered(blocked_c.clone(), Some(0)))
+        .is_some());
+    assert_index_matches(&gov);
+    assert_eq!(admit(), Err(budget_refusal("C")));
+
+    // A replaced snapshot with another unit and other targets re-keys both indexes.
+    {
+        let mut guard = book.lock();
+        let mut edit = guard.edit(&id(10)).expect("entry present");
+        edit.replace_snapshot(unit(10, 11, &[("group:C@total", 60)], &[]));
+    }
+    assert_index_matches(&gov);
+    assert_eq!(admit(), Ok(()), "C@total no longer blocked");
+    assert!(gov.unresolved_unit_target("group:C@total", 60));
+
+    {
+        let mut guard = book.lock();
+        let mut edit = guard.edit(&id(10)).expect("entry present");
+        edit.set_terminal(Vec::new(), 7);
+        edit.set_persisted(7);
+    }
+    assert_index_matches(&gov);
+
+    assert!(book.lock().remove(&id(10)).is_some());
+    assert!(book.lock().remove(&id(99)).is_none());
+    assert_index_matches(&gov);
+    assert_eq!(gov.check_unit_checkpoint_book(), 0);
+
+    // The unit index: zero, one and two live entries for a unit.
+    assert!(gov.note_unit_audit(20, 1).is_err(), "no entry for the unit");
+    gov.stage_unit_checkpoint(unit(20, 20, &[], &[]));
+    assert_eq!(gov.note_unit_audit(20, 2), Ok(()));
+    assert_eq!(gov.unit_checkpoint_audit_seq(&id(20)), Some(2));
+    gov.stage_unit_checkpoint(unit(21, 20, &[], &[]));
+    assert!(
+        gov.note_unit_audit(20, 3).is_err(),
+        "two live entries: a miss, never a guess"
+    );
+    assert_eq!(gov.unit_checkpoint_audit_seq(&id(20)), Some(2));
+    book.lock().insert(
+        id(30),
+        Pending::recovered(recovered(30, "group:D@total"), Some(0)),
+    );
+    assert!(
+        gov.note_unit_audit(30, 4).is_err(),
+        "recovered entries are skipped"
+    );
+    assert_eq!(gov.unit_audit_misses(), 3);
+    assert_index_matches(&gov);
 }
 
 /// `A` and `B` each sit under the same seven ancestors: eight budget buckets per admission.
