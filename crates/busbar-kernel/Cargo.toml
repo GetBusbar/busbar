@@ -83,6 +83,8 @@ futures = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
 criterion = { workspace = true }
+# FAST-MAPS B1 (`benches/fast_maps.rs`): foldhash against the incumbent hashers.
+foldhash = { workspace = true }
 # Member `test-support` features are enabled here, never in a release build.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger", features = ["test-support"] }
