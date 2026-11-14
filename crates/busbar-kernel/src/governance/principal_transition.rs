@@ -2355,19 +2355,16 @@ fn running_executable() -> std::io::Result<std::fs::File> {
 type DigestCell = std::sync::OnceLock<String>;
 
 fn executable_sha256() -> Result<String, String> {
-    static DIGEST: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
-    DIGEST
-        .get_or_init(|| {
-            use std::io::Read;
-            let mut file = running_executable().map_err(|e| e.to_string())?;
-            let mut digest = Sha256::new();
-            let mut bytes = [0u8; 16 * 1024];
-            loop {
-                let n = file.read(&mut bytes).map_err(|e| error_text(&e))?;
-                if n == 0 {
-                    break;
-                }
-                digest.update(&bytes[..n]);
+    static DIGEST: DigestCell = DigestCell::new();
+    once_digest(&DIGEST, || {
+        use std::io::Read;
+        let mut file = running_executable().map_err(executable_refusal)?;
+        let mut digest = Sha256::new();
+        let mut bytes = [0u8; 65536];
+        loop {
+            let n = file.read(&mut bytes).map_err(executable_refusal)?;
+            if n == 0 {
+                break;
             }
             digest.update(&bytes[..n]);
         }
