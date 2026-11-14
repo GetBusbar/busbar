@@ -556,6 +556,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "busbar-contract",
+ "criterion",
  "digest 0.11.3",
  "ed25519-dalek",
  "flate2",

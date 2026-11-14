@@ -18,6 +18,10 @@ name = "busbar-plugin-pack"
 path = "src/pack.rs"
 required-features = ["pack"]
 
+[[bench]]
+name = "gzip_paths"
+harness = false
+
 [[test]]
 name = "c_abi"
 path = "tests/c_abi.rs"
@@ -105,6 +109,7 @@ jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64 = { workspace = true }
+criterion = { workspace = true }
 tracing-core = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
 h2 = { workspace = true }
