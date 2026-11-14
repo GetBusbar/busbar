@@ -2434,8 +2434,8 @@ mod identity_provider_migration_tests {
     #[test]
     fn current_named_provider_and_bindings_require_no_decision() {
         let mut root: Mapping = yaml::mapping_from_str(
-            "auth: {chain: [keys], admin_auth: [rig], role_bindings: {rig: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}
-identity-providers: {rig: {module: oidc, settings: {issuer: https://issuer.example}, max_admin_scope: full}}",
+            "identity-providers: {rig: {module: oidc, settings: {issuer: https://issuer.example}, max_admin_scope: full}}
+auth: {chain: [keys], admin_auth: [rig], role_bindings: {rig: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}",
         ).unwrap();
         let original = root.clone();
         let (mut changes, mut todos) = (Vec::new(), Vec::new());
@@ -2456,8 +2456,8 @@ identity-providers: {rig: {module: oidc, settings: {issuer: https://issuer.examp
         assert!(todos.is_empty(), "{todos:?}");
         assert!(!changes.is_empty());
         let expected: Mapping = yaml::mapping_from_str(
-            "auth: {chain: [keys], admin_auth: [oidc], role_bindings: {oidc: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}
-identity-providers: {oidc: {module: oidc, settings: {issuer: https://issuer.example}, max_admin_scope: full}}",
+            "identity-providers: {oidc: {module: oidc, settings: {issuer: https://issuer.example}, max_admin_scope: full}}
+auth: {chain: [keys], admin_auth: [oidc], role_bindings: {oidc: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}",
         ).unwrap();
         assert_eq!(root, expected);
         assert_eq!(root.get_key("auth").unwrap().at("role_bindings"), &bindings);

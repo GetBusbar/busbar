@@ -157,18 +157,12 @@ fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
             &mut observed,
         )
         .expect_err(key);
-        let message = err.to_string();
-        assert!(
-            message.contains(&format!(
-                "tools.{key}: {}",
-                reserved_name_refusal("tools", "card thing", key)
-            )),
-            "{message}"
-        );
         assert_eq!(
-            err.location().map(|at| (at.line(), at.column())),
-            Some((6, 5)),
-            "{message}"
+            err.to_string(),
+            format!(
+                "tools.{key}: {} at line 6 column 5",
+                reserved_name_refusal("tools", "card thing", key)
+            )
         );
         assert!(
             observed.is_empty(),

@@ -234,13 +234,10 @@ fn test_pools_reserved_name_refusal_is_generic_with_docs_link() {
     crate::root::migration_table::install();
     let e = yaml::from_str::<busbar_kernel::config::PoolsCfg>("hooks:\n  members: []\n")
         .expect_err("a pool named `hooks` must be rejected");
-    let shown = e.to_string();
-    assert!(
-        shown.starts_with(
-            "a pool may not be named `hooks`: that name is reserved in the `pools:` section. See \
-             https://getbusbar.com/docs/configuration#reserved-names for the full list. Rename the pool."
-        ),
-        "{shown}"
+    assert_eq!(
+        e.to_string(),
+        "a pool may not be named `hooks`: that name is reserved in the `pools:` section. See \
+         https://getbusbar.com/docs/configuration#reserved-names for the full list. Rename the pool."
     );
 }
 
@@ -564,12 +561,9 @@ fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
         let e =
             yaml::from_str::<busbar_kernel::config::PoolsCfg>(&format!("{word}:\n  members: []\n"))
                 .expect_err(word);
-        let shown = e.to_string();
-        assert!(
-            shown.starts_with(&busbar_contract::section::reserved_name_refusal(
-                "pools", "pool", word
-            )),
-            "{shown}"
+        assert_eq!(
+            e.to_string(),
+            busbar_contract::section::reserved_name_refusal("pools", "pool", word)
         );
     }
 }

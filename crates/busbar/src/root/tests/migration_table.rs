@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{install, MIGRATION_ROWS};
-use busbar_contract::yaml::{MappingExt, ValueExt};
+use busbar_contract::yaml::ValueExt;
 
 fn golden(n: usize) -> busbar_contract::yaml::Value {
     let doc: busbar_contract::yaml::Value =
@@ -89,23 +89,6 @@ fn observability_golden() -> busbar_contract::yaml::Value {
     .expect("the golden parses")
 }
 
-/// Two YAML trees are the same document: mappings compare as key sets (1.5.5's comparison
-/// ignored key order), sequences and scalars compare in full.
-fn same_tree(a: &busbar_contract::yaml::Value, b: &busbar_contract::yaml::Value) -> bool {
-    use busbar_contract::yaml::Value;
-    match (a, b) {
-        (Value::Map(a), Value::Map(b)) => {
-            a.len() == b.len()
-                && a.iter()
-                    .all(|(k, v)| b.get_key(k).is_some_and(|w| same_tree(v, w)))
-        }
-        (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(v, w)| same_tree(v, w))
-        }
-        _ => a == b,
-    }
-}
-
 fn bullets(text: &str, head: &str, bullet: &str) -> Vec<String> {
     text.lines()
         .skip_while(|l| !l.starts_with(head))
@@ -150,8 +133,9 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
     let now: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str(&out.yaml).expect("the output parses");
     for (key, value) in was.as_mapping().expect("1.5.5's document is a map") {
-        assert!(
-            now.get(key).is_some_and(|now| same_tree(now, value)),
+        assert_eq!(
+            now.get(key),
+            Some(value),
             "`{key:?}` of the migrated document is not 1.5.5's:\n{}",
             out.yaml
         );

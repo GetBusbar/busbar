@@ -60,7 +60,12 @@ pub fn options() -> serde_saphyr::Options {
 #[derive(Debug)]
 pub struct Error {
     message: String,
+    /// The document path to the failing node (`a.b[0].c`), as serde_yaml printed it; `None` at
+    /// the root.
+    path: Option<String>,
     location: Option<Location>,
+    /// Whether `Display` appends the position (false when the message already carries one).
+    placed_suffix: bool,
 }
 
 impl Error {
@@ -73,14 +78,25 @@ impl Error {
     fn unplaced(message: impl fmt::Display) -> Self {
         Self {
             message: message.to_string(),
+            path: None,
             location: None,
+            placed_suffix: false,
         }
     }
 }
 
 impl fmt::Display for Error {
+    /// serde_yaml's shape: `path: ` when below the root, the message, then ` at line L column C`
+    /// when the position is known.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
+        if let Some(path) = &self.path {
+            write!(f, "{path}: ")?;
+        }
+        f.write_str(&self.message)?;
+        match self.location.filter(|_| self.placed_suffix) {
+            Some(at) => write!(f, " at line {} column {}", at.line(), at.column()),
+            None => Ok(()),
+        }
     }
 }
 
@@ -99,11 +115,35 @@ impl serde::ser::Error for Error {
 }
 
 impl From<serde_saphyr::Error> for Error {
+    /// Keeps the bare message; [`Error`]'s `Display` adds the position as serde_yaml did
+    /// (serde-saphyr writes ` at line L, column C`).
     fn from(error: serde_saphyr::Error) -> Self {
-        Self {
-            location: error.location().filter(|l| *l != Location::UNKNOWN),
-            message: error.to_string(),
+        let location = error.location().filter(|l| *l != Location::UNKNOWN);
+        let mut message = error.to_string();
+        let mut placed_suffix = false;
+        if let Some(at) = location {
+            let suffix = format!(" at line {}, column {}", at.line(), at.column());
+            if let Some(bare) = message.strip_suffix(&suffix) {
+                message = bare.to_owned();
+                placed_suffix = true;
+            }
         }
+        Self {
+            message,
+            path: None,
+            location,
+            placed_suffix,
+        }
+    }
+}
+
+impl Error {
+    fn at_path(mut self, path: serde_path_to_error::Path) -> Self {
+        let path = path.to_string();
+        if path != "." {
+            self.path = Some(path);
+        }
+        self
     }
 }
 
@@ -115,12 +155,13 @@ impl From<serde_saphyr::SerializeError> for Error {
 
 /// Read a YAML document into `T`.
 pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
-    Ok(serde_saphyr::from_str_with_options(text, options())?)
+    with_deserializer(text, |d| T::deserialize(d))
 }
 
 /// Read a UTF-8 YAML document into `T`.
 pub fn from_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
-    Ok(serde_saphyr::from_slice_with_options(bytes, options())?)
+    let text = std::str::from_utf8(bytes).map_err(Error::unplaced)?;
+    from_str(text)
 }
 
 /// Read a YAML document whose top level must be a mapping, keeping its key order. ([`Mapping`] is
@@ -140,17 +181,21 @@ pub fn mapping_from_slice(bytes: &[u8]) -> Result<Mapping, Error> {
     }
 }
 
+/// The deserializer [`with_deserializer`] hands its reader: serde-saphyr's, tracking the path to
+/// the node being read so an error names it, as serde_yaml's did.
+pub type Tracked<'t, 'de, 'e> = serde_path_to_error::Deserializer<'t, 't, Deserializer<'de, 'e>>;
+
 /// Run `read` over a YAML deserializer for `text`: for generic `D: Deserializer` readers and
 /// `DeserializeSeed`s, where serde_yaml offered `Deserializer::from_str`.
 pub fn with_deserializer<'de, R, F>(text: &'de str, read: F) -> Result<R, Error>
 where
-    F: for<'e> FnOnce(Deserializer<'de, 'e>) -> Result<R, serde_saphyr::Error>,
+    F: for<'t, 'e> FnOnce(Tracked<'t, 'de, 'e>) -> Result<R, serde_saphyr::Error>,
 {
-    Ok(serde_saphyr::with_deserializer_from_str_with_options(
-        text,
-        options(),
-        read,
-    )?)
+    let mut track = serde_path_to_error::Track::new();
+    let read = serde_saphyr::with_deserializer_from_str_with_options(text, options(), |de| {
+        read(serde_path_to_error::Deserializer::new(de, &mut track))
+    });
+    read.map_err(|e| Error::from(e).at_path(track.path()))
 }
 
 /// Write `value` as a YAML document.

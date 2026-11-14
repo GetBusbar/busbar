@@ -767,22 +767,39 @@ fn test_interpolate_env_multi_occurrence_names_only_the_true_culprit() {
 }
 
 #[test]
-fn application_tags_are_refused_before_any_structural_comparison() {
+fn structural_shapes_match_compares_tagged_nodes_by_tag_and_inner_shape() {
     use busbar_contract::yaml::Value;
 
-    // Tags never reach the shape comparison: the shared reader refuses them outright, so a
-    // `!tag` in a substituted value cannot smuggle a different node in.
-    for text in ["a: !mytag x\n", "!t {k: v}\n", "!t [v]\n"] {
-        assert!(
-            busbar_contract::yaml::from_str::<Value>(text).is_err(),
-            "{text}"
-        );
-    }
+    // ciborium's Value carries a tag as a number, so each named tag maps to a distinct number.
+    const MYTAG: u64 = 1;
+    const TAG_A: u64 = 2;
+    const TAG_B: u64 = 3;
+    const T: u64 = 4;
+    let tagged_str =
+        |tag: u64, inner: &str| Value::Tag(tag, Box::new(Value::Text(inner.to_string())));
 
-    let map = Value::Map(vec![(Value::Text("k".into()), Value::Text("v".into()))]);
-    let seq = Value::Array(vec![Value::Text("v".into())]);
-    assert!(!structural_shapes_match(&map, &seq, 0));
-    assert!(!structural_shapes_match(&map, &Value::Text("x".into()), 0));
+    assert!(structural_shapes_match(
+        &tagged_str(MYTAG, "a"),
+        &tagged_str(MYTAG, "b"),
+        0
+    ));
+
+    assert!(!structural_shapes_match(
+        &tagged_str(TAG_A, "x"),
+        &tagged_str(TAG_B, "x"),
+        0
+    ));
+
+    assert!(!structural_shapes_match(
+        &tagged_str(MYTAG, "x"),
+        &Value::Text("x".to_string()),
+        0
+    ));
+
+    let map = vec![(Value::Text("k".into()), Value::Text("v".into()))];
+    let tagged_map = Value::Tag(T, Box::new(Value::Map(map)));
+    let tagged_seq = Value::Tag(T, Box::new(Value::Array(vec![Value::Text("v".into())])));
+    assert!(!structural_shapes_match(&tagged_map, &tagged_seq, 0));
 }
 
 #[test]
@@ -1171,8 +1188,9 @@ fn an_inline_literal_refusal_names_its_config_position() {
         let yaml = format!(
             "store: {{module: memory}}\nmodels: {{}}\nproviders:\n  myprov:\n    api_key: {literal}\n"
         );
-        let error = deploy_from_yaml_str(&yaml).expect_err("an inline literal secret is refused");
-        let err = error.to_string();
+        let err = deploy_from_yaml_str(&yaml)
+            .expect_err("an inline literal secret is refused")
+            .to_string();
         let value = literal.trim_matches('"');
         assert!(
             !err.contains(value),
@@ -1187,9 +1205,7 @@ fn an_inline_literal_refusal_names_its_config_position() {
             "the refusal names the key path: {err}"
         );
         assert!(
-            error.location().map(|at| at.line()) == Some(line)
-                || err.contains(&format!("line {line},"))
-                || err.contains(&format!("line {line} ")),
+            err.contains(&format!("at line {line} ")),
             "the refusal names the line: {err}"
         );
     }
@@ -2678,13 +2694,8 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
         .to_string()
         .contains("auth.policy: unknown field `slef_mint`"));
     assert_eq!(typo.location().unwrap().line(), 5);
-    // The wrong-kind and repeated-key refusals are worded by the YAML reader; pin that they are
-    // refused and name what was wrong, not the library's sentence.
-    let wrong_kind = refusal("auth: 5\n").to_string();
-    assert!(
-        wrong_kind.contains("invalid type") || wrong_kind.contains("mapping"),
-        "{wrong_kind}"
-    );
+    // The repeated-key refusal is worded by the YAML reader; pin its kind and key.
+    assert!(refusal("auth: 5\n").to_string().contains("invalid type"));
     let repeated = refusal("auth:\n  policy: {}\n  policy: {}\n").to_string();
     assert!(
         repeated.contains("duplicate") && repeated.contains("policy"),
@@ -2862,6 +2873,7 @@ fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
         .expect_err("a typed key of the wrong type")
         .to_string();
     assert!(e.starts_with("p.protocol: "), "{e}");
+    assert!(e.contains("invalid type"), "{e}");
 }
 
 #[test]
@@ -2899,6 +2911,7 @@ fn an_unused_catalog_still_requires_valid_core_fields() {
     .expect_err("the core field is typed even for an unused catalog")
     .to_string();
     assert!(error.starts_with("p.base_url: "), "{error}");
+    assert!(error.contains("invalid type"), "{error}");
 }
 
 #[test]

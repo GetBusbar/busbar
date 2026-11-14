@@ -904,12 +904,7 @@ mod tests {
 
     #[test]
     fn source_bridge_preserves_scalar_types_empty_nodes_sequences_and_tags() {
-        let base = "flag: TRUE\nnumber: 0x10\nempty:\nseq:\n  - TRUE\n  - 0x20\n  -\nquoted: \"TRUE\"\n'name: part': value\n";
-        // Application tags are refused by the shared YAML reader, so the source bridge never
-        // carries one.
-        for tagged in ["tagged: !Variant TRUE\n", "!Key 'name: part': value\n"] {
-            assert!(source::SourceDocument::parse(tagged).is_err(), "{tagged}");
-        }
+        let base = "flag: TRUE\nnumber: 0x10\nempty:\nseq:\n  - TRUE\n  - 0x20\n  -\nquoted: \"TRUE\"\ntagged: !Variant TRUE\n!Key 'name: part': value\n";
         let mut document = source::SourceDocument::parse(base).unwrap();
         document
             .apply(&patch(json!({"set": {"/added": 8}})))
