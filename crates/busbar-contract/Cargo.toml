@@ -17,6 +17,10 @@ name = "sdk_door_baseline"
 path = "tests/fixtures/sdk_door_baseline.rs"
 crate-type = ["cdylib"]
 
+[[bench]]
+name = "sse_frames"
+harness = false
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
@@ -43,6 +47,7 @@ tracing-log = { workspace = true }
 
 [dev-dependencies]
 libc = { workspace = true }
+criterion = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 jsonschema = { workspace = true }
