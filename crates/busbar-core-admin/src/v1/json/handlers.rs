@@ -406,12 +406,7 @@ pub(crate) struct PluginRollbackReq {
     expected_archive_sha256: Option<String>,
 }
 
-fn valid_archive_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
+use busbar_kernel::governance::principal_transition::hash as valid_archive_sha256;
 
 fn deserialize_archive_sha256<'de, D: serde::Deserializer<'de>>(
     d: D,

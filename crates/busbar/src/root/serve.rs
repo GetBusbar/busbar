@@ -1965,10 +1965,7 @@ impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
     }
 
     fn dialect(&self, dialect: u32) -> String {
-        self.dialects
-            .get(dialect as usize)
-            .cloned()
-            .unwrap_or_default()
+        busbar_kernel::plane_driver::dialect_at(&self.dialects, dialect)
     }
 }
 

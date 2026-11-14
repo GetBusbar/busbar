@@ -348,11 +348,7 @@ impl PlaneCfg for DoorSection {
     }
 
     fn is_present(&self) -> bool {
-        match &self.value {
-            serde_yaml::Value::Null => false,
-            serde_yaml::Value::Mapping(m) => !m.is_empty(),
-            _ => true,
-        }
+        yaml_present(&self.value)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -781,11 +777,7 @@ impl DoorOwned {
 
 impl crate::config::plane_sections::PlaneEndpointCfg for DoorOwned {
     fn is_present(&self) -> bool {
-        match &self.value {
-            serde_yaml::Value::Null => false,
-            serde_yaml::Value::Mapping(m) => !m.is_empty(),
-            _ => true,
-        }
+        yaml_present(&self.value)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1043,6 +1035,14 @@ fn door_hooks(named: bool, owns: bool, admin: bool) -> PlaneHooks {
         retain_verify_gates: None,
         default_section: Some(default_section),
         resolve_provider: None,
+    }
+}
+
+fn yaml_present(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Null => false,
+        serde_yaml::Value::Mapping(m) => !m.is_empty(),
+        _ => true,
     }
 }
 

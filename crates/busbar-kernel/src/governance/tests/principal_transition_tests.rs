@@ -2426,3 +2426,14 @@ async fn native_startup_does_not_infer_principal_freshness_from_missing_records(
             .is_none()
     );
 }
+
+#[test]
+fn the_shared_sha256_hex_check_accepts_only_64_lowercase_hex_chars() {
+    let empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    assert!(super::hash(empty_sha256));
+    assert!(!super::hash(&empty_sha256.to_ascii_uppercase()));
+    assert!(!super::hash(&empty_sha256[..63]));
+    assert!(!super::hash(&format!("{empty_sha256}0")));
+    assert!(!super::hash(&empty_sha256.replace('e', "g")));
+    assert!(!super::hash(""));
+}

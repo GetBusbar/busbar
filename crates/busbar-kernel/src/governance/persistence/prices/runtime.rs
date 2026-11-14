@@ -26,12 +26,6 @@ fn now_ms() -> u64 {
 fn error(error: super::Error) -> String {
     format!("price persistence: {error:?}")
 }
-fn opening(entry: &StoredEntry) -> bool {
-    matches!(
-        entry.author,
-        EntryAuthor::Opening {} | EntryAuthor::Migrated { opening: true, .. }
-    )
-}
 
 #[derive(Default)]
 struct State {
@@ -160,7 +154,11 @@ impl PreparedCard {
                     .await?;
                 if flow.activation.is_none() {
                     flow.activation = Some(Activation {
-                        effective_from: if opening(&pending.entry) { 0 } else { now_ms() },
+                        effective_from: if super::is_opening(&pending.entry) {
+                            0
+                        } else {
+                            now_ms()
+                        },
                     });
                 }
                 if flow.phase == Some(Phase::Prepared) {

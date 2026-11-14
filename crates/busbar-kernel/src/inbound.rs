@@ -847,17 +847,18 @@ async fn claim_request_replay(
     won && alive.load(std::sync::atomic::Ordering::Acquire)
 }
 
-fn same_request(left: &Head, right: &Head) -> bool {
-    fn fields(head: &Head) -> std::collections::BTreeMap<String, Vec<&[u8]>> {
-        let mut fields = std::collections::BTreeMap::<String, Vec<&[u8]>>::new();
-        for (name, value) in &head.fields {
-            fields
-                .entry(name.to_ascii_lowercase())
-                .or_default()
-                .push(value);
-        }
+fn fields(head: &Head) -> std::collections::BTreeMap<String, Vec<&[u8]>> {
+    let mut fields = std::collections::BTreeMap::<String, Vec<&[u8]>>::new();
+    for (name, value) in &head.fields {
         fields
+            .entry(name.to_ascii_lowercase())
+            .or_default()
+            .push(value);
     }
+    fields
+}
+
+fn same_request(left: &Head, right: &Head) -> bool {
     left.method == right.method
         && left.target == right.target
         && left.authority == right.authority
@@ -874,16 +875,6 @@ fn continuation_head(original: &Head, current: &Head, strips: &[Strip]) -> bool 
         || original.authority != current.authority
     {
         return false;
-    }
-    fn fields(head: &Head) -> std::collections::BTreeMap<String, Vec<&[u8]>> {
-        let mut fields = std::collections::BTreeMap::<String, Vec<&[u8]>>::new();
-        for (name, value) in &head.fields {
-            fields
-                .entry(name.to_ascii_lowercase())
-                .or_default()
-                .push(value);
-        }
-        fields
     }
     let mut current_fields = fields(current);
     for (name, values) in fields(original) {
