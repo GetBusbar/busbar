@@ -694,7 +694,8 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
         let section = DoorSection::new(
             decl.door,
             decl.config_section,
-            serde_yaml::from_str("models: {}").expect("the actual valid decisions section"),
+            busbar_contract::yaml::from_str("models: {}")
+                .expect("the actual valid decisions section"),
         );
         let definitions = section.as_defs();
         let slot = (decl.build)(

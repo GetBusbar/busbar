@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::yaml::{self, prelude::*};
 use busbar_kernel::config;
 use busbar_kernel::config_validate::validate;
 
@@ -10,7 +11,7 @@ const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    aut
 fn a_config_without_a_store_block_is_refused() {
     crate::dist_root_install::install();
 
-    let deploy: config::DeployCfg = serde_yaml::from_str(
+    let deploy: config::DeployCfg = yaml::from_str(
         "providers: {}\nmodels: {}\nstore: {module: inert-store-metadata}\nauth: {chain: [], admin_auth: []}\n",
     )
     .expect("host-only fixture parses");
@@ -38,9 +39,9 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
     crate::dist_root_install::install();
     let out = busbar_migrations::config::migrate::migrate_config(NO_STORE)
         .expect("the no-store document migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output is YAML");
+    let doc: Value = yaml::from_str(&out.yaml).expect("the output is YAML");
     let store = doc.get("store").expect("the migrated config names a store");
-    let want: serde_yaml::Value = serde_yaml::from_str("module: memory").expect("yaml");
+    let want: Value = yaml::from_str("module: memory").expect("yaml");
     assert_eq!(store, &want, "exactly `store: {{module: memory}}`");
     assert!(
         out.changes
@@ -69,7 +70,7 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
         again.changes
     );
 
-    let deploy: config::DeployCfg = serde_yaml::from_str(&out.yaml).expect("the output parses");
+    let deploy: config::DeployCfg = yaml::from_str(&out.yaml).expect("the output parses");
     assert_eq!(
         deploy.store.map(|s| s.module),
         Some(busbar_migrations::config::migrated_store_module().to_string())
@@ -81,15 +82,14 @@ fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one(
     crate::dist_root_install::install();
     let unnamed = format!("{NO_STORE}store:\n  settings: {{ k: v }}\n");
     let out = busbar_migrations::config::migrate::migrate_config(&unnamed).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("yaml");
-    let want: serde_yaml::Value =
-        serde_yaml::from_str("settings: { k: v }\nmodule: memory").expect("yaml");
+    let doc: Value = yaml::from_str(&out.yaml).expect("yaml");
+    let want: Value = yaml::from_str("settings: { k: v }\nmodule: memory").expect("yaml");
     assert_eq!(doc.get("store"), Some(&want));
 
     let named = format!("{NO_STORE}store:\n  module: acme-durable\n");
     let out = busbar_migrations::config::migrate::migrate_config(&named).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("yaml");
-    let want: serde_yaml::Value = serde_yaml::from_str("module: acme-durable").expect("yaml");
+    let doc: Value = yaml::from_str(&out.yaml).expect("yaml");
+    let want: Value = yaml::from_str("module: acme-durable").expect("yaml");
     assert_eq!(doc.get("store"), Some(&want));
     assert!(!out.changes.iter().any(|c| c.starts_with("store")));
 }

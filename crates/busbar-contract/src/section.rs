@@ -33,12 +33,12 @@ pub struct UsageObservationPolicy {
 
 /// Read the host policy map without accepting null or sequence shorthand as an empty map.
 pub fn usage_observation_policies(
-    value: serde_yaml::Value,
+    value: crate::yaml::Value,
 ) -> Result<std::collections::BTreeMap<String, UsageObservationPolicy>, String> {
-    if !value.is_mapping() {
+    if !value.is_map() {
         return Err("usage_observations must be a mapping".into());
     }
-    serde_yaml::from_value(value).map_err(|e| e.to_string())
+    crate::yaml::from_value(value).map_err(|e| e.to_string())
 }
 
 /// The reserved `upstream_credentials:` word: how a member is credentialed (`own` or
@@ -207,8 +207,12 @@ where
 {
     use serde::de::Error as _;
 
-    let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
-        indexmap::IndexMap::deserialize(deserializer)?;
+    // Each member is read as serde_yaml read a `Value`: repeated keys refused, tags kept.
+    let mut raw: indexmap::IndexMap<String, crate::yaml::Value> =
+        indexmap::IndexMap::<String, crate::yaml::UntypedValue>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(name, value)| (name, value.0))
+            .collect();
 
     for reserved in RESERVED_SECTION_KEYS {
         if *reserved == USAGE_OBSERVATIONS_KEY {
@@ -216,7 +220,7 @@ where
         }
         if raw
             .get(*reserved)
-            .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
+            .is_some_and(|v| matches!(v, crate::yaml::Value::Map(_)))
         {
             return Err(D::Error::custom(reserved_name_refusal(
                 section, noun, reserved,
@@ -226,7 +230,7 @@ where
 
     let hooks: Vec<String> = match raw.shift_remove("hooks") {
         None => Vec::new(),
-        Some(v) => Vec::<String>::deserialize(v).map_err(|e| {
+        Some(v) => crate::yaml::from_value::<Vec<String>>(v).map_err(|e| {
             D::Error::custom(format!(
                 "the reserved `{section}.hooks:` all-{section} attach must be a list of hook \
                  names: {e}"
@@ -265,7 +269,7 @@ where
                 section, noun, &name,
             )));
         }
-        let def: T = T::deserialize(value).map_err(D::Error::custom)?;
+        let def: T = crate::yaml::from_value(value).map_err(D::Error::custom)?;
         validate(&name, &def).map_err(D::Error::custom)?;
         entries.insert(name, def);
     }
@@ -298,13 +302,10 @@ pub fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
 mod tests {
     use super::*;
 
-    fn parse(input: &str) -> Result<Section<serde_yaml::Value>, serde_yaml::Error> {
-        split_section(
-            serde_yaml::Deserializer::from_str(input),
-            "witness",
-            "member",
-            |_, _| Ok(()),
-        )
+    fn parse(input: &str) -> Result<Section<crate::yaml::Value>, crate::yaml::Error> {
+        crate::yaml::with_deserializer(input, |d| {
+            split_section(d, "witness", "member", |_, _| Ok(()))
+        })
     }
 
     #[test]

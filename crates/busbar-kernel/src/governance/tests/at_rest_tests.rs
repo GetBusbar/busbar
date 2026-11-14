@@ -176,7 +176,7 @@ async fn try_mint(g: &GovState) -> crate::governance::RecordStoreResult<(String,
             },
             2_000_000_000,
             1_700_000_000,
-            kind.as_str().expect("the frozen credential kind is text"),
+            kind.as_text().expect("the frozen credential kind is text"),
             &shape,
         )
         .await?;
@@ -194,7 +194,7 @@ fn now() -> u64 {
 fn read(g: &GovState, public_id: &str) -> (String, bool) {
     let kind = crate::tests::frozen_text("signed_credential_kind");
     let (s, live) = g.credential_secret(
-        kind.as_str().expect("the frozen credential kind is text"),
+        kind.as_text().expect("the frozen credential kind is text"),
         public_id,
         now(),
     );

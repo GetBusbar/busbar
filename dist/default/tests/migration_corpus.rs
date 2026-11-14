@@ -71,48 +71,44 @@ fn migrate(path: &Path) -> Result<(String, String), String> {
 }
 
 fn apply_deferred_decisions(yaml: &str) -> String {
-    let mut doc: serde_yaml::Value = match serde_yaml::from_str(yaml) {
+    use busbar_contract::yaml::prelude::{Mapping, MappingExt, Value, ValueExt};
+    let mut doc: Value = match busbar_contract::yaml::from_str(yaml) {
         Ok(v) => v,
         Err(_) => return yaml.to_string(),
     };
     let Some(map) = doc.as_mapping_mut() else {
         return yaml.to_string();
     };
-    let auth_key = serde_yaml::Value::String("auth".into());
-    let Some(auth) = map.get_mut(&auth_key).and_then(|a| a.as_mapping_mut()) else {
+    let Some(auth) = map.get_key_mut("auth").and_then(|a| a.as_mapping_mut()) else {
         return yaml.to_string();
     };
     let names_keys = auth
-        .get(serde_yaml::Value::String("chain".into()))
+        .get_key("chain")
         .and_then(|c| c.as_sequence())
         .is_some_and(|s| s.iter().any(|v| v.as_str() == Some("keys")));
     if !names_keys {
-        return serde_yaml::to_string(&doc).unwrap_or_else(|_| yaml.to_string());
+        return busbar_contract::yaml::to_string(&doc).unwrap_or_else(|_| yaml.to_string());
     }
 
-    auth.entry(serde_yaml::Value::String("signing_key".into()))
-        .or_insert_with(|| {
-            serde_yaml::from_str("{ env: BUSBAR_TEST_SIGNING_KEY }").expect("literal parses")
-        });
+    auth.entry_or_insert_with("signing_key", || {
+        busbar_contract::yaml::from_str("{ env: BUSBAR_TEST_SIGNING_KEY }").expect("literal parses")
+    });
 
     let op = common::operator_module();
-    auth.entry(serde_yaml::Value::String("admin_auth".into()))
-        .or_insert_with(|| serde_yaml::from_str(&format!("[{op}]")).expect("literal parses"));
+    auth.entry_or_insert_with("admin_auth", || {
+        busbar_contract::yaml::from_str(&format!("[{op}]")).expect("literal parses")
+    });
 
-    let idp_key = serde_yaml::Value::String("identity-providers".into());
-    let idp = map
-        .entry(idp_key)
-        .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+    let idp = map.entry_or_insert_with("identity-providers", || Mapping::new().into());
     if let Some(m) = idp.as_mapping_mut() {
-        m.entry(serde_yaml::Value::String(op.clone()))
-            .or_insert_with(|| {
-                serde_yaml::from_str(&format!(
-                    "{{ module: {op}, token: {{ env: BUSBAR_TEST_ADMIN_TOKEN }} }}"
-                ))
-                .expect("literal parses")
-            });
+        m.entry_or_insert_with(op.as_str(), || {
+            busbar_contract::yaml::from_str(&format!(
+                "{{ module: {op}, token: {{ env: BUSBAR_TEST_ADMIN_TOKEN }} }}"
+            ))
+            .expect("literal parses")
+        });
     }
-    serde_yaml::to_string(&doc).unwrap_or_else(|_| yaml.to_string())
+    busbar_contract::yaml::to_string(&doc).unwrap_or_else(|_| yaml.to_string())
 }
 
 fn providers_for(corpus_file: &Path) -> PathBuf {

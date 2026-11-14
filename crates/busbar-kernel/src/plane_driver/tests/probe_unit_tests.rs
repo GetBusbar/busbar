@@ -298,7 +298,7 @@ async fn probing(hosts: &[(&'static str, Script)], plane: Prober, tail: u32) -> 
         },
         till.clone(),
         Arc::new(crate::host_services::KernelServices::new()),
-        ("probe", &serde_yaml::Value::Null),
+        ("probe", &busbar_contract::yaml::Value::Null),
     )
     .await
     .expect("the instance is admitted");
@@ -458,7 +458,7 @@ async fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>)
         },
         Arc::new(Till::default()),
         Arc::new(crate::host_services::KernelServices::new()),
-        ("probe", &serde_yaml::Value::Null),
+        ("probe", &busbar_contract::yaml::Value::Null),
     )
     .await
     .expect("the instance is admitted");

@@ -197,7 +197,6 @@ tracing = { workspace = true }
 idna_adapter = { workspace = true }
 lexopt = { workspace = true }
 metrics = { workspace = true }
-serde_yaml = { workspace = true }
 # THE THREAD-PER-CORE BOOT SEAM — the one unix data-plane topology (non-unix keeps the classic
 # runtime as a compile-time platform shape; no knob selects either). Binary-only deps — nothing on
 # the request path names them. `core_affinity` advisorily pins the per-worker threads, `socket2`
@@ -1155,9 +1154,11 @@ serde_json = "1"
 # Form-encoding for the engine-built RFC 8693 token exchange — the exact crate reqwest's `.form()`
 # delegated to, so the encoded bytes are identical by construction. Already in the lock via reqwest.
 serde_urlencoded = "0.7"
-# YAML is yaml_serde, as in core's workspace. The `package` rename keeps every `serde_yaml::from_str`
-# call site unchanged and states the substitution once for the whole workspace.
-serde_yaml = { package = "yaml_serde", version = "0.10" }
+# YAML is serde-saphyr behind `busbar_contract::yaml`, as in core's workspace (ciborium's `Value` is
+# the untyped tree).
+serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
+ciborium = "0.2.2"
+serde_path_to_error = "0.1.20"
 # 0.10, the line every dependency that carries RustCrypto ships (oauth-as, sha1 via axum/tungstenite).
 # busbar's own digests and MACs are on ring (the one crypto backend); sha2 stays only where ring
 # would be a new backend in a plugin's closure (busbar-contract) and as the independent witness the
@@ -1250,6 +1251,11 @@ dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc6
 fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
 h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
+# YAML: serde-saphyr and granit-parser carry busbar's opt-in serde_yaml-compatibility options
+# (null_scalars_as_text, lowercase_radix_prefixes_only, bom_inside_document_as_content), offered
+# upstream; forks of the exact published versions plus those commits.
+serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "61b12ca45482dbecb3b8461ead62ae05d3777493" }
+granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "8c5ec50275a0056501615a039ca1a8e6be103da3" }
 
 [profile.dev]
 # The assembled distribution links every first-party plugin into one `busbar` test executable.

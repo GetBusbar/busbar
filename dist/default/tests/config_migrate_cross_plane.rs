@@ -7,6 +7,7 @@ mod migration {
     include!(concat!(env!("OUT_DIR"), "/migration_table.rs"));
 }
 
+use busbar_contract::yaml::{self, prelude::*};
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg, ProviderDef};
 use busbar_migrations::config::migrate::migrate_config;
 
@@ -89,10 +90,9 @@ pools:
         )
     });
 
-    let defs: std::collections::HashMap<String, ProviderDef> = serde_yaml::from_str(
-        "acme:\n  protocol: anthropic\n  base_url: https://api.acme.example\n",
-    )
-    .expect("provider defs parse");
+    let defs: std::collections::HashMap<String, ProviderDef> =
+        yaml::from_str("acme:\n  protocol: anthropic\n  base_url: https://api.acme.example\n")
+            .expect("provider defs parse");
     let cfg = resolve(&deploy, &defs)
         .unwrap_or_else(|e| panic!("migrated config must resolve on 1.6.0: {e:?}"));
     busbar_kernel::config_validate::validate(&cfg)
@@ -143,12 +143,12 @@ agents:
 "#;
     let defs: std::collections::HashMap<String, ProviderDef> = std::collections::HashMap::new();
     let resolve_pool = |section: &str, members: &str, extra: &str| {
-        let mut doc: serde_yaml::Value = serde_yaml::from_str(base).expect("the base parses");
-        let pool: serde_yaml::Value =
-            serde_yaml::from_str(&format!("members: {members}\n{extra}")).expect("the pool parses");
-        doc[section]["pools"] = serde_yaml::from_str("{}").unwrap();
-        doc[section]["pools"]["p"] = pool;
-        let raw = serde_yaml::to_string(&doc).expect("the config renders");
+        let mut doc: Value = yaml::from_str(base).expect("the base parses");
+        let pool: Value =
+            yaml::from_str(&format!("members: {members}\n{extra}")).expect("the pool parses");
+        *doc.at_mut(section).at_mut("pools") = yaml::from_str("{}").unwrap();
+        *doc.at_mut(section).at_mut("pools").at_mut("p") = pool;
+        let raw = yaml::to_string(&doc).expect("the config renders");
         let deploy: DeployCfg =
             deploy_from_yaml_str(&raw).unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
         resolve(&deploy, &defs)

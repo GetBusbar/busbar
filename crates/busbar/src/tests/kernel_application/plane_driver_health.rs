@@ -94,7 +94,7 @@ async fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
         let section = DoorSection::new(
             decl.door,
             decl.config_section,
-            serde_yaml::from_str(if should_open {
+            busbar_contract::yaml::from_str(if should_open {
                 "models: {}"
             } else {
                 "models: []"

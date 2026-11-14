@@ -36,17 +36,18 @@ fn plane_bound(prefix: &[&str], value: serde_json::Value) -> serde_json::Value {
     plane_bound_with_sources(prefix, value, &sources()).expect("admitted fill source")
 }
 
-fn interpolated(template: &str, vars: &[(&str, &str)]) -> serde_yaml::Value {
+fn interpolated(template: &str, vars: &[(&str, &str)]) -> busbar_contract::yaml::Value {
     for (k, v) in vars {
         std::env::set_var(k, v);
     }
     let text =
         interpolate_env_with(template, EnvSubst::Strict, &mut Vec::new()).expect("interpolates");
-    serde_yaml::from_str(&text).expect("parses")
+    busbar_contract::yaml::from_str(&text).expect("parses")
 }
 
-fn section(doc: &serde_yaml::Value, key: &str) -> serde_json::Value {
-    serde_json::to_value(doc.get(key).expect("written")).expect("json")
+fn section(doc: &busbar_contract::yaml::Value, key: &str) -> serde_json::Value {
+    serde_json::to_value(busbar_contract::yaml::ValueExt::get(doc, key).expect("written"))
+        .expect("json")
 }
 
 #[test]

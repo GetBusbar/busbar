@@ -75,7 +75,7 @@ fn resolved(sections: &str) -> RootCfg {
     let mut defs = std::collections::HashMap::new();
     defs.insert(
         "acme".to_string(),
-        serde_yaml::from_str(&format!(
+        busbar_contract::yaml::from_str(&format!(
             "protocol: {}\nbase_url: https://api.example.com\n",
             (linked::fallback().provider_dialects)(linked::fallback())
                 .first()
@@ -1464,8 +1464,9 @@ async fn plane_router(
             (name.to_string(), Arc::new(plugin))
         })
         .collect();
-    let written: serde_yaml::Value =
-        serde_yaml::from_str(sections).expect("the plane configuration");
+    use busbar_contract::yaml::ValueExt as _;
+    let written: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(sections).expect("the plane configuration");
     let mut configured = std::collections::BTreeMap::new();
     for decl in linked::planes() {
         for section in

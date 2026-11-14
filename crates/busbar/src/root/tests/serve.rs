@@ -730,8 +730,8 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
 #[test]
 fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    let written: serde_yaml::Value =
-        serde_yaml::from_str("fs: { url: \"http://fs\" }\nwork: { max_live: 4 }\n")
+    let written: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("fs: { url: \"http://fs\" }\nwork: { max_live: 4 }\n")
             .expect("a section");
     let pool = busbar_kernel::config::pools::CandidatePoolCfg {
         members: vec!["fs".to_string()],
@@ -860,8 +860,11 @@ fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
         need(DIRECTION_OUTBOUND, "out-t", "far"),
         need(DIRECTION_INBOUND, "in-t", "media"),
     ];
-    let doc = |yaml: &str| -> BTreeMap<&'static str, serde_yaml::Value> {
-        BTreeMap::from([("a-section", serde_yaml::from_str(yaml).expect("yaml"))])
+    let doc = |yaml: &str| -> BTreeMap<&'static str, busbar_contract::yaml::Value> {
+        BTreeMap::from([(
+            "a-section",
+            busbar_contract::yaml::from_str(yaml).expect("yaml"),
+        )])
     };
     let sections =
         doc("far: {listen: \"127.0.0.1:7000\"}\nmedia: {listen: \"127.0.0.1:7001\"}\nquiet: {}\n");

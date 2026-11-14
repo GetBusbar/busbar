@@ -3712,22 +3712,21 @@ async fn named_map_app_opts(
     std::fs::write(plugin_dir.join("store.tar.gz"), archive)
         .expect("stage the actual Store product");
     let settings = crate::root::test_plugins::application_store_settings(&dir);
-    let mut disk: serde_yaml::Value =
-        serde_yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    disk["store"] =
-        serde_yaml::to_value(serde_json::json!({"module": facts.name, "settings": settings}))
-            .unwrap();
-    disk["plugins"] = serde_yaml::to_value(super::plugins::config_document(
+    use busbar_contract::yaml::{self, prelude::*};
+    let mut disk: Value = yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    *disk.at_mut("store") =
+        yaml::to_value(&serde_json::json!({"module": facts.name, "settings": settings})).unwrap();
+    *disk.at_mut("plugins") = yaml::to_value(&super::plugins::config_document(
         &super::plugins::trusted_config(&plugin_dir),
     ))
     .expect("the disk baseline retains the actual signed Store configuration");
-    std::fs::write(&config_path, serde_yaml::to_string(&disk).unwrap())
+    std::fs::write(&config_path, yaml::to_string(&disk).unwrap())
         .expect("write the actual Store selection");
 
     let mut live = disk;
-    live["auth"] = serde_yaml::from_str("chain: []\nadmin_auth: [admin-tokens]\n").unwrap();
-    let deploy =
-        busbar_kernel::config::deploy_from_deserializer(live).expect("the admin deployment parses");
+    *live.at_mut("auth") = yaml::from_str("chain: []\nadmin_auth: [admin-tokens]\n").unwrap();
+    let deploy = busbar_kernel::config::deploy_from_deserializer(yaml::deserializer(live))
+        .expect("the admin deployment parses");
     let defs = busbar_kernel::config::providers::catalog_from_str(
         &std::fs::read_to_string(&providers_path).unwrap(),
     )
@@ -4671,7 +4670,7 @@ async fn try_publish_door(
         gov,
         Arc::new(crate::root::plane_node::NodeEndPost::new(node)),
     ));
-    let settings = serde_yaml::from_str(settings)
+    let settings = busbar_contract::yaml::from_str(settings)
         .expect("the exact opened section also supplies the normal host admission");
 
     let admission = Arc::new(

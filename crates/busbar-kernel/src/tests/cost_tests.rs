@@ -263,7 +263,7 @@ fn rate_card_is_sole_cost_source_and_drives_routing_scalar() {
     let scalar = crate::config::rate_entry_per_mtok(&c["gpt-5"]);
     assert!((scalar - 6.25).abs() < f64::EPSILON);
 
-    let err = serde_yaml::from_str::<crate::config::PoolCfg>(
+    let err = busbar_contract::yaml::from_str::<crate::config::PoolCfg>(
         "members:\n  - model: gpt-5\n    cost_per_mtok: 4\n",
     )
     .unwrap_err()

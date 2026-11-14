@@ -11,7 +11,7 @@ async fn boot_group_updates_and_self_mint_all_refuse_bucket_identity_collisions(
     use busbar_kernel::governance::group_provision::{build_with_group, plan_mint_group};
     use std::sync::Arc;
 
-    let groups: BTreeMap<String, GroupCfg> = serde_yaml::from_str(
+    let groups: BTreeMap<String, GroupCfg> = busbar_contract::yaml::from_str(
         r#"
 a:
   limits: [{ requests: 2, per: day, pool: 'x@day' }]
@@ -21,7 +21,8 @@ parent:
 "#,
     )
     .unwrap();
-    let conflicting: GroupCfg = serde_yaml::from_str("limits: [{ budget: 4, per: day }]").unwrap();
+    let conflicting: GroupCfg =
+        busbar_contract::yaml::from_str("limits: [{ budget: 4, per: day }]").unwrap();
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -59,7 +60,7 @@ parent:
     .expect("the group collision deployment parses");
     let definitions = std::collections::HashMap::from([(
         "p".to_string(),
-        serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:1\n")
+        busbar_contract::yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:1\n")
             .expect("the actual provider catalog"),
     )]);
     let config = busbar_kernel::config::resolve(&deploy, &definitions)

@@ -72,7 +72,7 @@ fn rig_with_lookup(enabled: bool, caller_key: bool) -> Rig {
         },
         book.clone(),
         services(),
-        ("test_plane", &serde_yaml::Value::Null),
+        ("test_plane", &busbar_contract::yaml::Value::Null),
     )
     .now_or_never()
     .unwrap()

@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::sync::{LazyLock, RwLock};
 
+use busbar_contract::yaml::{MappingExt, Value};
+
 /// One step of a document path: a mapping key, or a sequence index.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Seg {
@@ -50,11 +52,12 @@ fn scalar_text(v: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn key_of(k: &serde_yaml::Value) -> Option<String> {
+fn key_of(k: &Value) -> Option<String> {
     match k {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        Value::Text(s) => Some(s.clone()),
+        Value::Integer(n) => Some(i128::from(*n).to_string()),
+        Value::Float(f) => serde_json::Number::from_f64(*f).map(|n| n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
 }
@@ -68,8 +71,8 @@ fn placeholders_in(s: &str, placeholder_of: &dyn Fn(usize) -> String, count: usi
 }
 
 pub(super) fn record(
-    real: &serde_yaml::Value,
-    shape: &serde_yaml::Value,
+    real: &Value,
+    shape: &Value,
     vars: &[&str],
     placeholder_of: &dyn Fn(usize) -> String,
 ) {
@@ -117,20 +120,19 @@ pub(super) fn record(
 }
 
 fn walk_record(
-    real: &serde_yaml::Value,
-    shape: &serde_yaml::Value,
+    real: &Value,
+    shape: &Value,
     path: &mut Vec<Seg>,
     depth: usize,
-    on_scalar: &mut dyn FnMut(&[Seg], &serde_yaml::Value, &str),
+    on_scalar: &mut dyn FnMut(&[Seg], &Value, &str),
 ) {
-    use serde_yaml::Value;
     if depth > MAX_DEPTH {
         return;
     }
     match (real, shape) {
-        (Value::Mapping(r), Value::Mapping(s)) => {
+        (Value::Map(r), Value::Map(s)) => {
             for (k, sv) in s {
-                let (Some(rv), Some(name)) = (r.get(k), key_of(k)) else {
+                let (Some(rv), Some(name)) = (r.get_key(k), key_of(k)) else {
                     continue;
                 };
                 path.push(Seg::Key(name));
@@ -138,17 +140,14 @@ fn walk_record(
                 path.pop();
             }
         }
-        (Value::Sequence(r), Value::Sequence(s)) => {
+        (Value::Array(r), Value::Array(s)) => {
             for (i, (rv, sv)) in r.iter().zip(s).enumerate() {
                 path.push(Seg::Index(i));
                 walk_record(rv, sv, path, depth + 1, on_scalar);
                 path.pop();
             }
         }
-        (Value::Tagged(r), Value::Tagged(s)) => {
-            walk_record(&r.value, &s.value, path, depth + 1, on_scalar);
-        }
-        (r, Value::String(s)) => on_scalar(path, r, s),
+        (r, Value::Text(s)) => on_scalar(path, r, s),
         _ => {}
     }
 }
@@ -235,7 +234,7 @@ fn plane_bound_with_sources(
     Ok(value)
 }
 
-pub fn plane_bound_bytes(prefix: &[&str], value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
+pub fn plane_bound_bytes(prefix: &[&str], value: &Value) -> Result<Vec<u8>, String> {
     if value.is_null() {
         return Ok(Vec::new());
     }

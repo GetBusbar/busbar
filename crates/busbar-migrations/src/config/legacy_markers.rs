@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::plugin::Kind;
-use serde_yaml::{Mapping, Value};
+use busbar_contract::yaml::prelude::*;
 
 pub(super) mod field {
     pub const ACTION: &str = "action";
@@ -55,7 +55,7 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     let Some(root) = doc.as_mapping() else {
         return markers;
     };
-    let get = |m: &Mapping, k: &str| -> Option<Value> { m.get(Value::from(k)).cloned() };
+    let get = |m: &Pairs, k: &str| -> Option<Value> { m.get_key(k).cloned() };
 
     if get(root, field::GOVERNANCE).is_some() {
         markers.push(
@@ -120,7 +120,7 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
         markers.push("top-level `admin_auth:` (moved under auth as auth.admin_auth)".into());
     }
 
-    if let Some(Value::Mapping(hooks)) = get(root, Kind::Hook.root()) {
+    if let Some(Value::Map(hooks)) = get(root, Kind::Hook.root()) {
         if !is_new_hook_defs(&hooks) {
             markers.push(format!(
                 "top-level `hooks:` REGISTRY block with legacy socket:/{}: entries (1.x \
@@ -203,10 +203,10 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
         }
     }
 
-    if let Some(Value::Mapping(export)) = get(root, Kind::Export.root()) {
+    if let Some(Value::Map(export)) = get(root, Kind::Export.root()) {
         if export.values().any(|v| {
             v.as_mapping()
-                .is_some_and(|m| !m.contains_key(Value::from(field::MODULE)))
+                .is_some_and(|m| !m.contains_key(field::MODULE))
         }) {
             markers.push(
                 "top-level `export:` is TYPE-KEYED (retired 1.5.3 → a NAMED map `<name>: { module, \
@@ -235,7 +235,7 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     {
         for (name, p) in &providers {
             if p.as_mapping()
-                .is_some_and(|m| m.contains_key(Value::from(field::API_KEY_ENV)))
+                .is_some_and(|m| m.contains_key(field::API_KEY_ENV))
             {
                 markers.push(format!(
                     "`providers.{}.api_key_env:` (secret fields are now secret references: \
@@ -254,7 +254,7 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
                 .unwrap_or_default();
             if members.iter().any(|mem| {
                 mem.as_mapping()
-                    .is_some_and(|m| m.contains_key(Value::from(field::TARGET)))
+                    .is_some_and(|m| m.contains_key(field::TARGET))
             }) {
                 markers.push(format!(
                     "`pools.{}.members[].target:` (renamed to model)",
@@ -265,7 +265,7 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             if p.as_mapping()
                 .and_then(|m| get(m, field::ON_EXHAUSTED))
                 .and_then(|v| v.as_mapping().cloned())
-                .is_some_and(|m| m.contains_key(Value::from(field::ACTION)))
+                .is_some_and(|m| m.contains_key(field::ACTION))
             {
                 markers.push(format!(
                     "`pools.{}.on_exhausted.action:` (the action wrapper is gone; use a bare \
@@ -278,17 +278,17 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     markers
 }
 
-pub(super) fn is_new_hook_defs(hooks: &Mapping) -> bool {
+pub(super) fn is_new_hook_defs(hooks: &Pairs) -> bool {
     !hooks.is_empty()
         && hooks.iter().all(|(_, e)| {
             e.as_mapping().is_some_and(|em| {
-                em.get(Value::from(field::MODULE))
+                em.get_key(field::MODULE)
                     .and_then(|v| v.as_str())
                     .is_some_and(|s| !s.trim().is_empty())
-                    && !em.contains_key(Value::from(field::SOCKET))
-                    && !em.contains_key(Value::from(crate::config::migration_table::text(
+                    && !em.contains_key(field::SOCKET)
+                    && !em.contains_key(crate::config::migration_table::text(
                         "hook_1x_url_transport",
-                    )))
+                    ))
             })
         })
 }

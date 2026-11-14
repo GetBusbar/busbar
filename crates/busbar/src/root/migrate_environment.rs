@@ -6,7 +6,7 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use serde_yaml::{Mapping, Value};
+use busbar_contract::yaml::{MappingExt, Pairs, Value, ValueExt};
 
 /// Launch env vars 1.6.0 no longer reads. The ONLY place in the workspace that spells their names
 /// (law: `dist/default/tests/retired_env_single_source.rs` and this file's tests). `capture()`
@@ -77,8 +77,8 @@ pub(crate) fn capture(
     providers_flag: Option<&str>,
     env: impl Fn(&str) -> Option<OsString>,
 ) -> Result<Captured, String> {
-    let mut document: Value =
-        serde_yaml::from_str(raw).map_err(|error| format!("input is not valid YAML: {error}"))?;
+    let mut document: Value = busbar_contract::yaml::from_str(raw)
+        .map_err(|error| format!("input is not valid YAML: {error}"))?;
     let root = document
         .as_mapping_mut()
         .ok_or("input is not a YAML mapping (expected a busbar config document)")?;
@@ -101,7 +101,7 @@ pub(crate) fn capture(
         let path = path
             .to_str()
             .ok_or("the selected providers path is not UTF-8")?;
-        root.insert(Value::from("providers_file"), Value::from(path));
+        root.insert_key(Value::from("providers_file"), Value::from(path));
         changes.push("captured launch providers override as providers_file (absolute path)".into());
     }
 
@@ -130,7 +130,7 @@ pub(crate) fn capture(
         if let Some(value) = env(name) {
             // Preserve the old effective setting, including explicit false/empty overrides.
             let enabled = value != "0" && !value.is_empty();
-            advanced(root)?.insert(Value::from(key), Value::Bool(enabled));
+            advanced(root)?.insert_key(Value::from(key), Value::Bool(enabled));
             changes.push(format!("{name} -> advanced.{key}"));
         }
     }
@@ -140,7 +140,7 @@ pub(crate) fn capture(
     let yaml = if changes.is_empty() {
         raw.to_owned()
     } else {
-        serde_yaml::to_string(&document)
+        busbar_contract::yaml::to_string(&document)
             .map_err(|error| format!("could not serialize captured launch inputs: {error}"))?
     };
     Ok(Captured {
@@ -150,9 +150,8 @@ pub(crate) fn capture(
     })
 }
 
-fn advanced(root: &mut Mapping) -> Result<&mut Mapping, String> {
-    root.entry(Value::from("advanced"))
-        .or_insert_with(|| Value::Mapping(Mapping::new()))
+fn advanced(root: &mut Pairs) -> Result<&mut Pairs, String> {
+    root.entry_or_insert_with("advanced", || Value::Map(Pairs::new()))
         .as_mapping_mut()
         .ok_or_else(|| {
             "cannot capture retired environment settings: advanced must be a mapping".into()
@@ -185,11 +184,22 @@ mod tests {
                 ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "false"),
             ],
         );
-        let doc: Value = serde_yaml::from_str(&captured.yaml).unwrap();
-        assert_eq!(doc["providers_file"], "/launch/catalog/old.yaml");
-        assert_eq!(doc["advanced"]["worker_threads"], 128);
-        assert_eq!(doc["advanced"]["upstream_http1_only"], false);
-        assert_eq!(doc["advanced"]["upstream_h2_prior_knowledge"], true);
+        let doc: Value = busbar_contract::yaml::from_str(&captured.yaml).unwrap();
+        assert_eq!(
+            doc.at("providers_file").as_str(),
+            Some("/launch/catalog/old.yaml")
+        );
+        assert_eq!(doc.at("advanced").at("worker_threads").as_u64(), Some(128));
+        assert_eq!(
+            doc.at("advanced").at("upstream_http1_only").as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            doc.at("advanced")
+                .at("upstream_h2_prior_knowledge")
+                .as_bool(),
+            Some(true)
+        );
         assert_eq!(captured.changes.len(), 4);
         assert!(captured.warnings.is_empty());
     }
@@ -201,16 +211,19 @@ mod tests {
             Some("flag.yaml"),
             &[("BUSBAR_PROVIDERS", "env.yaml")],
         );
-        let doc: Value = serde_yaml::from_str(&captured.yaml).unwrap();
-        assert_eq!(doc["providers_file"], "/launch/flag.yaml");
+        let doc: Value = busbar_contract::yaml::from_str(&captured.yaml).unwrap();
+        assert_eq!(doc.at("providers_file").as_str(), Some("/launch/flag.yaml"));
         for pairs in [&[][..], &[("BUSBAR_PROVIDERS", "")][..]] {
             let captured = under("providers_file: catalog/config.yaml\n", None, pairs);
             assert_eq!(captured.yaml, "providers_file: catalog/config.yaml\n");
             assert!(captured.changes.is_empty());
         }
         let captured = under("{}", None, &[("BUSBAR_PROVIDERS", "/other/catalog.yaml")]);
-        let doc: Value = serde_yaml::from_str(&captured.yaml).unwrap();
-        assert_eq!(doc["providers_file"], "/other/catalog.yaml");
+        let doc: Value = busbar_contract::yaml::from_str(&captured.yaml).unwrap();
+        assert_eq!(
+            doc.at("providers_file").as_str(),
+            Some("/other/catalog.yaml")
+        );
     }
 
     #[test]
@@ -224,9 +237,12 @@ mod tests {
                     ("BUSBAR_UPSTREAM_HTTP1_ONLY", ""),
                 ],
             );
-            let doc: Value = serde_yaml::from_str(&captured.yaml).unwrap();
-            assert_eq!(doc["advanced"]["worker_threads"], 7);
-            assert_eq!(doc["advanced"]["upstream_http1_only"], false);
+            let doc: Value = busbar_contract::yaml::from_str(&captured.yaml).unwrap();
+            assert_eq!(doc.at("advanced").at("worker_threads").as_u64(), Some(7));
+            assert_eq!(
+                doc.at("advanced").at("upstream_http1_only").as_bool(),
+                Some(false)
+            );
             assert_eq!(captured.warnings.len(), 1);
         }
         let captured = under(

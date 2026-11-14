@@ -162,7 +162,11 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let mut disk = document.clone();
         disk["plugins"] = plugins::config_document(&app.plugins_cfg);
         disk["credentials"] = serde_json::json!({"at_rest": {"key": {"file": new_path}, "previous": {"file": old_path}}});
-        std::fs::write(&config_path, serde_yaml::to_string(&disk).unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            busbar_contract::yaml::to_string(&disk).unwrap(),
+        )
+        .unwrap();
         std::fs::write(&providers_path, "{}\n").unwrap();
         core.identity()
             .put_key(&VirtualKey {

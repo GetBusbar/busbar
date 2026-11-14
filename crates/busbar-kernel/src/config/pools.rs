@@ -500,9 +500,9 @@ impl<'de> Deserialize<'de> for OnExhaustedCfg {
             queue: QueueInner,
         }
 
-        let value = serde_yaml::Value::deserialize(deserializer)?;
+        let value = busbar_contract::yaml::untyped(deserializer)?;
         match value {
-            serde_yaml::Value::String(word) => match word.as_str() {
+            busbar_contract::yaml::Value::Text(word) => match word.as_str() {
                 "reject" => Ok(OnExhaustedCfg::Reject),
                 "least_bad" => Ok(OnExhaustedCfg::LeastBad),
                 other => Err(serde::de::Error::custom(format!(
@@ -512,16 +512,17 @@ impl<'de> Deserialize<'de> for OnExhaustedCfg {
                      `on_exhausted: {{ queue: {{ max_ms: <ms> }} }}`"
                 ))),
             },
-            v @ serde_yaml::Value::Mapping(_) => {
-                let has_fallback = v.get("fallback_pool").is_some();
-                let has_queue = v.get("queue").is_some();
+            v @ busbar_contract::yaml::Value::Map(_) => {
+                let has_fallback =
+                    busbar_contract::yaml::ValueExt::get(&v, "fallback_pool").is_some();
+                let has_queue = busbar_contract::yaml::ValueExt::get(&v, "queue").is_some();
                 match (has_fallback, has_queue) {
                     (true, true) => Err(serde::de::Error::custom(
                         "on_exhausted takes exactly one of `fallback_pool` | `queue`, not both",
                     )),
                     (true, false) => {
-                        let body: FallbackBody =
-                            serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
+                        let body: FallbackBody = busbar_contract::yaml::from_value(v)
+                            .map_err(serde::de::Error::custom)?;
                         if body.fallback_pool.trim().is_empty() {
                             return Err(serde::de::Error::custom(
                                 "on_exhausted: { fallback_pool: … } must name a non-empty pool",
@@ -530,8 +531,8 @@ impl<'de> Deserialize<'de> for OnExhaustedCfg {
                         Ok(OnExhaustedCfg::FallbackPool(body.fallback_pool))
                     }
                     (false, true) => {
-                        let body: QueueBody =
-                            serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
+                        let body: QueueBody = busbar_contract::yaml::from_value(v)
+                            .map_err(serde::de::Error::custom)?;
                         Ok(OnExhaustedCfg::Queue {
                             max_ms: body.queue.max_ms,
                         })

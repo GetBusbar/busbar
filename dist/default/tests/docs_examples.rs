@@ -186,22 +186,25 @@ fn known_protocols() -> Vec<String> {
 #[cfg(linked_section_pools)]
 #[test]
 fn test_shipped_providers_catalog_valid() {
+    use busbar_contract::yaml::{self, prelude::*};
     let raw =
         std::fs::read_to_string(repo_root().join("providers.yaml")).expect("read providers.yaml");
-    let defs: std::collections::BTreeMap<String, serde_yaml::Value> =
-        serde_yaml::from_str(&raw).expect("parse providers.yaml");
+    let defs: std::collections::BTreeMap<String, Value> =
+        yaml::from_str(&raw).expect("parse providers.yaml");
     assert!(defs.len() >= 10, "catalog should be non-trivial");
     let known = known_protocols();
     assert!(!known.is_empty(), "the binary knows at least one protocol");
     for (name, def) in &defs {
-        let protocol = def["protocol"]
+        let protocol = def
+            .at("protocol")
             .as_str()
             .unwrap_or_else(|| panic!("provider '{name}' names a protocol"));
         assert!(
             known.iter().any(|k| k == protocol),
             "provider '{name}' names unknown protocol '{protocol}' (known: {known:?})"
         );
-        let base_url = def["base_url"]
+        let base_url = def
+            .at("base_url")
             .as_str()
             .unwrap_or_else(|| panic!("provider '{name}' names a base_url"));
         assert!(

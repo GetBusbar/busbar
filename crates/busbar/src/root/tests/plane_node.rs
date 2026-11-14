@@ -4103,7 +4103,8 @@ async fn a_reranks_search_units_reach_the_price_on_both_books() {
     let (provider, _) = rerank_dialects();
     let card = |entry: &str| {
         let rates: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
-            serde_yaml::from_str(&format!("{RERANK_LANE}: {entry}\n")).expect("the card parses");
+            busbar_contract::yaml::from_str(&format!("{RERANK_LANE}: {entry}\n"))
+                .expect("the card parses");
         busbar_kernel::cost::CostModel::resolve_parts(Some(&rates), 0, &Default::default())
     };
     let priced = format!("{{ units: {{ {SEARCH_UNITS}: 2000 }} }}");

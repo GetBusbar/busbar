@@ -163,14 +163,15 @@ pub struct DialectFacts {
 
 /// THE ONE BUILDER OF A DOOR PLANE'S OPEN-TIME PROVIDER LIST, for its served instance and its probe
 pub fn dialect_facts(
-    section: &serde_yaml::Value,
+    section: &crate::yaml::Value,
     lookup: impl Fn(&str) -> Option<(String, std::collections::BTreeMap<String, String>)>,
 ) -> Vec<DialectFacts> {
     use crate::section::{MODEL_PROVIDER_KEY, RESERVED_MODELS_KEY};
+    use crate::yaml::{MappingExt as _, ValueExt as _};
     let mut out: Vec<DialectFacts> = Vec::new();
     let referenced = section
         .get(RESERVED_MODELS_KEY)
-        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(crate::yaml::ValueExt::as_mapping)
         .into_iter()
         .flat_map(|m| m.values())
         .filter_map(|entry| entry.get(MODEL_PROVIDER_KEY)?.as_str());

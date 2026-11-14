@@ -189,10 +189,11 @@ impl Documents {
                     )
                     .map_err(|_| "configuration detection interpolation refused")?,
                 );
-                detected_locked = serde_yaml::from_str::<serde_yaml::Value>(&detection)
-                    .ok()
-                    .and_then(|doc| doc.get("config")?.get("locked")?.as_bool())
-                    .unwrap_or(false);
+                detected_locked =
+                    busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&detection)
+                        .ok()
+                        .and_then(|doc| doc.get("config")?.get("locked")?.as_bool())
+                        .unwrap_or(false);
                 let host = crate::root::config_migrate::RootHost::for_startup_document(
                     &original,
                     &detection,
@@ -278,11 +279,13 @@ impl Documents {
         }
         state.locked |= detected_locked;
         if kind == ConfigDocument::Deployment {
-            if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&converted) {
+            if let Ok(doc) =
+                busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&converted)
+            {
                 state.locked |= doc
                     .get("config")
                     .and_then(|c| c.get("locked"))
-                    .and_then(serde_yaml::Value::as_bool)
+                    .and_then(busbar_contract::yaml::Value::as_bool)
                     .unwrap_or(false);
             }
         }
@@ -511,8 +514,8 @@ impl Documents {
         let templates = busbar_migrations::config::templates::ResolvedTemplates::from_yaml(
             &authored, &detection,
         )?;
-        let authored: serde_yaml::Value =
-            serde_yaml::from_str(&authored).map_err(|_| "retained Store source is invalid")?;
+        let authored: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&authored)
+            .map_err(|_| "retained Store source is invalid")?;
         let mut target = target.clone();
         let state = self
             .state
@@ -551,7 +554,7 @@ impl Documents {
         // captured YAML scalar, never a new environment read, supplies its value.
         fn env_refs(
             target: &mut serde_json::Value,
-            authored: &serde_yaml::Value,
+            authored: &busbar_contract::yaml::Value,
             templates: &busbar_migrations::config::templates::ResolvedTemplates,
             sources: &busbar_contract::secret_ref::Sugars,
         ) -> Result<(), String> {

@@ -19,10 +19,10 @@
 //! Split out of `migrate.rs` for size (the impl-file ceiling in `docs/code-layout.md`); the passes
 //! are one cohesive unit — they all rewrite the same section, in sequence.
 
-use super::migrate::{one_line, take, take_mapping, Taken};
+use super::migrate::{one_line, swap_remove_key, take, take_mapping, Taken};
 use busbar_contract::abi::export::ExportStream;
 use busbar_contract::plugin::Kind;
-use serde_yaml::{Mapping, Value};
+use busbar_contract::yaml::prelude::*;
 
 pub(crate) fn export_type_keys() -> Vec<(&'static str, &'static str, &'static str)> {
     super::migration_table::text("export_type_keys")
@@ -48,47 +48,43 @@ fn released_module_streams() -> Vec<(&'static str, Vec<ExportStream>)> {
         .collect()
 }
 
-fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
-    let entry = root
-        .entry(Kind::Export.root().into())
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
-    if !matches!(entry, Value::Mapping(_)) {
-        *entry = Value::Mapping(Mapping::new());
+fn export_map_mut(root: &mut Pairs) -> &mut Pairs {
+    let entry = root.entry_or_insert_with(Kind::Export.root(), || Value::Map(Pairs::new()));
+    if !matches!(entry, Value::Map(_)) {
+        *entry = Value::Map(Pairs::new());
     }
     match entry {
-        Value::Mapping(m) => m,
+        Value::Map(m) => m,
         _ => unreachable!("just normalized to a mapping"),
     }
 }
 
-pub(super) fn uniq_export_name(export: &Mapping, base: &str) -> String {
-    if !export.contains_key(Value::from(base)) {
+pub(super) fn uniq_export_name(export: &Pairs, base: &str) -> String {
+    if !export.contains_key(base) {
         return base.to_string();
     }
     (2..)
         .map(|n| format!("{base}-{n}"))
-        .find(|c| !export.contains_key(Value::from(c.as_str())))
+        .find(|c| !export.contains_key(c.as_str()))
         .expect("an unbounded counter always finds a free name")
 }
 
-pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<String>) {
-    let Some(Value::Mapping(export)) = root.get(Value::from(Kind::Export.root())).cloned() else {
+pub(super) fn migrate_export_named_map(root: &mut Pairs, changes: &mut Vec<String>) {
+    let Some(Value::Map(export)) = root.get_key(Kind::Export.root()).cloned() else {
         return;
     };
     let type_keys = export_type_keys();
 
-    let mut kept = Mapping::new();
+    let mut kept = Pairs::new();
     let mut to_rewrite: Vec<(String, Value)> = Vec::new();
     for (k, v) in export {
         let key = k.as_str().unwrap_or_default().to_string();
         let is_type_key = type_keys.iter().any(|(t, _, _)| *t == key);
-        let already_named = v
-            .as_mapping()
-            .is_some_and(|m| m.contains_key(Value::from("module")));
+        let already_named = v.as_mapping().is_some_and(|m| m.contains_key("module"));
         if is_type_key && !already_named {
             to_rewrite.push((key, v));
         } else {
-            kept.insert(k, v);
+            kept.insert_key(k, v);
         }
     }
     if to_rewrite.is_empty() {
@@ -100,68 +96,64 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
             .find(|(t, _, _)| *t == type_key)
             .expect("only retired type keys reach here");
         let name = uniq_export_name(&kept, base_name);
-        let mut inst = Mapping::new();
-        inst.insert("module".into(), Value::from(*module));
+        let mut inst = Pairs::new();
+        inst.insert_key("module", Value::from(*module));
 
-        if let Some(settings) = body
-            .as_mapping()
-            .and_then(|m| m.get(Value::from("settings")))
-        {
-            inst.insert("settings".into(), settings.clone());
+        if let Some(settings) = body.as_mapping().and_then(|m| m.get_key("settings")) {
+            inst.insert_key("settings", settings.clone());
         }
-        kept.insert(Value::from(name.as_str()), Value::Mapping(inst));
+        kept.insert_key(name.as_str(), Value::Map(inst));
         changes.push(format!(
             "export.{type_key} (type-keyed) -> export.{name}: {{ module: {module} }} (1.5.3 named \
              export map — the same module can now back several named instances)"
         ));
     }
-    root.insert(Kind::Export.root().into(), Value::Mapping(kept));
+    root.insert_key(Kind::Export.root(), Value::Map(kept));
 }
 
 pub(super) fn migrate_export_projection(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
 ) {
-    let Some(Value::Mapping(mut export)) = root.get(Value::from(Kind::Export.root())).cloned()
-    else {
+    let Some(Value::Map(mut export)) = root.get_key(Kind::Export.root()).cloned() else {
         return;
     };
-    let mut out = Mapping::new();
+    let mut out = Pairs::new();
     for key in export.keys().cloned().collect::<Vec<_>>() {
         let Some(name) = key.as_str().map(str::to_string) else {
-            if let Some(value) = export.get(&key) {
-                out.insert(key, value.clone());
+            if let Some(value) = export.get_key(&key) {
+                out.insert_key(key.clone(), value.clone());
             }
             todos.push("export: an instance name is not a string; its definition was left unchanged for manual migration".into());
             continue;
         };
         match take_mapping(&mut export, &name, Kind::Export.root(), todos) {
             Taken::Malformed => {
-                if let Some(v) = export.get(&key) {
-                    out.insert(key.clone(), v.clone());
+                if let Some(v) = export.get_key(&key) {
+                    out.insert_key(key.clone(), v.clone());
                 }
             }
             Taken::Absent => {}
             Taken::Got(mut inst) => {
                 migrate_one_export_projection(&name, &mut inst, changes, todos);
-                out.insert(key.clone(), Value::Mapping(inst));
+                out.insert_key(key.clone(), Value::Map(inst));
             }
         }
     }
 
-    root.insert(Kind::Export.root().into(), Value::Mapping(out));
+    root.insert_key(Kind::Export.root(), Value::Map(out));
 }
 
 fn migrate_one_export_projection(
     name: &str,
-    inst: &mut Mapping,
+    inst: &mut Pairs,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
 ) {
     let ctx = format!("export.{name}");
 
-    if let Some(existing) = inst.get(Value::from("streams")) {
+    if let Some(existing) = inst.get_key("streams") {
         let names_audit = existing
             .as_sequence()
             .is_some_and(|s| s.iter().any(|v| v.as_str() == Some("audit")));
@@ -173,7 +165,7 @@ fn migrate_one_export_projection(
         return;
     }
     let Some(module) = inst
-        .get(Value::from("module"))
+        .get_key("module")
         .and_then(|v| v.as_str())
         .map(|m| m.trim().to_string())
     else {
@@ -196,15 +188,15 @@ fn migrate_one_export_projection(
         .map(|s| s.as_token())
         .collect::<Vec<_>>()
         .join(", ");
-    inst.insert("streams".into(), Value::Sequence(list));
+    inst.insert_key("streams", Value::Array(list));
     changes.push(format!(
         "{ctx}: added `streams: [{tokens}]` (1.5.3 projection grammar — each export instance is a          PROJECTION of the engine's data, and the streams a sink subscribes to are now declared          rather than implied by `module:`. This is what the deployment already meant; narrow it          further with `fields:`)."
     ));
 }
 
-pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<String>) {
-    let removed = root.remove(Value::from("observability"));
-    let Some(Value::Mapping(mut obs)) = removed else {
+pub(super) fn migrate_observability_block(root: &mut Pairs, changes: &mut Vec<String>) {
+    let removed = swap_remove_key(root, "observability");
+    let Some(Value::Map(mut obs)) = removed else {
         if let Some(other) = removed {
             changes.push(format!(
                 "observability: block removed (DELETED in 1.5.3; it was not a mapping — the value \
@@ -229,12 +221,12 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
             export,
             super::migration_table::text("export_trace_instance"),
         );
-        let mut settings = Mapping::new();
-        settings.insert("url".into(), url);
-        let mut inst = Mapping::new();
-        inst.insert("module".into(), Value::from(module));
-        inst.insert("settings".into(), Value::Mapping(settings));
-        export.insert(Value::from(name.as_str()), Value::Mapping(inst));
+        let mut settings = Pairs::new();
+        settings.insert_key("url", url);
+        let mut inst = Pairs::new();
+        inst.insert_key("module", Value::from(module));
+        inst.insert_key("settings", Value::Map(settings));
+        export.insert_key(name.as_str(), Value::Map(inst));
         changes.push(format!(
             "observability.{key} -> export.{name}: {{ module: {module} }} (the `observability:` block \
              is DELETED in 1.5.3; `export:` is the single telemetry-egress surface)"

@@ -429,11 +429,12 @@ impl RootHost {
     }
     #[must_use]
     pub fn for_document(raw: &str, config: &std::path::Path) -> Self {
-        let doc = serde_yaml::from_str::<serde_yaml::Value>(raw).ok();
+        use busbar_contract::yaml::ValueExt;
+        let doc = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(raw).ok();
         let plugins = doc
             .as_ref()
             .and_then(|doc| doc.get(CONFIG_PLUGINS_KEY).cloned())
-            .and_then(|p| serde_yaml::from_value::<PluginsCfg>(p).ok());
+            .and_then(|p| busbar_contract::yaml::from_value::<PluginsCfg>(p).ok());
         let providers_file = doc
             .as_ref()
             .and_then(|doc| doc.get(CONFIG_PROVIDERS_FILE_KEY))
@@ -936,7 +937,7 @@ impl MigrateHost for RootHost {
             return Ok(None);
         };
         let shown = path.display();
-        match serde_yaml::from_str::<serde_json::Value>(&raw) {
+        match busbar_contract::yaml::from_str::<serde_json::Value>(&raw) {
             Ok(serde_json::Value::Object(entries)) => Ok(Some(entries)),
             Ok(serde_json::Value::Null) => Ok(None),
             Ok(_) => Err(format!("{shown}: not a map of providers")),

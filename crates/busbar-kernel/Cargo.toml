@@ -37,7 +37,6 @@ ring = { workspace = true }
 unicode-normalization = { workspace = true }
 base64 = { workspace = true }
 sonic-rs = { workspace = true }
-serde_yaml = { workspace = true }
 futures = { workspace = true }
 # TaskTracker counts the worker's detached tasks (detached.rs).
 tokio-util = { workspace = true, features = ["rt"] }

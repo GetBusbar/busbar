@@ -386,8 +386,10 @@ async fn resolve_reads_the_configured_plane_sections_off_the_config() {
         let mut defs = std::collections::HashMap::new();
         defs.insert(
             "acme".to_string(),
-            serde_yaml::from_str("protocol: anthropic\nbase_url: https://api.example.com\n")
-                .expect("provider def"),
+            busbar_contract::yaml::from_str(
+                "protocol: anthropic\nbase_url: https://api.example.com\n",
+            )
+            .expect("provider def"),
         );
         busbar_kernel::config::resolve(&deploy, &defs)
             .expect("resolve")

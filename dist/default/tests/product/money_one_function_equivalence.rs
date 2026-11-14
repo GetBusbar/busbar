@@ -668,10 +668,11 @@ async fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement
         ledger_cost::MeteredRow::new(LANE, enforcement_units(&counts), 0, &BTreeMap::new())
             .spend_micros_at_card(&card);
     let units = enforcement_units(&counts);
-    let config_card: BTreeMap<String, busbar_kernel::config::RateEntryCfg> = serde_yaml::from_str(
-        &format!("{LANE}: {{ output_utok: 2, units: {{ hops: 5 }} }}\n"),
-    )
-    .expect("an open class parses under units:");
+    let config_card: BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
+        busbar_contract::yaml::from_str(&format!(
+            "{LANE}: {{ output_utok: 2, units: {{ hops: 5 }} }}\n"
+        ))
+        .expect("an open class parses under units:");
     let kernel =
         busbar_kernel::cost::CostModel::resolve_parts(Some(&config_card), 0, &BTreeMap::new());
     let kernel_nanos = kernel.price_usage_nanos(
@@ -789,7 +790,7 @@ async fn accrued_on_the_book(
     .await
     .expect("a governance book over the actual product store");
     let card: Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> =
-        card_yaml.map(|yaml| serde_yaml::from_str(yaml).expect("the card parses"));
+        card_yaml.map(|yaml| busbar_contract::yaml::from_str(yaml).expect("the card parses"));
     let cost = busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), 0, &BTreeMap::new());
     gov.set_signing_key(Some(
         busbar_kernel::governance::signing::TokenSigner::generate(

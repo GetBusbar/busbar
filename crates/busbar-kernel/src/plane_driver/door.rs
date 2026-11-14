@@ -3,6 +3,7 @@
 
 use busbar_contract::plane::{BillableClass, PlaneDeclaration, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::PlaneRegistration;
+use busbar_contract::yaml::{MappingExt as _, ValueExt as _};
 
 use crate::config::plane_sections::{ContainerGateInputs, PlaneCfg};
 use crate::plane_driver::registry::{BuildCtx, PlaneDecl, PlaneHooks};
@@ -158,7 +159,7 @@ pub struct DoorSection {
     /// The section's key.
     pub section: &'static str,
     /// The section as written (`Null` when absent).
-    pub value: serde_yaml::Value,
+    pub value: busbar_contract::yaml::Value,
     /// The secret references the section holds at its door's declared paths
     /// (`PlaneRegistration::secret_refs`), each with the config path it was read at.
     refs: Vec<(String, busbar_contract::secret_ref::SecretRef)>,
@@ -184,7 +185,7 @@ impl DoorSection {
     pub fn new(
         door: Option<&'static DoorRow>,
         section: &'static str,
-        value: serde_yaml::Value,
+        value: busbar_contract::yaml::Value,
     ) -> Self {
         let declaring = door.filter(|d| d.reg.section == section);
         let paths = declaring
@@ -231,7 +232,7 @@ impl DoorSection {
         }
     }
 
-    fn registrations(&self) -> impl Iterator<Item = (&str, &serde_yaml::Value)> {
+    fn registrations(&self) -> impl Iterator<Item = (&str, &busbar_contract::yaml::Value)> {
         crate::trust::section::registrations(&self.value)
     }
 
@@ -250,7 +251,7 @@ impl DoorSection {
         if let Some(models) = self
             .value
             .get(RESERVED_MODELS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(busbar_contract::yaml::Value::as_mapping)
         {
             #[expect(
                 clippy::disallowed_methods,
@@ -258,7 +259,7 @@ impl DoorSection {
             )]
             let lanes = models
                 .keys()
-                .filter_map(serde_yaml::Value::as_str)
+                .filter_map(busbar_contract::yaml::Value::as_str)
                 .map(|name| format!("{}{sep}{name}", decl.key))
                 .collect();
             return lanes;
@@ -345,7 +346,7 @@ impl PlaneCfg for DoorSection {
         let entry: serde_yaml::Value = serde_yaml::to_value(def)
             .map_err(|e| format!("invalid `{}.{name}` definition: {e}", self.section))?;
         if !self.value.is_mapping() {
-            self.value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+            self.value = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Pairs::new());
         }
         if let Some(m) = self.value.as_mapping_mut() {
             #[expect(
@@ -355,7 +356,11 @@ impl PlaneCfg for DoorSection {
             m.insert(serde_yaml::Value::String(name.to_string()), entry);
         }
 
-        *self = Self::new(self.door, self.section, std::mem::take(&mut self.value));
+        *self = Self::new(
+            self.door,
+            self.section,
+            std::mem::replace(&mut self.value, busbar_contract::yaml::Value::Null),
+        );
         Ok(())
     }
 
@@ -405,7 +410,7 @@ impl PlaneCfg for DoorSection {
         let refs = self
             .value
             .get(RESERVED_MODELS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(busbar_contract::yaml::Value::as_mapping)
             .into_iter()
             .flat_map(|m| m.iter())
             .filter_map(|(name, entry)| {
@@ -608,17 +613,17 @@ fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
     dealt
 }
 
-fn settings_of(key: &str, value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
+fn settings_of(key: &str, value: &busbar_contract::yaml::Value) -> Result<Vec<u8>, String> {
     crate::config::filled::plane_bound_bytes(&[key], value)
 }
 
 fn view_of(
     name: &str,
-    entry: &serde_yaml::Value,
+    entry: &busbar_contract::yaml::Value,
     keys: &[TrustKeyDecl],
 ) -> crate::api::NamedDefView {
     let map = entry.as_mapping();
-    let field = |key: &str| map.and_then(|m| m.get(key)).filter(|v| !v.is_null());
+    let field = |key: &str| map.and_then(|m| m.get_key(key)).filter(|v| !v.is_null());
     let pin = keys.iter().find(|k| k.role == TrustRole::Pin);
     let ttl = keys.iter().find(|k| k.role == TrustRole::ReverifyTtl);
     let pin_obj = pin
@@ -637,19 +642,19 @@ fn view_of(
         browser_login_configured: None,
         pin_mechanism: pin.map(|_| {
             pin_obj
-                .and_then(|m| m.get("mechanism"))
-                .and_then(serde_yaml::Value::as_str)
+                .and_then(|m| m.get_key("mechanism"))
+                .and_then(busbar_contract::yaml::Value::as_str)
                 .unwrap_or_default()
                 .to_string()
         }),
         fingerprint_pinned: pin.map(|_| {
             pin_obj
-                .and_then(|m| m.get("fingerprint"))
+                .and_then(|m| m.get_key("fingerprint"))
                 .is_some_and(|v| !v.is_null())
         }),
         reverify_ttl: ttl.map(|k| {
             field(k.key)
-                .and_then(serde_yaml::Value::as_str)
+                .and_then(busbar_contract::yaml::Value::as_str)
                 .map(str::to_string)
                 .or_else(|| k.default.map(str::to_string))
                 .unwrap_or_default()
@@ -706,11 +711,12 @@ fn build(
             .and_then(|slot| slot.downcast_ref::<DoorOwned>())
             .is_some_and(crate::config::plane_sections::PlaneEndpointCfg::is_present) =>
         {
-            DoorSection::new(Some(d), d.reg.section, serde_yaml::Value::Null)
+            DoorSection::new(Some(d), d.reg.section, busbar_contract::yaml::Value::Null)
         }
         None => {
             let raw = ctx.endpoint_slot.as_deref()?;
-            let (section, value) = raw.downcast_ref::<(&'static str, serde_yaml::Value)>()?;
+            let (section, value) =
+                raw.downcast_ref::<(&'static str, busbar_contract::yaml::Value)>()?;
             let s = DoorSection::new(Some(d), section, value.clone());
             if !mine(&s) {
                 return None;
@@ -998,7 +1004,7 @@ pub struct DoorOwned {
     /// The owned section's key.
     pub section: &'static str,
     /// The section as written.
-    pub value: serde_yaml::Value,
+    pub value: busbar_contract::yaml::Value,
 }
 
 impl DoorOwned {
@@ -1035,7 +1041,7 @@ impl crate::config::plane_sections::PlaneEndpointCfg for DoorOwned {
 
 fn parse_endpoint(
     decl: &PlaneDecl,
-    value: &serde_yaml::Value,
+    value: &busbar_contract::yaml::Value,
 ) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String> {
     let section = row(decl)
         .and_then(|d| d.reg.owns.first().copied())
@@ -1063,7 +1069,10 @@ fn lower_endpoint(
     lowered
 }
 
-fn parse_section(decl: &PlaneDecl, value: &serde_yaml::Value) -> Result<Box<dyn PlaneCfg>, String> {
+fn parse_section(
+    decl: &PlaneDecl,
+    value: &busbar_contract::yaml::Value,
+) -> Result<Box<dyn PlaneCfg>, String> {
     let Some(d) = row(decl) else {
         #[expect(
             clippy::disallowed_methods,
@@ -1081,7 +1090,7 @@ fn default_section(decl: &PlaneDecl) -> Box<dyn PlaneCfg> {
     Box::new(DoorSection::new(
         row(decl),
         row(decl).map_or("", |d| d.reg.section),
-        serde_yaml::Value::Null,
+        busbar_contract::yaml::Value::Null,
     ))
 }
 

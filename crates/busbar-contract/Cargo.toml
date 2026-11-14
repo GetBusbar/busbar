@@ -26,7 +26,9 @@ harness = false
 busbar-crypto = { path = "../busbar-crypto" }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
-serde_yaml = { workspace = true }
+serde-saphyr = { workspace = true }
+ciborium = { workspace = true }
+serde_path_to_error = { workspace = true }
 indexmap = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
@@ -48,7 +50,6 @@ tracing-log = { workspace = true }
 libc = { workspace = true }
 criterion = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 jsonschema = { workspace = true }
 hyper = { workspace = true }
 proc-macro2 = { workspace = true }

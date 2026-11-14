@@ -561,7 +561,7 @@ mod tests {
                 .err()
                 .unwrap_or_else(|| panic!("{literal} admitted without owner context"));
             refused(error.to_string(), literal.trim_matches('"'));
-            let error = serde_yaml::from_str::<SecretRef>(literal)
+            let error = crate::yaml::from_str::<SecretRef>(literal)
                 .err()
                 .unwrap_or_else(|| panic!("{literal} admitted from YAML without owner context"));
             refused(error.to_string(), literal.trim_matches('"'));
@@ -571,8 +571,9 @@ mod tests {
                 #[serde(rename = "api_key")]
                 _api_key: SecretRef,
             }
-            let error = deserialize::<Keyed, _>(serde_yaml::Deserializer::from_str(&yaml), &sugars)
-                .unwrap_err();
+            let error =
+                crate::yaml::with_deserializer(&yaml, |d| deserialize::<Keyed, _>(d, &sugars))
+                    .unwrap_err();
             refused(error.to_string(), literal.trim_matches('"'));
         }
         let scalar = |d: Result<SecretRef, ValueError>, literal: &str| {

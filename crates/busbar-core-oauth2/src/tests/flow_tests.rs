@@ -475,8 +475,10 @@ async fn issued_code_tokens_retain_their_live_private_records_for_each_default_s
         default_grant: vec!["read".into(), "write".into()],
         ..Default::default()
     };
-    let block =
-        serde_yaml::to_value(config.authoring(&busbar_kernel::test_hooks::tokens::seal())).unwrap();
+    let block = busbar_contract::yaml::to_value(
+        config.authoring(&busbar_kernel::test_hooks::tokens::seal()),
+    )
+    .unwrap();
     let opaque = crate::plane::seam_build::<crate::NoConnections>(
         block,
         Vec::new(),

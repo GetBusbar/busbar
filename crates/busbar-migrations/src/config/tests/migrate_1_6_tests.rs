@@ -2,14 +2,15 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::config::migrate::migrate_config;
+use busbar_contract::yaml::{self, prelude::*};
 
-fn doc(yaml: &str) -> serde_yaml::Value {
-    let body: String = yaml
+fn doc(text: &str) -> Value {
+    let body: String = text
         .lines()
         .filter(|l| !l.starts_with('#'))
         .collect::<Vec<_>>()
         .join("\n");
-    serde_yaml::from_str(&body).expect("the migrated document parses")
+    yaml::from_str(&body).expect("the migrated document parses")
 }
 
 #[test]
@@ -90,25 +91,22 @@ fn a_provider_1_5_5_admitted_ungoverned_gains_the_ungoverned_binding_and_a_warni
     )
     .expect("migrates");
     let d = doc(&out.yaml);
-    let rb = &d["auth"]["role_bindings"];
+    let rb = d.at("auth").at("role_bindings");
     assert!(
-        rb["keys"].is_null(),
+        rb.at("keys").is_null(),
         "the signed-key verifier needs no binding: {}",
         out.yaml
     );
     assert_eq!(
-        rb["corp"]["*"],
-        serde_yaml::Value::Mapping(Default::default()),
+        rb.at("corp").at("*"),
+        &Value::Map(Mapping::new().into()),
         "{}",
         out.yaml
     );
+    assert_eq!(rb.at("sso").at("*"), &Value::Map(Mapping::new().into()));
     assert_eq!(
-        rb["sso"]["*"],
-        serde_yaml::Value::Mapping(Default::default())
-    );
-    assert_eq!(
-        rb["sso"]["eng"]["allowed_pools"],
-        serde_yaml::from_str::<serde_yaml::Value>("[fast]").unwrap(),
+        rb.at("sso").at("eng").at("allowed_pools"),
+        &yaml::from_str::<Value>("[fast]").unwrap(),
         "an operator's own binding is kept as written"
     );
     assert!(out
@@ -152,8 +150,8 @@ fn principal(roles: &[&str]) -> busbar_kernel::auth::Principal {
     }
 }
 
-fn bindings(yaml: &str) -> busbar_kernel::config::RoleBindings {
-    serde_yaml::from_str(yaml).expect("bindings parse")
+fn bindings(text: &str) -> busbar_kernel::config::RoleBindings {
+    yaml::from_str(text).expect("bindings parse")
 }
 
 #[test]

@@ -126,7 +126,7 @@ pub(crate) fn rig_with_hooks(
         },
         book.clone(),
         services(),
-        ("test_plane", &serde_yaml::Value::Null),
+        ("test_plane", &busbar_contract::yaml::Value::Null),
     )
     .now_or_never()
     .expect("non-persistent fixture admission completes immediately")
@@ -1965,7 +1965,7 @@ async fn driven(every_ns: u64) -> (Arc<Double>, Arc<cases::Book>, PlaneDriver) {
         Double::default(),
         every_ns,
         services(),
-        &serde_yaml::Value::Null,
+        &busbar_contract::yaml::Value::Null,
     )
     .await
 }
@@ -1974,7 +1974,7 @@ async fn driven_over(
     plane: Double,
     every_ns: u64,
     services: Arc<KernelServices>,
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
 ) -> (Arc<Double>, Arc<cases::Book>, PlaneDriver) {
     let plane = Arc::new(plane);
     plane.tick_every_ns.store(every_ns, Ordering::SeqCst);
@@ -2072,7 +2072,8 @@ async fn a_built_driver_admits_its_instance_to_the_host_services() {
         Outcome::Refused,
         "unadmitted"
     );
-    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("peer: {reverify: 1h}").unwrap();
     let (_plane, _book, _driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     let later: busbar_contract::services::Later = Box::new(|_| {});
     match services.records_get(&instance(), "approval", b"k", later) {
@@ -2089,7 +2090,8 @@ async fn a_built_driver_admits_its_instance_to_the_host_services() {
 #[tokio::test]
 async fn an_uncalled_upstream_is_never_fetched_over_time() {
     let services = stored().await;
-    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("peer: {reverify: 1h}").unwrap();
     let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     let due = |s: &KernelServices| std::mem::take(&mut s.trust_due(&instance()).bytes);
     assert!(due(&services).is_empty(), "nothing is due before a tick");
@@ -2131,7 +2133,8 @@ fn untrusted(outcome: &busbar_contract::caps::Outcome) -> bool {
 async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     use busbar_kernel::plane_driver::refusal_status;
     let services = stored().await;
-    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("peer: {reverify: 1h}").unwrap();
     let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     let refused = |code: u32| {
         format!(
@@ -2239,7 +2242,8 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
 async fn the_kernels_approve_judges_the_grant_before_the_trust_facts() {
     use busbar_contract::caps::{Outcome, ReasonCode, StepName};
     let services = stored().await;
-    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("peer: {reverify: 1h}").unwrap();
     let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     let (steps, far, caller) = (
         common::TestUnits::refusing(StepName::Approve, ReasonCode::ScopeDenied),
@@ -2278,8 +2282,8 @@ async fn a_planes_work_section_overrides_the_hosts_work_bounds() {
         retain_ms: 300_000,
     };
     let services = Arc::new(host_over(store).with_work_bounds(host));
-    let section: serde_yaml::Value =
-        serde_yaml::from_str("work: {max_live: 1}\npeer: {reverify: 1h}").unwrap();
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("work: {max_live: 1}\npeer: {reverify: 1h}").unwrap();
     let (_plane, _book, _driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     assert_eq!(
         services.work_bounds_of("inst"),
@@ -2316,7 +2320,7 @@ async fn a_misstated_work_section_refuses_the_instance() {
         "work: {retain_s: -1}",
         "work: {evict: true}",
     ] {
-        let section: serde_yaml::Value = serde_yaml::from_str(bad).unwrap();
+        let section: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(bad).unwrap();
         let refused = PlaneDriver::new(
             Arc::new(declaring()),
             DriverConfig {
@@ -3751,7 +3755,7 @@ fn governed(slot: busbar_kernel::plane_driver::CallerRefs) -> Rig {
         },
         book.clone(),
         services(),
-        ("test_plane", &serde_yaml::Value::Null),
+        ("test_plane", &busbar_contract::yaml::Value::Null),
     )
     .now_or_never()
     .expect("non-persistent fixture admission completes immediately")

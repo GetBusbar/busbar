@@ -898,7 +898,7 @@ fn test_validate_rejects_unknown_failover_exclusion() {
 
 #[test]
 fn a_role_binding_grant_of_an_undeclared_kind_is_refused_at_validation() {
-    let binding: config::RoleBindingCfg = serde_yaml::from_str("allowed_widgets: [x]\n")
+    let binding: config::RoleBindingCfg = busbar_contract::yaml::from_str("allowed_widgets: [x]\n")
         .expect("`allowed_{kind}s` is a role-binding key");
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
@@ -921,7 +921,7 @@ fn a_role_binding_grant_of_an_undeclared_kind_is_refused_at_validation() {
         "allowed_widgets: [1]\n",
     ] {
         assert!(
-            serde_yaml::from_str::<config::RoleBindingCfg>(not_a_grant).is_err(),
+            busbar_contract::yaml::from_str::<config::RoleBindingCfg>(not_a_grant).is_err(),
             "`{not_a_grant}` is not a role-binding grant"
         );
     }
@@ -980,7 +980,7 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
 fn a_verb_allow_list_naming_an_unknown_verb_is_refused_at_validation() {
     let errors_for = |yaml: &str| -> Vec<String> {
         let binding: config::RoleBindingCfg =
-            serde_yaml::from_str(yaml).expect("`verbs:` is a role-binding key");
+            busbar_contract::yaml::from_str(yaml).expect("`verbs:` is a role-binding key");
         let (providers, models, pools) = valid_maps();
         let mut cfg = make_root_cfg(providers, models, pools);
         let mut auth = config::AuthCfg::default_none();
@@ -2248,7 +2248,7 @@ fn endpoint_userinfo_is_refused_without_echoing_credentials() {
         p.scope = Some("api://x/.default".into());
 
         p.auth = Some(
-            serde_yaml::from_str(include_str!("../../../../busbar-kernel/src/config_validate/tests/fixtures/client_credentials_style.yaml"))
+            busbar_contract::yaml::from_str(include_str!("../../../../busbar-kernel/src/config_validate/tests/fixtures/client_credentials_style.yaml"))
                 .expect("a provider style"),
         );
         providers.insert("myprovider".to_string(), p);
@@ -2987,7 +2987,7 @@ fn cost_cfg(model_names: &[&str]) -> RootCfg {
 }
 
 fn priced_entry() -> config::RateEntryCfg {
-    serde_yaml::from_str(
+    busbar_contract::yaml::from_str(
         "input_utok: 3.0\noutput_utok: 15.0\ncache_read_utok: 0.3\ncache_write_utok: 3.75\n",
     )
     .expect("a fully-written entry must parse")
@@ -2995,8 +2995,8 @@ fn priced_entry() -> config::RateEntryCfg {
 
 fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::PlaneCfg> {
     let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    let written: serde_yaml::Value =
-        serde_yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n  pin: { mechanism: unpinned }\n")
+    let written: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n  pin: { mechanism: unpinned }\n")
             .expect("yaml");
     let deploy = config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {}, "auth": { "chain": [], "admin_auth": [] },
@@ -3274,13 +3274,15 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
 #[test]
 fn test_rate_card_open_class_grammar_is_exact_and_refuses_a_reserved_class() {
     let parse = |y: &str| {
-        serde_yaml::from_str::<std::collections::BTreeMap<String, config::RateEntryCfg>>(y)
+        busbar_contract::yaml::from_str::<std::collections::BTreeMap<String, config::RateEntryCfg>>(
+            y,
+        )
     };
     let card = parse("m: { units: { search_units: 2000, hops: \"0.5\" } }\n").expect("parses");
     let units = &card["m"].units;
     assert_eq!(units["search_units"].nanos_per_unit(), 2_000_000);
     assert_eq!(units["hops"].nanos_per_unit(), 500);
-    let round_trip = serde_yaml::to_string(&card).expect("serializes");
+    let round_trip = busbar_contract::yaml::to_string(&card).expect("serializes");
     assert_eq!(
         parse(&round_trip).expect("re-parses"),
         card,
@@ -3386,7 +3388,7 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
     let mut cfg = cost_cfg(&["claude-sonnet"]);
 
     let card: std::collections::BTreeMap<String, config::RateEntryCfg> =
-        serde_yaml::from_str("claude-sonnet:\n  input_utok: 3.0\n  output_utok: 15.0\n")
+        busbar_contract::yaml::from_str("claude-sonnet:\n  input_utok: 3.0\n  output_utok: 15.0\n")
             .expect("the two-tier card must parse");
     cfg.rate_card = Some(rate_card_for_actual_plane(card));
 
@@ -3424,7 +3426,7 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
         "the silent zero, measured: ten million cache-read tokens bill at nothing"
     );
 
-    let priced: config::RateEntryCfg = serde_yaml::from_str(
+    let priced: config::RateEntryCfg = busbar_contract::yaml::from_str(
         "input_utok: 3.0\noutput_utok: 15.0\ncache_read_utok: 0.3\ncache_write_utok: 3.75\n",
     )
     .unwrap();
@@ -3441,11 +3443,12 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
 #[test]
 fn test_validate_rate_card_entry_with_explicit_zero_tiers_is_free_not_unpriced() {
     let mut cfg = cost_cfg(&["claude-sonnet"]);
-    let card: std::collections::BTreeMap<String, config::RateEntryCfg> = serde_yaml::from_str(
-        "claude-sonnet:\n  input_utok: 3.0\n  output_utok: 15.0\n  cache_read_utok: 0.0\n  \
+    let card: std::collections::BTreeMap<String, config::RateEntryCfg> =
+        busbar_contract::yaml::from_str(
+            "claude-sonnet:\n  input_utok: 3.0\n  output_utok: 15.0\n  cache_read_utok: 0.0\n  \
          cache_write_utok: 0.0\n",
-    )
-    .expect("the four-tier card must parse");
+        )
+        .expect("the four-tier card must parse");
     cfg.rate_card = Some(rate_card_for_actual_plane(card));
 
     assert!(
@@ -3459,11 +3462,12 @@ fn test_validate_rate_card_entry_with_explicit_zero_tiers_is_free_not_unpriced()
 #[test]
 fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
     let mut cfg = cost_cfg(&["free-on-purpose"]);
-    let card: std::collections::BTreeMap<String, config::RateEntryCfg> = serde_yaml::from_str(
-        "free-on-purpose:\n  input_utok: 0.0\n  output_utok: 0.0\n  cache_read_utok: 0.0\n  \
+    let card: std::collections::BTreeMap<String, config::RateEntryCfg> =
+        busbar_contract::yaml::from_str(
+            "free-on-purpose:\n  input_utok: 0.0\n  output_utok: 0.0\n  cache_read_utok: 0.0\n  \
          cache_write_utok: 0.0\n",
-    )
-    .expect("the all-zero card must parse");
+        )
+        .expect("the all-zero card must parse");
     cfg.rate_card = Some(rate_card_for_actual_plane(card));
     assert!(
         validate(&cfg).is_ok(),
@@ -3493,9 +3497,9 @@ fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
 fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_off() {
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     let bad: config::RateEntryCfg =
-        serde_yaml::from_str("input_utok: -1\n").expect("parses; validation refuses");
-    let good: config::RateEntryCfg =
-        serde_yaml::from_str("units: { calls: 5 }\n").expect("an open-class entry parses");
+        busbar_contract::yaml::from_str("input_utok: -1\n").expect("parses; validation refuses");
+    let good: config::RateEntryCfg = busbar_contract::yaml::from_str("units: { calls: 5 }\n")
+        .expect("an open-class entry parses");
     let plane_card = std::collections::BTreeMap::from([
         ("bad-lane".to_string(), bad),
         ("good-lane".to_string(), good),
@@ -3810,8 +3814,8 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
 fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     crate::dist_root_install::install();
     let deploy: config::DeployCfg =
-        serde_yaml::from_str(yaml).expect("the test DeployCfg yaml must parse");
-    let def: config::ProviderDef = serde_yaml::from_str(&format!(
+        busbar_contract::yaml::from_str(yaml).expect("the test DeployCfg yaml must parse");
+    let def: config::ProviderDef = busbar_contract::yaml::from_str(&format!(
         "protocol: {}\nbase_url: https://api.acme.example.com\nerror_map:\n  \"400\": client_error\n",
         proto_a()
     ))
@@ -4339,7 +4343,7 @@ fn deferred_oauth_credential_does_not_hide_invalid_endpoint_settings() {
         (Some("https://unreachable.invalid/token"), None),
     ] {
         let mut provider = make_provider(proto_b(), "https://api.example.com", MISSING);
-        provider.auth = Some(serde_yaml::from_str(include_str!("../../../../busbar-kernel/src/config_validate/tests/fixtures/client_credentials_style.yaml")).unwrap());
+        provider.auth = Some(busbar_contract::yaml::from_str(include_str!("../../../../busbar-kernel/src/config_validate/tests/fixtures/client_credentials_style.yaml")).unwrap());
         provider.token_url = token_url.map(str::to_owned);
         let cfg = make_root_cfg(
             HashMap::from([("deferred".into(), provider)]),

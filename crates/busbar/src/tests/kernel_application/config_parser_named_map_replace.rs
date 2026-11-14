@@ -6,7 +6,7 @@ use busbar_kernel::config::DeployCfg;
 use std::collections::BTreeMap;
 
 fn deploy_with_a_base_provider() -> DeployCfg {
-    serde_yaml::from_str(
+    busbar_contract::yaml::from_str(
         r#"
 providers: {}
 models: {}

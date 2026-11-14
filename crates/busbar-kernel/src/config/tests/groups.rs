@@ -10,7 +10,7 @@ const ADDITIVE_METRIC_WORDS: [&str; 4] = [
 ];
 
 fn refusal(yaml: &str) -> String {
-    match serde_yaml::from_str::<LimitCfg>(yaml) {
+    match busbar_contract::yaml::from_str::<LimitCfg>(yaml) {
         Ok(ok) => panic!("expected a refusal, parsed {ok:?}"),
         Err(e) => e.to_string(),
     }
@@ -89,8 +89,9 @@ fn the_four_additive_metrics_still_parse() {
         LimitMetric::TokensCacheWrite,
     ];
     for (word, metric) in ADDITIVE_METRIC_WORDS.iter().zip(expected) {
-        let parsed: LimitCfg = serde_yaml::from_str(&format!("{{ {word}: 7, per: day }}"))
-            .unwrap_or_else(|e| panic!("`{word}` no longer parses: {e}"));
+        let parsed: LimitCfg =
+            busbar_contract::yaml::from_str(&format!("{{ {word}: 7, per: day }}"))
+                .unwrap_or_else(|e| panic!("`{word}` no longer parses: {e}"));
         assert_eq!(parsed.metric, metric);
         assert_eq!(parsed.amount, 7);
         assert_eq!(parsed.per, Some(LimitWindow::Day));
@@ -105,7 +106,7 @@ fn the_four_frozen_metrics_still_parse() {
         } else {
             format!("{{ {word}: 7, per: day }}")
         };
-        let parsed: LimitCfg = serde_yaml::from_str(&yaml)
+        let parsed: LimitCfg = busbar_contract::yaml::from_str(&yaml)
             .unwrap_or_else(|e| panic!("`{word}` no longer parses: {e}"));
         assert_eq!(parsed.metric.as_str(), word);
         assert_eq!(parsed.amount, 7);

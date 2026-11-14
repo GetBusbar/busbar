@@ -100,9 +100,9 @@ impl<'de> Deserialize<'de> for OnErrorCfg {
             hook: String,
         }
 
-        let value = serde_yaml::Value::deserialize(deserializer)?;
+        let value = busbar_contract::yaml::untyped(deserializer)?;
         match value {
-            serde_yaml::Value::String(word) => {
+            busbar_contract::yaml::Value::Text(word) => {
                 if on_error_terminal(&word).is_some() {
                     Ok(OnErrorCfg::Terminal(word))
                 } else {
@@ -113,9 +113,9 @@ impl<'de> Deserialize<'de> for OnErrorCfg {
                     )))
                 }
             }
-            v @ serde_yaml::Value::Mapping(_) => {
+            v @ busbar_contract::yaml::Value::Map(_) => {
                 let body: HookRefBody =
-                    serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
+                    busbar_contract::yaml::from_value(v).map_err(serde::de::Error::custom)?;
                 if body.hook.trim().is_empty() {
                     return Err(serde::de::Error::custom(
                         "on_error: { hook: … } must name a non-empty hook",

@@ -20,6 +20,8 @@ pub mod migration_table;
 pub mod overlay_legacy;
 mod retired;
 
+use busbar_contract::yaml::{self, prelude::*, same_tree};
+
 /// The actual default used by supported released configurations that omitted Store.
 #[must_use]
 pub fn migrated_store_module() -> &'static str {
@@ -86,12 +88,18 @@ fn normalize(
     if raw.len() > MAX_AUTHORED_BYTES {
         return Err("configuration exceeds the 16 MiB normalization input budget".into());
     }
-    let before: serde_yaml::Value =
-        serde_yaml::from_str(raw).map_err(|_| "configuration is not valid YAML".to_owned())?;
+    let before: Value =
+        yaml::from_str(raw).map_err(|_| "configuration is not valid YAML".to_owned())?;
     if !before.is_mapping() {
         return Err("configuration must be a YAML mapping".into());
     }
     check_tree(&before)?;
+    if yaml::first_application_tag(raw)
+        .map_err(|_| "configuration is not valid YAML".to_owned())?
+        .is_some()
+    {
+        return Err("configuration YAML tags are not supported".into());
+    }
     let decisions = required_security_decisions(&before);
     let detection = detection_yaml.unwrap_or(raw);
     if detection.len() > MAX_AUTHORED_BYTES {
@@ -103,7 +111,7 @@ fn normalize(
         && before
             .get("store")
             .and_then(|store| store.get("module"))
-            .and_then(serde_yaml::Value::as_str)
+            .and_then(Value::as_str)
             .is_some_and(|module| !module.trim().is_empty())
         && migrate::detect_legacy_markers(&before).is_empty()
         && busbar_kernel::config::deploy_from_yaml_str(detection).is_ok()
@@ -115,7 +123,7 @@ fn normalize(
     } else {
         migrate::migrate_structure(raw, host)?
     };
-    let after: serde_yaml::Value = serde_yaml::from_str(&normalized.yaml)
+    let after: Value = yaml::from_str(&normalized.yaml)
         .map_err(|_| "normalization did not produce valid YAML".to_owned())?;
     check_tree(&after)?;
     if !source_specific {
@@ -145,8 +153,8 @@ fn normalize_recognized_settings(
     raw: &str,
     host: &dyn migrate_plugins::MigrateHost,
 ) -> Result<migrate::MigrateOutput, String> {
-    let mut doc: serde_yaml::Value =
-        serde_yaml::from_str(raw).map_err(|_| "authored settings document is not YAML")?;
+    let mut doc: Value =
+        yaml::from_str(raw).map_err(|_| "authored settings document is not YAML")?;
     let root = doc
         .as_mapping_mut()
         .ok_or("authored settings document is not a mapping")?;
@@ -170,7 +178,7 @@ fn normalize_recognized_settings(
     let yaml = if changes.is_empty() {
         raw.to_owned()
     } else {
-        serde_yaml::to_string(&doc).map_err(|_| "converted settings could not be encoded")?
+        yaml::to_string(&doc).map_err(|_| "converted settings could not be encoded")?
     };
     let yaml = if yaml != raw {
         templates::render_authored(&yaml, host)?
@@ -188,8 +196,7 @@ fn normalize_recognized_settings(
 
 // These historical warnings describe choices, rather than lossless rewrites.
 // Automatic startup must retain them as admission-blocking debt.
-fn required_security_decisions(doc: &serde_yaml::Value) -> Vec<String> {
-    use serde_yaml::Value;
+fn required_security_decisions(doc: &Value) -> Vec<String> {
     let mut todos = Vec::new();
     let Some(root) = doc.as_mapping() else {
         return todos;
@@ -201,7 +208,7 @@ fn required_security_decisions(doc: &serde_yaml::Value) -> Vec<String> {
         let mut pending = vec![(value, check)];
         while let Some((value, check)) = pending.pop() {
             match value {
-                Value::Mapping(entries) => {
+                Value::Map(entries) => {
                     for (key, value) in entries {
                         let key = key.as_str().unwrap_or("");
                         if check == 0
@@ -226,7 +233,7 @@ fn required_security_decisions(doc: &serde_yaml::Value) -> Vec<String> {
                         ));
                     }
                 }
-                Value::Sequence(items) => pending.extend(items.iter().map(|v| (v, check))),
+                Value::Array(items) => pending.extend(items.iter().map(|v| (v, check))),
                 _ => {}
             }
         }
@@ -236,8 +243,7 @@ fn required_security_decisions(doc: &serde_yaml::Value) -> Vec<String> {
     todos
 }
 
-fn check_tree(root: &serde_yaml::Value) -> Result<(), String> {
-    use serde_yaml::Value;
+fn check_tree(root: &Value) -> Result<(), String> {
     const MAX_NODES: usize = 262_144;
     const MAX_DEPTH: usize = 128;
     let mut pending = vec![(root, 0usize)];
@@ -248,14 +254,13 @@ fn check_tree(root: &serde_yaml::Value) -> Result<(), String> {
             return Err("configuration exceeds normalization structure budget".into());
         }
         match node {
-            Value::Sequence(items) => pending.extend(items.iter().map(|v| (v, depth + 1))),
-            Value::Mapping(items) => {
+            Value::Array(items) => pending.extend(items.iter().map(|v| (v, depth + 1))),
+            Value::Map(items) => {
                 for (key, value) in items {
                     pending.push((key, depth + 1));
                     pending.push((value, depth + 1));
                 }
             }
-            Value::Tagged(_) => return Err("configuration YAML tags are not supported".into()),
             _ => {}
         }
         if pending.len() > MAX_NODES {
@@ -312,8 +317,13 @@ mod normalize_tests {
             &migrate_plugins::NoPlugins,
         )
         .unwrap();
-        let released: serde_yaml::Value = serde_yaml::from_str(&released.yaml).unwrap();
-        assert!(released["auth"]["role_bindings"]["corp"]["*"].is_mapping());
+        let released: Value = yaml::from_str(&released.yaml).unwrap();
+        assert!(released
+            .at("auth")
+            .at("role_bindings")
+            .at("corp")
+            .at("*")
+            .is_mapping());
     }
 
     #[test]

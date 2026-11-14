@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::plugin::Kind;
-use serde::Deserialize;
+use busbar_contract::yaml::{MappingExt, Value, ValueExt};
 
 /// A PLANE'S TOP-LEVEL CONFIG SECTION, CAPTURED RAW — the neutral carrier `DeployCfg`/`RootCfg` use
 /// for a plane's section in a build where the plane that would LOWER it is compiled out.
@@ -27,7 +27,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RawPlaneSection {
     /// The captured value, or `None` when the section was absent or explicitly null.
-    raw: Option<serde_yaml::Value>,
+    raw: Option<Value>,
 }
 
 impl<'de> serde::Deserialize<'de> for RawPlaneSection {
@@ -35,7 +35,7 @@ impl<'de> serde::Deserialize<'de> for RawPlaneSection {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = serde_yaml::Value::deserialize(deserializer)?;
+        let value = busbar_contract::yaml::untyped(deserializer)?;
         let raw = if value.is_null() { None } else { Some(value) };
         Ok(RawPlaneSection { raw })
     }
@@ -93,8 +93,8 @@ impl PlaneEndpointCfg for RawPlaneSection {
 impl RawPlaneSection {
     pub(crate) fn is_present(&self) -> bool {
         match &self.raw {
-            None | Some(serde_yaml::Value::Null) => false,
-            Some(serde_yaml::Value::Mapping(m)) => !m.is_empty(),
+            None | Some(Value::Null) => false,
+            Some(Value::Map(m)) => !m.is_empty(),
             Some(_) => true,
         }
     }
@@ -116,7 +116,7 @@ fn deserialize_plane_section<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    let value = serde_yaml::Value::deserialize(deserializer)?;
+    let value = busbar_contract::yaml::untyped(deserializer)?;
     let decl = crate::plane_driver::registry::plane_decl_for_config_section(config_section);
     match decl.and_then(|d| d.parse_section.map(|parse| (d, parse))) {
         Some((d, parse)) => {
@@ -144,7 +144,7 @@ fn deserialize_plane_endpoint<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    let value = serde_yaml::Value::deserialize(deserializer)?;
+    let value = busbar_contract::yaml::untyped(deserializer)?;
     if value.is_null() {
         return Ok(None);
     }
@@ -194,9 +194,9 @@ impl DeclaredSections {
 
     pub(crate) fn parse(
         section: &'static str,
-        value: serde_yaml::Value,
-    ) -> Result<Self, serde_yaml::Error> {
-        let cfg = deserialize_plane_section(section, value)?;
+        value: Value,
+    ) -> Result<Self, busbar_contract::yaml::Error> {
+        let cfg = deserialize_plane_section(section, busbar_contract::yaml::deserializer(value))?;
         Ok(DeclaredSections([(section, cfg)].into_iter().collect()))
     }
 }
@@ -242,7 +242,7 @@ pub fn config_sections_from(
 
 pub fn validate_plane_section(
     section: &str,
-    value: &serde_yaml::Value,
+    value: &Value,
     trust_keys: &[busbar_contract::plane::TrustKeyDecl],
     caller_credential_refusal: Option<&str>,
     sections: &[&'static str],
@@ -257,7 +257,7 @@ pub fn validate_plane_section(
     }
     let models = value
         .get(busbar_contract::section::RESERVED_MODELS_KEY)
-        .and_then(serde_yaml::Value::as_mapping);
+        .and_then(Value::as_mapping);
     for (name, entry) in models.into_iter().flatten() {
         if let Some(name) = name.as_str() {
             let models = busbar_contract::section::RESERVED_MODELS_KEY;
@@ -278,9 +278,9 @@ pub(crate) fn refuse_forwarded_caller_credential(
     };
     let default = value
         .as_mapping()
-        .and_then(|m| m.get(UPSTREAM_CREDENTIALS))
+        .and_then(|m| m.get_key(UPSTREAM_CREDENTIALS))
         .cloned()
-        .map(serde_yaml::from_value::<busbar_contract::config::UpstreamCreds>);
+        .map(busbar_contract::yaml::from_value::<busbar_contract::config::UpstreamCreds>);
     match default {
         Some(Ok(busbar_contract::config::UpstreamCreds::Passthrough)) => Err(refusal.to_string()),
         _ => Ok(()),
@@ -289,7 +289,7 @@ pub(crate) fn refuse_forwarded_caller_credential(
 
 pub fn refuse_registration_forwarding_caller_credential(
     at: &str,
-    entry: &serde_yaml::Value,
+    entry: &Value,
     refusal: Option<&str>,
 ) -> Result<(), String> {
     match refuse_forwarded_caller_credential(entry, refusal) {
@@ -304,7 +304,7 @@ pub fn refuse_registration_forwarding_caller_credential(
 pub fn validate_plane_entry(
     section: &str,
     name: &str,
-    entry: &serde_yaml::Value,
+    entry: &Value,
     trust_keys: &[busbar_contract::plane::TrustKeyDecl],
     sections: &[&'static str],
 ) -> Result<(), String> {
@@ -318,8 +318,8 @@ pub fn validate_plane_entry(
     }
     let hooks = entry
         .as_mapping()
-        .and_then(|m| m.get(Kind::Hook.root()))
-        .and_then(serde_yaml::Value::as_sequence);
+        .and_then(|m| m.get_key(Kind::Hook.root()))
+        .and_then(Value::as_sequence);
     for hook in hooks.into_iter().flatten() {
         if let Some(hook) = hook.as_str() {
             refuse_cross_plane_reference(&at, hook, sections)?;
@@ -332,7 +332,7 @@ pub(crate) fn judge_entry_timeout(at: &str, entry: &serde_yaml::Value) -> Result
     use busbar_contract::section::{entry_timeout_ms, ENTRY_TIMEOUT_KEY};
     let Some(written) = entry
         .as_mapping()
-        .and_then(|m| m.get(ENTRY_TIMEOUT_KEY))
+        .and_then(|m| m.get_key(ENTRY_TIMEOUT_KEY))
         .filter(|v| !v.is_null())
     else {
         return Ok(());

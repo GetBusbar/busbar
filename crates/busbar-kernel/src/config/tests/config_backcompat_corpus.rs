@@ -60,7 +60,7 @@ fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
         .providers
         .keys()
         .map(|name| {
-            let def: ProviderDef = serde_yaml::from_str(
+            let def: ProviderDef = busbar_contract::yaml::from_str(
                 "{ protocol: proto-a, base_url: \"https://provider.invalid\" }",
             )
             .expect("the fixed ProviderDef literal parses");
@@ -192,10 +192,10 @@ fn render_limit(l: &super::LimitCfg) -> String {
 fn snapshot_for(config_path: &Path) -> String {
     let yaml = std::fs::read_to_string(config_path)
         .unwrap_or_else(|e| panic!("read corpus config {}: {e}", config_path.display()));
-    let deploy: DeployCfg = busbar_contract::secret_ref::context::deserialize(
-        serde_yaml::Deserializer::from_str(&yaml),
-        &corpus_sources(),
-    )
+    let sources = corpus_sources();
+    let deploy: DeployCfg = busbar_contract::yaml::with_deserializer(&yaml, |d| {
+        busbar_contract::secret_ref::context::deserialize(d, &sources)
+    })
     .unwrap_or_else(|e| panic!("parse corpus config {}: {e}", config_path.display()));
     let defs = defs_for(&deploy);
     let cfg = resolve(&deploy, &defs).unwrap_or_else(|errs| {

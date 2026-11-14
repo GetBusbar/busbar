@@ -27,7 +27,6 @@ http = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = { workspace = true }
 serde = { workspace = true }
-serde_yaml = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]

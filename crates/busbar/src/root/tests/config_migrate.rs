@@ -5,6 +5,7 @@ use busbar_migrations::config::migrate::migrate_config_with;
 use busbar_migrations::config::migrate_plugins::MigrateHost;
 
 use super::{Index, IndexPlugin};
+use busbar_contract::yaml::ValueExt;
 
 #[test]
 fn core_applies_the_real_llm_migrations_private_destination_need() {
@@ -20,15 +21,17 @@ pools: {}
     let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
     let host = super::RootHost::for_document(config, &directory.0.join("config.yaml"));
     let out = migrate_config_with(config, &host).expect("the real linked plane migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("migrated YAML");
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&out.yaml).expect("migrated YAML");
     assert_eq!(
-        doc["advanced"]["allow_destinations"],
-        serde_yaml::from_str::<serde_yaml::Value>("['10.1.2.3']").unwrap(),
+        *doc.at("advanced").at("allow_destinations"),
+        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>("['10.1.2.3']").unwrap(),
         "the real plane's need is applied to the core-owned allowlist: {}",
         out.yaml
     );
     assert_eq!(
-        doc["providers"]["in-rack"]["base_url"], "http://10.1.2.3:8000/v1",
+        doc.at("providers").at("in-rack").at("base_url").as_str(),
+        Some("http://10.1.2.3:8000/v1"),
         "the plane's provider settings remain intact"
     );
 }
@@ -50,20 +53,27 @@ advanced:
     std::fs::write(directory.0.join("providers.yaml"), catalog).unwrap();
     let host = super::RootHost::for_document(config, &directory.0.join("config.yaml"));
     let out = migrate_config_with(config, &host).expect("the selected LLM plane migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&out.yaml).unwrap();
     assert_eq!(
-        doc["advanced"]["allow_destinations"],
-        serde_yaml::from_str::<serde_yaml::Value>("[127.0.0.1]").unwrap()
+        *doc.at("advanced").at("allow_destinations"),
+        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>("[127.0.0.1]").unwrap()
     );
-    assert!(doc["advanced"].get("block_private_addresses").is_none());
+    assert!(doc.at("advanced").get("block_private_addresses").is_none());
     assert!(
         doc.get("pools").is_none(),
         "migration must not invent a pool section"
     );
-    assert_eq!(doc["models"]["m-chat"]["provider"], "fixture-openai");
     assert_eq!(
-        doc["providers"]["fixture-openai"]["api_key"]["env"],
-        "FIXTURE_UPSTREAM_KEY"
+        doc.at("models").at("m-chat").at("provider").as_str(),
+        Some("fixture-openai")
+    );
+    assert_eq!(
+        doc.at("providers")
+            .at("fixture-openai")
+            .at("api_key")
+            .at("env")
+            .as_str(),
+        Some("FIXTURE_UPSTREAM_KEY")
     );
     assert_eq!(
         std::fs::read_to_string(directory.0.join("providers.yaml")).unwrap(),

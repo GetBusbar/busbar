@@ -6,7 +6,7 @@ use crate::config::{card::CardFields, overlay::RootSettings};
 use busbar_kernel_ledger::cost::{ClassPrice, LaneClass, RateCard};
 
 fn cards(text: &str) -> PluginRateCards {
-    serde_yaml::from_str(text).unwrap()
+    busbar_contract::yaml::from_str(text).unwrap()
 }
 
 #[test]
@@ -15,7 +15,7 @@ fn exact_common_rates_reject_floats_and_preserve_zero() {
     assert_eq!(rates["hook"]["gate"]["calls"].nanos_per_unit(), 125);
     assert_eq!(rates["hook"]["gate"]["bytes"].nanos_per_unit(), 0);
     for bad in ["0.125", "'-1'", "'0.0001'", "18446744073709551615"] {
-        assert!(serde_yaml::from_str::<PluginRateCards>(&format!(
+        assert!(busbar_contract::yaml::from_str::<PluginRateCards>(&format!(
             "hook: {{ gate: {{ calls: {bad} }} }}"
         ))
         .is_err());
@@ -112,7 +112,8 @@ fn common_composition_preserves_an_explicit_empty_legacy_card() {
 #[test]
 fn common_rates_are_a_host_root_setting_and_overlay_replaces_the_map() {
     let mut deploy: crate::config::DeployCfg =
-        serde_yaml::from_str("plugin_rate_cards: {hook: {gate: {calls: '0.125'}}}").unwrap();
+        busbar_contract::yaml::from_str("plugin_rate_cards: {hook: {gate: {calls: '0.125'}}}")
+            .unwrap();
     assert_eq!(
         CardFields::of_deploy(&deploy).plugin_rate_cards["hook"]["gate"]["calls"].nanos_per_unit(),
         125
