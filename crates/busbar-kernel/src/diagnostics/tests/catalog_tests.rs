@@ -204,3 +204,44 @@ fn two_catalogues_lent_in_one_process_each_resolve_only_their_own_codes() {
         assert_eq!(catalogue.installed().len(), 1);
     }
 }
+
+#[test]
+fn retired_env_var_diagnostics_match_published_docs() {
+    let published: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/diagnostics.json"
+    )))
+    .unwrap();
+    let page = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/diagnostics.md"
+    ));
+    for diagnostic in [&RETIRED_ENV_VAR_IGNORED, &DEPRECATED_ENV_VAR_HONORED] {
+        let rendered: Vec<serde_json::Value> =
+            serde_json::from_str(&render_json_for(&[diagnostic])).unwrap();
+        assert_eq!(
+            published
+                .iter()
+                .find(|entry| entry["number"] == diagnostic.code)
+                .unwrap_or_else(|| panic!("{} is not published", diagnostic.banner())),
+            &rendered[0],
+            "docs/diagnostics.json drifted from the catalog for {}",
+            diagnostic.banner()
+        );
+        let rendered = render_markdown_for(&[diagnostic]);
+        let entry = &rendered[rendered.find("<a id=").unwrap()..];
+        assert!(
+            page.contains(entry),
+            "docs/diagnostics.md drifted from the catalog for {}",
+            diagnostic.banner()
+        );
+    }
+    assert!(
+        DEPRECATED_ENV_VAR_HONORED
+            .action
+            .contains(&RETIRED_ENV_VAR_IGNORED.banner().to_string()),
+        "the retired {} must point operators at {}",
+        DEPRECATED_ENV_VAR_HONORED.banner(),
+        RETIRED_ENV_VAR_IGNORED.banner()
+    );
+}

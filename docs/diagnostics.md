@@ -470,7 +470,7 @@ A model has a `rate_card` entry present but every tier (input, output, cache_rea
 
 RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.
 
-**What to do:** Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md.
+**What to do:** Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029.
 
 <a id="config-overlay-rejected"></a>
 ### BUSBAR-3023 — Config overlay rejected at read (the reason, naming the key and the file) — RETIRED *(retired)*

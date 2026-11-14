@@ -443,6 +443,9 @@ fn refusal_list(
 }
 
 pub(crate) fn validate_config_command() -> i32 {
+    for w in crate::root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
+        eprintln!("{w}");
+    }
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     let ignore_overlay = ignore_overlay_requested(std::env::args());
