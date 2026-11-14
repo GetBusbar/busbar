@@ -226,6 +226,7 @@ impl<'a> StoreJournal<'a> {
     /// Select one head and then walk immutable records with constant retained
     /// state. Concurrent appends cannot change this cursor's selected prefix.
     pub(crate) async fn replay(&self) -> Result<Replay<'_, 'a>> {
+        count_replay();
         let mut rows = self
             .read(vec![self.address(b'H', 0), self.address(b'O', 0)])
             .await?;
@@ -474,6 +475,22 @@ fn advance(previous: Head, record: &JournalRecord) -> Result<Head> {
 
 /// Returns one verified original frame at a time. A domain must finish the
 /// cursor before treating a replay as complete or publishing reconstructed state.
+thread_local! {
+    static REPLAYS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count one whole-journal replay cursor opened on this thread.
+fn count_replay() {
+    REPLAYS.with(|replays| replays.set(replays.get().wrapping_add(1)));
+}
+
+/// Whole-journal replay cursors opened on this thread (WASTE-CORE-LIFECYCLE W1 count tests).
+#[doc(hidden)]
+#[must_use]
+pub fn replays_on_this_thread() -> u64 {
+    REPLAYS.with(std::cell::Cell::get)
+}
+
 pub(crate) struct Replay<'j, 's> {
     journal: &'j StoreJournal<'s>,
     target: VerifiedHead,
