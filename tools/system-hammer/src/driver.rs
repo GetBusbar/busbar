@@ -380,7 +380,7 @@ struct Ctx {
     arrivals: AtomicU64,
     rate: f64,
     seq: AtomicU64,
-    first_error: std::sync::Mutex<Option<String>>,
+    first_error: std::sync::OnceLock<String>,
 }
 
 impl Ctx {
@@ -410,8 +410,12 @@ impl Ctx {
             Ok(Ok(x)) if x.status != p.expect_status => {
                 let st = x.status;
                 if let Some(b) = &x.body {
-                    let text = String::from_utf8_lossy(&b[..b.len().min(400)]).into_owned();
-                    self.note_error(|| format!("status {st}: {text}"));
+                    self.note_error(|| {
+                        format!(
+                            "status {st}: {}",
+                            String::from_utf8_lossy(&b[..b.len().min(400)])
+                        )
+                    });
                 } else {
                     self.note_error(|| format!("status {st}"));
                 }
@@ -421,8 +425,12 @@ impl Ctx {
                 if let (Some(b), Some(want)) = (&x.body, &p.expect_contains) {
                     checked = Some(contains(b, want));
                     if checked == Some(false) {
-                        let text = String::from_utf8_lossy(&b[..b.len().min(400)]).into_owned();
-                        self.note_error(|| format!("body without expected marker: {text}"));
+                        self.note_error(|| {
+                            format!(
+                                "body without expected marker: {}",
+                                String::from_utf8_lossy(&b[..b.len().min(400)])
+                            )
+                        });
                         Err("body".into())
                     } else {
                         Ok(x)
@@ -463,9 +471,8 @@ impl Ctx {
     }
 
     fn note_error(&self, f: impl FnOnce() -> String) {
-        let mut g = self.first_error.lock().unwrap();
-        if g.is_none() {
-            *g = Some(f());
+        if self.first_error.get().is_none() {
+            let _ = self.first_error.set(f()); // a lost race just drops a String
         }
     }
 }
@@ -533,7 +540,7 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
         arrivals: AtomicU64::new(0),
         rate,
         seq: AtomicU64::new(0),
-        first_error: std::sync::Mutex::new(None),
+        first_error: std::sync::OnceLock::new(),
         plan,
     });
 
@@ -582,7 +589,7 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
         }
     }
     out.measured = ctx.plan.measure;
-    let first = ctx.first_error.lock().unwrap().take();
+    let first = ctx.first_error.get().cloned();
     (out, first)
 }
 
