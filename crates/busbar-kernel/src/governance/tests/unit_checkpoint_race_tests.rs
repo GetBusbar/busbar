@@ -127,7 +127,8 @@ fn decision_name(decision: &Decision) -> &'static str {
         Decision::ConditionConflict => "ConditionConflict",
         Decision::TimeGuardFailed { .. } => "TimeGuardFailed",
         Decision::OpIdConflict => "OpIdConflict",
-        Decision::ExpiredUnknown => "ExpiredUnknown",
+        Decision::Fenced => "Fenced",
+        Decision::Stale => "Stale",
     }
 }
 
@@ -170,7 +171,7 @@ impl Mem {
         if root.writer_epoch != candidate.id.writer_epoch
             || !writer.admits(candidate.id.execution_epoch)
         {
-            return Decision::ExpiredUnknown;
+            return Decision::Fenced;
         }
         for predicate in &candidate.predicates {
             let found = row(&state, &predicate.address);
@@ -275,7 +276,11 @@ impl PersistenceBackend for Mem {
             })
         })
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        _key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             if !is_unitcp(&prepared) {
                 return Ok(self.apply(&prepared));
