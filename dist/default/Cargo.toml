@@ -630,6 +630,9 @@ busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-
 tokio-tungstenite = { workspace = true }
 h2 = { workspace = true }
 ring = { workspace = true }
+# R34 no-tree-escape: the source-rule escapes check parses the binary's sources (with line spans).
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
 # The root's transport refresh fixture uses the connector's instance-local test support.
 busbar-core-connector = { path = "../../crates/busbar-core-connector", features = ["test-support"] }
 # The kernel's test fixtures on its pub API (the root's tests and this crate's).
