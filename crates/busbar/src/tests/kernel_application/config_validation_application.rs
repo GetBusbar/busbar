@@ -3159,20 +3159,40 @@ fn validate_with_rate_warnings(cfg: &RootCfg) -> (Result<(), Vec<String>>, Vec<S
 }
 
 #[test]
+fn test_validate_completeness_refusal_precedes_the_unknown_model_error() {
+    let mut cfg = cost_cfg(&["a", "b", "c"]);
+    cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&["a", "nope"])));
+    let (result, _) = validate_with_rate_warnings(&cfg);
+    let errors = result.expect_err("a partial card with an unknown model is refused");
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(
+        errors[0],
+        "rate_card is present but 2 configured models have no rate entry (rate_card is \
+         AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+         Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
+         \x20   b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n\
+         \x20   c: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n",
+    );
+    assert!(
+        errors[1].starts_with("rate_card names model 'nope'"),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn test_validate_missing_rates_warn_but_unknown_models_still_refuse() {
     let mut cfg = cost_cfg(&["claude-opus-4"]);
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[
         "some-other-model",
     ])));
-    let (result, warnings) = validate_with_rate_warnings(&cfg);
+    let (result, _) = validate_with_rate_warnings(&cfg);
     let joined = result
         .expect_err("an unknown rate-card model remains invalid")
         .join("\n");
     assert!(
-        warnings
-            .iter()
-            .any(|line| line.contains("claude-opus-4") && line.contains("has no configured rate")),
-        "missing configured model has a warning: {warnings:?}"
+        joined.contains("rate_card is present but 1 configured model has no rate entry")
+            && joined.contains("    claude-opus-4: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"),
+        "the configured model the card does not name is refused with a stub: {joined}"
     );
 
     assert!(
@@ -3194,20 +3214,25 @@ fn test_validate_missing_rates_warn_but_unknown_models_still_refuse() {
 }
 
 #[test]
-fn test_validate_unpriced_class_with_billing_on_warns_without_refusing_boot() {
+fn test_validate_unpriced_class_with_billing_on_refuses_boot() {
     let mut cfg = cost_cfg(&["claude-opus-4"]);
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[
         "some-priced-model",
     ])));
     cfg.models
         .insert("some-priced-model".to_string(), make_model("p", 10));
-    let (result, warnings) = validate_with_rate_warnings(&cfg);
-    result.expect("missing rate is advisory at configuration time");
-    assert!(
-        warnings
-            .iter()
-            .any(|line| line.contains("claude-opus-4") && line.contains("classes remain unpriced")),
-        "warning names the unpriced model: {warnings:?}"
+    let (result, _) = validate_with_rate_warnings(&cfg);
+    let errors = result.expect_err("a present card silent about a configured model refuses boot");
+    assert_eq!(
+        errors,
+        vec![
+            "rate_card is present but 1 configured model has no rate entry (rate_card is \
+             AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+             Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
+             \x20   claude-opus-4: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"
+                .to_string()
+        ],
+        "the refusal names the unpriced model with a stub"
     );
 }
 
@@ -3264,20 +3289,24 @@ fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
 }
 
 #[test]
-fn test_validate_rate_card_warns_for_every_missing_model() {
+fn test_validate_rate_card_refuses_naming_every_missing_model() {
     let mut cfg = cost_cfg(&["alpha", "long-model-name"]);
 
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[])));
-    let (result, warnings) = validate_with_rate_warnings(&cfg);
-    result.expect("missing model rates do not prevent boot");
-    for model in ["alpha", "long-model-name"] {
-        assert!(
-            warnings
-                .iter()
-                .any(|line| line.contains(model) && line.contains("has no configured rate")),
-            "warning names missing model '{model}': {warnings:?}"
-        );
-    }
+    let (result, _) = validate_with_rate_warnings(&cfg);
+    let errors = result.expect_err("a present empty card refuses every configured model");
+    assert_eq!(
+        errors,
+        vec![
+            "rate_card is present but 2 configured models have no rate entry (rate_card is \
+             AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+             Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
+             \x20   alpha:           { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n\
+             \x20   long-model-name: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n"
+                .to_string()
+        ],
+        "the refusal names every missing model, aligned"
+    );
 }
 
 #[test]

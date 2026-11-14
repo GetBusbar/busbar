@@ -90,7 +90,10 @@ fn zero(bytes: &mut [u8]) {
     std::hint::black_box(bytes);
 }
 
-struct Held {
+/// What one provider is lent for one verify, built once per provider (SINGLE-PATH SP-AU2): a
+/// submitted request is moved in, a borrowed one copied once, and a grown recall lends the same
+/// input with larger output buffers.
+struct VerifyInput {
     credential: Zeroizing<Vec<u8>>,
     lines: Vec<(String, Vec<u8>)>,
     named: Vec<NamedValue>,
@@ -104,6 +107,110 @@ struct Held {
     path: Zeroizing<String>,
     query: Zeroizing<Option<String>>,
     timestamp: u64,
+}
+
+// SAFETY: `named` points only into `lines`, which `VerifyInput` owns and never changes after
+// construction; nothing writes through it.
+unsafe impl Send for VerifyInput {}
+// SAFETY: as above.
+unsafe impl Sync for VerifyInput {}
+
+impl VerifyInput {
+    /// A borrowed request's input, copied once.
+    fn copied(
+        req: &VerifyRequest,
+        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+        headers: &Headers,
+    ) -> Arc<Self> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::VerifyCopy);
+        Self {
+            credential: req
+                .credential
+                .as_ref()
+                .and_then(|c| Some(Zeroizing::new(c.expose(seal?).clone())))
+                .unwrap_or_default(),
+            lines: req
+                .lines
+                .iter()
+                .filter(|(name, _)| headers.allows(name))
+                .filter_map(|(n, v)| Some((n.clone(), v.expose(seal?).clone())))
+                .collect(),
+            named: Vec::new(),
+            point: req.point.bit(),
+            conn: req.conn,
+            unit: req.unit,
+            peer: Zeroizing::new(req.peer.clone()),
+            body: Zeroizing::new(req.body.clone()),
+            method: Zeroizing::new(req.method.clone()),
+            authority: Zeroizing::new(req.authority.clone()),
+            path: Zeroizing::new(req.path.clone()),
+            query: Zeroizing::new(req.query.clone()),
+            timestamp: req.timestamp,
+        }
+        .named()
+    }
+
+    /// A submitted request's input, moved in: no byte is copied.
+    fn taken(
+        mut req: VerifyRequest,
+        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+        headers: &Headers,
+    ) -> Arc<Self> {
+        Self {
+            credential: req
+                .credential
+                .take()
+                .and_then(|c| Some(Zeroizing::new(c.into_exposed(seal?))))
+                .unwrap_or_default(),
+            lines: std::mem::take(&mut req.lines)
+                .into_iter()
+                .filter(|(name, _)| headers.allows(name))
+                .filter_map(|(n, v)| Some((n, v.into_exposed(seal?))))
+                .collect(),
+            named: Vec::new(),
+            point: req.point.bit(),
+            conn: req.conn,
+            unit: req.unit,
+            peer: Zeroizing::new(req.peer.take()),
+            body: Zeroizing::new(req.body.take()),
+            method: Zeroizing::new(std::mem::take(&mut req.method)),
+            authority: Zeroizing::new(std::mem::take(&mut req.authority)),
+            path: Zeroizing::new(std::mem::take(&mut req.path)),
+            query: Zeroizing::new(req.query.take()),
+            timestamp: req.timestamp,
+        }
+        .named()
+    }
+
+    /// No request at all: a login's identity buffers lend no verify input.
+    fn empty() -> Arc<Self> {
+        Self::taken(VerifyRequest::default(), None, &Headers::None)
+    }
+
+    fn named(mut self) -> Arc<Self> {
+        self.named = self
+            .lines
+            .iter()
+            .map(|(name, value)| NamedValue {
+                name: lend(name),
+                value: blob(value, BLOB_OCTETS, BLOB_SECRET),
+            })
+            .collect();
+        Arc::new(self)
+    }
+}
+
+impl Drop for VerifyInput {
+    fn drop(&mut self) {
+        zero(&mut self.credential);
+        for (_, v) in &mut self.lines {
+            zero(v);
+        }
+    }
+}
+
+struct Held {
+    input: Arc<VerifyInput>,
 
     strip: *mut StripName,
     strip_cap: u32,
@@ -115,7 +222,7 @@ struct Held {
     groups_cap: u32,
 }
 
-// SAFETY: `named` and the three buffers point only into allocations `Held` owns and frees in `Drop`;
+// SAFETY: the three buffers point only into allocations `Held` owns and frees in `Drop`;
 // after construction nothing writes through them but the plugin crossing under the dispatcher,
 // which never runs concurrently with the host's read (the host reads only after the op completed).
 unsafe impl Send for Held {}
@@ -143,14 +250,7 @@ impl Headers {
 }
 
 impl Held {
-    fn new(
-        req: &VerifyRequest,
-        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
-        headers: &Headers,
-        buf_cap: usize,
-        groups_cap: u32,
-        strip_cap: u32,
-    ) -> Arc<Self> {
+    fn new(input: Arc<VerifyInput>, buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Arc<Self> {
         let buf = Box::into_raw(vec![0u8; buf_cap].into_boxed_slice()).cast::<u8>();
         let empty = Span {
             offset: SPAN_ABSENT,
@@ -165,67 +265,37 @@ impl Held {
         };
         let strip =
             Box::into_raw(vec![unnamed; strip_cap as usize].into_boxed_slice()).cast::<StripName>();
-        let mut held = Self {
-            credential: req
-                .credential
-                .as_ref()
-                .and_then(|c| Some(Zeroizing::new(c.expose(seal?).clone())))
-                .unwrap_or_default(),
-            lines: req
-                .lines
-                .iter()
-                .filter(|(name, _)| headers.allows(name))
-                .filter_map(|(n, v)| Some((n.clone(), v.expose(seal?).clone())))
-                .collect(),
-            named: Vec::new(),
-            point: req.point.bit(),
-            conn: req.conn,
-            unit: req.unit,
-            peer: Zeroizing::new(req.peer.clone()),
-            body: Zeroizing::new(req.body.clone()),
-            method: Zeroizing::new(req.method.clone()),
-            authority: Zeroizing::new(req.authority.clone()),
-            path: Zeroizing::new(req.path.clone()),
-            query: Zeroizing::new(req.query.clone()),
-            timestamp: req.timestamp,
+        Arc::new(Self {
+            input,
             strip,
             strip_cap,
             buf,
             buf_cap,
             groups,
             groups_cap,
-        };
-        held.named = held
-            .lines
-            .iter()
-            .map(|(name, value)| NamedValue {
-                name: lend(name),
-                value: blob(value, BLOB_OCTETS, BLOB_SECRET),
-            })
-            .collect();
-        Arc::new(held)
+        })
     }
 
     fn input(&self, presented: bool) -> VerifyIn {
         VerifyIn {
             head: in_head(),
             credential: if presented {
-                blob(&self.credential, BLOB_OCTETS, BLOB_SECRET)
+                blob(&self.input.credential, BLOB_OCTETS, BLOB_SECRET)
             } else {
                 crate::dispatch::NO_BLOB
             },
-            lines: if self.named.is_empty() {
+            lines: if self.input.named.is_empty() {
                 std::ptr::null()
             } else {
-                self.named.as_ptr()
+                self.input.named.as_ptr()
             },
-            lines_len: self.named.len(),
+            lines_len: self.input.named.len(),
             request: RequestFacts {
-                method: lend(&self.method),
-                authority: lend(&self.authority),
-                canonical_path: lend(&self.path),
-                query: lend_opt(self.query.as_deref()),
-                timestamp: self.timestamp,
+                method: lend(&self.input.method),
+                authority: lend(&self.input.authority),
+                canonical_path: lend(&self.input.path),
+                query: lend_opt(self.input.query.as_deref()),
+                timestamp: self.input.timestamp,
             },
             out_buf: IdentityBuf {
                 buf: self.buf,
@@ -234,16 +304,18 @@ impl Held {
                 groups_cap: self.groups_cap,
                 _reserved: 0,
             },
-            point: self.point,
+            point: self.input.point,
             _reserved: 0,
-            conn: self.conn,
-            unit: self.unit,
+            conn: self.input.conn,
+            unit: self.input.unit,
 
             peer: self
+                .input
                 .peer
                 .as_deref()
                 .map_or(crate::dispatch::NO_BLOB, |p| blob(p, BLOB_OCTETS, 0)),
             body: self
+                .input
                 .body
                 .as_deref()
                 .map_or(crate::dispatch::NO_BLOB, |b| blob(b, BLOB_OCTETS, 0)),
@@ -339,10 +411,6 @@ impl Held {
 
 impl Drop for Held {
     fn drop(&mut self) {
-        zero(&mut self.credential);
-        for (_, v) in &mut self.lines {
-            zero(v);
-        }
         // SAFETY: the three allocations were made in `new` from boxed slices of exactly these
         // lengths, and nothing reads them once the last `Arc` is dropped.
         unsafe {
@@ -862,9 +930,7 @@ impl AuthCalls for AuthInstance {
             return Some(Verified::Failed.into());
         }
         let held = Held::new(
-            request,
-            seal,
-            &headers,
+            VerifyInput::copied(request, seal, &headers),
             IDENTITY_BUF_BYTES,
             IDENTITY_GROUPS,
             FIELDS_MAX,
@@ -879,7 +945,7 @@ impl AuthCalls for AuthInstance {
                 let Some((cap, groups, strips)) = grown(&f.out, &held) else {
                     return Some(Verified::Failed.into());
                 };
-                let bigger = Held::new(request, seal, &headers, cap, groups, strips);
+                let bigger = Held::new(Arc::clone(&held.input), cap, groups, strips);
                 let mut g = Frame::new(bigger.input(presented), identify_out());
                 let again = plugin.recall(token, slot::VERIFY, &mut g);
                 let _again = AnswerLease::new(plugin, again.lease);
@@ -908,9 +974,7 @@ impl AuthCalls for AuthInstance {
             return Box::new(Settled(Some(Verified::Failed.into())));
         }
         let held = Held::new(
-            &request,
-            seal,
-            &headers,
+            VerifyInput::taken(request, seal, &headers),
             IDENTITY_BUF_BYTES,
             IDENTITY_GROUPS,
             FIELDS_MAX,
@@ -920,8 +984,6 @@ impl AuthCalls for AuthInstance {
             call,
             Verify {
                 shared: sh.clone(),
-                request,
-                headers,
                 presented,
                 held,
                 recalled: false,
@@ -1061,8 +1123,6 @@ impl Verifying for Settled {
 
 struct Verify {
     shared: Arc<Shared>,
-    request: VerifyRequest,
-    headers: Headers,
     presented: bool,
     held: Arc<Held>,
     recalled: bool,
@@ -1082,8 +1142,7 @@ impl Answering<VerifyIn, IdentifyOut> for Verify {
             self.recalled = true;
             let grow = out.as_ref().and_then(|o| grown(o, &self.held));
             if let Some((cap, groups, strips)) = grow {
-                let seal = self.shared.dispatcher.seal();
-                self.held = Held::new(&self.request, seal, &self.headers, cap, groups, strips);
+                self.held = Held::new(Arc::clone(&self.held.input), cap, groups, strips);
                 self.shared.submit(call, &self.held, self.presented);
                 return None;
             }
