@@ -3,87 +3,54 @@
 
 //! THE MEDIA CARRIERS (DECISIONS #83: contract = shapes) — the opaque media payload values a plane
 
-use crate::bounded::SlabBytes;
+use base64::alphabet::STANDARD as STANDARD_ALPHABET;
+use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig, STANDARD};
+use base64::engine::DecodePaddingMode;
+use base64::Engine as _;
 
-const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+use crate::bounded::SlabBytes;
 
 /// Standard base64 (RFC 4648 section 4, with `=` padding). Audio cells cross the JSON/binary boundary
 pub fn base64_encode(input: &[u8]) -> String {
-    let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
-    base64_encode_into(input, &mut out);
-
-    String::from_utf8(out).expect("base64 output is ASCII")
+    STANDARD.encode(input)
 }
 
 /// [`base64_encode`], APPENDED to a buffer the caller holds: the same bytes, with no allocation when
 pub fn base64_encode_into(input: &[u8], out: &mut Vec<u8>) {
-    out.reserve(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B64_ALPHABET[((n >> 18) & 0x3f) as usize]);
-        out.push(B64_ALPHABET[((n >> 12) & 0x3f) as usize]);
-        out.push(if chunk.len() > 1 {
-            B64_ALPHABET[((n >> 6) & 0x3f) as usize]
-        } else {
-            b'='
-        });
-        out.push(if chunk.len() > 2 {
-            B64_ALPHABET[(n & 0x3f) as usize]
-        } else {
-            b'='
-        });
-    }
+    let start = out.len();
+    out.resize(start + input.len().div_ceil(3) * 4, 0);
+    let written = STANDARD
+        .encode_slice(input, &mut out[start..])
+        .expect("the buffer holds the padded length");
+    out.truncate(start + written);
 }
 
-/// The REVERSE of [`B64_ALPHABET`]: byte → its 6-bit value, `255` for every byte that is not a
-const B64_REVERSE: [u8; 256] = {
-    let mut val = [255u8; 256];
-    let mut i = 0;
-    while i < B64_ALPHABET.len() {
-        val[B64_ALPHABET[i] as usize] = i as u8;
-        i += 1;
-    }
-    val
-};
+/// The decoder's reading: the standard alphabet, trailing padding already cut, and non-zero trailing
+/// bits in the last symbol accepted, as this function always has.
+const LENIENT: GeneralPurpose = GeneralPurpose::new(
+    &STANDARD_ALPHABET,
+    GeneralPurposeConfig::new()
+        .with_decode_allow_trailing_bits(true)
+        .with_decode_padding_mode(DecodePaddingMode::RequireNone),
+);
 
 /// Decode standard base64 (padding optional; whitespace ignored). Returns `None` on any invalid byte
 pub fn base64_decode(input: &str) -> Option<SlabBytes> {
-    let val = &B64_REVERSE;
-    let mut bits: u32 = 0;
-    let mut nbits = 0u32;
-    let mut out = Vec::with_capacity(input.len() / 4 * 3);
-
-    let mut padded = false;
-    for &b in input.as_bytes() {
-        if b.is_ascii_whitespace() {
-            continue;
-        }
-        if b == b'=' {
-            padded = true;
-            continue;
-        }
-        if padded {
-            return None;
-        }
-        let v = val[b as usize];
-        if v == 255 {
-            return None;
-        }
-        bits = (bits << 6) | v as u32;
-        nbits += 6;
-        if nbits >= 8 {
-            nbits -= 8;
-            out.push((bits >> nbits) as u8);
-        }
-    }
-
-    if nbits == 6 {
-        return None;
-    }
-    Some(SlabBytes::from(out))
+    let spaced = input.bytes().any(|b| b.is_ascii_whitespace());
+    let compact: std::borrow::Cow<'_, [u8]> = if spaced {
+        input
+            .bytes()
+            .filter(|b| !b.is_ascii_whitespace())
+            .collect::<Vec<u8>>()
+            .into()
+    } else {
+        input.as_bytes().into()
+    };
+    let end = compact
+        .iter()
+        .rposition(|&b| b != b'=')
+        .map_or(0, |i| i + 1);
+    LENIENT.decode(&compact[..end]).ok().map(SlabBytes::from)
 }
 
 /// Audio payload — exactly ONE representation, enforced. `B64` is the lossless common denominator
