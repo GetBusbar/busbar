@@ -2229,16 +2229,6 @@ impl Framing {
         )
     }
 
-    /// Adopt a connection detached by its previous host framing, retaining its listener and
-    pub fn adopt_detached(
-        door: Arc<dyn FramerDoor>,
-        side: u32,
-        detached: Detached,
-        established: &Established,
-    ) -> Result<(Self, Yielded), Refused> {
-        Self::adopt_detached_mode(door, side, detached, established, false)
-    }
-
     /// Adopt once while requesting a typed opening receipt and an explicit wire commit.
     pub fn adopt_detached_staged(
         door: Arc<dyn FramerDoor>,

@@ -1251,18 +1251,6 @@ pub fn transport_publication_for_test(
     Some((resolution::published(key), resolution::in_flight(key)))
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub async fn resolve_transport_for_test(
-    name: &str,
-    hook: &crate::config::HookCfg,
-    env: &HookEnv,
-    settings_version: u64,
-) -> bool {
-    gate_transport_offloaded(name, hook, env, settings_version)
-        .await
-        .is_some()
-}
-
 pub async fn fetch_status(
     name: &str,
     hook: &crate::config::HookCfg,
