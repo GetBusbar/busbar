@@ -135,18 +135,16 @@ macro_rules! hyper_io {
                             Poll::Pending
                         };
                     }
-                    let (a, b) = p.rx.as_slices();
-                    let src = if a.is_empty() { b } else { a };
-                    let n = src.len().min(buf.remaining());
-                    buf.put_slice(&src[..n]);
-                    // Wipe what was handed up, in place; the front drain then only advances the
-                    // head, so the wiped bytes stay zero.
-                    let (a, b) = p.rx.as_mut_slices();
-                    wipe(if a.is_empty() {
-                        &mut b[..n]
-                    } else {
-                        &mut a[..n]
-                    });
+                    let n = {
+                        let (a, b) = p.rx.as_mut_slices();
+                        let src = if a.is_empty() { b } else { a };
+                        let n = src.len().min(buf.remaining());
+                        buf.put_slice(&src[..n]);
+                        // Wipe what was handed up, in place; the front drain then only advances
+                        // the head, so the wiped bytes stay zero.
+                        wipe(&mut src[..n]);
+                        n
+                    };
                     p.rx.drain(..n);
                     if p.rx.is_empty() && p.rx.capacity() > PIPE_KEEP {
                         p.rx.shrink_to(PIPE_KEEP);

@@ -495,6 +495,10 @@ fn copy_out(from: &mut VecDeque<u8>, to: *mut u8, n: usize) {
     if n == 0 {
         return;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture: read-queue copy-out"
+    )]
     let (a, b) = from.as_slices();
     let first = a.len().min(n);
     // SAFETY: `to` is a host buffer of at least `n` bytes (every caller bounds `n` by its cap).
