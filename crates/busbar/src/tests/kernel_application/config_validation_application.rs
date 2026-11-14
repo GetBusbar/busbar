@@ -3159,6 +3159,27 @@ fn validate_with_rate_warnings(cfg: &RootCfg) -> (Result<(), Vec<String>>, Vec<S
 }
 
 #[test]
+fn test_validate_completeness_refusal_precedes_the_unknown_model_error() {
+    let mut cfg = cost_cfg(&["a", "b", "c"]);
+    cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&["a", "nope"])));
+    let (result, _) = validate_with_rate_warnings(&cfg);
+    let errors = result.expect_err("a partial card with an unknown model is refused");
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(
+        errors[0],
+        "rate_card is present but 2 configured models have no rate entry (rate_card is \
+         AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+         Paste these under rate_card and fill in your rates (micro-units per token):\n\n\
+         \x20   b: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n\
+         \x20   c: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }\n",
+    );
+    assert!(
+        errors[1].starts_with("rate_card names model 'nope'"),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn test_validate_missing_rates_warn_but_unknown_models_still_refuse() {
     let mut cfg = cost_cfg(&["claude-opus-4"]);
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[
