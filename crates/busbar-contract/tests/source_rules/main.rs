@@ -5,6 +5,7 @@
 
 mod config;
 mod credential_typecheck;
+mod derive_once;
 mod secrets;
 mod walk;
 mod workflows;
