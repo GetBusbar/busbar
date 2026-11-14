@@ -287,10 +287,7 @@ async fn sink(store: Arc<CoreStore>, node: u64) -> StoreRecovery {
     StoreRecovery::new(journal, crate::teller::Kernel::new().durability_token()).unwrap()
 }
 
-async fn imported_usage(
-    backend: Arc<Backend>,
-    applied_head: bool,
-) -> (RecoveryEvent, RecoveryEvent) {
+async fn native_usage(backend: Arc<Backend>, applied_head: bool) -> (RecoveryEvent, RecoveryEvent) {
     use crate::governance::{ExactUsageDelta, GovState};
     let source = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
     let child = GovState::usage_recovery_child(
@@ -340,6 +337,14 @@ async fn imported_usage(
     } else {
         initial.clone()
     };
+    (initial, selected)
+}
+
+async fn imported_usage(
+    backend: Arc<Backend>,
+    applied_head: bool,
+) -> (RecoveryEvent, RecoveryEvent) {
+    let (initial, selected) = native_usage(backend.clone(), applied_head).await;
     let raw = backend
         .state
         .lock()
@@ -492,13 +497,7 @@ async fn native_writer_retirement_unknown_retries_exact_fence_and_blocks_delayed
 #[tokio::test]
 async fn native_writer_retirement_adopts_current_intent_without_migration_or_duplicate_charge() {
     let backend = Arc::new(Backend::default());
-    let (initial, _) = imported_usage(backend.clone(), false).await;
-    backend
-        .state
-        .lock()
-        .unwrap()
-        .rows
-        .retain(|address, _| address.namespace != *b"busbar.recimp1\0\0");
+    let (initial, _) = native_usage(backend.clone(), false).await;
     native_writer_lease(&backend, 1, 10_000);
     let target = sink(Arc::new(attach(backend.clone(), 2).await), 8).await;
     let selected = target.replay_selections().await.unwrap().pop().unwrap();
@@ -605,13 +604,7 @@ async fn imported_applied_intent_retains_exact_descriptor_after_unknown_and_orig
 async fn native_writer_retirement_resolves_exact_applied_receipt_without_reapplying_chunk() {
     use crate::governance::GovState;
     let backend = Arc::new(Backend::default());
-    let (initial, _) = imported_usage(backend.clone(), false).await;
-    backend
-        .state
-        .lock()
-        .unwrap()
-        .rows
-        .retain(|address, _| address.namespace != *b"busbar.recimp1\0\0");
+    let (initial, _) = native_usage(backend.clone(), false).await;
     let source = attach(backend.clone(), 1).await;
     let cells = GovState::legacy_usage_values(&initial).unwrap();
     let cells = cells
