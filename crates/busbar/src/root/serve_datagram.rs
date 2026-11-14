@@ -28,57 +28,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// THE CLAIM DOORS, by the claim their datagram framer answers: each one bound port.
 #[derive(Debug, Default, Clone)]
-pub struct ClaimDoors(HashMap<String, Arc<ClaimDoor>>);
+pub struct ClaimDoors(pub(in crate::root) HashMap<String, Arc<ClaimDoor>>);
 
 impl ClaimDoors {
-    pub fn insert(&mut self, claim: &str, door: Arc<ClaimDoor>) {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a claim door is keyed once, when its port is bound"
-        )]
-        self.0.insert(claim.to_owned(), door);
-    }
-
     #[must_use]
     pub fn get(&self, claim: &str) -> Option<Arc<ClaimDoor>> {
         self.0.get(claim).cloned()
-    }
-
-    pub fn bind(
-        binds: &[crate::root::loader::boot::InboundBind],
-        framer_for: impl Fn(&str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>>,
-    ) -> Result<Self, String> {
-        let mut doors = ClaimDoors::default();
-        for b in binds {
-            if b.transport.is_empty()
-                || !framer_for(&b.transport).is_some_and(|d| d.facts().datagram)
-            {
-                continue;
-            }
-            if doors.0.contains_key(&b.transport) {
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "error: the refusal text is spelled only when two claim doors share a transport"
-                )]
-                let refusal = format!(
-                    "{}: a second claim door for `{}`",
-                    b.listen_setting(),
-                    b.transport
-                );
-                return Err(refusal);
-            }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "boot: a claim door's port is bound once; its refusal text is spelled only on failure"
-            )]
-            let port = busbar_core_connector::udp::bind(&b.listen.to_string())
-                .and_then(ReadyPort::open)
-                .map_err(|e| {
-                    format!("{}: {} cannot be bound: {e}", b.listen_setting(), b.listen)
-                })?;
-            doors.insert(&b.transport, ClaimDoor::serve(port));
-        }
-        Ok(doors)
     }
 }
 
@@ -1032,20 +987,11 @@ impl Joining {
             mut pairing,
         } = self;
         if let Err(e) = door.join(framing, &leg) {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when the claim door refuses the association"
-            )]
-            let refusal = format!("the claim door refused the association: {e:?}");
-            return Err(refusal);
+            return Err(crate::root::cold::association_refused(&e));
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when the session book refuses the unit"
-        )]
         let paired = connector
             .pair(unit, Arc::clone(&pairing.pairing))
-            .map_err(|e| format!("the session book refused the unit: {e:?}"));
+            .map_err(|e| crate::root::cold::session_book_refused(&e));
         paired?;
         pairing.admitted = true;
         Ok(())

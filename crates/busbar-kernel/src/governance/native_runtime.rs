@@ -81,27 +81,7 @@ impl GovState {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
         let observed = self.observation_total_async(bucket_id, window).await?;
-        // Lane names are unique in `by_lane`: order it by name (the answer's order) and merge the
-        // observed lanes in place rather than rebuilding it through a map.
-        let mut by_lane = by_lane;
-        by_lane.sort_by(|(a, _), (b, _)| a.cmp(b));
-        for (lane, units) in observed.units {
-            let at = match by_lane.binary_search_by(|(name, _)| name.as_str().cmp(&lane)) {
-                Ok(at) => at,
-                Err(at) => {
-                    by_lane.insert(at, (lane, BTreeMap::new()));
-                    at
-                }
-            };
-            let counts = &mut by_lane[at].1;
-            for (class, count) in units {
-                let entry = counts.entry(class).or_default();
-                *entry = entry
-                    .checked_add(count)
-                    .map_err(|_| RecordStoreError("observation lane count overflow".into()))?;
-            }
-        }
-        Ok(by_lane)
+        model_lanes(&cell, &observed)
     }
 
     /// The /metrics view of many buckets (keys or group buckets, each with its
@@ -274,7 +254,7 @@ impl GovState {
         observed: &crate::persistence::observations::BudgetTotal,
     ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
         if observed.spent_nanos == 0 && observed.units.is_empty() {
-            return self.price_cell(cost, include_request_fee, cell);
+            return self.price_cell(cost, include_request_fee, &cell);
         }
         let tokens = Count::total(
             std::iter::once(cell.total_tokens()).chain(

@@ -16,7 +16,7 @@ pub const KIND_API_ERROR: &str = "api_error";
 pub const DETAIL_REQUEST_TIMEOUT: &str = "The request timed out. Please retry shortly.";
 
 /// The words an internal failure before any send says.
-pub(crate) const DETAIL_INTERNAL_ERROR: &str =
+pub const DETAIL_INTERNAL_ERROR: &str =
     "We received an unexpected internal error. Please try again.";
 
 /// The words a spill says when a gate's restriction left no eligible member in the pool it spilled

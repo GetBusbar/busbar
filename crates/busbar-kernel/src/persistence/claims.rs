@@ -367,10 +367,6 @@ impl<'a> Claims<'a> {
     }
 }
 
-#[cfg(test)]
-/// One pass uses advancing keys, not a pinned scan generation: deleting a page
-/// itself changes membership. Inserts behind the cursor belong to the next pass.
-/// Live rows cannot repeatedly hide expired rows farther along the key range.
 const CLAIM_SWEEP_MAX_REST: std::time::Duration =
     std::time::Duration::from_secs(crate::config::limits::DEFAULT_CLAIM_SWEEP_MAX_REST_SECS);
 const _: () = assert!(
@@ -379,6 +375,10 @@ const _: () = assert!(
     "claim sweep rest must stay within [1 s, 1 h]"
 );
 
+#[cfg(test)]
+/// One pass uses advancing keys, not a pinned scan generation: deleting a page
+/// itself changes membership. Inserts behind the cursor belong to the next pass.
+/// Live rows cannot repeatedly hide expired rows farther along the key range.
 pub struct Sweep<'a> {
     store: &'a CoreStore,
     state: SweepState,

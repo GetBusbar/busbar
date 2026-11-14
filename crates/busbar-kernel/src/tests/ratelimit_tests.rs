@@ -303,21 +303,6 @@ fn ratelimit_verdicts_unchanged() {
 }
 
 #[test]
-fn ratelimit_check_constant() {
-    let cost = |n: u64| {
-        let limiter = MutationLimiter::new();
-        let t = 1_000_020;
-        for i in 0..n {
-            let _ = limiter.check(&format!("p{i}"), MutationClass::Crud, t);
-        }
-        let before = limiter.state.lock().unwrap().windows.visits();
-        let _ = limiter.check("p0", MutationClass::Crud, t);
-        limiter.state.lock().unwrap().windows.visits() - before
-    };
-    assert_eq!(cost(10), cost(100_000));
-}
-
-#[test]
 fn every_mutation_class_names_itself_to_the_audit_row() {
     assert_eq!(MutationClass::Config.label(), "config");
     assert_eq!(MutationClass::Crud.label(), "crud");

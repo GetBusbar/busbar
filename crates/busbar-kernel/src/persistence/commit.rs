@@ -190,6 +190,12 @@ impl Attempt {
         Self::self_fenced(candidate, proof, backend)
     }
 
+    /// The dedupe key this attempt travels with; `None` for restored custody.
+    #[cfg(test)]
+    pub(crate) fn key(&self) -> Option<CommitKey> {
+        self.key
+    }
+
     /// Restore immutable candidate custody only, with submission prohibited.
     ///
     /// A restored candidate has no leased slot. It cannot establish complete durable

@@ -26,6 +26,7 @@
 //! walk reports ([`super::FarEnd::candidates`]). A unit no hook binds pays nothing: no projection,
 //! no allocation beyond the binder's answer.
 
+use std::borrow::Cow;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -1003,8 +1004,7 @@ fn trimmed_tags(mut tags: Vec<String>) -> Vec<String> {
     tags
 }
 
-static UNRANKED_WARNED: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+static UNRANKED_WARNED: LazyLock<Mutex<foldhash::HashSet<String>>> = LazyLock::new(Mutex::default);
 
 /// The ordering policy answered and made no choice: the walk is SWRR. Say so once per
 /// policy@pool when no shown member carries a fully priced routing-cost recipe.
@@ -2108,8 +2108,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         if !hooks.taps.candidate.is_empty() {
             fire_stage_taps_where(
                 &hooks.taps.candidate,
-                &view.shape(hooks.request_id, &pool),
-                &stage_at("candidate", None, None, Some(keep.len()), None, None, None),
+                &shape.shape(hooks.request_id, &pool),
+                &stage_at("candidate", None, None, Some(all.len()), None, None, None),
                 SignalBag::default(),
                 &*hooks.groups,
             );
@@ -2424,7 +2424,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         }
         fire_stage_taps_where(
             &hooks.taps.routing,
-            &view.shape(hooks.request_id, &st.hooked_pool),
+            &shape.shape(hooks.request_id, &st.hooked_pool),
             &stage_at(
                 "routing",
                 Some(member),
@@ -2458,7 +2458,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             };
             fire_stage_taps_where(
                 &hooks.taps.response,
-                &view.shape(hooks.request_id, &st.hooked_pool),
+                &shape.shape(hooks.request_id, &st.hooked_pool),
                 &stage_at(
                     "response",
                     None,
@@ -2514,7 +2514,7 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection<'_>, pool: &str) {
         return;
     }
     let reads = hooks.reads.clone();
-    let dialect = view.dialect.clone();
+    let dialect = view.dialect.to_string();
     crate::detached::spawn_detached(async move {
         let names: Vec<String> = content.iter().map(|t| t.1.name().to_owned()).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();

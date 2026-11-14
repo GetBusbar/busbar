@@ -1640,7 +1640,7 @@ fn operation(plan_sha256: &str, phase: &str) -> OpId {
 
 async fn transaction(
     core: &CoreStore,
-    request: Request,
+    mut request: Request,
     binding: Option<&WitnessBinding>,
 ) -> Result<(), String> {
     use crate::persistence::host_records::{HostRecords, Outcome};
@@ -1658,8 +1658,7 @@ async fn transaction(
         clippy::disallowed_methods,
         reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
     )]
-    let predicates = request
-        .predicates
+    let predicates = std::mem::take(&mut request.predicates)
         .into_iter()
         .map(|predicate| {
             let bytes = match &predicate.expected {
@@ -1690,8 +1689,7 @@ async fn transaction(
         clippy::disallowed_methods,
         reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
     )]
-    let mutations = request
-        .mutations
+    let mutations = std::mem::take(&mut request.mutations)
         .into_iter()
         .map(|mutation| match mutation {
             Mutation::Put { schema, key, value } if schema == SCHEMA.as_str() => {
