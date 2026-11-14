@@ -214,7 +214,7 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
         .expect("actual Store statement reads")
         .expect("actual Store states its door");
     let dispatcher = Arc::new(busbar_plugin_loader::dispatch::Dispatcher::new(
-        busbar_plugin_loader::dispatch::DispatchConfig::default(),
+        harness_dispatch(),
         busbar_contract::services::test_caller_binding(),
     ));
     let axis = busbar_plugin_loader::store_v4::DoorPersistenceAxis {

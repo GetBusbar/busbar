@@ -12,9 +12,33 @@ static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
 pub fn config(workers: usize) -> DispatchConfig {
     DispatchConfig {
         workers: u32::try_from(workers).unwrap_or(u32::MAX).max(1),
+        #[cfg(any(test, feature = "test-harness"))]
+        budgets: harness_budgets(),
         ..DispatchConfig::default()
     }
 }
+
+/// The watch budgets of a test or test-harness build. The shipped budgets (1 s per call
+/// crossing, quarantine on the first breach) are calibrated for an optimized binary. An
+/// unoptimized fixture process doing a durable SQLite commit can exceed 1 s when the CI
+/// confinement runs 16 such processes at once and their fsyncs and CPU contend. The breach
+/// faults the commit (`Pending`) and quarantines the only Store for the rest of the process.
+/// The watchdog still faults a wedged crossing; only the wall-clock allowance is wider.
+#[cfg(any(test, feature = "test-harness"))]
+#[must_use]
+pub fn harness_budgets() -> crate::root::loader::dispatch::Budgets {
+    let shipped = crate::root::loader::dispatch::Budgets::default();
+    crate::root::loader::dispatch::Budgets {
+        call: HARNESS_CROSSING_BUDGET.max(shipped.call),
+        stream: HARNESS_CROSSING_BUDGET.max(shipped.stream),
+        connection: HARNESS_CROSSING_BUDGET.max(shipped.connection),
+        write_behind: HARNESS_CROSSING_BUDGET.max(shipped.write_behind),
+        lifecycle: shipped.lifecycle,
+    }
+}
+
+#[cfg(any(test, feature = "test-harness"))]
+const HARNESS_CROSSING_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub fn boot(workers: usize, services: &LateServices) -> Arc<Dispatcher> {
     Arc::clone(DISPATCHER.get_or_init(|| Arc::new(build(workers, services))))
