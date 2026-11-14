@@ -1069,7 +1069,7 @@ hook_op!(
     Configure,
     ConfigureIn,
     ConfigureOut,
-    |held, _i, input, out| {
+    |held, _i, input, mut out| {
         let settings = match configure_settings(input.field(|i| &i.settings).bytes()) {
             Ok(settings) => settings,
             Err(refusal) => return out.fail(refusal),
