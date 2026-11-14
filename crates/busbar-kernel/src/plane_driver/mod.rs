@@ -697,9 +697,7 @@ pub struct Decoded {
 
 #[must_use]
 pub fn sticky_hash(key: &[u8]) -> u64 {
-    key.iter().fold(crate::store::FNV1A_OFFSET_BASIS, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(crate::store::FNV1A_PRIME)
-    })
+    crate::store::fnv1a_bytes(key)
 }
 
 pub trait DriverSteps {
