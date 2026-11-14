@@ -237,6 +237,38 @@ impl LoadablePlugin {
     }
 }
 
+/// Why a loadable row did not open: its Statement did not read, it has no door, the site's
+/// `Bind` failed, or the loader refused it. Each site formats it with its own prefix.
+pub enum RowRefusal {
+    Stated(String),
+    NoDoor,
+    Bind(String),
+    Load(crate::dispatch::LoadError),
+}
+
+/// Open a loadable row: its compiled-in door through `LinkedRow::of_raw`, else its stated
+/// rendering and library bytes (shown as `display`). The door is classified first; `bind` is
+/// called only for a row that has one.
+pub fn open_loadable<K: crate::dispatch::Kind>(
+    row: &LoadablePlugin,
+    display: &str,
+    bind: impl FnOnce() -> Result<crate::dispatch::Bind, String>,
+) -> Result<crate::dispatch::Plugin<K>, RowRefusal> {
+    use crate::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
+    if let Some(door) = row.door() {
+        let linked = LinkedRow::of_raw(door).map_err(RowRefusal::Load)?;
+        let bind = bind().map_err(RowRefusal::Bind)?;
+        return load_linked::<K>(&linked, bind).map_err(RowRefusal::Load);
+    }
+    let stated = row
+        .manifest
+        .stated_rendering()
+        .map_err(RowRefusal::Stated)?
+        .ok_or(RowRefusal::NoDoor)?;
+    let bind = bind().map_err(RowRefusal::Bind)?;
+    load_dropped_bytes::<K>(&row.lib_bytes, display, &stated, bind).map_err(RowRefusal::Load)
+}
+
 pub const JSON_SECRET_REFUSED: &str = "it speaks the 1.5.5 JSON secret contract, which this host does not load — rebuild the plugin against the 1.6.0 SDK";
 
 pub const LINKED_FILE: &str = "(linked)";

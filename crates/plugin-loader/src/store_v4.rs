@@ -62,7 +62,6 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
     ) -> owned::lifecycle::PrepareCall<'a> {
         Box::pin(async move {
             use busbar_contract::abi::mechanism::KindCode;
-            use owned::axis::StoreDoor;
             let sink = self
                 .logs
                 .sink(label, KindCode::Store, Arc::new(crate::dispatch::NoSink))
@@ -77,16 +76,7 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                 dispatcher: self.dispatcher.adopter(),
                 conns: self.conns.clone(),
             };
-            let plugin = match door {
-                StoreDoor::Linked(door) => crate::dispatch::LinkedRow::of_kind::<StoreV4>(door)
-                    .and_then(|row| crate::dispatch::load_linked::<StoreV4>(&row, bind)),
-                StoreDoor::Dropped {
-                    file,
-                    bytes,
-                    stated,
-                } => crate::dispatch::load_dropped_bytes::<StoreV4>(&bytes, &file, &stated, bind),
-            }
-            .map_err(|e| {
+            let plugin = open_store(door, bind).map_err(|e| {
                 eprintln!("store prepare '{label}': plugin load refused: {e}");
                 owned::lifecycle::Error::Unavailable
             })?;
@@ -106,7 +96,6 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
     ) -> owned::axis::OpenCall<'a> {
         Box::pin(async move {
             use busbar_contract::abi::mechanism::KindCode;
-            use owned::axis::StoreDoor;
 
             let sink = self
                 .logs
@@ -118,21 +107,29 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                 dispatcher: self.dispatcher.adopter(),
                 conns: self.conns.clone(),
             };
-            let plugin = match door {
-                StoreDoor::Linked(door) => crate::dispatch::LinkedRow::of_kind::<StoreV4>(door)
-                    .and_then(|row| crate::dispatch::load_linked::<StoreV4>(&row, bind)),
-                StoreDoor::Dropped {
-                    file,
-                    bytes,
-                    stated,
-                } => crate::dispatch::load_dropped_bytes::<StoreV4>(&bytes, &file, &stated, bind),
-            }
-            .map_err(|error| error.to_string())?;
+            let plugin = open_store(door, bind).map_err(|error| error.to_string())?;
             let backend =
                 LoadedPersistence::open(plugin, self.dispatcher.clone(), settings, self.limits)
                     .await?;
             Ok(Arc::new(backend) as owned::axis::OpenedBackend)
         })
+    }
+}
+
+/// Open a Store door, compiled in or dropped.
+fn open_store(
+    door: owned::axis::StoreDoor,
+    bind: crate::dispatch::Bind,
+) -> Result<crate::dispatch::Plugin<StoreV4>, crate::dispatch::LoadError> {
+    use owned::axis::StoreDoor;
+    match door {
+        StoreDoor::Linked(door) => crate::dispatch::LinkedRow::of_kind::<StoreV4>(door)
+            .and_then(|row| crate::dispatch::load_linked::<StoreV4>(&row, bind)),
+        StoreDoor::Dropped {
+            file,
+            bytes,
+            stated,
+        } => crate::dispatch::load_dropped_bytes::<StoreV4>(&bytes, &file, &stated, bind),
     }
 }
 

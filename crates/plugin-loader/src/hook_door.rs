@@ -27,8 +27,8 @@ use crate::dispatch::lifecycle::{
     blob, close, copy_blob, lend_or_null, open_frame, release, text, validate_json, AnswerLease,
 };
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
-    EnvelopeSink, Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig,
+    in_head, now_ns, out_head, Bind, ConnTable, Dispatcher, EnvelopeSink, Frame, InFrame, Lent,
+    NoSink, OutFrame, Plugin, PluginLogConfig,
 };
 use crate::PluginRegistry;
 
@@ -1306,13 +1306,8 @@ impl HookRows {
             dispatcher: dispatcher.adopter(),
             conns,
         };
-        match &c.origin {
-            Origin::Linked(row) => load_linked::<Hook>(row, bind),
-            Origin::Dropped { file, bytes } => {
-                load_dropped_bytes::<Hook>(bytes, file, &c.stated, bind)
-            }
-        }
-        .map_err(|e| format!("hook plugin '{}': {e}", c.name))
+        crate::boot::open_candidate::<Hook>(c, bind)
+            .map_err(|e| format!("hook plugin '{}': {e}", c.name))
     }
 }
 

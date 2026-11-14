@@ -23,12 +23,12 @@ use busbar_contract::redacted::Secret as SecretValue;
 use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
 use busbar_contract::secret_ref::SecretRef;
 
-use crate::boot::{Candidate, Origin};
+use crate::boot::Candidate;
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::lifecycle::{self, blob, open_frame, AnswerLease};
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
-    EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
+    in_head, now_ns, out_head, Bind, ConnTable, Dispatcher, EnvelopeSink, Frame, NoSink, Plugin,
+    PluginLogConfig, NO_BLOB,
 };
 
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -695,13 +695,8 @@ impl SecretRows {
 
             conns: ConnTable::serving((self.conns)()),
         };
-        match &c.origin {
-            Origin::Linked(row) => load_linked::<Secret>(row, bind),
-            Origin::Dropped { file, bytes } => {
-                load_dropped_bytes::<Secret>(bytes, file, &c.stated, bind)
-            }
-        }
-        .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))
+        crate::boot::open_candidate::<Secret>(c, bind)
+            .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))
     }
 
     fn secret_refs(c: &Candidate) -> Result<Vec<String>, String> {

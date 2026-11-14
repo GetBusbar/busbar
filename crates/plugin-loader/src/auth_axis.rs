@@ -11,10 +11,8 @@ use busbar_contract::conn::admissions::AdmissionAuthority;
 
 use crate::auth_door::{AuthInstance, AuthSink};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
-use crate::dispatch::{
-    load_dropped_bytes, load_linked, Bind, ConnTable, Dispatcher, LinkedRow, Plugin,
-};
-use crate::registry::LoadablePlugin;
+use crate::dispatch::{Bind, ConnTable, Dispatcher, LinkedRow, Plugin};
+use crate::registry::{open_loadable, LoadablePlugin, RowRefusal};
 use crate::PluginRegistry;
 
 const AUTH: &str = "auth";
@@ -120,14 +118,13 @@ impl AuthRows {
                 ConnTable::Probe
             },
         };
-        let loaded = match row.door() {
-            Some(door) => LinkedRow::of_raw(door).and_then(|r| load_linked::<Auth>(&r, bind)),
-            None => match row.manifest.stated_rendering().map_err(refused)? {
-                None => return Err(refused(NO_DOOR.to_string())),
-                Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
-            },
-        };
-        let plugin = loaded.map_err(|e| refused(e.to_string()))?;
+        let plugin = open_loadable::<Auth>(row, name, move || Ok(bind)).map_err(|e| {
+            refused(match e {
+                RowRefusal::Stated(e) | RowRefusal::Bind(e) => e,
+                RowRefusal::NoDoor => NO_DOOR.to_string(),
+                RowRefusal::Load(e) => e.to_string(),
+            })
+        })?;
         Ok(Door::Memory(plugin, sink))
     }
 
