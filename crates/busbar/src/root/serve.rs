@@ -93,11 +93,17 @@ pub(crate) const TICKET_CUSTODY_PER_KEY: usize = 256;
 /// One full sweep cycle, in seconds: the sweep visits every held ticket in this many passes.
 const TICKET_SWEEP_CYCLE_SECS: u64 = (TICKET_CUSTODY_CAP / TICKET_SWEEP_BATCH) as u64;
 
-static TICKET_NODES: std::sync::LazyLock<Mutex<Vec<std::sync::Weak<TicketCustody>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+/// Every node's ticket custody, by the node's registration order. A custody leaves the list when it
+/// drops, so the list holds no dead entries to prune.
+static TICKET_NODES: Mutex<BTreeMap<u64, std::sync::Weak<TicketCustody>>> =
+    Mutex::new(BTreeMap::new());
+/// The next [`TICKET_NODES`] key.
+static TICKET_NODE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) struct TicketCustody {
     pub(crate) nonce: Arc<()>,
+    /// This custody's key in [`TICKET_NODES`].
+    node: u64,
     closed: std::sync::atomic::AtomicBool,
     sources: Mutex<foldhash::HashMap<busbar_contract::UnitKey, Arc<TicketSource>>>,
     entries: Mutex<TicketEntries>,
@@ -106,21 +112,53 @@ pub(crate) struct TicketCustody {
     sweep_reads: std::sync::atomic::AtomicU64,
 }
 
+impl Drop for TicketCustody {
+    fn drop(&mut self) {
+        let gone = TICKET_NODES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.node);
+        drop(gone);
+    }
+}
+
+/// A ticket source's key, indexed by its id: the source's key is shared, its id never copied.
+struct KeyId(Arc<busbar_contract::records::VirtualKey>);
+
+impl PartialEq for KeyId {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+}
+
+impl Eq for KeyId {}
+
+impl std::hash::Hash for KeyId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(self.0.id.as_str(), state);
+    }
+}
+
+impl std::borrow::Borrow<str> for KeyId {
+    fn borrow(&self) -> &str {
+        &self.0.id
+    }
+}
+
 /// The node's ticket custody. `tickets` is the map; `by_key` partitions it per key id as
 /// `(expires_at, ticket id)`, `pending` names each unit's one ticket not yet ready, and `due`
-/// orders every held ticket by expiry for the sweep. Only [`TicketEntries::insert`],
-/// [`TicketEntries::remove`], [`TicketEntries::take_pending`] and [`TicketEntries::take_all`]
-/// change them, and each keeps the four in step.
+/// orders every held ticket by expiry for the sweep. Every index shares the map's one copy of a
+/// ticket id. Only [`TicketEntries::insert`], [`TicketEntries::remove_entry`],
+/// [`TicketEntries::take_pending`] and [`TicketEntries::take_all`] change them, and each keeps the
+/// four in step.
 #[derive(Default)]
 struct TicketEntries {
-    tickets: BTreeMap<String, TicketEntry>,
-    by_key: foldhash::HashMap<Box<str>, std::collections::BTreeSet<(u64, Box<str>)>>,
-    pending: foldhash::HashMap<busbar_contract::UnitKey, Box<str>>,
+    tickets: BTreeMap<Arc<str>, TicketEntry>,
+    by_key: foldhash::HashMap<KeyId, std::collections::BTreeSet<(u64, Arc<str>)>>,
+    pending: foldhash::HashMap<busbar_contract::UnitKey, Arc<str>>,
     /// Every held ticket by its expiry (unix seconds), so the sweep reads only the due ones.
-    due: std::collections::BTreeSet<(u64, String)>,
-    by_key: foldhash::HashMap<Box<str>, std::collections::BTreeSet<(u64, Box<str>)>>,
-    pending: foldhash::HashMap<busbar_contract::UnitKey, Box<str>>,
-    cursor: Option<String>,
+    due: std::collections::BTreeSet<(u64, Arc<str>)>,
+    cursor: Option<Arc<str>>,
     /// When the round-robin backstop last ran.
     backstop_at: Option<std::time::Instant>,
     version: u64,
@@ -130,69 +168,57 @@ impl TicketEntries {
     /// Hold `entry` under `id`, indexed by its key, its expiry and, when not ready, by its unit.
     /// A ticket the map already held under `id` is answered, unindexed, for the caller to drop
     /// outside the lock.
-    fn insert(&mut self, id: String, entry: TicketEntry) -> Option<TicketEntry> {
+    fn insert(&mut self, id: Arc<str>, entry: TicketEntry) -> Option<TicketEntry> {
         let replaced = self.remove(&id);
-        let ticket: Box<str> = id.as_str().into();
         self.by_key
-            .entry(entry.source.key.id.as_str().into())
+            .entry(KeyId(Arc::clone(&entry.source.key)))
             .or_default()
-            .insert((entry.expires_at, ticket.clone()));
+            .insert((entry.expires_at, Arc::clone(&id)));
         if !entry.ready {
-            self.pending.insert(entry.source.unit, ticket);
+            self.pending.insert(entry.source.unit, Arc::clone(&id));
         }
-        self.due.insert((entry.expires_at, id.clone()));
+        self.due.insert((entry.expires_at, Arc::clone(&id)));
         self.tickets.insert(id, entry);
         replaced
     }
 
     /// Release the ticket `id`, out of every index.
     fn remove(&mut self, id: &str) -> Option<TicketEntry> {
-        let entry = self.tickets.remove(id)?;
-        let key = entry.source.key.id.as_str();
-        if let Some(held) = self.by_key.get_mut(key) {
-            held.remove(&(entry.expires_at, Box::from(id)));
-            if held.is_empty() {
-                self.by_key.remove(key);
-            }
-        }
-        if self
-            .pending
-            .get(&entry.source.unit)
-            .is_some_and(|pending| &**pending == id)
-        {
-            self.pending.remove(&entry.source.unit);
-        }
-        self.due.remove(&(entry.expires_at, id.to_owned()));
-        let key = entry.source.key.id.as_str();
-        if let Some(held) = self.by_key.get_mut(key) {
-            held.remove(&(entry.expires_at, Box::from(id)));
-            if held.is_empty() {
-                self.by_key.remove(key);
-            }
-        }
-        if self
-            .pending
-            .get(&entry.source.unit)
-            .is_some_and(|pending| &**pending == id)
-        {
-            self.pending.remove(&entry.source.unit);
-        }
-        Some(entry)
+        self.remove_entry(id).map(|(_, entry)| entry)
     }
 
-    /// Release `unit`'s one ticket not yet ready, if it holds one.
-    fn take_pending(&mut self, unit: busbar_contract::UnitKey) -> Option<TicketEntry> {
-        let id = self.pending.get(&unit)?.clone();
-        self.remove(&id)
+    /// Release the ticket `id`, out of every index, with the map's copy of its id.
+    fn remove_entry(&mut self, id: &str) -> Option<(Arc<str>, TicketEntry)> {
+        let (id, entry) = self.tickets.remove_entry(id)?;
+        let key = entry.source.key.id.as_str();
+        if let Some(held) = self.by_key.get_mut(key) {
+            held.remove(&(entry.expires_at, Arc::clone(&id)));
+            if held.is_empty() {
+                self.by_key.remove(key);
+            }
+        }
+        if self
+            .pending
+            .get(&entry.source.unit)
+            .is_some_and(|pending| *pending == id)
+        {
+            self.pending.remove(&entry.source.unit);
+        }
+        self.due.remove(&(entry.expires_at, Arc::clone(&id)));
+        Some((id, entry))
+    }
+
+    /// Release `unit`'s one ticket not yet ready, if it holds one, with its id.
+    fn take_pending(&mut self, unit: busbar_contract::UnitKey) -> Option<(Arc<str>, TicketEntry)> {
+        let id = Arc::clone(self.pending.get(&unit)?);
+        self.remove_entry(&id)
     }
 
     /// Release every ticket.
-    fn take_all(&mut self) -> BTreeMap<String, TicketEntry> {
+    fn take_all(&mut self) -> BTreeMap<Arc<str>, TicketEntry> {
         self.by_key.clear();
         self.pending.clear();
         self.due.clear();
-        self.by_key.clear();
-        self.pending.clear();
         std::mem::take(&mut self.tickets)
     }
 
@@ -302,23 +328,20 @@ impl Drop for TicketSourceOwner {
 
 impl TicketCustody {
     pub(crate) fn new() -> Arc<Self> {
+        let node = TICKET_NODE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let custody = Arc::new(Self {
             nonce: Arc::new(()),
+            node,
             closed: std::sync::atomic::AtomicBool::new(false),
             sources: Mutex::new(foldhash::HashMap::default()),
             entries: Mutex::new(TicketEntries::default()),
             #[cfg(test)]
             sweep_reads: std::sync::atomic::AtomicU64::new(0),
         });
-        let mut nodes = TICKET_NODES
+        TICKET_NODES
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: the custody list is pruned once per plane composition"
-        )]
-        nodes.retain(|n| n.strong_count() > 0);
-        nodes.push(Arc::downgrade(&custody));
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(node, Arc::downgrade(&custody));
         custody
     }
 
@@ -449,7 +472,7 @@ impl TicketCustody {
         };
         entries.version = version;
         let replaced = entries.insert(
-            identity.id().to_owned(),
+            Arc::from(identity.id()),
             TicketEntry {
                 reservation,
                 source: Arc::clone(source),
@@ -470,15 +493,12 @@ impl TicketCustody {
                 .entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match entries.pending.get(&key).map(|id| String::from(&**id)) {
-                Some(id) if acknowledged_completed => {
-                    let ready = entries.take_pending(key).map(|mut entry| {
-                        entry.ready = true;
-                        entry
-                    });
-                    ready.and_then(|entry| entries.insert(id, entry))
+            match entries.take_pending(key) {
+                Some((id, mut entry)) if acknowledged_completed => {
+                    entry.ready = true;
+                    entries.insert(id, entry)
                 }
-                Some(_) => entries.take_pending(key),
+                Some((_, entry)) => Some(entry),
                 None => None,
             }
         };
@@ -550,10 +570,14 @@ impl TicketCustody {
                 .take_while(|(expires_at, _)| *expires_at <= horizon)
                 .take(TICKET_SWEEP_BATCH)
                 .filter_map(|(_, id)| {
-                    entries
-                        .tickets
-                        .get(id)
-                        .map(|e| (id.clone(), e.version, e.expires_at, Arc::clone(&e.store)))
+                    entries.tickets.get(id).map(|e| {
+                        (
+                            Arc::clone(id),
+                            e.version,
+                            e.expires_at,
+                            Arc::clone(&e.store),
+                        )
+                    })
                 })
                 .collect();
             let now = std::time::Instant::now();
@@ -564,31 +588,38 @@ impl TicketCustody {
                 entries.backstop_at = Some(now);
                 use std::ops::Bound::{Excluded, Unbounded};
                 let cursor = entries.cursor.clone();
-                let after = cursor
-                    .as_ref()
-                    .map_or(Unbounded, |id| Excluded(id.as_str()));
+                let after = cursor.as_ref().map_or(Unbounded, |id| Excluded(&**id));
                 let mut cycle: Vec<_> = entries
                     .tickets
                     .range::<str, _>((after, Unbounded))
                     .take(TICKET_SWEEP_BATCH)
-                    .map(|(id, e)| (id.clone(), e.version, e.expires_at, Arc::clone(&e.store)))
+                    .map(|(id, e)| {
+                        (
+                            Arc::clone(id),
+                            e.version,
+                            e.expires_at,
+                            Arc::clone(&e.store),
+                        )
+                    })
                     .collect();
                 if let Some(cursor) = cursor.as_ref() {
                     let remaining = TICKET_SWEEP_BATCH - cycle.len();
                     cycle.extend(
                         entries
                             .tickets
-                            .range::<str, _>((
-                                Unbounded,
-                                std::ops::Bound::Included(cursor.as_str()),
-                            ))
+                            .range::<str, _>((Unbounded, std::ops::Bound::Included(&**cursor)))
                             .take(remaining)
                             .map(|(id, e)| {
-                                (id.clone(), e.version, e.expires_at, Arc::clone(&e.store))
+                                (
+                                    Arc::clone(id),
+                                    e.version,
+                                    e.expires_at,
+                                    Arc::clone(&e.store),
+                                )
                             }),
                     );
                 }
-                entries.cursor = cycle.last().map(|(id, ..)| id.clone());
+                entries.cursor = cycle.last().map(|(id, ..)| Arc::clone(id));
                 for ticket in cycle {
                     if !chosen.iter().any(|(id, ..)| *id == ticket.0) {
                         chosen.push(ticket);
@@ -603,7 +634,7 @@ impl TicketCustody {
         // One batched observation per store.
         let mut by_store: Vec<(
             Arc<busbar_kernel::persistence::facade::CoreStore>,
-            Vec<(String, u64, u64)>,
+            Vec<(Arc<str>, u64, u64)>,
         )> = Vec::new();
         for (id, version, expiry, store) in snapshots {
             match by_store
@@ -618,7 +649,7 @@ impl TicketCustody {
         for (store, tickets) in by_store {
             let items: Vec<_> = tickets
                 .iter()
-                .map(|(id, _, expiry)| (id.clone(), *expiry))
+                .map(|(id, _, expiry)| (String::from(&**id), *expiry))
                 .collect();
             #[cfg(test)]
             self.sweep_reads
@@ -670,7 +701,7 @@ fn ticket_nodes() -> Vec<Arc<TicketCustody>> {
     TICKET_NODES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
+        .values()
         .filter_map(std::sync::Weak::upgrade)
         .collect()
 }
@@ -1234,7 +1265,7 @@ pub struct DoorLive {
 }
 
 /// The model catalog, in the map type the configuration (`RootCfg::models`) holds it as.
-pub type ModelCatalog = std::collections::HashMap<String, busbar_contract::config::ModelCfg>;
+type ModelCatalog = std::collections::HashMap<String, busbar_contract::config::ModelCfg>;
 
 pub(crate) struct ApplyReach {
     providers: BTreeMap<String, crate::root::door_steps::ProviderRoute>,
@@ -1567,7 +1598,6 @@ impl DoorApply {
                 &self.units,
             );
         }
-        // busbar:expect(bp::clone_alloc, reason = "config: a plane is refreshed once per configuration apply")
         Ok(DoorLive {
             observations,
             ticket_nonce: Arc::new(()),
@@ -1594,7 +1624,6 @@ pub(crate) fn applied_section(
         .get(plane)
         .and_then(|s| s.downcast_ref::<busbar_kernel::plane_driver::door::DoorSlot>())
     else {
-        // busbar:expect(bp::clone_alloc, reason = "config: the applied section is read once per configuration apply")
         return now.section.clone();
     };
 
@@ -1952,7 +1981,6 @@ impl Served {
 
     #[must_use]
     pub fn member_tls_sections(&self) -> Vec<&'static str> {
-        // busbar:expect(bp::state_scan, reason = "boot: the member TLS sections are gathered once at startup")
         #[expect(
             clippy::disallowed_methods,
             reason = "boot: the member TLS sections are gathered once at startup"
@@ -1973,7 +2001,6 @@ impl Served {
 
     #[must_use]
     pub fn unopened(&self, doors: &[(String, DoorPlane)]) -> Vec<&'static str> {
-        // busbar:expect(bp::state_scan, reason = "boot: the unopened planes are listed once at startup")
         #[expect(
             clippy::disallowed_methods,
             reason = "boot: the unopened planes are listed once at startup"
@@ -2161,7 +2188,6 @@ pub fn datagram_binds(
     doors: &[(String, DoorPlane)],
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<Vec<crate::root::loader::boot::InboundBind>, String> {
-    // busbar:expect(bp::fresh_buffer, reason = "boot: the datagram binds are planned once at startup")
     let mut binds = Vec::new();
     for (instance, plugin) in doors {
         binds.extend(need_binds(
@@ -2198,7 +2224,6 @@ pub(crate) fn need_binds(
     let claims =
         busbar_contract::conn::inbound::admit(&busbar_kernel::seal::acquire(), &settings, needs)
             .map_err(|why| format!("{section_name}.{why}"))?;
-    // busbar:expect(bp::fresh_buffer, reason = "boot: the inbound binds are planned once at startup")
     let mut binds = Vec::new();
     for claim in claims {
         #[expect(
@@ -2463,7 +2488,6 @@ fn section_with_pools(
         BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
 ) -> busbar_contract::yaml::Value {
-    // busbar:expect(bp::clone_alloc, reason = "config: the section is composed once per configuration")
     let mut section = written.clone();
     for (owner, stated) in pools {
         if *owner == key {
@@ -2566,7 +2590,6 @@ pub fn pools_into(
 #[must_use]
 pub fn plane_settings(section: &busbar_contract::yaml::Value) -> busbar_contract::yaml::Value {
     use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
-    // busbar:expect(bp::clone_alloc, reason = "config: the plane settings are composed once per configuration")
     let mut section = section.clone();
     if let Some(map) = section.as_mapping_mut() {
         map.remove_key(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
@@ -2674,11 +2697,9 @@ pub(crate) async fn compose_planes_over(
         Some(proof) if !proof.published().await => Some(proof),
         _ => None,
     };
-    // busbar:expect(bp::fresh_buffer, reason = "config: planes are composed once per configuration")
     let mut staged_tables = Vec::new();
     if let Some(proof) = &first_start {
         use busbar_contract::crypto::Sha256;
-        // busbar:expect(bp::fresh_buffer, reason = "config: planes are composed once per configuration")
         let mut plan = Vec::new();
         for (instance, plugin) in doors {
             if !plugin.declared().conditional_records {
@@ -2741,7 +2762,6 @@ pub(crate) async fn compose_planes_over(
             reason = "config: planes are composed once per configuration"
         )]
         plan.sort_by(|a, b| a.instance.cmp(&b.instance));
-        // busbar:expect(bp::clone_alloc, reason = "config: planes are composed once per configuration")
         confirm_first_start(|| proof.freeze(plan.clone())).await?;
     }
     for (instance, plugin) in doors {
@@ -2994,7 +3014,6 @@ pub(crate) async fn compose_planes_over(
         ));
         arm_probes(&driver, &served_facts, &mut live, egress, &probe_schedule);
         let facts = live.facts.clone();
-        // busbar:expect(bp::clone_alloc, reason = "config: planes are composed once per configuration")
         let reach = egress.map(|e| ApplyReach {
             providers: e.reach.providers.clone(),
             auths: Arc::clone(&e.reach.auths),
@@ -3004,8 +3023,6 @@ pub(crate) async fn compose_planes_over(
             catalog: e.reach.catalog.cloned(),
             upgrades: e.reach.upgrades.clone(),
         });
-        // busbar:expect(bp::into_alloc, reason = "config: planes are composed once per configuration")
-        // busbar:expect(bp::clone_alloc, reason = "config: planes are composed once per configuration")
         let live = Arc::new(DoorApply {
             instance: Arc::from(instance.as_str()),
             observations_supported: plane_money.observations_supported(),
@@ -3091,7 +3108,6 @@ fn fold_catalog_routes(
     catalog: &ModelCatalog,
 ) -> (busbar_contract::yaml::Value, Option<String>) {
     use busbar_contract::yaml::{Pairs, Value};
-    // busbar:expect(bp::clone_alloc, reason = "config: catalog routes are folded once per configuration")
     let mut routes = section.clone();
     let named = section
         .get(SESSION_KEY)
@@ -3130,7 +3146,6 @@ fn routes_of(
     section: &busbar_contract::yaml::Value,
     catalog: Option<&ModelCatalog>,
 ) -> (busbar_contract::yaml::Value, Option<String>) {
-    // busbar:expect(bp::clone_alloc, reason = "config: catalog routes are folded once per configuration")
     catalog.map_or_else(
         || (section.clone(), None),
         |c| fold_catalog_routes(section, c),
@@ -3236,7 +3251,6 @@ fn seal_live(
         .collect();
     facts.metric_lanes = metric_lanes;
     if let Some(egress) = egress {
-        // busbar:expect(bp::clone_alloc, reason = "config: a plane's live state is sealed once per configuration")
         #[expect(
             clippy::disallowed_methods,
             reason = "config: a plane's live state is sealed once per configuration"
@@ -3322,7 +3336,6 @@ fn seal_live(
         None => (None, None),
     };
     let observations = observations::parse(instance, section, &facts, &pools)?;
-    // busbar:expect(bp::clone_alloc, reason = "config: a plane's live state is sealed once per configuration")
     Ok(DoorLive {
         observations,
         ticket_nonce: Arc::new(()),
@@ -3456,7 +3469,6 @@ fn settings_of(
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> busbar_contract::yaml::Value {
     if !handed_keyed(facts) {
-        // busbar:expect(bp::clone_alloc, reason = "config: the settings are composed once per configuration")
         let mut settings = section.clone();
         if let Some(map) = settings.as_mapping_mut() {
             map.remove_key(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
@@ -3464,7 +3476,6 @@ fn settings_of(
         return settings;
     }
     let own = if facts.section == busbar_contract::section::RESERVED_POOLS_KEY {
-        // busbar:expect(bp::clone_alloc, reason = "config: the settings are composed once per configuration")
         let mut own = section.clone();
         if let Some(map) = own.as_mapping_mut() {
             map.remove_key(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
@@ -3499,12 +3510,10 @@ fn walked_section(
         .contains(&RESERVED_MODELS_KEY)
         .then(|| sections.get(RESERVED_MODELS_KEY))
         .flatten();
-    // busbar:expect(bp::clone_alloc, reason = "config: the walked section is composed once per configuration")
     match models {
         Some(models) if facts.section == RESERVED_POOLS_KEY => {
             let mut uniform = busbar_contract::yaml::Pairs::new();
             uniform.insert_key(RESERVED_MODELS_KEY, models.clone());
-            // busbar:expect(bp::clone_alloc, reason = "config: the walked section is composed once per configuration")
             let mut pools = section.clone();
             if let Some(policy) = pools
                 .as_mapping_mut()
@@ -3860,7 +3869,6 @@ impl ListenerPlan {
         framer_for: &FramerFor,
     ) -> Self {
         let mut seen = foldhash::HashSet::default();
-        // busbar:expect(bp::fresh_buffer, reason = "config: the listener plan is built once at startup")
         let mut root_claims = Vec::new();
         for (scheme, _) in &offers {
             let Some(door) = framer_for(scheme) else {
@@ -3939,7 +3947,6 @@ impl ListenerPlan {
 
     /// Whether boot retained a physical root data listener.
     pub fn has_root_listener(&self) -> bool {
-        // busbar:expect(bp::state_scan, reason = "config: the listener plan is read once per configuration")
         self.initial.binds.iter().any(|bind| bind.at == "listen")
     }
 
@@ -3966,7 +3973,6 @@ impl ListenerPlan {
             {
                 continue;
             }
-            // busbar:expect(bp::state_scan, reason = "config: claim doors are shared once at startup")
             if let Some(bind) = self.initial.binds.iter().find(|bind| bind.at == need.at) {
                 if let Some(door) = served.claim_doors.get(&bind.transport) {
                     served.claim_doors.insert(&need.transport, door);
@@ -4013,7 +4019,6 @@ impl ListenerPlan {
     }
 
     pub fn stream_binds(&self) -> impl Iterator<Item = &crate::root::loader::boot::InboundBind> {
-        // busbar:expect(bp::state_scan, reason = "config: the listener plan is read once per configuration")
         self.initial.binds.iter().filter(|bind| {
             bind.owner != crate::root::loader::boot::BindOwner::Root
                 && self
@@ -4042,7 +4047,6 @@ impl ListenerPlan {
             .iter()
             .map(|name| (name.clone(), app.auth.position_points(name)))
             .collect();
-        // busbar:expect(bp::fresh_buffer, reason = "config: planes are mounted once per configuration")
         let mut lines = Vec::new();
         for plane in &served.planes {
             for (rung, claim) in plane.snapshot.claims.iter().enumerate() {
@@ -4508,7 +4512,6 @@ impl ListenerPlan {
             .retain(|need| !self.withheld_public_export_need(app, need));
         let physical_bind = |at: &str| {
             let proposed = next.binds.iter().find(|bind| bind.at == at);
-            // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
             self.initial
                 .binds
                 .iter()
@@ -4522,7 +4525,6 @@ impl ListenerPlan {
                     })
                 })
                 .or_else(|| {
-                    // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
                     self.initial
                         .binds
                         .iter()
@@ -4637,7 +4639,6 @@ impl ListenerPlan {
             }
             if matches!(need.kind, KindCode::Hook | KindCode::Export)
                 && !app.plugin_routes.descriptors().iter().any(|route| {
-                    // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
                     route.source_instance == need.instance
                         && route.dispatch_available
                         && (!route.persistent || self.initial.needs.contains(need))
@@ -4683,7 +4684,6 @@ impl ListenerPlan {
             }
             Ok(line)
         };
-        // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
         #[expect(
             clippy::disallowed_methods,
             reason = "config: listener lists are sealed once per configuration"
@@ -4903,7 +4903,6 @@ impl ListenerPlan {
                 reason = "config: listener lists are sealed once per configuration"
             )]
             let needs = if route.persistent {
-                // busbar:expect(bp::state_scan, reason = "config: listener lists are sealed once per configuration")
                 self.initial
                     .needs
                     .iter()
@@ -5355,7 +5354,6 @@ fn signed_paths(
     claims: &[crate::root::loader::dispatch::kinds::plane::OwnedClaim],
 ) -> Arc<[String]> {
     use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
-    // busbar:expect(bp::into_alloc, reason = "config: signed paths are listed once per configuration")
     #[expect(
         clippy::disallowed_methods,
         reason = "config: signed paths are listed once per configuration"
@@ -5396,7 +5394,6 @@ fn mount_paths(path: &str) -> Option<Vec<String>> {
     let target = if prefix.is_empty() {
         "/".to_string()
     } else {
-        // busbar:expect(bp::clone_alloc, reason = "config: mount paths are built once per configuration")
         prefix.clone()
     };
     #[expect(
@@ -5489,9 +5486,7 @@ fn door_mounts_planned(
         None
     };
     let mut upgraded: foldhash::HashSet<DoorClaim> = foldhash::HashSet::default();
-    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut lines = Vec::new();
-    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut doors: Vec<(busbar_kernel::guest::Line, Option<RouteMethod>, DoorClaim)> = Vec::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
@@ -5568,7 +5563,6 @@ fn door_mounts_planned(
     let instances: Vec<String> = served.planes.iter().map(|p| p.instance.clone()).collect();
     let documents = resource_documents(&served);
 
-    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut of_line: HashMap<(String, u32), (RouteAuth, DoorClaim)> = HashMap::default();
     for (line, method, door) in doors {
@@ -5686,11 +5680,8 @@ fn door_mounts_planned(
     } else {
         attach_nests(kernel, &routes);
     }
-    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
-    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut sessions = Vec::new();
-    // busbar:expect(bp::fresh_buffer, reason = "config: door mounts are planned once per configuration")
     let mut requests = Vec::new();
     for mount in mounts {
         let (path, method, auth, door) = mount;
@@ -5898,7 +5889,6 @@ fn door_mounts_planned(
     routes_of.extend(public);
 
     if plan.is_none() {
-        // busbar:expect(bp::clone_alloc, reason = "config: door mounts are planned once per configuration")
         crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
     }
     Ok(DoorMounts {
@@ -5915,7 +5905,6 @@ pub(crate) fn line_routes(
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
 ) -> Result<Arc<DataRoutes>, String> {
     use busbar_kernel::guest::GuestList;
-    // busbar:expect(bp::fresh_buffer, reason = "config: line routes are planned once per configuration")
     let mut lines_of = Vec::new();
     #[expect(
         clippy::disallowed_types,
