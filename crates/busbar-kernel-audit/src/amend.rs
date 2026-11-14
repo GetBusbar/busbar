@@ -727,7 +727,7 @@ impl NodeAmendments {
                         fact.fields.clone(),
                         fact.wall,
                     ),
-                    prev_hash: tail,
+                    prev_hash: std::mem::take(&mut tail),
                     hash: String::new(),
                 };
                 amendment.hash = AmendChain::digest_of(&amendment);
