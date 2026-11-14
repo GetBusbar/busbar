@@ -45,7 +45,7 @@ hex = { workspace = true }
 serde = { workspace = true }
 getrandom = { workspace = true }
 arc-swap = { workspace = true }
-tower = { workspace = true, optional = true }
+tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "process"] }
 axum = { workspace = true }
 http-body = { workspace = true }
@@ -70,8 +70,6 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] }
 
 [features]
-default = ["root-admin"]
-root-admin = ["dep:tower"]
 test-harness = []
 
 [build-dependencies]

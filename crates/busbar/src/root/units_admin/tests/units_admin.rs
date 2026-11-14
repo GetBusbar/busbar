@@ -74,7 +74,6 @@ fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn the_door_answers_the_published_releases_own_bytes() {
     const GOLDEN: &str = include_str!(concat!(
@@ -110,7 +109,6 @@ fn the_door_answers_the_published_releases_own_bytes() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn a_grant_that_does_not_reach_the_endpoint_is_answered_with_the_scope_it_needed() {
     let answer = scope_answer(&a_request());
@@ -121,7 +119,6 @@ fn a_grant_that_does_not_reach_the_endpoint_is_answered_with_the_scope_it_needed
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_walk_dropped_before_its_answer_still_releases_the_drain_it_asked_for() {
     busbar_core_admin::restart::drain_released_at_exit();
@@ -143,7 +140,6 @@ async fn a_walk_dropped_before_its_answer_still_releases_the_drain_it_asked_for(
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
     use tower::ServiceExt;
@@ -188,7 +184,6 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_unreadable_amendment_is_told_what_the_body_must_carry() {
     let refused = Outcome::Refused(
@@ -214,7 +209,6 @@ async fn an_unreadable_amendment_is_told_what_the_body_must_carry() {
     assert!(explained_answer(&amend, unavailable).is_none());
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn a_refused_units_status_is_the_one_its_ending_earned() {
     let status = |reason| {
@@ -296,7 +290,6 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
 }
 
 #[tokio::test]
-#[cfg(feature = "root-admin")]
 async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
     let admin = crate::root::kernel::new_kernel().admin_token();
 
@@ -333,12 +326,10 @@ async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
     }
 }
 
-#[cfg(feature = "root-admin")]
 fn a_door_answering(door: busbar_kernel::auth::AdminDoor) -> AdminDoorFn {
     Arc::new(move |_: &AdminRequest| busbar_kernel::auth::AdminVerdict::from(door.clone()))
 }
 
-#[cfg(feature = "root-admin")]
 fn listed_door(named: &[&str], needs: Scope) -> busbar_kernel::auth::AdminDoor {
     busbar_kernel::auth::AdminDoor::Listed(
         busbar_contract::auth::Principal::from_id("acct:verb-listed"),
@@ -350,7 +341,6 @@ fn listed_door(named: &[&str], needs: Scope) -> busbar_kernel::auth::AdminDoor {
     )
 }
 
-#[cfg(feature = "root-admin")]
 fn approved_under(
     door: busbar_kernel::auth::AdminDoor,
     method: &str,
@@ -367,7 +357,6 @@ fn approved_under(
     approve(&walk)
 }
 
-#[cfg(feature = "root-admin")]
 async fn answered_under(
     door: busbar_kernel::auth::AdminDoor,
     request: AdminRequest,
@@ -382,7 +371,6 @@ async fn answered_under(
         .await
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_verb_the_allow_list_names_is_admitted() {
     let door = || listed_door(&["post_keys", "get_audit"], Scope::Full);
@@ -403,7 +391,6 @@ async fn a_verb_the_allow_list_names_is_admitted() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_verb_the_allow_list_does_not_name_is_refused_with_the_scope_answer() {
     let door = || listed_door(&["post_keys"], Scope::Full);
@@ -436,7 +423,6 @@ async fn a_verb_the_allow_list_does_not_name_is_refused_with_the_scope_answer() 
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn a_rung_held_whole_beside_a_list_admits_exactly_as_full() {
     let full = || {
@@ -473,7 +459,6 @@ fn a_rung_held_whole_beside_a_list_admits_exactly_as_full() {
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_grant_with_no_verbs_key_is_decided_by_its_rung_as_before() {
     let rung = |scope: Scope| {
@@ -634,10 +619,8 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 struct AnsweringDispatch;
 
-#[cfg(feature = "root-admin")]
 #[async_trait::async_trait]
 impl AdminDispatch for AnsweringDispatch {
     async fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
@@ -649,10 +632,8 @@ impl AdminDispatch for AnsweringDispatch {
     }
 }
 
-#[cfg(feature = "root-admin")]
 struct Denylist(bool);
 
-#[cfg(feature = "root-admin")]
 impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
     fn verify(
         &self,
@@ -671,10 +652,8 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
     }
 }
 
-#[cfg(feature = "root-admin")]
 struct IdentifiesOperator;
 
-#[cfg(feature = "root-admin")]
 impl busbar_kernel_identity::module::AuthModule for IdentifiesOperator {
     fn name(&self) -> &'static str {
         "identifies-operator"
@@ -691,7 +670,6 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesOperator {
     }
 }
 
-#[cfg(feature = "root-admin")]
 fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
     busbar_kernel_identity::AuthChain::new(
         vec![busbar_kernel_identity::chain::ChainEntry {
@@ -702,7 +680,6 @@ fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
     )
 }
 
-#[cfg(feature = "root-admin")]
 async fn answer_under_denylist(revoked: bool) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(AnsweringDispatch),
@@ -717,7 +694,6 @@ async fn answer_under_denylist(revoked: bool) -> AdminAnswer {
         .await
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_revoked_credential_is_refused_before_the_operation_runs() {
     assert_eq!(
@@ -733,7 +709,6 @@ async fn a_revoked_credential_is_refused_before_the_operation_runs() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified() {
     let units =
@@ -751,10 +726,8 @@ async fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identi
     );
 }
 
-#[cfg(feature = "root-admin")]
 struct IdentifiesSomebodyElse;
 
-#[cfg(feature = "root-admin")]
 impl busbar_kernel_identity::module::AuthModule for IdentifiesSomebodyElse {
     fn name(&self) -> &'static str {
         "identifies-somebody-else"
@@ -769,7 +742,6 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesSomebodyElse {
     }
 }
 
-#[cfg(feature = "root-admin")]
 async fn answer_at_the_closed_door(
     door: busbar_kernel_identity::AuthChain,
     credential: Option<&str>,
@@ -789,7 +761,6 @@ async fn answer_at_the_closed_door(
         .await
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_wrong_or_absent_credential_is_refused_at_the_door() {
     assert_eq!(
@@ -823,7 +794,6 @@ async fn a_wrong_or_absent_credential_is_refused_at_the_door() {
     assert_eq!(absent.status, 401, "and that answer's status is the door's");
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() {
     let absent = answer_at_the_closed_door(a_door_that_identifies_the_operator(), None).await;
@@ -842,7 +812,6 @@ async fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() 
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_needed() {
     let door = busbar_kernel_identity::AuthChain::new(
@@ -868,7 +837,6 @@ async fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scop
     );
 }
 
-#[cfg(feature = "root-admin")]
 fn a_bound_unit(request: AdminRequest) -> AdminWalk {
     let mut walk = AdminWalk::new(request);
 
@@ -876,7 +844,6 @@ fn a_bound_unit(request: AdminRequest) -> AdminWalk {
     walk
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
     use busbar_contract::caps::{OriginKind, StepName};
@@ -962,7 +929,6 @@ async fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_
     assert!(full.is_empty());
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere_priced() {
     let principal = PrincipalId::new("admin");
@@ -992,7 +958,6 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
     let mut mutating = a_request();
@@ -1038,7 +1003,6 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
     }
 }
 
-#[cfg(feature = "root-admin")]
 fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::AuditEntry> {
     busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, usize::MAX, None, None)
@@ -1047,7 +1011,6 @@ fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::Audi
         .collect()
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
     const WHO: &str = "operator-cifollow-one-entry";
@@ -1241,7 +1204,6 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
 
 const AN_IDENTIFIED_OPERATOR: &str = "operator-alice";
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     /// A store that records what reached it and refuses it.
@@ -1365,7 +1327,6 @@ fn a_restore_that_names_no_backup_is_refused_rather_than_defaulted() {
     assert_eq!(backup_ref_of(&[0xff, 0xfe]), None);
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn either_carrier_reaches_the_loop_as_the_credential_itself() {
     let presented = |name: &str, value: &str| -> Option<String> {
@@ -1439,7 +1400,6 @@ fn exactly_two_verbs_land_on_the_store() {
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
     let refused = &Outcome::Refused(
@@ -1472,7 +1432,6 @@ fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[test]
 fn the_refused_door_seals_the_refusal_that_happened() {
     let mut unrouted = a_request();
@@ -1551,7 +1510,6 @@ fn a_ledger_request(path: &str) -> AdminRequest {
     }
 }
 
-#[cfg(feature = "root-admin")]
 async fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
     let mut units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
@@ -1563,7 +1521,6 @@ async fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
         .await
 }
 
-#[cfg(feature = "root-admin")]
 fn one_lane_rates() -> std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> {
     crate::dist_root_install::install();
     let mut entry = busbar_kernel::config::RateEntryCfg {
@@ -1585,7 +1542,6 @@ fn one_lane_rates() -> std::collections::BTreeMap<String, busbar_kernel::config:
     std::collections::BTreeMap::from([("m".to_string(), entry)])
 }
 
-#[cfg(feature = "root-admin")]
 fn one_lane_card() -> busbar_kernel::cost::CostModel {
     busbar_kernel::cost::CostModel::resolve_parts(
         Some(&one_lane_rates()),
@@ -1594,7 +1550,6 @@ fn one_lane_card() -> busbar_kernel::cost::CostModel {
     )
 }
 
-#[cfg(feature = "root-admin")]
 async fn answer_over_counts(
     gov: Arc<busbar_kernel::governance::GovState>,
     path: &str,
@@ -1708,7 +1663,6 @@ async fn answer_over_counts(
     serde_json::from_slice(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
     use busbar_kernel::governance::{GovState, VirtualKey};
@@ -1794,7 +1748,6 @@ async fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
     let mut bodies = Vec::new();
@@ -1825,7 +1778,6 @@ async fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn each_view_serves_the_figures_the_ledger_holds() {
     let body = async |path: &str| -> serde_json::Value {
@@ -1862,7 +1814,6 @@ async fn each_view_serves_the_figures_the_ledger_holds() {
     assert_eq!(document["info"]["version"], "1.6.0");
 }
 
-#[cfg(feature = "root-admin")]
 async fn real_admin_dispatch() -> RouterDispatch {
     crate::dist_root_install::install();
     busbar_core_admin::install();
@@ -1973,7 +1924,6 @@ async fn real_admin_dispatch() -> RouterDispatch {
     )
 }
 
-#[cfg(feature = "root-admin")]
 fn authenticated_admin_request() -> AdminRequest {
     let mut request = a_request();
     request
@@ -1982,13 +1932,11 @@ fn authenticated_admin_request() -> AdminRequest {
     request
 }
 
-#[cfg(feature = "root-admin")]
 struct PanickingDispatch {
     calls: std::sync::atomic::AtomicUsize,
     next: RouterDispatch,
 }
 
-#[cfg(feature = "root-admin")]
 #[async_trait::async_trait]
 impl AdminDispatch for PanickingDispatch {
     async fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
@@ -1999,7 +1947,6 @@ impl AdminDispatch for PanickingDispatch {
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
     let dispatch = Arc::new(PanickingDispatch {
@@ -2026,7 +1973,6 @@ async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
     assert_eq!(dispatch.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_unopened_ledger_answers_empty_rather_than_absent() {
     let units =
@@ -2061,7 +2007,6 @@ async fn an_unopened_ledger_answers_empty_rather_than_absent() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
     let served: serde_json::Value = serde_json::from_slice(
@@ -2080,7 +2025,6 @@ async fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
     assert_eq!(refused[0]["bucket"], "key-3");
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn verify_names_a_refused_row_and_every_other_finding() {
     let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
@@ -2125,7 +2069,6 @@ async fn verify_names_a_refused_row_and_every_other_finding() {
     assert_eq!(body["ok"], false, "{body}");
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_read_does() {
     let under = async |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
@@ -2309,21 +2252,18 @@ async fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
         .is_err());
 }
 
-#[cfg(feature = "root-admin")]
 const AUDIT_PATHS: &[&str] = &[
     "/api/v1/admin/audit/head",
     "/api/v1/admin/audit/range",
     "/api/v1/admin/audit/keys",
 ];
 
-#[cfg(feature = "root-admin")]
 struct SealedChain {
     chain: busbar_kernel_audit::AuditChain,
     records: Vec<busbar_kernel_audit::AuditRecord>,
     keys: busbar_kernel_audit::AuditKeySet,
 }
 
-#[cfg(feature = "root-admin")]
 #[async_trait::async_trait]
 impl AuditView for SealedChain {
     fn read(
@@ -2341,12 +2281,10 @@ impl AuditView for SealedChain {
     }
 }
 
-#[cfg(feature = "root-admin")]
 fn an_audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
     busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel())
 }
 
-#[cfg(feature = "root-admin")]
 fn a_sealed_chain() -> SealedChain {
     use busbar_contract::caps::{OriginKind, Outcome as UnitOutcome, UnitKey};
     use busbar_kernel_audit::{
@@ -2412,7 +2350,6 @@ fn a_sealed_chain() -> SealedChain {
     }
 }
 
-#[cfg(feature = "root-admin")]
 async fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
     let mut units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
@@ -2425,7 +2362,6 @@ async fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
 }
 
 #[tokio::test]
-#[cfg(feature = "root-admin")]
 async fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
     let head = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/head")).await;
     assert_eq!(head.status, 200, "the head read did not answer");
@@ -2482,7 +2418,6 @@ async fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
 }
 
 #[tokio::test]
-#[cfg(feature = "root-admin")]
 async fn an_unbound_chain_refuses_rather_than_answering_an_empty_head() {
     let mut units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
@@ -2501,7 +2436,6 @@ async fn an_unbound_chain_refuses_rather_than_answering_an_empty_head() {
 }
 
 #[tokio::test]
-#[cfg(feature = "root-admin")]
 async fn a_range_read_that_names_no_window_is_refused_rather_than_widened() {
     for target in [
         "/api/v1/admin/audit/range",
@@ -2523,7 +2457,6 @@ async fn a_range_read_that_names_no_window_is_refused_rather_than_widened() {
 }
 
 #[test]
-#[cfg(feature = "root-admin")]
 fn a_chain_read_is_read_only_in_every_table_that_has_an_opinion() {
     for path in AUDIT_PATHS {
         let row = busbar_core_admin::admin_codec::verbs::resolve("GET", path)
@@ -2557,7 +2490,6 @@ fn a_chain_read_is_read_only_in_every_table_that_has_an_opinion() {
 }
 
 #[test]
-#[cfg(feature = "root-admin")]
 fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
     for verb in NEW_VERBS
         .iter()
@@ -2588,7 +2520,6 @@ fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
     let answer =
@@ -2644,7 +2575,6 @@ async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_v
     );
 }
 
-#[cfg(feature = "root-admin")]
 fn snake_of(operation_id: &str) -> String {
     let mut out = String::new();
     for (i, c) in operation_id.chars().enumerate() {
@@ -3763,7 +3693,6 @@ async fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_signed_record_verifies_against_the_served_audit_keys() {
     use busbar_contract::caps::{OriginKind, Outcome as UnitOutcome, UnitKey};
@@ -4245,7 +4174,6 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
 }
 
 #[tokio::test]
-#[cfg(feature = "root-admin")]
 async fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     let admin = crate::root::kernel::new_kernel().admin_token();
     let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
@@ -4323,7 +4251,6 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
     );
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     use tower::ServiceExt;
@@ -4394,7 +4321,6 @@ async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     assert_eq!(records[0].what.op_class, admin_read);
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_claimed_length_is_checked_against_the_bytes_not_trusted() {
     use tower::ServiceExt;

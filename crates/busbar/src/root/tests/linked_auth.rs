@@ -784,10 +784,8 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
     );
 }
 
-#[cfg(feature = "root-admin")]
 struct Answers200;
 
-#[cfg(feature = "root-admin")]
 #[async_trait::async_trait]
 impl crate::root::units_admin::AdminDispatch for Answers200 {
     async fn execute(
@@ -803,10 +801,8 @@ impl crate::root::units_admin::AdminDispatch for Answers200 {
     }
 }
 
-#[cfg(feature = "root-admin")]
 const DOOR_401: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#;
 
-#[cfg(feature = "root-admin")]
 async fn through_the_loop(
     handle: &Arc<busbar_kernel::state::AppHandle>,
     (method, path): (&str, &str),
@@ -843,10 +839,8 @@ async fn through_the_loop(
     (answer.status, String::from_utf8(answer.body).unwrap())
 }
 
-#[cfg(feature = "root-admin")]
 const INFO: (&str, &str) = ("GET", "/api/v1/admin/info");
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_empty_admin_chain_is_the_open_posture_on_the_loop() {
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(
@@ -857,7 +851,6 @@ async fn an_empty_admin_chain_is_the_open_posture_on_the_loop() {
     assert_eq!(through_the_loop(&handle, write, None, None).await.0, 200);
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
     let op = op();
@@ -885,7 +878,6 @@ async fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_external_admin_module_is_consulted_by_the_loop() {
     let op = op();
@@ -913,7 +905,6 @@ async fn an_external_admin_module_is_consulted_by_the_loop() {
     }
 }
 
-#[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_swapped_admin_chain_is_the_loops_next_door() {
     link();

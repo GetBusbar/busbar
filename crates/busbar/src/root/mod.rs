@@ -45,7 +45,6 @@ pub mod settings_public;
 pub mod shutdown;
 pub mod startup_upgrade;
 pub mod transports;
-#[cfg(feature = "root-admin")]
 pub mod units_admin;
 pub mod userinfo;
 
