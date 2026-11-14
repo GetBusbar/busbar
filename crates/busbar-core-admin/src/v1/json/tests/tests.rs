@@ -292,18 +292,6 @@ fn openapi_hook_escalation_endpoints_document_403() {
 }
 
 #[cfg(feature = "openapi-schema")]
-const COMMITTED_OPENAPI_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/src/v1/json/openapi.json");
-
-#[cfg(feature = "openapi-schema")]
-#[test]
-fn served_openapi_equals_committed_file() {
-    let committed =
-        std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi");
-    assert_eq!(super::handlers::openapi_json(), committed);
-}
-
-#[cfg(feature = "openapi-schema")]
 #[test]
 fn restart_request_body_is_documented_optional() {
     let doc = openapi_doc();

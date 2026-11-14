@@ -143,12 +143,6 @@ fn openapi_json_matches_committed_file() {
     if std::env::var("UPDATE_OPENAPI").is_ok_and(|v| v == "1") {
         std::fs::write(COMMITTED_OPENAPI_PATH, &fresh)
             .unwrap_or_else(|e| panic!("write {COMMITTED_OPENAPI_PATH}: {e}"));
-
-        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-        std::io::Write::write_all(&mut enc, fresh.as_bytes()).expect("gz write");
-        let gz = enc.finish().expect("gz finish");
-        std::fs::write(format!("{COMMITTED_OPENAPI_PATH}.gz"), gz)
-            .unwrap_or_else(|e| panic!("write {COMMITTED_OPENAPI_PATH}.gz: {e}"));
         return;
     }
     let committed = std::fs::read_to_string(COMMITTED_OPENAPI_PATH)

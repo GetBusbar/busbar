@@ -4622,7 +4622,7 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-static OPENAPI_JSON_GZ: &[u8] = include_bytes!("openapi.json.gz");
+static OPENAPI_JSON_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openapi.json.gz"));
 
 pub(crate) fn openapi_json() -> String {
     use std::io::Read;
