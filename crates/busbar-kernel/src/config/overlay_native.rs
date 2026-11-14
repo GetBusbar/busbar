@@ -17,6 +17,8 @@ use crate::persistence::{
 
 const SCHEMA: &str = "busbar.config.overlay.v1";
 const HEAD: &[u8] = b"head";
+/// The receipt `import_once` writes beside HEAD when it imports a 1.5.5 file overlay.
+const RECEIPT: &[u8] = b"migration:1.5.5:file";
 type Observed = Arc<Mutex<Option<Option<Vec<u8>>>>>;
 
 #[derive(Serialize, Deserialize)]
@@ -414,13 +416,29 @@ impl NativeOverlay {
         }
     }
 
+    /// What a 1.5.5 file-overlay import would meet here, read in `import_once`'s own order
+    /// (RECEIPT, then HEAD), so the serve gate never promises an import it would refuse.
+    pub(super) async fn legacy_import_state(
+        &self,
+    ) -> Result<super::overlay_store::LegacyImportState, String> {
+        use super::overlay_store::LegacyImportState;
+        if let Some(saved) = self.get(RECEIPT).await? {
+            let receipt: super::overlay_store::import::Receipt = serde_json::from_slice(&saved)
+                .map_err(|_| "overlay migration receipt is unreadable")?;
+            return Ok(LegacyImportState::Imported(receipt.source_sha256));
+        }
+        if self.get(HEAD).await?.is_some() {
+            return Ok(LegacyImportState::StoreOverlayPresent);
+        }
+        Ok(LegacyImportState::Empty)
+    }
+
     pub(super) async fn import_once(
         &self,
         source_sha256: [u8; 32],
         doc: &OverlayDoc,
     ) -> Result<bool, String> {
         use super::overlay_store::import::{canonicalize, check_receipt, Receipt};
-        const RECEIPT: &[u8] = b"migration:1.5.5:file";
         let mut value = serde_json::to_value(doc.authoring(&crate::seal::acquire()))
             .map_err(|error| error.to_string())?;
         value["version"] = super::overlay::OVERLAY_VERSION.into();

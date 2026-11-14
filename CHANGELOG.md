@@ -741,9 +741,13 @@ old effective values into `providers_file:` and the corresponding `advanced` key
 old precedence, false/empty upstream settings and worker-count fallback/capping. Launch-relative
 provider overrides become absolute paths. The `--providers` flag remains supported. Remove the
 retired variables from the launcher after conversion. **Breaking:** the old `config.overlay`
-file/boolean selector is refused by current parsing, and serving does not read
-`BUSBAR_CONFIG_OVERLAY`. One-time migration removes the field while preserving `config.locked`
-and imports old file-overlay state; runtime configuration is persisted through Store.
+file/boolean selector is refused by `--validate` (the current reader); serving normalizes it at
+startup, and serving never reads a file overlay or `BUSBAR_CONFIG_OVERLAY`. Serving refuses to
+start while a 1.5.5 file overlay holding settings has not been imported (BUSBAR-3027); legacy
+overlay selectors and `BUSBAR_CONFIG_OVERLAY` that hold nothing are warned about (BUSBAR-3028).
+One-time migration removes the field while preserving `config.locked`, and `--migrate-overlay`
+imports old file-overlay state into an empty Store overlay; runtime configuration is persisted
+through Store.
 The obsolete `configuration.values.sections.config.legacy_overlay_configured` readback leaf
 is removed; `config.locked` remains the management policy. See [the migration guide](docs/migration-1.6.md).
 `BUSBAR_CONFIG`, explicit secret `{ env: NAME }` references, `RUST_LOG`, and the

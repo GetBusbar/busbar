@@ -461,6 +461,28 @@ A plugin declares billable classes for a configured lane, but that lane lacks on
 
 **What to do:** Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup.
 
+<a id="config-legacy-overlay-not-imported"></a>
+### BUSBAR-3027 — A 1.5.5 file overlay holds settings this Store has not imported (boot refuses to start)
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-legacy-overlay-not-imported`
+
+The overlay file a 1.5.5 deployment read and wrote (config.overlay.file, BUSBAR_CONFIG_OVERLAY, or busbar-overlay.json beside config.yaml) holds admin-API settings, and this Store has no import receipt for it. 1.6 serving never reads file overlays, so starting would silently drop those settings, security hooks and groups included; serving REFUSES to start instead. The message names the file and how it was selected, never its settings. In --safe-mode it is a warning and the boot continues.
+
+**What to do:** Follow the remedy the message gives for this Store. Empty durable Store: import once with `busbar --config <config.yaml> --migrate-overlay <old-config.yaml>` before any admin-API config change. Ephemeral Store: configure a durable Store first, then import. Store already holds a 1.6 overlay: --migrate-overlay cannot import into it, so move the file away (keep a copy), start, and re-apply the settings you still want through the admin API. Moving the file away without a copy abandons the settings deliberately. Admin-API config writes in safe mode create a Store overlay, after which the file can no longer be imported.
+
+<a id="config-legacy-overlay-not-read"></a>
+### BUSBAR-3028 — A 1.5.5 overlay selector, variable or file is not read (nothing to import)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-legacy-overlay-not-read`
+
+The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does not read: a config.overlay selector or BUSBAR_CONFIG_OVERLAY naming a file that does not exist, an overlay file that holds no settings, a file whose settings this Store has already imported, or a file beside a locked config (which 1.5.5 ignored too). Nothing is lost, so the boot continues; the message names the file and how it was selected.
+
+**What to do:** Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. `busbar --migrate-config` removes config.overlay from config.yaml. See docs/migration-1.6.md.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>
