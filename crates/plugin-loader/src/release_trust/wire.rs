@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{KeysDoc, RawKeysDoc, ReleaseKey, Role, Signed, Target, TargetsDoc};
-use crate::release_crypto::{
-    standard_result, CryptoUnavailable, PublicKey, RawReleaseKey, ReleaseCrypto, StandardCrypto,
-    WithCryptoError,
-};
+use super::{KeysDoc, ReleaseKey, Role, Signed, Target, TargetsDoc};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -75,39 +71,19 @@ fn write_string(s: &str, out: &mut Vec<u8>) -> Result<(), String> {
 }
 
 pub fn key_object(key: &ReleaseKey) -> Value {
-    raw_key_object(&RawReleaseKey::from(key))
-}
-
-pub fn raw_key_object(key: &RawReleaseKey) -> Value {
     let (keytype, scheme, public) = match key {
-        RawReleaseKey::Ed25519(k) => ("ed25519", "ed25519", hex::encode(k)),
-        RawReleaseKey::P256(point) => ("ecdsa", "ecdsa-sha2-nistp256", hex::encode(point)),
+        ReleaseKey::Ed25519(k) => ("ed25519", "ed25519", hex::encode(k.as_bytes())),
+        ReleaseKey::P256(point) => ("ecdsa", "ecdsa-sha2-nistp256", hex::encode(point)),
     };
     serde_json::json!({"keytype": keytype, "scheme": scheme, "keyval": {"public": public}})
 }
 
 pub fn key_id(key: &ReleaseKey) -> String {
-    key_id_with_crypto(&RawReleaseKey::from(key), &StandardCrypto)
-        .expect("StandardCrypto SHA-256 is always available")
+    let bytes = canonical(&key_object(key)).expect("a key object is in the canonical subset");
+    crate::sign::sha256_hex(&bytes)
 }
 
-pub fn key_id_with_crypto(
-    key: &RawReleaseKey,
-    crypto: &dyn ReleaseCrypto,
-) -> Result<String, CryptoUnavailable> {
-    let bytes = canonical(&raw_key_object(key)).expect("a key object is in the canonical subset");
-    crate::sign::sha256_hex_with_crypto(&bytes, crypto)
-}
-
-pub fn read_key_object(v: &Value) -> Result<ReleaseKey, String> {
-    standard_result(read_key_object_with_crypto(v, &StandardCrypto))
-        .map(RawReleaseKey::into_standard)
-}
-
-pub fn read_key_object_with_crypto(
-    v: &Value,
-    crypto: &dyn ReleaseCrypto,
-) -> Result<RawReleaseKey, WithCryptoError<String>> {
+pub(crate) fn read_key_object(v: &Value) -> Result<ReleaseKey, String> {
     let obj = v.as_object().ok_or("a key is not an object")?;
     only_fields(obj, &["keytype", "scheme", "keyval"], "key")?;
     let keytype = str_field(obj, "keytype")?;
@@ -119,22 +95,16 @@ pub fn read_key_object_with_crypto(
     only_fields(keyval, &["public"], "keyval")?;
     let public = str_field(keyval, "public")?;
     match (keytype, scheme) {
-        ("ed25519", "ed25519") => {
-            crate::sign::public_key_from_hex_with_crypto(public, crypto).map(RawReleaseKey::Ed25519)
-        }
-        ("ecdsa", "ecdsa-sha2-nistp256") => p256_from_hex_with_crypto(public, crypto),
+        ("ed25519", "ed25519") => crate::sign::public_key_from_hex(public).map(ReleaseKey::Ed25519),
+        ("ecdsa", "ecdsa-sha2-nistp256") => p256_from_hex(public),
         _ => Err(format!(
             "key type '{keytype}' with scheme '{scheme}' is not one this build verifies \
              (ed25519/ed25519, ecdsa/ecdsa-sha2-nistp256)"
-        )
-        .into()),
+        )),
     }
 }
 
-pub(crate) fn p256_from_hex_with_crypto(
-    s: &str,
-    crypto: &dyn ReleaseCrypto,
-) -> Result<RawReleaseKey, WithCryptoError<String>> {
+pub(crate) fn p256_from_hex(s: &str) -> Result<ReleaseKey, String> {
     let bytes = hex::decode(s.trim()).map_err(|e| format!("p256 public key not valid hex: {e}"))?;
     let point: [u8; 65] = bytes.as_slice().try_into().map_err(|_| {
         format!(
@@ -145,34 +115,29 @@ pub(crate) fn p256_from_hex_with_crypto(
     if point[0] != 4 {
         return Err("p256 public key is not an uncompressed SEC1 point (04 || x || y)".into());
     }
-    if !crypto.validate_public_key(PublicKey::P256(&point))? {
-        return Err("invalid p256 public key".into());
-    }
-    Ok(RawReleaseKey::P256(point))
+    Ok(ReleaseKey::P256(point))
 }
 
+/// Strict Ed25519 (a weak key never verifies) or P-256 SHA-256 with an ASN.1 DER signature.
 pub fn verify(key: &ReleaseKey, msg: &[u8], sig: &[u8]) -> bool {
-    verify_with_crypto(&RawReleaseKey::from(key), msg, sig, &StandardCrypto)
-        .expect("StandardCrypto verification is always available")
-}
-
-pub fn verify_with_crypto(
-    key: &RawReleaseKey,
-    msg: &[u8],
-    sig: &[u8],
-    crypto: &dyn ReleaseCrypto,
-) -> Result<bool, CryptoUnavailable> {
-    if !crypto.validate_public_key(key.public_key())? {
-        return Ok(false);
-    }
     match key {
-        RawReleaseKey::Ed25519(k) => {
-            let Ok(arr) = <&[u8; 64]>::try_from(sig) else {
-                return Ok(false);
+        ReleaseKey::Ed25519(k) => {
+            let Ok(sig) = <&[u8; 64]>::try_from(sig) else {
+                return false;
             };
-            crypto.verify_ed25519_strict(k, msg, arr)
+            !k.is_weak()
+                && k.verify_strict(msg, &ed25519_dalek::Signature::from_bytes(sig))
+                    .is_ok()
         }
-        RawReleaseKey::P256(k) => crypto.verify_p256_sha256_asn1(k, msg, sig),
+        ReleaseKey::P256(k) => {
+            k[0] == 4
+                && ring::signature::UnparsedPublicKey::new(
+                    &ring::signature::ECDSA_P256_SHA256_ASN1,
+                    k,
+                )
+                .verify(msg, sig)
+                .is_ok()
+        }
     }
 }
 
@@ -261,30 +226,6 @@ fn header(obj: &serde_json::Map<String, Value>, ty: &str) -> Result<(u64, u64), 
 }
 
 pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
-    let raw = standard_result(read_keys_with_crypto(bytes, &StandardCrypto))?;
-    Ok(Signed {
-        signed_bytes: raw.signed_bytes,
-        signatures: raw.signatures,
-        doc: KeysDoc {
-            version: raw.doc.version,
-            expires: raw.doc.expires,
-            keys: raw
-                .doc
-                .keys
-                .into_iter()
-                .map(|(id, key)| (id, key.into_standard()))
-                .collect(),
-            roles: raw.doc.roles,
-            revoked_keyids: raw.doc.revoked_keyids,
-            revoked_digests: raw.doc.revoked_digests,
-        },
-    })
-}
-
-pub fn read_keys_with_crypto(
-    bytes: &[u8],
-    crypto: &dyn ReleaseCrypto,
-) -> Result<Signed<RawKeysDoc>, WithCryptoError<String>> {
     let (signed, signed_bytes, signatures) = read_envelope(bytes, "keys document")?;
     let obj = signed.as_object().ok_or("`signed` is not an object")?;
     only_fields(
@@ -307,10 +248,11 @@ pub fn read_keys_with_crypto(
         .and_then(Value::as_object)
         .ok_or("`keys` is not an object")?
     {
-        let key = read_key_object_with_crypto(k, crypto)
-            .map_err(|e| e.map_rejection(|e| format!("key {id}: {e}")))?;
-        if key_id_with_crypto(&key, crypto)? != *id {
-            return Err((format!("key {id} is listed under an id that is not its own")).into());
+        let key = read_key_object(k).map_err(|e| format!("key {id}: {e}"))?;
+        if key_id(&key) != *id {
+            return Err(format!(
+                "key {id} is listed under an id that is not its own"
+            ));
         }
         keys.insert(id.clone(), key);
     }
@@ -359,7 +301,7 @@ pub fn read_keys_with_crypto(
         }
     }
     Ok(Signed {
-        doc: RawKeysDoc {
+        doc: KeysDoc {
             version,
             expires,
             keys,
@@ -606,6 +548,7 @@ pub fn read_seal(signature: &str) -> Option<Result<SealBytes, String>> {
     })())
 }
 
+#[cfg(test)]
 pub fn sealed_keys_version(signature: &str) -> Option<u64> {
     let (keys, _) = read_seal(signature)?.ok()?;
     let v: Value = serde_json::from_slice(&keys).ok()?;
