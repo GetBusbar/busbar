@@ -99,17 +99,8 @@ impl std::fmt::Debug for UserinfoBasic {
 }
 
 fn basic_value(plain: &[u8]) -> Vec<u8> {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = b"Basic ".to_vec();
-    for chunk in plain.chunks(3) {
-        let at = |i: usize| u32::from(chunk.get(i).copied().unwrap_or(0));
-        let n = (at(0) << 16) | (at(1) << 8) | at(2);
-        let sextet = |shift: u32| TABLE[((n >> shift) & 63) as usize];
-        out.push(sextet(18));
-        out.push(sextet(12));
-        out.push(if chunk.len() > 1 { sextet(6) } else { b'=' });
-        out.push(if chunk.len() > 2 { sextet(0) } else { b'=' });
-    }
+    busbar_contract::media::base64_encode_into(plain, &mut out);
     out
 }
 
