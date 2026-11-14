@@ -10,7 +10,7 @@
 //! `{PAD}` (a request body's `pad` bytes of filler).
 
 use crate::driver::{Proto, Req, Shape};
-use crate::mock::llm::{Dialect, MARKER};
+use crate::mock::llm::Dialect;
 use crate::mock::MockConfig;
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue, Method};
