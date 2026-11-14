@@ -241,6 +241,7 @@ use crate::hooks::RewriteReply;
 
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
 pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
+    crate::stage_probe::tick(crate::stage_probe::Derive::ProjectCopy);
     let messages: Vec<serde_json::Value> = value.get("messages")?.as_array()?.clone();
     if messages.is_empty() {
         return None;
