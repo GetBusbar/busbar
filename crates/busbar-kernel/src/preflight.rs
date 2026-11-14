@@ -20,7 +20,7 @@ pub type LinkedStore = (
     &'static str,
 );
 
-pub(crate) type LinkedStoreDoor = (
+pub type LinkedStoreDoor = (
     &'static str,
     bool,
     busbar_contract::abi::sdk::door::MacroDoor,
