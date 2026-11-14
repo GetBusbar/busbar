@@ -73,7 +73,7 @@ configuration's answers are unchanged.
 
 ### Behaviour identical to 1.5.5
 
-Measured by the shadow oracle — boot refusals and warnings, `--validate`,
+Measured by the upgrade tests — boot refusals and warnings, `--validate`,
 `--migrate-config` on the whole migration corpus, the admin API, the six LLM dialects buffered and
 streaming, failover, billing, `/metrics`, and the published store plugins — 1.6.0 answers a 1.5.5
 config and request exactly as 1.5.5 did, apart from the improvements and breaking changes
@@ -83,10 +83,10 @@ through its own `migrate`. It cannot rebuild a third-party plugin built for 1.5.
 key whose reference does not resolve (it names each one in a TODO), make a `file:` secret that is not
 a regular file into one, or repoint an identity provider whose discovery redirects to a private
 address (see [Owner-signed changes from 1.5.5](#owner-signed-changes-from-155)); the published store
-plugins in the oracle ran as 1.5.5 builds against the 1.5.5 binary.
+plugins in the upgrade tests ran as 1.5.5 builds against the 1.5.5 binary.
 
 A request whose upstream is down is counted and billed nothing, as in 1.5.5. The published 1.5.5
-binary books it as one request with 0 cents of spend and 0 tokens (shadow-oracle cell
+binary books it as one request with 0 cents of spend and 0 tokens (upgrade-test cell
 `billing|key-usage|upstream-down-refunded` in `testing/shadow-oracle/golden/1.5.5`), and 1.6.0 books
 the same.
 
@@ -537,7 +537,7 @@ declares.
 instead, because each waives only a caller-additive or documentation-only surface rather than a
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
 and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
-oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
+upgrade-test tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
 changed. A reader counting `kind: breaking` rows in the register will find eleven, not eight. One
 further entry, AUTH-ROW's, is also registered `breaking` and presented under Improvements: the
 differ accepts a `status` class on no other kind, and what it waives is a misconfigured admin-auth
@@ -655,12 +655,12 @@ minted secret carries over.
   1.5.5 priced every row of `GET /api/v1/admin/usage` at the card current at read time, so a card
   edited to one micro-unit per token made requests served earlier under a dearer card read 18
   micro-units each; 1.6.0 reads them at the card they were served under (2,500,000 each on the
-  oracle's card). **Migration:** none; to change what an earlier window was charged, post a
+  upgrade tests' card). **Migration:** none; to change what an earlier window was charged, post a
   correction through `POST /api/v1/admin/ledger/amend-rate-history`.
 - 1.6.0 Changed: applying a config no longer reprices spend already recorded in the `/metrics` spend series.
   In 1.5.5, `POST /api/v1/admin/config/apply` with a config that drops the rate card moved
   `busbar_key_spend_cents` and `busbar_bucket_spend_cents` down by what the earlier requests were
-  charged (250 cents on the oracle's card) and `busbar_bucket_budget_remaining_cents` up; in 1.6.0
+  charged (250 cents on the upgrade tests' card) and `busbar_bucket_budget_remaining_cents` up; in 1.6.0
   those series keep each earlier request at the card in force when it arrived. **Migration:** none;
   dashboards that read a drop in these series after an apply as a refund will no longer see one.
 
@@ -841,7 +841,7 @@ A level word that names no level, or a `rotate_mb` of `0`, refuses the boot and 
 
 The LLM plane is now validated against the providers' published, machine-readable API
 specifications — OpenAI (Chat Completions and Responses), Anthropic, Google Gemini, AWS Bedrock
-and Cohere, each pinned by URL and digest — for every request the oracle sends and every buffered,
+and Cohere, each pinned by URL and digest — for every request the upgrade tests send and every buffered,
 streamed and error response Busbar returns. Where 1.5.5's bytes and the spec disagreed, the spec
 won; that is the origin of the stream-shape, required-member, error-vocabulary and `finish_reason`
 improvements above. One documented disagreement

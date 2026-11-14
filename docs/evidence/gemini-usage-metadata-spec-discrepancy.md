@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (C) 2026 Busbar Inc and contributors -->
 
+> Superseded by the upgrade tests (decision 120): the shadow oracle this document cites is retired.
+
 # Gemini `usageMetadata` — measured wire behaviour vs. the published spec
 
 **Status:** measured, filed, not yet acted on for billing

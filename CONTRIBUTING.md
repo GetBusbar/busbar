@@ -16,7 +16,7 @@ is retired; GitHub is the public code mirror.
 
 1. Branch `lane-<name>` from `origin/dev`. `predev` is retired.
 2. Before you ship, format, lint and run the few tests directly covering the change. Full
-   behavior suites, the assembled oracle and supply-chain checks run in CI. Follow the current
+   behavior suites, the upgrade tests and supply-chain checks run in CI. Follow the current
    owner-authorized runner path for the branch; a local quick check is not final certification.
 
    ```bash
@@ -24,7 +24,8 @@ is retired; GitHub is the public code mirror.
    cargo metadata --format-version 1 >/dev/null   # refreshes a stale Cargo.lock
    ```
 
-   Final CI evidence binds fmt, clippy/workspace lints, behavior tests, the assembled 1.5.5 oracle,
+   Final CI evidence binds fmt, clippy/workspace lints, behavior tests, the upgrade tests (every
+   test with a 1.5.5 baseline passes on 1.5.5; 1.6.0 failures go to the owner's accept/fix queue)
    and supply-chain checks (both `cargo deny` and `cargo vet`) to the actual final product revision.
 3. When authorized to commit/push, push the lane and open a PR into `dev`. Inspect the CI result
    and fix actual failures. QA/main promotion and signed publication require the owner's authority.
