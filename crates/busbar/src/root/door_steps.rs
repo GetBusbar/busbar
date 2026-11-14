@@ -2488,15 +2488,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
-        kernel_sections(cfg)?;
-        if let Some(url) = cfg.public_url.as_deref() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when the public URL is refused"
-            )]
-            busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)
-                .map_err(|errors| errors.join("\n"))?;
-        }
+        offline_root_rules(cfg).map_err(|e| e.join("\n"))?;
         let anchors = self
             .owned_anchors
             .lock()
