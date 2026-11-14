@@ -5,27 +5,29 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 use axum::http::StatusCode;
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 use axum::response::Response;
 
+#[cfg(test)]
+use busbar_contract::caps::Route;
 use busbar_contract::caps::{
-    Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Route, VerifiedDestination,
+    Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, VerifiedDestination,
 };
 use busbar_contract::{LaneId, UnitKey};
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 use busbar_kernel::plane_driver::PlaneAnswer;
-use busbar_kernel::teller::{
-    AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
-};
+use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, UnitCtx, Units};
+#[cfg(test)]
+use busbar_kernel::teller::{RouteLeg, Screen};
 use busbar_kernel::Registration;
 use busbar_kernel_audit::{
     AuditInputs, Controls, FinishClass as RecordFinish, HookApplied, OpClassId as RecordOpClass,
     OutcomeFacts, Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
 };
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 use crate::root::linked::node::Handed;
 use crate::root::linked::node::{Late, Reported, Resolve};
 
@@ -131,7 +133,7 @@ pub struct Node {
 
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
 
-    #[cfg(any(test, distribution_root))]
+    #[cfg(test)]
     dispatch: Arc<dyn crate::root::transports::PlaneDispatch>,
 
     pub(crate) ticket_custody: Arc<crate::root::serve::TicketCustody>,
@@ -176,7 +178,7 @@ impl Node {
             lost: Mutex::new(HashMap::new()),
             mono: AtomicU64::new(0),
 
-            #[cfg(any(test, distribution_root))]
+            #[cfg(test)]
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
             ticket_custody: crate::root::serve::TicketCustody::new(),
         }
@@ -796,20 +798,20 @@ impl Node {
         }
     }
 
-    #[cfg(any(test, distribution_root))]
+    #[cfg(test)]
     #[must_use]
     pub async fn answer(&self, handed: Handed) -> Response {
         self.answer_arriving_at(handed, self.arrived()).await
     }
 
-    #[cfg(any(test, distribution_root))]
+    #[cfg(test)]
     #[must_use]
     pub async fn answer_arriving_at(&self, handed: Handed, arrived: Arrived) -> Response {
         self.answer_pinned(handed, arrived, || crate::root::kernel::ROOT_CARD.pin())
             .await
     }
 
-    #[cfg(any(test, distribution_root))]
+    #[cfg(test)]
     async fn answer_pinned(
         &self,
         handed: Handed,
@@ -917,7 +919,7 @@ impl Node {
         }
     }
 
-    #[cfg(any(test, distribution_root))]
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     async fn tail(
         &self,
@@ -1098,11 +1100,11 @@ impl LateAccrual {
     }
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 type JournalConfirmation =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 struct LateBody {
     inner: Option<axum::body::Body>,
 
@@ -1111,9 +1113,8 @@ struct LateBody {
     journal: Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 impl LateBody {
-    #[cfg(any(test, distribution_root))]
     fn new(inner: axum::body::Body, arm: LateAccrual) -> Self {
         let journal = arm
             .book
@@ -1129,13 +1130,12 @@ impl LateBody {
         }
     }
 
-    #[cfg(any(test, distribution_root))]
     fn fire(&mut self) -> Option<TerminalConfirmation> {
         self.arm.take().and_then(LateAccrual::post)
     }
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 impl http_body::Body for LateBody {
     type Data = axum::body::Bytes;
     type Error = axum::Error;
@@ -1196,7 +1196,7 @@ impl http_body::Body for LateBody {
     }
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 impl Drop for LateBody {
     fn drop(&mut self) {
         drop(self.inner.take());
@@ -1396,7 +1396,7 @@ impl Drop for Occupied<'_> {
     }
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 fn journal_unavailable(proto: &str, why: &str) -> Response {
     busbar_kernel::ingress::ingress_error(
         proto,
@@ -1406,7 +1406,7 @@ fn journal_unavailable(proto: &str, why: &str) -> Response {
     )
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 fn unavailable(proto: &str) -> Response {
     busbar_kernel::ingress::ingress_error(
         proto,
@@ -1416,7 +1416,7 @@ fn unavailable(proto: &str) -> Response {
     )
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 struct Driven<'n> {
     node: &'n Node,
     route: &'n (dyn RouteAwait + Send + Sync),
@@ -1431,9 +1431,8 @@ struct Driven<'n> {
     sealing: Mutex<Option<Accruing>>,
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 impl Driven<'_> {
-    #[cfg(any(test, distribution_root))]
     fn take_seal(&self, key: UnitKey) -> Option<Sealing> {
         let accruing = self
             .sealing
@@ -1443,7 +1442,6 @@ impl Driven<'_> {
         accruing.into_seal(key, self.node.kernel.origin(OriginKind::Client), None)
     }
 
-    #[cfg(any(test, distribution_root))]
     fn accruing(&self) -> std::sync::MutexGuard<'_, Option<Accruing>> {
         self.sealing
             .lock()
@@ -1451,7 +1449,7 @@ impl Driven<'_> {
     }
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 impl busbar_kernel::teller::UnitTaps for Driven<'_> {
     fn audited(&self, _ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
         self.accruing().get_or_insert_with(Accruing::default).door = Some((facts, pass));
@@ -1462,7 +1460,7 @@ impl busbar_kernel::teller::UnitTaps for Driven<'_> {
     fn routed(&self, _ctx: &UnitCtx, _destinations: &[VerifiedDestination]) {}
 }
 
-#[cfg(any(test, distribution_root))]
+#[cfg(test)]
 impl RouteAwait for Driven<'_> {
     fn route_leg<'a>(
         &'a self,
@@ -2054,13 +2052,6 @@ pub fn node() -> Arc<Node> {
 }
 
 #[cfg(any(test, distribution_root))]
-fn drive(
-    handed: Handed,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = PlaneAnswer> + Send>> {
-    Box::pin(async move { PlaneAnswer::Live(NODE.answer(handed).await) })
-}
-
-#[cfg(any(test, distribution_root))]
 pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
     bind_node_book(&NODE, &crate::root::kernel::ROOT_CARD, book);
 }
@@ -2068,7 +2059,6 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
 #[cfg(any(test, distribution_root))]
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: None,
-    drive: Some(drive),
     on_config: Some(|_| crate::root::kernel::install_card_repricer()),
     #[cfg(test)]
     opens_book: true,
