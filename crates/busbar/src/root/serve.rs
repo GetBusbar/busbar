@@ -6302,6 +6302,7 @@ pub(crate) fn report_of(
     facts: &DoorFacts,
 ) -> Option<crate::root::linked::node::Reported> {
     let lane = money.serving(unit)?;
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UsageFold);
     let mut usage_units: BTreeMap<String, busbar_contract::Count> = BTreeMap::new();
     let mut fee = 0u32;
     for u in money

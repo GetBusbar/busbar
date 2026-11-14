@@ -1471,6 +1471,7 @@ impl DriverSteps for DoorSteps<'_> {
             .money
             .map(|m| m.last_counts(ctx.key))
             .unwrap_or_default();
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UsageFold);
         let mut by_class: BTreeMap<u32, busbar_contract::Count> = BTreeMap::new();
         for u in last.iter().filter(|u| units_bill(u.source)) {
             if self.facts.fee_units.contains(&u.class) {
@@ -4536,6 +4537,10 @@ fn peer_key_pin_refusal(at: &str, keys: &[busbar_contract::plane::TrustKeyDecl])
 #[cfg(test)]
 #[path = "tests/door_steps.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "tests/usage_fold.rs"]
+mod usage_fold_tests;
 
 #[cfg(all(test, linked_axis_transport_door, linked_section_agents))]
 #[path = "tests/registration_pin.rs"]

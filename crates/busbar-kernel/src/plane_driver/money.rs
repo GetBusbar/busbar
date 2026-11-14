@@ -904,6 +904,9 @@ impl PlaneMoney {
             ..
         } = end;
         let removed = {
+            busbar_contract::stage_probe::tick(
+                busbar_contract::stage_probe::Derive::MoneyShardLock,
+            );
             let mut all = self.shard(key);
             all.remove(&key)
         };
@@ -917,6 +920,7 @@ impl PlaneMoney {
         }
         if !open.ledgered {
             let delivered = (200..=299).contains(&caller_status);
+            busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UsageFold);
             let counts = reported(&open.last);
             if !self.finish_checkpoint(key, &open, &counts, delivered) {
                 self.bill(m, open.provider.as_deref(), &counts, |_| delivered);
@@ -927,6 +931,7 @@ impl PlaneMoney {
 
     #[must_use]
     pub fn last_counts(&self, key: UnitKey) -> Vec<UnitCount> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
         self.shard(key)
             .get(&key)
             .map(|o| o.last.clone())
@@ -935,6 +940,7 @@ impl PlaneMoney {
 
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
         self.shard(key).get(&key).map(|o| o.money.lane.clone())
     }
 
