@@ -1705,9 +1705,7 @@ struct ReservedSource {
 }
 
 async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
-    use busbar_contract::caps::{Hold, OriginKind, PrincipalId};
     use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
-    use busbar_kernel::plane_driver::{FeeRefund, UnitMoney};
     let limit = |metric, per| LimitCfg {
         metric,
         amount: 1,
@@ -1749,6 +1747,20 @@ async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
         .gov
         .lookup_by_sub(&key.id)
         .expect("the host resolves the actual stored source key");
+    reserved_source_for(g, key, cost, group, now)
+}
+
+/// A real admitted source for an existing `key` under `cost`: one paid admission, one admitted
+/// cell, one registered ticket source.
+fn reserved_source_for(
+    g: &Governed,
+    key: Arc<VirtualKey>,
+    cost: Arc<CostModel>,
+    group: &str,
+    now: u64,
+) -> ReservedSource {
+    use busbar_contract::caps::{Hold, OriginKind, PrincipalId};
+    use busbar_kernel::plane_driver::{FeeRefund, UnitMoney};
     let money = Arc::clone(&g.served.planes[0].money);
     let node = g.post.node();
     let unit = node.mint();
@@ -2362,3 +2374,6 @@ async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_fil
 
 #[path = "serve_hook_child.rs"]
 mod hook_child_tests;
+
+#[path = "serve_ticket_custody.rs"]
+mod ticket_custody_tests;
