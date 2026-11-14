@@ -45,6 +45,13 @@ impl ActualStore {
         }
     }
     async fn open(&self) -> Arc<CoreStore> {
+        self.open_wrapped(|backend| backend).await
+    }
+    /// Open with `wrap` inserted between the product Store and native startup.
+    async fn open_wrapped(
+        &self,
+        wrap: impl FnOnce(Arc<dyn PersistenceBackend>) -> Arc<dyn PersistenceBackend>,
+    ) -> Arc<CoreStore> {
         if let Some(core) = self.core.get() {
             return core.clone();
         }
@@ -89,7 +96,7 @@ impl ActualStore {
             .unwrap(),
         );
         let mut startup = Startup::new(
-            backend.clone(),
+            wrap(backend.clone()),
             CoreLimits {
                 pending_operations: 128,
                 conflict_retries: 4,
@@ -1450,4 +1457,119 @@ async fn measurement_root_loader_callback_preserves_early_and_admitted_attributi
         .await
         .unwrap()
         .is_empty());
+}
+
+/// A request-path audit append on this node's own journal lands before every
+/// read of its original frames while enabled, as audits do throughout a
+/// checkpoint flush. Reads the append itself makes are answered plainly.
+struct AppendDuringReplay {
+    actual: Arc<dyn PersistenceBackend>,
+    journal: OnceLock<Arc<RuntimeJournal>>,
+    enabled: AtomicBool,
+    busy: AtomicBool,
+    appended: std::sync::atomic::AtomicUsize,
+}
+impl PersistenceBackend for AppendDuringReplay {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.actual.info()
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.actual.clock(dataset)
+    }
+    fn scan(
+        &self,
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.actual.scan(request)
+    }
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, Decision> {
+        self.actual.commit(candidate)
+    }
+    fn read(&self, request: Arc<Read>) -> busbar_contract::persistence::Call<'_, ReadResult> {
+        Box::pin(async move {
+            let original = self.enabled.load(Ordering::SeqCst)
+                && request.addresses.iter().any(|at| {
+                    at.key.starts_with(b"busbar.journal4\0") && at.key.get(24) == Some(&b'R')
+                });
+            if original && !self.busy.swap(true, Ordering::SeqCst) {
+                if let Some(journal) = self.journal.get() {
+                    let run = journal.stage_run(&[busbar_kernel_wal::Entry::new(
+                        busbar_kernel_wal::RecordClass::Transaction,
+                        b"request-path audit".to_vec(),
+                    )]);
+                    if let Ok(run) = run {
+                        if journal.confirm(&run).await.is_ok() {
+                            self.appended.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                }
+                self.busy.store(false, Ordering::SeqCst);
+            }
+            self.actual.read(request).await
+        })
+    }
+}
+
+/// PERFPASS-F2 T1: a running checkpoint persists while request-path audits
+/// append to the same node journal throughout its replays. Before the fix
+/// every attempt lost to the append ("unit checkpoint: Authority").
+#[tokio::test]
+async fn actual_store_checkpoint_persists_while_request_audits_append() {
+    let fixture = ActualStore::new();
+    let view = OnceLock::<Arc<AppendDuringReplay>>::new();
+    let store = fixture
+        .open_wrapped(|actual| {
+            let wrapped = Arc::new(AppendDuringReplay {
+                actual,
+                journal: OnceLock::new(),
+                enabled: AtomicBool::new(false),
+                busy: AtomicBool::new(false),
+                appended: Default::default(),
+            });
+            assert!(view.set(wrapped.clone()).is_ok());
+            wrapped as Arc<dyn PersistenceBackend>
+        })
+        .await;
+    let view = view.get().expect("wrapped store").clone();
+    let host = format!(
+        "unit-checkpoint-append-race-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(store.clone(), &host).await;
+    assert!(view.journal.set(book.journal.clone()).is_ok());
+    let sink = unit_checkpoint_sink(&book);
+    let snapshot = unit();
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        view.enabled.store(true, Ordering::SeqCst);
+        let mut last = Err(error("no attempt"));
+        for _ in 0..3 {
+            last = sink.persist(&snapshot).await;
+            if last.is_ok() {
+                break;
+            }
+        }
+        if let Err(why) = &last {
+            panic!("checkpoint lost to request-path appends: {}", why.0);
+        }
+        assert!(
+            view.appended.load(Ordering::SeqCst) > 0,
+            "no append interleaved"
+        );
+        let stored = sink.replay().await.unwrap();
+        assert!(
+            stored == vec![snapshot.clone()],
+            "the persisted checkpoint replays"
+        );
+        view.enabled.store(false, Ordering::SeqCst);
+    })
+    .await
+    .expect("no hang");
+    stop(&book);
 }
