@@ -230,7 +230,7 @@ fn in_contract(m: &Table, t: Ticket, unit: u64) -> bool {
         .map(|t| t.slot)
         .collect();
     let held = tickets.len();
-    tickets.sort_unstable();
+    tickets.sort();
     tickets.dedup();
     tickets.len() == held && (unit == 0 || m.iter().all(|(k, u)| *k == unit || u.ticket != Some(t)))
 }

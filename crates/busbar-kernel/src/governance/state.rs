@@ -1467,7 +1467,7 @@ impl GovState {
             shard_idx.push(self.budget.shard_index(bucket.bucket_id));
         }
         let mut order = shard_idx.clone();
-        order.sort_unstable();
+        order.sort();
         let mut guards: Vec<Option<std::sync::RwLockWriteGuard<'_, HashMap<String, BudgetCell>>>> =
             Vec::new();
         guards.resize_with(n, || None);

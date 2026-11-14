@@ -971,7 +971,7 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
                     .expect("n")
             })
             .collect();
-        ns.sort_unstable();
+        ns.sort();
         (in_flight, carried_while_held, ns)
     });
     assert_eq!(

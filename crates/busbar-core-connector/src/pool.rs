@@ -419,7 +419,7 @@ impl Pools {
                     .iter()
                     .map(|(_, i)| *i)
                     .collect();
-                drop.sort_unstable_by(|a, b| b.cmp(a));
+                drop.sort_by(|a, b| b.cmp(a));
                 for i in drop {
                     spent.push(entries.remove(i).line);
                 }

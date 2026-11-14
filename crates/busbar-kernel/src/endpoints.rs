@@ -144,7 +144,7 @@ pub fn catalog_names(app: &App, gov: &GovCtx, plane: &str) -> Vec<String> {
         .map(|(n, _)| *n)
         .filter(|n| visible_pool(n))
         .collect();
-    names.sort_unstable();
+    names.sort();
 
     let mut models: Vec<&str> = view
         .model_indices()
@@ -161,7 +161,7 @@ pub fn catalog_names(app: &App, gov: &GovCtx, plane: &str) -> Vec<String> {
             routed.then_some(m)
         })
         .collect();
-    models.sort_unstable();
+    models.sort();
     names.extend(models);
     names.dedup();
 

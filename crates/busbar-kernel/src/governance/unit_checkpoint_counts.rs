@@ -115,7 +115,7 @@ impl GovState {
             .iter()
             .map(|t| self.budget.shard_index(&t.bucket))
             .collect();
-        shards.sort_unstable();
+        shards.sort();
         shards.dedup();
         let capture = || -> RecordStoreResult<Vec<Option<BudgetCell>>> {
             let guards: Vec<_> = shards
@@ -280,7 +280,7 @@ impl GovState {
             .iter()
             .map(|(bucket, _, _)| self.budget.shard_index(bucket))
             .collect();
-        shards.sort_unstable();
+        shards.sort();
         shards.dedup();
         let mut guards: Vec<_> = shards
             .iter()

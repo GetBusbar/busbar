@@ -2172,7 +2172,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             .copied()
             .filter(|section| writes_plane(section, cfg))
             .collect();
-        out.sort_unstable();
+        out.sort();
         out
     }
 

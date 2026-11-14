@@ -623,7 +623,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     for hook in hooks {
         let hook = hook.as_object().expect("a hook is an object");
         let mut keys: Vec<&str> = hook.keys().map(String::as_str).collect();
-        keys.sort_unstable();
+        keys.sort();
         assert_eq!(
             keys,
             vec!["failed", "head", "hook"],

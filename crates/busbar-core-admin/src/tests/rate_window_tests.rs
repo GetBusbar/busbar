@@ -119,7 +119,7 @@ fn every_mutation_class_names_itself_to_the_audit_row() {
     ]
     .map(MutationClass::label);
     let mut sorted = labels.to_vec();
-    sorted.sort_unstable();
+    sorted.sort();
     sorted.dedup();
     assert_eq!(
         sorted.len(),

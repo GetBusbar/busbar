@@ -383,7 +383,7 @@ pub fn required_kinds(bytes: &[u8]) -> Result<Vec<u32>, &'static str> {
     }
     r.end()?;
     let mut sorted = kinds.clone();
-    sorted.sort_unstable();
+    sorted.sort();
     if sorted.windows(2).any(|w| w[0] == w[1]) {
         return Err(INVALID);
     }

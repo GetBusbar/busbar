@@ -336,7 +336,7 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
     );
     // Provider validation walks a HashMap; require the exact diagnostics without its iteration order.
     let mut details: Vec<_> = lines.collect();
-    details.sort_unstable();
+    details.sort();
     assert_eq!(
         details,
         [

@@ -107,7 +107,7 @@ tools:
         "tools.t1.timeout",
         "tools.t1.upstream_credentials",
     ];
-    want.sort_unstable();
+    want.sort();
     assert_eq!(paths, want);
 
     assert!(s

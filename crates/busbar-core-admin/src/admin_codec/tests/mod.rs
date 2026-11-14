@@ -7,7 +7,7 @@ use crate::admin_codec::verbs;
 fn combined_table_has_unique_verb_names() {
     let all = verbs::table();
     let mut names: Vec<&str> = all.iter().map(|e| e.verb).collect();
-    names.sort_unstable();
+    names.sort();
     let before = names.len();
     names.dedup();
     assert_eq!(

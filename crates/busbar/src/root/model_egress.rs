@@ -374,7 +374,7 @@ impl LatencyReservoir {
         }
         let p95 = (n > 0).then(|| {
             let held = &mut held[..n];
-            held.sort_unstable();
+            held.sort();
             held[(n * 95).div_ceil(100) - 1].div_ceil(1000)
         });
         self.p95.store(

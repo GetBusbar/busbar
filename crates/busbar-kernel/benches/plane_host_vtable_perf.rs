@@ -138,7 +138,7 @@ fn percentiles(mut f: impl FnMut()) -> (u64, u64) {
         }
         per_call.push(t.elapsed().as_nanos() as u64 / BATCH);
     }
-    per_call.sort_unstable();
+    per_call.sort();
     let p50 = per_call[SAMPLES / 2];
     let p99 = per_call[(SAMPLES * 99) / 100];
     (p50, p99)

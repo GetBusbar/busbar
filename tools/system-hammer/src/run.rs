@@ -531,7 +531,7 @@ fn median(mut v: Vec<u64>) -> u64 {
     if v.is_empty() {
         return 0;
     }
-    v.sort_unstable();
+    v.sort();
     v[v.len() / 2]
 }
 

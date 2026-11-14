@@ -215,7 +215,7 @@ impl PieceInFlight for GatedFlight {
 fn await_published(c: &Control) {
     let flights = c.flights.lock().unwrap().clone();
     let mut kinds: Vec<bool> = flights.iter().map(|(primary, _)| *primary).collect();
-    kinds.sort_unstable();
+    kinds.sort();
     assert_eq!(
         kinds,
         [false, true],
