@@ -105,30 +105,47 @@ pub fn stated_facts(
 pub(crate) fn stated_facts_raw(
     door: busbar_contract::abi::sdk::door::RawDoorFn,
 ) -> Result<AuthFacts, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let v = crate::dispatch::load::validate::<Auth>(door).map_err(|e| e.to_string())?;
     facts(&v.statement)
 }
 
 fn fit(s: &str, over: &str) -> Result<String, String> {
-    if s.len() > crate::dispatch::plugin::MAX_TEXT {
-        return Err(over.to_string());
+    let fits = s.len() <= crate::dispatch::plugin::MAX_TEXT;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a Statement string is copied out once, at bind"
+    )]
+    let owned = if fits { s } else { over }.to_owned();
+    if fits {
+        Ok(owned)
+    } else {
+        Err(owned)
     }
-    Ok(s.to_string())
 }
 
 fn carriers(words: &[(u32, String)]) -> Result<Vec<String>, String> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the carrier list is copied out once, at bind")
     let mut out = Vec::new();
     for (class, word) in words {
         if *class != MARK_WORD_CARRIER {
             continue;
         }
         if out.len() == MAX_CARRIERS {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a load-time Statement refusal"
+            )]
             return Err(format!(
                 "the auth Statement states more than {MAX_CARRIERS} carriers"
             ));
         }
-        let word = fit(word, "an auth carrier name is over-long")?;
-        out.push(word.to_ascii_lowercase());
+        let mut word = fit(word, "an auth carrier name is over-long")?;
+        word.make_ascii_lowercase();
+        out.push(word);
     }
     Ok(out)
 }
@@ -149,6 +166,10 @@ fn issued(words: &[(u32, String)]) -> Result<Option<IssuedShape>, String> {
             continue;
         };
         if slots[slot].is_some() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a load-time Statement refusal"
+            )]
             return Err(format!(
                 "the auth Statement states issued-credential mark class {class} twice"
             ));
@@ -160,17 +181,32 @@ fn issued(words: &[(u32, String)]) -> Result<Option<IssuedShape>, String> {
     }
     let [prefix, id_len, id_alphabet, secret_len, secret_alphabet] = slots;
     let length = |word: Option<String>, what: &str| -> Result<usize, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         let word = word.ok_or_else(|| format!("the issued-credential shape states no {what}"))?;
         match word.parse::<usize>() {
             Ok(n) if (1..=MAX_ISSUED).contains(&n) && word.bytes().all(|b| b.is_ascii_digit()) => {
                 Ok(n)
             }
-            _ => Err(format!(
-                "the issued-credential {what} {word:?} is not a decimal in 1..={MAX_ISSUED}"
-            )),
+            _ => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: a load-time Statement refusal"
+                )]
+                let refusal = format!(
+                    "the issued-credential {what} {word:?} is not a decimal in 1..={MAX_ISSUED}"
+                );
+                Err(refusal)
+            }
         }
     };
     let alphabet = |word: Option<String>, what: &str| -> Result<String, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         let word = word.ok_or_else(|| format!("the issued-credential shape states no {what}"))?;
         let graphic = !word.is_empty() && word.bytes().all(|b| b.is_ascii_graphic());
         let mut seen = [false; 128];
@@ -178,6 +214,10 @@ fn issued(words: &[(u32, String)]) -> Result<Option<IssuedShape>, String> {
             .bytes()
             .all(|b| !std::mem::replace(&mut seen[usize::from(b & 0x7f)], true));
         if !graphic || !distinct || word.len() > MAX_ISSUED {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a load-time Statement refusal"
+            )]
             return Err(format!(
                 "the issued-credential {what} is not up to {MAX_ISSUED} distinct ASCII graphic \
                  characters"
@@ -194,6 +234,10 @@ fn issued(words: &[(u32, String)]) -> Result<Option<IssuedShape>, String> {
         secret_alphabet: alphabet(secret_alphabet, "secret alphabet")?,
     };
     if !shape.id_prefix.bytes().all(|b| b.is_ascii_graphic()) || shape.id_prefix.len() >= id_len {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!(
             "the issued-credential id prefix {:?} is not ASCII graphic or leaves no room in a \
              {id_len}-character id",
@@ -210,12 +254,20 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
     };
     // SAFETY: the loader's Statement check ran on `st`: every Statement list is its stated count of
     // `'static` entries, and the rendering bounds each tail list and string before it reads it.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let rendering = unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }
         .map_err(|e| e.to_string())?;
     rendered_facts(&rendering)
 }
 
 pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let r = busbar_contract::abi::mechanism::rendering::read(rendering).map_err(|e| {
         format!(
             "the auth Statement rendering does not read back: byte {} is not {}",
@@ -223,6 +275,10 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
         )
     })?;
     if r.kind != KindCode::Auth as u32 {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!(
             "the Statement rendering states kind {}, not auth",
             r.kind
@@ -230,15 +286,27 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
     }
 
     if r.kind_tail_size == 0 {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err("an auth plugin states no kind tail".to_string());
     }
     if (r.kind_tail_size as usize) < auth::TAIL_FROZEN {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!(
             "an auth plugin states a {}-byte tail, smaller than its frozen {}",
             r.kind_tail_size,
             auth::TAIL_FROZEN
         ));
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let t =
         busbar_contract::abi::mechanism::rendering::read_auth_tail(&r.kind_tail).map_err(|e| {
             format!(
@@ -250,6 +318,10 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
     let issued = issued(&r.mark_words)?;
 
     if t.facts & auth::FACT_DEFAULT_INBOUND_STYLE != 0 && carriers.is_empty() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(
             "the auth tail states the default inbound style and its Statement names no carrier"
                 .to_string(),
@@ -262,12 +334,20 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
         auth::LOGIN_KIND_NONE | auth::LOGIN_KIND_REDIRECT | auth::LOGIN_KIND_CREDENTIAL
     );
     if !kind_known || logs_in != (t.login_kind != auth::LOGIN_KIND_NONE) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!(
             "the auth tail's login kind {} disagrees with its login capability",
             t.login_kind
         ));
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let inbound_points = check_inbound_points(t.caps, t.inbound_points).map_err(|f| {
         format!(
             "the auth tail's inbound points {:#x} are refused: {f:?}",
@@ -281,6 +361,10 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
     )?;
     let operator = t.facts & auth::FACT_OPERATOR != 0;
     if operator == principal.is_empty() || (operator && t.caps & auth::CAP_INBOUND == 0) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!(
             "the auth tail's operator fact disagrees with its principal ({} bytes) or capabilities",
             principal.len()
@@ -288,11 +372,19 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
     }
 
     if t.credential_kinds.len() > MAX_CREDENTIAL_KINDS {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!(
             "the auth tail states {} credential kinds",
             t.credential_kinds.len()
         ));
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the credential kinds are copied out once, at bind"
+    )]
     let credential_kinds = t
         .credential_kinds
         .iter()
@@ -301,6 +393,10 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
     let reads = t.facts & auth::FACT_READS_CREDENTIALS != 0;
     let blank = credential_kinds.iter().any(String::is_empty);
     if reads == credential_kinds.is_empty() || blank || (reads && t.caps & auth::CAP_INBOUND == 0) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!(
             "the auth tail's credential-read fact disagrees with its {} credential kinds or \
              capabilities",
@@ -309,6 +405,7 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
     }
 
     if issued.is_some() && !reads {
+        #[expect(clippy::disallowed_methods, reason = "boot: a load-time Statement refusal")]
         return Err(
             "the auth Statement states an issued-credential shape and reads no host-held credential"
                 .to_string(),
@@ -316,15 +413,28 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
     }
 
     if t.styles.len() > MAX_STYLES {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!("the auth tail states {} styles", t.styles.len()));
     }
     if (t.caps & auth::CAP_OUTBOUND != 0) != !t.styles.is_empty() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err("the auth tail's outbound capability disagrees with its styles".to_string());
     }
-    let mut names = std::collections::HashSet::new();
+    let mut names = foldhash::HashSet::default();
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the style list is copied out once, at bind")
     let mut styles = Vec::with_capacity(t.styles.len());
     for d in &t.styles {
         if d.name.is_empty() || !names.insert(d.name.as_str()) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a load-time Statement refusal"
+            )]
             return Err(format!(
                 "auth style name {:?} is empty or duplicated",
                 d.name
@@ -335,6 +445,10 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
             flags: d.flags,
             points: d.points,
         });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         check_style_decl(d.flags, d.points).map_err(|f| {
             format!(
                 "auth style {} is refused: flags {:#x}, points {:#x}: {f:?}",
@@ -348,6 +462,10 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
             cache_family = u32::try_from(i).ok();
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the secret-ref keys are copied out once, at bind"
+    )]
     let secret_refs = r
         .secret_refs
         .iter()

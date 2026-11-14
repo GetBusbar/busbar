@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::os::raw::c_void;
@@ -317,12 +317,14 @@ pub struct Called {
 impl Called {
     #[must_use]
     pub fn open_failure(&self, display: &str) -> String {
-        let reason = match (&self.error, self.outcome) {
-            (Some(e), _) if !e.is_empty() => String::from_utf8_lossy(e).into_owned(),
-            (_, Outcome::Fault) => "status 3".to_string(),
-            _ => "status 1".to_string(),
+        let reason: &dyn std::fmt::Display = match (&self.error, self.outcome) {
+            (Some(e), _) if !e.is_empty() => &String::from_utf8_lossy(e),
+            (_, Outcome::Fault) => &"status 3",
+            _ => &"status 1",
         };
-        format!("plugin '{display}' open failed: {reason}")
+        #[expect(clippy::disallowed_methods, reason = "error: a plugin's refused open")]
+        let failure = format!("plugin '{display}' open failed: {reason}");
+        failure
     }
 }
 
@@ -775,6 +777,10 @@ pub struct Instance {
     pub(crate) instance: InstanceId,
 
     needs: Box<[ReadNeed]>,
+    /// Some need takes its target from the settings ([`from_settings`]), judged once at bind.
+    needs_from_settings: bool,
+    /// Some need names a `target_from` settings path, judged once at bind.
+    targets_from_settings: bool,
 
     secret_refs: Box<[String]>,
 
@@ -1027,9 +1033,7 @@ impl Instance {
             _ => Phase::Bound,
         }
     }
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
+    // `fetch_update` keeps this crate's MSRV floor below 1.95, where `try_update` is new.
     pub(crate) fn advance_store_phase(
         &self,
         phase: busbar_contract::persistence::lifecycle::Phase,
@@ -1072,9 +1076,7 @@ impl Instance {
             && self.store_target.load(Ordering::Acquire)
     }
 
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
+    // `fetch_update` keeps this crate's MSRV floor below 1.95, where `try_update` is new.
     pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
         if self.kind == KindCode::Export
             && matches!(s, slot::REFRESH | slot::CANCEL | slot::RELEASE)
@@ -1105,9 +1107,7 @@ impl Instance {
         self.inflight.fetch_sub(units, Ordering::AcqRel);
     }
 
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
+    // `fetch_update` keeps this crate's MSRV floor below 1.95, where `try_update` is new.
     fn enter_gate(&self, s: u32) -> bool {
         if s == slot::CLOSE {
             return self
@@ -1192,7 +1192,7 @@ impl Instance {
 
     fn uses_bindings(&self) -> bool {
         self.kind == KindCode::Export
-            || self.needs.iter().any(from_settings)
+            || self.needs_from_settings
             || self
                 .wake
                 .destinations
@@ -1213,6 +1213,10 @@ impl Instance {
     ) -> Option<String> {
         use busbar_contract::conn::admissions::AdmissionRefused;
         let Some(admissions) = admissions else {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a refused connection admission"
+            )]
             return self
                 .wake
                 .conn
@@ -1227,7 +1231,13 @@ impl Instance {
         });
         let answers = match admissions.apply(doc.as_ref(), owned.as_ref(), predecessor) {
             Ok(answers) => answers,
-            Err(_) => return Some("connection admission authority refused".to_owned()),
+            Err(_) => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a refused connection admission"
+                )]
+                return Some("connection admission authority refused".to_owned());
+            }
         };
         let mut trust_refused = None;
         for answer in answers {
@@ -1239,11 +1249,13 @@ impl Instance {
             if let (Err(reason), Some(path), None) =
                 (result, answer.trust_refused_at, &trust_refused)
             {
-                trust_refused = Some(format!(
+                #[expect(clippy::disallowed_methods, reason = "error: a refused CA certificate")]
+                let refusal = format!(
                     "{path}: the host refused the CA certificate it names for need {} ({reason}); \
                      it must be PEM that parses into a trust anchor",
                     answer.need.0
-                ));
+                );
+                trust_refused = Some(refusal);
             }
             if answer.report {
                 self.need_refused(answer.need, result);
@@ -1332,6 +1344,10 @@ impl Instance {
             .flatten();
         let conn = match self.wake.conn.get() {
             Some((owner, table)) => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a refused binding generation"
+                )]
                 let owner = if initial && !self.wake.conn_forgotten.load(Ordering::Acquire) {
                     *owner
                 } else {
@@ -1366,6 +1382,10 @@ impl Instance {
             {
                 let id = NeedId(index as u32);
                 if table.declared(*owner, id).is_none() {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: a refused binding generation"
+                    )]
                     table
                         .declare(*owner, id, need, None, None)
                         .map_err(|error| crate::observe::conn_reason(error).to_string())?;
@@ -1645,7 +1665,7 @@ impl Instance {
             crate::ffi_thread::on_plugin_thread(|| {
                 let _dispatch = tracing::dispatcher::set_default(&dispatch);
                 let _span = span.enter();
-                let _framing = super::framing_context::enter(framing.clone());
+                let _framing = super::framing_context::enter(framing);
                 let _original_phase = super::access::enter_kind(self.kind, original_operation);
                 // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
                 let mut crossed = unsafe { self.cross(slot::CANCEL, input, out, out_size) };
@@ -1860,7 +1880,7 @@ impl Instance {
                     if proposed_binding.is_none() {
                         return Crossed::host(Outcome::Fault);
                     }
-                    refresh_binding.generation = proposed_binding.clone();
+                    refresh_binding.generation.clone_from(&proposed_binding);
                 } else {
                     match self.binding_generation(settings, owned, false) {
                         Ok(binding) => {
@@ -2240,6 +2260,7 @@ impl Instance {
                         .open_stream(ticket, open)
                 });
                 if let Err(error) = opened {
+                    #[expect(clippy::disallowed_methods, reason = "error: a refused stream open")]
                     return Crossed {
                         error: Some(error.as_bytes().to_vec()),
                         ..Crossed::host(Outcome::Refused).unread(head.lease)
@@ -2548,10 +2569,18 @@ pub(crate) unsafe fn kind_tail<T: Copy>(
 ) -> Result<T, String> {
     let p = st.kind_tail;
     if p.is_null() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         return Err(format!("{who} states no kind tail"));
     }
     // SAFETY: a non-NULL kind tail leads with a `KindTailHead` (the caller's contract).
     let size = unsafe { (*p).size };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a load-time Statement refusal"
+    )]
     let read = busbar_contract::abi::mechanism::door::tail_read_len(size, frozen, size_of::<T>())
         .ok_or_else(|| {
         format!("{who} states a {size}-byte tail, smaller than its frozen {frozen}")
@@ -2623,7 +2652,7 @@ fn kind_word(kind: KindCode) -> &'static str {
 
 fn observed(
     observing: Arc<crate::observe::Observing>,
-    then: &Arc<dyn EnvelopeSink>,
+    then: Arc<dyn EnvelopeSink>,
     st: &busbar_contract::abi::mechanism::door::Statement,
     kind: KindCode,
     name: &[u8],
@@ -2637,7 +2666,7 @@ fn observed(
         .unwrap_or_default();
     Arc::new(crate::observe::EnvelopeObserver::before(
         observing,
-        then.clone(),
+        then,
         &String::from_utf8_lossy(name),
         kind_word(kind),
         families,
@@ -2700,6 +2729,10 @@ impl<K: Kind> Plugin<K> {
         let mut statement_digest = [0; 32];
         statement_digest
             .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, stated).as_ref());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance is bound once, at load"
+        )]
         let families = (0..st.families_len)
             .map(|i| {
                 // SAFETY: `validate` checked `families` holds `families_len` entries.
@@ -2719,6 +2752,10 @@ impl<K: Kind> Plugin<K> {
 
         let instance = super::handle::instance_id(ctx);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance is bound once, at load"
+        )]
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
                 (ConnTable::NoNeeds, n) if n > 0 => {
@@ -2745,6 +2782,7 @@ impl<K: Kind> Plugin<K> {
                     wake.conn_state.declare_needs(ctx, &needs);
                     for (i, need) in needs.iter().enumerate() {
                         if !need.transport.is_empty() && !table.serves_scheme(&need.transport) {
+                            // busbar:expect(bp::clone_alloc, reason = "boot: a load-time refusal of an unserved need")
                             return Err(LoadError::UnservedScheme {
                                 plugin: str_bytes(st.name)
                                     .map(|n| String::from_utf8_lossy(n).into_owned())
@@ -2760,6 +2798,7 @@ impl<K: Kind> Plugin<K> {
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
 
                         if let Err(e) = table.declare(instance, id, need, None, None) {
+                            // busbar:expect(bp::clone_alloc, reason = "boot: a load-time refusal of a refused need")
                             return Err(LoadError::NeedRefused {
                                 plugin: str_bytes(st.name)
                                     .map(|n| String::from_utf8_lossy(n).into_owned())
@@ -2794,6 +2833,10 @@ impl<K: Kind> Plugin<K> {
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance is bound once, at load"
+        )]
         let secret_refs: Box<[String]> = (0..st.secret_refs_len)
             .map(|i| {
                 // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a count;
@@ -2804,6 +2847,10 @@ impl<K: Kind> Plugin<K> {
                     .ok_or_else(|| LoadError::BadStatement("a secret ref is malformed".into()))
             })
             .collect::<Result<_, _>>()?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance is bound once, at load"
+        )]
         let reference_fields = super::load::reference_fields(&st)?.into_boxed_slice();
         if bind.instance.is_empty() || bind.instance.chars().any(char::is_control) {
             return Err(LoadError::BadStatement(
@@ -2818,6 +2865,10 @@ impl<K: Kind> Plugin<K> {
                 "caller binding does not match the validated descriptor".into(),
             ));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a load-time Statement refusal"
+        )]
         let classes = busbar_contract::abi::mechanism::rendering::read(stated)
             .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?
             .measurement_classes;
@@ -2832,11 +2883,17 @@ impl<K: Kind> Plugin<K> {
         let _ = wake
             .credential_kinds
             .set(K::credential_kinds(context.as_deref()));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance is bound once, at load"
+        )]
         let plugin = Self {
             inner: Arc::new(Instance {
                 measurement_binding,
                 measurement_authority: bind.dispatcher.measurements(),
                 instance,
+                needs_from_settings: declared_needs.iter().any(from_settings),
+                targets_from_settings: declared_needs.iter().any(|n| !n.target_from.is_empty()),
                 needs: declared_needs,
                 secret_refs,
                 reference_fields,
@@ -2861,7 +2918,7 @@ impl<K: Kind> Plugin<K> {
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),
                 resumes: AtomicU64::new(0),
-                calls: Mutex::new(HashMap::new()),
+                calls: Mutex::new(HashMap::default()),
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
                 drainable: AtomicU32::new(0),
@@ -2877,7 +2934,7 @@ impl<K: Kind> Plugin<K> {
                 context,
                 sink: observed(
                     bind.dispatcher.observing().unwrap_or_default(),
-                    &bind.sink,
+                    bind.sink,
                     &st,
                     v.kind,
                     name,
@@ -3092,7 +3149,7 @@ impl<K: Kind> Plugin<K> {
     }
 
     pub fn targets_from_settings(&self) -> bool {
-        self.inner.needs.iter().any(|n| !n.target_from.is_empty())
+        self.inner.targets_from_settings
     }
 
     pub(crate) fn store_phase(&self) -> busbar_contract::persistence::lifecycle::Phase {
@@ -3132,9 +3189,10 @@ impl<K: Kind> Plugin<K> {
             },
             None => None,
         };
-        let called = super::measurement::with_reservation(token.measurement.clone(), || {
+        let measurement = token.measurement;
+        let called = super::measurement::with_reservation(measurement.clone(), || {
             if token.ticket.is_none() {
-                self.call_on(s, frame, token.ticket, false, token.measurement.clone())
+                self.call_on(s, frame, token.ticket, false, measurement)
             } else {
                 self.call_inline(token.ticket, true, s, frame)
             }

@@ -51,7 +51,7 @@
 //! plugin never names a path, opens a file or holds a descriptor, so the compiled-in and the
 //! dropped-in build of one plugin write the same bytes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -169,12 +169,20 @@ impl PluginLogConfig {
         rotate_mb: Option<u64>,
         keep: Option<u32>,
     ) -> Result<Self, String> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a refused plugins.logs level"
+        )]
         let word = |key: String, w: &str| {
             LogLevel::parse(w).ok_or_else(|| {
                 format!("{key}: '{w}' is not a level (off, error, warn, info, debug, trace)")
             })
         };
         let level = level.map_or(Ok(LogLevel::Info), |w| word("plugins.logs.level".into(), w))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: plugins.logs is read once per config apply"
+        )]
         let levels = levels
             .iter()
             .map(|(k, w)| Ok((k.clone(), word(format!("plugins.logs.levels['{k}']"), w)?)))
@@ -182,8 +190,10 @@ impl PluginLogConfig {
         if rotate_mb == Some(0) {
             return Err("plugins.logs.rotate_mb: must be at least 1".into());
         }
+        // busbar:expect(bp::into_alloc, reason = "config: plugins.logs is read once per config apply")
+        let dir_path = PathBuf::from(dir.unwrap_or(DEFAULT_DIR));
         Ok(Self {
-            dir: PathBuf::from(dir.unwrap_or(DEFAULT_DIR)),
+            dir: dir_path,
             named_dir: dir.is_some(),
             level,
             levels,
@@ -202,6 +212,7 @@ impl PluginLogConfig {
     }
 
     fn words(&self) -> Words {
+        // busbar:expect(bp::clone_alloc, reason = "config: the words are taken once per config apply or sink open")
         Words {
             dir: self.dir.clone(),
             level: self.level,
@@ -228,7 +239,7 @@ impl PluginLogConfig {
         if next.named_dir {
             if let Err(e) = crate::durable::create_dir_all(&words.dir) {
                 tracing::warn!(
-                    error = %format!("plugins.logs.dir {}: {e}", words.dir.display()),
+                    error = %format_args!("plugins.logs.dir {}: {e}", words.dir.display()),
                     "the applied plugin log directory cannot be used"
                 );
             }
@@ -237,6 +248,10 @@ impl PluginLogConfig {
         let mut sinks = cell.sinks.lock().unwrap_or_else(|p| p.into_inner());
         *cell.now.words.write().unwrap_or_else(|p| p.into_inner()) = Some(Arc::clone(&words));
         cell.now.generation.fetch_add(1, Ordering::AcqRel);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a config apply re-levels every live sink once"
+        )]
         sinks.retain(|s| {
             s.upgrade().is_some_and(|s| {
                 s.level
@@ -256,16 +271,28 @@ impl PluginLogConfig {
         let (admit, words) = {
             let mut sinks = cell.sinks.lock().unwrap_or_else(|p| p.into_inner());
             let words = self.current();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a sink opens once, when its plugin instance is bound"
+            )]
             let admit = Arc::new(Admit {
                 instance: instance.to_string(),
                 level: AtomicU8::new(words.level_for(instance) as u8),
             });
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a sink opens once, when its plugin instance is bound"
+            )]
             sinks.retain(|s| s.strong_count() > 0);
             sinks.push(Arc::downgrade(&admit));
             (admit, words)
         };
         let name = file_name(instance, kind);
         let path = words.dir.join(&name);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a sink opens once, when its plugin instance is bound"
+        )]
         let tag = Arc::new(Tag {
             instance: instance.to_string(),
             kind: format!("{kind:?}").to_ascii_lowercase(),
@@ -280,9 +307,17 @@ impl PluginLogConfig {
             match lanes.get(&name).and_then(Weak::upgrade) {
                 Some(lane) => lane,
                 None => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: a plugin log writer that could not start"
+                    )]
                     let lane = Lane::start(&name, &cell.now, words, &tag).map_err(|e| {
                         format!("plugins.logs: the log writer of {instance} could not start: {e}")
                     })?;
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "boot: a file's writer starts once, when its first sink is bound"
+                    )]
                     lanes.retain(|_, l| l.strong_count() > 0);
                     lanes.insert(name, Arc::downgrade(&lane));
                     lane
@@ -302,6 +337,10 @@ impl PluginLogConfig {
 }
 
 fn file_name(instance: &str, kind: KindCode) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a log file is named once, when its sink is bound"
+    )]
     let qualified = match crate::boot::kind_of(kind).root_key() {
         Some(section)
             if !instance
@@ -312,6 +351,10 @@ fn file_name(instance: &str, kind: KindCode) -> String {
         }
         _ => instance.to_string(),
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a log file is named once, when its sink is bound"
+    )]
     let stem: String = qualified
         .bytes()
         .map(|b| {
@@ -323,17 +366,26 @@ fn file_name(instance: &str, kind: KindCode) -> String {
         })
         .collect();
 
-    let stem = if stem.bytes().all(|b| b == b'.') {
-        stem.replace('.', "_")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a log file is named once, when its sink is bound"
+    )]
+    let file = if stem.bytes().all(|b| b == b'.') {
+        format!("{}.log", stem.replace('.', "_"))
     } else {
-        stem
+        format!("{stem}.log")
     };
-    format!("{stem}.log")
+    file
 }
 
 fn refusal(path: &Path, e: &std::io::Error) -> String {
     let dir = path.parent().unwrap_or(path);
-    format!("plugins.logs.dir {}: {e}", dir.display())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: an unusable plugin log directory"
+    )]
+    let refusal = format!("plugins.logs.dir {}: {e}", dir.display());
+    refusal
 }
 
 /// The words of `plugins.logs` a sink and its writer follow.
@@ -376,7 +428,7 @@ struct Cell {
     /// The words, shared with every writer.
     now: Arc<Now>,
     /// Each file's writer, by file name: every sink of one file shares it.
-    lanes: Mutex<HashMap<String, Weak<Lane>>>,
+    lanes: Mutex<foldhash::HashMap<String, Weak<Lane>>>,
     /// Every open sink's level, set anew by each reconfigure.
     sinks: Mutex<Vec<Weak<Admit>>>,
 }
@@ -436,6 +488,35 @@ struct Over {
     at: AtomicU64,
     /// The writer is gone and the host has been told so.
     gone: AtomicBool,
+    /// Line buffers the writer has written and handed back, cleared, for the sinks to copy the
+    /// next records into: a record's copy reuses one instead of allocating.
+    spare: Mutex<Vec<Vec<u8>>>,
+}
+
+/// The most written line buffers a lane keeps for reuse: one full queue's worth.
+const SPARE_LINES: usize = LOG_QUEUE_LINES;
+
+impl Over {
+    /// A cleared line buffer: one the writer handed back, or a new one when none is spare.
+    fn buffer(&self) -> Vec<u8> {
+        self.spare
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+            .unwrap_or_default()
+    }
+
+    /// Hand a written line buffer back for reuse, cleared; dropped once enough are spare.
+    fn recycle(&self, mut text: Vec<u8>) {
+        text.clear();
+        let mut spare = self
+            .spare
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if spare.len() < SPARE_LINES {
+            spare.push(text);
+        }
+    }
 }
 
 enum Job {
@@ -491,10 +572,13 @@ impl PluginLogSink {
         }
     }
 
+    /// Whether a line at `level` is written: it is not `Off` and at or under the instance's level.
+    fn admits(&self, level: LogLevel) -> bool {
+        level != LogLevel::Off && level <= LogLevel::of_u8(self.admit.level.load(Ordering::Acquire))
+    }
+
     fn line(&self, level: LogLevel, text: Vec<u8>) {
-        if level == LogLevel::Off
-            || level > LogLevel::of_u8(self.admit.level.load(Ordering::Acquire))
-        {
+        if !self.admits(level) {
             return;
         }
         let at = (self.clock)();
@@ -533,8 +617,13 @@ impl Lane {
     ) -> std::io::Result<Arc<Self>> {
         let (queue, jobs) = sync_channel(LOG_QUEUE_LINES);
         let over = Arc::new(Over::default());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a file's writer starts once, when its first sink is bound"
+        )]
         let writer = Writer {
             name: name.to_string(),
+            rendered: String::new(),
             now: Arc::clone(now),
 
             seen: u64::MAX,
@@ -553,6 +642,8 @@ impl Lane {
 
 struct Writer {
     name: String,
+    /// The line being written, reused for every line this writer renders.
+    rendered: String,
     now: Arc<Now>,
 
     seen: u64,
@@ -585,6 +676,7 @@ impl Writer {
                 text,
             } => {
                 self.line(&tag, at, level, &text);
+                self.over.recycle(text);
                 self.last = tag;
             }
             Job::Tally => self.tally(),
@@ -603,6 +695,10 @@ impl Writer {
         }
         let tag = Arc::clone(&self.last);
         let at = self.over.at.load(Ordering::Acquire);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a tally of the lines a full log queue lost"
+        )]
         let text = format!("busbar: {n} log lines were dropped: the log writer was behind");
         self.line(&tag, at, LogLevel::Warn, text.as_bytes());
     }
@@ -625,7 +721,13 @@ impl Writer {
 
     fn line(&mut self, tag: &Tag, at: u64, level: LogLevel, text: &[u8]) {
         self.follow();
-        let line = render(tag, at, level, text);
+        let mut line = std::mem::take(&mut self.rendered);
+        render(&mut line, tag, at, level, text);
+        self.write_line(tag, at, &line);
+        self.rendered = line;
+    }
+
+    fn write_line(&mut self, tag: &Tag, at: u64, line: &str) {
         let slot = match self.slot.clone() {
             Some(slot) => slot,
             None => match FileSlot::of(&self.path) {
@@ -646,8 +748,11 @@ impl Writer {
                     "a plugin log file could not be rotated"
                 );
                 let text = report.line(self.words.rotate_bytes.unwrap_or(0));
-                let line = render(tag, at, LogLevel::Warn, text.as_bytes());
-                if let Err(e) = slot.append(line.as_bytes(), None, self.words.keep) {
+                let mut line = std::mem::take(&mut self.rendered);
+                render(&mut line, tag, at, LogLevel::Warn, text.as_bytes());
+                let appended = slot.append(line.as_bytes(), None, self.words.keep);
+                self.rendered = line;
+                if let Err(e) = appended {
                     self.lost(tag, &e);
                 }
             }
@@ -664,36 +769,47 @@ impl Writer {
     }
 }
 
-fn render(tag: &Tag, at: u64, level: LogLevel, text: &[u8]) -> String {
-    let mut line = format!(
-        "{} {} {} {} ",
+/// Render one line of a plugin's file into `line` (cleared first): the time, the level, the
+/// instance, the kind, then the escaped text.
+fn render(line: &mut String, tag: &Tag, at: u64, level: LogLevel, text: &[u8]) {
+    use std::fmt::Write as _;
+    line.clear();
+    let _ = write!(
+        line,
+        "{} {} {} {} {}",
         busbar_contract::civil::rfc3339_from_secs(at),
         level.label(),
         tag.instance,
-        tag.kind
+        tag.kind,
+        Escaped(&String::from_utf8_lossy(text)),
     );
-    escape_into(&mut line, text);
     line.push('\n');
-    line
 }
 
-fn escape_into(line: &mut String, text: &[u8]) {
-    use std::fmt::Write as _;
-    for c in String::from_utf8_lossy(text).chars() {
-        match c {
-            '\n' => line.push_str("\\n"),
-            '\r' => line.push_str("\\r"),
-            c if c.is_control()
-                || matches!(
-                    c,
-                    '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}'
-                        | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
-                ) =>
-            {
-                let _ = write!(line, "\\u{{{:x}}}", u32::from(c));
+/// A text written with every control character, line separator and bidirectional control
+/// escaped, so it is one line and nothing raw reaches a terminal.
+struct Escaped<'a>(&'a str);
+
+impl std::fmt::Display for Escaped<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        for c in self.0.chars() {
+            match c {
+                '\n' => f.write_str("\\n")?,
+                '\r' => f.write_str("\\r")?,
+                c if c.is_control()
+                    || matches!(
+                        c,
+                        '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}'
+                            | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                    ) =>
+                {
+                    write!(f, "\\u{{{:x}}}", u32::from(c))?;
+                }
+                c => f.write_char(c)?,
             }
-            c => line.push(c),
         }
+        Ok(())
     }
 }
 
@@ -704,28 +820,38 @@ fn mirror(level: LogLevel, text: &[u8]) {
     let text = String::from_utf8_lossy(text);
     let said_raw = text
         .split_once(": ")
-        .map_or(text.as_ref(), |(_, rest)| rest);
-    let mut said = String::new();
-    escape_into(&mut said, without_diag_field(said_raw).as_bytes());
+        .map_or_else(|| text.as_ref(), |(_, rest)| rest);
+    let (before, after) = diag_field_split(said_raw);
+    let (before, after) = (Escaped(before), Escaped(after));
     match level {
-        LogLevel::Error => tracing::error!(target: MIRROR_TARGET, "{said}"),
-        _ => tracing::warn!(target: MIRROR_TARGET, "{said}"),
+        LogLevel::Error => tracing::error!(target: MIRROR_TARGET, "{before}{after}"),
+        _ => tracing::warn!(target: MIRROR_TARGET, "{before}{after}"),
     }
 }
 
-fn without_diag_field(text: &str) -> std::borrow::Cow<'_, str> {
+/// `text` around its ` diag=<id>` field: the text before the field and the text after it (empty
+/// when it names none).
+fn diag_field_split(text: &str) -> (&str, &str) {
     const FIELD: &str = " diag=";
     let Some(at) = text.find(FIELD) else {
-        return std::borrow::Cow::Borrowed(text);
+        return (text, "");
     };
     let rest = &text[at + FIELD.len()..];
     let end = rest.find(' ').map_or(text.len(), |i| at + FIELD.len() + i);
-    std::borrow::Cow::Owned([&text[..at], &text[end..]].concat())
+    (&text[..at], &text[end..])
+}
+
+#[cfg(test)]
+fn without_diag_field(text: &str) -> std::borrow::Cow<'_, str> {
+    match diag_field_split(text) {
+        (before, "") => std::borrow::Cow::Borrowed(before),
+        (before, after) => std::borrow::Cow::Owned([before, after].concat()),
+    }
 }
 
 pub const MIRROR_TARGET: &str = "busbar::plugin";
 
-static FILES: Mutex<Option<HashMap<PathBuf, Weak<FileSlot>>>> = Mutex::new(None);
+static FILES: Mutex<Option<foldhash::HashMap<PathBuf, Weak<FileSlot>>>> = Mutex::new(None);
 
 struct FileSlot {
     path: PathBuf,
@@ -748,10 +874,12 @@ struct RotationReport {
 
 impl RotationReport {
     fn line(&self, limit: u64) -> String {
-        format!(
+        #[expect(clippy::disallowed_methods, reason = "error: a failed log rotation")]
+        let line = format!(
             "busbar: this log file could not be rotated ({}); it is tried again once it holds another {limit} bytes",
             self.failed.join(", ")
-        )
+        );
+        line
     }
 }
 
@@ -768,10 +896,14 @@ impl FileSlot {
             std::fs::canonicalize(dir)?.join(name)
         };
         let mut files = FILES.lock().unwrap_or_else(|p| p.into_inner());
-        let files = files.get_or_insert_with(HashMap::new);
+        let files = files.get_or_insert_with(Default::default);
         if let Some(slot) = files.get(&key).and_then(Weak::upgrade) {
             return Ok(slot);
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a log file's slot opens once, at its sink's bind or a directory change"
+        )]
         files.retain(|_, s| s.strong_count() > 0);
         let slot = Arc::new(Self {
             path: key.clone(),
@@ -858,22 +990,30 @@ impl EnvelopeSink for PluginLogSink {
         let level = LogLevel::of_severity(d.severity);
         if d.id == DIAG_LOG {
             mirror(level, d.text);
-            return self.line(level, d.text.to_vec());
         }
-        let mut text = Vec::with_capacity(d.name.len() + 2 + d.text.len());
-        text.extend_from_slice(d.name);
-        text.extend_from_slice(b": ");
+        if !self.admits(level) {
+            return;
+        }
+        // The record is still plugin memory: copy it into a line buffer the writer handed back.
+        let mut text = self.lane.over.buffer();
+        if d.id != DIAG_LOG {
+            text.extend_from_slice(d.name);
+            text.extend_from_slice(b": ");
+        }
         text.extend_from_slice(d.text);
         self.line(level, text);
     }
 
     fn dropped(&self, why: Dropped) {
         if let Dropped::Logs(n) = why {
-            self.line(
-                LogLevel::Warn,
-                format!("busbar: {n} log records of one reply were dropped over the bound")
-                    .into_bytes(),
-            );
+            if self.admits(LogLevel::Warn) {
+                let mut text = self.lane.over.buffer();
+                let _ = write!(
+                    text,
+                    "busbar: {n} log records of one reply were dropped over the bound"
+                );
+                self.line(LogLevel::Warn, text);
+            }
         }
         self.metrics.dropped(why);
     }
