@@ -187,6 +187,10 @@ struct State {
     card: Bytes,
     stats: Arc<Stats>,
     mints: AtomicU64,
+    /// `http://127.0.0.1:<port>` of the plaintext listener and `https://...` of the TLS one: the
+    /// base a document names its own URLs under, by the listener that serves it.
+    base: String,
+    tls_base: String,
 }
 
 /// A running mock server.
@@ -213,6 +217,9 @@ impl Mock {
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         std_listener.set_nonblocking(true)?;
         let addr = std_listener.local_addr()?;
+        let tls_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        tls_listener.set_nonblocking(true)?;
+        let tls_addr = tls_listener.local_addr()?;
         let stats = Arc::new(Stats::default());
         let state = Arc::new(State {
             bodies: Bodies::build(cfg.reply_pad, cfg.stream_chunks),
@@ -220,10 +227,9 @@ impl Mock {
             cfg,
             stats: Arc::clone(&stats),
             mints: AtomicU64::new(0),
+            base: format!("http://{addr}"),
+            tls_base: format!("https://{tls_addr}"),
         });
-        let tls_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        tls_listener.set_nonblocking(true)?;
-        let tls_addr = tls_listener.local_addr()?;
         let (acceptor, spki_pin, cert_pem) = tls_acceptor()?;
         let st_tls = Arc::clone(&state);
         rt.spawn(async move {
@@ -233,7 +239,7 @@ impl Mock {
                     continue;
                 };
                 let _ = stream.set_nodelay(true);
-                tokio::spawn(serve(Arc::clone(&state), stream));
+                tokio::spawn(serve(Arc::clone(&state), stream, false));
             }
         });
         rt.spawn(async move {
@@ -246,7 +252,7 @@ impl Mock {
                 let (acceptor, st) = (acceptor.clone(), Arc::clone(&st_tls));
                 tokio::spawn(async move {
                     if let Ok(tls) = acceptor.accept(stream).await {
-                        serve(st, tls).await;
+                        serve(st, tls, true).await;
                     }
                 });
             }
@@ -266,13 +272,13 @@ impl Mock {
     }
 }
 
-async fn serve<IO>(st: Arc<State>, io: IO)
+async fn serve<IO>(st: Arc<State>, io: IO, tls: bool)
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let svc = hyper::service::service_fn(move |req| {
         let st = Arc::clone(&st);
-        async move { Ok::<_, Infallible>(handle(&st, req).await) }
+        async move { Ok::<_, Infallible>(handle(&st, req, tls).await) }
     });
     let mut b = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
     b.http2()
@@ -402,7 +408,8 @@ fn rpc_id(body: &[u8]) -> (String, Value) {
     (m, v.get("id").cloned().unwrap_or(Value::Null))
 }
 
-async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
+/// Answer `req`; `tls` says which listener it arrived on.
+async fn handle(st: &State, req: Request<Incoming>, tls: bool) -> Response<MockBody> {
     let method = req.method().clone();
     let mut path = req.uri().path().to_string();
     if path.contains('%') {
@@ -503,7 +510,8 @@ async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
         }
         (Method::GET, "/.well-known/openid-configuration") => {
             st.stats.hit(Role::Idp);
-            let base = "http://127.0.0.1";
+            // The listener that served the document, port included.
+            let base = if tls { &st.tls_base } else { &st.base };
             json_reply(&json!({"issuer": base, "jwks_uri": format!("{base}/jwks"),
                 "token_endpoint": format!("{base}/token")}))
         }

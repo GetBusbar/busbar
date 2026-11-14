@@ -460,12 +460,23 @@ fn stream(d: Dialect, text: &str, chunks: usize) -> Vec<Bytes> {
     f
 }
 
-/// Split `text` into `n` non-empty pieces on char boundaries (fewer when it is shorter).
+/// Split `text` into exactly `n` non-empty pieces on char boundaries (as many as it has chars when
+/// it is shorter; one empty piece for an empty text). Piece lengths differ by at most one.
 fn split(text: &str, n: usize) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
-    let n = n.min(chars.len()).max(1);
-    let per = chars.len().div_ceil(n);
-    chars.chunks(per).map(|c| c.iter().collect()).collect()
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    let n = n.clamp(1, chars.len());
+    let (per, longer) = (chars.len() / n, chars.len() % n);
+    let mut out = Vec::with_capacity(n);
+    let mut at = 0;
+    for i in 0..n {
+        let len = per + usize::from(i < longer);
+        out.push(chars[at..at + len].iter().collect());
+        at += len;
+    }
+    out
 }
 
 /// Every prepared answer of one dialect.

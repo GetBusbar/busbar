@@ -75,7 +75,7 @@ pub struct Plan {
     pub proto: Proto,
     pub reqs: Vec<Req>,
     pub shape: Shape,
-    /// Sends start at `start`; completions before `start + warmup` are not recorded.
+    /// Sends start at `start`; requests that start before `start + warmup` are not recorded.
     pub start: Instant,
     pub warmup: Duration,
     pub measure: Duration,
@@ -93,7 +93,8 @@ impl Plan {
     }
 }
 
-/// What a run measured (completions inside the measured window only).
+/// What a run measured: every request whose (scheduled) start is inside the measured window,
+/// however late it completes (no coordinated omission).
 #[derive(Debug)]
 pub struct Outcome {
     /// Request latency, nanoseconds (open loop: from the scheduled start).
@@ -103,7 +104,7 @@ pub struct Outcome {
     pub ok: u64,
     /// Failures by cause: `status 503`, `io`, `timeout`, `body`.
     pub errors: BTreeMap<String, u64>,
-    /// Successful completions per one-second window of the measured phase.
+    /// Successful requests per one-second window of the measured phase, by start.
     pub windows: Vec<u64>,
     pub measured: Duration,
     /// Bodies checked against `expect_contains` in the measured window, and those that missed.
@@ -192,7 +193,17 @@ struct Prepared {
     expect_contains: Option<Vec<u8>>,
 }
 
-fn prepare(plan: &Plan) -> Vec<Prepared> {
+/// A request path the driver sends as written: an absolute path with an optional query.
+pub fn check_path(path: &str) -> Result<(), String> {
+    if !path.starts_with('/') {
+        return Err(format!("bad path {path:?}: not an absolute path"));
+    }
+    http::uri::PathAndQuery::try_from(path)
+        .map(drop)
+        .map_err(|e| format!("bad path {path:?}: {e}"))
+}
+
+fn prepare(plan: &Plan) -> Result<Vec<Prepared>, String> {
     let authority = plan.addr.to_string();
     // The mix: each request repeated `weight` times, interleaved deterministically.
     let mut order: Vec<usize> = Vec::new();
@@ -206,13 +217,18 @@ fn prepare(plan: &Plan) -> Vec<Prepared> {
     }
     order
         .into_iter()
-        .map(|i| {
+        .map(|i| -> Result<Prepared, String> {
             let r = &plan.reqs[i];
-            let uri: Uri = match plan.proto {
-                Proto::H1 => r.path.parse(),
-                Proto::H2c => format!("http://{authority}{}", r.path).parse(),
+            check_path(&r.path)?;
+            // h1 sends the origin form (the authority goes in `host`); h2c the absolute form,
+            // whose authority becomes `:authority`.
+            let uri = match plan.proto {
+                Proto::H1 => Uri::builder(),
+                Proto::H2c => Uri::builder().scheme("http").authority(authority.as_str()),
             }
-            .unwrap_or_else(|_| Uri::from_static("/"));
+            .path_and_query(r.path.as_str())
+            .build()
+            .map_err(|e| format!("bad path {:?}: {e}", r.path))?;
             let mut headers = HeaderMap::new();
             if plan.proto == Proto::H1 {
                 headers.insert(
@@ -223,14 +239,14 @@ fn prepare(plan: &Plan) -> Vec<Prepared> {
             for (k, v) in &r.headers {
                 headers.append(k.clone(), v.clone());
             }
-            Prepared {
+            Ok(Prepared {
                 method: r.method.clone(),
                 uri,
                 headers,
                 body: r.body.clone(),
                 expect_status: r.expect_status,
                 expect_contains: r.expect_contains.clone(),
-            }
+            })
         })
         .collect()
 }
@@ -358,7 +374,7 @@ impl Ctx {
         p: &Prepared,
     ) -> bool {
         let ms = self.plan.measure_start();
-        let in_window = started >= ms && done <= self.plan.end();
+        let in_window = started >= ms && started < self.plan.end();
         let mut healthy = true;
         // `Some(hit)` when the body was checked against `expect_contains`.
         let mut checked: Option<bool> = None;
@@ -415,7 +431,7 @@ impl Ctx {
                         .first_byte
                         .record((fb.saturating_duration_since(started)).as_nanos().max(1) as u64);
                 }
-                let w = (done - ms).as_secs() as usize;
+                let w = (started - ms).as_secs() as usize;
                 if let Some(slot) = local.windows.get_mut(w.min(self.windows - 1)) {
                     *slot += 1;
                 }
@@ -433,9 +449,11 @@ impl Ctx {
     }
 }
 
-/// Whether a worker sends the request scheduled at `started` in a plan that ends at `end`.
+/// Whether a worker sends the request scheduled at `started` in a plan that ends at `end`: every
+/// arrival scheduled before the end is sent, also when a worker only frees up after it (the
+/// open-loop backlog), so a stalled gateway shows up as latency.
 fn sends(started: Instant, end: Instant) -> bool {
-    started < end && Instant::now() < end
+    started < end
 }
 
 async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>) -> Local {
@@ -492,9 +510,19 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
         Shape::Closed { concurrency } => (concurrency.max(1), 0.0),
         Shape::Open { rate, connections } => (connections.max(1), rate.max(0.001)),
     };
+    // A request the driver cannot send as written fails the run: never a substitute target.
+    let reqs = match prepare(&plan) {
+        Ok(r) => r,
+        Err(e) => {
+            let mut out = Outcome::new(windows);
+            out.errors.insert("bad path".into(), 1);
+            out.measured = plan.measure;
+            return (out, Some(e));
+        }
+    };
     let permits = matches!(plan.shape, Shape::Open { .. }).then(|| Arc::new(Semaphore::new(0)));
     let ctx = Arc::new(Ctx {
-        reqs: prepare(&plan),
+        reqs,
         windows,
         permits: permits.clone(),
         arrivals: AtomicU64::new(0),

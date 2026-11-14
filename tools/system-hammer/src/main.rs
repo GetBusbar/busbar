@@ -131,7 +131,13 @@ fn parse() -> Result<Args, String> {
 
 /// `--seconds N`: the selftest's measured window.
 fn parse_seconds(v: &str) -> Result<f64, String> {
-    v.parse().map_err(|_| "--seconds N".to_string())
+    let s: f64 = v.parse().map_err(|_| "--seconds N".to_string())?;
+    // Positive, finite and within `Duration` (which `from_secs_f64` would otherwise panic on).
+    if s > 0.0 && Duration::try_from_secs_f64(s).is_ok() {
+        Ok(s)
+    } else {
+        Err(format!("--seconds {v}: a positive number of seconds"))
+    }
 }
 
 /// Write the JSON and text reports under `out` as `<stem>.json` and `<stem>.txt`.
@@ -141,11 +147,11 @@ fn write_report(
     json: &str,
     table: &str,
 ) -> Result<(PathBuf, PathBuf), String> {
-    let _ = std::fs::create_dir_all(out);
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let json_path = out.join(format!("{stem}.json"));
     let txt_path = out.join(format!("{stem}.txt"));
-    let _ = std::fs::write(&json_path, json);
-    let _ = std::fs::write(&txt_path, table);
+    std::fs::write(&json_path, json).map_err(|e| format!("{}: {e}", json_path.display()))?;
+    std::fs::write(&txt_path, table).map_err(|e| format!("{}: {e}", txt_path.display()))?;
     Ok((json_path, txt_path))
 }
 
@@ -370,7 +376,10 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Err(e) => eprintln!("report: {e}"),
+        Err(e) => {
+            eprintln!("report: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
