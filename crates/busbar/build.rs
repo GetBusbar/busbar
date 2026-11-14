@@ -163,6 +163,10 @@ fn main() {
         "cargo:rerun-if-changed={}",
         core.join("src/linked_gen.rs").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        core.join("src/manifest_rows.rs").display()
+    );
     let always_on: Vec<String> = metadata_map(&manifest, "package.metadata.busbar.always-on")
         .into_iter()
         .map(|(key, _)| key)
