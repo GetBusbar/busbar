@@ -335,9 +335,18 @@ impl RootHost {
             return Err("migration validation reference declarations contradict".into());
         }
         let allowed = [statement.secret_refs.as_slice(), reference.as_slice()].concat();
+        let sources = self.source_declarations()?;
         let mut probe = busbar_contract::abi::sdk::cred::SettingsValue::from(
             busbar_migrations::config::templates::resolved_settings(settings, self)?,
         );
+        // The admitted source shorthand (`{env:}`, `{file:}`, …) is a reference here exactly as
+        // it is to boot's settings resolution; otherwise a declared reference would reach the
+        // plugin's VALIDATE as an object and invent a migration decision.
+        busbar_contract::plugin_settings::canonicalize(
+            probe.pointer_mut("").expect("the JSON document has a root"),
+            &sources,
+        )
+        .map_err(|_| "migration validation reference shorthand is invalid")?;
         if secret_fields::undeclared_reference(&probe, &allowed).is_some() {
             return Err("migration validation contains an undeclared settings reference".into());
         }
@@ -370,7 +379,6 @@ impl RootHost {
             &[],
             &allowed,
             |_, reference| {
-                let sources = self.source_declarations()?;
                 let source =
                     sources.with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH);
                 if let Some(secret) = staged.iter().find(|secret| {
