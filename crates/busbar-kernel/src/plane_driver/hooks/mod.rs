@@ -85,6 +85,11 @@ pub trait HookBinder: Send + Sync {
     }
 }
 
+/// The dialect name at `dialect` in a binder's dialect table, empty when it has none.
+pub fn dialect_at(dialects: &[String], dialect: u32) -> String {
+    dialects.get(dialect as usize).cloned().unwrap_or_default()
+}
+
 /// ONE UNIT'S HOOK FACTS, as its hook stage reports them: every hook that ran for it, in the order
 /// it ran, by the key the deployment configured it under (never the instance serving it), with its
 /// decision head and whether it failed.
@@ -405,10 +410,7 @@ fn denied_taps(
 
 impl HookBinder for BoundHooks {
     fn dialect(&self, dialect: u32) -> String {
-        self.dialects
-            .get(dialect as usize)
-            .cloned()
-            .unwrap_or_default()
+        dialect_at(&self.dialects, dialect)
     }
 
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
@@ -459,10 +461,7 @@ pub struct HostHooks {
 
 impl HookBinder for HostHooks {
     fn dialect(&self, dialect: u32) -> String {
-        self.dialects
-            .get(dialect as usize)
-            .cloned()
-            .unwrap_or_default()
+        dialect_at(&self.dialects, dialect)
     }
 
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {

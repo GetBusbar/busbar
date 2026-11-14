@@ -55,11 +55,13 @@ pub use far_end::{
     MemberSignals, MemberStanding, ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
+    dialect_at, GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys,
+};
+pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
     HookBinder, HookJournal, HookRead, HooksRan, HostHooks, Projection, Restrict, RewriteChain,
     SessionStage, StageTaps, UnitHooks, CONTENT_ROLE, STAGE_GONE,
 };
-pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
     standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
