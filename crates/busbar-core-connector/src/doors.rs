@@ -164,6 +164,9 @@ impl Live {
         i.settings = settings_arg(blob.as_deref());
         let mut f = Frame::new(i, blank_out::<OutHead>());
         let called = self.plugin.answer(life::REFRESH, &mut f);
+        // A failed refresh may have applied part of its settings: either way, what the instance
+        // located before this point is stale now.
+        self.applied.fetch_add(1, Ordering::Release);
         if called.outcome == Outcome::Ready {
             return Ok(());
         }
