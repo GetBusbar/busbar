@@ -887,6 +887,21 @@ mod tests {
         let mut extra = config(&base, "loop-ext4");
         extra.set("unexpected", true.into());
         assert!(validate_configuration(&extra).is_err());
+        // The storage root comes from protected configuration and must be link-free: a root
+        // reached through a directory link refuses even though it is lexically exact.
+        let linked = base.join(format!("linked-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&linked);
+        fs::create_dir_all(linked.join("real")).unwrap();
+        std::os::unix::fs::symlink(linked.join("real"), linked.join("link")).unwrap();
+        for unsafe_root in [linked.join("link/store"), linked.join("link"), "/".into()] {
+            let mut bad = config(&base, "tmpfs");
+            bad.set(
+                "storage_root",
+                unsafe_root.to_string_lossy().as_ref().into(),
+            );
+            assert!(validate_configuration(&bad).is_err(), "{unsafe_root:?}");
+        }
+        fs::remove_dir_all(&linked).unwrap();
     }
 
     #[test]

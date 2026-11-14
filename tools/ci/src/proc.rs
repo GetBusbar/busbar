@@ -344,4 +344,13 @@ mod tests {
         .unwrap();
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "disposed\n");
     }
+
+    /// A host tool name is one bare file name looked up on the fixed PATH, never a path.
+    #[test]
+    fn host_program_names_cannot_leave_the_fixed_path() {
+        assert!(host_program("sh").is_ok());
+        for name in ["../bin/sh", "/bin/sh", "bin/../sh", "", "sh\0"] {
+            assert!(host_program(name).is_err(), "{name:?}");
+        }
+    }
 }
