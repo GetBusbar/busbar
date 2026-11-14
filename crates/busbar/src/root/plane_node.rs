@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -91,6 +91,10 @@ impl LaneNames {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lane(name)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a registered lane's name is keyed once, on its first resolve"
+        )]
         self.resolved.insert(name.to_owned(), lane);
         Some(lane)
     }
@@ -162,12 +166,12 @@ impl Node {
             lanes: Arc::clone(&lanes),
             lane_names: Arc::new(Mutex::new(LaneNames {
                 interner: lanes,
-                resolved: HashMap::new(),
+                resolved: HashMap::default(),
                 consulted: 0,
             })),
             next_key: Arc::default(),
             marked: AtomicU64::new(0),
-            lost: Mutex::new(HashMap::new()),
+            lost: Mutex::new(HashMap::default()),
             mono: AtomicU64::new(0),
 
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
@@ -238,6 +242,10 @@ impl Node {
     }
     pub(crate) async fn retry_held_journal(&self) -> Result<(), String> {
         if let Some(journal) = self.lane.get() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is spelled only when the native journal refuses the flush"
+            )]
             journal
                 .flush()
                 .await
@@ -354,6 +362,10 @@ impl Node {
 
                     let entered = lost.arrived;
 
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "error: a lost unit's usage line is gathered only when the tick sweeps a unit that lost its owner"
+                    )]
                     let lines: Vec<RecordLine> = Registration::meter_class(line.class.as_str())
                         .filter(|class| *class != busbar_kernel::teller::KERNEL_ACCRUAL_CLASS)
                         .map(|class| RecordLine { class, ..line })
@@ -473,7 +485,10 @@ impl Node {
         self.next_key.mint()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the unit's parts are handed down unbundled from its one owner"
+    )]
     pub async fn drive_borrowed<U: Units + RouteAwait>(
         &self,
         key: UnitKey,
@@ -609,7 +624,10 @@ impl Node {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the unit's parts are handed down unbundled from its one owner"
+    )]
     pub async fn open_borrowed<'n, U: Units + RouteAwait>(
         &'n self,
         key: UnitKey,
@@ -909,7 +927,10 @@ impl Node {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the unit's parts are handed down unbundled from its one owner"
+    )]
     async fn tail(
         &self,
         ended: Ended,
@@ -1140,13 +1161,18 @@ impl http_body::Body for LateBody {
             let terminal = this.fire();
             this.inner = None;
             let journal = this.journal.clone();
-            this.confirmation = Some(Box::pin(async move {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is spelled only when the terminal audit is unconfirmed"
+            )]
+            let confirmation: JournalConfirmation = Box::pin(async move {
                 await_terminal(terminal).await?;
                 journal
                     .flush()
                     .await
                     .map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
-            }));
+            });
+            this.confirmation = Some(confirmation);
         }
         if let Some(confirmation) = &mut this.confirmation {
             match confirmation.as_mut().poll(cx) {
@@ -1445,10 +1471,14 @@ impl RouteAwait for Driven<'_> {
         ctx: &'a UnitCtx,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
-        self.accruing()
-            .get_or_insert_with(Accruing::default)
-            .ran
-            .verified = lanes_of(destinations);
+        seal_lanes(
+            &mut self
+                .accruing()
+                .get_or_insert_with(Accruing::default)
+                .ran
+                .verified,
+            destinations,
+        );
 
         self.node.dispatch.execute(
             self.op_class,
@@ -1515,12 +1545,14 @@ impl busbar_kernel::teller::UnitTaps for NodeEndPost {
 impl NodeEndPost {
     #[must_use]
     pub fn new(node: Arc<Node>) -> Self {
-        NodeEndPost {
-            node,
-            open: (0..busbar_kernel::inflight::SHARDS)
-                .map(|_| Mutex::new(HashMap::new()))
-                .collect(),
-        }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the open-unit shards are built once, when the node starts"
+        )]
+        let open = (0..busbar_kernel::inflight::SHARDS)
+            .map(|_| Mutex::new(HashMap::default()))
+            .collect();
+        NodeEndPost { node, open }
     }
 
     fn lock(&self, key: UnitKey) -> std::sync::MutexGuard<'_, OpenUnits> {
@@ -1563,7 +1595,7 @@ impl NodeEndPost {
 
     fn routed(&self, key: UnitKey, destinations: &[VerifiedDestination]) {
         if let Some(open) = self.lock(key).get_mut(&key) {
-            open.sealing.ran.verified = lanes_of(destinations);
+            seal_lanes(&mut open.sealing.ran.verified, destinations);
         }
     }
 
@@ -1653,6 +1685,37 @@ impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
     }
 }
 
+/// A unit's captured checkpoint facts, borrowed from the open unit: the fields of
+/// [`crate::root::durability::RunningAudit`], in its order and its shapes, so they serialize to the
+/// very bytes that record reads back.
+#[derive(serde::Serialize)]
+struct RunningAuditFacts<'a> {
+    incarnation: u64,
+    principal: &'a str,
+    op_class: &'a str,
+    origin: &'a str,
+    parent: Option<u64>,
+    wall: u64,
+    mono: u64,
+    destination: Option<&'a str>,
+    rate_card: Option<[u8; 20]>,
+    policy_epoch: u64,
+    hooks: HookFacts<'a>,
+}
+
+/// The hooks a unit ran, spelled as the record's `(hook, head, failed)` triples.
+struct HookFacts<'a>(&'a [HookApplied]);
+
+impl serde::Serialize for HookFacts<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(
+            self.0
+                .iter()
+                .map(|hook| (hook.hook.as_str(), hook.head.as_str(), hook.failed)),
+        )
+    }
+}
+
 impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     fn checkpoint_decoded(&self, key: UnitKey, class: OpClassId) {
         if let Some(open) = self.lock(key).get_mut(&key) {
@@ -1669,11 +1732,11 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
             .get()?
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let captured = crate::root::durability::RunningAudit {
+        let captured = RunningAuditFacts {
             incarnation: book.incarnation,
-            principal: open.principal.as_str().to_string(),
-            op_class: open.checkpoint_class?.as_str().to_string(),
-            origin: open.checkpoint_origin.as_str().to_string(),
+            principal: open.principal.as_str(),
+            op_class: open.checkpoint_class?.as_str(),
+            origin: open.checkpoint_origin.as_str(),
             parent: match open.checkpoint_origin {
                 OriginKind::Nested { parent } | OriginKind::Delivery { parent } => {
                     Some(parent.get())
@@ -1685,19 +1748,7 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
             destination: open.sealing.ran.destination(None),
             rate_card: card_in_force(open.history.as_ref(), open.arrived.ms()),
             policy_epoch: policy_in_force(open.history.as_ref(), open.arrived.ms()),
-            hooks: open
-                .sealing
-                .ran
-                .hooks
-                .iter()
-                .map(|hook| {
-                    (
-                        hook.hook.clone(),
-                        hook.head.as_str().to_string(),
-                        hook.failed,
-                    )
-                })
-                .collect(),
+            hooks: HookFacts(&open.sealing.ran.hooks),
         };
         serde_json::to_vec(&captured).ok()
     }
@@ -1808,6 +1859,10 @@ type TerminalConfirmation = tokio::task::JoinHandle<Result<(), String>>;
 
 async fn await_terminal(confirmation: Option<TerminalConfirmation>) -> Result<(), String> {
     if let Some(task) = confirmation {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text is spelled only when the terminal confirmation task fails"
+        )]
         task.await
             .map_err(|error| format!("terminal confirmation task failed: {error}"))??;
     }
@@ -1832,7 +1887,13 @@ impl StagedAudit {
         Some(runtime.spawn(async move {
             let confirmed = self.journal.confirm(&self.run).await;
             custody.terminal(key, completed && confirmed.is_ok());
-            confirmed.map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is spelled only when the terminal audit is unconfirmed"
+            )]
+            let confirmed =
+                confirmed.map_err(|error| format!("terminal audit is unconfirmed: {error:?}"));
+            confirmed
         }))
     }
 }
@@ -1851,12 +1912,14 @@ impl From<UnitSeal> for Sealing {
     }
 }
 
-fn lanes_of(destinations: &[VerifiedDestination]) -> Vec<LaneId> {
-    destinations.iter().map(|d| *d.lane()).collect()
+/// Record the unit's verified lanes in its own list, reusing the list's room.
+fn seal_lanes(verified: &mut Vec<LaneId>, destinations: &[VerifiedDestination]) {
+    verified.clear();
+    verified.extend(destinations.iter().map(|d| *d.lane()));
 }
 
 impl Ran {
-    fn destination(&self, served: Option<&str>) -> Option<String> {
+    fn destination<'s>(&self, served: Option<&'s str>) -> Option<&'s str> {
         let sealed = |lane: &str| self.verified.iter().any(|v| v.as_str() == lane);
         let lane = match (self.dialled, served) {
             (Some(dialled), _) => Some(dialled.as_str()),
@@ -1867,7 +1930,7 @@ impl Ran {
                 _ => None,
             },
         };
-        lane.map(str::to_owned)
+        lane
     }
 }
 
@@ -1880,26 +1943,23 @@ fn a_local_billing_lane_keeps_only_a_unique_verified_route_destination() {
     let mut ran = Ran::default();
     assert_eq!(ran.destination(billing), None, "no unverified attribution");
     ran.verified = vec![b];
-    assert_eq!(ran.destination(billing), Some(b.as_str().to_owned()));
+    assert_eq!(ran.destination(billing), Some(b.as_str()));
     ran.verified = vec![a, b];
     assert_eq!(
         ran.destination(billing),
         None,
         "no choice between verified entries"
     );
-    assert_eq!(
-        ran.destination(Some(a.as_str())),
-        Some(a.as_str().to_owned())
-    );
+    assert_eq!(ran.destination(Some(a.as_str())), Some(a.as_str()));
     ran.dialled = Some(b);
-    assert_eq!(
-        ran.destination(Some(a.as_str())),
-        Some(b.as_str().to_owned())
-    );
+    assert_eq!(ran.destination(Some(a.as_str())), Some(b.as_str()));
 }
 
 impl Sealing {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the unit's parts are handed down unbundled from its one owner"
+    )]
     fn seal(
         self,
         book: &Arc<Mutex<crate::root::durability::Durability>>,
@@ -1916,7 +1976,7 @@ impl Sealing {
         let refused = matches!(outcome, Outcome::Refused(..));
 
         let hook_failed = ran.hooks.iter().any(|hook| hook.failed);
-        let destination = ran.destination(served);
+        let destination = ran.destination(served).map(str::to_owned);
         let controls = Controls {
             policy_epoch: policy_in_force(card, arrived.ms()),
             hooks_applied: ran.hooks,
@@ -2065,3 +2125,71 @@ mod seal_tests;
 #[cfg(test)]
 #[path = "tests/plane_node_money.rs"]
 mod node_money_tests;
+
+#[cfg(test)]
+#[test]
+fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
+    let hooks = [
+        HookApplied {
+            hook: "guard".to_owned(),
+            head: busbar_kernel_audit::HookHead::Modify,
+            failed: false,
+        },
+        HookApplied {
+            hook: "late".to_owned(),
+            head: busbar_kernel_audit::HookHead::Veto,
+            failed: true,
+        },
+    ];
+    let borrowed = RunningAuditFacts {
+        incarnation: 7,
+        principal: "key-1",
+        op_class: "chat",
+        origin: "direct",
+        parent: Some(3),
+        wall: 1_700_000_000,
+        mono: 42,
+        destination: Some("llm\u{1f}openai"),
+        rate_card: Some([9; 20]),
+        policy_epoch: 5,
+        hooks: HookFacts(&hooks),
+    };
+    let owned = crate::root::durability::RunningAudit {
+        incarnation: 7,
+        principal: "key-1".to_owned(),
+        op_class: "chat".to_owned(),
+        origin: "direct".to_owned(),
+        parent: Some(3),
+        wall: 1_700_000_000,
+        mono: 42,
+        destination: Some("llm\u{1f}openai".to_owned()),
+        rate_card: Some([9; 20]),
+        policy_epoch: 5,
+        hooks: vec![
+            ("guard".to_owned(), "modify".to_owned(), false),
+            ("late".to_owned(), "veto".to_owned(), true),
+        ],
+    };
+    assert_eq!(
+        serde_json::to_vec(&borrowed).unwrap(),
+        serde_json::to_vec(&owned).unwrap()
+    );
+    let empty = RunningAuditFacts {
+        destination: None,
+        parent: None,
+        rate_card: None,
+        hooks: HookFacts(&[]),
+        ..borrowed
+    };
+    let empty_owned = crate::root::durability::RunningAudit {
+        destination: None,
+        parent: None,
+        rate_card: None,
+        hooks: Vec::new(),
+        ..owned
+    };
+    assert_eq!(
+        serde_json::to_vec(&empty).unwrap(),
+        serde_json::to_vec(&empty_owned).unwrap()
+    );
+}

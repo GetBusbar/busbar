@@ -5,25 +5,32 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_kernel::snapshot::observe::{
     Grants, KernelPluginObserver, ObservationOwner, ObservationSink, PLUGIN_LABEL,
 };
-use std::collections::HashMap;
-use std::sync::Mutex;
+use foldhash::HashMap;
+use std::sync::{Arc, Mutex};
 
 use busbar_kernel::audit::auditlog::{record_plugin_refusal, PluginRefusal};
 
 use crate::root::loader::observe::{first_party, first_party_series, BindRefusal, PluginObserver};
 
+/// Each plugin's observation owner and its shared name, keyed by that name.
+type Owners = HashMap<Arc<str>, (ObservationOwner, Arc<str>)>;
+
 struct Observer {
     policy: KernelPluginObserver,
-    owners: Mutex<HashMap<String, ObservationOwner>>,
+    /// Each plugin's observation owner and its name, shared into every metric label it reports.
+    owners: Mutex<Owners>,
 }
 impl Observer {
-    fn owner(&self, plugin: &str) -> ObservationOwner {
-        self.owners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(plugin.to_owned())
-            .or_default()
-            .clone()
+    fn owner(&self, plugin: &str) -> (ObservationOwner, Arc<str>) {
+        let mut owners = self.owners.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(known) = owners.get(plugin) {
+            return known.clone();
+        }
+        // busbar:expect(bp::into_alloc, reason = "config: a plugin's name is spelled once, on its first observation, then shared")
+        let name: Arc<str> = Arc::from(plugin);
+        let known = (ObservationOwner::default(), name.clone());
+        owners.insert(name, known.clone());
+        known
     }
 }
 
@@ -38,13 +45,13 @@ impl PluginObserver for Observer {
         let Some(kind) = KindCode::ALL.into_iter().find(|code| code.word() == kind) else {
             return;
         };
-        let owner = self.owner(plugin);
+        let (owner, name) = self.owner(plugin);
         self.policy.observe(
             &LoaderGrants {
                 plugin,
                 owner: &owner,
             },
-            &Output(plugin),
+            &Output(&name),
             kind,
             metrics,
             diagnostics,
@@ -57,12 +64,14 @@ impl PluginObserver for Observer {
 
     fn refused(&self, kind: &str, instance: &str, refusal: BindRefusal<'_>) {
         match refusal {
-            BindRefusal::Need { need, reason } => record_plugin_refusal(
-                PluginRefusal::Need,
-                kind,
-                instance,
-                &format!("need.{need}.{reason}"),
-            ),
+            BindRefusal::Need { need, reason } => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refusal code is spelled only when a plugin's bind is refused"
+                )]
+                let code = format!("need.{need}.{reason}");
+                record_plugin_refusal(PluginRefusal::Need, kind, instance, &code);
+            }
             BindRefusal::Open { code } => {
                 record_plugin_refusal(PluginRefusal::Open, kind, instance, code);
             }
@@ -89,7 +98,22 @@ impl Grants for LoaderGrants<'_> {
     }
 }
 
-struct Output<'a>(&'a str);
+/// A diagnostic's fields as `k=v` pairs joined by single spaces, written straight into the log
+/// line when (and only when) the event is recorded.
+struct Fields<'a>(&'a [(String, String)]);
+impl std::fmt::Display for Fields<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, (k, v)) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{k}={v}")?;
+        }
+        Ok(())
+    }
+}
+
+struct Output<'a>(&'a Arc<str>);
 impl ObservationSink for Output<'_> {
     fn metric(&self, m: &busbar_contract::hook_wire::reply::HookMetric, canonical: bool) {
         let labels = labels_for((!canonical).then_some(self.0), m);
@@ -114,11 +138,7 @@ impl ObservationSink for Output<'_> {
         }
         let plugin = self.0;
         let banner = diag.banner();
-        let fields = fields
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let fields = Fields(fields);
         match level {
             tracing::Level::ERROR => {
                 tracing::error!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
@@ -140,10 +160,10 @@ impl ObservationSink for Output<'_> {
 }
 
 fn labels_for(
-    plugin: Option<&str>,
+    plugin: Option<&Arc<str>>,
     m: &busbar_contract::hook_wire::reply::HookMetric,
 ) -> Vec<metrics::Label> {
-    let provenance = plugin.map(|p| metrics::Label::new(PLUGIN_LABEL, p.to_string()));
+    let provenance = plugin.map(|p| metrics::Label::new(PLUGIN_LABEL, Arc::clone(p)));
     let mut labels: Vec<metrics::Label> = provenance.into_iter().collect();
     if let Some(own) = &m.labels {
         for (k, v) in own {
@@ -159,7 +179,7 @@ fn labels_for(
 pub fn install(catalogue: busbar_kernel::diagnostics::Catalogue) {
     let observer: &'static Observer = Box::leak(Box::new(Observer {
         policy: KernelPluginObserver::lent(catalogue),
-        owners: Mutex::new(HashMap::new()),
+        owners: Mutex::new(HashMap::default()),
     }));
     let _ = crate::root::dispatch::dispatcher()
         .observing()

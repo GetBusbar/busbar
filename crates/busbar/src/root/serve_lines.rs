@@ -15,10 +15,17 @@ pub fn line_carrier(
     let mut lines = transports.iter().flat_map(|t| (t.lines)());
     let one = lines.next();
     match (one, lines.next()) {
-        (Some(one), Some(other)) => Err(format!(
-            "the linked transport claims `{one}` and `{other}` both open a session on their first \
-             line, and the process's own stdin/stdout carries one"
-        )),
+        (Some(one), Some(other)) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is spelled only when two transports claim the first line"
+            )]
+            let refusal = format!(
+                "the linked transport claims `{one}` and `{other}` both open a session on their first \
+                 line, and the process's own stdin/stdout carries one"
+            );
+            Err(refusal)
+        }
         (one, _) => Ok(one),
     }
 }
@@ -41,11 +48,16 @@ pub fn refusal() -> Option<&'static str> {
 
 #[must_use]
 pub fn env_credential(plane: &str, carrier: &str) -> String {
-    format!(
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the credential's variable name is spelled once, when the stdio session opens"
+    )]
+    let name = format!(
         "BUSBAR_{}_{}_CREDENTIAL",
         plane.to_ascii_uppercase(),
         carrier.to_ascii_uppercase()
-    )
+    );
+    name
 }
 
 #[must_use]
@@ -77,12 +89,16 @@ async fn session(
 ) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
     let env = env_credential(plane, carrier);
 
-    let canonical_uri = format!("{plane}.canonical_uri");
     let Some(resource) = audience else {
-        return Err(format!(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text is spelled only when the plane states no audience"
+        )]
+        let refusal = format!(
             "this deployment's `{plane}:` block states no canonical resource, so a {carrier} session \
              has no audience to be bound to."
-        ));
+        );
+        return Err(refusal);
     };
 
     if let Some(token) = credential {
@@ -90,28 +106,42 @@ async fn session(
         match busbar_kernel::auth::audience::inspect_bearer(token, resource) {
             Binding::Deferred | Binding::Bound => {}
             Binding::Mismatch => {
-                return Err(format!(
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refusal text is spelled only when the credential's audience mismatches"
+                )]
+                let refusal = format!(
                     "the credential in {env} carries an audience that does not identify this \
                      resource. Request a token whose `resource` (RFC 8707) is this deployment's \
-                     `{canonical_uri}`."
-                ));
+                     `{plane}.canonical_uri`."
+                );
+                return Err(refusal);
             }
             Binding::Opaque => {
-                return Err(format!(
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refusal text is spelled only when the credential's audience is unreadable"
+                )]
+                let refusal = format!(
                     "the credential in {env} carries no readable audience, so it cannot be shown \
                      to have been issued for this resource. A busbar-signed key or a JWT access \
-                     token bound to `{canonical_uri}` is required."
-                ));
+                     token bound to `{plane}.canonical_uri` is required."
+                );
+                return Err(refusal);
             }
         }
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the stdio session is admitted once, when it opens"
+    )]
     let admitted = busbar_kernel::auth::admit::admit_session(
         app,
         credential.map(str::to_string),
         resource.to_string(),
-    )
-    .await;
+    );
+    let admitted = admitted.await;
     match admitted {
         Ok((_principal, gov)) => {
             if !gov.is_governed() {
@@ -123,20 +153,34 @@ async fn session(
             }
             Ok(gov)
         }
-        Err(busbar_kernel::auth::IdentityRefusal::Denied) => Err(if credential.is_none() {
-            format!(
+        Err(busbar_kernel::auth::IdentityRefusal::Denied) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is spelled only when the auth chain denies the session"
+            )]
+            let refusal = if credential.is_none() {
+                format!(
                 "this deployment's `auth.chain` is configured, so an unauthenticated {carrier} session \
                  is refused exactly as an unauthenticated POST is. Set {env} to a credential the \
-                 chain admits (audience-bound to `{canonical_uri}`)."
-            )
-        } else {
-            format!("the credential in {env} was refused by the auth chain.")
-        }),
-        Err(busbar_kernel::auth::IdentityRefusal::NoGrant) => Err(format!(
+                 chain admits (audience-bound to `{plane}.canonical_uri`)."
+                )
+            } else {
+                format!("the credential in {env} was refused by the auth chain.")
+            };
+            Err(refusal)
+        }
+        Err(busbar_kernel::auth::IdentityRefusal::NoGrant) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is spelled only when the credential earns no key"
+            )]
+            let refusal = format!(
             "the credential in {env} authenticated, but its roles earned no enforcement key under \
              `role_bindings`, and an ungoverned admission would widen its access. The same request \
              over HTTP answers `insufficient_scope`."
-        )),
+            );
+            Err(refusal)
+        }
     }
 }
 
@@ -144,7 +188,50 @@ pub struct LineCaller<R> {
     lines: AsyncMutex<tokio::io::BufReader<R>>,
     max_line: usize,
     out: mpsc::UnboundedSender<Vec<u8>>,
+    /// The output lines the writer hands back once written.
+    spare: Arc<LinePool>,
     failure: Arc<IoFailure>,
+}
+
+/// Output line buffers the writer hands back once a line is written, so a steady stream of answers
+/// reuses a few buffers instead of allocating one per line. Bounded in count and in each buffer's
+/// capacity, so one huge answer is not kept for the session's life.
+#[derive(Default)]
+struct LinePool(std::sync::Mutex<Vec<Vec<u8>>>);
+
+const POOLED_LINES: usize = 16;
+const POOLED_LINE_BYTES: usize = 64 * 1024;
+
+impl LinePool {
+    fn take(&self) -> Vec<u8> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+            .unwrap_or_default()
+    }
+
+    fn give(&self, mut line: Vec<u8>) {
+        if line.capacity() > POOLED_LINE_BYTES {
+            return;
+        }
+        line.clear();
+        let mut spare = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if spare.len() < POOLED_LINES {
+            spare.push(line);
+        }
+    }
+
+    /// `bytes` as one newline-terminated output line, in a handed-back buffer.
+    fn line(&self, bytes: &[u8]) -> Vec<u8> {
+        let mut line = self.take();
+        line.extend_from_slice(bytes);
+        terminate(&mut line);
+        line
+    }
 }
 
 #[derive(Default)]
@@ -176,17 +263,19 @@ impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
     fn head(&self, _status: u32, _fields: HeadFields) {}
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        self.out.send(terminated(bytes)).is_ok()
+        self.out.send(self.spare.line(bytes)).is_ok()
     }
 }
 
-fn terminated(bytes: &[u8]) -> Vec<u8> {
-    let mut line = Vec::with_capacity(bytes.len() + 1);
-    line.extend_from_slice(bytes);
+fn terminate(line: &mut Vec<u8>) {
     if !line.ends_with(b"\n") {
         line.push(b'\n');
     }
-    line
+}
+
+#[cfg(test)]
+fn terminated(bytes: &[u8]) -> Vec<u8> {
+    LinePool::default().line(bytes)
 }
 
 impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
@@ -202,9 +291,10 @@ impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
                 }
                 Ok(_) => {}
             }
-            let line = trim(&buf);
-            if !line.is_empty() {
-                return Some(line.to_vec());
+            let line = trim(&buf).len();
+            if line != 0 {
+                buf.truncate(line);
+                return Some(buf);
             }
         }
     }
@@ -250,6 +340,7 @@ where
         );
         return 1;
     };
+    // busbar:expect(bp::clone_alloc, reason = "boot: the stdio session names its plane once, when it opens")
     let instance = served.planes[plane].instance.clone();
     let target = served.planes[plane].snapshot.claims[claim as usize]
         .target
@@ -287,6 +378,10 @@ where
         }
     };
     run_io(carrier, reader, writer, stop, move |caller| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the session's principal is spelled once, when the stdio session opens"
+        )]
         let principal = gov.key().map_or_else(
             || {
                 busbar_contract::auth::AuthPrincipal(None)
@@ -295,12 +390,12 @@ where
             },
             |k| k.id.clone(),
         );
-        let sink_out = caller.out.clone();
+        let sink = Arc::clone(&caller);
         let session = std::num::NonZeroU64::new(
             driver
                 .open_carrier_session(
                     &principal,
-                    Arc::new(move |bytes: &[u8]| sink_out.send(terminated(bytes)).is_ok()),
+                    Arc::new(move |bytes: &[u8]| sink.out.send(sink.spare.line(bytes)).is_ok()),
                 )
                 .expect("served plane holds its core caller binding"),
         )
@@ -330,9 +425,13 @@ where
             let caller = Arc::clone(&caller);
             async move {
                 let response = routes.answer_on_line(plane, claim, req, session).await;
-                let body = collect(response).await;
-                if !body.is_empty() {
-                    let _ = caller.write(&body).await;
+                let mut line = caller.spare.take();
+                collect(response, &mut line).await;
+                if line.is_empty() {
+                    caller.spare.give(line);
+                } else {
+                    terminate(&mut line);
+                    let _ = caller.out.send(line);
                 }
             }
         };
@@ -360,6 +459,8 @@ where
     let (out, mut lines_out) = mpsc::unbounded_channel::<Vec<u8>>();
     let failure = Arc::new(IoFailure::default());
     let write_failure = Arc::clone(&failure);
+    let spare = Arc::new(LinePool::default());
+    let handed_back = Arc::clone(&spare);
     let mut written = tokio::spawn(async move {
         let mut writer = writer;
         while let Some(line) = lines_out.recv().await {
@@ -372,6 +473,7 @@ where
                 write_failure.record("output", error);
                 return;
             }
+            handed_back.give(line);
         }
         if let Err(error) = writer.flush().await {
             write_failure.record("output", error);
@@ -385,6 +487,7 @@ where
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line,
         out,
+        spare,
         failure: Arc::clone(&failure),
     });
     let (answer, close) = open(Arc::clone(&caller));
@@ -409,6 +512,10 @@ where
         while units.try_join_next().is_some() {}
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the process lifecycle reads the clock once, when the stdio session ends, to bound its drain"
+    )]
     let deadline = tokio::time::Instant::now() + busbar_kernel::detached::DETACHED_DRAIN_GRACE;
     let ended = if writer_ended {
         let ended = units.len();
@@ -480,10 +587,10 @@ async fn drain_units(
     ended
 }
 
-async fn collect(response: axum::response::Response) -> Vec<u8> {
+/// The answer's body, appended to `all`.
+async fn collect(response: axum::response::Response, all: &mut Vec<u8>) {
     use http_body::Body as _;
     let mut body = response.into_body();
-    let mut all = Vec::new();
     while let Some(frame) =
         std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
     {
@@ -492,7 +599,6 @@ async fn collect(response: axum::response::Response) -> Vec<u8> {
             all.extend_from_slice(&data);
         }
     }
-    all
 }
 
 async fn read_line<R: AsyncBufReadExt + Unpin>(

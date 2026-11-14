@@ -47,7 +47,7 @@ use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, Destinatio
 use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus,
 };
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 /// The per-pool breaker configuration the adapter closes over.
 ///
@@ -161,14 +161,14 @@ pub(crate) fn cooldown_remaining(
     }
 }
 
-pub(crate) fn classify(status: UpstreamStatus) -> Classified {
+pub(crate) fn classify(status: &UpstreamStatus) -> Classified {
     busbar_kernel_breaker::port::classify_upstream(busbar_kernel_breaker::port::UpstreamStatus {
         retry_after: status.retry_after,
         reading: reading(status),
     })
 }
 
-fn reading(status: UpstreamStatus) -> Reading {
+fn reading(status: &UpstreamStatus) -> Reading {
     if status.class.is_none() && status.fault.is_none() {
         return Reading::NoAnswer;
     }
@@ -214,7 +214,7 @@ impl Breaker for BreakerAdapter {
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        classify(status)
+        classify(&status)
     }
 
     fn observe(

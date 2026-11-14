@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -11,7 +11,7 @@ use busbar_core_connector::datagram::{
     Across, Answered, DatagramFraming, Leg, LegSink, LineStep, Pairing, PortAssociations,
     PublicationTask, SessionBatch,
 };
-use busbar_core_connector::framer::Got;
+use busbar_core_connector::framer::{instant_of, now_ns, Got};
 use busbar_core_connector::publication::{Custody, Message, Messages};
 use busbar_core_connector::udp::{ReadyPort, MAX_DATAGRAM};
 use busbar_kernel::detached::{self, DetachedTasks};
@@ -32,6 +32,10 @@ pub struct ClaimDoors(HashMap<String, Arc<ClaimDoor>>);
 
 impl ClaimDoors {
     pub fn insert(&mut self, claim: &str, door: Arc<ClaimDoor>) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a claim door is keyed once, when its port is bound"
+        )]
         self.0.insert(claim.to_owned(), door);
     }
 
@@ -52,12 +56,21 @@ impl ClaimDoors {
                 continue;
             }
             if doors.0.contains_key(&b.transport) {
-                return Err(format!(
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: the refusal text is spelled only when two claim doors share a transport"
+                )]
+                let refusal = format!(
                     "{}: a second claim door for `{}`",
                     b.listen_setting(),
                     b.transport
-                ));
+                );
+                return Err(refusal);
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: a claim door's port is bound once; its refusal text is spelled only on failure"
+            )]
             let port = busbar_core_connector::udp::bind(&b.listen.to_string())
                 .and_then(ReadyPort::open)
                 .map_err(|e| {
@@ -67,6 +80,14 @@ impl ClaimDoors {
         }
         Ok(doors)
     }
+}
+
+/// What woke the port loop: a datagram read into its buffer (its length and sender), the
+/// associations' deadline, or a joined association.
+enum Woke {
+    Read(std::io::Result<(usize, SocketAddr)>),
+    Clock,
+    Joined,
 }
 
 pub struct ClaimDoor {
@@ -107,7 +128,7 @@ impl ClaimDoor {
             shutdown: detached::worker_shutdown(),
             closed: AtomicBool::new(false),
             assocs: PortAssociations::new(),
-            legs: Mutex::new(HashMap::new()),
+            legs: Mutex::new(HashMap::default()),
             joined: Notify::new(),
         });
         door.spawn(Arc::clone(&door).run());
@@ -201,49 +222,46 @@ impl ClaimDoor {
                 return;
             }
             let deadline = self.assocs.deadline();
-            let read = std::future::poll_fn(|cx| {
-                self.port
-                    .poll_recv_from(cx, &mut buf)
-                    .map(|r| r.map(|(n, from)| (buf[..n].to_vec(), from)))
-            });
+            let read = std::future::poll_fn(|cx| self.port.poll_recv_from(cx, &mut buf));
             let sleep = async {
                 match deadline {
                     Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
                     None => std::future::pending::<()>().await,
                 }
             };
-            enum Woke {
-                Read(std::io::Result<(Vec<u8>, SocketAddr)>),
-                Clock,
-                Joined,
-            }
             let woke = tokio::select! {
                 () = &mut shutdown => return,
                 got = read => Woke::Read(got),
                 () = sleep => Woke::Clock,
                 () = self.joined.notified() => Woke::Joined,
             };
-            let now = Instant::now();
-            let answered = match woke {
-                Woke::Read(Ok((datagram, from))) => self
-                    .assocs
-                    .raw_datagram_with_publication(
-                        from,
-                        &datagram,
-                        now,
-                        &|to, d| self.send(to, d),
-                        |answered| self.answer(answered, now),
-                    )
-                    .into_answered(),
-
-                Woke::Read(Err(_)) => Vec::new(),
-                Woke::Joined => Vec::new(),
-                Woke::Clock => self
-                    .assocs
-                    .timeout_incremental(now, &|to, d| self.send(to, d)),
-            };
-            self.answer(answered, now);
+            self.woke(&woke, &buf);
         }
+    }
+
+    /// One wake of the port loop, judged at one clock reading. A read datagram is served straight
+    /// from the loop's receive buffer.
+    fn woke(&self, woke: &Woke, buf: &[u8]) {
+        let now = instant_of(now_ns());
+        let answered = match woke {
+            Woke::Read(Ok((n, from))) => self
+                .assocs
+                .raw_datagram_with_publication(
+                    *from,
+                    &buf[..*n],
+                    now,
+                    &|to, d| self.send(to, d),
+                    |answered| self.answer(answered, now),
+                )
+                .into_answered(),
+
+            Woke::Read(Err(_)) => Vec::new(),
+            Woke::Joined => Vec::new(),
+            Woke::Clock => self
+                .assocs
+                .timeout_incremental(now, &|to, d| self.send(to, d)),
+        };
+        self.answer(answered, now);
     }
 
     fn join(
@@ -296,7 +314,7 @@ impl ClaimDoor {
                 &|to, d| self.send(to, d),
                 &|answered| {
                     self.joined.notify_one();
-                    self.answer(answered, Instant::now());
+                    self.answer(answered, instant_of(now_ns()));
                 },
             )
             .await
@@ -952,7 +970,7 @@ impl Opened {
         };
         *lock(&leg.pairing) = Some(Arc::clone(&pairing.pairing));
         framing.memory(pairing.pairing.memory_account());
-        let now = Instant::now();
+        let now = instant_of(now_ns());
         let yielded = framing.rendezvous(description, now).map_err(|r| r.error)?;
         let mut session = pairing.pairing.publish(Leg::Caller, yielded, now);
         let index = session
@@ -1010,11 +1028,21 @@ impl Joining {
             mut pairing,
         } = self;
         if let Err(e) = door.join(framing, &leg) {
-            return Err(format!("the claim door refused the association: {e:?}"));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is spelled only when the claim door refuses the association"
+            )]
+            let refusal = format!("the claim door refused the association: {e:?}");
+            return Err(refusal);
         }
-        connector
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text is spelled only when the session book refuses the unit"
+        )]
+        let paired = connector
             .pair(unit, Arc::clone(&pairing.pairing))
-            .map_err(|e| format!("the session book refused the unit: {e:?}"))?;
+            .map_err(|e| format!("the session book refused the unit: {e:?}"));
+        paired?;
         pairing.admitted = true;
         Ok(())
     }
