@@ -11,6 +11,10 @@
 //! ticket; on resume the plugin re-issues the SAME handle and receives the stored result. The host
 //! never runs a service twice for one handle.
 //!
+//! THE KEPT-CYCLE RULE. On a driver ticket, a `tick` of a kept cycle (something was held at the
+//! tick's start) starts new work. It never re-issues a handle issued earlier in the cycle; the
+//! `drive` the pending service's wake brings resumes it. Such a re-issue is FAULT, and nothing runs.
+//!
 //! THE SHORT-BUFFER RULE FOR SERVICES. The caller is the plugin, so a service writes its result
 //! into PLUGIN buffers its `in` names ([`ServiceBufs`]: bytes, and the spans that name ranges of
 //! them). [`ServiceOut`] carries a `needed_*` per dimension. A plugin declares its largest buffers

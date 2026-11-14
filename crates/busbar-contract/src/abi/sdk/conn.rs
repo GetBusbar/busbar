@@ -400,6 +400,11 @@ impl<K: KindMarker> Host<K> {
 
 /// The connector for one entry of one op: each service it makes carries the next completion
 /// handle on its ticket (the replay rule, above).
+///
+/// The replay rule: a service that answered PENDING is resumed by re-issuing the SAME handle, and
+/// the host answers it the stored result. On a driver ticket, only the `drive` the pending
+/// service's wake brings resumes it: a `tick` of a kept cycle starts new work and never re-issues
+/// a handle issued earlier in the cycle. Such a re-issue is FAULT ([`ConnFailure::Fault`]).
 #[derive(Debug)]
 pub struct Connector<'h, K: KindMarker> {
     host: &'h Host<K>,
