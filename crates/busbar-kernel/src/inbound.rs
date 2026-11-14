@@ -19,6 +19,9 @@ use busbar_contract::redacted::Secret;
 use crate::guest::{GuestList, Line, LineAuth, Matched};
 use crate::state::App;
 
+mod derived;
+pub(crate) use derived::Derived;
+
 pub const NO_LIST: &str = "the kernel holds no guest list for this listener at this generation";
 
 pub const NO_LINE: &str = "the handle names no line of this listener's list";
@@ -56,7 +59,7 @@ pub const fn is_line_id(id: u64) -> bool {
 }
 
 /// One request's head, as a transport decoded it: neutral fields only.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq)]
 pub struct Head {
     /// The method.
     pub method: String,
@@ -92,7 +95,27 @@ impl Drop for Head {
     }
 }
 
+/// A deep copy of every field, counted (SINGLE-PATH SP-A2): a unit shares its heads, so a copy
+/// is a cost the probes see.
+impl Clone for Head {
+    fn clone(&self) -> Self {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::HeadCopy);
+        self.duplicate()
+    }
+}
+
 impl Head {
+    /// The copy behind [`Clone`], uncounted: the strip builds a different head from it.
+    fn duplicate(&self) -> Self {
+        Self {
+            method: self.method.clone(),
+            target: self.target.clone(),
+            authority: self.authority.clone(),
+            query: self.query.clone(),
+            fields: self.fields.clone(),
+        }
+    }
+
     fn path_and_query(&self) -> String {
         match &self.query {
             Some(query) => format!("{}?{query}", self.target),
@@ -102,7 +125,8 @@ impl Head {
 
     fn stripped(&self, strips: &[Strip]) -> Option<Self> {
         use zeroize::Zeroize as _;
-        let mut head = self.clone();
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
+        let mut head = self.duplicate();
         head.fields.retain_mut(|(name, value)| {
             let remove = strips.iter().any(|strip| {
                 strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name)
@@ -461,7 +485,25 @@ pub struct ListenerScope {
 }
 
 impl Listener {
+    /// The plane admission for a unit's original head. Read it through [`Derived::admission`],
+    /// which resolves it once per unit (a refusal with no unit uses a record of its own).
     fn admission(&self, head: &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::PlaneAdmission);
+        self.resolve_admission(head)
+    }
+
+    /// The plane admission for a non-peer continuation call's own head. Earlier auth points'
+    /// strips are already applied to it, and the admission matches header fields, so it is a
+    /// different input from the unit's original and is resolved, not read from [`Derived`].
+    fn admission_on(&self, head: &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AdmissionOnHead);
+        self.resolve_admission(head)
+    }
+
+    fn resolve_admission(
+        &self,
+        head: &Head,
+    ) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
         self.scope.as_ref().map_or_else(
             || self.app.planes.admission_for(&head.target).cloned(),
             |scope| (scope.admission)(&self.app, head),
@@ -562,8 +604,11 @@ pub(crate) struct AdmittedRequest {
     pub(crate) credential: Option<Secret<String>>,
 
     pub(crate) signed: bool,
-    pub(crate) original: Head,
-    handed: Head,
+    /// The unit's heads, shared with it rather than copied (SINGLE-PATH SP-A2).
+    pub(crate) original: Arc<Head>,
+    handed: Arc<Head>,
+    /// What the unit derived from `original`, carried from its auth calls (SP-A1 / SP-AU1).
+    derived: Arc<Derived>,
     pub(crate) strips: Vec<Strip>,
     replay: Option<Arc<ReplayAdmission>>,
     deadline: Option<std::time::Instant>,
@@ -769,8 +814,22 @@ impl RequestAdmission {
         self.inner.table.listener.body_limit
     }
 
-    pub(crate) fn plane_admission(&self) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
-        self.inner.table.listener.admission(&self.inner.original)
+    pub(crate) fn plane_admission(&self) -> Option<&crate::plane_driver::dispatch::PlaneAdmission> {
+        self.inner
+            .derived
+            .admission(&self.inner.table.listener, &self.inner.original)
+    }
+
+    /// The original (unstripped) head as an HTTP header map, built once per unit.
+    pub(crate) fn original_headers(&self) -> &axum::http::HeaderMap {
+        self.inner.derived.headers(&self.inner.original)
+    }
+
+    /// The client token the original head carries (carriers only), read once per unit.
+    pub(crate) fn client_token(&self) -> Option<&str> {
+        self.inner
+            .derived
+            .client_token(&self.inner.table.listener.app, &self.inner.original)
     }
 
     pub fn app(&self) -> Arc<App> {
@@ -954,9 +1013,11 @@ struct UnitState {
     line: u32,
     binding: RequestBinding,
     secret: [u64; 2],
-    head: Option<Head>,
+    head: Option<Arc<Head>>,
+    /// What this unit derived from `head`; moves with it into the claimed request.
+    derived: Arc<Derived>,
 
-    handed_head: Option<Head>,
+    handed_head: Option<Arc<Head>>,
     claimed: bool,
     deadline: Option<std::time::Instant>,
     alive: Arc<std::sync::atomic::AtomicBool>,
@@ -1004,6 +1065,7 @@ impl UnitState {
             binding,
             secret,
             head: None,
+            derived: Arc::default(),
             handed_head: None,
             claimed: false,
             deadline: None,
@@ -1216,6 +1278,31 @@ fn matched_handin_line<'a>(
     }
 }
 
+/// Whether a hand-in on `line` (already matched on the handed head) may continue the unit: its
+/// state agrees with the hand-in, a Chain line's unit is admitted, and no stripped credential
+/// is still present. Runs under the caller's units guard, the same one that records the hand-in.
+fn admits(line: &Line, h: &HandIn, u: &UnitState) -> bool {
+    if !handin_state_matches(
+        u.line,
+        u.generation,
+        u.signed_pending,
+        u.head.as_deref(),
+        &u.strips,
+        h,
+    ) {
+        return false;
+    }
+
+    if matches!(line.auth, LineAuth::Chain(..)) && !matches!(u.fixed(), Some(Fixed::Admitted(_))) {
+        return false;
+    }
+
+    // With an original, `handin_state_matches` already required the handed head to equal it
+    // with every strip applied, so no stripped credential can still be there; only a unit with
+    // no recorded original needs the scan (SINGLE-PATH SP-AU4).
+    u.head.is_some() || !still_present(&u.strips, &h.head)
+}
+
 fn handin_state_matches(
     unit_line: u32,
     generation: u64,
@@ -1326,6 +1413,7 @@ fn same(want: u64, got: u64) -> bool {
 }
 
 fn still_present(strips: &[Strip], head: &Head) -> bool {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::StripScan);
     strips.iter().any(|s| match s.place {
         StripPlace::Field => head
             .fields
@@ -1411,7 +1499,9 @@ struct Position {
 enum Judging<'a> {
     Nothing,
 
-    Keys(&'a Head, Option<SignedAnswer>),
+    /// Judge the keys arm on the unit's original head, reading what the unit already derived
+    /// from it.
+    Keys(&'a Head, &'a Derived, Option<SignedAnswer>),
 
     Answer(VerifyAnswer),
 }
@@ -1433,7 +1523,22 @@ impl AsRef<[u8]> for FieldBytes {
     }
 }
 
+/// An inbound unit's original head as an HTTP header map. A unit reads it through
+/// [`Derived::headers`], which builds it once; a refusal with no unit reads it through a
+/// [`Derived`] record of its own.
 pub(crate) fn header_map(head: &Head) -> axum::http::HeaderMap {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::HeaderMap);
+    build_header_map(head)
+}
+
+/// The served (stripped) head converted back to HTTP for the operator adapter: a different input
+/// from the unit's original, so it is not the unit's [`Derived`] map.
+pub(crate) fn served_header_map(head: &Head) -> axum::http::HeaderMap {
+    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ServedHeaderMap);
+    build_header_map(head)
+}
+
+fn build_header_map(head: &Head) -> axum::http::HeaderMap {
     let mut headers = axum::http::HeaderMap::new();
     for (n, v) in &head.fields {
         if let (Ok(n), Ok(v)) = (
@@ -1463,7 +1568,7 @@ fn ordered(names: &[String]) -> Vec<String> {
 fn signed_then_keys(
     app: &App,
     gov: Option<&crate::governance::GovState>,
-    head: &Head,
+    candidate: Option<&Secret<String>>,
     signed: Option<SignedAnswer>,
     now: u64,
     expected_aud: Option<&str>,
@@ -1514,7 +1619,7 @@ fn signed_then_keys(
             Verified::Overloaded => return (Judged::Overloaded, None, named, None),
         }
     }
-    let (judged, identity, strips, resolved) = keys_judged(app, gov, head, now, expected_aud);
+    let (judged, identity, strips, resolved) = keys_judged(app, gov, candidate, now, expected_aud);
     named.extend(strips);
     (judged, identity, named, resolved)
 }
@@ -1522,7 +1627,7 @@ fn signed_then_keys(
 fn keys_judged(
     app: &App,
     gov: Option<&crate::governance::GovState>,
-    head: &Head,
+    candidate: Option<&Secret<String>>,
     now: u64,
     expected_aud: Option<&str>,
 ) -> (
@@ -1532,17 +1637,13 @@ fn keys_judged(
     Option<Arc<crate::governance::VirtualKey>>,
 ) {
     let carriers = app.auth.carriers();
-    let headers = header_map(head);
-    let candidate = crate::auth::inbound_candidate(app, &headers);
     let strips = carriers
         .iter()
         .map(|c| Strip::field(c.as_str().to_string()))
         .collect();
     match crate::auth::keys_arm_verdict(
         gov,
-        candidate
-            .as_ref()
-            .map(|candidate| candidate.expose(&crate::seal::lend()).as_str()),
+        candidate.map(|candidate| candidate.expose(&crate::seal::lend()).as_str()),
         now,
         expected_aud,
     ) {
@@ -1993,16 +2094,13 @@ impl Inbound {
             }
             return self.table(owner, generation).ok_or(NO_LIST);
         }
-        if !self.verified(owner, Some(generation), None, binding, unit) {
-            return Err(UNIT_FOREIGN);
-        }
-        self.units()
-            .get(&unit.id)
-            .map(|u| Arc::clone(&u.table))
+        // The unit's table comes out of the guard that checked its MAC (SINGLE-PATH SP-AU5).
+        self.verified_table(owner, Some(generation), None, binding, unit)
             .ok_or(UNIT_FOREIGN)
     }
 
     fn units(&self) -> std::sync::MutexGuard<'_, HashMap<u64, UnitState>> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UnitsLock);
         self.units.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -2089,6 +2187,7 @@ impl Inbound {
                 signed: unit.signed,
                 original: unit.head.as_ref().unwrap_or(handed).clone(),
                 handed: handed.clone(),
+                derived: Arc::clone(&unit.derived),
                 strips: unit.strips.clone(),
                 replay: unit.replay.clone(),
                 deadline: unit.deadline,
@@ -2315,6 +2414,20 @@ impl Inbound {
         binding: RequestBinding,
         r: UnitRef,
     ) -> bool {
+        self.verified_table(owner, generation, line, binding, r)
+            .is_some()
+    }
+
+    /// [`Self::verified`], answering the verified unit's pinned table out of the same units
+    /// guard, so a caller that needs it takes no second lock.
+    fn verified_table(
+        &self,
+        owner: u64,
+        generation: Option<u64>,
+        line: Option<u32>,
+        binding: RequestBinding,
+        r: UnitRef,
+    ) -> Option<Arc<Table>> {
         let held = self
             .framing_listeners
             .lock()
@@ -2324,20 +2437,19 @@ impl Inbound {
                 listener.status != FramingStatus::Active
                     || listener.ended_streams.contains(&binding.stream)
             }) {
-                return false;
+                return None;
             }
         }
         let units = self.units();
-        let Some(u) = units.get(&r.id) else {
-            return false;
-        };
+        let u = units.get(&r.id)?;
         if u.owner != owner
             || u.binding != binding
             || generation.is_some_and(|g| g != u.generation)
             || line.is_some_and(|l| l != u.line)
         {
-            return false;
+            return None;
         }
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::UnitMac);
         (self.seals.mac)(&UnitTag {
             secret: u.secret,
             generation: u.generation,
@@ -2346,6 +2458,7 @@ impl Inbound {
             unit: r.id,
         })
         .is_some_and(|mac| same(mac, r.mac))
+        .then(|| Arc::clone(&u.table))
     }
 
     pub fn auth_call(
@@ -2487,7 +2600,7 @@ impl Inbound {
                 }
                 u.deadline = call.deadline;
                 if u.head.is_none() {
-                    u.head = Some(call.head.clone());
+                    u.head = Some(Arc::new(call.head.clone()));
                 }
             }
             (Target::Unit(unit.id), unit)
@@ -2516,12 +2629,17 @@ impl Inbound {
         let deadline = call.deadline;
         let (head, conn) = (call.head, call.conn);
         Ok(async move {
-            let original = (!peer)
-                .then(|| me.with_state(target, |u| u.head.clone()).flatten())
-                .flatten();
-            let candidate = original.as_ref().and_then(|head| {
-                crate::auth::inbound_candidate(&table.listener.app, &header_map(head))
-            });
+            let (original, derived) = me
+                .with_state(target, |u| {
+                    (
+                        (!peer).then(|| u.head.clone()).flatten(),
+                        Arc::clone(&u.derived),
+                    )
+                })
+                .unwrap_or_default();
+            let candidate = original
+                .as_ref()
+                .and_then(|head| derived.candidate(&table.listener.app, head));
             let mut resume_head_after_reader = false;
 
             let unfinished = me
@@ -2537,21 +2655,28 @@ impl Inbound {
                 let prefix = method
                     .as_ref()
                     .and_then(|method| table.doors.door_ticket(&head.target, method));
-                let token = candidate
-                    .as_ref()
-                    .map(|c| c.expose(&crate::seal::lend()).as_str());
+                let token = candidate.map(|c| c.expose(&crate::seal::lend()).as_str());
                 let keys = positions
                     .iter()
                     .find(|p| matches!(p.kind, PositionKind::Keys));
-                let signed_reader = (table.listener.admission(&head).is_none()
+                // On the first request `call.head` is the original just recorded, so its
+                // admission is the unit's; a continuation call's head has earlier strips applied.
+                let unadmitted = match original.as_ref() {
+                    Some(original) if first_request => {
+                        derived.admission(&table.listener, original).is_none()
+                    }
+                    _ => table.listener.admission_on(&head).is_none(),
+                };
+                let signed_reader = (unadmitted
                     && (table.doors.signed_ingress(&head.target)
                         || (table.listener.signed_ingress)(&table.listener.app, &head.target)))
-                .then(|| {
-                    table
+                .then(|| match original.as_ref() {
+                    Some(original) => table
                         .listener
                         .app
                         .auth
-                        .signed_reader(&header_map(original.as_ref().unwrap_or(&head)))
+                        .signed_reader(derived.headers(original)),
+                    None => table.listener.app.auth.signed_reader(&header_map(&head)),
                 })
                 .flatten();
                 if let (Some(keys), Some((provider, calls, kinds))) = (keys, signed_reader) {
@@ -2569,7 +2694,7 @@ impl Inbound {
                             return me.answer(target, unit, peer);
                         }
                         let req = verify_request(
-                            original.as_ref().unwrap_or(&head),
+                            original.as_deref().unwrap_or(&head),
                             AuthPoint::HeadBody,
                             conn,
                             unit.id,
@@ -2599,7 +2724,8 @@ impl Inbound {
                                 me.preflight_keys(target, keys.index)?;
                                 let judging = match answer {
                                     Some(answer) => Judging::Keys(
-                                        original.as_ref().unwrap_or(&head),
+                                        original.as_deref().unwrap_or(&head),
+                                        &derived,
                                         Some(SignedAnswer {
                                             faulted,
                                             answer: *answer,
@@ -2701,7 +2827,7 @@ impl Inbound {
                             target,
                             p.index,
                             &p.provider,
-                            Judging::Keys(original.as_ref().unwrap_or(&head), None),
+                            Judging::Keys(original.as_deref().unwrap_or(&head), &derived, None),
                             &table,
                         );
                         continue;
@@ -2724,7 +2850,7 @@ impl Inbound {
                     continue;
                 };
                 let verify_head = if verify_point != point {
-                    original.as_ref().unwrap_or(&head)
+                    original.as_deref().unwrap_or(&head)
                 } else {
                     &head
                 };
@@ -2742,7 +2868,7 @@ impl Inbound {
                     } else {
                         None
                     },
-                    candidate.as_ref(),
+                    candidate,
                 );
                 let mut verifying = calls.verify(req);
                 let answer = until_deadline(deadline, &mut verifying).await;
@@ -2801,28 +2927,25 @@ impl Inbound {
     ) {
         let gov = table.listener.app.governance.as_deref();
         let now = crate::store::now();
-        let signed_identity = matches!(&judging, Judging::Keys(_, Some(signed))
+        let signed_identity = matches!(&judging, Judging::Keys(_, _, Some(signed))
             if !signed.faulted && matches!(&signed.answer.verified, Verified::Identity(_)));
         let replay_provider = match &judging {
-            Judging::Keys(_, Some(signed)) => signed.provider.as_str(),
+            Judging::Keys(_, _, Some(signed)) => signed.provider.as_str(),
             _ => provider,
         }
         .to_owned();
         let (judged, identity, strips, resolved) = match judging {
             Judging::Nothing => (Judged::Denied, None, Vec::new(), None),
-            Judging::Keys(head, signed) => {
-                let admission = table.listener.admission(head);
-                signed_then_keys(
-                    &table.listener.app,
-                    gov,
-                    head,
-                    signed,
-                    now,
-                    admission
-                        .as_ref()
-                        .map(|admission| admission.audience.as_str()),
-                )
-            }
+            Judging::Keys(head, derived, signed) => signed_then_keys(
+                &table.listener.app,
+                gov,
+                derived.candidate(&table.listener.app, head),
+                signed,
+                now,
+                derived
+                    .admission(&table.listener, head)
+                    .map(|admission| admission.audience.as_str()),
+            ),
             Judging::Answer(a) => {
                 let (judged, identity) = match a.verified {
                     Verified::Identity(id) => (Judged::Identity, Some(id)),
@@ -2907,26 +3030,37 @@ impl Inbound {
                 binding,
                 Arc::clone(&table),
             )?
-        } else if self.verified(h.owner, None, None, binding, h.unit) {
-            h.unit
         } else {
-            return Err(UNIT_FOREIGN);
+            // `request_table` verified the presented unit (MAC, owner, binding, generation); a
+            // second check here could only refuse what it already refused (SINGLE-PATH SP-AU5).
+            h.unit
         };
-        let flow = if self.admits(&table, &h, unit) {
+        // The claim match reads the handed head and the table only, so it runs outside the
+        // units lock; the unit's own checks and the write then share one guard, so nothing can
+        // claim or retire the unit between them.
+        let line = matched_handin_line(
+            &table.listener.guests,
+            table.line_of(h.auth),
+            h.line,
+            &h.head,
+        );
+        let mut units = self.units();
+        let u = units.get_mut(&unit.id).ok_or(UNIT_FOREIGN)?;
+        let flow = if line.is_some_and(|line| admits(line, &h, u)) {
             FLOW_CONTINUE
         } else {
             FLOW_STOP
         };
-        let mut units = self.units();
-        let u = units.get_mut(&unit.id).ok_or(UNIT_FOREIGN)?;
+        // One head, shared as the unit's original (when it had none) and as what it was handed.
+        let handed = Arc::new(h.head);
         if u.head.is_none() {
-            u.head = Some(h.head.clone());
+            u.head = Some(Arc::clone(&handed));
         }
         if flow == FLOW_CONTINUE {
             if u.handed_head.is_some() || u.claimed {
                 return Err(UNIT_FOREIGN);
             }
-            u.handed_head = Some(h.head);
+            u.handed_head = Some(handed);
             // Hand-in may tighten the first-auth deadline, but cannot clear or extend it.
             u.deadline = match (u.deadline, deadline) {
                 (Some(first), Some(handed)) => Some(first.min(handed)),
@@ -2934,39 +3068,6 @@ impl Inbound {
             };
         }
         Ok((flow, unit))
-    }
-
-    fn admits(&self, table: &Table, h: &HandIn, unit: UnitRef) -> bool {
-        let Some(line) = matched_handin_line(
-            &table.listener.guests,
-            table.line_of(h.auth),
-            h.line,
-            &h.head,
-        ) else {
-            return false;
-        };
-        let units = self.units();
-        let Some(u) = units.get(&unit.id) else {
-            return false;
-        };
-        if !handin_state_matches(
-            u.line,
-            u.generation,
-            u.signed_pending,
-            u.head.as_ref(),
-            &u.strips,
-            h,
-        ) {
-            return false;
-        }
-
-        if matches!(line.auth, LineAuth::Chain(..))
-            && !matches!(u.fixed(), Some(Fixed::Admitted(_)))
-        {
-            return false;
-        }
-
-        !still_present(&u.strips, &h.head)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3051,15 +3152,27 @@ impl Inbound {
                 return Err(UNIT_FOREIGN);
             }
         }
-        let (head, overloaded) = unit
+        let (recorded, overloaded) = unit
             .and_then(|u| {
-                self.units()
-                    .get(&u.id)
-                    .map(|s| (s.head.clone(), s.fixed() == Some(Fixed::Overloaded)))
+                self.units().get(&u.id).map(|s| {
+                    (
+                        s.head
+                            .as_deref()
+                            .cloned()
+                            .map(|head| (head, Arc::clone(&s.derived))),
+                        s.fixed() == Some(Fixed::Overloaded),
+                    )
+                })
             })
             .unwrap_or((None, false));
 
-        let head = head.or(r.request);
+        // A unit's refusal reads what its auth calls already derived from its original head; a
+        // refusal with no recorded head derives each input once, on a record of its own
+        // (SINGLE-PATH SP-A1 / SP-AU1).
+        let (head, derived) = match recorded {
+            Some((head, derived)) => (Some(head), derived),
+            None => (r.request, Arc::default()),
+        };
         let path = head
             .as_ref()
             .map(|h| h.target.clone())
@@ -3114,11 +3227,11 @@ impl Inbound {
                 };
                 let challenge = if reason == ReasonCode::Unauthenticated {
                     head.as_ref()
-                        .and_then(|head| table.listener.admission(head))
+                        .and_then(|head| derived.admission(&table.listener, head))
                         .map(|admission| {
-                            let present = head.as_ref().is_some_and(|head| {
-                                crate::auth::inbound_candidate(app, &header_map(head)).is_some()
-                            });
+                            let present = head
+                                .as_ref()
+                                .is_some_and(|head| derived.candidate(app, head).is_some());
                             crate::auth::challenge::render(
                                 if present {
                                     crate::auth::challenge::ChallengeError::InvalidToken
@@ -3261,15 +3374,15 @@ impl Inbound {
                         .map(|refuse| (refuse, target));
                     let admission = head
                         .as_ref()
-                        .and_then(|head| table.listener.admission(head));
-                    let client_token_present = head.as_ref().is_some_and(|head| {
-                        crate::auth::inbound_candidate(app, &header_map(head)).is_some()
-                    });
+                        .and_then(|head| derived.admission(&table.listener, head));
+                    let client_token_present = head
+                        .as_ref()
+                        .is_some_and(|head| derived.candidate(app, head).is_some());
                     crate::auth::scoped_unauthorized_with_completion_taps(
                         app,
                         &path,
                         door.as_ref(),
-                        admission.as_ref(),
+                        admission,
                         client_token_present,
                     )
                 }
