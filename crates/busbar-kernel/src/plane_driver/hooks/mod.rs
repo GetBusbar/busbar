@@ -1139,7 +1139,6 @@ impl Asked<'_> {
             send_prompt,
             send_user,
             on_empty,
-            content_blind: _,
         } = resolved;
         if self.named && self.candidates.is_empty() {
             return (Decided::Weighted, None);
@@ -1664,6 +1663,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         arena: ProjectArena,
         rewrite: Option<&[u8]>,
         faultable: bool,
+        observe_only: bool,
     ) -> (ProjectArena, Result<ProjectAt, Stopped>) {
         let a = &self.arrival;
         let unit = self.lock().unit;
@@ -1966,7 +1966,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 
         // The stage's arenas: the current view's, and a spare a rewrite re-projects into. A stage
         // run allocates at most these two, whatever its rewrite count.
-        let (arena, first) = self.project(self.fresh_arena(), None, faultable);
+        let (arena, first) =
+            self.project(self.fresh_arena(), None, faultable, hooks.observe_only());
         let first = first.map_err(|e| match e {
             Stopped::Unparseable { .. } => Stopped::Unreadable,
             other => other,
@@ -1974,11 +1975,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let mut cur = match first {
             Ok(at) => StageView::Projected(Projected { arena, at }),
 
-            Err(Stopped::Unreadable)
-                if hooks.rewrites.is_empty()
-                    && hooks.gates.is_empty()
-                    && hooks.policy.is_none() =>
-            {
+            Err(Stopped::Unreadable) if hooks.idle() => {
                 drop(arena);
                 StageView::Fallback(Projection::empty(&walk_pool, &hooks.dialect))
             }
@@ -2017,7 +2014,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
                     let arena = spare.take().unwrap_or_else(|| self.fresh_arena());
-                    let (mut arena, next) = self.project(arena, Some(&bytes), true);
+                    let (mut arena, next) = self.project(arena, Some(&bytes), true, false);
                     match next {
                         Ok(at) if at.rewritten.is_some() || rw.messages.is_empty() => {
                             if let Some(body) = at.rewritten_body(&arena) {
