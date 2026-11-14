@@ -3732,3 +3732,7 @@ mod refresh_binding_tests;
 #[cfg(test)]
 #[path = "tests/completed_head_tests.rs"]
 mod completed_head_tests;
+
+#[cfg(test)]
+#[path = "tests/pool_prepared_tests.rs"]
+mod pool_prepared_tests;
