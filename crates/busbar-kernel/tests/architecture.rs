@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A5, THE LOC BUDGET (CORE-ARCHITECTURE-DIET §7; owner decision 200).
+//! THE ARCHITECTURE CHECKS (CORE-ARCHITECTURE-DIET). This file holds A5, THE LOC BUDGET (§7;
+//! owner decision 200); `arch/escapes.rs` holds A8 and A7.
 //!
 //! Core's production lines, counted one way only (`diet-metrics-v2`: Cargo targets, `mod`,
 //! `#[path]` and `include!` followed, `cfg(test)` and doc attributes excluded, comments and
