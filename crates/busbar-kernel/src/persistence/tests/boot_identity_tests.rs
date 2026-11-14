@@ -6,104 +6,15 @@ use crate::persistence::host_records::tests::{attach, Backend};
 use std::sync::atomic::Ordering;
 
 #[tokio::test]
-async fn verified_imported_journal_is_discoverable_without_assignment_or_lease() {
-    use crate::persistence::import_target::journal as import;
-    struct Original(Vec<u8>);
-    impl import::IndexedFrames for Original {
-        fn count(&self) -> u64 {
-            1
-        }
-        fn frame(&mut self, ordinal: u64) -> Result<Vec<u8>, import::Error> {
-            if ordinal != 1 {
-                return Err(import::Error::Invalid);
-            }
-            Ok(self.0.clone())
-        }
-    }
-    let body = b"original retained journal".to_vec();
-    let mut original = busbar_kernel_wal::JournalRecord {
-        class: busbar_kernel_wal::RecordClass::Reconciliation,
-        node: 7,
-        node_seq: 9,
-        lease_epoch: 1,
-        policy_epoch: 1,
-        wall: 10,
-        mono: 1,
-        body_hash: busbar_kernel_wal::journal::body_digest(&body),
-        body,
-        prev_hash: [17; 32],
-        hash: [0; 32],
-    };
-    original.hash = original.digest_of_chain();
-    let proof = import::verify_source(
-        7,
-        &mut Original(original.encode()),
-        import::SourceBudget {
-            max_frame_bytes: 4096,
-            max_reads: 4,
-        },
-    )
-    .unwrap();
-    let (address, value) = import::inventory_row(&proof).unwrap();
-    assert!(import::inventory_matches(&proof, &address, &value));
-    assert!(import::inventory_address_class(&address));
-    for malformed in [
-        b"journal:".as_slice(),
-        b"journal:x",
-        b"journal:\0\0\0\0\0\0\0\0",
-    ] {
-        let reserved =
-            super::super::scoped::migration_address(true, INSTANCE, NODE_SCHEMA, malformed)
-                .unwrap();
-        assert!(import::inventory_address_class(&reserved));
-        assert!(!import::inventory_matches(&proof, &reserved, &value));
-    }
-    let assignment =
-        super::super::scoped::migration_address(true, INSTANCE, NODE_SCHEMA, &host_key("host"))
-            .unwrap();
-    assert!(!import::inventory_address_class(&assignment));
-    let key = journal_inventory_key(7);
-    let bytes = value.expose(&crate::seal::lend());
-    assert_eq!(journal_inventory_node(&key, bytes).unwrap(), 7);
-    // Every retained field, including both historical digests, participates
-    // in the inventory checksum. A different stored identity is refused.
-    for at in 0..bytes.len() {
-        let mut altered = bytes.clone();
-        altered[at] ^= 1;
-        assert!(journal_inventory_node(&key, &altered).is_err());
-    }
-    assert!(journal_inventory_node(&journal_inventory_key(8), bytes).is_err());
+async fn journal_inventory_row_is_refused() {
+    let key = [JOURNAL_INVENTORY_PREFIX, &7u64.to_be_bytes()].concat();
     let backend = Arc::new(Backend::default());
-    let core = Arc::new(attach(backend).await);
-    let owner = BootIdentity::new(core).unwrap();
+    let owner = BootIdentity::new(Arc::new(attach(backend).await)).unwrap();
     assert!(owner
         .records
         .decide(
             vec![predicate(NODE_SCHEMA, key.clone(), None)],
-            vec![put(NODE_SCHEMA, key.clone(), bytes.clone())]
-        )
-        .await
-        .unwrap());
-    let nodes = owner.registered().await.unwrap();
-    assert_eq!(nodes, vec![("journal:0000000000000007".into(), 7)]);
-    let absent = owner
-        .records
-        .records
-        .read(&[
-            (NODE_SCHEMA, &host_key("journal:0000000000000007")),
-            (NODE_SCHEMA, &lease_key("journal:0000000000000007")),
-            (NODE_SCHEMA, &id_key(7)),
-        ])
-        .await
-        .unwrap();
-    assert!(absent.iter().all(Option::is_none));
-    let mut corrupt = bytes.clone();
-    corrupt[64] ^= 1;
-    assert!(owner
-        .records
-        .decide(
-            vec![predicate(NODE_SCHEMA, key.clone(), Some(value))],
-            vec![put(NODE_SCHEMA, key, corrupt)]
+            vec![put(NODE_SCHEMA, key, b"arbitrary".to_vec())]
         )
         .await
         .unwrap());
