@@ -1061,7 +1061,10 @@ impl Program {
         let mut args = zeroize::Zeroizing::new(Vec::new());
         if let Some(value) = map.get("args") {
             for argument in value.as_array().ok_or(ProgramRefused::Args)? {
-                args.push(argument.as_str().ok_or(ProgramRefused::Args)?.to_owned());
+                crate::secure::push(
+                    &mut args,
+                    argument.as_str().ok_or(ProgramRefused::Args)?.to_owned(),
+                );
             }
         }
 
@@ -1070,7 +1073,9 @@ impl Program {
         if let Some(v) = map.get(PROGRAM_ENV_KEY) {
             for (k, v) in v.as_object().ok_or(ProgramRefused::Env)? {
                 match v {
-                    serde_json::Value::String(text) => env.push((k.clone(), text.clone())),
+                    serde_json::Value::String(text) => {
+                        crate::secure::push(&mut env, (k.clone(), text.clone()))
+                    }
                     serde_json::Value::Object(_) => env_refs.push((
                         k.clone(),
                         crate::secret_ref::context::deserialize(v.clone(), sources)

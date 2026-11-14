@@ -190,23 +190,24 @@ impl NativeSnapshot {
                 .map_err(native_error)?;
                 admitted.admit(&mut self, &chunk)?;
                 let length = chunk.group.expose(&seal).len();
-                let mut key = Zeroizing::new(Vec::with_capacity(
-                    length.checked_add(25).ok_or(Error::Bounds)?,
-                ));
-                key.push(match chunk.family {
+                // family, group length, group, sequence, then one 8-byte fact index: exact size,
+                // written in place, so the wiping buffer never grows (LINT-RULES LR-117).
+                let prefix = length.checked_add(17).ok_or(Error::Bounds)?;
+                let mut key = Zeroizing::new(vec![0_u8; prefix + 8]);
+                key[0] = match chunk.family {
                     native::source::HistoricalFamily::Identity => 0,
                     native::source::HistoricalFamily::Accounting => 1,
                     native::source::HistoricalFamily::Archival => 2,
                     native::source::HistoricalFamily::Audit => 3,
                     native::source::HistoricalFamily::Evidence => 4,
-                });
-                key.extend_from_slice(
+                };
+                key[1..9].copy_from_slice(
                     &u64::try_from(length)
                         .map_err(|_| Error::Bounds)?
                         .to_le_bytes(),
                 );
-                key.extend_from_slice(chunk.group.expose(&seal));
-                key.extend_from_slice(&chunk.sequence.to_le_bytes());
+                key[9..prefix - 8].copy_from_slice(chunk.group.expose(&seal));
+                key[prefix - 8..prefix].copy_from_slice(&chunk.sequence.to_le_bytes());
                 let encoded = legacy_row::encode::<SpoolOwner>(
                     &[Cell::Blob(row.value.expose(&seal))],
                     limits.frame_bytes,
@@ -215,14 +216,12 @@ impl NativeSnapshot {
                 writer
                     .write_row(
                         u32::try_from(interpreted).map_err(|_| Error::Bounds)?,
-                        &key,
+                        &key[..prefix],
                         encoded.expose_own(&SpoolOwner::here()),
                     )
                     .map_err(err)?;
-                let prefix = key.len();
                 for (index, fact) in chunk.facts.into_iter().enumerate() {
-                    key.truncate(prefix);
-                    key.extend_from_slice(&(index as u64).to_le_bytes());
+                    key[prefix..].copy_from_slice(&(index as u64).to_le_bytes());
                     // This host projection is kept separate from the exact received source chunk.
                     let projected = SourceChunk {
                         reader: chunk.reader,
@@ -249,7 +248,7 @@ impl NativeSnapshot {
                     writer
                         .write_row(
                             u32::try_from(facts_table).map_err(|_| Error::Bounds)?,
-                            &key,
+                            &key[..],
                             wrapped.expose_own(&SpoolOwner::here()),
                         )
                         .map_err(err)?;

@@ -70,17 +70,7 @@ struct Output {
 
 impl Output {
     fn append(&mut self, bytes: &[u8]) {
-        let len = self
-            .bytes
-            .len()
-            .checked_add(bytes.len())
-            .expect("wire output length");
-        if len > self.bytes.capacity() {
-            let mut next = Zeroizing::new(Vec::with_capacity(len));
-            next.extend_from_slice(&self.bytes);
-            self.bytes = next;
-        }
-        self.bytes.extend_from_slice(bytes);
+        crate::secure::append(&mut self.bytes, bytes);
         #[cfg(test)]
         sealed_tests::watch(&self.bytes);
     }

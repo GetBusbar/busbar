@@ -304,14 +304,7 @@ impl<'a> FieldsWriter<'a> {
 
     /// Append `b` to the staging bytes. Growing moves them into a new allocation and drops the old
     fn stage(&mut self, b: &[u8]) {
-        let want = self.staged.len().saturating_add(b.len());
-        if want > self.staged.capacity() {
-            let cap = want.max(self.staged.capacity().saturating_mul(2));
-            let mut grown = Zeroizing::new(Vec::with_capacity(cap));
-            grown.extend_from_slice(&self.staged);
-            self.staged = grown;
-        }
-        self.staged.extend_from_slice(b);
+        crate::secure::append(&mut self.staged, b);
     }
 
     /// WRITE the staged fields into the host's buffers and answer READY, or, when they do not fit,

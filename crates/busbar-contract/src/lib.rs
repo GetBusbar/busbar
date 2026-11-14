@@ -18,6 +18,10 @@ pub mod abi;
 #[path = "tests/allocation_observer.rs"]
 mod alloc_counter;
 
+#[cfg(test)]
+#[path = "tests/wipe_support.rs"]
+mod support;
+
 mod sdk_hyper;
 
 pub mod auth_egress;
@@ -79,6 +83,7 @@ pub mod records;
 pub mod scratch;
 #[allow(missing_docs)]
 pub mod secret;
+pub mod secure;
 
 pub mod secret_ref;
 /// Settings sensitivity: every plugin setting is sensitive unless its schema declares it public.

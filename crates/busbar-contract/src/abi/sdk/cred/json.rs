@@ -179,7 +179,8 @@ impl SealedJson {
         let mut len = 0;
         self.write(&mut |b| len += b.len())?;
         let mut buf = Zeroizing::new(Vec::with_capacity(len));
-        self.write(&mut |b| buf.extend_from_slice(b))?;
+        // Sized by the counting pass, so the wiping buffer never grows (LINT-RULES LR-117).
+        self.write(&mut |b| crate::secure::append(&mut buf, b))?;
         debug_assert_eq!(buf.len(), buf.capacity());
         let secure = self.members.iter().any(|(_, m)| match m {
             Member::Sealed(c) => c.secure_required(),
@@ -223,14 +224,7 @@ mod erased {
 
     impl std::io::Write for Wiping {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if self.0.capacity() - self.0.len() < buf.len() {
-                let mut grown = Zeroizing::new(Vec::with_capacity(
-                    (self.0.len() + buf.len()).max(self.0.capacity() * 2),
-                ));
-                grown.extend_from_slice(&self.0);
-                self.0 = grown;
-            }
-            self.0.extend_from_slice(buf);
+            crate::secure::append(&mut self.0, buf);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {

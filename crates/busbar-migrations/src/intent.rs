@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use busbar_contract::secure::SecureVec;
 use busbar_contract::{persistence::*, Secret};
 use tokio::sync::Mutex;
-use zeroize::Zeroizing;
 
 use super::ReconciliationProgress;
 use super::{coordinator::ResolutionKind, Digest32, Error, Id, IntentResolution, IntentStore};
@@ -1333,14 +1333,18 @@ impl IntentStore for StoreIntent {
                 if HEADER.checked_add(length).ok_or(Error::Bounds)? > self.budget {
                     return Err(Error::Bounds);
                 }
-                let mut out = Zeroizing::new(Vec::new());
-                out.try_reserve_exact(length).map_err(|_| Error::Bounds)?;
-                out.extend_from_slice(b"BSMPRF01");
-                out.extend_from_slice(&(source.len() as u64).to_le_bytes());
-                out.extend_from_slice(&(result.len() as u64).to_le_bytes());
-                out.extend_from_slice(source);
-                out.extend_from_slice(result);
-                (5, self.encode(header, &out)?)
+                // Exact size, one allocation: the wiping buffer never grows (LR-117).
+                let mut out = SecureVec::with_capacity(length).map_err(|_| Error::Bounds)?;
+                for part in [
+                    b"BSMPRF01".as_slice(),
+                    &(source.len() as u64).to_le_bytes(),
+                    &(result.len() as u64).to_le_bytes(),
+                    &source[..],
+                    &result[..],
+                ] {
+                    out.extend(part).map_err(|_| Error::Bounds)?;
+                }
+                (5, self.encode(header, out.as_slice())?)
             } else {
                 (state, self.encode(header, &[])?)
             }

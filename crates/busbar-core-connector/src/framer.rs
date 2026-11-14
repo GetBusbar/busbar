@@ -397,10 +397,12 @@ impl Yielded {
             .expect("framer wire length overflow");
         if required > self.wire.capacity() {
             let capacity = required.max(self.wire.capacity().saturating_mul(2));
-            let mut grown = zeroize::Zeroizing::new(Vec::with_capacity(capacity));
+            // A fresh block of the final capacity (no reallocation of live bytes), then the old
+            // one wiped (LINT-RULES LR-117).
+            let mut grown = Vec::with_capacity(capacity);
             grown.extend_from_slice(&self.wire);
             zeroize::Zeroize::zeroize(&mut self.wire);
-            self.wire = std::mem::take(&mut *grown);
+            self.wire = grown;
         }
         self.wire.extend_from_slice(bytes);
     }
