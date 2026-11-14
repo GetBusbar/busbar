@@ -380,5 +380,81 @@ fn credential_owner_migration_resolves_outer_source_once_and_keeps_inline_refere
     assert!(!error.contains("SYNTHETIC_ABSENT"));
 }
 
+/// The 1.4 `governance.db_path` shape of the `LAW0-MIG-OPERATOR-14X` cell: no `plugins:` section,
+/// so the sqlite Store's current plugin can only be fetched.
+const GOVERNANCE_14: &str = "governance: {enabled: true, db_path: busbar-governance.db}\n";
+
+/// A downloader that never touches the network and fails the way the connector does, echoing the
+/// whole URL it was handed.
+fn echo_fail(url: &str) -> Result<Vec<u8>, String> {
+    Err(format!("GET {url}: error sending request for url ({url})"))
+}
+
+#[test]
+fn an_unreachable_credentialed_index_is_shown_without_its_secrets() {
+    crate::dist_root_install::install();
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let mut host = super::RootHost::for_document(GOVERNANCE_14, &directory.0.join("config.yaml"));
+    host.index_source =
+        "https://u:TOKSENTINEL@127.0.0.1:1/i.json?sig=SIGSENTINEL#FRAGSENTINEL".into();
+    host.download = echo_fail;
+    let line = migrate_config_with(GOVERNANCE_14, &host)
+        .expect_err("a Store whose plugin cannot be obtained is not emitted");
+    assert!(line.contains("https://127.0.0.1:1/i.json"), "{line}");
+    for secret in [
+        "TOKSENTINEL",
+        "SIGSENTINEL",
+        "FRAGSENTINEL",
+        "u:",
+        "error sending request",
+    ] {
+        assert!(!line.contains(secret), "{secret} reached the line: {line}");
+    }
+}
+
+/// A file index naming the sqlite Store with one release built for this core, at `tag`.
+fn sqlite_index(dir: &std::path::Path, repo: &str, tag: &str, abi: u32) -> String {
+    let index = dir.join("plugin-index.json");
+    std::fs::write(
+        &index,
+        serde_json::to_vec(&serde_json::json!({
+            "plugins": [{
+                "repo": repo,
+                "kind": "store",
+                "answers_to": ["sqlite"],
+                "releases": [{ "tag": tag, "abi_version": abi }]
+            }]
+        }))
+        .expect("JSON"),
+    )
+    .unwrap();
+    index.display().to_string()
+}
+
+#[test]
+fn an_unreachable_plugin_asset_is_shown_without_downloader_text() {
+    crate::dist_root_install::install();
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let abi = crate::root::loader::registry::supported_abi("store")[0];
+    let mut host = super::RootHost::for_document(GOVERNANCE_14, &directory.0.join("config.yaml"));
+    host.index_source = sqlite_index(
+        &directory.0,
+        "GetBusbar/store-sqlite",
+        "v0.0.0-a17f-absent",
+        abi,
+    );
+    host.download = echo_fail;
+    let line = migrate_config_with(GOVERNANCE_14, &host)
+        .expect_err("a Store whose plugin cannot be downloaded is not emitted");
+    assert!(line.contains("could not be downloaded"), "{line}");
+    assert!(
+        line.contains(
+            "https://github.com/GetBusbar/store-sqlite/releases/download/v0.0.0-a17f-absent/"
+        ),
+        "{line}"
+    );
+    assert!(!line.contains("error sending request"), "{line}");
+}
+
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(config_migrate_export);
