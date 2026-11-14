@@ -47,6 +47,10 @@ enum Script {
     Refused,
     /// The open answers this error, after the dial was asked for.
     OpenFails(ConnError),
+    /// The open succeeds, then the host's framer FAILS the connection before any answer: the
+    /// read answers `ConnError::Fault` and the table names `CAUSE_FRAMER` with this text, raised
+    /// `outbound` (the host's own emit failed) or not (the framer rejected the far end's bytes).
+    FramerFault(&'static str, bool),
 }
 
 type Opened = (String, Vec<(String, Vec<u8>)>, Vec<u8>, u64);
@@ -84,6 +88,8 @@ struct Table {
     broken: Mutex<std::collections::HashSet<u64>>,
     /// The connections whose stream FAILS once their scripted pieces are read.
     failing: Mutex<Vec<u64>>,
+    /// Why each failed connection failed, as `PollConns::failure_cause` names it.
+    causes: Mutex<HashMap<u64, busbar_contract::conn::ConnCause>>,
     /// The head lines the framer states for every target (`PollConns::head_defaults`).
     defaults: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
     budget_defaults: std::sync::atomic::AtomicBool,
@@ -173,6 +179,18 @@ impl Conns for Table {
             Script::Refused => return Err(ConnError::Refused),
             Script::OpenFails(err) => return Err(err),
             Script::Silent => (VecDeque::new(), VecDeque::new()),
+            Script::FramerFault(text, outbound) => {
+                self.failing.lock().unwrap().push(id);
+                self.causes.lock().unwrap().insert(
+                    id,
+                    busbar_contract::conn::ConnCause {
+                        stage: busbar_contract::abi::host::conn::connector::CAUSE_FRAMER,
+                        text: text.into(),
+                        outbound,
+                    },
+                );
+                (VecDeque::new(), VecDeque::new())
+            }
             Script::Trailed(status, chunks, trailers) => {
                 let mut pieces = VecDeque::new();
                 let mut bytes = VecDeque::new();
@@ -273,6 +291,14 @@ impl Conns for Table {
 }
 
 impl PollConns for Table {
+    fn failure_cause(
+        &self,
+        _: InstanceId,
+        conn: ConnId,
+    ) -> Option<busbar_contract::conn::ConnCause> {
+        self.causes.lock().unwrap().get(&conn.0).cloned()
+    }
+
     fn head_defaults(
         &self,
         _: InstanceId,
@@ -3942,4 +3968,101 @@ async fn failed_timeout_defaults_refuse_before_authentication_or_open() {
     assert!(r.auth.heads.lock().unwrap().is_empty());
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert_eq!(far.unsent(&t), Some(RefusalCode::UnsentOpenRefused));
+}
+
+/// Counts ERROR events: the one diagnostic a local fault must leave.
+struct CountErrors(Arc<std::sync::atomic::AtomicUsize>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountErrors {
+    fn on_event(&self, e: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if *e.metadata().level() == tracing::Level::ERROR {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// THE HOST'S OWN OUTBOUND FRAMER FAULT before the answer (the table names `CAUSE_FRAMER`,
+/// `outbound`): refused as the internal error it is (500, no Retry-After, no fail-over), audited as
+/// `Internal` in place of the false `BreakerOpen`, explained by exactly one diagnostic, and never
+/// charged to the member, which did nothing wrong.
+#[tokio::test]
+async fn an_outbound_framer_fault_before_the_answer_is_refused_as_internal_and_never_charged() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let errors = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let _logs = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(CountErrors(errors.clone())),
+    );
+    let r = rig(
+        &[(
+            "a.test",
+            Script::FramerFault("stream 1 already carries a request", true),
+        )],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let _ = far.next(&t).await;
+    assert_eq!(
+        far.member(&t, 2).await,
+        Pick::Exhausted {
+            status: 500,
+            retry_after: None,
+            detail: busbar_kernel_egress::wire::DETAIL_INTERNAL_ERROR,
+        },
+        "the host's own fault is a 500, never 503 overloaded with a Retry-After"
+    );
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "the host's own fault is never charged to the member's breaker"
+    );
+    assert_eq!(
+        far.unsent(&t),
+        Some(RefusalCode::Internal),
+        "audited as the internal fault it is, not as BreakerOpen"
+    );
+    assert_eq!(errors.load(Ordering::SeqCst), 1, "exactly one diagnostic");
+}
+
+/// THE DIRECTION SPLIT, pinned at the walk: a framer fault that is NOT the host's outbound emit
+/// (the framer rejected the far end's bytes, a resume failed, or a carried socket read failed:
+/// `CAUSE_FRAMER` without `outbound`) stays the member's failure. The walk fails over to the next
+/// member, which answers, and the broken member is charged to its breaker so it leaves rotation.
+#[tokio::test]
+async fn a_far_end_framer_fault_before_the_answer_still_fails_over_and_charges_the_member() {
+    let r = rig(
+        &[
+            ("a.test", Script::FramerFault("a malformed reply", false)),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let Pick::Member { .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(far.send(&t, request()).await);
+    assert!(
+        far.next(&t).await.expect("a piece").fail_over,
+        "a broken member's fault fails over"
+    );
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )],
+        "and is charged to that member's breaker"
+    );
+    let Pick::Member { .. } = far.member(&t, 2).await else {
+        panic!("the next member")
+    };
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over, "{p:?}");
+    assert_eq!(p.status.map(|(code, _)| code), Some(200));
 }

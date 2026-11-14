@@ -915,6 +915,13 @@ impl busbar_contract::conn::Conns for BoundConns {
     }
 }
 impl busbar_contract::conn::PollConns for BoundConns {
+    fn failure_cause(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Option<busbar_contract::conn::ConnCause> {
+        self.inner.failure_cause(caller, conn)
+    }
     fn poll_read(
         &self,
         caller: busbar_contract::conn::InstanceId,

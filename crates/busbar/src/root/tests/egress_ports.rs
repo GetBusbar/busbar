@@ -148,6 +148,13 @@ impl busbar_contract::conn::Conns for Shut {
 }
 
 impl busbar_contract::conn::PollConns for Shut {
+    fn failure_cause(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Option<busbar_contract::conn::ConnCause> {
+        None
+    }
     fn poll_read(
         &self,
         _: busbar_contract::conn::InstanceId,

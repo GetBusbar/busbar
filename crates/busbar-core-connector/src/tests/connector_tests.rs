@@ -5034,3 +5034,111 @@ fn datagram_head_defaults_use_rendezvous_exchange_without_locate() {
         "invalid targets never fall back to datagram Locate"
     );
 }
+
+/// A dialled need over a framer of `knobs` that fails its connection: the read's error, then the
+/// cause the declaring table names ([`DeclaredConns::cause`]) and the one the host-side reader
+/// reads ([`PollConns::failure_cause`]). `body` is the opening the dial sends; the far end writes
+/// one line, so a framer that rejects the far end's bytes is driven too.
+fn failed_through_the_table(
+    knobs: crate::support::Knobs,
+    body: &'static [u8],
+) -> (ConnError, Option<ConnCause>, Option<ConnCause>) {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut s, _) = l.accept().await.unwrap();
+            s.write_all(b"k: v\r\n").await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(s);
+        });
+        let door = Arc::new(TestDoor::new("bytes", &["bytes"], &[], knobs));
+        let view = Transports::new(vec![
+            Entry {
+                door,
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::identity("carrier")),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _: Ticket| {}));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: busbar_contract::conn::Bytes::from_static(body),
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let started = std::time::Instant::now();
+        let err = loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(5),
+                        "the connection never failed"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Err(e) => break e,
+                Ok(piece) => panic!("the framer fails the connection, not {piece:?}"),
+            }
+        };
+        (
+            err,
+            DeclaredConns::cause(&c, OWNER, id),
+            PollConns::failure_cause(&c, OWNER, id),
+        )
+    })
+}
+
+/// THE HOST'S OWN OUTBOUND FRAMER FAULT IS NAMED AS SUCH, end to end through the table: the framer
+/// FAILS the dial's opening emit (as transport-http failed a re-called oversized opening), and both
+/// the declaring table and the host-side reader name `CAUSE_FRAMER` with the framer's own words and
+/// `outbound`, so the egress walk can refuse it as the host's fault instead of cooling the member.
+#[test]
+fn a_failed_opening_emit_is_named_an_outbound_framer_fault_with_the_framers_own_words() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_FRAMER;
+    let (err, declared, read) = failed_through_the_table(
+        crate::support::Knobs {
+            fail_emit: Some("stream 1 already carries a request"),
+            ..crate::support::Knobs::default()
+        },
+        b"first",
+    );
+    assert_eq!(err, ConnError::Fault);
+    let expected = ConnCause {
+        stage: CAUSE_FRAMER,
+        text: "stream 1 already carries a request".into(),
+        outbound: true,
+    };
+    assert_eq!(declared.as_ref(), Some(&expected), "the declaring table");
+    assert_eq!(read, Some(expected), "the host-side reader");
+}
+
+/// THE DIRECTION SPLIT, pinned: a framer that rejects the FAR END's bytes (an ingest fault) is
+/// still `CAUSE_FRAMER` with its own words, but never `outbound`: a broken member's malformed reply
+/// must stay the member's failure (fail-over, breaker charge), never be read as the host's own.
+#[test]
+fn a_framer_rejecting_the_far_ends_bytes_is_never_named_an_outbound_fault() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_FRAMER;
+    let (err, declared, read) = failed_through_the_table(
+        crate::support::Knobs {
+            fail_ingest: Some("a malformed reply"),
+            ..crate::support::Knobs::default()
+        },
+        b"first",
+    );
+    assert_eq!(err, ConnError::Fault);
+    let expected = ConnCause {
+        stage: CAUSE_FRAMER,
+        text: "a malformed reply".into(),
+        outbound: false,
+    };
+    assert_eq!(declared.as_ref(), Some(&expected), "the declaring table");
+    assert_eq!(read, Some(expected), "the host-side reader");
+}

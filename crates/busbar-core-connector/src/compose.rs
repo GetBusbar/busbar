@@ -210,6 +210,10 @@ pub struct Connection {
     upgraded: bool,
     /// The framer's own error, when it is what failed the open connection.
     framer_error: Option<String>,
+    /// The framer's own error and the exact [`Failure`] it became, when the host's OUTBOUND emit of
+    /// an opening is what the framer refused: a local fault, not the far end's. [`Self::fail`]
+    /// honours it only for that same failure, so a later fault is never misread as local.
+    emit_fault: Option<(String, Failure)>,
     /// The far end's key the handshake is held to (the dial's sealed anchors), in its canonical
     key_pin: Option<String>,
     /// Raised when the handshake presented busbar's client identity.
@@ -948,6 +952,7 @@ impl Connection {
             _slot: None,
             upgraded: false,
             framer_error: None,
+            emit_fault: None,
             key_pin,
             presented,
             security_error: None,
@@ -1009,6 +1014,7 @@ impl Connection {
         };
         let mut conn = Self {
             framer_error: None,
+            emit_fault: None,
             cause: None,
             opening_owed: false,
             unfed: VecDeque::new(),
@@ -1168,6 +1174,7 @@ impl Connection {
             _slot: slot,
             upgraded: false,
             framer_error: None,
+            emit_fault: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             security_error: None,
@@ -1387,9 +1394,17 @@ impl Connection {
             }
         }
         if let Some(framing) = self.framing.as_mut() {
-            let y = framing
+            let y = match framing
                 .emit_opening_sensitive(stream, bytes, end, text, body_len, &sensitive)
-                .map_err(failed)?;
+            {
+                Ok(y) => y,
+                Err(e) => {
+                    let text = e.error.clone();
+                    let f = failed(e);
+                    self.emit_fault = Some((text, f.clone()));
+                    return Err(f);
+                }
+            };
             return self.absorb(y);
         }
         if self.door.is_some() {
@@ -1553,7 +1568,12 @@ impl Connection {
 
     /// The connection fails with `f`, in the stage it is in.
     fn fail(&mut self, f: Failure) {
-        let framer = self.framer_error.take();
+        let emitted = self
+            .emit_fault
+            .take()
+            .and_then(|(text, sent)| (sent == f).then_some(text));
+        let outbound = emitted.is_some();
+        let framer = emitted.or(self.framer_error.take());
         let stage = match (&f, &self.phase) {
             (Failure::Timeout, _) => CAUSE_DEADLINE,
             (_, Phase::Open) if framer.is_some() => CAUSE_FRAMER,

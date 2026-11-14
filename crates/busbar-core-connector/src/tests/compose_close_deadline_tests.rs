@@ -108,6 +108,7 @@ fn tls_eof_requires_close_notify_and_fresh_retains_the_failure() {
                 let expected = ConnCause {
                     stage: CAUSE_EXCHANGE,
                     text,
+                    outbound: false,
                 };
                 assert_eq!(c.cause(), Some(&expected));
                 assert!(next(&mut c).await.is_err());
@@ -190,6 +191,7 @@ fn the_overall_open_deadline_survives_connect_and_the_tls_transition() {
                 Some(&ConnCause {
                     stage: CAUSE_DEADLINE,
                     text: String::new(),
+                    outbound: false,
                 })
             );
             stop.send(()).unwrap();
@@ -314,6 +316,7 @@ fn an_untrusted_midstream_upgrade_records_the_security_cause() {
             stage: CAUSE_SECURITY,
             text: rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)
                 .to_string(),
+            outbound: false,
         };
         assert_eq!(c.cause(), Some(&expected));
         assert!(next(&mut c).await.is_err());

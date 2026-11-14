@@ -52,6 +52,22 @@ struct BurstDoor {
     pending_at: Option<usize>,
     calls: AtomicUsize,
     resumed: AtomicBool,
+    /// The crossing in flight is a resume (stated by `cross_on`): it re-lends per-op metadata on
+    /// purpose, so the re-call guard skips it.
+    resuming: AtomicBool,
+}
+
+/// A re-call's `*In` with the fields a re-call is ALLOWED to carry reset by `allow`, beside the
+/// blank one: a YIELD_MORE re-call CARRIES NO NEW BYTES and no per-op metadata, so the two must
+/// read the same. A field added later is caught here unless it is added to an allowlist.
+fn masked<T>(input: &T, allow: impl FnOnce(&mut T, &T)) -> (String, String)
+where
+    T: busbar_contract::abi::sdk::door::AbiIn + Copy + std::fmt::Debug,
+{
+    let blank: T = blank_in();
+    let mut masked = *input;
+    allow(&mut masked, &blank);
+    (format!("{masked:?}"), format!("{blank:?}"))
 }
 
 impl BurstDoor {
@@ -64,6 +80,7 @@ impl BurstDoor {
             pending_at,
             calls: AtomicUsize::new(0),
             resumed: AtomicBool::new(false),
+            resuming: AtomicBool::new(false),
         })
     }
 
@@ -126,6 +143,7 @@ impl FramerDoor for BurstDoor {
 
     fn cross_on(&self, _: &dyn crate::carrier::Side, resume: bool, call: Call<'_>) -> Crossed {
         self.resumed.fetch_or(resume, Ordering::SeqCst);
+        self.resuming.store(resume, Ordering::SeqCst);
         self.cross(call)
     }
 
@@ -134,36 +152,69 @@ impl FramerDoor for BurstDoor {
             outcome: Outcome::Ready,
             error: None,
         };
-        let (sink, out, input_len) = match call {
+        let resuming = self.resuming.swap(false, Ordering::SeqCst);
+        // The allowlist per re-call: exactly the fields every crossing stamps (`cross_ticketed`'s
+        // Ingest and Emit arms, `more_on`'s Refuse and Timer re-calls). Begin and Adopt are never
+        // re-called as themselves (they continue as Timer and Ingest).
+        let (sink, out, input_len, recall) = match call {
             Call::Begin(input, out) => {
                 out.framing = STREAM;
                 if !matches!(self.driven, Driven::Begin) {
                     return ready;
                 }
-                (input.sink, out, 0)
+                (input.sink, out, 0, None)
             }
             Call::Adopt(input, out) => {
                 out.framing = STREAM;
                 assert!(matches!(self.driven, Driven::Adopt));
-                (input.sink, out, input.leftover_len)
+                (input.sink, out, input.leftover_len, None)
             }
             Call::Ingest(input, out) if matches!(self.driven, Driven::Ingest | Driven::Adopt) => {
-                (input.sink, out, input.len)
+                let recall = masked(&*input, |m, b| {
+                    m.framing = b.framing;
+                    m.sink = b.sink;
+                });
+                (input.sink, out, input.len, Some(recall))
             }
             Call::Emit(input, out) if matches!(self.driven, Driven::Emit) => {
-                (input.sink, out, input.len)
+                let recall = masked(&*input, |m, b| {
+                    m.framing = b.framing;
+                    m.stream = b.stream;
+                    m.sink = b.sink;
+                });
+                (input.sink, out, input.len, Some(recall))
             }
             Call::Timer(input, out) if matches!(self.driven, Driven::Timer | Driven::Begin) => {
-                (input.sink, out, 0)
+                let recall = masked(&*input, |m, b| {
+                    m.framing = b.framing;
+                    m.sink = b.sink;
+                });
+                (input.sink, out, 0, Some(recall))
             }
             Call::Refuse(input, out) if matches!(self.driven, Driven::Refuse) => {
-                (input.sink, out, input.len)
+                let recall = masked(&*input, |m, b| {
+                    m.framing = b.framing;
+                    m.stream = b.stream;
+                    m.has_stream = b.has_stream;
+                    m.status = b.status;
+                    m.head_sent = b.head_sent;
+                    m.sink = b.sink;
+                });
+                (input.sink, out, input.len, Some(recall))
             }
             _ => return ready,
         };
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
         if index != 0 {
             assert_eq!(input_len, 0, "recalls lend no new input");
+            if !resuming {
+                let (masked, blank) = recall.expect("only a re-callable op is re-called");
+                assert_eq!(
+                    masked, blank,
+                    "{:?}: a YIELD_MORE re-call lends nothing beyond its allowlist",
+                    self.driven
+                );
+            }
         }
         if self.pending_at == Some(index) {
             return Crossed {
@@ -342,4 +393,93 @@ fn a_finite_burst_of_empty_stream_flow_records_remains_progress() {
     assert_eq!(output.flow, vec![StreamFlow::Full(STREAM); count]);
     assert!(output.pieces.is_empty());
     assert!(output.wire.is_empty());
+}
+
+/// What one `emit` crossing lent the framer: its byte count, its end mark, its extensions blob
+/// length and whether it stated the opening body's length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EmitLent {
+    len: usize,
+    end: u32,
+    extensions: usize,
+    body_len_known: u32,
+}
+
+/// A dial framer whose first `emit` fills the host's whole wire loan and owes more: the shape of an
+/// opening larger than [`WIRE_CAP`].
+struct OverflowingEmitDoor {
+    inner: TestDoor,
+    lent: std::sync::Mutex<Vec<EmitLent>>,
+}
+
+#[allow(unsafe_code)]
+impl FramerDoor for OverflowingEmitDoor {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        let ready = Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        };
+        match call {
+            Call::Begin(_, out) => out.framing = STREAM,
+            Call::Emit(input, out) => {
+                let mut lent = self.lent.lock().unwrap();
+                lent.push(EmitLent {
+                    len: input.len,
+                    end: input.end_of_frame,
+                    extensions: input.head.extensions.len,
+                    body_len_known: input.body_len_known,
+                });
+                if lent.len() == 1 {
+                    let sink = input.sink;
+                    // SAFETY: the host loans this entire wire buffer for this crossing.
+                    unsafe { std::ptr::write_bytes(sink.wire, b'w', sink.wire_cap) };
+                    out.yielded.wire_len = sink.wire_cap as u64;
+                    out.yielded.flags = YIELD_MORE;
+                }
+            }
+            _ => {}
+        }
+        ready
+    }
+}
+
+#[test]
+fn an_opening_larger_than_the_wire_loan_recalls_without_its_opening_metadata() {
+    let door = Arc::new(OverflowingEmitDoor {
+        inner: TestDoor::identity("t"),
+        lent: std::sync::Mutex::new(Vec::new()),
+    });
+    let (mut framing, _) =
+        Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
+    let sensitive = SensitiveFields::new(vec!["authorization".into()]).unwrap();
+    let opening = vec![b'o'; WIRE_CAP + 1];
+    let body_len = (WIRE_CAP + 1) as u64 - 64;
+    framing
+        .emit_opening_sensitive(STREAM, &opening, true, false, Some(body_len), &sensitive)
+        .unwrap();
+    let lent = door.lent.lock().unwrap().clone();
+    assert_eq!(lent.len(), 2, "one fresh emit, one YIELD_MORE re-call");
+    assert_eq!(lent[0].len, opening.len());
+    assert_ne!(
+        lent[0].extensions, 0,
+        "the fresh call carries the classification"
+    );
+    assert_eq!(
+        lent[0].body_len_known, 1,
+        "the fresh call states the body length"
+    );
+    assert_eq!(
+        lent[1],
+        EmitLent {
+            len: 0,
+            end: 0,
+            extensions: 0,
+            body_len_known: 0,
+        },
+        "a re-call carries nothing the first call already lent (transport ABI: recalls lend no new input)"
+    );
 }
