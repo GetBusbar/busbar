@@ -832,7 +832,7 @@ mod standard_crypto {
     #[test]
     fn structure_validation_hashes_the_exact_library() {
         let m = manifest();
-        let abi = |_: &str| &([1][..]);
+        let abi = |_: &str| Some(1);
         assert_eq!(sign::validate_structure(&m, LIB, &abi, "busbar"), Ok(()));
         assert!(sign::validate_structure(&m, b"wrong library", &abi, "busbar").is_err());
     }

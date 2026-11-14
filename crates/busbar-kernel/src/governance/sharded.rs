@@ -99,7 +99,7 @@ impl<V> Sharded<V> {
 
     #[inline]
     pub(super) fn shard_index(&self, key_id: &str) -> usize {
-        (busbar_kernel::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)
+        (busbar_kernel::store::key_hash_u64(key_id) as usize) & (GOV_SHARDS - 1)
     }
 
     #[inline]
