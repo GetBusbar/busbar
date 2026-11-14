@@ -9,7 +9,6 @@ use busbar_contract::UnitKey;
 use busbar_core_admin::admin_codec::verbs::ResolvedVerb;
 use busbar_kernel_audit::{expose, AuditChain, AuditKeySet, AuditRecord};
 
-use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_core_admin::{KernelVerb, VerbScope, NEW_VERBS};
 #[cfg(test)]
 use busbar_core_admin::{AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES};
@@ -1708,11 +1707,6 @@ pub fn kernel_verb(resolved: &ResolvedVerb) -> Option<KernelVerb> {
     busbar_core_admin::verb::verb_for(resolved.method, resolved.template)
 }
 
-#[must_use]
-pub fn mutation_class(verb: KernelVerb) -> MutationClass {
-    MutationClass::for_verb(verb, CONFIG_CLASS_RULES)
-}
-
 pub(crate) async fn decide(
     units: &crate::root::kernel::ProductionUnits,
     walk: &mut AdminWalk,
@@ -1879,14 +1873,11 @@ fn scope_as_verb_scope(scope: Scope) -> VerbScope {
 }
 
 pub(crate) fn admit(walk: &AdminWalk) -> Result<(), ReasonCode> {
-    let verb = walk
-        .verb
+    walk.verb
         .as_ref()
         .and_then(kernel_verb)
-        .ok_or(ReasonCode::NoDestination)?;
-
-    let _class = mutation_class(verb);
-    Ok(())
+        .map(|_| ())
+        .ok_or(ReasonCode::NoDestination)
 }
 
 pub(crate) async fn route(
@@ -1954,7 +1945,6 @@ pub(crate) async fn route(
             binding.replay_store.clone(),
         ),
         store,
-        CONFIG_CLASS_RULES,
         Arc::clone(&binding.mutations),
     );
 
