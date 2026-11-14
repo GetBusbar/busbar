@@ -632,8 +632,8 @@ fn cloud_metadata_is_never_added_by_literal_by_name_or_by_answer() {
             changes[0].starts_with("advanced.allow_destinations: not added '")
                 && changes[0].contains("cloud metadata")
                 && changes[0].ends_with(
-                    "a migration never allows it (the 1.5.5 `allow_metadata_hosts` carve-outs \
-                     keep working as they did)"
+                    "cloud metadata is refused for every outbound connection and no \
+                     configuration admits it, so it was not added"
                 ),
             "{url}: {changes:?}"
         );

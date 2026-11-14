@@ -172,10 +172,9 @@ BUSBAR_CONFIG=./config.yaml busbar --print-metadata-blocklist
 - Your `security.blocked_metadata_hosts` entries are appended when `BUSBAR_CONFIG` points at a config
   that reads and parses. If it does not, the flag prints the built-in set alone and says so on stderr
   rather than handing you a silently incomplete list. Run Busbar normally to see the parse error.
-- It does NOT subtract the allow-overrides. `security.allow_metadata_hosts`, a provider's own
-  `allow_metadata_hosts`, and `allow_all_metadata` still win at request time, so a host printed here
-  can still be reachable if you unblocked it. See
-  [the configuration reference](configuration.md#security) for how the two sides combine.
+- Every host printed here is refused for every outbound connection: there are no allow-overrides
+  (the 1.5.5 carve-outs are retired, BUSBAR-3136). See
+  [the configuration reference](configuration.md#security).
 
 ## Inbound TLS & mutual-TLS (mTLS)
 

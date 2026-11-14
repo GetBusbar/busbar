@@ -997,8 +997,8 @@ fn allow_if_private(
     let todo = |why: &str| {
         format!("advanced.allow_destinations: '{raised}', which the plugin '{plugin}' dials, {why}")
     };
-    let never = "a migration never allows it (the 1.5.5 `allow_metadata_hosts` carve-outs keep \
-                 working as they did)";
+    let never = "cloud metadata is refused for every outbound connection and no configuration \
+                 admits it, so it was not added";
 
     let name = match judged_host(raised) {
         Ok(name) if !name.is_empty() => name,

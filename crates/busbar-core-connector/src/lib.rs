@@ -913,6 +913,10 @@ pub struct Connector {
     auths: Mutex<HashMap<AuthKey, busbar_contract::conn::ConnAuth>>,
     /// The instances whose connections' authority the host writes
     authority_held: Mutex<HashSet<InstanceId>>,
+    /// THE ABI RULES FLAGGED, once per instance and code ([`Connector::flag_once`]): BUSBAR-6013 (a
+    /// retired need shape), 6014 (a refused call) and 6015 (an honoured deprecated value), each
+    /// logged and audited the first time an instance meets it.
+    flagged: Mutex<HashSet<(InstanceId, u16)>>,
     /// THE HOST'S I/O every carrier is served from ([`hostio`]): the one holder of OS handles.
     io: Arc<HostIo>,
     /// THE PROXY ENVIRONMENT every framed dial honours ([`proxy`]); `None` = every dial direct.
@@ -948,6 +952,7 @@ impl Default for Connector {
             reaching: Mutex::new(HashMap::new()),
             auths: Mutex::new(HashMap::new()),
             authority_held: Mutex::new(HashSet::new()),
+            flagged: Mutex::new(HashSet::new()),
             io: hostio::process(),
             proxy: None,
             pairs: Mutex::new(HashMap::new()),
@@ -1246,6 +1251,56 @@ impl Connector {
             .expect("transports")
             .serving(transport)
             .is_some()
+    }
+
+    /// Whether `transport` is served by a FRAMER (`http`, `grpc`, ...), not a carrier (`tcp`,
+    /// `unix`, ...) carried as itself.
+    fn framed_transport(&self, transport: &str) -> bool {
+        self.transports
+            .read()
+            .expect("transports")
+            .dialing(transport)
+            .is_some_and(|served| served.entry.door.facts().role != ROLE_CARRIER)
+    }
+
+    /// Flag `diag` for `owner` once: the first time an instance meets an ABI rule, one coded line
+    /// and one audit record; `false` (nothing written) every time after.
+    fn flag_once(
+        &self,
+        owner: InstanceId,
+        diag: &busbar_contract::diagnostic::Diagnostic,
+        refusal: busbar_kernel::audit::auditlog::PluginRefusal,
+        what: &str,
+    ) -> bool {
+        let first = self
+            .flagged
+            .lock()
+            .expect("flagged")
+            .insert((owner, diag.code));
+        if first {
+            busbar_kernel::diagnostics::diag_warn!(diag, instance = owner.0, "{what}");
+            busbar_kernel::audit::auditlog::record_plugin_refusal(
+                refusal,
+                "plugin",
+                &format!("instance-{}", owner.0),
+                &diag.banner().to_string(),
+            );
+        }
+        first
+    }
+
+    /// The ABI rules flagged so far, by instance and code, in order.
+    #[cfg(test)]
+    pub(crate) fn abi_flags(&self) -> Vec<(InstanceId, u16)> {
+        let mut flags: Vec<_> = self
+            .flagged
+            .lock()
+            .expect("flagged")
+            .iter()
+            .copied()
+            .collect();
+        flags.sort_by_key(|(owner, code)| (owner.0, *code));
+        flags
     }
 
     /// The framer entry that answers `scheme`, where a loaded one does: what frames a stream that
@@ -2293,6 +2348,49 @@ impl Connector {
     }
 }
 
+/// THE OFFERED-NAME RULE (`UpgradeIn::offered_name`, BUSBAR-6014): the name offered (SNI, and the
+/// name verified) must be the dialled host when the dial names a host, compared as the guard maps
+/// names (case, a trailing dot, IDNA); a dial to an IP literal may offer any DNS name (libpq
+/// `hostaddr` + `host`). Trust is never selected by the offered name.
+pub(crate) fn offered_name_admitted(target: &str, offered: &str) -> bool {
+    use busbar_contract::net::{host_ip, judged_host};
+    let mapped = |h: &str| {
+        judged_host(h)
+            .ok()
+            .map(|m| m.trim_start_matches('[').trim_end_matches(']').to_owned())
+            .filter(|m| !m.is_empty())
+    };
+    let Some(offered) = mapped(offered) else {
+        return false;
+    };
+    let Some(dialled) = mapped(&host_of(target)) else {
+        return false;
+    };
+    host_ip(&dialled).is_some() || dialled == offered
+}
+
+/// CA via `trust_from` (deprecated, refused from 1.7.0 once the core trust store exists): one info
+/// line naming the SHA-256 of each operator anchor a need was declared with. No operator warning:
+/// there is nothing the operator can move it to yet.
+fn log_operator_anchors(owner: InstanceId, need: NeedId, trust_from: &str, roots: &[Vec<u8>]) {
+    for der in roots {
+        let digest = ring::digest::digest(&ring::digest::SHA256, der);
+        let sha256: String = digest
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        tracing::info!(
+            instance = owner.0,
+            need = need.0,
+            trust_from,
+            sha256 = %sha256,
+            "an outbound need trusts an operator CA from its plugin settings (deprecated: the core \
+             trust store replaces it)"
+        );
+    }
+}
+
 /// The host name a dial target names: a URL's host, or a bare `host:port`'s host, unbracketed.
 fn host_of(target: &str) -> String {
     if target.contains("://") {
@@ -2509,9 +2607,14 @@ impl DeclaredConns for Connector {
             .and_then(without_userinfo);
         let target = cleared.as_deref().or(target);
         let credentialed = target.is_some_and(carries_userinfo);
+        let untargeted_infrastructure = outbound
+            && spec.egress_class == EGRESS_OPERATOR_INFRASTRUCTURE
+            && spec.target_from.is_empty()
+            && self.framed_transport(&spec.transport);
         let anchored = match trust.filter(|_| outbound) {
             None => Ok(None),
             Some(pem) => tls::client::operator_ca_anchors(pem.as_bytes()).and_then(|roots| {
+                log_operator_anchors(owner, need, &spec.trust_from, &roots);
                 let policy = busbar_contract::transport::trust::EgressTrust {
                     extra_anchors: roots,
                     ..Default::default()
@@ -2529,6 +2632,22 @@ impl DeclaredConns for Connector {
                     self.slab.declare(owner, need);
                     Ok(())
                 }
+            }
+            Ok(_) if untargeted_infrastructure => {
+                self.flag_once(
+                    owner,
+                    &busbar_kernel::diagnostics::PLUGIN_DECLARES_RETIRED_ABI_VALUE,
+                    busbar_kernel::audit::auditlog::PluginRefusal::Need,
+                    &format!(
+                        "an operator-infrastructure need over the framed transport `{}` names no \
+                         config-declared target (`target_from`); the class is a property of a \
+                         target the operator configured, never a plugin's choice, so the need is \
+                         refused",
+                        spec.transport
+                    ),
+                );
+                self.set_need(owner, need, None);
+                Err(ConnError::Refused)
             }
             Ok(tls) if !(spec.transport.is_empty() || unresolved || credentialed) => self
                 .record(owner, need, &spec.transport, spec.egress_class, target, tls)
@@ -2579,6 +2698,14 @@ impl DeclaredConns for Connector {
             if class != Some(EGRESS_OPERATOR_INFRASTRUCTURE) {
                 return Err(ConnError::Refused);
             }
+            self.flag_once(
+                caller,
+                &busbar_kernel::diagnostics::PLUGIN_USES_DEPRECATED_ABI_VALUE,
+                busbar_kernel::audit::auditlog::PluginRefusal::Open,
+                "an operator-infrastructure connection was secured with UPGRADE_VERIFY_OFF: the far \
+                 end's certificate is NOT verified. The flag is deprecated and refused from busbar \
+                 1.7.0; configure the server's CA instead of disabling verification",
+            );
             Arc::new(crate::tls::client::unverified_client_config())
         } else {
             let declared = self.declared.lock().expect("declared needs");
@@ -2601,9 +2728,24 @@ impl DeclaredConns for Connector {
             return Err(ConnError::Pending);
         }
         let (line, _) = held.line().ok_or(ConnError::Closed)?;
+        let target = line.target().ok_or(ConnError::Closed)?;
         let name = match name {
+            Some(n) if !offered_name_admitted(&target, n) => {
+                self.flag_once(
+                    caller,
+                    &busbar_kernel::diagnostics::PLUGIN_CALL_REFUSED_ABI_RULE,
+                    busbar_kernel::audit::auditlog::PluginRefusal::Op,
+                    &format!(
+                        "upgrade_secure offered the name `{n}` for a dial to `{}`; the offered \
+                         name must be the dialled host (any name only for a dial to an IP \
+                         literal), so the upgrade is refused",
+                        host_of(&target)
+                    ),
+                );
+                return Err(ConnError::Refused);
+            }
             Some(n) => n.to_owned(),
-            None => host_of(&line.target().ok_or(ConnError::Closed)?),
+            None => host_of(&target),
         };
 
         let Some((mut reading, kept)) = Reading::begin(&held.rest, &waker) else {

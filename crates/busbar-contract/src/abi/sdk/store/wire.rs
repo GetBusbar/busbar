@@ -279,6 +279,9 @@ impl Wire {
         self.upgrade(name, false).await
     }
 
+    /// DEPRECATED; refused from 1.7.0 (BUSBAR-6015 while honoured). No `#[deprecated]` attribute, so
+    /// a plugin's `-D warnings` build keeps compiling at a pin bump.
+    ///
     /// [`Wire::upgrade_secure`] WITHOUT verifying the far end's certificate: the operator's
     pub async fn upgrade_secure_unverified(&self, name: Option<&str>) -> Result<(), ConnFailure> {
         self.upgrade(name, true).await

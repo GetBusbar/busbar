@@ -16,6 +16,12 @@ pub const EGRESS_DEFAULT: u32 = 0;
 /// [`Need::egress_class`] `provider`: upstreams a plane reaches — the allow-list, and cloud
 pub const EGRESS_PROVIDER: u32 = 1;
 /// [`Need::egress_class`] `operator-infrastructure`: databases, secret services, directories —
+///
+/// The class is a property of a CONFIG-DECLARED target, never a plugin's choice: `dest.judge`
+/// refuses it (BUSBAR-6014), and a need over a FRAMED transport (`http`, `grpc`) in this class must
+/// name its target from config (`target_from`) or it is refused at declaration (BUSBAR-6013). A
+/// CARRIER need (`tcp`, `unix`) in this class without `target_from` is DEPRECATED: honoured in
+/// 1.6.x, refused from 1.7.0.
 pub const EGRESS_OPERATOR_INFRASTRUCTURE: u32 = 2;
 /// [`Need::egress_class`] `open-web`: public destinations over a secure connection only.
 pub const EGRESS_OPEN_WEB: u32 = 3;
@@ -48,6 +54,10 @@ pub struct Need {
     /// references); the host seals it, with the registration's far-end key pin (its plane's pin
     /// key, under a mechanism flagged `abi::plane::MECHANISM_PEER_KEY`), into the member's route,
     /// and the connector enforces both on every connection to the member.
+    ///
+    /// A settings-path `trust_from` holding a CA PEM is DEPRECATED (refused from 1.7.0): the core
+    /// trust store replaces it. The client-identity shape `{cert, key}` (the key a sealed secret
+    /// reference) and a far-end key pin are RESERVED for every outbound need.
     pub trust_from: AbiStr,
     /// The need's details, validated only by the claiming transport.
     pub details: Blob,
@@ -324,18 +334,25 @@ pub struct UpgradeIn {
     pub head: ServiceHead,
     /// The stream.
     pub stream: u64,
-    /// The name to offer the far end; absent = the endpoint's host name.
+    /// The name to offer the far end (the SNI, and the name verified); absent = the endpoint's host
+    /// name. FROZEN RULE: when the dial target is a host name, the offered name must equal it
+    /// (case-insensitive, after IDNA), or the upgrade is Refused (BUSBAR-6014); when the dial target
+    /// is an IP literal, any DNS name may be offered (libpq `hostaddr` + `host`). The offered name
+    /// never selects trust anchors: they are those of the dialled target.
     pub offered_name: AbiStr,
     /// The trust anchors, by the need's `trust_from` reference; absent = the need's.
     pub trust: AbiStr,
-    /// Appended: `UPGRADE_*` bits ([`UPGRADE_VERIFY_OFF`]); `0` = verify as the need's trust says.
-    /// An `in` that ends before it ([`UPGRADE_IN_V1_SIZE`]) is `0`.
+    /// Appended: `UPGRADE_*` bits ([`UPGRADE_VERIFY_OFF`], DEPRECATED, refused from 1.7.0); `0` =
+    /// verify as the need's trust says. An `in` that ends before it ([`UPGRADE_IN_V1_SIZE`]) is `0`.
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
 }
 
 /// [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's
+///
+/// DEPRECATED; refused from 1.7.0. Honoured in 1.6.x for an operator-infrastructure need only; each
+/// instance that uses it is flagged once (BUSBAR-6015: a coded warning and an audit record).
 pub const UPGRADE_VERIFY_OFF: u32 = 1;
 
 /// The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`.

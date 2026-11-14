@@ -16,39 +16,68 @@ fn doc(yaml: &str) -> serde_yaml::Value {
 fn a_metadata_entry_naming_no_host_is_removed_and_reported() {
     let out = migrate_config(
         "store: { module: memory }\n\
-         security:\n  blocked_metadata_hosts: ['169.254.169.254', 'db.1', 'metadata.corp']\n  \
-         allow_metadata_hosts: ['1.2.3.4.5']\n",
+         security:\n  blocked_metadata_hosts: ['169.254.169.254', 'db.1', 'metadata.corp']\n",
     )
     .expect("migrates");
     let d = doc(&out.yaml);
-    let blocked = &d["security"]["blocked_metadata_hosts"];
     assert_eq!(
-        blocked,
-        &serde_yaml::from_str::<serde_yaml::Value>("['169.254.169.254', 'metadata.corp']").unwrap(),
+        d["security"]["blocked_metadata_hosts"],
+        serde_yaml::from_str::<serde_yaml::Value>("['169.254.169.254', 'metadata.corp']").unwrap(),
         "{}",
         out.yaml
     );
-    assert_eq!(
-        d["security"]["allow_metadata_hosts"],
-        serde_yaml::from_str::<serde_yaml::Value>("[]").unwrap()
-    );
-    for (key, entry) in [
-        ("security.blocked_metadata_hosts", "db.1"),
-        ("security.allow_metadata_hosts", "1.2.3.4.5"),
-    ] {
-        let lines: Vec<_> = out
-            .changes
-            .iter()
-            .filter(|c| c.starts_with(&format!("{key}: removed entry '{entry}'")))
-            .collect();
-        assert_eq!(
-            lines.len(),
-            1,
-            "one change line for {entry}: {:?}",
-            out.changes
+    let lines: Vec<_> = out
+        .changes
+        .iter()
+        .filter(|c| c.starts_with("security.blocked_metadata_hosts: removed entry 'db.1'"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{:?}", out.changes);
+    assert!(lines[0].contains("never matched any destination on 1.5.5"));
+}
+
+/// BUSBAR-3411: the retired 1.5.5 cloud-metadata carve-outs are removed whatever they hold, every
+/// entry that admitted something named in a warning; `blocked_metadata_hosts` stays.
+#[test]
+fn the_retired_metadata_carve_outs_are_removed_and_each_entry_is_named() {
+    let out = migrate_config(
+        "store: { module: memory }\n\
+         security:\n  blocked_metadata_hosts: ['10.9.9.9']\n  \
+         allow_metadata_hosts: ['169.254.169.254', 'imds.corp']\n  allow_all_metadata: true\n\
+         providers:\n  gemini:\n    allow_metadata_hosts: ['169.254.170.2']\n  \
+         other:\n    allow_metadata_hosts: []\n",
+    )
+    .expect("migrates");
+    let d = doc(&out.yaml);
+    assert!(d["security"].get("allow_metadata_hosts").is_none(), "{}", out.yaml);
+    assert!(d["security"].get("allow_all_metadata").is_none(), "{}", out.yaml);
+    assert_eq!(d["security"]["blocked_metadata_hosts"][0], "10.9.9.9");
+    for provider in ["gemini", "other"] {
+        assert!(
+            d["providers"][provider].get("allow_metadata_hosts").is_none(),
+            "{}",
+            out.yaml
         );
-        assert!(lines[0].contains("never matched any destination on 1.5.5"));
     }
+    for (path, entry) in [
+        ("security.allow_metadata_hosts", "169.254.169.254"),
+        ("security.allow_metadata_hosts", "imds.corp"),
+        ("security.allow_all_metadata", "true"),
+        ("providers.gemini.allow_metadata_hosts", "169.254.170.2"),
+    ] {
+        assert!(
+            out.warnings.iter().any(|w| w
+                .starts_with(&format!("BUSBAR-3411: {path}: removed entry '{entry}'"))),
+            "{path} {entry}: {:?}",
+            out.warnings
+        );
+    }
+    assert!(
+        out.changes
+            .iter()
+            .any(|c| c.starts_with("BUSBAR-3411: providers.other.allow_metadata_hosts: removed")),
+        "{:?}",
+        out.changes
+    );
 }
 
 #[test]
@@ -200,21 +229,22 @@ fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() 
     assert_eq!(d["tools"]["hooks"][0], "pii-guard");
     let report = out.changes.join("\n");
     assert!(
-        report.contains("tools.search.allow_private: replaced by advanced.allow_destinations: 'mcp.tools.internal'"),
+        report.contains("BUSBAR-3410: tools.search.allow_private: replaced by advanced.allow_destinations: 'mcp.tools.internal'"),
         "{report}"
     );
     assert!(
-        report.contains("tools.other.allow_private: removed; 'already.internal' is already listed"),
+        report.contains("BUSBAR-3410: tools.other.allow_private: removed; 'already.internal' is already listed"),
         "{report}"
     );
     assert!(
-        report.contains("tools.public.allow_private: removed (it was not `true`"),
+        report.contains("BUSBAR-3410: tools.public.allow_private: removed (it was not `true`"),
         "{report}"
     );
     assert!(
         out.warnings
             .iter()
-            .any(|w| w.starts_with("agents.planner: `http://[fd00::7]:8080/a2a` is plaintext")),
+            .any(|w| w.starts_with("BUSBAR-3410: agents.planner: `http://[fd00::7]:8080/a2a` is plaintext")
+                && w.contains("refused at GA; use https")),
         "{:?}",
         out.warnings
     );
@@ -247,10 +277,43 @@ fn allow_private_never_lists_a_metadata_host() {
         assert!(d["agents"][name].get("allow_private").is_none());
         assert!(
             out.warnings.iter().any(|w| w
-                .starts_with(&format!("agents.{name}.allow_private: removed; "))
+                .starts_with(&format!("BUSBAR-3410: agents.{name}.allow_private: removed; "))
                 && w.contains("cloud-metadata")),
             "{name}: {:?}",
             out.warnings
         );
     }
+}
+
+/// A plaintext registration to LOOPBACK keeps working at GA (the planes admit `http://` to loopback
+/// only), so its host is listed with no plaintext warning; every line the retirement writes carries
+/// BUSBAR-3410.
+#[test]
+fn allow_private_on_a_loopback_http_registration_lists_it_without_a_plaintext_warning() {
+    let out = migrate_config(
+        "store: { module: memory }\n\
+         agents:\n  local:\n    url: 'http://127.0.0.1:9100/a2a'\n    allow_private: true\n\
+         tools:\n  dev:\n    url: 'http://localhost:9200/mcp'\n    allow_private: true\n",
+    )
+    .expect("migrates");
+    let d = doc(&out.yaml);
+    assert_eq!(
+        d["advanced"]["allow_destinations"],
+        serde_yaml::from_str::<serde_yaml::Value>("['localhost', '127.0.0.1']").unwrap(),
+        "{}",
+        out.yaml
+    );
+    assert!(
+        !out.warnings.iter().any(|w| w.contains("plaintext")),
+        "{:?}",
+        out.warnings
+    );
+    assert!(
+        out.changes
+            .iter()
+            .filter(|c| c.contains("allow_private"))
+            .all(|c| c.starts_with("BUSBAR-3410: ")),
+        "{:?}",
+        out.changes
+    );
 }

@@ -1501,11 +1501,11 @@ fn test_reject_cidr_metadata_entries() {
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
-    let errs = validate(&cfg).expect_err("a CIDR allow_metadata_hosts entry must fail validation");
+    let errs = validate(&cfg).expect_err("the retired allow_metadata_hosts must fail validation");
     assert!(
         errs.iter()
-            .any(|e| e.contains("security.allow_metadata_hosts") && e.contains("10.0.0.0/8")),
-        "expected a CIDR rejection naming security.allow_metadata_hosts; got: {errs:?}"
+            .any(|e| e.starts_with("security.allow_metadata_hosts is retired (BUSBAR-3136)")),
+        "expected the retired-key refusal naming security.allow_metadata_hosts; got: {errs:?}"
     );
 
     let mut providers = HashMap::new();
@@ -1515,12 +1515,11 @@ fn test_reject_cidr_metadata_entries() {
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     let errs = validate(&cfg)
-        .expect_err("a CIDR per-provider allow_metadata_hosts entry must fail validation");
+        .expect_err("the retired per-provider allow_metadata_hosts must fail validation");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("provider 'prov' allow_metadata_hosts")
-                && e.contains("169.254.169.254/32")),
-        "expected a CIDR rejection naming the provider's allow_metadata_hosts; got: {errs:?}"
+        errs.iter().any(|e| e
+            .starts_with("provider 'prov' allow_metadata_hosts is retired (BUSBAR-3136)")),
+        "expected the retired-key refusal naming the provider's allow_metadata_hosts; got: {errs:?}"
     );
 
     let mut providers = HashMap::new();
@@ -1529,8 +1528,7 @@ fn test_reject_cidr_metadata_entries() {
         make_provider(proto_b(), "https://api.vendor-a.example.com", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    cfg.blocked_metadata_hosts = vec!["169.254.169.254".to_string()];
-    cfg.allow_metadata_hosts = vec!["metadata.example.com".to_string()];
+    cfg.blocked_metadata_hosts = vec!["169.254.169.254".to_string(), "metadata.example.com".to_string()];
     if let Err(errs) = validate(&cfg) {
         assert!(
             !errs.iter().any(|e| e.contains("CIDR")),
@@ -1567,18 +1565,9 @@ fn test_a_metadata_entry_naming_no_host_refuses_startup_naming_the_entry() {
     let entries: Vec<String> = NO_HOST_ENTRIES.iter().map(|e| e.to_string()).collect();
     let mut cfg = no_host_entries_baseline();
     cfg.blocked_metadata_hosts = entries.clone();
-    cfg.allow_metadata_hosts = entries.clone();
-    cfg.providers
-        .get_mut("myprovider")
-        .expect("valid_maps names `myprovider`")
-        .allow_metadata_hosts = entries.clone();
 
     let errs = validate(&cfg).expect_err("an entry naming no usable host refuses startup");
-    for key in [
-        "security.blocked_metadata_hosts",
-        "security.allow_metadata_hosts",
-        "provider 'myprovider' allow_metadata_hosts",
-    ] {
+    for key in ["security.blocked_metadata_hosts"] {
         for entry in NO_HOST_ENTRIES {
             let head = format!("{key} entry '{entry}' names no usable host: ");
             let lines: Vec<&String> = errs.iter().filter(|e| e.starts_with(&head)).collect();
@@ -1594,8 +1583,8 @@ fn test_a_metadata_entry_naming_no_host_refuses_startup_naming_the_entry() {
         errs.iter()
             .filter(|e| e.contains("names no usable host"))
             .count(),
-        3 * NO_HOST_ENTRIES.len(),
-        "exactly one error per entry per key: {errs:?}"
+        NO_HOST_ENTRIES.len(),
+        "exactly one error per entry: {errs:?}"
     );
 
     for said in [
@@ -1603,14 +1592,14 @@ fn test_a_metadata_entry_naming_no_host_refuses_startup_naming_the_entry() {
          as a number but it is no IPv4 address a URL client reads, so it could never match a \
          destination. Write an address as a dotted quad, or a name whose last label is not a \
          number, or remove it",
-        "security.allow_metadata_hosts entry '%6c%6fcalhost' names no usable host: it holds a '%' \
-         escape outside an IPv6 zone id, which a URL client decodes before it dials, so it could \
-         never match a destination. Write the host decoded (the name or address it spells), or \
-         remove it",
-        "provider 'myprovider' allow_metadata_hosts entry 'b\u{fc}cher\u{ff1c}.example' names no \
-         usable host: UTS #46 refuses it, so it is no name a URL client would dial, so it could \
-         never match a destination. Write the host in ASCII (an internationalized name as its \
-         punycode 'xn--' form), or remove it",
+        "security.blocked_metadata_hosts entry '%6c%6fcalhost' names no usable host: it holds a \
+         '%' escape outside an IPv6 zone id, which a URL client decodes before it dials, so it \
+         could never match a destination. Write the host decoded (the name or address it spells), \
+         or remove it",
+        "security.blocked_metadata_hosts entry 'b\u{fc}cher\u{ff1c}.example' names no usable \
+         host: UTS #46 refuses it, so it is no name a URL client would dial, so it could never \
+         match a destination. Write the host in ASCII (an internationalized name as its punycode \
+         'xn--' form), or remove it",
     ] {
         assert!(errs.iter().any(|e| e == said), "{said}: {errs:?}");
     }
@@ -1624,8 +1613,6 @@ fn test_a_metadata_entry_naming_no_host_refuses_startup_naming_the_entry() {
         "fd00:ec2::254".to_string(),
         "fe80::1%eth0".to_string(),
         "metadata.google.internal.".to_string(),
-    ];
-    cfg.allow_metadata_hosts = vec![
         "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example".to_string(),
         "metadata.example.com".to_string(),
     ];
@@ -1649,12 +1636,10 @@ fn test_a_dropped_metadata_entry_lifts_no_real_target() {
     }
     let mut cfg = no_host_entries_baseline();
     cfg.blocked_metadata_hosts = entries.clone();
-    cfg.allow_metadata_hosts = entries.clone();
     let provider = cfg
         .providers
         .get_mut("myprovider")
         .expect("valid_maps names `myprovider`");
-    provider.allow_metadata_hosts = entries.clone();
     provider.base_url = "https://169.254.169.254/".into();
     let errs = validate(&cfg).expect_err("the IMDS address stays refused");
     assert!(
@@ -1672,20 +1657,8 @@ fn test_a_dropped_metadata_entry_lifts_no_real_target() {
 fn test_a_cidr_metadata_entry_is_refused_with_the_1_5_5_text() {
     let mut cfg = no_host_entries_baseline();
     cfg.blocked_metadata_hosts = vec!["169.254.0.0/16".to_string()];
-    cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
-    cfg.providers
-        .get_mut("myprovider")
-        .expect("valid_maps names `myprovider`")
-        .allow_metadata_hosts = vec!["169.254.169.254/32".to_string()];
     let errs = validate(&cfg).expect_err("a CIDR entry is refused at boot, as on 1.5.5");
-    for (key, entry) in [
-        ("security.blocked_metadata_hosts", "169.254.0.0/16"),
-        ("security.allow_metadata_hosts", "10.0.0.0/8"),
-        (
-            "provider 'myprovider' allow_metadata_hosts",
-            "169.254.169.254/32",
-        ),
-    ] {
+    for (key, entry) in [("security.blocked_metadata_hosts", "169.254.0.0/16")] {
         let said = format!(
             "{key} entry '{entry}' contains '/' (CIDR is not supported here): these lists are matched by EXACT IP or hostname, so a CIDR/slash entry silently never matches and is a no-op. List exact IPs/hostnames instead (e.g. '169.254.169.254', not '169.254.0.0/16')"
         );
@@ -1697,57 +1670,47 @@ fn test_a_cidr_metadata_entry_is_refused_with_the_1_5_5_text() {
     );
 }
 
+/// BUSBAR-3136: the retired 1.5.5 carve-outs (`security.allow_metadata_hosts`,
+/// `security.allow_all_metadata: true`, a provider's `allow_metadata_hosts`) refuse startup, and a
+/// metadata or operator-blocked base_url stays refused: nothing lifts the denylist.
 #[test]
-fn test_global_allow_overrides_blocked_metadata_hosts() {
-    let blocked = vec!["10.77.77.77".to_string()];
-    let allow = vec!["10.77.77.77".to_string()];
-    assert!(
-        ssrf_blocked_host("https://10.77.77.77/", &allow, false, &blocked).is_none(),
-        "global allow_metadata_hosts must override blocked_metadata_hosts"
+fn test_the_retired_metadata_carve_outs_refuse_startup_and_lift_nothing() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider_allow_hosts("https://10.77.77.77/", &["10.77.77.77"]),
     );
-
+    let mut cfg = make_root_cfg_with_blocked(providers, vec!["10.77.77.77".to_string()]);
+    cfg.allow_metadata_hosts = vec!["10.77.77.77".to_string()];
+    cfg.allow_all_metadata = true;
+    let errs = validate(&cfg).expect_err("the retired carve-outs refuse startup");
+    for key in [
+        "security.allow_metadata_hosts",
+        "security.allow_all_metadata",
+        "provider 'p' allow_metadata_hosts",
+    ] {
+        assert!(
+            errs.iter().any(|e| e.starts_with(&format!("{key} is retired (BUSBAR-3136): "))
+                && e.contains("no configuration admits it")),
+            "{key}: {errs:?}"
+        );
+    }
     assert!(
-        ssrf_blocked_host("https://10.77.77.77/", &[], false, &blocked).is_some(),
-        "the host must be blocked when not allow-listed"
+        errs.iter()
+            .any(|e| e.contains("targets a blocked cloud-metadata host '10.77.77.77'")),
+        "the blocked base_url stays refused: {errs:?}"
     );
-
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
         make_provider(proto_b(), "https://10.77.77.77/", "API_KEY"),
     );
-    let mut cfg = make_root_cfg_with_blocked(providers, vec!["10.77.77.77".to_string()]);
-    cfg.allow_metadata_hosts = vec!["10.77.77.77".to_string()];
+    let mut cfg = make_root_cfg_with_blocked(providers, Vec::new());
+    cfg.allow_metadata_hosts = Vec::new();
+    cfg.allow_all_metadata = false;
     assert!(
         validate(&cfg).is_ok(),
-        "global allow_metadata_hosts must override blocked_metadata_hosts in validate(); got: {:?}",
-        validate(&cfg)
-    );
-}
-
-#[test]
-fn test_allow_all_metadata_beats_nonempty_blocked_list() {
-    let blocked = vec!["10.0.0.7".to_string(), "metadata.x.example".to_string()];
-    for base in [
-        "https://169.254.169.254/",
-        "https://10.0.0.7/",
-        "https://metadata.x.example/",
-    ] {
-        assert!(
-            ssrf_blocked_host(base, &[], true, &blocked).is_none(),
-            "allow_all_metadata must unblock '{base}' even with a non-empty blocked list"
-        );
-    }
-    let mut providers = HashMap::new();
-    providers.insert(
-        "p".to_string(),
-        make_provider(proto_b(), "https://10.0.0.7/", "API_KEY"),
-    );
-    let mut cfg = make_root_cfg_with_blocked(providers, vec!["10.0.0.7".to_string()]);
-    cfg.allow_all_metadata = true;
-    assert!(
-        validate(&cfg).is_ok(),
-        "allow_all_metadata must win over a non-empty blocked_metadata_hosts; got: {:?}",
+        "an empty list and `false` carve nothing and load: {:?}",
         validate(&cfg)
     );
 }
@@ -2878,75 +2841,11 @@ fn test_metadata_blocked_by_default_every_form() {
     }
 }
 
+/// A provider whose base_url is a cloud-metadata endpoint is refused whatever carve-out the
+/// configuration writes: the carve-out itself is refused (BUSBAR-3136), and the base_url refusal no
+/// longer offers one.
 #[test]
-fn test_per_provider_allow_metadata_hosts_is_surgical_and_scoped() {
-    let allow = vec!["169.254.169.254".to_string()];
-
-    assert!(
-        ssrf_blocked_host("https://169.254.169.254/", &allow, false, &[]).is_none(),
-        "the listed host must be unblocked by the override"
-    );
-    assert!(
-        ssrf_blocked_host("https://100.100.100.200/", &allow, false, &[]).is_some(),
-        "a DIFFERENT metadata IP must stay blocked"
-    );
-    assert!(
-        ssrf_blocked_host("https://169.254.170.2/", &allow, false, &[]).is_some(),
-        "another link-local metadata IP must stay blocked (override is exact, not the /16)"
-    );
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "surgical".to_string(),
-        make_provider_allow_hosts("https://169.254.169.254/", &["169.254.169.254"]),
-    );
-    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    assert!(
-        validate(&cfg).is_ok(),
-        "the provider's own allow_metadata_hosts must let its IMDS base_url validate; got: {:?}",
-        validate(&cfg)
-    );
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "other".to_string(),
-        make_provider(proto_b(), "https://169.254.169.254/", "API_KEY"),
-    );
-    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    validate(&cfg).expect_err("a provider without the override must still block IMDS");
-}
-
-#[test]
-fn test_global_allow_metadata_hosts_unblocks_all_providers() {
-    let mut providers = HashMap::new();
-    providers.insert(
-        "a".to_string(),
-        make_provider(proto_b(), "https://100.100.100.200/", "API_KEY"),
-    );
-    providers.insert(
-        "b".to_string(),
-        make_provider(proto_b(), "https://100.100.100.200/", "API_KEY"),
-    );
-    let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    cfg.allow_metadata_hosts = vec!["100.100.100.200".to_string()];
-    assert!(
-        validate(&cfg).is_ok(),
-        "security.allow_metadata_hosts must unblock the host for ALL providers; got: {:?}",
-        validate(&cfg)
-    );
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "c".to_string(),
-        make_provider(proto_b(), "https://169.254.169.254/", "API_KEY"),
-    );
-    let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    cfg.allow_metadata_hosts = vec!["100.100.100.200".to_string()];
-    validate(&cfg).expect_err("a host not in the global allow-list must stay blocked");
-}
-
-#[test]
-fn test_allow_all_metadata_disables_guard_entirely() {
+fn test_a_metadata_base_url_is_refused_whatever_is_carved() {
     for base in [
         "https://169.254.169.254/",
         "https://metadata.google.internal/",
@@ -2954,21 +2853,19 @@ fn test_allow_all_metadata_disables_guard_entirely() {
         "https://168.63.129.16/",
         "https://[fd00:ec2::254]/",
     ] {
-        assert!(
-            ssrf_blocked_host(base, &[], true, &[]).is_none(),
-            "allow_all_metadata must unblock '{base}'"
-        );
         let mut providers = HashMap::new();
         providers.insert(
             "meta".to_string(),
-            make_provider(proto_b(), base, "API_KEY"),
+            make_provider_allow_hosts(base, &["169.254.169.254"]),
         );
         let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
         cfg.allow_all_metadata = true;
+        let errs = validate(&cfg).expect_err("a metadata base_url is refused");
         assert!(
-            validate(&cfg).is_ok(),
-            "allow_all_metadata must let '{base}' validate; got: {:?}",
-            validate(&cfg)
+            errs.iter().any(|e| e.contains("targets a blocked cloud-metadata host")
+                && e.contains("no configuration admits them")
+                && !e.contains("allow_metadata_hosts")),
+            "{base}: {errs:?}"
         );
     }
 }
@@ -3018,17 +2915,6 @@ fn test_blocked_metadata_hosts_extends_denylist() {
         "expected a metadata-host error for the listed host; got: {errs:?}"
     );
 
-    let mut providers = HashMap::new();
-    providers.insert(
-        "p".to_string(),
-        make_provider_allow_hosts("https://10.99.99.99/", &["10.99.99.99"]),
-    );
-    let cfg = make_root_cfg_with_blocked(providers, vec!["10.99.99.99".to_string()]);
-    assert!(
-        validate(&cfg).is_ok(),
-        "allow_metadata_hosts must override an operator-listed blocked host; got: {:?}",
-        validate(&cfg)
-    );
 }
 
 #[test]

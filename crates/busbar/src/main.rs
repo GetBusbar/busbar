@@ -548,10 +548,7 @@ mod bootstrap_destination_tests {
         let policy = |block_private_addresses| config::Destinations {
             block_private_addresses,
             allow: Vec::new(),
-            legacy_allow: Vec::new(),
-            url_allow: Vec::new(),
             blocked: Vec::new(),
-            allow_all_metadata: false,
         };
         let holder = BootstrapDestJudge::new(root::connector::guard_for(&policy(false)).unwrap());
         let installed: Arc<dyn busbar_kernel::host_services::DestJudge> = holder.clone();
@@ -1110,18 +1107,9 @@ async fn run(
         ))
     });
 
-    if cfg.allow_all_metadata {
-        tracing::warn!(
-            diag = %diagnostics::METADATA_PROTECTION_DISABLED.banner(),
-            "metadata protection DISABLED — all cloud-metadata endpoints reachable"
-        );
-    } else {
-        let blocked =
-            config_validate::metadata_denylist_entries().len() + cfg.blocked_metadata_hosts.len();
-        tracing::info!(
-            "metadata protection: {blocked} hosts blocked (--print-metadata-blocklist to view)"
-        );
-    }
+    let blocked =
+        config_validate::metadata_denylist_entries().len() + cfg.blocked_metadata_hosts.len();
+    tracing::info!("metadata protection: {blocked} hosts blocked (--print-metadata-blocklist to view)");
 
     let listen = cfg.listen.clone();
     let tls_cfg = cfg.tls.clone();
