@@ -539,7 +539,7 @@ async fn apply(
 
 
             loaded.overlay_doc = Some(doc.clone());
-            let built = async {
+            let built = Box::pin(async {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
@@ -548,7 +548,7 @@ async fn apply(
                 let base_group_names: std::collections::HashSet<String> =
                     cfg.groups.keys().cloned().collect();
                 busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
-                busbar_kernel::build_app_from_config(
+                Box::pin(busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
 
@@ -558,8 +558,8 @@ async fn apply(
                     (Some(config_path), Some(loaded.providers_path.clone())),
                     Some(&snapshot),
                     &snapshot.root_rules,
-                ).await
-            }.await;
+                )).await
+            }).await;
             let (mut built, gov_rotate, limits) = match built {
                 Ok(v) => v,
 

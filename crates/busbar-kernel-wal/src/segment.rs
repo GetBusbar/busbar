@@ -59,6 +59,8 @@ pub struct Segment {
     /// The ceiling this segment rolls at.
     ceiling: u64,
     poisoned: bool,
+    /// The bytes of the batch being committed, reused from one commit to the next.
+    staging: Vec<u8>,
 }
 
 impl std::fmt::Debug for Segment {
@@ -88,6 +90,7 @@ impl Segment {
             claimed,
             ceiling,
             poisoned: false,
+            staging: Vec::new(),
         })
     }
 
@@ -139,12 +142,18 @@ impl Segment {
         if self.poisoned {
             return Err(SegmentError::Poisoned);
         }
-        let mut buf: Vec<u8> = Vec::new();
+        let mut buf = std::mem::take(&mut self.staging);
+        buf.clear();
         for (i, record) in records.iter().enumerate() {
-            for frame in record.encode_in_commit(i == 0) {
-                buf.extend_from_slice(&frame);
-            }
+            record.encode_in_commit_into(i == 0, &mut buf);
         }
+        let written = self.write_staged(&buf);
+        self.staging = buf;
+        written
+    }
+
+    /// Put down the framed batch `buf`: claim, write, sync, or poison on any failure.
+    fn write_staged(&mut self, buf: &[u8]) -> Result<u64, SegmentError> {
         if buf.is_empty() {
             return Ok(self.write_offset);
         }
@@ -156,7 +165,7 @@ impl Segment {
             self.poison();
             return Err(SegmentError::Write(e));
         }
-        if let Err(e) = self.backend.write_all_at(self.write_offset, &buf) {
+        if let Err(e) = self.backend.write_all_at(self.write_offset, buf) {
             self.poison();
             return Err(SegmentError::Write(e));
         }

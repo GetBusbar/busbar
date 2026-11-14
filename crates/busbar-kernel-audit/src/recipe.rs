@@ -89,128 +89,112 @@ pub struct DigestField {
     pub value: DigestValue,
 }
 
-impl DigestField {
-    fn text(name: &'static str, value: impl Into<String>) -> Self {
-        DigestField {
-            name,
-            value: DigestValue::Text(value.into()),
-        }
+/// Where the recipe's fields go, in order, as they are read off a record: a digest frames them, the
+/// range read prints them. Nothing is built in between — text is lent, and a tag is formatted
+/// straight into whatever the sink writes.
+pub trait FieldSink {
+    /// A text field.
+    fn text(&mut self, name: &'static str, value: &str);
+    /// A text field whose text is `value`, formatted.
+    fn text_fmt(&mut self, name: &'static str, value: std::fmt::Arguments<'_>);
+    /// A number field.
+    fn num(&mut self, name: &'static str, value: u64);
+}
+
+/// The record chain's digest takes the fields as framed bytes.
+impl FieldSink for crate::digest::Digest {
+    fn text(&mut self, _name: &'static str, value: &str) {
+        crate::digest::Digest::text(self, value);
     }
 
-    fn num(name: &'static str, value: u64) -> Self {
-        DigestField {
-            name,
-            value: DigestValue::Num(value),
-        }
+    fn text_fmt(&mut self, _name: &'static str, value: std::fmt::Arguments<'_>) {
+        crate::digest::Digest::text_fmt(self, value);
+    }
+
+    fn num(&mut self, _name: &'static str, value: u64) {
+        crate::digest::Digest::num(self, value);
     }
 }
 
-/// EVERY FIELD THAT GOES INTO ONE RECORD'S DIGEST, IN ORDER.
-#[must_use]
-pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
-    use crate::record::{finish_tag, outcome_tag, quantity_source_tag, subject_tag, subject_value};
+/// EVERY FIELD THAT GOES INTO ONE RECORD'S DIGEST, IN ORDER, handed to `f`.
+pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink) {
+    use crate::record::{
+        finish_tag, subject_tag, HexBytes, OutcomeTag, QuantitySourceTag, Subject,
+    };
 
-    let mut f = Vec::with_capacity(48);
-    f.push(DigestField::text("prev_hash", record.prev_hash.clone()));
-    f.push(DigestField::num("seq", record.seq));
-    f.push(DigestField::text(
-        "subject_tag",
-        subject_tag(&record.subject),
-    ));
-    f.push(DigestField::text(
-        "subject_value",
-        subject_value(&record.subject),
-    ));
-    f.push(DigestField::num("unit_key", record.what.unit_key.get()));
+    f.text("prev_hash", &record.prev_hash);
+    f.num("seq", record.seq);
+    f.text("subject_tag", subject_tag(&record.subject));
+    match &record.subject {
+        Subject::PrincipalId(p) => f.text("subject_value", p),
+        Subject::Arrival | Subject::Aggregate => f.text("subject_value", ""),
+        Subject::Node(id) => f.text_fmt("subject_value", format_args!("{id}")),
+    }
+    f.num("unit_key", record.what.unit_key.get());
 
     if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5 | Recipe::V6) {
-        f.push(DigestField::num("incarnation", record.what.incarnation));
+        f.num("incarnation", record.what.incarnation);
     }
-    f.push(DigestField::text("op_class", record.what.op_class.as_str()));
-    f.push(DigestField::text(
+    f.text("op_class", record.what.op_class.as_str());
+    f.text(
         "destination",
         record.what.destination.as_deref().unwrap_or(""),
-    ));
-    f.push(DigestField::num(
-        "parent",
-        record.what.parent.map(|p| p.get()).unwrap_or(0),
-    ));
-    f.push(DigestField::text(
+    );
+    f.num("parent", record.what.parent.map(|p| p.get()).unwrap_or(0));
+    f.text(
         "pre_hook_head",
         record.what.pre_hook_head.as_deref().unwrap_or(""),
-    ));
-    f.push(DigestField::text(
+    );
+    f.text(
         "post_hook_head",
         record.what.post_hook_head.as_deref().unwrap_or(""),
-    ));
-    f.push(DigestField::num("wall", record.wall));
-    f.push(DigestField::num("mono", record.mono));
+    );
+    f.num("wall", record.wall);
+    f.num("mono", record.mono);
 
     if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5 | Recipe::V6) {
-        f.push(DigestField::num("node", record.node));
+        f.num("node", record.node);
     }
-    f.push(DigestField::text("origin_kind", record.origin_kind));
-    f.push(DigestField::text(
+    f.text("origin_kind", record.origin_kind);
+    f.text_fmt(
         "outcome",
-        outcome_tag(record.outcome.unit_end),
-    ));
-    f.push(DigestField::text(
+        format_args!("{}", OutcomeTag(record.outcome.unit_end)),
+    );
+    f.text(
         "step",
-        record
-            .outcome
-            .step
-            .map(|s| s.as_str().to_string())
-            .unwrap_or_default(),
-    ));
-    f.push(DigestField::text(
-        "finish",
-        finish_tag(record.outcome.finish),
-    ));
-    f.push(DigestField::num(
-        "hook_failed",
-        u64::from(record.outcome.hook_failed),
-    ));
-    f.push(DigestField::text(
+        record.outcome.step.map(|s| s.as_str()).unwrap_or_default(),
+    );
+    f.text("finish", finish_tag(record.outcome.finish));
+    f.num("hook_failed", u64::from(record.outcome.hook_failed));
+    f.text_fmt(
         "emission_delta",
-        record.outcome.emission_delta.to_string(),
-    ));
-    f.push(DigestField::num(
-        "stale_policy",
-        u64::from(record.outcome.stale_policy),
-    ));
-    f.push(DigestField::num(
-        "lines_count",
-        record.usage.lines.len() as u64,
-    ));
+        format_args!("{}", record.outcome.emission_delta),
+    );
+    f.num("stale_policy", u64::from(record.outcome.stale_policy));
+    f.num("lines_count", record.usage.lines.len() as u64);
     for line in &record.usage.lines {
-        f.push(DigestField::text("lines[].class", line.class.as_str()));
-        f.push(if matches!(record.recipe, Recipe::V6) {
-            DigestField::text("lines[].quantity", line.quantity.to_decimal_string())
+        f.text("lines[].class", line.class.as_str());
+        if matches!(record.recipe, Recipe::V6) {
+            f.text_fmt("lines[].quantity", format_args!("{}", line.quantity));
         } else {
-            DigestField::num(
+            f.num(
                 "lines[].quantity",
                 line.quantity
                     .whole_u64()
                     .expect("legacy recipe has whole quantities"),
-            )
-        });
-        f.push(DigestField::text(
+            );
+        }
+        f.text_fmt(
             "lines[].source",
-            quantity_source_tag(&line.source),
-        ));
-        f.push(DigestField::num(
-            "lines[].estimated",
-            u64::from(line.estimated),
-        ));
+            format_args!("{}", QuantitySourceTag(&line.source)),
+        );
+        f.num("lines[].estimated", u64::from(line.estimated));
     }
-    f.push(DigestField::num("tier_bp", u64::from(record.usage.tier_bp)));
-    f.push(DigestField::num(
-        "fee_count",
-        u64::from(record.usage.fee_count),
-    ));
+    f.num("tier_bp", u64::from(record.usage.tier_bp));
+    f.num("fee_count", u64::from(record.usage.fee_count));
 
     if let Recipe::V2 { currency, .. } = &record.recipe {
-        f.push(DigestField::text("currency", currency.clone()));
+        f.text("currency", currency);
     }
     match record.recipe {
         Recipe::V2 {
@@ -220,84 +204,64 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
         | Recipe::V4 {
             legacy_rate_card_version,
         } => {
-            f.push(DigestField::num(
-                "rate_card_version",
-                legacy_rate_card_version,
-            ));
+            f.num("rate_card_version", legacy_rate_card_version);
         }
         Recipe::V5 | Recipe::V6 => {
-            f.push(DigestField::num(
+            f.num(
                 "rate_card_key_present",
                 u64::from(record.usage.rate_card_version.is_some()),
-            ));
-            let key = record
-                .usage
-                .rate_card_version
-                .map(|key| {
-                    use std::fmt::Write;
-                    let mut s = String::with_capacity(key.len() * 2);
-                    for byte in key {
-                        let _ = write!(s, "{byte:02x}");
-                    }
-                    s
-                })
-                .unwrap_or_default();
-            f.push(DigestField::text("rate_card_version", key));
+            );
+            match &record.usage.rate_card_version {
+                Some(key) => f.text_fmt("rate_card_version", format_args!("{}", HexBytes(key))),
+                None => f.text("rate_card_version", ""),
+            }
         }
     }
-    f.push(DigestField::text(
-        "bucket_chain_ref",
-        record.usage.bucket_chain_ref.clone(),
-    ));
-    f.push(DigestField::text(
+    f.text("bucket_chain_ref", &record.usage.bucket_chain_ref);
+    f.text(
         "hold_ref",
         record.controls.hold_ref.as_deref().unwrap_or(""),
-    ));
-    f.push(DigestField::text(
+    );
+    f.text(
         "settle_ref",
         record.controls.settle_ref.as_deref().unwrap_or(""),
-    ));
-    f.push(DigestField::text(
+    );
+    f.text(
         "slice_ref",
         record.controls.slice_ref.as_deref().unwrap_or(""),
-    ));
-    f.push(DigestField::text(
+    );
+    f.text(
         "lease_ref",
         record.controls.lease_ref.as_deref().unwrap_or(""),
-    ));
-    f.push(DigestField::num("lease_epoch", record.controls.lease_epoch));
-    f.push(DigestField::num(
-        "policy_epoch",
-        record.controls.policy_epoch,
-    ));
-    f.push(DigestField::num(
-        "hooks_count",
-        record.controls.hooks_applied.len() as u64,
-    ));
+    );
+    f.num("lease_epoch", record.controls.lease_epoch);
+    f.num("policy_epoch", record.controls.policy_epoch);
+    f.num("hooks_count", record.controls.hooks_applied.len() as u64);
     for hook in &record.controls.hooks_applied {
-        f.push(DigestField::text("hooks[].hook", hook.hook.clone()));
+        f.text("hooks[].hook", &hook.hook);
 
         if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5 | Recipe::V6) {
-            f.push(DigestField::text("hooks[].head", hook.head.as_str()));
-            f.push(DigestField::num("hooks[].failed", u64::from(hook.failed)));
+            f.text("hooks[].head", hook.head.as_str());
+            f.num("hooks[].failed", u64::from(hook.failed));
         }
     }
-    f.push(DigestField::num(
-        "replayed",
-        u64::from(record.controls.replayed),
-    ));
-    f.push(DigestField::num(
-        "children_count",
-        record.controls.children.len() as u64,
-    ));
+    f.num("replayed", u64::from(record.controls.replayed));
+    f.num("children_count", record.controls.children.len() as u64);
     for child in &record.controls.children {
-        f.push(DigestField::num("children[]", child.get()));
+        f.num("children[]", child.get());
     }
-    f.push(DigestField::text(
+    f.text(
         "correlation_hash",
         record.correlation_hash.as_deref().unwrap_or(""),
-    ));
-    f
+    );
+}
+
+/// Hash one record under the record chain's framing, field by field, as [`visit_fields`] reads it.
+#[must_use]
+pub fn digest_record(record: &crate::record::AuditRecord) -> String {
+    let mut d = crate::digest::Digest::new(crate::digest::Framing::LengthPrefixed);
+    visit_fields(record, &mut d);
+    d.finish()
 }
 
 /// Hash one field list under the record chain's framing.

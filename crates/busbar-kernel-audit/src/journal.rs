@@ -7,9 +7,9 @@
 use busbar_contract::caps::{Abort, MeterClassId, Outcome, ReasonCode, StepName, UnitKey};
 
 use crate::record::{
-    abort_tag, direction_tag, finish_tag, outcome_tag, reason_tag, step_tag, AuditRecord, Controls,
-    FinishClass, HookApplied, HookHead, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage,
-    UsageLine, What,
+    direction_tag, displays_as, finish_tag, step_tag, AbortTag, AuditRecord, Controls, FinishClass,
+    HookApplied, HookHead, OpClassId, OutcomeFacts, OutcomeTag, QuantitySource, ReasonTag, Subject,
+    SubjectValue, Usage, UsageLine, What,
 };
 
 /// The tag for keyed audit records with legacy whole-count framing.
@@ -55,7 +55,7 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     w.opt_text(record.signature.as_deref());
     w.opt_text(record.key_id.as_deref());
     w.text(crate::record::subject_tag(&record.subject));
-    w.text(&crate::record::subject_value(&record.subject));
+    w.text_fmt(format_args!("{}", SubjectValue(&record.subject)));
     w.num(record.what.unit_key.get());
     w.num(record.what.incarnation);
     w.text(record.what.op_class.as_str());
@@ -67,17 +67,17 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     w.num(record.mono);
     w.num(record.node);
     w.text(record.origin_kind);
-    w.text(&outcome_tag(record.outcome.unit_end));
+    w.text_fmt(format_args!("{}", OutcomeTag(record.outcome.unit_end)));
     w.opt_text(record.outcome.step.map(step_tag));
     w.text(finish_tag(record.outcome.finish));
     w.num(u64::from(record.outcome.hook_failed));
-    w.text(&record.outcome.emission_delta.to_string());
+    w.text_fmt(format_args!("{}", record.outcome.emission_delta));
     w.num(u64::from(record.outcome.stale_policy));
     w.num(record.usage.lines.len() as u64);
     for line in &record.usage.lines {
         w.text(line.class.as_str());
         if matches!(record.recipe, crate::recipe::Recipe::V6) {
-            w.text(&line.quantity.to_decimal_string());
+            w.text_fmt(format_args!("{}", line.quantity));
         } else {
             w.num(
                 line.quantity
@@ -156,6 +156,10 @@ pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, Strin
     let Some(keyed) = journal_kind(&mut r) else {
         return Ok(None);
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: names an audit head prefix that does not decode"
+    )]
     let bad = || "an audit head prefix does not decode".to_string();
     match r.text().as_deref().ok_or_else(bad)? {
         crate::recipe::DIGEST_RECIPE if keyed == 5 => {}
@@ -170,7 +174,10 @@ pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, Strin
     let prev_hash = r.text().ok_or_else(bad)?;
     let hash = r.text().ok_or_else(bad)?;
     let signature = r.opt_text().ok_or_else(bad)?;
-    let key_id = r.opt_text().ok_or_else(bad)?;
+    let key_id = r
+        .opt_text()
+        .ok_or_else(bad)?
+        .map(std::sync::Arc::<str>::from);
     r.skip_text().ok_or_else(bad)?;
     r.skip_text().ok_or_else(bad)?;
     r.num().ok_or_else(bad)?;
@@ -210,6 +217,10 @@ fn decode(
     class: &dyn Fn(&str) -> Option<MeterClassId>,
     keyed: u8,
 ) -> Result<AuditRecord, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: names the field of an audit record that does not decode"
+    )]
     let bad = |what: &str| format!("an audit record whose {what} does not decode");
     let mut recipe = match r.text().ok_or_else(|| bad("recipe"))?.as_str() {
         crate::recipe::DIGEST_RECIPE if keyed == 5 => crate::recipe::Recipe::V5,
@@ -222,16 +233,22 @@ fn decode(
             legacy_rate_card_version: 0,
         },
         other => {
-            return Err(format!(
-                "an audit record sealed under an unknown recipe {other:?}"
-            ))
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: names the unknown recipe an audit record claims"
+            )]
+            let refusal = format!("an audit record sealed under an unknown recipe {other:?}");
+            return Err(refusal);
         }
     };
     let seq = r.num().ok_or_else(|| bad("seq"))?;
     let prev_hash = r.text().ok_or_else(|| bad("prev_hash"))?;
     let hash = r.text().ok_or_else(|| bad("hash"))?;
     let signature = r.opt_text().ok_or_else(|| bad("signature"))?;
-    let key_id = r.opt_text().ok_or_else(|| bad("key_id"))?;
+    let key_id = r
+        .opt_text()
+        .ok_or_else(|| bad("key_id"))?
+        .map(std::sync::Arc::<str>::from);
     let subject = subject_of(
         &r.text().ok_or_else(|| bad("subject"))?,
         &r.text().ok_or_else(|| bad("subject"))?,
@@ -270,9 +287,14 @@ fn decode(
         stale_policy: r.flag().ok_or_else(|| bad("stale_policy"))?,
     };
     let n = r.num().ok_or_else(|| bad("lines"))?;
+    // busbar:expect(bp::fresh_buffer, reason = "boot: a sealed record is read back from the journal at recovery")
     let mut lines = Vec::new();
     for _ in 0..n {
         let name = r.text().ok_or_else(|| bad("line class"))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: names the meter class no plane declares"
+        )]
         let resolved = class(&name).ok_or_else(|| {
             format!("an audit record names the class {name:?}, which no plane declares here")
         })?;
@@ -464,7 +486,7 @@ fn reason_of(tag: &str) -> Option<ReasonCode> {
     ReasonCode::ALL
         .iter()
         .copied()
-        .find(|r| reason_tag(*r) == tag)
+        .find(|r| displays_as(ReasonTag(*r), tag))
 }
 
 fn finish_of(tag: &str) -> Option<FinishClass> {
@@ -478,7 +500,7 @@ fn finish_of(tag: &str) -> Option<FinishClass> {
     .find(|f| finish_tag(*f) == tag)
 }
 
-/// The inverse of [`outcome_tag`], checked by re-rendering: an outcome is accepted only when it
+/// The inverse of [`OutcomeTag`](crate::record::OutcomeTag), checked by re-rendering: an outcome is accepted only when it
 pub(crate) fn outcome_of(tag: &str) -> Option<Outcome> {
     let outcome = if tag == "Completed" {
         Outcome::Completed
@@ -503,7 +525,7 @@ pub(crate) fn outcome_of(tag: &str) -> Option<Outcome> {
         let inner = tag.strip_prefix("Aborted(")?.strip_suffix(')')?;
         Outcome::Aborted(abort_of(inner)?)
     };
-    (outcome_tag(outcome) == tag).then_some(outcome)
+    displays_as(OutcomeTag(outcome), tag).then_some(outcome)
 }
 
 fn abort_of(tag: &str) -> Option<Abort> {
@@ -522,7 +544,7 @@ fn abort_of(tag: &str) -> Option<Abort> {
             by: UnitKey::new(by.parse().ok()?),
         }
     };
-    (abort_tag(abort) == tag).then_some(abort)
+    displays_as(AbortTag(abort), tag).then_some(abort)
 }
 
 /// The body writer. A text longer than `limit` (the length prefix's own bound, `u32::MAX`, outside
@@ -547,6 +569,30 @@ impl Writer {
 
     pub(crate) fn text(&mut self, s: &str) {
         self.bytes(s.as_bytes());
+    }
+
+    /// A text field formatted straight into the body: the same bytes as [`Writer::text`] over the
+    /// formatted string, with no string built first.
+    pub(crate) fn text_fmt(&mut self, value: std::fmt::Arguments<'_>) {
+        /// Formats into the body's bytes.
+        struct Onto<'a>(&'a mut Vec<u8>);
+        impl std::fmt::Write for Onto<'_> {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                self.0.extend_from_slice(s.as_bytes());
+                Ok(())
+            }
+        }
+        let prefix = self.out.len();
+        self.out.extend_from_slice(&[0; 4]);
+        let _ = std::fmt::Write::write_fmt(&mut Onto(&mut self.out), value);
+        let len = self.out.len() - prefix - 4;
+        match u32::try_from(len).ok().filter(|_| len <= self.limit) {
+            Some(len) => self.out[prefix..prefix + 4].copy_from_slice(&len.to_be_bytes()),
+            None => {
+                self.out.truncate(prefix);
+                self.too_long = true;
+            }
+        }
     }
 
     fn bytes(&mut self, bytes: &[u8]) {
@@ -626,7 +672,12 @@ impl Reader<'_> {
     }
 
     fn text(&mut self) -> Option<String> {
-        String::from_utf8(self.bytes()?.to_vec()).ok()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a sealed record is read back from the journal at recovery"
+        )]
+        let text = String::from_utf8(self.bytes()?.to_vec()).ok();
+        text
     }
 
     fn skip_text(&mut self) -> Option<()> {

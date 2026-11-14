@@ -96,8 +96,13 @@ struct RegistrationWindow {
 
 impl Default for Registrations {
     fn default() -> Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the registration window's origin, read once when the plane is built"
+        )]
+        let base = std::time::Instant::now();
         Self {
-            base: std::time::Instant::now(),
+            base,
             state: std::sync::Mutex::new(RegistrationWindow::default()),
         }
     }
@@ -177,6 +182,10 @@ impl Carried {
     ) -> Result<Self, String> {
         match store {
             Some(store) => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: names why the authorization server's store could not be scoped"
+                )]
                 let scoped = busbar_kernel::persistence::scoped::ScopedStore::host_private(
                     store,
                     "oauth-as",
@@ -257,6 +266,10 @@ impl AsPlane {
         let key = match key_material {
             Some(b64) => {
                 use base64::Engine as _;
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: names why the configured signing key is not base64"
+                )]
                 let der = base64::engine::general_purpose::STANDARD
                     .decode(b64.trim())
                     .map_err(|e| AsBuildError::SigningKeyMaterial(e.to_string()))?;
@@ -267,6 +280,10 @@ impl AsPlane {
                 let der = match carried.ephemeral_key.get() {
                     Some(der) => der,
                     None => {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "error: names why a signing key could not be minted"
+                        )]
                         let fresh = match carried.store() {
                             Some(store) => store
                                 .signing_key(|| {
@@ -287,40 +304,57 @@ impl AsPlane {
         };
 
         let mut config = ServerConfig::new(identity.issuer(), identity.verification_url());
-        config.authorization_endpoint = Some(format!("{}/authorize", identity.issuer()));
-        config.token_endpoint = Some(format!("{}/token", identity.issuer()));
-        config.device_authorization_endpoint = Some(format!(
-            "{}{}",
-            identity.origin(),
-            identity.device_authorization_path()
-        ));
-        config.revocation_endpoint = Some(format!(
-            "{}{}",
-            identity.origin(),
-            identity.revocation_path()
-        ));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the endpoints are spelled once, when the authorization server is built"
+        )]
+        let (authorization, token, device, revocation) = (
+            format!("{}/authorize", identity.issuer()),
+            format!("{}/token", identity.issuer()),
+            format!(
+                "{}{}",
+                identity.origin(),
+                identity.device_authorization_path()
+            ),
+            format!("{}{}", identity.origin(), identity.revocation_path()),
+        );
+        config.authorization_endpoint = Some(authorization);
+        config.token_endpoint = Some(token);
+        config.device_authorization_endpoint = Some(device);
+        config.revocation_endpoint = Some(revocation);
         config.jwks_uri = Some(identity.jwks_uri());
         config.registration = Some(super::policy::registration_config(&identity));
         config.access_token_ttl = identity.access_token_ttl();
 
         config.refresh_token_ttl = Some(identity.refresh_token_ttl());
-        config.scopes_supported =
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the scopes are listed once, when the authorization server is built"
+        )]
+        let scopes =
             (!identity.default_grant().is_empty()).then(|| identity.default_grant().to_vec());
+        config.scopes_supported = scopes;
 
-        config.allowed_resources = Some(
-            protected_resources
-                .iter()
-                .map(|r| r.as_str().into())
-                .collect::<Vec<Box<str>>>()
-                .into_boxed_slice(),
-        );
-        config.protected_resources =
-            (!protected_resources.is_empty()).then(|| protected_resources.clone());
-
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the resources are listed once, when the authorization server is built"
+        )]
+        let allowed: Box<[Box<str>]> = protected_resources
+            .iter()
+            .map(|r| r.as_str().into())
+            .collect::<Vec<Box<str>>>()
+            .into_boxed_slice();
+        config.allowed_resources = Some(allowed);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the audience is named once, when the authorization server is built"
+        )]
         let audience = protected_resources
             .first()
             .cloned()
             .unwrap_or_else(|| identity.issuer().to_string());
+        config.protected_resources =
+            (!protected_resources.is_empty()).then_some(protected_resources);
         config.access_token_format = oauth_as::jwt::AccessTokenFormat::Jwt(Box::new(
             oauth_as::jwt::JwtConfig::new(key, audience).with_jwks_uri(identity.jwks_uri()),
         ));
@@ -686,7 +720,12 @@ fn granted_default(client: &oauth_as::client::Client) -> oauth_as::scope::ScopeS
 
 fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
     let ceiling = super::policy::default_grant_scopes(identity);
-    identity
+    // busbar:expect(bp::clone_alloc, reason = "boot: the provisioned clients are built once, with the authorization server")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the provisioned clients are built once, with the authorization server"
+    )]
+    let clients = identity
         .clients
         .iter()
         .map(|c| oauth_as::client::Client {
@@ -717,18 +756,22 @@ fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
             name: Some(c.client_id.clone()),
             registration: None,
         })
-        .collect()
+        .collect();
+    clients
 }
 
 fn public_jwk(k: &crate::config::StaticClientJwk) -> oauth_as::jwt::Jwk {
+    // busbar:expect(bp::clone_alloc, reason = "boot: a provisioned client's key is copied once, with the authorization server")
     let member = |v: &Option<String>| v.clone().unwrap_or_default();
     if k.kty == "RSA" {
+        // busbar:expect(bp::clone_alloc, reason = "boot: a provisioned client's key is copied once, with the authorization server")
         oauth_as::jwt::Jwk::Rsa {
             n: member(&k.n),
             e: member(&k.e),
             kid: k.kid.clone(),
         }
     } else {
+        // busbar:expect(bp::clone_alloc, reason = "boot: a provisioned client's key is copied once, with the authorization server")
         oauth_as::jwt::Jwk::Ec {
             crv: oauth_as::jwt::EcCurve::P256,
             x: member(&k.x),
@@ -754,15 +797,23 @@ fn fapi2_posture(mut config: ServerConfig, identity: &AsIdentity) -> ServerConfi
 
 fn plain_metadata(server: &AsServer) -> bytes::Bytes {
     let mut meta = server.metadata();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the plain metadata document is rendered once, when the plane is built"
+    )]
     meta.token_endpoint_auth_methods_supported.retain(|m| {
         m != oauth_as::client_assertion::CLIENT_SECRET_JWT
             && m != oauth_as::client_assertion::PRIVATE_KEY_JWT
     });
     meta.token_endpoint_auth_signing_alg_values_supported = None;
     meta.dpop_signing_alg_values_supported = None;
-    bytes::Bytes::from(
-        serde_json::to_vec(&meta).expect("the RFC 8414 document is plain JSON and serializes"),
-    )
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the plain metadata document is rendered once, when the plane is built"
+    )]
+    let document =
+        serde_json::to_vec(&meta).expect("the RFC 8414 document is plain JSON and serializes");
+    bytes::Bytes::from(document)
 }
 
 pub(crate) fn seam_verify_dpop(
@@ -821,8 +872,12 @@ pub(crate) fn seam_build<C: crate::Connections>(
                 );
                 None
             }
-            Some(_) => Some(
-                secrets
+            Some(_) => Some({
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: names the signing-key reference that did not resolve"
+                )]
+                let found = secrets
                     .iter()
                     .find(|(path, _)| path == crate::config::SIGNING_KEY_PATH)
                     .map(|(_, value)| value.as_str())
@@ -831,11 +886,16 @@ pub(crate) fn seam_build<C: crate::Connections>(
                             "{}: the reference was not resolved",
                             crate::config::SIGNING_KEY_PATH
                         )
-                    })?,
-            ),
+                    });
+                found?
+            }),
         };
 
         let fetch = Arc::new(super::cimd::ConnectorFetch { table: C::table });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: names why the authorization server could not be built"
+        )]
         let mut plane =
             AsPlane::build_carrying(identity, key_material, protected_resources, fetch, carried)
                 .await
@@ -850,7 +910,13 @@ pub(crate) fn seam_build<C: crate::Connections>(
 }
 
 pub(crate) struct Sweeper {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "held only to keep the sweep registered; tests probe it"
+        )
+    )]
     work: Arc<SweepWork>,
 }
 
@@ -869,6 +935,10 @@ impl AsPlane {
 }
 
 pub(crate) fn sweep_on_clock(server: &Arc<AsServer>, every: std::time::Duration) -> Sweeper {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the sweep's first due time, read once when it is registered"
+    )]
     let work = Arc::new(SweepWork {
         server: Arc::downgrade(server),
         every,

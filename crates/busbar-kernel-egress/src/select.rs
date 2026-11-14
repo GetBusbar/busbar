@@ -3,8 +3,9 @@
 
 //! The pick: who is asked first, and who is allowed.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+
+use foldhash::{HashMap, HashSet};
 
 use busbar_contract::caps::{Pass, Route};
 
@@ -26,6 +27,21 @@ pub struct RequestCtx {
     excluded_reasons: Vec<(DestinationId, Unavailable)>,
     /// Every pool this request has already routed through, for the spill loop guard.
     visited_pools: HashSet<String>,
+    /// The pick's working lists, kept from one pick to the next so a pick allocates nothing.
+    scratch: PickScratch,
+}
+
+/// The lists one pick works through, emptied between uses.
+#[derive(Debug, Clone, Default)]
+struct PickScratch {
+    /// The members still in play: position, destination, weight.
+    candidates: Vec<(usize, DestinationId, u32)>,
+    /// Those of them the breaker would send to now: destination, weight, tier.
+    healthy: Vec<(DestinationId, u32, u32)>,
+    /// Those of the lowest tier: destination, weight.
+    offered: Vec<(DestinationId, u32)>,
+    /// Positions this pick has already been refused by.
+    local_excluded: HashSet<usize>,
 }
 
 impl RequestCtx {
@@ -35,9 +51,10 @@ impl RequestCtx {
         Self {
             deadline_secs: now_secs.saturating_add(timeout_secs),
             deadline_millis: now_millis.saturating_add(u128::from(timeout_secs) * 1000),
-            excluded: HashSet::new(),
+            excluded: HashSet::default(),
             excluded_reasons: Vec::new(),
-            visited_pools: HashSet::new(),
+            visited_pools: HashSet::default(),
+            scratch: PickScratch::default(),
         }
     }
 
@@ -87,7 +104,13 @@ impl RequestCtx {
 
     /// Mark a pool as routed through, for the spill loop guard.
     pub fn mark_pool_visited(&mut self, pool: &str) {
-        self.visited_pools.insert(pool.to_string());
+        if !self.visited_pools.contains(pool) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a pool is marked visited only when the walk exhausts it or spills from it"
+            )]
+            self.visited_pools.insert(pool.to_string());
+        }
     }
 
     /// Whether this request has already routed through a pool.
@@ -266,8 +289,11 @@ pub struct PickInput<'a, 't> {
 
 /// Pick one member of the pool for this hop, or find that there is nowhere to send it.
 pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option<Picked<'a>> {
-    let mut order = Order::new(input, ctx);
-    let mut passed_over: Vec<(DestinationId, Unavailable)> = Vec::new();
+    let mut scratch = std::mem::take(&mut ctx.scratch);
+    scratch.local_excluded.clear();
+    let mut order = Order::new(input, ctx, &mut scratch);
+    let mut passed_over = std::mem::take(&mut ctx.excluded_reasons);
+    passed_over.clear();
     let mut refused: Option<usize> = None;
 
     let picked = loop {
@@ -283,6 +309,7 @@ pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option
             }
         }
     };
+    ctx.scratch = scratch;
 
     if picked.is_none() && passed_over.is_empty() && !ctx.expired(input.now) {
         for member in input.members {
@@ -338,19 +365,19 @@ fn try_admit<'a>(
 }
 
 /// The order: session affinity first, then a ranking hook's preference, then the weighted floor.
-struct Order<'a, 'b, 't> {
+struct Order<'a, 'b, 't, 's> {
     input: &'b PickInput<'a, 't>,
-    /// The affinity position, offered first and exactly once.
+    /// The affinity position, when there is one and it is still in play.
     sticky: Option<usize>,
     sticky_offered: bool,
-    /// Set for exactly one call after the affinity position was offered.
+    /// Whether the last offer was the sticky one, so a refusal of it is forgiven once.
     sticky_grace: bool,
-    /// Positions this order will not offer again. Local to the pick: it never touches the
-    local_excluded: HashSet<usize>,
+    /// The request's reused working lists.
+    scratch: &'s mut PickScratch,
 }
 
-impl<'a, 'b, 't> Order<'a, 'b, 't> {
-    fn new(input: &'b PickInput<'a, 't>, ctx: &RequestCtx) -> Self {
+impl<'a, 'b, 't, 's> Order<'a, 'b, 't, 's> {
+    fn new(input: &'b PickInput<'a, 't>, ctx: &RequestCtx, scratch: &'s mut PickScratch) -> Self {
         let sticky = input.affinity.and_then(|hash| {
             if input.members.is_empty() {
                 return None;
@@ -364,14 +391,14 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
             sticky,
             sticky_offered: false,
             sticky_grace: false,
-            local_excluded: HashSet::new(),
+            scratch,
         }
     }
 
     fn next(&mut self, refused: Option<usize>, ctx: &RequestCtx) -> Option<usize> {
         if let Some(position) = refused {
             if !(self.sticky_grace && Some(position) == self.sticky) {
-                self.local_excluded.insert(position);
+                self.scratch.local_excluded.insert(position);
             }
         }
         self.sticky_grace = false;
@@ -388,9 +415,15 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
             return None;
         }
 
-        let mut candidates: Vec<(usize, DestinationId, u32)> = Vec::new();
+        let PickScratch {
+            candidates,
+            healthy,
+            offered,
+            local_excluded,
+        } = &mut *self.scratch;
+        candidates.clear();
         for (position, member) in self.input.members.iter().enumerate() {
-            if ctx.is_excluded(member.destination) || self.local_excluded.contains(&position) {
+            if ctx.is_excluded(member.destination) || local_excluded.contains(&position) {
                 continue;
             }
             candidates.push((position, member.destination, member.weight));
@@ -399,37 +432,39 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
             return None;
         }
 
-        let healthy: Vec<(DestinationId, u32, u32)> = candidates
-            .iter()
-            .filter(|(_, destination, weight)| {
-                *weight != 0
-                    && self.input.breaker.admissible(*destination)
-                    && self.input.breaker.ready(
-                        self.input.pool,
-                        *destination,
-                        self.input.now,
-                        self.input.token,
-                    )
-            })
-            .map(|(position, destination, weight)| {
-                (*destination, *weight, self.input.members[*position].tier)
-            })
-            .collect();
+        let input = self.input;
+        healthy.clear();
+        healthy.extend(
+            candidates
+                .iter()
+                .filter(|(_, destination, weight)| {
+                    *weight != 0
+                        && input.breaker.admissible(*destination)
+                        && input
+                            .breaker
+                            .ready(input.pool, *destination, input.now, input.token)
+                })
+                .map(|(position, destination, weight)| {
+                    (*destination, *weight, input.members[*position].tier)
+                }),
+        );
 
         let lowest = healthy.iter().map(|(_, _, tier)| *tier).min();
-        let offered: Vec<(DestinationId, u32)> = healthy
-            .iter()
-            .filter(|(_, _, tier)| Some(*tier) == lowest)
-            .map(|(destination, weight, _)| (*destination, *weight))
-            .collect();
+        offered.clear();
+        offered.extend(
+            healthy
+                .iter()
+                .filter(|(_, _, tier)| Some(*tier) == lowest)
+                .map(|(destination, weight, _)| (*destination, *weight)),
+        );
 
-        let picked = match self.input.preference {
+        let picked = match input.preference {
             Some(preference) => preference
                 .iter()
                 .copied()
                 .find(|destination| offered.iter().any(|(d, _)| d == destination))
-                .or_else(|| self.input.floor.take_turn(&offered)),
-            None => self.input.floor.take_turn(&offered),
+                .or_else(|| input.floor.take_turn(offered)),
+            None => input.floor.take_turn(offered),
         }?;
 
         candidates
