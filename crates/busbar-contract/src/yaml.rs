@@ -18,7 +18,9 @@
 //! - `<<` is a literal key; merge keys are not expanded.
 //! - A duplicate key is refused, with the line and column of the repeat.
 //! - `.inf`, `-.inf` and `.nan` are floats.
-//! - Application tags (`!Tag value`) are refused rather than silently dropped.
+//! - Application tags (`!Tag value`) are accepted, as 1.5.5 accepted them. An untyped read gives
+//!   the node's value; the admin source bridge (busbar-kernel `document_source`) carries the tag
+//!   itself through an edit.
 
 #![forbid(unsafe_code)]
 
@@ -50,7 +52,7 @@ pub fn options() -> serde_saphyr::Options {
         leading_zero_numbers_as_strings: true,
         underscored_numbers_as_strings: true,
         ignore_binary_tag_for_string: true,
-        reject_unsupported_tags: true,
+        reject_unsupported_tags: false,
         non_finite_float_policy: NonFiniteFloatPolicy::PassThrough,
         with_snippet: false,
     }
@@ -196,6 +198,116 @@ where
         read(serde_path_to_error::Deserializer::new(de, &mut track))
     });
     read.map_err(|e| Error::from(e).at_path(track.path()))
+}
+
+/// The first application tag (`!Name`, or a non-core tag URI) anywhere in the document, keys
+/// included; `None` when it has none. An untyped [`Value`] read keeps a tagged node's value but
+/// not its tag, so a reader that must refuse or carry tags asks here first.
+pub fn first_application_tag(text: &str) -> Result<Option<String>, Error> {
+    with_deserializer(text, |d| {
+        serde::de::DeserializeSeed::deserialize(FindTag, d)
+    })
+}
+
+/// serde-saphyr's newtype name for its public `serde_saphyr::Tagged<T>` wrapper: a deserializer
+/// asked for it hands the visitor the node as the sequence `[value, tag?]`.
+const TAGGED: &str = "__yaml_tagged";
+
+struct FindTag;
+
+impl<'de> serde::de::DeserializeSeed<'de> for FindTag {
+    type Value = Option<String>;
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        de.deserialize_newtype_struct(TAGGED, self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for FindTag {
+    type Value = Option<String>;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a YAML node")
+    }
+    fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+        self,
+        de: D,
+    ) -> Result<Self::Value, D::Error> {
+        de.deserialize_any(FindTagInside)
+    }
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        let inside = seq.next_element_seed(FindTagInsideSeed)?.flatten();
+        let tag = seq
+            .next_element::<String>()?
+            .filter(|t| !t.starts_with("tag:yaml.org,2002:"));
+        Ok(tag.or(inside))
+    }
+}
+
+struct FindTagInsideSeed;
+
+impl<'de> serde::de::DeserializeSeed<'de> for FindTagInsideSeed {
+    type Value = Option<String>;
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        de.deserialize_any(FindTagInside)
+    }
+}
+
+/// The node itself (its own tag already read): scalars carry none further; collections are
+/// searched through their keys and values.
+struct FindTagInside;
+
+impl<'de> serde::de::Visitor<'de> for FindTagInside {
+    type Value = Option<String>;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a YAML node")
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_i128<E: serde::de::Error>(self, _: i128) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_u128<E: serde::de::Error>(self, _: u128) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_bytes<E: serde::de::Error>(self, _: &[u8]) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_some<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        de.deserialize_any(FindTagInside)
+    }
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        let mut found = None;
+        while let Some(tag) = seq.next_element_seed(FindTag)? {
+            found = found.or(tag);
+        }
+        Ok(found)
+    }
+    fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        let mut found = None;
+        while let Some(tag) = map.next_key_seed(FindTag)? {
+            found = found.or(tag);
+            found = found.or(map.next_value_seed(FindTag)?);
+        }
+        Ok(found)
+    }
 }
 
 /// Write `value` as a YAML document.

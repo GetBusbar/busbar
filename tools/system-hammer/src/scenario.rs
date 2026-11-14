@@ -270,6 +270,25 @@ impl Scenario {
 
 pub type Suites = BTreeMap<String, Vec<String>>;
 
+/// Read scenario YAML with core's pins (busbar_contract::yaml::options), so a scenario means what
+/// busbar 1.5.5 read: `yes`/`no`/`on`/`off` and leading-zero numbers stay strings, `<<` is a
+/// literal key, duplicate keys are refused.
+fn yaml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_saphyr::Error> {
+    use serde_saphyr::{DuplicateKeyPolicy, MergeKeyPolicy, NonFiniteFloatPolicy};
+    let options = serde_saphyr::options! {
+        duplicate_keys: DuplicateKeyPolicy::Error,
+        merge_keys: MergeKeyPolicy::AsOrdinary,
+        strict_booleans: true,
+        legacy_octal_numbers: false,
+        leading_zero_numbers_as_strings: true,
+        underscored_numbers_as_strings: true,
+        ignore_binary_tag_for_string: true,
+        non_finite_float_policy: NonFiniteFloatPolicy::PassThrough,
+        with_snippet: false,
+    };
+    serde_saphyr::from_str_with_options(text, options)
+}
+
 pub fn scenarios_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios")
 }
@@ -277,7 +296,7 @@ pub fn scenarios_dir() -> PathBuf {
 pub fn load_suites(dir: &Path) -> Result<Suites, String> {
     let p = dir.join("suites.yaml");
     let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", p.display()))
+    yaml(&text).map_err(|e| format!("{}: {e}", p.display()))
 }
 
 pub fn load(dir: &Path, name: &str) -> Result<Scenario, String> {
@@ -287,7 +306,7 @@ pub fn load(dir: &Path, name: &str) -> Result<Scenario, String> {
         dir.join(format!("{name}.yaml"))
     };
     let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    let s: Scenario = serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", p.display()))?;
+    let s: Scenario = yaml(&text).map_err(|e| format!("{}: {e}", p.display()))?;
     s.steps().map_err(|e| format!("{}: {e}", p.display()))?;
     Ok(s)
 }
@@ -494,7 +513,7 @@ mod tests {
 
     #[test]
     fn the_matrix_expands_every_pairing() {
-        let m: LlmMatrix = serde_yaml::from_str(
+        let m: LlmMatrix = yaml(
             "ingress: [openai, gemini]\negress: [anthropic, bedrock]\nstream: [false, true]\n",
         )
         .unwrap();

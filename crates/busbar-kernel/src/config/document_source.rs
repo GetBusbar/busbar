@@ -33,6 +33,9 @@ impl<T: Zeroize> Drop for PathMap<T> {
 struct Spellings {
     values: PathMap<Zeroizing<String>>,
     keys: PathMap<Zeroizing<String>>,
+    /// Application tags (`!Name`) on values and on keys, by path, carried through an edit.
+    value_tags: PathMap<Zeroizing<String>>,
+    key_tags: PathMap<Zeroizing<String>>,
     map_names: PathMap<Vec<Zeroizing<String>>>,
 }
 
@@ -54,12 +57,12 @@ impl SourceDocument {
         };
         let mut path = Zeroizing::new(Vec::new());
         busbar_contract::yaml::with_deserializer(text, |d| {
-            ReadSource {
+            TagFirst(ReadSource {
                 shape: &source.value.0,
                 path: &mut path,
                 spellings: &mut source.spellings,
                 wide: &wide,
-            }
+            })
             .deserialize(d)
         })
         .map_err(|_| "invalid configuration YAML".to_owned())?;
@@ -92,6 +95,8 @@ impl SourceDocument {
         }
         forget(&mut self.spellings.values, &changed, false);
         forget(&mut self.spellings.keys, &changed, true);
+        forget(&mut self.spellings.value_tags, &changed, false);
+        forget(&mut self.spellings.key_tags, &changed, true);
         // Record explicit numeric spelling at the resolved append index before removals shift it.
         if let Some(set) = patch.0.get("set").and_then(serde_json::Value::as_object) {
             for ((_, value), (path, _)) in set.iter().zip(&prepared.set) {
@@ -105,6 +110,8 @@ impl SourceDocument {
             if sequence_parent(&self.value.0, path) {
                 shift_after_remove(&mut self.spellings.values, path);
                 shift_after_remove(&mut self.spellings.keys, path);
+                shift_after_remove(&mut self.spellings.value_tags, path);
+                shift_after_remove(&mut self.spellings.key_tags, path);
             }
         }
         prepared.apply(&mut self.value.0);
@@ -113,6 +120,12 @@ impl SourceDocument {
 
     pub fn to_yaml_bytes(&self) -> Result<Zeroizing<Vec<u8>>, String> {
         let mut bytes = Zeroizing::new(Vec::new());
+        if let Some(tag) = self.spellings.value_tags.0.get(&Vec::<String>::new()) {
+            write_tag(&mut bytes, tag);
+            if container(&self.value.0) {
+                bytes.push(b'\n');
+            }
+        }
         emit(
             &self.value.0,
             &mut Zeroizing::new(Vec::new()),
@@ -419,6 +432,85 @@ impl<'de> DeserializeSeed<'de> for ReadSource<'_> {
     }
 }
 
+/// serde-saphyr's newtype name for its public `serde_saphyr::Tagged<T>` wrapper: a deserializer
+/// asked for it hands the visitor the node as the sequence `[value, tag?]`. Any other
+/// deserializer calls `visit_newtype_struct`, and the node reads as untagged.
+const TAGGED: &str = "__yaml_tagged";
+
+/// An application tag worth carrying (`!Name`, or a non-core URI); core-schema tags
+/// (`tag:yaml.org,2002:*`) only restate how the scalar resolves and are not kept.
+fn application_tag(tag: String) -> Option<String> {
+    (!tag.starts_with("tag:yaml.org,2002:")).then_some(tag)
+}
+
+/// Read one node's tag, then the node itself through `ReadSource`.
+struct TagFirst<'a>(ReadSource<'a>);
+impl<'de> DeserializeSeed<'de> for TagFirst<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
+        de.deserialize_newtype_struct(TAGGED, self)
+    }
+}
+impl<'de> Visitor<'de> for TagFirst<'_> {
+    type Value = ();
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a possibly tagged source node")
+    }
+    fn visit_newtype_struct<D: serde::Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
+        self.0.deserialize(de)
+    }
+    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<(), S::Error> {
+        let ReadSource {
+            shape,
+            path,
+            spellings,
+            wide,
+        } = self.0;
+        seq.next_element_seed(ReadSource {
+            shape,
+            path: &mut *path,
+            spellings: &mut *spellings,
+            wide,
+        })?
+        .ok_or_else(|| serde::de::Error::custom("source node changed"))?;
+        if let Some(tag) = seq.next_element::<String>()?.and_then(application_tag) {
+            spellings
+                .value_tags
+                .0
+                .insert(path.clone(), Zeroizing::new(tag));
+        }
+        Ok(())
+    }
+}
+
+/// Read a map key's text and its tag.
+struct TaggedKey;
+impl<'de> DeserializeSeed<'de> for TaggedKey {
+    type Value = (String, Option<String>);
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        de.deserialize_newtype_struct(TAGGED, self)
+    }
+}
+impl<'de> Visitor<'de> for TaggedKey {
+    type Value = (String, Option<String>);
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a possibly tagged source key")
+    }
+    fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+        self,
+        de: D,
+    ) -> Result<Self::Value, D::Error> {
+        Ok((String::deserialize(de)?, None))
+    }
+    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        let name: String = seq
+            .next_element()?
+            .ok_or_else(|| serde::de::Error::custom("source key changed"))?;
+        let tag = seq.next_element::<String>()?.and_then(application_tag);
+        Ok((name, tag))
+    }
+}
+
 struct Names(HashSet<String>);
 impl Drop for Names {
     fn drop(&mut self) {
@@ -438,26 +530,30 @@ impl<'de> Visitor<'de> for ReadSource<'_> {
         let mut names = Vec::with_capacity(shape.len());
         let mut seen = Names(HashSet::new());
         for (key, value) in shape {
-            let name = Zeroizing::new(
-                map.next_key::<String>()?
-                    .ok_or_else(|| serde::de::Error::custom("source map changed"))?,
-            );
+            let (name, key_tag) = map
+                .next_key_seed(TaggedKey)?
+                .ok_or_else(|| serde::de::Error::custom("source map changed"))?;
+            let name = Zeroizing::new(name);
+            let key_tag = key_tag.map(Zeroizing::new);
             if !seen.0.insert((*name).clone()) {
                 return Err(serde::de::Error::custom("duplicate source map key"));
             }
             self.path.push((*name).clone());
+            if let Some(tag) = key_tag {
+                self.spellings.key_tags.0.insert(self.path.clone(), tag);
+            }
             if !key.is_string() {
                 self.spellings
                     .keys
                     .0
                     .insert(self.path.clone(), name.clone());
             }
-            map.next_value_seed(ReadSource {
+            map.next_value_seed(TagFirst(ReadSource {
                 shape: value,
                 path: self.path,
                 spellings: self.spellings,
                 wide: self.wide,
-            })?;
+            }))?;
             self.path.pop().expect("path member").zeroize();
             names.push(name);
         }
@@ -476,12 +572,12 @@ impl<'de> Visitor<'de> for ReadSource<'_> {
             .enumerate()
         {
             self.path.push(index.to_string());
-            seq.next_element_seed(ReadSource {
+            seq.next_element_seed(TagFirst(ReadSource {
                 shape: value,
                 path: self.path,
                 spellings: self.spellings,
                 wide: self.wide,
-            })?
+            }))?
             .ok_or_else(|| serde::de::Error::custom("source sequence changed"))?;
             self.path.pop().expect("path member").zeroize();
         }
@@ -528,6 +624,17 @@ fn container(value: &Value) -> bool {
         _ => false,
     }
 }
+/// Write a carried tag and the space after it: a local `!Name` as written, a URI as `!<uri>`.
+fn write_tag(bytes: &mut Vec<u8>, tag: &str) {
+    if tag.starts_with('!') {
+        bytes.extend_from_slice(tag.as_bytes());
+    } else {
+        bytes.extend_from_slice(b"!<");
+        bytes.extend_from_slice(tag.as_bytes());
+        bytes.push(b'>');
+    }
+    bytes.push(b' ');
+}
 fn after_marker(
     value: &Value,
     path: &mut Vec<String>,
@@ -536,6 +643,9 @@ fn after_marker(
     bytes: &mut Vec<u8>,
 ) -> Result<(), ()> {
     bytes.push(b' ');
+    if let Some(tag) = spellings.value_tags.0.get(path.as_slice()) {
+        write_tag(bytes, tag);
+    }
     if container(value) {
         bytes.push(b'\n');
         emit(value, path, depth + 2, spellings, bytes)
@@ -558,6 +668,9 @@ fn emit(
                 let key = key.as_str().ok_or(())?;
                 path.push(key.to_owned());
                 indent(bytes, depth);
+                if let Some(tag) = spellings.key_tags.0.get(path.as_slice()) {
+                    write_tag(bytes, tag);
+                }
                 if let Some(raw) = spellings.keys.0.get(path.as_slice()) {
                     bytes.extend_from_slice(raw.as_bytes());
                 } else {
