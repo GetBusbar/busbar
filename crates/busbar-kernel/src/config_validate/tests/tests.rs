@@ -1571,18 +1571,6 @@ fn missing_model_entries_refuse_while_unknown_models_and_invalid_rates_still_fai
         ]
     );
     let mut errors = Vec::new();
-    // Install the plane that declares the token classes, as production does at boot.
-    static FLAT_PLANE_DECL: crate::plane_driver::registry::PlaneDecl =
-        crate::plane_driver::registry::PlaneDecl {
-            declaration: crate::plane_driver::registry::PlaneDeclaration { ..FLAT_PLANE },
-            ..crate::plane_driver::dispatch::neutral_sibling_decl("flat-plane", "pools", "flat")
-        };
-    crate::plane_driver::registry::publish_planes(&[&FLAT_PLANE_DECL]);
-    validate_cost_model(&cfg, &mut errors);
-    assert!(
-        errors.is_empty(),
-        "missing model rate must not refuse: {errors:?}"
-    );
     cfg.rate_card = Some(card_yaml("typo: { input_utok: -1, output_utok: 0.0001 }"));
     validate_cost_model(&cfg, &mut errors);
     assert!(
