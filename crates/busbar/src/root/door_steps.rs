@@ -855,6 +855,7 @@ impl<'s> DoorSteps<'s> {
         &self,
         expected: &[UnitCount],
     ) -> Result<BTreeMap<String, busbar_contract::Count>, Refusal> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::BudgetUnits);
         let mut units = BTreeMap::new();
         for u in expected {
             if let Some(name) = self.facts.classes.get(u.class as usize) {

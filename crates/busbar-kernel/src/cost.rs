@@ -552,6 +552,7 @@ impl CostModel {
         models: &[&str],
         expected: &BTreeMap<String, busbar_contract::Count>,
     ) -> Option<i64> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::Estimate);
         if expected.values().all(|count| count.is_zero()) {
             return Some(0);
         }
@@ -571,6 +572,7 @@ impl CostModel {
         &'a self,
         key: &'a busbar_contract::records::VirtualKey,
     ) -> Result<Chain<'a>, &'a str> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ChainFor);
         let mut buckets: Vec<ChainBucket<'a>> = Vec::with_capacity(8);
 
         buckets.push(ChainBucket {
