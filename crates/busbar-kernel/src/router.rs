@@ -647,10 +647,7 @@ fn mount_plane_route(
             let consumed_fields =
                 auth::ConsumedCredentials::fields_of(consumed.as_deref(), &headers);
             auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
-            let caller_credential = consumed
-                .as_deref()
-                .and_then(|c| c.caller.as_ref())
-                .map(auth::CallerCredential::lend);
+            let caller_credential = consumed.as_deref().and_then(|c| c.caller.clone());
             let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let host_ticket_admission = consumed
                 .as_deref()
@@ -715,10 +712,7 @@ fn mount_plane_session(
             let consumed_fields =
                 auth::ConsumedCredentials::fields_of(consumed.as_deref(), &headers);
             auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
-            let caller_credential = consumed
-                .as_deref()
-                .and_then(|c| c.caller.as_ref())
-                .map(auth::CallerCredential::lend);
+            let caller_credential = consumed.as_deref().and_then(|c| c.caller.clone());
             let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let host_ticket_admission = consumed
                 .as_deref()

@@ -267,7 +267,7 @@ pub struct UnitRoute {
     pub leg: u8,
     /// The caller's verified credential, as the identity step read it, for a member configured for
     /// passthrough. Zeroised on drop; never logged, stored or handed to the plane.
-    pub caller_credential: Option<Secret<Vec<u8>>>,
+    pub caller_credential: Option<crate::auth::CallerCredential>,
     /// The unit's operation is performed AT MOST ONCE (the plane's `ROUTE_ONCE`): a member that
     /// ANSWERED with a failure is not retried on another; its answer reaches the plane as it came.
     /// A walk still moves on before anything was answered.
@@ -1344,12 +1344,10 @@ impl EgressFarEnd<'_> {
             },
 
             caller_credential: if binding.passthrough || self.live_passthrough() {
-                Some(
-                    self.route
-                        .caller_credential
-                        .clone()
-                        .unwrap_or_else(|| Secret::new(Vec::new())),
-                )
+                Some(self.route.caller_credential.as_ref().map_or_else(
+                    || Secret::new(Vec::new()),
+                    crate::auth::CallerCredential::lend,
+                ))
             } else {
                 None
             },

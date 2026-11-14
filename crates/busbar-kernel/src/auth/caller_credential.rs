@@ -87,6 +87,11 @@ impl ConsumedCredentials {
 /// The caller's verified credential, retained in host request context. Its `Debug` prints
 /// presence only; the host lends a wiping copy to the selected auth-kind binding at egress.
 ///
+/// ONE BUFFER, SHARED (SINGLE-PATH SP-AU6): `CallerCredential::verified` is the one copy from
+/// transport custody into kernel custody. Every later holder (the data door, the unit's record,
+/// the far end's route) clones this value, which shares the buffer; only [`CallerCredential::lend`]
+/// at egress makes the wiping copy a plugin input owns.
+///
 /// ZEROISED AT EXIT (THE DESIGN §6: the kernel "holds it on the unit, zeroised at exit, for the
 /// caller-credential style"; "auth material is zeroised"): the bytes live in ONE zeroising buffer,
 /// and a clone shares it, so the plaintext is wiped when the last holder drops, never left behind in
@@ -96,14 +101,26 @@ pub struct CallerCredential(std::sync::Arc<zeroize::Zeroizing<Vec<u8>>>);
 
 impl CallerCredential {
     pub(super) fn verified(token: &str) -> Self {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
         Self(std::sync::Arc::new(zeroize::Zeroizing::new(
             token.as_bytes().to_vec(),
         )))
     }
 
+    /// The wiping copy an egress input owns (an outbound auth call's caller credential): the one
+    /// plaintext copy made after `CallerCredential::verified`.
     #[must_use]
     pub fn lend(&self) -> busbar_contract::redacted::Secret<Vec<u8>> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
         busbar_contract::redacted::Secret::new(self.0.to_vec())
+    }
+}
+
+/// Bytes the host already holds as a verified caller credential, MOVED into the one shared
+/// buffer (no copy).
+impl From<Vec<u8>> for CallerCredential {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(std::sync::Arc::new(zeroize::Zeroizing::new(bytes)))
     }
 }
 
@@ -116,3 +133,7 @@ impl std::fmt::Debug for CallerCredential {
 #[cfg(test)]
 #[path = "tests/caller_credential_tests.rs"]
 mod caller_credential_tests;
+
+#[cfg(test)]
+#[path = "tests/caller_credential_custody.rs"]
+mod caller_credential_custody;

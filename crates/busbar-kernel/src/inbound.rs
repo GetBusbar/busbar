@@ -2301,7 +2301,9 @@ impl Inbound {
                 upgrade_used: std::sync::atomic::AtomicBool::new(false),
                 table: Arc::clone(&unit.table),
                 admitted: unit.admitted.clone(),
-                credential: unit.credential.clone(),
+                // Moved, never copied: the claimed request is the credential's one transport
+                // custody from here on (SP-AU6).
+                credential: unit.credential.take(),
                 signed: unit.signed,
                 original: unit.head.as_ref().unwrap_or(handed).clone(),
                 handed: handed.clone(),
@@ -2316,6 +2318,8 @@ impl Inbound {
         Ok(admission)
     }
 
+    /// The unit's credential while it waits for its claim. The claim moves it into the claimed
+    /// request (SP-AU6), so a claimed unit lends nothing here.
     pub fn with_credential<R>(&self, unit: u64, f: impl FnOnce(&Secret<String>) -> R) -> Option<R> {
         self.units()
             .get(&unit)
