@@ -98,7 +98,7 @@ fn the_breakers_classification_never_moves_with_the_number_beside_the_fault_read
 #[test]
 fn the_adapter_reads_the_fault_reading_and_never_the_class() {
     let read = |class, fault| {
-        reading(UpstreamStatus {
+        reading(&UpstreamStatus {
             class,
             fault,
             code: None,

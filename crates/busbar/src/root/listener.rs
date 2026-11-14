@@ -56,7 +56,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use busbar_kernel::diagnostics::{diag_warn, TLS_ACCEPT_PERSISTENT_FAILURE};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn handshake_timeout() -> Duration {
     Duration::from_secs(busbar_kernel::limits::tls_handshake_timeout_secs())
@@ -208,18 +208,30 @@ pub struct ConnBalancer {
 
 impl ConnBalancer {
     pub fn build(n: usize) -> Vec<ConnBalancer> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: one count cell per accept worker, built once when the listener starts"
+        )]
         let counts: Arc<[PaddedCount]> = (0..n)
             .map(|_| PaddedCount(std::sync::atomic::AtomicU32::new(0)))
             .collect();
+        // busbar:expect(bp::fresh_buffer, reason = "boot: one hand-off sender per accept worker, built once when the listener starts")
         let mut txs = Vec::with_capacity(n);
+        // busbar:expect(bp::fresh_buffer, reason = "boot: one hand-off receiver per accept worker, built once when the listener starts")
         let mut rxs = Vec::with_capacity(n);
         for _ in 0..n {
             let (tx, rx) = tokio::sync::mpsc::channel(HANDOFF_CHANNEL_DEPTH);
             txs.push(tx);
             rxs.push(rx);
         }
+        // busbar:expect(bp::into_alloc, reason = "boot: the senders are shared once across the accept workers when the listener starts")
         let txs: Arc<[_]> = txs.into();
-        rxs.into_iter()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: one balancer per accept worker, built once when the listener starts"
+        )]
+        let balancers = rxs
+            .into_iter()
             .enumerate()
             .map(|(me, rx)| ConnBalancer {
                 counts: counts.clone(),
@@ -227,7 +239,8 @@ impl ConnBalancer {
                 me,
                 rx,
             })
-            .collect()
+            .collect();
+        balancers
     }
 
     fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
@@ -411,7 +424,8 @@ struct TimeoutBody<B> {
 
     sleep: Option<Pin<Box<tokio::time::Sleep>>>,
 
-    started: Option<Instant>,
+    /// The body's first poll on the shared monotonic clock (`loader::dispatch::now_ns`).
+    started: Option<u64>,
 
     bytes: u64,
 }
@@ -466,8 +480,8 @@ impl std::fmt::Display for BodyBoundExceeded {
 }
 impl std::error::Error for BodyBoundExceeded {}
 
-fn check_body_bounds(started: Instant, bytes: u64) -> Option<BodyBoundExceeded> {
-    let elapsed = started.elapsed();
+fn check_body_bounds(started: u64, now: u64, bytes: u64) -> Option<BodyBoundExceeded> {
+    let elapsed = Duration::from_nanos(now.saturating_sub(started));
     if elapsed > total_body_deadline() {
         return Some(BodyBoundExceeded::Total);
     }
@@ -493,7 +507,10 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = &mut *self;
-        let started = *this.started.get_or_insert_with(Instant::now);
+        // The poll's one clock reading: it starts the body's deadline on the first poll and is
+        // the instant both bounds are judged at.
+        let now = crate::root::loader::dispatch::now_ns();
+        let started = *this.started.get_or_insert(now);
 
         match Pin::new(&mut this.inner).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
@@ -502,7 +519,7 @@ where
                     this.bytes += data.remaining() as u64;
                 }
 
-                if let Some(e) = check_body_bounds(started, this.bytes) {
+                if let Some(e) = check_body_bounds(started, now, this.bytes) {
                     return Poll::Ready(Some(Err(Box::new(e))));
                 }
                 Poll::Ready(Some(Ok(frame)))
@@ -510,7 +527,7 @@ where
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e.into()))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => {
-                if let Some(e) = check_body_bounds(started, this.bytes) {
+                if let Some(e) = check_body_bounds(started, now, this.bytes) {
                     return Poll::Ready(Some(Err(Box::new(e))));
                 }
 

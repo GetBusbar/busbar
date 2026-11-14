@@ -114,12 +114,15 @@ pub(super) async fn stopped(s: &Shared) -> ReasonCode {
         }
         let stream = {
             let mut slot = lock(s);
-            // An emit may have replaced or cleared the deadline while the timer woke.
+            // An emit may have replaced or cleared the deadline while the timer woke. The timer fired
+            // at or after `deadline`, so a current deadline no later than it is due; a later one is
+            // slept for again.
             let due = slot
                 .stream
                 .as_ref()
                 .and_then(FramedStream::deadline)
-                .is_some_and(|at| at <= std::time::Instant::now());
+                .zip(deadline)
+                .is_some_and(|(at, slept)| at <= slept);
             if !due {
                 continue;
             }
@@ -216,16 +219,34 @@ impl FramedCaller {
 
     fn finish(&self, status: u32, message: &[u8], details: &[u8]) {
         let head_sent = self.inner.stated().is_some();
-        let (message, details) = (message.to_vec(), details.to_vec());
-        let trailers = Arc::clone(&self.trailers);
-        close_with(&self.stream, move |mut s| {
+        let finished = move |s: &mut FramedStream, message: &[u8], details: &[u8], t: &Trailers| {
             let block = s
-                .finish(status, &message, &details)
+                .finish(status, message, details)
                 .or_else(|_| s.refuse(&[], refusal_status(ReasonCode::PlanePanic), head_sent));
             if let Ok(block) = block {
-                send_trailers(&trailers, &block);
+                send_trailers(t, &block);
             }
-        });
+        };
+        let mut slot = lock(&self.stream);
+        if let Some(mut stream) = slot.stream.take() {
+            // The stream is home: finish it now, straight from the borrowed status words.
+            drop(slot);
+            finished(&mut stream, message, details, &self.trailers);
+            return;
+        }
+        if !slot.out || slot.then.is_some() {
+            return;
+        }
+        // The stream is still crossing the plugin: finish it when it is returned.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a unit finishes while its stream is still out only when it is cut short mid-emit"
+        )]
+        let (message, details) = (message.to_vec(), details.to_vec());
+        let trailers = Arc::clone(&self.trailers);
+        slot.then = Some(Box::new(move |mut s: FramedStream| {
+            finished(&mut s, &message, &details, &trailers);
+        }));
     }
 
     async fn framed(&self, bytes: &[u8], ends: bool) -> bool {

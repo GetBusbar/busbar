@@ -119,6 +119,7 @@ fn caller_over<R: AsyncRead + Unpin + Send>(reader: R) -> LineCaller<R> {
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line: 1024,
         out: mpsc::unbounded_channel().0,
+        spare: Arc::default(),
         failure: Arc::new(IoFailure::default()),
     }
 }

@@ -612,7 +612,7 @@ impl Breaker for WalkCells {
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        adapters::classify(status)
+        adapters::classify(&status)
     }
 
     fn observe(
@@ -676,7 +676,7 @@ impl Breaker for WalkCells {
         now: u64,
         token: &Pass<Route>,
     ) -> (Classified, bool) {
-        let classified = adapters::classify(status);
+        let classified = adapters::classify(&status);
         let tripped = self.observe(pool, destination, classified.outcome, now, token);
         (classified, tripped)
     }

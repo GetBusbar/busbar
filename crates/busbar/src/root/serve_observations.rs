@@ -14,6 +14,10 @@ pub(super) fn parse(
     let Some(value) = section.get(USAGE_OBSERVATIONS_KEY) else {
         return Ok(BTreeMap::new());
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the refusal text is spelled only when the section's observations are refused"
+    )]
     let configured = usage_observation_policies(value.clone())
         .map_err(|e| format!("{instance}.{USAGE_OBSERVATIONS_KEY}: {e}"))?;
     if configured.len() > 256 {
@@ -29,12 +33,22 @@ pub(super) fn parse(
             || policy.classes.len() > 64
             || policy.rated_subjects.len() > 15
         {
-            return Err(format!(
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is spelled only when a policy is refused"
+            )]
+            let refusal = format!(
                 "{instance}.{USAGE_OBSERVATIONS_KEY}.{member}: invalid bounded accounting policy"
-            ));
+            );
+            return Err(refusal);
         }
+        // busbar:expect(bp::fresh_buffer, reason = "config: a policy's class indexes are read once per generation")
         let mut classes = Vec::new();
         for name in policy.classes {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal text is spelled only when a class is undeclared"
+            )]
             let index = facts
                 .classes
                 .iter()
@@ -50,15 +64,24 @@ pub(super) fn parse(
             classes.push(index);
         }
         let serving_subject = crate::root::door_steps::plane_lane(&facts.plane, &member);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a policy's rated subjects are spelled once per generation"
+        )]
         let rated_subjects = policy
             .rated_subjects
             .iter()
             .map(|lane| crate::root::door_steps::plane_lane(&facts.plane, lane))
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a policy names its instance once per generation"
+        )]
+        let owned_instance = instance.to_owned();
         policies.insert(
             member.clone(),
             ObservationPolicy {
-                instance: instance.to_owned(),
+                instance: owned_instance,
                 destination: member,
                 serving_subject,
                 accounting_namespace: policy.accounting_namespace,
@@ -77,20 +100,20 @@ pub(super) struct UnitBinding<'a> {
     pub served: &'a ServedPlane,
     pub live: &'a DoorLive,
     pub unit: busbar_contract::UnitKey,
-    pub selected_member: OnceLock<String>,
+    pub selected_member: OnceLock<&'a str>,
 }
-impl UnitBinding<'_> {
+impl<'a> UnitBinding<'a> {
     pub fn selected(&self, member: &str) -> bool {
-        if self.selected_member.get().is_some_and(|old| old != member) {
+        if self.selected_member.get().is_some_and(|old| *old != member) {
             return false;
         }
-        let Some(policy) = self.live.observations.get(member) else {
+        let Some((member, policy)) = self.live.observations.get_key_value(member) else {
             return true;
         };
         let Some(caller) = self.served.live.plugin.service_caller() else {
             return false;
         };
-        let _ = self.selected_member.set(member.to_owned());
+        let _ = self.selected_member.set(member.as_str());
         self.served
             .kernel
             .register_observation_unit(
