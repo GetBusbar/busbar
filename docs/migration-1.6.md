@@ -234,11 +234,11 @@ gains no endpoint and no route, and the migrator adds none of them.
 
 | Section | What it declares | Guide |
 |---|---|---|
-| `mcp:` | Busbar as an MCP server: canonical URI, identity provider, OAuth 2.1 discovery | [MCP](mcp.md) |
-| `tools:` | Registered upstream MCP servers Busbar governs (`transport: stdio` for local ones) | [MCP](mcp.md), [Tool and agent trust](tool-and-agent-trust.md) |
-| `agents:` | Registered A2A agents, served over JSON-RPC, HTTP+JSON and gRPC | [A2A](a2a.md) |
+| `mcp:` | Busbar as an MCP server: canonical URI, identity provider, OAuth 2.1 discovery | [MCP](https://getbusbar.com/docs/mcp/) |
+| `tools:` | Registered upstream MCP servers Busbar governs (`transport: stdio` for local ones) | [MCP](https://getbusbar.com/docs/mcp/), [Tool and agent trust](tool-and-agent-trust.md) |
+| `agents:` | Registered A2A agents, served over JSON-RPC, HTTP+JSON and gRPC | [A2A](https://getbusbar.com/docs/a2a/) |
 | `streams:` | The live-voice plane: full-duplex realtime sessions over one IR | [Voice](voice.md) |
-| `oauth_as:` | The embedded OAuth 2.1 authorization server the MCP door can use | [MCP](mcp.md) |
+| `oauth_as:` | The embedded OAuth 2.1 authorization server the MCP door can use | [MCP](https://getbusbar.com/docs/mcp/) |
 | `decisions:` | The decisions plane: `jev` and `nanojev` served as passthrough | [Changelog](../CHANGELOG.md#additive-planes) |
 
 Two things about them are worth knowing before you write one. An `mcp:` block with an empty

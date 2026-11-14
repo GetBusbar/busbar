@@ -4,7 +4,7 @@
 # The ACTIVE counterpart of ./config.yaml's commented-out "Durable store" block, mounted by
 # ../docker/docker-compose.yml so that example is wired end to end rather than merely documented.
 # Identical to config.yaml except the store/plugins block below is live instead of commented — see
-# docs/getting-started.md#durable-store-giving-persistence-a-writable-volume for what each of the
+# https://getbusbar.com/getting-started/ for what each of the
 # four keys does and the exact refusal text if one is missing.
 
 listen: "0.0.0.0:8080"
