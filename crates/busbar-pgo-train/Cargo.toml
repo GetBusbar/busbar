@@ -1,0 +1,17 @@
+[package]
+name = "busbar-pgo-train"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "Training-only PGO profile flush for the benchmark build: empty unless built with --cfg busbar_pgo_train."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_pgo_train"
+path = "src/lib.rs"
+
+# std only: no dependencies.
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(busbar_pgo_train)"] }
