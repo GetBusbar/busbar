@@ -577,7 +577,7 @@ pub enum SelfKeyIssue {
     NoGrant,
     /// No governance to issue from.
     NoGovernance,
-    /// The subject's key is disabled, or another identity provider minted it.
+    /// The identity's role grants no group to charge a self-serve key through.
     Unbound,
     /// The subject's self-serve key is on hold, and why.
     Held(crate::governance::SelfMintRefusal),
@@ -617,7 +617,15 @@ pub async fn issue_self_key(
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let keys = DeterministicEd25519Keys::new(gov, module.to_string(), team, pools, provisioner);
+    let unattributed = crate::auth::self_keys::unattributed_binding(app, module);
+    let keys = DeterministicEd25519Keys::new(
+        gov,
+        module.to_string(),
+        unattributed,
+        team,
+        pools,
+        provisioner,
+    );
     match issue_key(&keys, principal, ttl, refresh).await {
         Ok(k) => SelfKeyIssue::Issued {
             subject: principal.id.clone(),
