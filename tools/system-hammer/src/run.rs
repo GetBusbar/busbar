@@ -599,8 +599,22 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
         Ok(m) => m,
         Err(e) => return vec![failed(s, "-", format!("mock: {e}"))],
     };
-    let listen: SocketAddr = ([127, 0, 0, 1], gateway::free_port()).into();
-    let admin: SocketAddr = ([127, 0, 0, 1], gateway::free_port()).into();
+    let (listen, admin, pa, pb) = match (|| {
+        Ok::<_, String>((
+            gateway::free_port()?,
+            gateway::free_port()?,
+            gateway::free_port()?,
+            gateway::free_port()?,
+        ))
+    })() {
+        Ok((l, a, pa, pb)) => (
+            SocketAddr::from(([127, 0, 0, 1], l)),
+            SocketAddr::from(([127, 0, 0, 1], a)),
+            pa,
+            pb,
+        ),
+        Err(e) => return vec![failed(s, "-", e)],
+    };
     let signing = match gateway::signing_key(&env.bin) {
         Ok(k) => k,
         Err(e) => return vec![failed(s, "-", e)],
@@ -624,8 +638,8 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
     vars.insert("CARD_ISSUER_KEY".into(), mock::card_issuer_key());
     vars.insert("MCP_SCHEMA_HASH".into(), mock::MCP_PING_SCHEMA_HASH.into());
     vars.insert("ADMIN_TOKEN".into(), token.clone());
-    vars.insert("FREE_PORT_A".into(), gateway::free_port().to_string());
-    vars.insert("FREE_PORT_B".into(), gateway::free_port().to_string());
+    vars.insert("FREE_PORT_A".into(), pa.to_string());
+    vars.insert("FREE_PORT_B".into(), pb.to_string());
 
     // Steps that must run before boot (a service account the config's env needs).
     let steps = match s.steps() {
