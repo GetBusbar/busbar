@@ -237,7 +237,7 @@ use crate::caps::ReasonCode;
 
 /// The plane kind's initial released ABI; v1.5.5 had no plane kind ABI.
 /// Admission also requires the current layout fingerprint.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = crate::abi::versions::PLANE.raw();
 
 /// The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0xf333cffc6e7801db;
