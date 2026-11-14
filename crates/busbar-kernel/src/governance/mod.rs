@@ -1181,16 +1181,6 @@ pub(crate) fn issue_credential(
     Ok((id, draw(&shape.secret_alphabet, shape.secret_len)?))
 }
 
-/// Exercise the production issued-shape generator with a fixture verifier's declared shape.
-/// This hook carries no fixture format or implementation; those belong to the external kit.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn issue_credential_for_test(
-    shape: &busbar_contract::auth_calls::IssuedShape,
-) -> Result<(String, String), getrandom::Error> {
-    issue_credential(shape)
-}
-
 pub fn pool_allowed(key: &VirtualKey, pool: &str) -> bool {
     key.scope_allowed("pool", pool)
 }

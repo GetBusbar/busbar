@@ -781,19 +781,6 @@ impl App {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_test_telemetry<'a>(
-        &mut self,
-        pools: &[(&'a str, Vec<usize>)],
-        by_model: &[(&'a str, usize)],
-        lane_model: impl Fn(usize) -> Option<&'a str>,
-        plane: &'static str,
-    ) {
-        self.tslots = Arc::new(crate::telemetry::AppSlots::build(
-            pools, by_model, lane_model, plane,
-        ));
-    }
-
     pub fn flush_verified_credentials(&self, module: Option<&str>) -> Result<u64, String> {
         credential_flush_results(
             self.admin_modules
@@ -867,13 +854,6 @@ impl App {
 
     pub fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
-    }
-
-    pub fn plane_slot_mut(
-        &mut self,
-        key: &str,
-    ) -> Option<&mut Arc<dyn std::any::Any + Send + Sync>> {
-        self.plane_slots.get_mut(key)
     }
 
     pub fn fallback_runtime_key(&self) -> &'static str {

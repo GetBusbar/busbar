@@ -149,12 +149,6 @@ impl Attempt {
         &self.candidate
     }
 
-    /// Authority facts captured from the original backend at construction.
-    #[must_use]
-    pub fn backend_info(&self) -> BackendInfo {
-        self.info
-    }
-
     /// Observe custody state without disclosing any protected bytes.
     #[must_use]
     pub fn state(&self) -> State {
