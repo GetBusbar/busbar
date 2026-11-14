@@ -3,8 +3,9 @@
 
 //! THE PROXY ROUTE CHOICE: which proxy, if any, a dial goes through. The connector reads the
 
-use std::net::IpAddr;
 use std::sync::Arc;
+
+use hyper_util::client::proxy::matcher::Matcher;
 
 /// ONE PROXY ENDPOINT: where to connect, and the `Proxy-Authorization` value its userinfo became.
 #[derive(Clone, PartialEq, Eq)]
@@ -92,12 +93,16 @@ impl ProxyHop {
 }
 
 /// THE CHOICE: the secured slot, the plain slot, and the hosts exempt from both.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ProxyChoice {
     secured: Option<Arc<ProxyHop>>,
     plain: Option<Arc<ProxyHop>>,
-    exempt: NoProxy,
+    exempt: Matcher,
 }
+
+/// The intercept the exemption matcher answers with. It is never dialled: only whether
+/// the matcher intercepts (not exempt) or not (exempt) is read.
+const SENTINEL: &str = "http://no-proxy.invalid";
 
 impl ProxyChoice {
     /// The choice of a `secured` slot, a `plain` slot, and the exemption list `exempt` as its
@@ -106,14 +111,18 @@ impl ProxyChoice {
         Self {
             secured,
             plain,
-            exempt: NoProxy::parse(exempt),
+            exempt: Matcher::builder()
+                .http(SENTINEL)
+                .https(SENTINEL)
+                .no(exempt)
+                .build(),
         }
     }
 
     /// The per-dial choice — `None` → direct (the host is exempt, or no proxy is set for the
     #[must_use]
     pub fn select(&self, secured_target: bool, target_host: &str) -> Option<Arc<ProxyHop>> {
-        if self.exempt.matches(target_host) {
+        if self.exempts(target_host) {
             return None;
         }
         if secured_target {
@@ -126,7 +135,8 @@ impl ProxyChoice {
     /// Whether the exemption list excludes `target_host` from both slots.
     #[must_use]
     pub fn exempts(&self, target_host: &str) -> bool {
-        self.exempt.matches(target_host)
+        http::Uri::try_from(format!("http://{target_host}/"))
+            .is_ok_and(|u| self.exempt.intercept(&u).is_none())
     }
 }
 
