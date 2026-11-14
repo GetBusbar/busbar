@@ -112,12 +112,17 @@ pub fn validate_configuration(config: &Value) -> Result<PathBuf> {
         config.has_keys(&keys),
         "invalid Linux isolation configuration",
     )?;
-    let root = PathBuf::from(
-        config
-            .at("storage_root")
-            .as_str()
-            .ok_or("unsafe job storage root")?,
-    );
+    // Operator-only: protected root configuration names the job storage root. It is
+    // still held to an exact, absolute, link-free path (`exact_path`: no `.`, `..` or
+    // link anywhere) below the filesystem root before anything mounts on it.
+    let configured = config
+        .at("storage_root")
+        .as_str()
+        .ok_or("unsafe job storage root")?;
+    require(!configured.contains('\0'), "unsafe job storage root")?;
+    let root = crate::confined::Trusted::internal(Path::new(configured))
+        .as_path()
+        .to_path_buf();
     require(
         exact_path(&root)
             && root.components().count() > 2
