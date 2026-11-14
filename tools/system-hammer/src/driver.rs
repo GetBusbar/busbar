@@ -600,3 +600,103 @@ pub fn pct_us(h: &Histogram<u64>, q: f64) -> f64 {
     }
     h.value_at_quantile(q) as f64 / 1000.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The text between `from` and `to` in `src`: the doc comment of the field named by `to`.
+    fn doc_of<'a>(src: &'a str, from: &str, to: &str) -> &'a str {
+        let end = src.find(to).expect("field present");
+        let start = src[..end].rfind(from).expect("previous field present");
+        &src[start..end]
+    }
+
+    /// A `contains:` marker is checked on every answer with the expected status, but a miss is
+    /// counted as `body_miss` (and fails the case) only inside the measured window; warmup and
+    /// late misses are only logged. The field docs must state exactly that scope.
+    #[test]
+    fn contains_miss_counts_only_in_window_and_docs_say_so() {
+        let start = Instant::now();
+        let plan = Plan {
+            addr: "127.0.0.1:9".parse().unwrap(),
+            proto: Proto::H1,
+            reqs: Vec::new(),
+            shape: Shape::Closed { concurrency: 1 },
+            start,
+            warmup: Duration::from_secs(5),
+            measure: Duration::from_secs(5),
+            timeout: Duration::from_secs(1),
+            h2_streams: 1,
+            sample_every: 1,
+        };
+        let ctx = Ctx {
+            plan,
+            reqs: Vec::new(),
+            windows: 5,
+            permits: None,
+            arrivals: AtomicU64::new(0),
+            rate: 0.0,
+            seq: AtomicU64::new(0),
+            first_error: std::sync::Mutex::new(None),
+        };
+        let p = Prepared {
+            method: Method::GET,
+            uri: Uri::from_static("/"),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            expect_status: 200,
+            expect_contains: Some(b"hammer-ok".to_vec()),
+        };
+        let miss =
+            |status: u16| -> Result<Result<Exchange, hyper::Error>, tokio::time::error::Elapsed> {
+                Ok(Ok(Exchange {
+                    status,
+                    first_byte: None,
+                    bytes: 2,
+                    chunks: 1,
+                    body: Some(b"no".to_vec()),
+                }))
+            };
+        let mut local = Local::new(ctx.windows);
+        let s = Duration::from_secs;
+        // Warmup miss: logged, not counted.
+        ctx.record(&mut local, start + s(1), start + s(2), miss(200), &p);
+        // Miss that completes after the window: logged, not counted.
+        ctx.record(&mut local, start + s(9), start + s(11), miss(200), &p);
+        assert_eq!((local.body_total, local.body_miss), (0, 0));
+        assert!(
+            ctx.first_error.lock().unwrap().is_some(),
+            "the miss is logged"
+        );
+        // Wrong status in the window: a status error, the body is not checked.
+        ctx.record(&mut local, start + s(6), start + s(7), miss(503), &p);
+        assert_eq!((local.body_total, local.body_miss), (0, 0));
+        // Expected status in the window: checked and counted.
+        ctx.record(&mut local, start + s(6), start + s(7), miss(200), &p);
+        assert_eq!((local.body_total, local.body_miss), (1, 1));
+
+        // The docs state that scope, not "every body, any miss fails".
+        for doc in [
+            doc_of(
+                include_str!("scenario.rs"),
+                "pub expect: u16,",
+                "pub contains: Option<String>",
+            ),
+            doc_of(
+                include_str!("driver.rs"),
+                "pub expect_status: u16,",
+                "pub expect_contains: Option<Vec<u8>>",
+            ),
+        ] {
+            assert!(
+                doc.contains("measured window") && doc.contains("warmup"),
+                "doc must say misses count only in the measured window: {doc}"
+            );
+            assert!(
+                !doc.contains("EVERY"),
+                "doc must not overstate the check: {doc}"
+            );
+        }
+    }
+}
