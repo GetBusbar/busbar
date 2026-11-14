@@ -38,7 +38,7 @@ impl Posting {
                 .lines()
                 .iter()
                 .map(|l| Quantity {
-                    class: l.class.as_str().into(),
+                    class: l.class.as_str(),
                     amount: l.quantity,
                 })
                 .collect(),
@@ -57,7 +57,7 @@ impl Priced {
         self.lines
             .iter()
             .filter(|l| l.unpriced)
-            .map(|l| l.class.as_str())
+            .map(|l| l.class)
             .collect()
     }
 }

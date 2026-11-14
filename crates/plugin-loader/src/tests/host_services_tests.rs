@@ -3760,6 +3760,13 @@ fn slots_of(slots: &HostSlots) -> [Option<svc::ServiceFn>; SERVICES as usize] {
         slots.work_status,
         slots.outbound_authorize,
         slots.hook_child,
+        slots.directory_get,
+        slots.directory_lookup,
+        slots.directory_scan,
+        slots.directory_count,
+        slots.directory_create,
+        slots.directory_apply,
+        slots.directory_delete,
     ]
 }
 

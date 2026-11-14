@@ -28,7 +28,7 @@ use busbar_contract::secure::SecureVec;
 
 use crate::boot::Candidate;
 use crate::dispatch::kinds::secret::Secret;
-use crate::dispatch::lifecycle::{self, blob, open_frame, AnswerLease};
+use crate::dispatch::lifecycle::{self, blob, AnswerLease};
 use crate::dispatch::Called;
 use crate::dispatch::{
     in_head, instant_at, now_ns, out_head, Bind, ConnTable, Dispatcher, EnvelopeSink, Frame,
@@ -349,20 +349,6 @@ fn answer_text(error: Option<&[u8]>, fallback: std::fmt::Arguments<'_>) -> Strin
     text
 }
 
-/// What an OPEN crossing borrows, owned for as long as the dispatcher may still read it (a PENDING
-/// open is resumed later, and an open that outlives its wait is finished or cancelled by the
-/// dispatcher, never against freed memory).
-struct OpenLent {
-    settings: SecureVec,
-    _secrets: Vec<SecureVec>,
-    blobs: Vec<Blob>,
-}
-
-// SAFETY: every blob pointer borrows an immutable allocation this value owns.
-unsafe impl Send for OpenLent {}
-// SAFETY: as above; nothing in it is mutated after construction.
-unsafe impl Sync for OpenLent {}
-
 impl LoadedSecret {
     /// OPEN an instance through the dispatcher, as every other op on it crosses: a PENDING open
     /// (a plugin that authenticates before it is ready) is resumed by the dispatcher until it
@@ -375,10 +361,15 @@ impl LoadedSecret {
     ) -> Result<Self, String> {
         let owned: Vec<SecureVec> = match (secrets.is_empty(), dispatcher.seal()) {
             (true, _) => Vec::new(),
-            (false, Some(seal)) => secrets
-                .iter()
-                .map(|s| SecureVec::from(s.expose(seal).as_slice()))
-                .collect(),
+            (false, Some(seal)) => {
+                let mut owned = Vec::with_capacity(secrets.len());
+                owned.extend(
+                    secrets
+                        .iter()
+                        .map(|s| SecureVec::from(s.expose(seal).as_slice())),
+                );
+                owned
+            }
             (false, None) => {
                 return Err(format!(
                     "plugin '{}' open failed: its secret material is revealed only on a \
@@ -387,20 +378,8 @@ impl LoadedSecret {
                 ));
             }
         };
-        let blobs = owned
-            .iter()
-            .map(|s| blob(s, BLOB_OCTETS, BLOB_SECRET))
-            .collect();
-        let lent = Arc::new(OpenLent {
-            settings: SecureVec::from(settings),
-            _secrets: owned,
-            blobs,
-        });
-        let mut f = open_frame(blob(&lent.settings, BLOB_JSON, 0));
-        if !lent.blobs.is_empty() {
-            f.input.secrets = lent.blobs.as_ptr();
-            f.input.secrets_len = lent.blobs.len();
-        }
+        let lent = Arc::new(lifecycle::OpenLent::new(settings, owned));
+        let f = lent.frame();
         let Some(ticket) = dispatcher.mint(0) else {
             return Err(format!(
                 "plugin '{}' open failed: no ticket to open it on",
