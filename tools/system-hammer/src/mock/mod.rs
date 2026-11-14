@@ -560,3 +560,27 @@ async fn handle(st: &State, req: Request<Incoming>) -> Response<MockBody> {
 }
 
 const IN_TOK_DEC: i64 = 4;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The OIDC discovery document names the listener that served it, port included, so a
+    /// client following `jwks_uri` / `token_endpoint` reaches this mock and not port 80.
+    #[test]
+    fn the_oidc_discovery_document_names_the_mock_s_own_listener() {
+        let m = Mock::start(MockConfig::default(), 1).unwrap();
+        let r = crate::gateway::call(m.addr, "GET", "/.well-known/openid-configuration", &[], b"")
+            .unwrap();
+        assert_eq!(r.status, 200);
+        let text = r.text();
+        let base = m.base();
+        for want in [
+            format!("\"issuer\":\"{base}\""),
+            format!("\"jwks_uri\":\"{base}/jwks\""),
+            format!("\"token_endpoint\":\"{base}/token\""),
+        ] {
+            assert!(text.contains(&want), "{want} in {text}");
+        }
+    }
+}

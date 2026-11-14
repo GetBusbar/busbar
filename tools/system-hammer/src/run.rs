@@ -220,18 +220,11 @@ fn start_docker(s: &Scenario, vars: &mut BTreeMap<String, String>) -> Result<Con
         let deadline = Instant::now() + Duration::from_secs(90);
         loop {
             let ready = match &svc.ready_log {
-                Some(needle) => {
-                    let logs = Command::new("docker").args(["logs", &id]).output();
-                    logs.map(|o| {
-                        let all = format!(
-                            "{}{}",
-                            String::from_utf8_lossy(&o.stdout),
-                            String::from_utf8_lossy(&o.stderr)
-                        );
-                        all.matches(needle.as_str()).count() >= svc.ready_count
-                    })
-                    .unwrap_or(false)
-                }
+                Some(needle) => log_ready(
+                    Command::new("docker").args(["logs", &id]).output(),
+                    needle,
+                    svc.ready_count,
+                )?,
                 None => std::net::TcpStream::connect(("127.0.0.1", port)).is_ok(),
             };
             if ready {
@@ -244,6 +237,24 @@ fn start_docker(s: &Scenario, vars: &mut BTreeMap<String, String>) -> Result<Con
         }
     }
     Ok(started)
+}
+
+/// Whether a container's `docker logs` output carries `needle` at least `count` times.
+fn log_ready(
+    logs: std::io::Result<std::process::Output>,
+    needle: &str,
+    count: usize,
+) -> Result<bool, String> {
+    Ok(logs
+        .map(|o| {
+            let all = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            all.matches(needle).count() >= count
+        })
+        .unwrap_or(false))
 }
 
 fn stage_plugins(s: &Scenario, env: &Env, work: &Path) -> Result<(), String> {
@@ -984,6 +995,27 @@ mod tests {
                 format!("{}/{}", out.body_miss, out.body_total)
             );
         });
+    }
+
+    /// `docker logs` that cannot run, or that fails (the container is gone), is an error the
+    /// scenario reports, not "not ready yet" until the 90 s deadline.
+    #[test]
+    fn a_docker_logs_failure_is_an_error_not_a_not_ready() {
+        use std::os::unix::process::ExitStatusExt as _;
+        use std::process::{ExitStatus, Output};
+        assert!(log_ready(Err(std::io::Error::other("no docker")), "ready", 1).is_err());
+        let failed = Output {
+            status: ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"Error response from daemon: No such container: x".to_vec(),
+        };
+        assert!(log_ready(Ok(failed), "ready", 1).is_err());
+        let ok = Output {
+            status: ExitStatus::from_raw(0),
+            stdout: b"ready\n".to_vec(),
+            stderr: b"ready\n".to_vec(),
+        };
+        assert_eq!(log_ready(Ok(ok), "ready", 2), Ok(true));
     }
 
     #[test]
