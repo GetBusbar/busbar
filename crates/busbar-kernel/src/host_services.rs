@@ -31,8 +31,8 @@ use crate::host_records::{
 };
 use crate::host_units::StageAnswer;
 use crate::host_work::{
-    owner_of, parse_reference, reference_text, refusal as work_refusal, work_key, Owner, Work,
-    WorkBook, WorkBounds, WORK_SCHEMA,
+    owner_of, parse_reference, reference_text, refusal as work_refusal, Owner, Work, WorkBook,
+    WorkBounds, WORK_SCHEMA,
 };
 use crate::trust::book::{
     Distrust, Effect, KeyRow, KeyState, Ruling, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
@@ -464,12 +464,6 @@ impl Drop for LifeObservationOwed {
             done(Err("chain life observation was not run"));
         }
     }
-}
-
-fn submit(pool: &dyn Offload, later: Later, job: impl FnOnce() -> Stored + Send + 'static) -> Ran {
-    let owed = Owed(Some(later));
-    pool.run(Box::new(move || owed.answer(job())));
-    Ran::Later
 }
 
 fn native_record_found(value: Vec<u8>) -> Stored {
@@ -2566,6 +2560,17 @@ impl KernelServices {
         let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
         Ok((schema, records, pool))
     }
+
+    /// The refusal of a record read or claim on a host with no persistence bound.
+    fn unbound(&self, caller: &Caller, kind: &str) -> Stored {
+        match self.facts(caller) {
+            None => Stored::refused(NOT_ADMITTED),
+            Some(facts) if !facts.record_kinds.iter().any(|k| k.as_str() == kind) => {
+                Stored::refused(NOT_A_KIND)
+            }
+            Some(_) => Stored::refused(NO_STORE),
+        }
+    }
 }
 
 impl KernelServices {
@@ -2574,19 +2579,12 @@ impl KernelServices {
         Some(owner_of(record.principal.as_deref().map(|k| k.id.as_str())))
     }
 
-    fn work_scope(
-        &self,
-        caller: &Caller,
-    ) -> Result<(Arc<InstanceFacts>, &Records, &dyn Offload), Stored> {
-        let facts = self
-            .facts(caller)
-            .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
-        let records = self
-            .records
-            .get()
-            .ok_or_else(|| Stored::refused(NO_STORE))?;
-        let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
-        Ok((facts, records, pool))
+    /// The refusal of a work call on a host with no persistence bound.
+    fn work_unbound(&self, caller: &Caller) -> Stored {
+        match self.facts(caller) {
+            None => Stored::refused(NOT_ADMITTED),
+            Some(_) => Stored::refused(NO_STORE),
+        }
     }
 }
 
@@ -4079,46 +4077,7 @@ impl HostServices for KernelServices {
             }
             Ok(None) => {}
         }
-        let (_, records, pool) = match self.work_scope(caller) {
-            Ok(s) => s,
-            Err(refused) => return Ran::Now(refused),
-        };
-        let (Some(unit), Some(owner)) = (unit, self.owner_of_unit(unit)) else {
-            return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
-        };
-        let units = Arc::clone(&self.units);
-
-        let absent = || Stored::ready(svc::ABSENT);
-        let Some(reference) = parse_reference(reference) else {
-            return Ran::Now(absent());
-        };
-        let book = Arc::clone(&self.work);
-        let rows = Arc::clone(&records.reads);
-        let retain_ms = self.work_bounds_of(caller.namespace()).retain_ms;
-        let wall_ms = Arc::clone(&self.wall_ms);
-        let instance = Arc::clone(caller.namespace());
-        submit(pool, later, move || {
-            let held = match book.by_reference(&instance, &reference) {
-                Some(held) => Some(held),
-
-                None => match rows.record_get(WORK_SCHEMA, &work_key(&instance, &reference)) {
-                    Err(_) => return failed(STORE_FAILED),
-                    Ok(row) => row
-                        .and_then(|row| Work::read(&instance, reference, row.as_slice()))
-                        .map(|w| (book.adopt(w.clone()), w)),
-                },
-            };
-            match held {
-                Some((handle, w))
-                    if w.owner == owner
-                        && (w.live || w.settled_ms.saturating_add(retain_ms) > wall_ms()) =>
-                {
-                    book.found(handle, unit, &|u| units.get(u).is_some());
-                    work_found(handle, &w)
-                }
-                _ => absent(),
-            }
-        })
+        Ran::Now(self.work_unbound(caller))
     }
 
     fn work_status(&self, caller: &Caller, reference: &[u8], later: Later) -> Ran {
@@ -4148,24 +4107,7 @@ impl HostServices for KernelServices {
             }
             Ok(None) => {}
         }
-        let (_, records, pool) = match self.work_scope(caller) {
-            Ok(scope) => scope,
-            Err(refused) => return Ran::Now(refused),
-        };
-        let Some(reference) = parse_reference(reference) else {
-            return Ran::Now(Stored::ready(svc::WORK_STATUS_ABSENT));
-        };
-        let book = Arc::clone(&self.work);
-        let rows = Arc::clone(&records.reads);
-        let instance = Arc::clone(caller.namespace());
-        let retain_ms = self.work_bounds_of(&instance).retain_ms;
-        let wall_ms = Arc::clone(&self.wall_ms);
-        submit(pool, later, move || {
-            match book.status(&*rows, &instance, &reference, wall_ms(), retain_ms) {
-                Ok(status) => Stored::ready(status),
-                Err(_) => failed(STORE_FAILED),
-            }
-        })
+        Ran::Now(self.work_unbound(caller))
     }
 
     fn work_settle(
