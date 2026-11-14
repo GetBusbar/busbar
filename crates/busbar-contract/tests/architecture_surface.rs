@@ -856,3 +856,42 @@ fn included_source_uses_the_compiling_crates_generated_directory() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("implementation selector fixture-owner"));
 }
+
+fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let entry = entry.expect("directory entry readable");
+        let kind = entry.file_type().expect("file type readable");
+        let path = entry.path();
+        if kind.is_dir() && entry.file_name() != "target" {
+            rust_sources(&path, out);
+        } else if kind.is_file() && path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn no_exemption_markers_for_unregistered_lints() {
+    // No lint registry exists, so every exemption marker names a lint that is never
+    // enforced. If a real lint is added later, replace this with an allowlist of
+    // registered lint names. The needle is split so this file does not match itself.
+    let needle = concat!("lint-", "exempt(");
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    rust_sources(&crates, &mut files);
+    assert!(
+        !files.is_empty(),
+        "no Rust sources under {}",
+        crates.display()
+    );
+    let hits: Vec<String> = files
+        .iter()
+        .filter(|path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+                .contains(needle)
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    assert!(hits.is_empty(), "markers for nonexistent lints: {hits:?}");
+}
