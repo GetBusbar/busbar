@@ -25,6 +25,12 @@ const OWNER: InstanceId = InstanceId(7);
 type Saw = Option<(bool, Vec<u8>)>;
 
 fn sealing_plane() -> (ServedFacts, NeedId) {
+    sealing_plane_where(|_| true)
+}
+
+/// A linked plane door as [`sealing_plane`], whose need's trust path's member key passes `trust_is`
+/// (`"tls"`: the structured selector that also carries a member root, `tls.ca_cert_pem`).
+fn sealing_plane_where(trust_is: impl Fn(&str) -> bool) -> (ServedFacts, NeedId) {
     use crate::root::loader::dispatch::{
         load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
@@ -59,7 +65,7 @@ fn sealing_plane() -> (ServedFacts, NeedId) {
                 .zip(&served.need_trust)
                 .position(|(target, trust)| {
                     busbar_contract::section::member_target(target).is_some()
-                        && busbar_contract::section::member_target(trust).is_some()
+                        && busbar_contract::section::member_target(trust).is_some_and(&trust_is)
                 })?;
             let need = NeedId(u32::try_from(need).ok()?);
             pins_key.then_some((served, need))
@@ -120,6 +126,26 @@ impl Pki {
             key_pem: kp.serialize_pem(),
             pin: key_pin(&kp.subject_public_key_info()),
         }
+    }
+}
+
+/// A self-signed certificate for `name`, its own issuer: a leaf (`CA:FALSE`, critical) or, with
+/// `ca`, a CA certificate (`CA:TRUE`) served as if it were one.
+fn self_signed(name: &str, ca: bool) -> Issued {
+    let kp = rcgen::KeyPair::generate().expect("a key");
+    let mut params = rcgen::CertificateParams::new(vec![name.to_owned()]).expect("params");
+    params.is_ca = if ca {
+        rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained)
+    } else {
+        rcgen::IsCa::ExplicitNoCa
+    };
+    let cert = params.self_signed(&kp).expect("the certificate");
+    Issued {
+        der: cert.der().to_vec(),
+        pem: cert.pem(),
+        key_der: kp.serialize_der(),
+        key_pem: kp.serialize_pem(),
+        pin: key_pin(&kp.subject_public_key_info()),
     }
 }
 
@@ -266,6 +292,24 @@ fn registration(
         r.insert(identity.into(), Value::Mapping(id));
     }
     Value::Mapping(r)
+}
+
+/// [`registration`] with `root` as the member's own root (`tls.ca_cert_pem`).
+fn rooted(
+    served: &ServedFacts,
+    need: NeedId,
+    url: &str,
+    pin: (&str, &str),
+    root: &str,
+) -> serde_yaml::Value {
+    use serde_yaml::{Mapping, Value};
+    let mut r = registration(served, need, url, pin, None);
+    let mut tls = Mapping::new();
+    tls.insert("ca_cert_pem".into(), root.into());
+    r.as_mapping_mut()
+        .expect("a mapping")
+        .insert("tls".into(), Value::Mapping(tls));
+    r
 }
 
 fn seal(
@@ -451,6 +495,96 @@ async fn an_mtls_registration_presents_its_client_identity_and_one_with_none_is_
     );
     let _ = std::fs::remove_file(&cert);
     let _ = std::fs::remove_file(&key);
+}
+
+/// The refusal cause of a dial to `url` under `entry` that must fail at its handshake.
+async fn refused_cause(c: &Connector, need: NeedId, url: &str, entry: &str) -> String {
+    let (conn, got) = exchange(c, need, url, entry).await;
+    assert_eq!(got, Err(ConnError::Refused), "{entry}: refused");
+    let conn = conn.expect("refused at its handshake, not before");
+    let cause = c.cause(OWNER, conn).expect("a cause").text;
+    c.close(OWNER, conn).expect("closed");
+    cause
+}
+
+/// A `cert_spki` PIN IS CHECKED ON TOP OF THE CHAIN, NOT INSTEAD OF IT, AND THE REFUSAL SAYS SO
+/// (design mcp-issuer §2, §3.1, §4): a self-signed `CA:FALSE` leaf whose key the pin names, with no
+/// member root, is refused for its chain, and the cause says the certificate does not chain to a
+/// root busbar trusts.
+#[cfg(linked_section_tools)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_pinned_self_signed_leaf_with_no_member_root_is_refused_for_its_chain_in_words() {
+    let (served, need) = sealing_plane_where(|trust| trust == "tls");
+    let pki = Pki::new();
+    let leaf = self_signed("127.0.0.1", false);
+    let (port, _rx) = far_end(&pki, &leaf, false).await;
+    let origin = format!("https://127.0.0.1:{port}");
+    let url = format!("{origin}/agent");
+    let c = connector(&pki, &served, need);
+    let pinned = registration(&served, need, &url, ("cert_spki", &leaf.pin), None);
+    seal(&c, &served, need, "unrooted", &origin, &pinned);
+    let cause = refused_cause(&c, need, &url, "unrooted").await;
+    let unknown = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
+    assert!(cause.starts_with(&unknown.to_string()), "{cause}");
+    assert!(cause.contains("does not chain"), "{cause}");
+}
+
+/// A CA CERTIFICATE SERVED AS THE LEAF IS NAMED AS ONE (design mcp-issuer §3.1, §4): a self-signed
+/// `CA:TRUE` certificate, configured as its own member root and pinned, is refused, and the cause
+/// asks for a `CA:FALSE` leaf.
+#[cfg(linked_section_tools)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_ca_certificate_served_as_its_own_leaf_is_refused_with_a_ca_false_remedy() {
+    let (served, need) = sealing_plane_where(|trust| trust == "tls");
+    let pki = Pki::new();
+    let leaf = self_signed("127.0.0.1", true);
+    let (port, _rx) = far_end(&pki, &leaf, false).await;
+    let origin = format!("https://127.0.0.1:{port}");
+    let url = format!("{origin}/agent");
+    let c = connector(&pki, &served, need);
+    let pinned = rooted(&served, need, &url, ("cert_spki", &leaf.pin), &leaf.pem);
+    seal(&c, &served, need, "ca-leaf", &origin, &pinned);
+    let cause = refused_cause(&c, need, &url, "ca-leaf").await;
+    assert!(cause.contains("CA:FALSE"), "{cause}");
+}
+
+/// THE DOCUMENTED SELF-SIGNED RECIPE, AND THE PIN STILL NARROWS IT (design mcp-issuer §3.3, §4): a
+/// self-signed `CA:FALSE` leaf configured as the member's root is reached under a pin naming its
+/// key, and refused with exactly the pin's refusal under a pin naming another key.
+#[cfg(linked_section_tools)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_self_signed_leaf_as_its_member_root_is_reached_under_its_pin_and_refused_under_another()
+{
+    let (served, need) = sealing_plane_where(|trust| trust == "tls");
+    let pki = Pki::new();
+    let leaf = self_signed("127.0.0.1", false);
+    let other = self_signed("127.0.0.1", false);
+    let (port, mut rx) = far_end(&pki, &leaf, false).await;
+    let origin = format!("https://127.0.0.1:{port}");
+    let url = format!("{origin}/agent");
+    let c = connector(&pki, &served, need);
+
+    let mispinned = rooted(&served, need, &url, ("cert_spki", &other.pin), &leaf.pem);
+    seal(&c, &served, need, "rooted-mispinned", &origin, &mispinned);
+    let cause = refused_cause(&c, need, &url, "rooted-mispinned").await;
+    assert_eq!(cause, busbar_core_connector::compose::PIN_REFUSED);
+    assert!(
+        saw(&mut rx).await.is_none_or(|(_, bytes)| bytes.is_empty()),
+        "no request byte reached the far end"
+    );
+
+    let pinned = rooted(&served, need, &url, ("cert_spki", &leaf.pin), &leaf.pem);
+    seal(&c, &served, need, "rooted", &origin, &pinned);
+    let (conn, got) = exchange(&c, need, &url, "rooted").await;
+    let conn = conn.expect("the open");
+    assert_eq!(
+        got,
+        Ok((Some(200), b"ok".to_vec())),
+        "the documented recipe is reached"
+    );
+    c.close(OWNER, conn).expect("closed");
+    let (_, bytes) = saw(&mut rx).await.expect("the handshake completed");
+    assert!(bytes.starts_with(b"GET /agent "), "{bytes:?}");
 }
 
 #[test]
