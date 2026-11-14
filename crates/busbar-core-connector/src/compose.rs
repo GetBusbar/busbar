@@ -1198,8 +1198,9 @@ impl Connection {
             {
                 Ok(y) => y,
                 Err(e) => {
-                    let f = failed(&e);
-                    self.emit_fault = Some((e.error.clone(), f.clone()));
+                    let text = e.error.clone();
+                    let f = failed(e);
+                    self.emit_fault = Some((text, f.clone()));
                     return Err(f);
                 }
             };

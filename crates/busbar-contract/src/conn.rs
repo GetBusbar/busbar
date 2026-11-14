@@ -877,9 +877,16 @@ pub trait PollConns: Conns {
 
     /// Why `caller`'s connection `conn` failed, once it has ([`DeclaredConns::cause`]), for the
     /// host-side reader that must tell the host's own outbound framer fault
-    /// ([`ConnCause::outbound`]) from a far end that failed. REQUIRED, never defaulted: a
-    /// wrapping table that forgot to forward it would silently read every fault as the far end's.
-    fn failure_cause(&self, caller: InstanceId, conn: ConnId) -> Option<ConnCause>;
+    /// ([`ConnCause::outbound`]) from a far end that failed.
+    ///
+    /// EVERY HOST TABLE AND EVERY FORWARDING WRAPPER (the root's `BoundConns`, the `Connector`)
+    /// MUST implement it: a wrapper that forgot would read every fault as the far end's. It keeps
+    /// a body only so the connection fakes plane crates carry in their root tests (built against
+    /// this trait from their own pinned revisions) still compile; `None` reads as today's
+    /// far-end failure (fail-over, breaker charge), never as a local refusal.
+    fn failure_cause(&self, _caller: InstanceId, _conn: ConnId) -> Option<ConnCause> {
+        None
+    }
 
     /// SEAL THE TRUST ANCHORS of one destination `owner`'s declared `need` reaches at `target` (a
     fn anchor(
