@@ -143,6 +143,9 @@ struct State {
     missed: Vec<Arc<Waker>>,
     /// Pieces read off the connection for a holder that has not taken them, by stream.
     parked: HashMap<u64, VecDeque<Got>>,
+    /// The bytes of every piece in `parked`, kept current by [`State::park`], [`State::unpark`],
+    /// [`State::clear_parked`] and [`State::remove_parked`] (LINT-RULES LR-108, BP04).
+    parked_total: usize,
     /// The streams a holder still reads.
     held: HashSet<u64>,
     /// The next stream an exchange opened on this line rides.
@@ -172,7 +175,33 @@ impl Drop for HeldOpening {
 impl State {
     /// The bytes of every piece parked and not yet taken.
     fn parked_bytes(&self) -> usize {
-        self.parked.values().flatten().map(|g| g.bytes.len()).sum()
+        self.parked_total
+    }
+
+    /// Park `got` for `stream`'s holder.
+    fn park(&mut self, stream: u64, got: Got) {
+        self.parked_total += got.bytes.len();
+        self.parked.entry(stream).or_default().push_back(got);
+    }
+
+    /// The next piece parked for `stream`, taken.
+    fn unpark(&mut self, stream: u64) -> Option<Got> {
+        let got = self.parked.get_mut(&stream).and_then(VecDeque::pop_front)?;
+        self.parked_total -= got.bytes.len();
+        Some(got)
+    }
+
+    /// Drop every parked piece.
+    fn clear_parked(&mut self) {
+        self.parked.clear();
+        self.parked_total = 0;
+    }
+
+    /// Take `stream`'s parked pieces out.
+    fn remove_parked(&mut self, stream: u64) -> Option<VecDeque<Got>> {
+        let queue = self.parked.remove(&stream)?;
+        self.parked_total -= queue.iter().map(|g| g.bytes.len()).sum::<usize>();
+        Some(queue)
     }
 
     /// Whether a piece (or why its open failed) waits for `stream`.
@@ -603,7 +632,7 @@ impl Line {
                 for got in read.drain(..) {
                     let key = key(&got);
                     if s.held.contains(&key) {
-                        s.parked.entry(key).or_default().push_back(got);
+                        s.park(key, got);
                         waiting.push(key);
                     } else {
                         dropped = true;
@@ -643,7 +672,7 @@ impl Line {
         }
         let full = s.conn.is_none()
             || s.parked_bytes().saturating_add(s.seen.buffered_input) >= RECEIVE_BUFFER_BYTES;
-        if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
+        if let Some(got) = s.unpark(stream) {
             drop(s);
             if full && !got.bytes.is_empty() {
                 self.fan.wake_by_ref();
@@ -654,7 +683,7 @@ impl Line {
         let mut s = self.state();
         let full = s.conn.is_none()
             || s.parked_bytes().saturating_add(s.seen.buffered_input) >= RECEIVE_BUFFER_BYTES;
-        if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
+        if let Some(got) = s.unpark(stream) {
             drop(s);
             if full && !got.bytes.is_empty() {
                 self.fan.wake_by_ref();
@@ -821,7 +850,7 @@ impl Line {
             },
             |s, (_, spent)| {
                 if *spent {
-                    s.parked.clear();
+                    s.clear_parked();
                 }
             },
         ) {
