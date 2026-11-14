@@ -6427,10 +6427,9 @@ async fn exhausted_unit_checkpoint_adds_no_lane_row() {
         .expect("an exhausted unit's checkpoint applies");
 
     let usage = gov
-        .viewed_usage_for_async(&cost, &key.id, at)
+        .viewed_bucket_usage_async(&cost, &key.id, crate::governance::WINDOW_TOTAL, true, at)
         .await
-        .expect("an exhausted unit must not make the key's money unreadable")
-        .expect("the key exists");
+        .expect("an exhausted unit must not make the key's money unreadable");
     assert_eq!(
         (usage.requests, usage.spend_cents),
         (1, 0),
