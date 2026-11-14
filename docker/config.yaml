@@ -46,7 +46,7 @@ store:
 # ── Durable store (optional; commented out — this image ships plugin-free) ────────────────────────
 # Replaces the memory store above. Turning this on needs all FOUR of the keys below, not just a
 # writable volume — see
-# https://getbusbar.com/getting-started/ for the full recipe
+# docs/getting-started.md#durable-store-giving-persistence-a-writable-volume for the full recipe
 # and the exact refusal text for each way this goes wrong, and docker/docker-compose.yml for a
 # working end-to-end example (docker/config.persistent.yaml is that example's active config, i.e.
 # this same block un-commented).
