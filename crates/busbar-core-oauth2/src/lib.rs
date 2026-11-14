@@ -4,6 +4,7 @@
 pub mod cimd;
 pub mod config;
 pub mod consent;
+pub mod crypto_provider;
 
 mod hosted_login;
 pub mod plane;
