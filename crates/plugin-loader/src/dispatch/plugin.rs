@@ -192,30 +192,32 @@ impl std::fmt::Debug for Bind {
     }
 }
 
-/// THE ONE RE-CALL a SHORT answer earns: consumed by [`Plugin::recall`], and neither `Clone` nor
-/// `Copy`, so it cannot be spent twice. Dropping a negotiated token returns its retained answer
-/// to the originating instance, even when the caller abandons the recall.
-///
-/// ```compile_fail
-/// fn twice<K: busbar_plugin_loader::dispatch::Kind>(
-///     p: &busbar_plugin_loader::dispatch::Plugin<K>,
-///     r: busbar_plugin_loader::dispatch::Recall,
-///     f: &mut busbar_plugin_loader::dispatch::Frame<
-///         busbar_contract::abi::mechanism::call::InHead,
-///         busbar_contract::abi::mechanism::call::OutHead,
-///     >,
-/// ) {
-///     let _ = p.recall(r, 4, f);
-///     let _ = p.recall(r, 4, f); // use of moved value: a token is spent once
-/// }
-/// ```
-pub struct Recall {
-    measurement: Option<super::measurement::Reservation>,
-    instance: usize,
+test_support_pub! {
+    /// THE ONE RE-CALL a SHORT answer earns: consumed by [`Plugin::recall`], and neither `Clone` nor
+    /// `Copy`, so it cannot be spent twice. Dropping a negotiated token returns its retained answer
+    /// to the originating instance, even when the caller abandons the recall.
+    ///
+    /// ```compile_fail
+    /// fn twice<K: busbar_plugin_loader::dispatch::Kind>(
+    ///     p: &busbar_plugin_loader::dispatch::Plugin<K>,
+    ///     r: busbar_plugin_loader::dispatch::Recall,
+    ///     f: &mut busbar_plugin_loader::dispatch::Frame<
+    ///         busbar_contract::abi::mechanism::call::InHead,
+    ///         busbar_contract::abi::mechanism::call::OutHead,
+    ///     >,
+    /// ) {
+    ///     let _ = p.recall(r, 4, f);
+    ///     let _ = p.recall(r, 4, f); // use of moved value: a token is spent once
+    /// }
+    /// ```
+    struct Recall {
+        measurement: Option<super::measurement::Reservation>,
+        instance: usize,
 
-    slot: u32,
-    ticket: Ticket,
-    kept: Option<RecallLease>,
+        slot: u32,
+        ticket: Ticket,
+        kept: Option<RecallLease>,
+    }
 }
 
 impl std::fmt::Debug for Recall {
@@ -300,30 +302,62 @@ impl Drop for RecallInput {
     }
 }
 
-/// What one ticket-less call answered, copied out of the plugin's memory.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Called {
-    /// The authoritative outcome.
-    pub outcome: Outcome,
-    /// The error text, for FAILED/REFUSED.
-    pub error: Option<Vec<u8>>,
-    /// A lease the caller hands back to `release`; `0` = none.
-    pub lease: u64,
-    /// For a FAILED answer the kind calls SHORT ([`Kind::short`]): the token for the ONE re-call,
-    /// through [`Plugin::recall`], with bigger buffers.
-    pub recall: Option<Recall>,
+test_support_pub! {
+    /// What one ticket-less call answered, copied out of the plugin's memory.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Called {
+        /// The authoritative outcome.
+        pub outcome: Outcome,
+        /// The error text, for FAILED/REFUSED.
+        pub error: Option<Vec<u8>>,
+        /// A lease the caller hands back to `release`; `0` = none.
+        pub lease: u64,
+        /// For a FAILED answer the kind calls SHORT ([`Kind::short`]): the token for the ONE re-call,
+        /// through [`Plugin::recall`], with bigger buffers.
+        pub recall: Option<Recall>,
+    }
 }
 
 impl Called {
     #[must_use]
     pub fn open_failure(&self, display: &str) -> String {
-        let reason = match (&self.error, self.outcome) {
-            (Some(e), _) if !e.is_empty() => String::from_utf8_lossy(e).into_owned(),
-            (_, Outcome::Fault) => "status 3".to_string(),
-            _ => "status 1".to_string(),
-        };
-        format!("plugin '{display}' open failed: {reason}")
+        open_failure(self.outcome, self.error.as_deref(), display)
     }
+}
+
+/// What one crossing answered, copied out of the plugin's memory. Its lease, if any, was released
+/// inside the crossing ([`Plugin::answer`]): nothing is left for the caller to hand back.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Answered {
+    /// The authoritative outcome.
+    pub outcome: Outcome,
+    /// The error text, for FAILED/REFUSED.
+    pub error: Option<Vec<u8>>,
+}
+
+impl Answered {
+    #[must_use]
+    pub fn open_failure(&self, display: &str) -> String {
+        open_failure(self.outcome, self.error.as_deref(), display)
+    }
+}
+
+impl From<Called> for Answered {
+    fn from(c: Called) -> Self {
+        Self {
+            outcome: c.outcome,
+            error: c.error,
+        }
+    }
+}
+
+fn open_failure(outcome: Outcome, error: Option<&[u8]>, display: &str) -> String {
+    let reason = match (error, outcome) {
+        (Some(e), _) if !e.is_empty() => String::from_utf8_lossy(e).into_owned(),
+        (_, Outcome::Fault) => "status 3".to_string(),
+        _ => "status 1".to_string(),
+    };
+    format!("plugin '{display}' open failed: {reason}")
 }
 
 /// What one crossing answered.
@@ -1640,6 +1674,25 @@ impl Instance {
         }
         Crossed {
             unread: 0,
+            ..crossed
+        }
+    }
+
+    /// A crossing that hands no lease out ([`Plugin::answer`]): its answer's leases are released
+    /// here, inside the crossing's own reservation and framing scope, as an unread lease is. A
+    /// SHORT answer stays FAILED and earns no re-call. A RELEASE is never released (no recursion).
+    fn release_answer(&self, s: u32, crossed: Crossed) -> Crossed {
+        if s != slot::RELEASE {
+            for lease in [crossed.lease, crossed.short_lease] {
+                if lease != 0 {
+                    self.release_unread(lease);
+                }
+            }
+        }
+        Crossed {
+            lease: 0,
+            short_lease: 0,
+            short: false,
             ..crossed
         }
     }
@@ -3181,51 +3234,86 @@ impl<K: Kind> Plugin<K> {
         self.inner.is_open()
     }
 
-    pub fn call<I: InFrame, O: OutFrame>(&self, s: u32, frame: &mut Frame<I, O>) -> Called {
-        self.call_on(s, frame, Ticket::NONE, false, None)
+    test_support_pub! {
+        fn call<I: InFrame, O: OutFrame>(&self, s: u32, frame: &mut Frame<I, O>) -> Called {
+            self.call_on(s, frame, Ticket::NONE, false, None, true)
+        }
     }
 
-    pub fn recall<I: InFrame, O: OutFrame>(
-        &self,
-        token: Recall,
-        s: u32,
-        frame: &mut Frame<I, O>,
-    ) -> Called {
-        if token.instance != self.instance_id() || token.slot != s {
-            return Called::from(Crossed::refused(
-                "the recall token names another instance or op",
-            ));
-        }
-        let _reference = match token.kept.as_ref() {
-            Some(kept) => match unsafe { RecallInput::new(frame.heads().0, kept.id) } {
-                Ok(reference) => Some(reference),
-                Err(()) => {
-                    return Called::from(Crossed::refused(
-                        "the recalled short answer could not be lent back",
-                    ))
-                }
-            },
-            None => None,
-        };
-        let called = super::measurement::with_reservation(token.measurement.clone(), || {
-            if token.ticket.is_none() {
-                self.call_on(s, frame, token.ticket, false, token.measurement.clone())
-            } else {
-                self.call_inline(token.ticket, true, s, frame)
+    test_support_pub! {
+        fn recall<I: InFrame, O: OutFrame>(
+            &self,
+            token: Recall,
+            s: u32,
+            frame: &mut Frame<I, O>,
+        ) -> Called {
+            if token.instance != self.instance_id() || token.slot != s {
+                return Called::from(Crossed::refused(
+                    "the recall token names another instance or op",
+                ));
             }
-        });
-        if called.recall.is_some() {
-            return Called::from(Crossed::host(Outcome::Fault));
+            let _reference = match token.kept.as_ref() {
+                Some(kept) => match unsafe { RecallInput::new(frame.heads().0, kept.id) } {
+                    Ok(reference) => Some(reference),
+                    Err(()) => {
+                        return Called::from(Crossed::refused(
+                            "the recalled short answer could not be lent back",
+                        ))
+                    }
+                },
+                None => None,
+            };
+            let called = super::measurement::with_reservation(token.measurement.clone(), || {
+                if token.ticket.is_none() {
+                    self.call_on(s, frame, token.ticket, false, token.measurement.clone(), true)
+                } else {
+                    self.call_inline(token.ticket, true, s, frame)
+                }
+            });
+            if called.recall.is_some() {
+                return Called::from(Crossed::host(Outcome::Fault));
+            }
+            called
         }
-        called
     }
 
-    pub fn call_inline<I: InFrame, O: OutFrame>(
+    test_support_pub! {
+        fn call_inline<I: InFrame, O: OutFrame>(
+            &self,
+            ticket: Ticket,
+            resume: bool,
+            s: u32,
+            frame: &mut Frame<I, O>,
+        ) -> Called {
+            self.inline_on(ticket, resume, s, frame, true)
+        }
+    }
+
+    /// One ticket-less crossing. The answer's lease, if any, is released inside the crossing, under
+    /// the crossing's own reservation and framing scope: the caller is left nothing to hand back.
+    pub fn answer<I: InFrame, O: OutFrame>(&self, s: u32, frame: &mut Frame<I, O>) -> Answered {
+        self.call_on(s, frame, Ticket::NONE, false, None, false)
+            .into()
+    }
+
+    /// [`Plugin::answer`] on an inline `ticket` (a RESUME when `resume`).
+    pub fn answer_inline<I: InFrame, O: OutFrame>(
         &self,
         ticket: Ticket,
         resume: bool,
         s: u32,
         frame: &mut Frame<I, O>,
+    ) -> Answered {
+        self.inline_on(ticket, resume, s, frame, false).into()
+    }
+
+    fn inline_on<I: InFrame, O: OutFrame>(
+        &self,
+        ticket: Ticket,
+        resume: bool,
+        s: u32,
+        frame: &mut Frame<I, O>,
+        hand: bool,
     ) -> Called {
         let inline = self
             .inner
@@ -3258,7 +3346,7 @@ impl<K: Kind> Plugin<K> {
             }
         };
         let called = super::measurement::with_reservation(measurement.clone(), || {
-            self.call_on(s, frame, ticket, resume, measurement.clone())
+            self.call_on(s, frame, ticket, resume, measurement.clone(), hand)
         });
         if let Some(tickets) = &inline {
             let kept = if called.recall.is_some() {
@@ -3284,6 +3372,7 @@ impl<K: Kind> Plugin<K> {
         ticket: Ticket,
         resume: bool,
         retained_measurement: Option<super::measurement::Reservation>,
+        hand: bool,
     ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
@@ -3370,7 +3459,12 @@ impl<K: Kind> Plugin<K> {
                 .map_or_else(|| context.clone(), |r| r.context());
             super::measurement::with_context(context, || {
                 super::measurement::with_reservation(measurement.clone(), || {
-                    inst.cross(s, i, o, out_size)
+                    let crossed = inst.cross(s, i, o, out_size);
+                    if hand {
+                        crossed
+                    } else {
+                        inst.release_answer(s, crossed)
+                    }
                 })
             })
         });
