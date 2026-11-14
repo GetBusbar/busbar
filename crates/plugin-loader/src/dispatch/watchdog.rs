@@ -209,3 +209,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "watchdog_tests.rs"]
+mod tests;
