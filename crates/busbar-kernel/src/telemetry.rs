@@ -177,11 +177,14 @@ impl AppSlots {
 
         // Mounted ingress currently observes response-ready at its middleware boundary, before
         // body consumption, with the fixed unresolved pool label. Never infer producer completion.
+        // Mounted planes bank the same way: their request series are bounded by the plane's
+        // declared dialects at that one pool label, so the request path never builds a key.
+        let pool = POOL_LABEL_UNRESOLVED;
         #[expect(
             clippy::disallowed_methods,
             reason = "config: the metric bank is built once per App snapshot, at config load"
         )]
-        let mounted_duration = crate::plane_driver::dispatch::plane_keys()
+        let mounted = crate::plane_driver::dispatch::plane_keys()
             .filter(|key| !crate::plane_driver::dispatch::is_fallback(key))
             .map(|key| {
                 let families = declared_dialects(key)
