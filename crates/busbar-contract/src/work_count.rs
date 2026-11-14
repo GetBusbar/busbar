@@ -5,13 +5,17 @@
 //!
 //! A deterministic count of work, not a timing. The host bumps one counter at each boundary it
 //! owns: [`Work::Crossing`] where the loader calls into a plugin, [`Work::StoreRoundTrip`] where
-//! the loader submits one request to the store plugin. [`Counting`] wraps the global allocator so
+//! the loader submits one request to the store plugin. `Counting` wraps the global allocator so
 //! the gate can count heap allocations too.
 //!
-//! The counters only move when this crate is built with `test-support`, which no shipping build
-//! enables; in every other build [`tally`] is an empty inline function.
+//! Test support only: the counters, `Tally` and `Counting` exist only when this crate is built
+//! with `test-support`, which only `[dev-dependencies]` enable and no shipping build does. [`Work`]
+//! and [`tally`] stay in every build so the host's boundaries can name the work they do; without
+//! the feature [`tally`] is an empty inline function.
 
+#[cfg(feature = "test-support")]
 use std::alloc::{GlobalAlloc, Layout};
+#[cfg(feature = "test-support")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One kind of counted work.
@@ -23,8 +27,11 @@ pub enum Work {
     StoreRoundTrip,
 }
 
+#[cfg(feature = "test-support")]
 static CROSSINGS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-support")]
 static STORE_ROUND_TRIPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-support")]
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Count one unit of `work`. A no-op unless built with `test-support`.
@@ -43,6 +50,7 @@ pub fn tally(work: Work) {
 }
 
 /// Every counter's value at one moment, process-wide.
+#[cfg(feature = "test-support")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tally {
     /// Heap allocations (`alloc`, `alloc_zeroed`, `realloc`) through [`Counting`].
@@ -53,6 +61,7 @@ pub struct Tally {
     pub store_round_trips: u64,
 }
 
+#[cfg(feature = "test-support")]
 impl Tally {
     /// The counters now.
     pub fn now() -> Self {
@@ -76,11 +85,13 @@ impl Tally {
 }
 
 /// A global allocator that counts every allocation, then forwards to `A`.
+#[cfg(feature = "test-support")]
 #[derive(Debug)]
 pub struct Counting<A>(pub A);
 
 // SAFETY: every method forwards verbatim to `A`, a sound `GlobalAlloc`. The only added work is a
 // relaxed increment of a static atomic, which neither allocates nor touches the memory handed out.
+#[cfg(feature = "test-support")]
 #[allow(unsafe_code)]
 unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
     #[inline]
