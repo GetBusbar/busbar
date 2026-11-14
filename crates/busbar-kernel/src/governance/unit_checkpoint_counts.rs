@@ -330,11 +330,9 @@ impl GovState {
             if cell.window_start < window {
                 cell.roll(window);
             }
-            // No counts, no row: a row in the cell is a hit on its lane (#42). An
-            // exhausted pool unit reports the empty lane with no counts.
-            if has_units(units) {
-                cell.accrue_raw(lane, era, units)?;
-            }
+            // An exhausted pool unit reports the empty lane with no counts; accrue_raw adds no
+            // row for it (#42, LINT-RULES R35).
+            cell.accrue_raw(lane, era, units)?;
             fn finish(
                 cell: &mut BudgetCell,
                 lane: &str,
