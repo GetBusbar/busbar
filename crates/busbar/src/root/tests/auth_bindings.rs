@@ -1,43 +1,19 @@
 use super::*;
-use busbar_kernel_identity::module::AuthOutcome;
-use std::sync::Mutex;
 
-/// A directory a test can state the whole truth of in four lines.
-#[derive(Default)]
+/// A directory a test can state the whole truth of in one line.
 struct Directory {
-    keys: Vec<(String, KeyFacts)>,
     revoked: Vec<String>,
-    asked: Mutex<Vec<String>>,
 }
 
-impl VirtualKeyDirectory for Directory {
-    fn verify(&self, credential: &str, _now: u64, _expected_aud: Option<&str>) -> Option<KeyFacts> {
-        self.asked
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(credential.to_string());
-        self.keys
-            .iter()
-            .find(|(c, _)| c == credential)
-            .map(|(_, f)| f.clone())
-    }
-
-    fn revoked(&self, credential: &str) -> bool {
+impl RevocationView for Directory {
+    fn is_revoked(&self, credential: &str) -> bool {
         self.revoked.iter().any(|r| r == credential)
     }
 }
 
 fn a_directory() -> Arc<Directory> {
     Arc::new(Directory {
-        keys: vec![(
-            "tok-live".to_string(),
-            KeyFacts {
-                id: "vk_1".to_string(),
-                name: "the operator's key".to_string(),
-            },
-        )],
         revoked: vec!["vk_gone".to_string()],
-        asked: Mutex::new(Vec::new()),
     })
 }
 
@@ -113,7 +89,7 @@ fn the_bound_verifier_resolves_through_the_directory() {
 
 #[test]
 fn the_revocation_view_reads_the_same_directory() {
-    let bindings = AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>);
+    let bindings = AuthBindings::new(a_directory() as Arc<dyn RevocationView>);
     let revocations = bindings
         .revocations()
         .expect("a bound directory is a revocation view");
@@ -124,7 +100,6 @@ fn the_revocation_view_reads_the_same_directory() {
 #[test]
 fn an_unbound_node_binds_no_authority() {
     let bindings = AuthBindings::without_directory();
-    assert!(bindings.keys().is_none());
     assert!(bindings.revocations().is_none());
 }
 

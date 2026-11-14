@@ -1,124 +1,53 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The two seams the authenticate unit is handed and cannot own.
+//! The revocation set the admin door consults, bound to the governance state.
 //!
-//! `busbar-unit-auth` depends on the capability crate and on nothing else — its own manifest states
-//! the rule and gives the reason: a unit that could name the kernel could reach past its token, and
-//! a unit that could name a transport would grow a second opinion about what a credential is. The
-//! price of that rule is that two things the chain genuinely needs arrive as traits the caller
-//! implements:
-//!
-//! 1. **The key verifier.** The built-in signed-key arm resolves a whole enforced key, which is a
-//!    thing the boxed-module answer type has no shape for. Resolving it means reading a signature, an
-//!    expiry, a denylist and a rotation generation — four facts that live with the governance state.
-//! 2. **The revocation set.** The gate that applies to a NEW unit, over the same denylist.
-//!
-//! This module is where the root holds both, because the root is the only thing that sees both
-//! the unit and the state the answers come from.
-//!
-//! ## Why there is a port in the middle
-//!
-//! The verifier could name the governance state directly. It does not, because the three facts the
-//! chain needs out of a key — does this credential verify, what id does it resolve to, and is that
-//! subject revoked — are a far smaller surface than the state that answers them, and a root that
-//! named the whole state would make every later reader of this file reason about the whole state.
-//! So the shape is: a port with three methods ([`VirtualKeyDirectory`]), an adapter that turns it
-//! into the two traits the unit asks for ([`AuthBindings`]), and a deployment supplying the one
-//! implementor it has. `GovernanceDirectory` is that implementor for a node whose keys are busbar's
-//! own; a deployment whose keys come from somewhere else writes its own and nothing here changes.
+//! The admin unit asks one question of the node's keys after the door identified a caller: has
+//! this credential been taken away? [`AuthBindings`] carries the answer as a [`RevocationView`],
+//! and [`GovernanceDirectory`] is the view for a node whose keys are busbar's own. Key
+//! verification itself is the kernel auth chain's keys arm (`GovState::verify_token`).
 //!
 //! ## What an unbound node does
 //!
 //! [`AuthBindings::without_directory`] is a real posture and not a placeholder: a node that resolves
-//! no busbar-minted keys has no verifier to bind, and the chain's own answer for that is already the
-//! right one — the signed-key arm denies, because a signed key cannot be verified without a verifier.
+//! no busbar-minted keys has no revocation set to consult.
 //!
 //! ## No credential cache
 //!
 //! The kernel holds no verified-credential cache (THE DESIGN 11.11 R3): an auth plugin that caches
 //! its verdicts does so inside itself, and the admin cache flush reaches it through its `refresh`.
 
-use busbar_kernel_identity::chain::{KeyVerifier, ResolvedKey, RevocationView};
+use busbar_kernel_identity::RevocationView;
 use std::sync::Arc;
 
-/// The facts the chain reads out of a verified key.
-///
-/// Two strings, because two strings are what the unit's own `ResolvedKey` carries and what the
-/// principal it builds is made of. The key's policy — its group, its pools, its labels — is the
-/// governance state's business and is deliberately not in this shape: a value carried through here
-/// would be a value the authenticate step could act on, and the authenticate step decides who is
-/// calling and nothing else.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeyFacts {
-    /// The key's stable subject id — the principal's id, the ledger bucket, the audit attribution.
-    pub id: String,
-    /// The key's operator-facing label.
-    pub name: String,
-}
-
-pub trait VirtualKeyDirectory: Send + Sync {
-    fn verify(&self, credential: &str, now: u64, expected_aud: Option<&str>) -> Option<KeyFacts>;
-
-    fn revoked(&self, credential: &str) -> bool;
-}
-
-struct DirectoryArm(Arc<dyn VirtualKeyDirectory>);
-
-impl KeyVerifier for DirectoryArm {
-    fn verify_token(
-        &self,
-        token: &str,
-        now: u64,
-        expected_aud: Option<&str>,
-    ) -> Option<ResolvedKey> {
-        self.0
-            .verify(token, now, expected_aud)
-            .map(|facts| ResolvedKey {
-                id: facts.id,
-                name: facts.name,
-            })
-    }
-}
-
-impl RevocationView for DirectoryArm {
-    fn is_revoked(&self, credential: &str) -> bool {
-        self.0.revoked(credential)
-    }
-}
-
 pub struct AuthBindings {
-    directory: Option<DirectoryArm>,
+    revocations: Option<Arc<dyn RevocationView>>,
 }
 
 impl AuthBindings {
     #[must_use]
-    pub fn new(directory: Arc<dyn VirtualKeyDirectory>) -> Self {
+    pub fn new(revocations: Arc<dyn RevocationView>) -> Self {
         AuthBindings {
-            directory: Some(DirectoryArm(directory)),
+            revocations: Some(revocations),
         }
     }
 
     #[must_use]
     pub fn without_directory() -> Self {
-        AuthBindings { directory: None }
-    }
-
-    #[must_use]
-    pub fn keys(&self) -> Option<&dyn KeyVerifier> {
-        self.directory.as_ref().map(|d| d as &dyn KeyVerifier)
+        AuthBindings { revocations: None }
     }
 
     #[must_use]
     pub fn revocations(&self) -> Option<&dyn RevocationView> {
-        self.directory.as_ref().map(|d| d as &dyn RevocationView)
+        self.revocations.as_deref()
     }
 }
 
 impl std::fmt::Debug for AuthBindings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthBindings")
-            .field("directory", &self.directory.is_some())
+            .field("revocations", &self.revocations.is_some())
             .finish()
     }
 }
@@ -134,17 +63,8 @@ impl GovernanceDirectory {
     }
 }
 
-impl VirtualKeyDirectory for GovernanceDirectory {
-    fn verify(&self, credential: &str, now: u64, expected_aud: Option<&str>) -> Option<KeyFacts> {
-        self.state
-            .verify_token(credential, now, expected_aud)
-            .map(|key| KeyFacts {
-                id: key.id.clone(),
-                name: key.name.clone(),
-            })
-    }
-
-    fn revoked(&self, credential: &str) -> bool {
+impl RevocationView for GovernanceDirectory {
+    fn is_revoked(&self, credential: &str) -> bool {
         self.state.is_revoked(credential)
     }
 }
