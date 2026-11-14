@@ -63,20 +63,6 @@ fn published_field_order(doc: &str) -> Vec<(String, Kind)> {
     order
 }
 
-/// How a page's body spells a recipe number.
-///
-/// Every page whose body this build can be asked to answer with, and every page the out-of-process
-/// verifier checks, publishes a recipe number as its canonical decimal text in a JSON string: a
-/// `u64` above 2^53 does not survive a reader that maps JSON numbers to doubles. The `v1` page,
-/// whose body no node can serve, is kept as it was published, with bare JSON numbers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Numbers {
-    /// Canonical decimal text in a JSON string (`"seq": "1"`).
-    AsText,
-    /// A bare JSON number (`"seq": 1`): the kept `v1` page only.
-    AsJson,
-}
-
 fn canonical_decimal(s: &str) -> Option<u64> {
     let canonical =
         !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s == "0" || !s.starts_with('0'));
@@ -87,7 +73,9 @@ fn canonical_decimal(s: &str) -> Option<u64> {
     }
 }
 
-fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind, numbers: Numbers) {
+/// Every published page spells a recipe number as its canonical decimal text in a JSON string: a
+/// `u64` above 2^53 does not survive a reader that maps JSON numbers to doubles.
+fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind) {
     match kind {
         Kind::Text => {
             let s = value
@@ -97,24 +85,19 @@ fn frame(out: &mut Vec<u8>, value: &serde_json::Value, kind: Kind, numbers: Numb
             out.extend_from_slice(s.as_bytes());
         }
         Kind::Num => {
-            let n = match numbers {
-                Numbers::AsText => value.as_str().and_then(canonical_decimal),
-                Numbers::AsJson => value.as_u64(),
-            };
-            let n = n.unwrap_or_else(|| {
-                panic!("a published number field is not spelled {numbers:?}: {value}")
-            });
+            let n = value
+                .as_str()
+                .and_then(canonical_decimal)
+                .unwrap_or_else(|| {
+                    panic!("a published number field is not canonical decimal text: {value}")
+                });
             out.extend_from_slice(&8u64.to_be_bytes());
             out.extend_from_slice(&n.to_be_bytes());
         }
     }
 }
 
-fn preimage_from_published(
-    order: &[(String, Kind)],
-    record: &serde_json::Value,
-    numbers: Numbers,
-) -> Vec<u8> {
+fn preimage_from_published(order: &[(String, Kind)], record: &serde_json::Value) -> Vec<u8> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < order.len() {
@@ -123,7 +106,7 @@ fn preimage_from_published(
             let value = record.get(name).unwrap_or_else(|| {
                 panic!("the published record carries no member `{name}` the field table names")
             });
-            frame(&mut out, value, *kind, numbers);
+            frame(&mut out, value, *kind);
             i += 1;
             continue;
         };
@@ -150,7 +133,7 @@ fn preimage_from_published(
                         panic!("a published `{array_name}` element carries no `{member}`")
                     })
                 };
-                frame(&mut out, value, *kind, numbers);
+                frame(&mut out, value, *kind);
             }
         }
     }
@@ -161,14 +144,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn digest_from_published(
-    order: &[(String, Kind)],
-    record: &serde_json::Value,
-    numbers: Numbers,
-) -> String {
-    hex(&Sha256::digest(preimage_from_published(
-        order, record, numbers,
-    )))
+fn digest_from_published(order: &[(String, Kind)], record: &serde_json::Value) -> String {
+    hex(&Sha256::digest(preimage_from_published(order, record)))
 }
 
 fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
@@ -193,7 +170,7 @@ fn the_published_table_reproduces_the_published_examples_digest() {
         .as_str()
         .expect("the example carries its digest");
     assert_eq!(
-        digest_from_published(&order, record, Numbers::AsText),
+        digest_from_published(&order, record),
         published_hash,
         "the published field table does not reproduce the published example's own digest — the \
          page is not followable"
@@ -201,43 +178,12 @@ fn the_published_table_reproduces_the_published_examples_digest() {
 }
 
 #[test]
-fn the_v1_page_is_kept_and_v2_is_v1_less_the_three_priced_fields() {
-    let v1 = published_page("audit-chain-digest-v1.md");
-    let v1_order = published_field_order(&v1);
-    let v1_record = &spec_json_block(&v1, 0)["records"][0];
-    assert_eq!(
-        digest_from_published(&v1_order, v1_record, Numbers::AsJson),
-        v1_record["hash"]
-            .as_str()
-            .expect("the v1 example carries its digest"),
-        "the v1 page no longer reproduces its own example — a v1 body could not be verified"
-    );
-    assert_eq!(
-        spec_json_block(&v1, 0)["recipe"].as_str(),
-        Some("busbar.audit.digest.v1")
-    );
-
-    let priced = ["pre_tier", "priced", "hooks[].priced_delta"];
-    let v1_less_priced: Vec<_> = v1_order
-        .iter()
-        .filter(|(name, _)| !priced.contains(&name.as_str()))
-        .cloned()
-        .collect();
-    assert_eq!(v1_less_priced.len() + priced.len(), v1_order.len());
-    assert_eq!(
-        published_field_order(&published_page("audit-chain-digest-v2.md")),
-        v1_less_priced,
-        "the v2 page is not the v1 page less exactly the three priced fields"
-    );
-}
-
-#[test]
-fn the_v2_page_is_kept_and_v3_is_v2_less_currency() {
+fn the_v2_page_is_kept_and_v4_is_v2_less_currency_plus_incarnation_and_node() {
     let v2 = published_page("audit-chain-digest-v2.md");
     let v2_order = published_field_order(&v2);
     let v2_record = &spec_json_block(&v2, 0)["records"][0];
     assert_eq!(
-        digest_from_published(&v2_order, v2_record, Numbers::AsText),
+        digest_from_published(&v2_order, v2_record),
         v2_record["hash"]
             .as_str()
             .expect("the v2 example carries its digest"),
@@ -248,55 +194,32 @@ fn the_v2_page_is_kept_and_v3_is_v2_less_currency() {
         Some("busbar.audit.digest.v2")
     );
 
-    let v2_less_currency: Vec<_> = v2_order
+    let mut v2_next: Vec<_> = v2_order
         .iter()
         .filter(|(name, _)| name != "currency")
         .cloned()
         .collect();
-    assert_eq!(v2_less_currency.len() + 1, v2_order.len());
-    assert_eq!(
-        published_field_order(&published_page("audit-chain-digest-v3.md")),
-        v2_less_currency,
-        "the v3 page is not the v2 page less exactly `currency`"
-    );
-}
-
-#[test]
-fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
-    let v3 = published_page("audit-chain-digest-v3.md");
-    let v3_order = published_field_order(&v3);
-    let v3_record = &spec_json_block(&v3, 0)["records"][0];
-    assert_eq!(
-        digest_from_published(&v3_order, v3_record, Numbers::AsText),
-        v3_record["hash"]
-            .as_str()
-            .expect("the v3 example carries its digest"),
-        "the v3 page no longer reproduces its own example"
-    );
-    assert_eq!(
-        spec_json_block(&v3, 0)["recipe"].as_str(),
-        Some("busbar.audit.digest.v3")
-    );
-
-    let v4_order = published_field_order(&published_spec());
-    let after = |name: &str| {
-        v3_order
+    assert_eq!(v2_next.len() + 1, v2_order.len());
+    let after = |order: &[(String, Kind)], name: &str| {
+        order
             .iter()
             .position(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("the v3 page frames {name}"))
+            .unwrap_or_else(|| panic!("the v2 page frames {name}"))
             + 1
     };
-    let mut v3_plus = v3_order.clone();
-
-    let hook = after("hooks[].hook");
-    v3_plus.insert(hook, ("hooks[].failed".to_string(), Kind::Num));
-    v3_plus.insert(hook, ("hooks[].head".to_string(), Kind::Text));
-    v3_plus.insert(after("mono"), ("node".to_string(), Kind::Num));
-    v3_plus.insert(after("unit_key"), ("incarnation".to_string(), Kind::Num));
+    let hook = after(&v2_next, "hooks[].hook");
+    v2_next.insert(hook, ("hooks[].failed".to_string(), Kind::Num));
+    v2_next.insert(hook, ("hooks[].head".to_string(), Kind::Text));
+    let mono = after(&v2_next, "mono");
+    v2_next.insert(mono, ("node".to_string(), Kind::Num));
+    let unit_key = after(&v2_next, "unit_key");
+    v2_next.insert(unit_key, ("incarnation".to_string(), Kind::Num));
     assert_eq!(
-        v4_order, v3_plus,
-        "the v4 page is not the v3 page plus exactly `incarnation` after `unit_key`, `node` \
-         after `mono` and `hooks[].head` and `hooks[].failed` after `hooks[].hook`"
+        published_field_order(&published_spec()),
+        v2_next,
+        "the v4 page is not the v2 page less exactly `currency`, plus exactly `incarnation` after \
+         `unit_key`, `node` after `mono` and `hooks[].head` and `hooks[].failed` after \
+         `hooks[].hook`"
     );
     assert_eq!(
         spec_json_block(&published_spec(), 0)["recipe"].as_str(),
@@ -332,7 +255,7 @@ fn the_published_table_still_describes_what_this_build_seals() {
     .expect("a published body is JSON");
 
     assert_eq!(
-        digest_from_published(&order, &body["records"][0], Numbers::AsText),
+        digest_from_published(&order, &body["records"][0]),
         sealed.hash,
         "this build seals a digest the PUBLISHED field order does not reproduce. The chain still \
          verifies against itself, so nothing else in this crate goes red — and the chain has \
@@ -404,7 +327,7 @@ fn the_recomputation_rejects_the_published_example_with_one_cosmetic_field_alter
         .expect("the example carries a mono");
     record["mono"] = serde_json::json!((was + 1).to_string());
     assert_ne!(
-        digest_from_published(&order, &record, Numbers::AsText),
+        digest_from_published(&order, &record),
         published_hash,
         "altering the monotonic clock left the recomputed digest unchanged — the preimage builder \
          is not reading its inputs"
