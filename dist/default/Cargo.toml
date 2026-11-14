@@ -1070,6 +1070,8 @@ dimpl = { version = "=0.7.4", default-features = false }
 # 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
 ed25519-dalek = { version = "3", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# FNV-1a 64 for in-memory keys (shards, sticky routing, session keys, breaker jitter); already locked.
+fnv = "1.0.7"
 futures = "0.3"
 getrandom = "0.3"
 hex = "0.4.3"

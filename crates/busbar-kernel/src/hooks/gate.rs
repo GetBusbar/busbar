@@ -80,12 +80,11 @@ impl IncrementalScan<'_> {
             principal_id.len(),
             sid.len()
         );
-        let mut hash = busbar_kernel::store::FNV1A_OFFSET_BASIS;
-        for &byte in head.as_bytes().iter().chain(sid) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(busbar_kernel::store::FNV1A_PRIME);
-        }
-        crate::session::SessionKey(hash)
+        use std::hash::Hasher as _;
+        let mut hash = fnv::FnvHasher::default();
+        hash.write(head.as_bytes());
+        hash.write(sid);
+        crate::session::SessionKey(hash.finish())
     }
 
     fn piece_key(&self, clearance: &str, digest: &str) -> crate::session::SessionKey {
