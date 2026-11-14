@@ -72,7 +72,7 @@ impl UnitCheckpoint {
             }
             let mut operations = std::collections::BTreeSet::new();
             for event in events {
-                event.follows(None).map_err(error)?;
+                event.follows(None).map_err(|e| failed(&e))?;
                 if !operations.insert(event.operation_id) {
                     return Err(error("duplicate unit terminal operation"));
                 }
@@ -104,7 +104,8 @@ pub trait UnitCheckpointSink: Send + Sync {
 pub(super) struct UnitCheckpointBook {
     sink: OnceLock<Arc<dyn UnitCheckpointSink>>,
     pending: Mutex<BTreeMap<[u8; 16], Pending>>,
-    flushing: tokio::sync::Mutex<()>,
+    /// Held for a whole flush pass; it carries the pass's reused list of checkpoint ids.
+    flushing: tokio::sync::Mutex<Vec<[u8; 16]>>,
 }
 
 struct Pending {
@@ -113,8 +114,23 @@ struct Pending {
     recovered: bool,
 }
 
-fn error(message: impl ToString) -> RecordStoreError {
-    RecordStoreError(message.to_string())
+/// A refusal from a lower layer, rendered once on the error path.
+fn failed(cause: &dyn std::fmt::Display) -> RecordStoreError {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused checkpoint renders its message once"
+    )]
+    let message = cause.to_string();
+    RecordStoreError(message)
+}
+
+fn error(message: &str) -> RecordStoreError {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused checkpoint renders its message once"
+    )]
+    let message = message.to_string();
+    RecordStoreError(message)
 }
 
 impl GovState {
@@ -172,6 +188,7 @@ impl GovState {
                 .pending
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
+            // busbar:expect(bp::state_scan, reason = "boot: the sink is attached once, before any unit is admitted")
             let owned = pending.values().all(|entry| {
                 entry.persisted == Some(entry.snapshot.revision)
                     && entry.snapshot.terminal.as_ref().is_some_and(|events| {
@@ -307,17 +324,18 @@ impl GovState {
         let Some(sink) = self.unit_checkpoints.sink.get() else {
             return Ok(());
         };
-        let _flush = self.unit_checkpoints.flushing.lock().await;
-        let ids: Vec<_> = self
-            .unit_checkpoints
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .keys()
-            .copied()
-            .collect();
+        let mut ids = self.unit_checkpoints.flushing.lock().await;
+        ids.clear();
+        ids.extend(
+            self.unit_checkpoints
+                .pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .keys()
+                .copied(),
+        );
         let mut first_error = None;
-        for id in ids {
+        for &id in ids.iter() {
             if let Err(failed) = self.flush_unit_checkpoint(sink.as_ref(), id).await {
                 tracing::warn!(checkpoint = %hex::encode(id), error = %failed,
                     "running money checkpoint remains unresolved and will retry");

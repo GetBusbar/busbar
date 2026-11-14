@@ -2132,10 +2132,10 @@ async fn a_shutdown_flush_against_a_down_store_names_what_is_unrecorded() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
 
     assert!(g.has_unsettled_persistence());
-    let (_, lines) = captured(async {
+    let (_, lines) = captured(Box::pin(async {
         g.flush_budgets_final().await;
         g.flush_metering_final().await;
-    })
+    }))
     .await;
     let errs: Vec<_> = lines
         .iter()
@@ -2157,9 +2157,9 @@ async fn a_shutdown_flush_against_a_down_store_names_what_is_unrecorded() {
         "failed flush retains its actual owner queues"
     );
 
-    let (_, lines) = captured(async {
+    let (_, lines) = captured(Box::pin(async {
         g.flush_budgets().await;
-    })
+    }))
     .await;
     assert!(
         lines

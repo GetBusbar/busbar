@@ -62,7 +62,7 @@ fn usage(
 #[test]
 fn the_metering_row_counts_its_request_and_carries_no_card_instant() {
     let u = usage(7, 2, Some(1), None);
-    let row = metering_row("k1", "lane-a", "prov", Some(&u));
+    let row = metering_row("k1".into(), "lane-a".into(), "prov".into(), Some(&u));
     assert_eq!(
         (
             row.key_id.as_str(),
@@ -75,6 +75,6 @@ fn the_metering_row_counts_its_request_and_carries_no_card_instant() {
     assert_eq!((row.tokens_cache_read, row.tokens_cache_write), (1, 0));
     assert_eq!((row.requests, row.billable_requests), (1, 1));
     assert_eq!(row.priced_from_ms, 0);
-    let empty = metering_row("k1", "lane-a", "prov", None);
+    let empty = metering_row("k1".into(), "lane-a".into(), "prov".into(), None);
     assert_eq!((empty.tokens_input, empty.requests), (0, 1));
 }

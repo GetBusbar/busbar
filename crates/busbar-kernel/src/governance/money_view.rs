@@ -6,7 +6,8 @@ use super::{
 };
 
 type Priced = Result<DerivedUsage, MoneyError>;
-use std::collections::{BTreeMap, HashMap};
+use foldhash::HashMap;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -101,6 +102,11 @@ impl MoneyView {
 
     pub(in crate::governance) fn keep(&self, bucket_id: &str, inputs: Inputs, usage: Priced) {
         let mut memo = self.memo.lock().unwrap_or_else(|p| p.into_inner());
+        // A bucket already in the memo is re-keyed in place; only its first figure spells its key.
+        if let Some(kept) = memo.get_mut(bucket_id) {
+            *kept = (inputs, usage);
+            return;
+        }
         memo.insert(bucket_id.to_string(), (inputs, usage));
     }
 

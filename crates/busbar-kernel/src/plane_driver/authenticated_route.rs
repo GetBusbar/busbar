@@ -145,7 +145,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         .map_err(|_| refuse(ReasonCode::PlanePanic))?;
         match answered.outcome {
             Outcome::Ready => {
-                let entry = buffers.entry[..output.entry_written as usize].to_vec();
+                let written = &buffers.entry[..output.entry_written as usize];
+                let entry = written.to_vec();
                 let op = {
                     let mut state = self.lock();
                     let decoded = state
@@ -153,7 +154,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                         .as_mut()
                         .ok_or_else(|| refuse(ReasonCode::DecodeFailed))?;
                     decoded.route = output.route;
-                    decoded.pool = Some(entry.clone());
+                    decoded.pool = Some(entry);
                     *self
                         .driver
                         .config
@@ -163,18 +164,22 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 };
                 // Only destination facts change. Operation, request, estimates and caller stay
                 // fixed, and the caller immediately runs ordinary Verify/Approve/Admit.
-                self.steps.decoded(ctx, op, output.route, Some(&entry));
+                self.steps.decoded(ctx, op, output.route, Some(written));
                 Ok(())
             }
             Outcome::Refused => {
                 self.lock().declined = Some((output.refusal, output.refusal_status));
                 Err(refuse(ReasonCode::DecodeFailed))
             }
-            _ => Err(refuse(if self.driver.calls.now_ns() >= deadline {
-                ReasonCode::DeadlineExceeded
-            } else {
-                ReasonCode::PlanePanic
-            })),
+            _ => {
+                // busbar:expect(bp::clock_repeat, reason = "error: a failed lookup reads the clock again only to name its cause")
+                let late = self.driver.calls.now_ns() >= deadline;
+                Err(refuse(if late {
+                    ReasonCode::DeadlineExceeded
+                } else {
+                    ReasonCode::PlanePanic
+                }))
+            }
         }
     }
 }

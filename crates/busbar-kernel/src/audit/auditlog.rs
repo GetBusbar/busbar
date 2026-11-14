@@ -1389,7 +1389,7 @@ async fn drain_native(
             if first.operation != pending.operation {
                 return Err(RecordStoreError("audit queue original changed".into()));
             }
-            first.prepared = pending.prepared.clone();
+            first.prepared.clone_from(&pending.prepared);
         }
         let prepared = pending.prepared.as_ref().expect("retained audit original");
         if !Arc::ptr_eq(&prepared.native, &native) {

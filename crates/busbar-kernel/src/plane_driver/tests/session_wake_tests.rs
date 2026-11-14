@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Wake, Waker};
 
@@ -25,7 +25,7 @@ impl Wake for Reenter {
 #[test]
 fn a_ready_session_wakes_with_the_table_available_for_reentry() {
     let told = Arc::new(Notify::new());
-    let sessions = Arc::new(Mutex::new(HashMap::from([(7, told.clone())])));
+    let sessions = Arc::new(Mutex::new(HashMap::from_iter([(7, told.clone())])));
     let reenter = Arc::new(Reenter {
         sessions: sessions.clone(),
         wakes: AtomicUsize::new(0),

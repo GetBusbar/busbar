@@ -223,7 +223,7 @@ fn fold_families<'a>(hooks: impl Iterator<Item = (&'a str, &'a [HookMetric])>) -
     }
 
     let mut out = Vec::with_capacity(order.len());
-    order.sort();
+    order.sort_unstable();
     for name in &order {
         let (ptype, help, entries) = &groups[name];
         let mut samples = Vec::new();

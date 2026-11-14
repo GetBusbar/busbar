@@ -54,7 +54,7 @@ impl TicketRefusal {
 fn ticket_id() -> Result<String, TicketRefusal> {
     let mut raw = [0u8; 16];
     getrandom::fill(&mut raw).map_err(|_| TicketRefusal::NoRandomness)?;
-    Ok(raw.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hex::encode(raw))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,8 +340,10 @@ impl GovState {
             if expiry >= observed.unix_seconds {
                 break;
             }
-            let id = std::str::from_utf8(&key[8..]).ok()?.to_owned();
-            if !valid_ticket_id(&id) {
+            // The cleanup's map key carries the id; the id is borrowed from it, not copied out.
+            let cleanup_id = format!("expiry:{}", std::str::from_utf8(&key[8..]).ok()?);
+            let id = &cleanup_id["expiry:".len()..];
+            if !valid_ticket_id(id) {
                 return None;
             }
             let mut values = records
@@ -410,7 +412,6 @@ impl GovState {
                 delivered: AtomicBool::new(false),
                 runner: Default::default(),
             });
-            let cleanup_id = format!("expiry:{id}");
             let operation = self
                 .ticket_operations
                 .pending
@@ -651,7 +652,10 @@ impl GovState {
         })
         .await
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "config: the mint's inputs are its contract"
+    )]
     pub async fn mint_ticket_bound(
         &self,
         key_id: &str,

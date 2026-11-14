@@ -59,20 +59,22 @@ impl OpIds {
 
 // Exhaustion leaves the allocator exhausted. In particular, catching a panic
 // must not allow a subsequent call to reuse an identity under the same node.
-// `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-// MSRV floor is below 1.95, so keep the older name.
-#[allow(deprecated)]
 fn next_counter(counter: &std::sync::atomic::AtomicU64) -> u64 {
     use std::sync::atomic::Ordering::Relaxed;
     counter
-        .fetch_update(Relaxed, Relaxed, |current| current.checked_add(1))
+        .try_update(Relaxed, Relaxed, |current| current.checked_add(1))
         .expect("the kernel identity counter is exhausted")
 }
 
 fn boot_node() -> u64 {
     for _ in 0..8 {
         let mut b = [0u8; 8];
-        if getrandom::fill(&mut b).is_ok() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the node identity is drawn from OS entropy once per process"
+        )]
+        let filled = getrandom::fill(&mut b);
+        if filled.is_ok() {
             let n = u64::from_le_bytes(b);
             if n != 0 {
                 return n;
@@ -82,18 +84,19 @@ fn boot_node() -> u64 {
     panic!("the OS entropy source answered nothing usable; a store op_id cannot be minted")
 }
 
+/// The row owns its names; the caller hands them over, so building a row copies none of them.
 pub fn metering_row(
-    key_id: &str,
-    model: &str,
-    provider: &str,
+    key_id: String,
+    model: String,
+    provider: String,
     usage: Option<&busbar_contract::billing::TokenUsage>,
 ) -> busbar_contract::records::MeteringRow {
     busbar_contract::records::MeteringRow {
         scale: 0,
         usage_units: Default::default(),
-        key_id: key_id.to_owned(),
-        model: model.to_owned(),
-        provider: provider.to_owned(),
+        key_id,
+        model,
+        provider,
         tokens_input: i128::from(usage.map(|u| u.input).unwrap_or(0)),
         tokens_output: i128::from(usage.map(|u| u.output).unwrap_or(0)),
         tokens_cache_read: i128::from(usage.and_then(|u| u.cache_read).unwrap_or(0)),
@@ -145,12 +148,12 @@ impl VerifyRefusal {
 
     #[must_use]
     pub fn message(&self) -> String {
-        match self {
-            VerifyRefusal::NotAuthorized => {
-                "Your API key does not have permission to access this resource.".to_string()
-            }
-            VerifyRefusal::NoRate { name } => format!("no configured rate for model '{name}'"),
-        }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refusal renders its message once, on the refusal path"
+        )]
+        let message = self.to_string();
+        message
     }
 
     #[must_use]
@@ -158,6 +161,17 @@ impl VerifyRefusal {
         match self {
             VerifyRefusal::NotAuthorized => ReasonCode::PoolNotPermitted,
             VerifyRefusal::NoRate { .. } => ReasonCode::NoRate,
+        }
+    }
+}
+
+impl std::fmt::Display for VerifyRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyRefusal::NotAuthorized => {
+                f.write_str("Your API key does not have permission to access this resource.")
+            }
+            VerifyRefusal::NoRate { name } => write!(f, "no configured rate for model '{name}'"),
         }
     }
 }
@@ -184,26 +198,35 @@ fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRe
     if !view.has_key() || !view.key_is_scoped() {
         return None;
     }
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut current = pool.to_string();
+    // Walk the fallback chain from `pool`; the names the view hands back are owned, so they are
+    // moved into the visited set rather than copied. `None` stands for the borrowed start.
+    let mut visited = foldhash::HashSet::<String>::default();
+    let mut current: Option<String> = None;
     loop {
-        if !visited.insert(current.clone()) {
-            return None;
-        }
-        let next = view.on_exhausted_fallback(&current)?;
+        let next = view.on_exhausted_fallback(current.as_deref().unwrap_or(pool))?;
         if let Some(refusal) = pool_authorized(view, &next) {
             return Some(refusal);
         }
-        current = next;
+        if let Some(walked) = current.take() {
+            visited.insert(walked);
+        }
+        if next == pool || visited.contains(&next) {
+            return None;
+        }
+        current = Some(next);
     }
 }
 
 fn priced(view: &dyn PoolView, name: &str) -> Option<VerifyRefusal> {
-    (view.has_key() && !view.is_configured(name) && view.is_unpriced(name)).then(|| {
-        VerifyRefusal::NoRate {
-            name: name.to_string(),
-        }
-    })
+    if !(view.has_key() && !view.is_configured(name) && view.is_unpriced(name)) {
+        return None;
+    }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the refusal carries the name the caller spelled"
+    )]
+    let name = name.to_string();
+    Some(VerifyRefusal::NoRate { name })
 }
 
 pub fn destination_guard(view: &dyn PoolView, pool: &str) -> Result<(), VerifyRefusal> {

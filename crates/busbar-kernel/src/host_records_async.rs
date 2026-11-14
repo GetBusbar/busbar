@@ -30,6 +30,10 @@ impl AsyncRecords {
         instance: &str,
         schemas: impl IntoIterator<Item = String>,
     ) -> Result<Self, host_records::Error> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance's record access is authorized once, when it is admitted"
+        )]
         let result = Self {
             store,
             instance: instance.into(),
@@ -52,6 +56,7 @@ impl AsyncRecords {
     ) -> Result<Option<Secret<Vec<u8>>>, host_records::Error> {
         self.owner()?.get(schema, key).await
     }
+    #[cfg(test)]
     pub(crate) async fn put(
         &self,
         schema: &str,
@@ -59,13 +64,6 @@ impl AsyncRecords {
         value: Secret<Vec<u8>>,
     ) -> Result<host_records::Outcome, host_records::Error> {
         self.owner()?.put(schema, key, value).await
-    }
-    pub(crate) async fn delete(
-        &self,
-        schema: &str,
-        key: &[u8],
-    ) -> Result<host_records::Outcome, host_records::Error> {
-        self.owner()?.delete(schema, key).await
     }
     pub(crate) async fn page(
         &self,
@@ -148,6 +146,10 @@ impl AsyncHistory {
         instance: &str,
         declarations: impl IntoIterator<Item = HistoryCollection<'a>>,
     ) -> Result<Self, HistoryError> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance's collections are declared once, when it is admitted"
+        )]
         let result = Self {
             store,
             instance: instance.into(),
@@ -172,6 +174,10 @@ impl AsyncHistory {
         instance: &str,
         kinds: impl IntoIterator<Item = String>,
     ) -> Result<Self, HistoryError> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance's collections are declared once, when it is admitted"
+        )]
         let result = Self {
             store,
             instance: instance.into(),
@@ -193,6 +199,10 @@ impl AsyncHistory {
         instance: &str,
         facts: &crate::host_services::InstanceFacts,
     ) -> Result<Self, history::Error> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an instance's collections are declared once, when it is admitted"
+        )]
         let declarations = facts
             .record_collections
             .iter()

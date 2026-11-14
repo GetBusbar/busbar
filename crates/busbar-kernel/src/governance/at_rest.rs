@@ -46,13 +46,21 @@ impl hkdf::KeyType for Len {
     }
 }
 
-fn aad(meta: &CredentialMeta) -> Vec<u8> {
-    let mut a = Vec::new();
-    for part in [&meta.id, &meta.key_id, &meta.kind, &meta.public_id] {
-        a.extend_from_slice(&(part.len() as u64).to_be_bytes());
-        a.extend_from_slice(part.as_bytes());
-    }
-    a
+thread_local! {
+    /// The thread's reused AAD buffer: a row's associated data is rebuilt into it per seal/open.
+    static AAD: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` over the row's associated data, built into the thread's reused buffer.
+fn with_aad<R>(meta: &CredentialMeta, f: impl FnOnce(Aad<&[u8]>) -> R) -> R {
+    AAD.with_borrow_mut(|a| {
+        a.clear();
+        for part in [&meta.id, &meta.key_id, &meta.kind, &meta.public_id] {
+            a.extend_from_slice(&(part.len() as u64).to_be_bytes());
+            a.extend_from_slice(part.as_bytes());
+        }
+        f(Aad::from(a.as_slice()))
+    })
 }
 
 fn b64() -> base64::engine::GeneralPurpose {
@@ -81,21 +89,36 @@ impl CredentialKek {
 
     fn seal(&self, meta: &CredentialMeta, plain: &[u8]) -> Result<String, String> {
         let mut nonce = [0_u8; NONCE_LEN];
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a nonce is drawn only when a credential is sealed at mint or re-wrap"
+        )]
         getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG unavailable: {e}"))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: sealing copies the secret once, at mint or re-wrap"
+        )]
         let mut buf = Zeroizing::new(plain.to_vec());
-        self.key
-            .seal_in_place_append_tag(
-                Nonce::assume_unique_for_key(nonce),
-                Aad::from(aad(meta)),
-                &mut *buf,
-            )
-            .map_err(|_| "the credential could not be sealed".to_string())?;
-        Ok(format!(
+        let sealed = with_aad(meta, |aad| {
+            self.key
+                .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), aad, &mut *buf)
+        });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a seal failure renders its message once"
+        )]
+        sealed.map_err(|_| "the credential could not be sealed".to_string())?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the sealed envelope is the stored row, written at mint or re-wrap"
+        )]
+        let envelope = format!(
             "{AEAD}{}:{}:{}",
             self.kid,
             b64().encode(nonce),
             b64().encode(&buf[..])
-        ))
+        );
+        Ok(envelope)
     }
 
     fn open_sealed(&self, meta: &CredentialMeta, rest: &str) -> Option<Zeroizing<String>> {
@@ -106,16 +129,23 @@ impl CredentialKek {
         }
         let nonce: [u8; NONCE_LEN] = b64().decode(nonce).ok()?.try_into().ok()?;
         let mut buf = Zeroizing::new(b64().decode(ct).ok()?);
-        let plain = self
-            .key
-            .open_in_place(
-                Nonce::assume_unique_for_key(nonce),
-                Aad::from(aad(meta)),
-                &mut buf[..],
-            )
-            .ok()?;
-        let text = std::str::from_utf8(plain).ok()?.to_string();
-        Some(Zeroizing::new(text))
+        let len = with_aad(meta, |aad| {
+            self.key
+                .open_in_place(Nonce::assume_unique_for_key(nonce), aad, &mut buf[..])
+                .map(|plain| plain.len())
+        })
+        .ok()?;
+        // The plaintext is the decoded buffer's prefix: keep that buffer as the secret's own storage
+        // rather than copying it out. The cut-off tag stays in spare capacity, which zeroizing clears.
+        let mut bytes = std::mem::take(&mut *buf);
+        bytes.truncate(len);
+        match String::from_utf8(bytes) {
+            Ok(text) => Some(Zeroizing::new(text)),
+            Err(e) => {
+                drop(Zeroizing::new(e.into_bytes()));
+                None
+            }
+        }
     }
 }
 
@@ -175,12 +205,22 @@ pub fn parse_key(path: &str, bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>, String>
         }
     }
     if bytes.len() == 32 {
-        return Ok(Zeroizing::new(bytes.to_vec()));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the at-rest key is read once per boot or reload"
+        )]
+        let raw = bytes.to_vec();
+        return Ok(Zeroizing::new(raw));
     }
-    Err(format!(
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a malformed at-rest key renders its message once"
+    )]
+    let refusal = format!(
         "{path} must resolve to a 32-byte key (32 raw bytes, or 64 hex characters: `openssl rand \
          -hex 32`)"
-    ))
+    );
+    Err(refusal)
 }
 
 #[must_use]
@@ -208,7 +248,12 @@ pub fn open(
                  or reload that has one configured"
             );
         }
-        return Some(Zeroizing::new(plain.to_string()));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a clear row exists only until a configured at-rest key re-seals it"
+        )]
+        let plain = plain.to_string();
+        return Some(Zeroizing::new(plain));
     }
     let rest = envelope.strip_prefix(AEAD)?;
     let opened = keys.and_then(|k| k.open_sealed(meta, rest)).map(|(p, _)| p);
@@ -225,7 +270,12 @@ pub fn stale(
     envelope: &str,
 ) -> Option<Zeroizing<String>> {
     if let Some(plain) = envelope.strip_prefix(PLAIN) {
-        return Some(Zeroizing::new(plain.to_string()));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a stale row is read only by the boot or reload re-wrap"
+        )]
+        let plain = plain.to_string();
+        return Some(Zeroizing::new(plain));
     }
     let rest = envelope.strip_prefix(AEAD)?;
     match keys.open_sealed(meta, rest)? {
@@ -234,22 +284,36 @@ pub fn stale(
     }
 }
 
+/// The node's at-rest kids, as the unopenable-row warning names them.
+struct NodeKids<'a>(Option<&'a AtRestKeys>);
+
+impl std::fmt::Display for NodeKids<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            None => f.write_str("none (credentials.at_rest is not configured)"),
+            Some(k) => match k.previous_kid() {
+                Some(p) => write!(f, "{} (previous {p})", k.kid()),
+                None => f.write_str(k.kid()),
+            },
+        }
+    }
+}
+
 fn refused(keys: Option<&AtRestKeys>, meta: &CredentialMeta, kid: &str) {
-    let kid: String = kid.chars().take(32).collect();
+    // At most 32 characters of the kid, borrowed.
+    let kid = &kid[..kid.char_indices().nth(32).map_or(kid.len(), |(i, _)| i)];
     {
         let mut seen = REFUSED_KIDS.lock().unwrap_or_else(|e| e.into_inner());
-        if seen.contains(&kid) || seen.len() >= REFUSED_KIDS_CAP {
+        if seen.contains(kid) || seen.len() >= REFUSED_KIDS_CAP {
             return;
         }
-        seen.insert(kid.clone());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refused kid is remembered once, at most REFUSED_KIDS_CAP times"
+        )]
+        seen.insert(kid.to_string());
     }
-    let node = keys.map_or_else(
-        || "none (credentials.at_rest is not configured)".to_string(),
-        |k| match k.previous_kid() {
-            Some(p) => format!("{} (previous {p})", k.kid()),
-            None => k.kid().to_string(),
-        },
-    );
+    let node = NodeKids(keys);
     crate::diagnostics::diag_warn!(
         crate::diagnostics::CREDENTIAL_AT_REST_UNOPENABLE,
         kind = %meta.kind,
@@ -260,9 +324,14 @@ fn refused(keys: Option<&AtRestKeys>, meta: &CredentialMeta, kid: &str) {
          authenticate. Configure the key with kid {kid} as credentials.at_rest.previous (or as \
          key) and reload; a row whose key is lost cannot be recovered and must be re-minted"
     );
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused kid is audited once, at most REFUSED_KIDS_CAP times"
+    )]
+    let resource = format!("kid:{kid}");
     crate::audit_ring::AUDIT.record_by(
         "credential.at_rest.open",
-        &format!("kid:{kid}"),
+        &resource,
         crate::audit_ring::OUTCOME_REJECTED,
         "busbar",
     );
