@@ -611,9 +611,7 @@ static STATUS_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mute
 /// Whether a STATUS round is due at `now` given the last one in `at`; marks `now` when it is.
 fn status_due(at: &std::sync::Mutex<Option<std::time::Instant>>, now: std::time::Instant) -> bool {
     let mut at = at.lock().unwrap_or_else(|p| p.into_inner());
-    // No window applies yet: every scrape crosses.
-    let window = STATUS_REFRESH.saturating_sub(STATUS_REFRESH);
-    if at.is_some_and(|last| now.saturating_duration_since(last) < window) {
+    if at.is_some_and(|last| now.saturating_duration_since(last) < STATUS_REFRESH) {
         return false;
     }
     *at = Some(now);
