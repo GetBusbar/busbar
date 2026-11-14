@@ -307,7 +307,8 @@ pub struct Called {
     pub outcome: Outcome,
     /// The error text, for FAILED/REFUSED.
     pub error: Option<Vec<u8>>,
-    /// A lease the caller hands back to `release`; `0` = none.
+    /// A lease the caller hands back to `release`; `0` = none. Always `0` for transport op slots
+    /// (`LISTEN..=TIMER`): their answer leases are retired inside the crossing.
     pub lease: u64,
     /// For a FAILED answer the kind calls SHORT ([`Kind::short`]): the token for the ONE re-call,
     /// through [`Plugin::recall`], with bigger buffers.
@@ -1638,8 +1639,15 @@ impl Instance {
         if crossed.unread != 0 && s != slot::RELEASE {
             self.release_unread(crossed.unread);
         }
+        // A transport op answer's lease is consumed inside this crossing (its extensions decoded,
+        // its error copied); the caller has no use for it, so it is retired here, not handed out.
+        let transport_op = self.kind == KindCode::Transport && s >= transport_slot::LISTEN;
+        if transport_op && crossed.lease != 0 {
+            self.release_unread(crossed.lease);
+        }
         Crossed {
             unread: 0,
+            lease: if transport_op { 0 } else { crossed.lease },
             ..crossed
         }
     }
