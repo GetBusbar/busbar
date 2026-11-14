@@ -190,3 +190,19 @@ fn a_disabled_gate_records_nothing_and_reads_no_clock() {
 
     set_enabled(true);
 }
+
+#[test]
+fn percentiles_are_within_one_percent_of_the_true_value_not_a_power_of_two_floor() {
+    let mut s = MethodStat::default();
+    for v in 1..=1000u64 {
+        s.record(v * 1_000);
+    }
+    for (p, truth) in [(0.50, 500_000u64), (0.99, 990_000u64)] {
+        let got = s.percentile(p);
+        assert!(
+            got.abs_diff(truth) * 100 <= truth,
+            "p{} = {got}, true value {truth}",
+            p * 100.0
+        );
+    }
+}
