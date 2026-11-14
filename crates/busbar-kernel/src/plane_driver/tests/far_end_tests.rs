@@ -728,6 +728,35 @@ fn route() -> UnitRoute {
     }
 }
 
+/// Egress one attempt through a passthrough member, the unit's route carrying `caller`, and
+/// answer the caller credential each of the member's auth calls was lent (SINGLE-PATH SP-AU6, read
+/// from the claim on in `inbound_caller_secret.rs`).
+pub(crate) async fn lent_on_egress(
+    caller: Option<crate::auth::CallerCredential>,
+) -> Vec<Option<Vec<u8>>> {
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    for member in &mut r.egress.pools.get_mut(POOL).unwrap().members {
+        member.passthrough = true;
+    }
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        caller_credential: caller,
+        ..route()
+    });
+    let Pick::Member { passthrough, .. } = far.member(&t, 1).await else {
+        panic!("a member");
+    };
+    assert!(passthrough, "the member relays its caller's credential");
+    assert!(far.send(&t, request()).await);
+    let _ = drain(&far, &t).await;
+    let lent = r.auth.callers.lock().unwrap().clone();
+    lent
+}
+
 async fn read_out(far: &EgressFarEnd<'_>, t: &Pass<Route>) {
     loop {
         let p = far.next(t).await.expect("a piece through the last");

@@ -107,6 +107,9 @@ mod plugin {
             mut out: Out<'_, FieldsOut>,
         ) -> Outcome {
             let i: &FieldsIn = &input;
+            if i.handle == super::auth_fields_copy_tests::LENT {
+                super::auth_fields_copy_tests::lent(i.caller_credential.ptr);
+            }
             let fields: Vec<(Vec<u8>, Vec<u8>, u32)> = match (i.handle, i.mode) {
                 (1, MODE_PASSTHROUGH) => return Outcome::Refused,
                 (1, _) => {
@@ -130,7 +133,7 @@ mod plugin {
                     ),
                     (b"x-signature".to_vec(), b"signed".to_vec(), FIELD_SENSITIVE),
                 ],
-                (2 | 8, _) => (0..17)
+                (2 | 8 | super::auth_fields_copy_tests::LENT, _) => (0..17)
                     .map(|k| (format!("x-f{k:02}").into_bytes(), b"v".to_vec(), 0))
                     .collect(),
                 (3, _) => {

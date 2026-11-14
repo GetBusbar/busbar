@@ -2455,7 +2455,7 @@ impl FarEnd for EgressFarEnd<'_> {
 
 #[cfg(test)]
 #[path = "tests/far_end_tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 fn delivered(live: &mut Live, piece: &FarPiece, streamed: bool) {
     if streamed && live.answered && live.error_left.is_none() && !piece.bytes.is_empty() {
