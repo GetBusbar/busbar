@@ -53,8 +53,7 @@ mod ordinary_load_negatives;
 mod sdk_registration_tests;
 
 #[cfg(feature = "pack")]
-#[path = "../../../testing/settings/integer_token.rs"]
-pub mod settings_profile;
+pub mod integer_token;
 pub mod settings_schema;
 pub mod sign;
 #[allow(unsafe_code)]
