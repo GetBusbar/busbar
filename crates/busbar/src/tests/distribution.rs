@@ -38,10 +38,6 @@ mod central_router_headers;
 #[path = "kernel_application/central_rebuild.rs"]
 mod central_rebuild;
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "R23: test input differs: tests read carriers from hand-built headers"
-)]
 #[path = "kernel_application/auth_carrier_tests.rs"]
 mod auth_carrier_tests;
 
