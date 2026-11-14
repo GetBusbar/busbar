@@ -38,17 +38,20 @@ fn b64(bytes: &[u8]) -> Bytes {
     )
 }
 
-fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> Zeroizing<[u8; 32]> {
-    let key = HmacSha256Key::new(password);
-    let mut u = key.mac_parts([salt, &1_u32.to_be_bytes()[..]]);
-    let mut acc = Zeroizing::new(*u);
-    for _ in 1..iterations {
-        u = key.mac(&u[..]);
-        for (a, b) in acc.iter_mut().zip(u.iter()) {
-            *a ^= b;
-        }
-    }
-    acc
+/// PBKDF2-HMAC-SHA256 (RFC 8018) of `password` under `salt`, 32 bytes, over the crypto facade.
+fn pbkdf2_sha256(
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+) -> Result<Zeroizing<[u8; 32]>, Refused> {
+    let mut out = Zeroizing::new([0_u8; 32]);
+    crate::crypto::pbkdf2_hmac_sha256(password, salt, iterations, &mut out[..]).map_err(
+        |e| match e {
+            crate::crypto::Error::Unsupported(u) => Refused(u.reason),
+            _ => Refused("PBKDF2 parameters refused"),
+        },
+    )?;
+    Ok(out)
 }
 
 impl Cred {
