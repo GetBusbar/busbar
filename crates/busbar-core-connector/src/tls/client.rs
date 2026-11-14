@@ -41,6 +41,10 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
     match &trust.client_identity {
         None => Ok(wants_client_cert(trust).with_no_client_auth()),
         Some(identity) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: refusal text for an unusable client key at config"
+            )]
             let key = rustls_pki_types::PrivateKeyDer::try_from(
                 identity
                     .private_key
@@ -48,15 +52,24 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
                     .clone(),
             )
             .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: rustls owns the identity chain, built once per client config"
+            )]
             let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
                 .cert_chain
                 .iter()
                 .cloned()
                 .map(rustls_pki_types::CertificateDer::from)
                 .collect();
-            wants_client_cert(trust)
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: refusal text for an unusable client chain at config"
+            )]
+            let config = wants_client_cert(trust)
                 .with_client_auth_cert(chain, key)
-                .map_err(|e| BadClientIdentity(format!("certificate chain: {e}")))
+                .map_err(|e| BadClientIdentity(format!("certificate chain: {e}")))?;
+            Ok(config)
         }
     }
 }
@@ -67,12 +80,21 @@ pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
         extra_anchors: operator_ca_anchors(pem)?,
         ..EgressTrust::default()
     };
-    build_client_config(&trust).map_err(|e| e.to_string())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: refusal text for an unusable operator CA at config"
+    )]
+    let config = build_client_config(&trust).map_err(|e| e.to_string())?;
+    Ok(config)
 }
 
 /// Parse and validate the public certificate roots in an operator PEM bundle.
 pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     use rustls::pki_types::pem::PemObject as _;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the operator CA bundle is parsed once at config"
+    )]
     let certs = rustls_pki_types::CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("the operator CA does not parse: {e}"))?;
@@ -81,11 +103,20 @@ pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     }
     let mut anchors = rustls::RootCertStore::empty();
     for cert in &certs {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: refusal text for an unusable operator CA at config"
+        )]
         anchors
             .add(cert.clone())
             .map_err(|e| format!("the operator CA is not a usable trust anchor: {e}"))?;
     }
-    Ok(certs.into_iter().map(|c| c.to_vec()).collect())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the parsed anchors are handed back owned, once at config"
+    )]
+    let owned = certs.into_iter().map(|c| c.to_vec()).collect();
+    Ok(owned)
 }
 
 /// The verifier half of the client config, before the client-auth choice: platform roots plus any
@@ -173,7 +204,8 @@ impl rustls::client::danger::ServerCertVerifier for AcceptsAnyCertificate {
 #[derive(Debug)]
 struct PinnedKeyVerifier {
     inner: Arc<rustls::client::WebPkiServerVerifier>,
-    pins: Vec<[u8; 32]>,
+    /// The pinned SPKI digests, looked up by the handshake's digest.
+    pins: foldhash::HashSet<[u8; 32]>,
 }
 
 impl PinnedKeyVerifier {
@@ -181,10 +213,9 @@ impl PinnedKeyVerifier {
         let inner = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
             .build()
             .expect("a root store with at least the platform anchors builds a verifier");
-        Self {
-            inner,
-            pins: pins.to_vec(),
-        }
+        let mut set = foldhash::HashSet::default();
+        set.extend(pins.iter().copied());
+        Self { inner, pins: set }
     }
 }
 
@@ -208,11 +239,7 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
             rustls::Error::General("peer certificate carries no readable key".into())
         })?;
         let digest = ::ring::digest::digest(&::ring::digest::SHA256, key_info);
-        if self
-            .pins
-            .iter()
-            .any(|pin| pin.as_slice() == digest.as_ref())
-        {
+        if <[u8; 32]>::try_from(digest.as_ref()).is_ok_and(|d| self.pins.contains(&d)) {
             Ok(verified)
         } else {
             Err(rustls::Error::General(
@@ -308,6 +335,10 @@ pub fn seal(
                     "the connector secures no connection to present it on".into(),
                 ))
             })?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: refusal text for an unusable member key at declaration"
+            )]
             let key = rustls_pki_types::PrivateKeyDer::try_from(
                 identity
                     .private_key
@@ -315,12 +346,20 @@ pub fn seal(
                     .clone(),
             )
             .map_err(|e| BadAnchors::Identity(BadClientIdentity(format!("private key: {e}"))))?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: rustls owns the member's identity chain, sealed once at declaration"
+            )]
             let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
                 .cert_chain
                 .iter()
                 .cloned()
                 .map(rustls_pki_types::CertificateDer::from)
                 .collect();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: refusal text for an unusable member chain at declaration"
+            )]
             let certified =
                 rustls::sign::CertifiedKey::from_der(chain, key, base.crypto_provider()).map_err(
                     |e| BadAnchors::Identity(BadClientIdentity(format!("certificate chain: {e}"))),
@@ -555,9 +594,9 @@ pub fn seal_with_policy(
     anchors: &busbar_contract::transport::trust::Anchors,
 ) -> Result<Sealed, BadAnchors> {
     let mut without_roots = anchors.clone();
-    without_roots.extra_anchors.clear();
+    let extra_anchors = std::mem::take(&mut without_roots.extra_anchors);
     let mut sealed = seal(base, &without_roots)?;
-    if anchors.extra_anchors.is_empty() {
+    if extra_anchors.is_empty() {
         return Ok(sealed);
     }
     let mut policy = policy.cloned().ok_or_else(|| {
@@ -576,7 +615,7 @@ pub fn seal_with_policy(
     sealed.tls = Some(Arc::new(
         build_client_config(&policy).map_err(BadAnchors::Identity)?,
     ));
-    sealed.extra_anchors = anchors.extra_anchors.clone();
+    sealed.extra_anchors = extra_anchors;
     Ok(sealed)
 }
 
