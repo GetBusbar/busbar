@@ -243,3 +243,57 @@ fn derived_subkey_seed_is_the_free_function_over_the_root_secret() {
         "the method must be exactly the free function over the root secret, with no second path"
     );
 }
+
+/// WASTE-PLANES W4: a domain subkey is derived once per (key material, domain), not per signature.
+/// A same-kid rotation (new secret, `DEFAULT_KID` kept) is a new signer and derives afresh.
+#[test]
+fn subkey_derived_once_per_key_and_domain() {
+    const DOMAIN: &str = "agents/card-signing/v1";
+    let derivations = || SUBKEY_DERIVATIONS.with(std::cell::Cell::get);
+    let before = derivations();
+
+    let old = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+    let old_vk = SigningKey::from_bytes(&old.derived_subkey_seed(DOMAIN)).verifying_key();
+    let old_spki = old.subkey_key_info_base64(DOMAIN);
+    for i in 0u32..1_000 {
+        let input = i.to_le_bytes();
+        let sig = Signature::from_bytes(&old.sign_with_subkey(DOMAIN, &input));
+        assert!(
+            old_vk.verify(&input, &sig).is_ok(),
+            "signature {i} verifies"
+        );
+    }
+
+    let new = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+    assert_eq!(old.kid(), new.kid(), "same-kid rotation");
+    let new_spki = new.subkey_key_info_base64(DOMAIN);
+    assert_ne!(
+        old_spki, new_spki,
+        "key material changed under the same kid"
+    );
+    let new_vk = SigningKey::from_bytes(&new.derived_subkey_seed(DOMAIN)).verifying_key();
+    for i in 0u32..1_000 {
+        let input = i.to_le_bytes();
+        let sig = Signature::from_bytes(&new.sign_with_subkey(DOMAIN, &input));
+        assert!(
+            new_vk.verify(&input, &sig).is_ok(),
+            "signature {i} verifies"
+        );
+        assert!(
+            old_vk.verify(&input, &sig).is_err(),
+            "not under the old key"
+        );
+    }
+    // The cached key signs exactly as a fresh derivation does.
+    let fresh = SigningKey::from_bytes(&new.derived_subkey_seed(DOMAIN));
+    assert_eq!(
+        new.sign_with_subkey(DOMAIN, b"x"),
+        fresh.sign(b"x").to_bytes()
+    );
+
+    assert_eq!(
+        derivations() - before,
+        2,
+        "one derivation per (key, domain); dev derives once per signature"
+    );
+}
