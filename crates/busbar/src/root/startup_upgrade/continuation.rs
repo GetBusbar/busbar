@@ -176,17 +176,19 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
         return Err(failed.refused(config::store_required()));
     };
     let store_module = store.module.clone();
-    let (mut app, rotation, limits) = match appbuild::build_app_from_config_with_store(
-        config,
-        plugins,
-        overlay.clone(),
-        base_hook_names,
-        base_group_names,
-        (Some(config_path), Some(providers_path)),
-        None,
-        &rules,
-        Some(core.clone()),
-        true,
+    let (mut app, rotation, limits) = match busbar_kernel::config_validate::after_boot_advice(
+        appbuild::build_app_from_config_with_store(
+            config,
+            plugins,
+            overlay.clone(),
+            base_hook_names,
+            base_group_names,
+            (Some(config_path), Some(providers_path)),
+            None,
+            &rules,
+            Some(core.clone()),
+            true,
+        ),
     )
     .await
     {

@@ -36,8 +36,13 @@ pub struct Check<'a> {
 #[cold]
 #[inline(never)]
 pub fn check(cfg: &RootCfg, c: Check<'_>) -> Result<Arc<dyn PluginRows>, Refusal> {
-    super::validate_with_plugins(cfg, c.unset_env_vars, c.plugins.enabled)
-        .map_err(Refusal::Config)?;
+    let semantic = || super::validate_with_plugins(cfg, c.unset_env_vars, c.plugins.enabled);
+    let verdict = if super::boot_advised() {
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), semantic)
+    } else {
+        semantic()
+    };
+    verdict.map_err(Refusal::Config)?;
     (c.root)(cfg).map_err(Refusal::Root)?;
     if let Some(fetch) = c.fetch {
         fetch().map_err(Refusal::Plugins)?;
