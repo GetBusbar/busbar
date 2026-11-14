@@ -904,8 +904,15 @@ impl Identity<'_> {
                 _ => unreachable!(),
             })
     }
-    pub async fn self_keys(&self, subject: &str) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.query(Query::SelfKeys(subject))
+    /// Every key row a self-serve login for `subject` judges: its `user:<subject>` group rows, its
+    /// `idp_subject` rows, and the rows at `derived` (the subject's derived ids, wherever an admin
+    /// moved them). Unrelated keys are not returned and do not defer the read.
+    pub async fn self_keys(
+        &self,
+        subject: &str,
+        derived: &std::collections::BTreeSet<String>,
+    ) -> RecordStoreResult<Vec<VirtualKey>> {
+        self.query(Query::SelfKeys { subject, derived })
             .await
             .map(|output| match output {
                 Output::Keys(keys) => keys,
@@ -1203,6 +1210,7 @@ impl Identity<'_> {
                     }
                     if is_self_group(key.group.as_deref(), subject)
                         || key.idp_subject.as_deref() == Some(*subject)
+                        || derived.contains(&key.id)
                     {
                         keys.push(key);
                     }
@@ -1319,7 +1327,10 @@ impl Targets<'_> {
 
 enum Query<'a> {
     Denied(&'a str),
-    SelfKeys(&'a str),
+    SelfKeys {
+        subject: &'a str,
+        derived: &'a std::collections::BTreeSet<String>,
+    },
     Snapshot,
     Key(&'a str),
     Keys(Option<u64>),

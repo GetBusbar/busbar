@@ -956,6 +956,8 @@ pub mod group_provision;
 mod state;
 pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
+#[cfg(test)]
+pub(crate) use state::self_serve::{SelfEpoch, SelfWrite};
 pub use state::{
     metering_lane, AdjustRefused, Adjustment, KeyMutationError, MintError, PricedBucket,
     UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
@@ -983,7 +985,7 @@ pub enum SelfMintRefusal {
     /// The subject holds a self-serve binding an admin disabled and has not deleted. A login or
     /// refresh must not re-enable it or route around it with a fresh key.
     Disabled,
-    /// The subject's binding was minted through a different identity provider
+    /// The subject's binding was minted through a different identity module
     /// ([`busbar_contract::records::VirtualKey::idp_provider`]).
     OtherProvider,
     /// The subject's binding was revoked (denylisted). Revoked is terminal: no login, refresh or
@@ -1081,9 +1083,11 @@ impl std::fmt::Display for SelfMintError {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn mint_self_offloaded(
     gov: Arc<GovState>,
     op: SelfMintOp,
+    unattributed: UnattributedBinding,
     user_sub: String,
     provider: String,
     allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
@@ -1092,11 +1096,11 @@ pub async fn mint_self_offloaded(
 ) -> Result<(VirtualKey, String), SelfMintError> {
     match op {
         SelfMintOp::Issue => {
-            gov.issue_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+            gov.issue_self_scoped(&user_sub, &provider, unattributed, allowed_scopes, exp, now)
                 .await
         }
         SelfMintOp::Refresh => {
-            gov.refresh_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+            gov.refresh_self_scoped(&user_sub, &provider, unattributed, allowed_scopes, exp, now)
                 .await
         }
     }

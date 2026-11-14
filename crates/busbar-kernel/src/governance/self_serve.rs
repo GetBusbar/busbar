@@ -84,6 +84,45 @@ impl GovState {
             .find(|key| {
                 key.enabled && key.deleted_at.is_none() && is_self_binding_of(key, user_sub)
             })
+            .max()
+            .map_or(SELF_EPOCH_WINDOW, |max_e| {
+                SELF_EPOCH_WINDOW.max(max_e.saturating_mul(2).saturating_add(1))
+            })
+    }
+
+    /// Whether `key` is `user_sub`'s own self-serve row, wherever an admin has moved it: a 1.6.0
+    /// binding (`idp_subject` and `user-bound`), or a pre-1.6.0 row whose id is derived for the
+    /// subject (from its own epoch, or from the window when an admin rewrote its generation).
+    /// Group plays no part: `user:` groups are not reserved for self keys.
+    pub(crate) fn owned_by(
+        key: &VirtualKey,
+        user_sub: &str,
+        seed: &[u8; 32],
+        derived: &BTreeSet<String>,
+    ) -> bool {
+        if key.deleted_at.is_some() {
+            return false;
+        }
+        if key.idp_subject.as_deref() == Some(user_sub)
+            && key.binding_mode.as_deref() == Some(SELF_KEY_BINDING_MODE)
+        {
+            return true;
+        }
+        if !Self::legacy_shaped(key) {
+            return false;
+        }
+        derived.contains(&key.id)
+            || Self::parsed_epoch(key)
+                .is_some_and(|epoch| key.id == Self::derive_self_subject(seed, user_sub, epoch))
+    }
+
+    /// The subject's live binding among its owned rows; the `user:<sub>` row wins over a moved one.
+    fn live_self_binding(owned: &[VirtualKey], user_sub: &str) -> Option<VirtualKey> {
+        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
+        owned
+            .iter()
+            .find(|key| key.enabled && key.group.as_deref() == Some(group.as_str()))
+            .or_else(|| owned.iter().find(|key| key.enabled))
             .cloned()
     }
 
@@ -133,6 +172,7 @@ impl GovState {
         &self,
         user_sub: &str,
         provider: &str,
+        unattributed: UnattributedBinding,
         rows: &[VirtualKey],
     ) -> RecordStoreResult<Option<(SelfMintRefusal, Option<String>)>> {
         if self.subject_held(user_sub) {
@@ -186,12 +226,16 @@ impl GovState {
         SelfMintError::Refused(reason)
     }
 
-    async fn first_free_self_epoch(
+    /// The first derived id from `from` (strides 0, 1, 2, 4, ...) that is not a tombstone and not in
+    /// `cleared`: `Free` when no row holds it, `Occupied` when an undeleted row does. An undeleted
+    /// derived row is never stepped over, so a revoked or disabled one is judged, not routed around.
+    pub(crate) async fn first_free_self_epoch(
         &self,
         seed: &[u8; 32],
         user_sub: &str,
         from: u64,
-    ) -> RecordStoreResult<(String, u64)> {
+        cleared: &BTreeSet<String>,
+    ) -> RecordStoreResult<SelfEpoch> {
         const MAX_PROBES: u32 = 64;
         let mut stride = 0u64;
         for _ in 0..MAX_PROBES {
@@ -235,7 +279,8 @@ impl GovState {
         exp: u64,
         now: u64,
         previous: Option<&VirtualKey>,
-    ) -> RecordStoreResult<(VirtualKey, String)> {
+        cleared: &BTreeSet<String>,
+    ) -> Result<SelfWrite, SelfMintError> {
         let seed = material.signer.secret_bytes();
         let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch).await?;
         #[expect(
@@ -287,7 +332,7 @@ impl GovState {
         let commit = match previous {
             Some(previous) => {
                 if identity.is_denied(&previous.id).await? {
-                    return Err(RecordStoreError("self binding is revoked".into()));
+                    return Err(SelfMintError::Refused(SelfMintRefusal::Revoked));
                 }
                 identity.replace_key(previous, &binding).await?
             }
@@ -304,9 +349,10 @@ impl GovState {
         let binding = super::identity_runtime::committed_key(&commit, &id)?;
         self.publish_identity(commit);
         let token = material.signer.mint(&id, exp, Some(&generation));
-        Ok((binding, token))
+        Ok(SelfWrite::Written(binding, token))
     }
 
+    /// Test-only entry: fails closed on an unattributed binding.
     pub async fn issue_self(
         &self,
         user_sub: &str,
@@ -316,14 +362,94 @@ impl GovState {
         now: u64,
     ) -> Result<(VirtualKey, String), SelfMintError> {
         let scopes = crate::governance::pool_scopes(allowed_pools);
-        self.issue_self_scoped(user_sub, provider, scopes, exp, now)
-            .await
+        self.issue_self_scoped(
+            user_sub,
+            provider,
+            UnattributedBinding::Refuse,
+            scopes,
+            exp,
+            now,
+        )
+        .await
+    }
+
+    /// Bind the subject's existing owned row: update scopes and stamp the provider (an adopted
+    /// pre-1.6.0 row also gets its subject and binding mode), never its group.
+    #[allow(clippy::too_many_arguments)]
+    async fn bind_existing_self(
+        &self,
+        material: &SigningMaterial,
+        user_sub: &str,
+        provider: &str,
+        unattributed: UnattributedBinding,
+        allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
+        exp: u64,
+        existing: &VirtualKey,
+        seed: &[u8; 32],
+        derived: &BTreeSet<String>,
+    ) -> Result<(VirtualKey, String), SelfMintError> {
+        let _key = self.identity_key_guard(&existing.id).await;
+        // Re-read under the key claim: a disable or move that landed since is seen here.
+        let existing = self
+            .read_self_binding(&existing.id, user_sub, seed, derived)
+            .await?;
+        if self
+            .core_store()?
+            .identity()
+            .is_denied(&existing.id)
+            .await?
+        {
+            self.refresh_order
+                .patch(|| self.denylist.insert(&existing.id));
+            return Err(SelfMintError::Refused(SelfMintRefusal::Revoked));
+        }
+        if let Some(refusal) = self.self_mint_refusal(
+            user_sub,
+            provider,
+            unattributed,
+            &[],
+            std::slice::from_ref(existing.as_ref()),
+            &BTreeSet::new(),
+        ) {
+            return Err(SelfMintError::Refused(refusal));
+        }
+        let new_scopes = allowed_scopes;
+        let adopt = existing.idp_provider.is_none() || Self::legacy_shaped(&existing);
+        if new_scopes != existing.allowed_scopes || adopt {
+            let mut updated = (*existing).clone();
+            updated.allowed_scopes = new_scopes;
+            updated.idp_provider = Some(provider.to_string());
+            updated.idp_subject = Some(user_sub.to_string());
+            updated.binding_mode = Some(SELF_KEY_BINDING_MODE.to_string());
+            let commit = self
+                .core_store()?
+                .identity()
+                .compare_self_key(Some(existing.as_ref()), &updated)
+                .await?;
+            let updated = super::identity_runtime::committed_key(&commit, &updated.id)?;
+            self.publish_identity(commit);
+            let generation = binding_generation(&updated.generation_hash);
+            let token = material.signer.mint(&updated.id, exp, generation);
+            Ok((updated, token))
+        } else {
+            self.publish_identity(crate::governance::persistence::identity::IdentityCommit {
+                changed: false,
+                revision: existing.revision,
+                keys: vec![(*existing).clone()],
+                credentials: Vec::new(),
+                denied: Vec::new(),
+            });
+            let generation = binding_generation(&existing.generation_hash);
+            let token = material.signer.mint(&existing.id, exp, generation);
+            Ok(((*existing).clone(), token))
+        }
     }
 
     pub async fn issue_self_scoped(
         &self,
         user_sub: &str,
         provider: &str,
+        unattributed: UnattributedBinding,
         allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
         exp: u64,
         now: u64,
@@ -334,6 +460,7 @@ impl GovState {
             )
             .into());
         };
+        let seed = material.signer.secret_bytes();
 
         let _mint = self
             .identity_claim(IdentityClaimKey::Subject(user_sub.into()))
@@ -409,6 +536,7 @@ impl GovState {
         }
     }
 
+    /// Test-only entry: fails closed on an unattributed binding.
     pub async fn refresh_self(
         &self,
         user_sub: &str,
@@ -418,14 +546,22 @@ impl GovState {
         now: u64,
     ) -> Result<(VirtualKey, String), SelfMintError> {
         let scopes = crate::governance::pool_scopes(allowed_pools);
-        self.refresh_self_scoped(user_sub, provider, scopes, exp, now)
-            .await
+        self.refresh_self_scoped(
+            user_sub,
+            provider,
+            UnattributedBinding::Refuse,
+            scopes,
+            exp,
+            now,
+        )
+        .await
     }
 
     pub async fn refresh_self_scoped(
         &self,
         user_sub: &str,
         provider: &str,
+        unattributed: UnattributedBinding,
         allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
         exp: u64,
         now: u64,
@@ -436,6 +572,7 @@ impl GovState {
             )
             .into());
         };
+        let seed = material.signer.secret_bytes();
 
         let _mint = self
             .identity_claim(IdentityClaimKey::Subject(user_sub.into()))
@@ -453,26 +590,45 @@ impl GovState {
         };
         let epoch = previous
             .as_ref()
-            .map(|key| {
-                binding_generation(&key.generation_hash)
-                    .and_then(|generation| generation.parse::<u64>().ok())
-                    .unwrap_or(0)
-                    .saturating_add(1)
-            })
+            .map(|key| Self::parsed_epoch(key).unwrap_or(0).saturating_add(1))
             .unwrap_or(0);
-        let out = self
-            .write_self_binding(
-                &material,
-                user_sub,
-                provider,
-                allowed_scopes,
-                epoch,
-                exp,
-                now,
-                previous.as_deref(),
-            )
-            .await?;
-        Ok(out)
+        let mut cleared = BTreeSet::new();
+        loop {
+            match self
+                .write_self_binding(
+                    &material,
+                    user_sub,
+                    provider,
+                    allowed_scopes.clone(),
+                    epoch,
+                    exp,
+                    now,
+                    previous.as_deref(),
+                    &cleared,
+                )
+                .await?
+            {
+                SelfWrite::Written(binding, token) => return Ok((binding, token)),
+                SelfWrite::Occupied(row) => {
+                    if !cleared.is_empty() {
+                        return Err(RecordStoreError(
+                            "self binding changed; retry the request".into(),
+                        )
+                        .into());
+                    }
+                    owned.push(row.clone());
+                    if let Some(refusal) = self
+                        .judge_self_mint(user_sub, provider, unattributed, &rows, &owned)
+                        .await?
+                    {
+                        return Err(SelfMintError::Refused(refusal));
+                    }
+                    // A live, unrefused owned row: a pre-existing duplicate (or the previous
+                    // binding's own id after an admin rewrote its generation). Step past it.
+                    cleared.insert(row.id);
+                }
+            }
+        }
     }
 }
 

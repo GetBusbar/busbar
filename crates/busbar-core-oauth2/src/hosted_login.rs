@@ -347,6 +347,55 @@ fn issue_page(base_url: &str, module_name: &str, issue: SelfKeyIssue) -> Respons
     }
 }
 
+/// The page for each self-serve refusal: what the administrator decided and who can undo it. "No
+/// access yet" is only for an identity with no grant.
+pub(crate) fn self_mint_refused_page(
+    refusal: busbar_kernel::governance::SelfMintRefusal,
+) -> Response {
+    let (title, body) = self_mint_refused_copy(refusal);
+    error_page(StatusCode::FORBIDDEN, title, body)
+}
+
+pub(crate) fn self_mint_refused_copy(
+    refusal: busbar_kernel::governance::SelfMintRefusal,
+) -> (&'static str, &'static str) {
+    use busbar_kernel::governance::SelfMintRefusal;
+    match refusal {
+        SelfMintRefusal::Disabled => (
+            "Key disabled",
+            "An administrator has disabled your self-serve key. Signing in again does not \
+             re-enable it. Ask your Busbar admin to re-enable it.",
+        ),
+        SelfMintRefusal::Revoked => (
+            "Key revoked",
+            "An administrator revoked your self-serve key. Ask your Busbar admin to remove it so \
+             a new key can be issued.",
+        ),
+        SelfMintRefusal::TransitionHeld => (
+            "Key on hold",
+            "Your account is part of an identity change, and an administrator's disable or \
+             revocation carried over to it. Ask your Busbar admin to review it.",
+        ),
+        SelfMintRefusal::OtherProvider => (
+            "Different sign-in method",
+            "Your self-serve key belongs to a different sign-in method. Sign in with the method \
+             you used first. If you no longer can, your Busbar admin must confirm you are the \
+             same person before changing the key.",
+        ),
+        SelfMintRefusal::Unattributed => (
+            "Key needs an administrator",
+            "Your self-serve key was created before Busbar recorded sign-in methods, and more \
+             than one is configured here. Your Busbar admin must confirm which sign-in method it \
+             belongs to.",
+        ),
+        SelfMintRefusal::ForeignKeyInGroup => (
+            "Key needs an administrator",
+            "Your self-serve group holds a key that cannot be verified as issued to you. Ask your \
+             Busbar admin to move it out.",
+        ),
+    }
+}
+
 async fn credential_submit(
     app: &App,
     handle: &Arc<AppHandle>,
