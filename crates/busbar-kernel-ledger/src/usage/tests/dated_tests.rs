@@ -51,6 +51,7 @@ fn price_raw<'a>(
             (lane, era, counts)
         })
         .collect();
+    let fees: Vec<(RawRateEra, u64)> = fees.into_iter().collect();
     price_dated_counts_raw(
         rows.iter().map(|(lane, era, counts)| (*lane, *era, counts)),
         fees,
