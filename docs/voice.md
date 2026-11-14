@@ -399,7 +399,7 @@ other durable-handle consumer inherits (`crates/busbar-voice/src/runtime/scope.r
 Retention is generous and fixed, not operator-tunable: an hour of idle, an hour past terminal, a
 working-set cap of 4096 rows (`crates/busbar-voice/src/runtime/scope.rs:25-31`).
 
-With `store: memory` (the choice `busbar --migrate-config` writes into a config that had no `store:` block), nothing survives a restart. With a durable store configured, boot
+With `store: memory` (the choice the 1.6.0 upgrade writes into a config that had no `store:` block), nothing survives a restart. With a durable store configured, boot
 restores the working set through `voice_hydrate`: an active row is re-installed, a terminal one is
 counted and left, and a row that cannot be decoded is counted and skipped rather than aborting the
 restore — only a store-level list failure refuses boot

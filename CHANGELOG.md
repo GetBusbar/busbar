@@ -180,7 +180,7 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   you to add one, e.g. `store: {module: memory}`. 1.5.5 used `memory` when the block was absent.
   **Migration:** run `busbar --migrate-config`, which inserts exactly `store: {module: memory}`
   (spec line 557, "a signed customer-visible change from 1.5.5"; owner ruling Q-STORE (B), spec lines
-  4365-4378). See [the migration guide](docs/migration-1.6.md#the-store-block-is-required).
+  4365-4378). See [the migration guide](docs/migration-1.6.md#what-the-migration-changes-for-you).
 - **Config migration explains how to configure a required missing signing key.** When the migrated
   auth chain uses `keys` without `auth.signing_key`, the YAML and migration summary tell the
   operator to generate a key and configure a secret reference. Validation and boot still require
@@ -1394,7 +1394,7 @@ This release reshapes the config file, so give yourself a few minutes for the up
 `busbar --migrate-config <config.yaml>` does most of it for you and tells you what it changed. Busbar
 will not start on the old spellings, which is deliberate. Every breaking change below is a config
 change; [config at a glance](docs/config-at-a-glance.md) shows the finished shape on one page, and
-[the 1.5 migration guide](docs/migration-1.5.md) walks the path from 1.4.
+[Upgrade to 1.5.5](docs/upgrade-to-1.5.5.md) walks the path from 1.4.
 
 ### Breaking changes
 
@@ -1502,7 +1502,7 @@ change; [config at a glance](docs/config-at-a-glance.md) shows the finished shap
 - **`auth.chain: [keys]` with no way to mint an admin token now refuses to start.** It previously
   booted as a silent open relay admitting anonymous requests. Give `auth.admin_auth` an `admin-tokens`
   entry with a `token:`, or an admin module granting `mint` or `full`, or set an explicit `admin_auth: []`
-  for development. See [the 1.5 migration guide](docs/migration-1.5.md).
+  for development. See [Upgrade to 1.5.5](docs/upgrade-to-1.5.5.md).
 
 ### Changed
 
@@ -1737,7 +1737,7 @@ Maintenance release: no change in behaviour.
 
 The API release: anything you could previously do only by editing YAML and restarting, you can now do over
 an authenticated, audited API. Hooks and policies are configured differently, so **existing configs need a
-one-time update**: see the [1.2.x to 1.3 migration guide](docs/migration-1.3.md). An old-form key reports a
+one-time update**: see [Upgrade to 1.5.5](docs/upgrade-to-1.5.5.md#from-12x-routing-hooks-and-auth-13). An old-form key reports a
 startup error naming exactly what to write instead.
 
 ### Breaking changes

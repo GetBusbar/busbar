@@ -632,9 +632,9 @@ A read-only config directory does not prevent Store persistence.
 
 An unavailable, incomplete, corrupt or newer Store overlay refuses recovery. Boot with
 `--safe-mode` to quarantine it and use the base configuration without deleting overlay records.
-`config.overlay` file and boolean selectors are refused by current parsing. One-time migration
-removes the old selector while preserving `config.locked` and imports old file state separately;
-serving never reads `BUSBAR_CONFIG_OVERLAY`. See [the migration guide](migration-1.6.md).
+`config.overlay` file and boolean selectors are refused by current parsing. The first 1.6.0 boot
+on a 1.5.5 config removes the old selector, keeps `config.locked` and imports the old overlay file
+into the Store; serving never reads `BUSBAR_CONFIG_OVERLAY`. See [the upgrade guide](migration-1.6.md#your-saved-config-overlay).
 
 ### The config plane
 
