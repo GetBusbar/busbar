@@ -8,7 +8,8 @@ description = "The busbar plugin subsystem: signed-tarball discovery, in-memory 
 license = "Apache-2.0"
 
 [features]
-# Dev-only conformance retirement barrier; not enabled by shipped defaults.
+# Dev-only conformance retirement barrier and the standalone test harness (path loaders,
+# probes, door helpers); never enabled by shipped defaults.
 test-support = []
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
@@ -22,6 +23,7 @@ required-features = ["pack"]
 name = "c_abi"
 path = "tests/c_abi.rs"
 test = false
+required-features = ["test-support"]
 
 [[example]]
 name = "dispatch_test_plugin"
