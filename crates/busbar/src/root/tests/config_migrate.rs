@@ -73,6 +73,72 @@ advanced:
     assert!(out.todos.is_empty(), "{:?}", out.todos);
 }
 
+/// WHO: an operator migrating a 1.5.x config that has the shipped catalog beside it, whose model
+/// names a private provider that exists only in the catalog (an in-rack upstream).
+/// WHY: migrate judges exactly the hosts the deployment dials (a model names it, or the config
+/// authors it) and nothing else. A catalog-only provider a model names still gets its
+/// allow_destinations entry, or 1.6.0 refuses the dial after the upgrade. A catalog entry no model
+/// names and the config does not author is neither resolved nor reported (UPG-A17e).
+#[test]
+fn migrate_judges_only_the_providers_the_deployment_dials_not_the_whole_catalog() {
+    crate::dist_root_install::install();
+    // `used` is in the catalog only and is named only by a model: the config does NOT author it,
+    // so it is kept only if core hands `models:` to the plane's migrate site. `authored` is kept
+    // through the authored-providers provenance. Address literals and one `.invalid` name, so no
+    // DNS answer decides the result.
+    let config = "\
+store: { module: memory }
+providers:
+  authored: { api_key: { env: FIXTURE_UPSTREAM_KEY } }
+models:
+  m: { provider: used }
+advanced:
+  usage_flush_interval_ms: 3600000
+";
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let catalog = "\
+used:
+  protocol: openai
+  base_url: http://10.20.0.1:8000
+authored:
+  protocol: openai
+  base_url: http://10.20.0.2
+catalog-only:
+  protocol: openai
+  base_url: http://10.20.0.3
+catalog-unresolvable:
+  protocol: openai
+  base_url: http://never.invalid
+";
+    std::fs::write(directory.0.join("providers.yaml"), catalog).unwrap();
+    let host = super::RootHost::for_document(config, &directory.0.join("config.yaml"));
+    let out = migrate_config_with(config, &host).expect("the real linked plane migrates");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("migrated YAML");
+    let mut allowed: Vec<String> = doc["advanced"]["allow_destinations"]
+        .as_sequence()
+        .map(|hosts| {
+            hosts
+                .iter()
+                .filter_map(|h| h.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    allowed.sort();
+    assert_eq!(
+        allowed,
+        ["10.20.0.1", "10.20.0.2"],
+        "exactly the model-named and the authored provider are judged: {}",
+        out.yaml
+    );
+    for line in out.changes.iter().chain(out.todos.iter()) {
+        assert!(
+            !line.contains("10.20.0.3") && !line.contains("never.invalid"),
+            "a catalog entry the deployment never dials is reported: {line}"
+        );
+    }
+    assert!(out.todos.is_empty(), "{:?}", out.todos);
+}
+
 #[test]
 fn the_release_index_picks_the_newest_release_built_for_this_core() {
     let kind = "store";
