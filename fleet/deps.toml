@@ -55,12 +55,6 @@ version = "1"
 repos = ["busbar-auth-webhook-signature"]
 reason = "the twilio signature's `application/x-www-form-urlencoded` body decode (DEPENDENCY-LADDER S18); the pair cap, strict-escape and UTF-8 checks stay the plugin's. Pure; already in busbar's lock (1.2.2, through url)."
 
-[plugin-deps.quick_cache]
-version = "0.7"
-default-features = false
-repos = ["busbar-auth-oidc"]
-reason = "the OIDC verdict cache, bounded with O(1) eviction (DEPENDENCY-LADDER S26, R9: quick_cache everywhere). Default features off: std hasher and locks, so its only dependencies are equivalent and hashbrown, both already in the closure. Pure, no socket."
-
 [plugin-deps.postgres]
 version = "0.19"
 repos = ["busbar-store-postgres"]
@@ -164,7 +158,6 @@ allow = [
     { crate = "crypto-common", line = "0.2", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's crypto-common line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "const-oid", line = "0.10", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's const-oid line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "wasi", line = "0.14", repos = ["busbar-store-postgres"], use = "tests-only", reason = "the independent `postgres` test client (tokio-postgres 0.7.18 -> whoami 2) the live tests verify the store with; never shipped" },
-    { crate = "quick_cache", line = "0.7", repos = ["busbar-auth-oidc"], use = "shipped", reason = "the OIDC verdict cache (DEPENDENCY-LADDER S26, R9); busbar's own quick_cache row (C22) is not on dev yet, so its lock holds no line of it" },
 ]
 
 # ── cargo-deny [bans] ─────────────────────────────────────────────────────────────────────────────
