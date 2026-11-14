@@ -3,19 +3,6 @@
 
 //! Shared plane-SDK readers for a body declared
 
-use crate::bounded::{Ir, PlaneAlloc};
-use crate::wire::Decode;
-
-/// The span view of a body, built from the pointers a plane declared: one scan of one closed
-pub fn view_with_arena<'u>(
-    body: &'u [u8],
-    pointers: &[&'u str],
-    arena: &'u dyn PlaneAlloc,
-) -> Result<Ir<'u>, Decode> {
-    let spans = crate::spans::resolve(body, pointers, arena).map_err(|_| Decode::Oversize)?;
-    Ok(Ir::new(body, spans))
-}
-
 /// Whether a body has a member at one pointer at all.
 #[must_use]
 pub fn has(body: &[u8], pointer: &str) -> bool {

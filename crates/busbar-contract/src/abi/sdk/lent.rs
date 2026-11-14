@@ -345,52 +345,6 @@ impl HostBuf<'_, crate::abi::hook::MessageView> {
     }
 }
 
-/// A signal value with no pointer in it: what a plugin writes into a host signal buffer by hand.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SignalScalar {
-    /// [`SIGNAL_TAG_U64`](crate::abi::hook::SIGNAL_TAG_U64).
-    U64(u64),
-    /// [`SIGNAL_TAG_I64`](crate::abi::hook::SIGNAL_TAG_I64).
-    I64(i64),
-    /// [`SIGNAL_TAG_F64`](crate::abi::hook::SIGNAL_TAG_F64).
-    F64(f64),
-    /// [`SIGNAL_TAG_BOOL`](crate::abi::hook::SIGNAL_TAG_BOOL).
-    Bool(bool),
-}
-
-impl HostBuf<'_, crate::abi::hook::SignalEntry> {
-    /// Write the signal `id` = `value` at the next index while there is room; count it either way.
-    pub fn push_signal(&mut self, id: u32, value: SignalScalar) -> usize {
-        use crate::abi::hook::{
-            SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_F64, SIGNAL_TAG_I64,
-            SIGNAL_TAG_U64,
-        };
-        let (tag, value) = match value {
-            SignalScalar::U64(v) => (SIGNAL_TAG_U64, SignalValue { u64_: v }),
-            SignalScalar::I64(v) => (SIGNAL_TAG_I64, SignalValue { i64_: v }),
-            SignalScalar::F64(v) => (SIGNAL_TAG_F64, SignalValue { f64_: v }),
-            SignalScalar::Bool(v) => (
-                SIGNAL_TAG_BOOL,
-                SignalValue {
-                    boolean: u8::from(v),
-                },
-            ),
-        };
-        let at = self.asked;
-        if at < self.cap {
-            // SAFETY: `at < cap`, and the host lent `cap` writable entries at `ptr` (`new`); the
-            // entry holds no pointer (its tag names a number).
-            unsafe {
-                self.ptr
-                    .add(at)
-                    .write_unaligned(SignalEntry { id, tag, value })
-            };
-        }
-        self.asked = self.asked.saturating_add(1);
-        at
-    }
-}
-
 impl HostBuf<'_, u8> {
     /// Copy `bytes` into this ARENA and answer their [`Span`](Span): the
     pub fn span(&mut self, bytes: &[u8]) -> Span {
