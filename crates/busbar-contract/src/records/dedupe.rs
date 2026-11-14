@@ -4,7 +4,7 @@
 //! Stable operation fingerprints and replay comparison shared by core and plugin adapters.
 //! Historical domain tags are retained verbatim to preserve existing receipt bytes.
 
-use sha2::{Digest as _, Sha256};
+use crate::crypto::Sha256;
 
 use crate::records::{
     MeteringDelta, ModelTokensDelta, PlaneDisposition, PlaneRecordRef, UsageDelta,
@@ -100,9 +100,7 @@ impl Dedupe {
                 f.record(record);
             }
         }
-        Self {
-            body: f.0.finalize().into(),
-        }
+        Self { body: f.0.finish() }
     }
 
     /// The body a NEW op records: its 32 bytes.
@@ -140,15 +138,15 @@ pub(crate) struct Feed(pub(crate) Sha256);
 
 impl Feed {
     pub(crate) fn u64(&mut self, v: u64) {
-        self.0.update(v.to_le_bytes());
+        self.0.update(&v.to_le_bytes());
     }
 
     fn i64(&mut self, v: i64) {
-        self.0.update(v.to_le_bytes());
+        self.0.update(&v.to_le_bytes());
     }
 
     fn i128(&mut self, v: i128) {
-        self.0.update(v.to_le_bytes());
+        self.0.update(&v.to_le_bytes());
     }
 
     pub(crate) fn count(&mut self, n: usize) {
@@ -157,7 +155,7 @@ impl Feed {
 
     pub(crate) fn bytes(&mut self, b: &[u8]) {
         self.count(b.len());
-        self.0.update(b);
+        self.0.update(&b[..]);
     }
 
     pub(crate) fn text(&mut self, s: &str) {
@@ -245,15 +243,15 @@ impl Feed {
         self.text(kind);
         self.text(id);
         match parent {
-            None => self.0.update([0]),
+            None => self.0.update(&[0]),
             Some(p) => {
-                self.0.update([1]);
+                self.0.update(&[1]);
                 self.text(p);
             }
         }
         self.u64(seq);
         self.u64(ts);
-        self.0.update([match disposition {
+        self.0.update(&[match disposition {
             PlaneDisposition::Active => 0,
             PlaneDisposition::Terminal => 1,
         }]);

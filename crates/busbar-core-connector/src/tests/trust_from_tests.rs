@@ -22,13 +22,15 @@ fn private_ca() -> (String, Vec<u8>, Vec<u8>) {
 
 /// A TLS far end on loopback presenting `leaf`: every connection whose handshake completes has its
 async fn tls_far_end(leaf: Vec<u8>, key: Vec<u8>) -> String {
-    let server = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![leaf.into()],
-            rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-        )
-        .unwrap();
+    let server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let far = l.local_addr().unwrap().to_string();
@@ -52,7 +54,6 @@ async fn tls_far_end(leaf: Vec<u8>, key: Vec<u8>) -> String {
 
 /// The process's connector shape: a door whose targets ask for connection security, every literal
 fn secure_connector() -> Connector {
-    crate::tls::install_crypto_provider();
     let view = Transports::new(vec![
         Entry {
             door: Arc::new(TestDoor::new(

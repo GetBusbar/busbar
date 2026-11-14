@@ -24,9 +24,9 @@ pub enum OpRefused {
 /// An `op_id`-carrying write's answer.
 pub type OpResult<T> = Result<T, OpRefused>;
 
+use crate::crypto::Sha256;
 use crate::records::dedupe::Feed;
 pub use crate::records::dedupe::{Body, Dedupe, Seen};
-use sha2::{Digest as _, Sha256};
 
 impl Dedupe {
     /// Atomic v3 conditional-record request; version, predicates and mutations form its body.
@@ -42,9 +42,9 @@ impl Dedupe {
             f.text(&predicate.schema);
             f.bytes(&predicate.key);
             match &predicate.expected {
-                super::conditional::Expected::Absent => f.0.update([0]),
+                super::conditional::Expected::Absent => f.0.update(&[0]),
                 super::conditional::Expected::Bytes(bytes) => {
-                    f.0.update([1]);
+                    f.0.update(&[1]);
                     f.bytes(bytes);
                 }
             }
@@ -54,29 +54,27 @@ impl Dedupe {
             let (schema, key) = mutation.address();
             match mutation {
                 super::conditional::Mutation::Put { value, .. } => {
-                    f.0.update([0]);
+                    f.0.update(&[0]);
                     f.text(schema);
                     f.bytes(key);
                     f.bytes(value);
                 }
                 super::conditional::Mutation::Delete { .. } => {
-                    f.0.update([1]);
+                    f.0.update(&[1]);
                     f.text(schema);
                     f.bytes(key);
                 }
                 super::conditional::Mutation::DeleteRange {
                     exact_key_length, ..
                 } => {
-                    f.0.update([2]);
+                    f.0.update(&[2]);
                     f.text(schema);
                     f.bytes(key);
                     f.u64(*exact_key_length);
                 }
             }
         }
-        Self {
-            body: f.0.finalize().into(),
-        }
+        Self { body: f.0.finish() }
     }
 
     /// The op's answer from what its async body found: `None` = it applied the op and recorded its

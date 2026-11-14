@@ -4,11 +4,11 @@
 //! Admission of owner-interpreted facts against the independently captured original bytes.
 //! Coverage is complete and bounded; an invalid stream cannot be retried in the same verifier.
 use crate::{archive_source::ArchiveRows, Error};
+use busbar_contract::crypto::Sha256;
 use busbar_contract::persistence::{
     archive,
     lifecycle::{source::SourceChunk, SourceReader},
 };
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 struct ActiveGroup {
@@ -93,7 +93,7 @@ impl SourceCoverage {
         }
         let mut hash = Sha256::new();
         hash.update(b"busbar.interpreted.source-group/1\0");
-        hash.update([match chunk.family {
+        hash.update(&[match chunk.family {
             busbar_contract::persistence::lifecycle::source::HistoricalFamily::Identity => 0,
             busbar_contract::persistence::lifecycle::source::HistoricalFamily::Accounting => 1,
             busbar_contract::persistence::lifecycle::source::HistoricalFamily::Archival => 2,
@@ -101,7 +101,7 @@ impl SourceCoverage {
             busbar_contract::persistence::lifecycle::source::HistoricalFamily::Evidence => 4,
         }]);
         hash.update(chunk.group.expose(&seal));
-        let digest: [u8; 32] = hash.finalize().into();
+        let digest: [u8; 32] = hash.finish();
         if let Some(active) = &self.active {
             if active.digest != digest || active.next != chunk.sequence {
                 return Err(Error::Verification);

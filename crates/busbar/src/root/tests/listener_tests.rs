@@ -893,9 +893,12 @@ pub(super) fn tls_fixture(cert: &str, key: &str, ca: Option<&str>) -> TlsFixture
 }
 
 fn gen_self_signed() -> (String, String) {
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
-            .expect("self-signed");
+    let busbar_contract::crypto::testing::rcgen::CertifiedKey { cert, signing_key } =
+        busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec![
+            "localhost".into(),
+            "127.0.0.1".into(),
+        ])
+        .expect("self-signed");
     (cert.pem(), signing_key.serialize_pem())
 }
 
@@ -945,7 +948,7 @@ async fn tls_happy_path_trusted_client_gets_200() {
     let tls = tls_fixture(&cert_pem, &key_pem, None);
     let (addr, _stop) = spawn_tls_server(&tls).await;
     let client = reqwest::Client::builder()
-        .add_root_certificate(reqwest::Certificate::from_pem(cert_pem.as_bytes()).expect("cert"))
+        .use_preconfigured_tls(preconfigured_tls(&cert_pem, None))
         .build()
         .expect("client");
     let resp = client
@@ -958,17 +961,21 @@ async fn tls_happy_path_trusted_client_gets_200() {
 }
 
 fn gen_ca_and_leaf(sans: &[&str]) -> (String, String, String) {
-    let ca_kp = rcgen::KeyPair::generate().expect("ca key");
-    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("ca params");
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_kp = busbar_contract::crypto::testing::rcgen::KeyPair::generate().expect("ca key");
+    let mut ca_params = busbar_contract::crypto::testing::rcgen::CertificateParams::new(Vec::new())
+        .expect("ca params");
+    ca_params.is_ca = busbar_contract::crypto::testing::rcgen::IsCa::Ca(
+        busbar_contract::crypto::testing::rcgen::BasicConstraints::Unconstrained,
+    );
     let ca_pem = ca_params.self_signed(&ca_kp).expect("self-signed ca").pem();
-    let issuer = rcgen::Issuer::from_params(&ca_params, ca_kp);
-    let leaf_kp = rcgen::KeyPair::generate().expect("leaf key");
-    let leaf =
-        rcgen::CertificateParams::new(sans.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-            .expect("leaf params")
-            .signed_by(&leaf_kp, &issuer)
-            .expect("leaf");
+    let issuer = busbar_contract::crypto::testing::rcgen::Issuer::from_params(&ca_params, ca_kp);
+    let leaf_kp = busbar_contract::crypto::testing::rcgen::KeyPair::generate().expect("leaf key");
+    let leaf = busbar_contract::crypto::testing::rcgen::CertificateParams::new(
+        sans.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+    )
+    .expect("leaf params")
+    .signed_by(&leaf_kp, &issuer)
+    .expect("leaf");
     (ca_pem, leaf.pem(), leaf_kp.serialize_pem())
 }
 
@@ -976,18 +983,36 @@ fn mutual(srv_cert_pem: &str, srv_key_pem: &str, ca_pem: &str) -> TlsFixture {
     tls_fixture(srv_cert_pem, srv_key_pem, Some(ca_pem))
 }
 
-fn client_with(srv_cert_pem: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .add_root_certificate(
-            reqwest::Certificate::from_pem(srv_cert_pem.as_bytes()).expect("cert"),
-        )
-        .use_rustls_tls();
-    if let Some((leaf, key)) = identity {
-        builder = builder.identity(
-            reqwest::Identity::from_pem(format!("{leaf}{key}").as_bytes()).expect("identity"),
-        );
+/// A reqwest TLS config trusting `ca_pem`, with an optional client identity (`leaf`, `key` PEM),
+/// built through the crypto facade.
+fn preconfigured_tls(ca_pem: &str, identity: Option<(&str, &str)>) -> rustls::ClientConfig {
+    use rustls::pki_types::{pem::PemObject as _, CertificateDer, PrivateKeyDer};
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in CertificateDer::pem_slice_iter(ca_pem.as_bytes()) {
+        roots.add(cert.expect("cert PEM")).expect("root");
     }
-    builder.build().expect("client")
+    let config = busbar_contract::crypto::tls::client_config(|b| {
+        let b = b.with_root_certificates(roots);
+        match identity {
+            Some((leaf, key)) => {
+                let chain = CertificateDer::pem_slice_iter(leaf.as_bytes())
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("client certificate PEM");
+                let key = PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("client key PEM");
+                b.with_client_auth_cert(chain, key)
+            }
+            None => Ok(b.with_no_client_auth()),
+        }
+    })
+    .expect("a client config");
+    (*config).clone()
+}
+
+fn client_with(srv_cert_pem: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
+    reqwest::Client::builder()
+        .use_preconfigured_tls(preconfigured_tls(srv_cert_pem, identity))
+        .build()
+        .expect("client")
 }
 
 #[tokio::test]

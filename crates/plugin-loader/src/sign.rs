@@ -9,6 +9,132 @@ use std::collections::BTreeMap;
 
 pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
+/// An Ed25519 signature, as the 64 bytes of RFC 8032.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Signature([u8; 64]);
+
+impl Signature {
+    /// The signature encoded as `bytes`.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8; 64]) -> Self {
+        Self(*bytes)
+    }
+
+    /// The signature encoded as `bytes`, which must be 64 long.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, crypto::Error> {
+        <[u8; 64]>::try_from(bytes)
+            .map(Self)
+            .map_err(|_| crypto::Error::Invalid("Ed25519 signature is not 64 bytes"))
+    }
+
+    /// The encoded signature.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 64] {
+        self.0
+    }
+}
+
+/// Something that signs a message with Ed25519.
+pub trait Signer {
+    /// The signature of `msg`.
+    fn sign(&self, msg: &[u8]) -> Signature;
+}
+
+/// An Ed25519 private key, over the crypto facade.
+pub struct SigningKey(ed25519::SigningKey);
+
+impl SigningKey {
+    /// The key whose RFC 8032 seed is `seed`.
+    ///
+    /// # Panics
+    /// If the crypto backend refuses a well-formed seed (never in core's software backend); use
+    /// [`SigningKey::try_from_seed`] to handle that.
+    #[must_use]
+    pub fn from_bytes(seed: &[u8; 32]) -> Self {
+        Self::try_from_seed(seed).expect("the crypto backend refused an Ed25519 seed")
+    }
+
+    /// The key whose RFC 8032 seed is `seed`, or why the backend refused it.
+    pub fn try_from_seed(seed: &[u8; 32]) -> Result<Self, crypto::Error> {
+        ed25519::SigningKey::from_seed(seed).map(Self)
+    }
+
+    /// The 32-byte seed.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 32] {
+        *self.0.to_seed()
+    }
+
+    /// The public key.
+    #[must_use]
+    pub fn verifying_key(&self) -> VerifyingKey {
+        VerifyingKey::from_facade(self.0.verifying_key())
+    }
+}
+
+impl Signer for SigningKey {
+    fn sign(&self, msg: &[u8]) -> Signature {
+        Signature(self.0.sign(msg))
+    }
+}
+
+impl Clone for SigningKey {
+    fn clone(&self) -> Self {
+        Self::from_bytes(&self.to_bytes())
+    }
+}
+
+impl std::fmt::Debug for SigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SigningKey(..)")
+    }
+}
+
+/// An Ed25519 public key, over the crypto facade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct VerifyingKey {
+    key: ed25519::VerifyingKey,
+    bytes: [u8; 32],
+}
+
+impl VerifyingKey {
+    fn from_facade(key: ed25519::VerifyingKey) -> Self {
+        Self {
+            bytes: key.to_bytes(),
+            key,
+        }
+    }
+
+    /// The key encoded as `bytes`.
+    pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, crypto::Error> {
+        ed25519::VerifyingKey::from_bytes(bytes).map(Self::from_facade)
+    }
+
+    /// The encoded key.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.bytes
+    }
+
+    /// The encoded key.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.bytes
+    }
+
+    /// Whether the key is a small-order point.
+    #[must_use]
+    pub fn is_weak(&self) -> bool {
+        self.key.is_weak()
+    }
+
+    /// Verify `signature` over `msg` strictly: `Err` for a bad signature, a weak key, a
+    /// small-order `R` or a non-canonical `S`.
+    pub fn verify_strict(&self, msg: &[u8], signature: &Signature) -> Result<(), crypto::Error> {
+        self.key.verify_strict(msg, &signature.0)
+    }
+}
+
 /// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which kind's
 /// table the door answers and which engine subsystem consumes it; discovery/trust/validation are
 /// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`, THE DESIGN

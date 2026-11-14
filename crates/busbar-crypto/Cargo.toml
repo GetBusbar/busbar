@@ -18,12 +18,14 @@ zeroize = { version = "1", default-features = false }
 # Protocol crates only, with no provider features (the backend turns its provider on).
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"], optional = true }
 rustls-pki-types = { version = "1", default-features = false, features = ["std"], optional = true }
+dimpl = { version = "=0.7.4", default-features = false, optional = true }
 
 [features]
 # TLS configs, verifiers and the ticketer, built only through this crate (no public provider).
-tls = ["dep:rustls", "dep:rustls-pki-types", "busbar-crypto-backend/tls"]
+tls = ["dep:rustls", "dep:rustls-pki-types", "dep:dimpl", "busbar-crypto-backend/tls"]
 # Test certificates; dev-dependencies only.
 test-support = ["tls", "busbar-crypto-backend/test-support"]
 
 [dev-dependencies]
-busbar-crypto = { path = ".", features = ["test-support"] }
+# The suite runs against the facade as every crate sees it (busbar_contract::crypto, test-support on).
+busbar-contract = { path = "../busbar-contract", features = ["test-support"] }

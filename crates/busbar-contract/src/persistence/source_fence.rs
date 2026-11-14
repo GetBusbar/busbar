@@ -5,8 +5,8 @@
 //! Successful replies require real native enforcement checks. These types neither
 //! disable accounts nor assert that an archive or an operator boolean is a fence.
 
+use crate::crypto::Sha256;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// Current probe and attestation wire version.
 pub const VERSION: u32 = 1;
@@ -302,9 +302,9 @@ fn text(value: &str, max: usize) -> bool {
 fn hash<T: Serialize + ?Sized>(domain: &[u8], value: &T) -> Result<[u8; 32], Error> {
     let bytes = serde_json::to_vec(value).map_err(|_| Error::Invalid)?;
     let mut digest = Sha256::new();
-    digest.update(domain);
-    digest.update(bytes);
-    Ok(digest.finalize().into())
+    digest.update(&domain[..]);
+    digest.update(&bytes[..]);
+    Ok(digest.finish())
 }
 
 impl std::fmt::Debug for Attestation {

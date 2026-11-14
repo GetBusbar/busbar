@@ -1,25 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{RingEs256Key, RingEs256Verifier};
+use super::{Es256Key, Es256Verifier};
 
-fn key(kid: &str) -> RingEs256Key {
-    let der = RingEs256Key::generate_pkcs8().expect("generate a P-256 key");
-    RingEs256Key::from_pkcs8_der(kid, &der).expect("load the key just generated")
+fn key(kid: &str) -> Es256Key {
+    let der = Es256Key::generate_pkcs8().expect("generate a P-256 key");
+    Es256Key::from_pkcs8_der(kid, &der).expect("load the key just generated")
 }
 
 #[tokio::test]
-async fn the_ring_backend_passes_the_upstream_signer_conformance_harness() {
-    let violations = oauth_as::signer_conformance::SignerConformance::new(
-        key("busbar-as-test"),
-        RingEs256Verifier,
-    )
-    .run()
-    .await;
+async fn the_es256_backend_passes_the_upstream_signer_conformance_harness() {
+    let violations =
+        oauth_as::signer_conformance::SignerConformance::new(key("busbar-as-test"), Es256Verifier)
+            .run()
+            .await;
 
     assert!(
         violations.is_empty(),
-        "the ring ES256 backend failed oauth-as's signer conformance harness:\n{}",
+        "the ES256 backend failed oauth-as's signer conformance harness:\n{}",
         violations
             .iter()
             .map(|v| format!("  {} — {}", v.check, v.detail))
@@ -49,7 +47,7 @@ async fn the_harness_fails_a_signer_that_does_not_actually_sign() {
     let real = key("busbar-as-planted-fault");
     let violations = oauth_as::signer_conformance::SignerConformance::new(
         ConstantSigner(oauth_as::jwt::JwsSigner::public_jwk(&real)),
-        RingEs256Verifier,
+        Es256Verifier,
     )
     .run()
     .await;
@@ -70,17 +68,17 @@ async fn the_verifier_refuses_an_asn1_der_signature() {
     let public = oauth_as::jwt::Jwk::from_coordinates(jwk.x(), jwk.y()).expect("coordinates");
     let input = b"the JWS signing input";
     let oauth_as::jwt::JwsSignature::Es256(fixed) = signer.sign(input).await.expect("sign") else {
-        panic!("the ring ES256 signer produced a non-ES256 signature variant");
+        panic!("the ES256 signer produced a non-ES256 signature variant");
     };
 
     assert!(
-        super::RingEs256Verifier.verify(&public, input, &fixed),
+        super::Es256Verifier.verify(&public, input, &fixed),
         "the fixed-width signature must verify, or the rest of this test proves nothing"
     );
 
     let der = der_encode(&fixed);
     assert!(
-        !super::RingEs256Verifier.verify(&public, input, &der),
+        !super::Es256Verifier.verify(&public, input, &der),
         "the verifier accepted the DER encoding of a signature it had already accepted in the \
          fixed-width form; two encodings of one signature is malleability"
     );
@@ -112,17 +110,12 @@ fn der_encode(fixed: &[u8; 64]) -> Vec<u8> {
 async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     use base64::Engine as _;
     use http_body_util::BodyExt as _;
-    use ring::signature::KeyPair as _;
 
-    let der = RingEs256Key::generate_pkcs8().expect("generate a P-256 key");
+    let der = Es256Key::generate_pkcs8().expect("generate a P-256 key");
 
-    let pair = ring::signature::EcdsaKeyPair::from_pkcs8(
-        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-        &der,
-        &ring::rand::SystemRandom::new(),
-    )
-    .expect("load the key just generated");
-    let point = pair.public_key().as_ref();
+    let pair =
+        busbar_contract::crypto::ecdsa_p256::from_pkcs8(&der).expect("load the key just generated");
+    let point = &pair.public_key();
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let (x, y) = (b64.encode(&point[1..33]), b64.encode(&point[33..65]));
 

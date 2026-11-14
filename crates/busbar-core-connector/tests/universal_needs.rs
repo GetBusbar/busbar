@@ -6,6 +6,7 @@
 use std::sync::OnceLock;
 
 use busbar_contract::conn::{ConnError, PieceKind};
+use busbar_contract::crypto::testing::rcgen;
 
 #[allow(unused_imports)]
 use busbar_core_connector::{carrier, compose, framer, hostio};
@@ -263,8 +264,8 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
                 }).expect("the actual WebSocket transport sends its upgrade key");
                 let mut challenge = key.as_bytes().to_vec();
                 challenge.extend_from_slice(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-                let hash = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &challenge);
-                let accept = base64::engine::general_purpose::STANDARD.encode(hash.as_ref());
+                let hash = busbar_contract::crypto::legacy::sha1(&challenge).unwrap();
+                let accept = base64::engine::general_purpose::STANDARD.encode(hash);
                 socket.write_all(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").as_bytes()).await.unwrap();
                 let mut echoed = 0;
                 while echoed < 40_008 {
@@ -540,7 +541,6 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
                 .is_ok_and(|located| located.secure)
         })
         .expect("the request framer states its secured claim");
-    busbar_core_connector::tls::install_crypto_provider();
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])
             .unwrap();
@@ -548,13 +548,15 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
         extra_anchors: vec![cert.der().to_vec()],
         ..Default::default()
     };
-    let mut server = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![cert.der().clone()],
-            rustls_pki_types::PrivateKeyDer::try_from(signing_key.serialize_der()).unwrap(),
-        )
-        .unwrap();
+    let mut server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![cert.der().clone()],
+                rustls_pki_types::PrivateKeyDer::try_from(signing_key.serialize_der()).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
 
     let protocol = framer::accept_offer(door.as_ref())
         .unwrap()

@@ -10,13 +10,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::hashing::Sha256;
 use crate::persistence::facade::CoreStore;
 use busbar_contract::host_records::conditional::{Expected, Mutation, Predicate, Request, VERSION};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::records::OpId;
 use busbar_contract::records::{UsageLedger, VirtualKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::config::{
     overlay::{OverlayDoc, OverlayStore},

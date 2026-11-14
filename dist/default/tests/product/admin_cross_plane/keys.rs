@@ -4665,12 +4665,12 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn issuer_key_info(issuer: &ed25519_dalek::SigningKey) -> String {
+fn issuer_key_info(issuer: &busbar_contract::crypto::ed25519::SigningKey) -> String {
     use base64::Engine as _;
     let mut der = vec![
         0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
     ];
-    der.extend_from_slice(issuer.verifying_key().as_bytes());
+    der.extend_from_slice(&issuer.verifying_key().to_bytes());
     base64::engine::general_purpose::STANDARD.encode(der)
 }
 
@@ -4678,7 +4678,8 @@ async fn drive_agent_door_verb_errors() {
     if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "agent_door_verb_errors") {
         return;
     }
-    let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let issuer = busbar_contract::crypto::ed25519::SigningKey::from_seed(&[7; 32])
+        .expect("a valid Ed25519 seed");
     let section = serde_json::json!({
         "base-agent": {
             "url": "http://127.0.0.1:1/closed",

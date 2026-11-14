@@ -118,7 +118,7 @@ impl NativeHarness {
             self.restore().await.expect("native restore before append");
         }
         let mut operation = [0; 16];
-        getrandom::fill(&mut operation).unwrap();
+        busbar_contract::crypto::fill(&mut operation).unwrap();
         let queue = PendingAuditQueue::new(1);
         queue.enqueue(PendingAudit {
             scope: scope.into(),
@@ -960,7 +960,7 @@ async fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared
 }
 
 fn hash_by_the_published_recipe(served: &serde_json::Value) -> String {
-    use sha2::{Digest as _, Sha256};
+    use crate::hashing::Sha256;
     let text = |k: &str| served[k].as_str().expect("a served text field").to_string();
     let num = |k: &str| served[k].as_u64().expect("a served integer field");
     let mut preimage = Vec::new();
@@ -1247,9 +1247,8 @@ async fn native_restore_refuses_to_splice_legacy_and_modern_chains_that_disagree
 }
 
 fn v1_5_5_hash(prev: &str, seq: u64, ts: u64, act: &str, res: &str, out: &str, pr: &str) -> String {
-    use sha2::Digest as _;
     let canonical = format!("{prev}|{seq}|{ts}|{act}|{res}|{out}|{pr}");
-    sha2::Sha256::digest(canonical.as_bytes())
+    crate::hashing::Sha256::digest(canonical.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

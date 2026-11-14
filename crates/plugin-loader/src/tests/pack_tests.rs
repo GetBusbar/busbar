@@ -1194,29 +1194,23 @@ fn unsigned_first_party(name: &str, lib: &[u8]) -> Vec<u8> {
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-struct P256(ring::signature::EcdsaKeyPair);
+struct P256(busbar_contract::crypto::ecdsa_p256::KeyPair);
 
 impl P256 {
     fn new() -> Self {
-        use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING as ALG};
-        let rng = ring::rand::SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ALG, &rng).unwrap();
-        P256(EcdsaKeyPair::from_pkcs8(&ALG, pkcs8.as_ref(), &rng).unwrap())
+        use busbar_contract::crypto::ecdsa_p256;
+        let pkcs8 = ecdsa_p256::generate_pkcs8().unwrap();
+        P256(ecdsa_p256::from_pkcs8(&pkcs8).unwrap())
     }
     fn spec(&self) -> String {
-        use ring::signature::KeyPair as _;
-        format!("p256:{}", hex::encode(self.0.public_key().as_ref()))
+        format!("p256:{}", hex::encode(self.0.public_key()))
     }
     fn key(&self) -> ReleaseKey {
         public_key(&self.spec()).unwrap()
     }
 
     fn sign(&self, bytes: &[u8]) -> Vec<u8> {
-        self.0
-            .sign(&ring::rand::SystemRandom::new(), bytes)
-            .unwrap()
-            .as_ref()
-            .to_vec()
+        self.0.sign_asn1(bytes).unwrap()
     }
     fn root(&self, id: &str) -> FirstPartyKey {
         FirstPartyKey {
@@ -1369,7 +1363,7 @@ fn the_release_tooling_refuses_what_would_not_load_as_first_party() {
 
 #[test]
 fn verify_refuses_an_unlisted_key_naming_the_trusted_ids() {
-    use ed25519_dalek::Signer as _;
+    use busbar_plugin_loader::sign::Signer as _;
     let stranger = SigningKey::from_bytes(&[13; 32]);
     let roots = vec![P256::new().root("busbar-plugins-root")];
     let unsigned = unsigned_first_party("busbar-store-x", b"cdylib");
@@ -1475,7 +1469,7 @@ fn release_entry_and_verifier_keep_the_current_structural_gate() {
 
 #[test]
 fn release_envelopes_accept_ed25519_and_refuse_noncanonical_bytes() {
-    use ed25519_dalek::Signer as _;
+    use busbar_plugin_loader::sign::Signer as _;
     let key = SigningKey::from_bytes(&[0x32; 32]);
     let public = ReleaseKey::Ed25519(key.verifying_key());
     let signed = keys_doc_bytes(

@@ -71,13 +71,12 @@ fn canonical(value: &Value) -> String {
 }
 
 fn tool_digest(name: &str, description: &str, schema: &Value) -> String {
-    use sha2::Digest as _;
-    let mut h = sha2::Sha256::new();
+    let mut h = busbar_contract::crypto::Sha256::new();
     for part in [name, description, &canonical(schema)] {
-        h.update((part.len() as u64).to_be_bytes());
+        h.update(&(part.len() as u64).to_be_bytes());
         h.update(part.as_bytes());
     }
-    format!("sha256:{}", hex::encode(h.finalize()))
+    format!("sha256:{}", hex::encode(h.finish()))
 }
 
 fn ping_schema() -> Value {
@@ -119,32 +118,35 @@ struct Upstream {
 
 impl Upstream {
     fn start() -> Upstream {
-        use rcgen::PublicKeyData as _;
+        use busbar_contract::crypto::testing::rcgen::PublicKeyData as _;
 
-        let ca_key = rcgen::KeyPair::generate().expect("a CA key");
-        let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("CA parameters");
-        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_key =
+            busbar_contract::crypto::testing::rcgen::KeyPair::generate().expect("a CA key");
+        let mut ca_params =
+            busbar_contract::crypto::testing::rcgen::CertificateParams::new(Vec::new())
+                .expect("CA parameters");
+        ca_params.is_ca = busbar_contract::crypto::testing::rcgen::IsCa::Ca(
+            busbar_contract::crypto::testing::rcgen::BasicConstraints::Unconstrained,
+        );
         let ca = ca_params.self_signed(&ca_key).expect("the CA certificate");
-        let issuer = rcgen::Issuer::new(ca_params, ca_key);
-        let key = rcgen::KeyPair::generate().expect("an upstream key");
-        let leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".into()])
-            .expect("the upstream SAN")
-            .signed_by(&key, &issuer)
-            .expect("the upstream certificate");
+        let issuer = busbar_contract::crypto::testing::rcgen::Issuer::new(ca_params, ca_key);
+        let key =
+            busbar_contract::crypto::testing::rcgen::KeyPair::generate().expect("an upstream key");
+        let leaf = busbar_contract::crypto::testing::rcgen::CertificateParams::new(vec![
+            "127.0.0.1".into(),
+        ])
+        .expect("the upstream SAN")
+        .signed_by(&key, &issuer)
+        .expect("the upstream certificate");
         let pin = busbar_contract::transport::trust::key_pin(&key.subject_public_key_info());
-        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("TLS protocol versions")
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![leaf.der().clone()],
-            rustls_pki_types::PrivateKeyDer::try_from(key.serialize_der())
-                .expect("upstream key DER"),
-        )
+        let tls = busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![leaf.der().clone()],
+                rustls_pki_types::PrivateKeyDer::try_from(key.serialize_der())
+                    .expect("upstream key DER"),
+            )
+        })
         .expect("upstream TLS configuration");
-        let tls = Arc::new(tls);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind the upstream");
         let port = listener.local_addr().unwrap().port();
         let served = Arc::new(Mutex::new(Served {

@@ -175,10 +175,8 @@ fn hmac_sig_token_rejected_bad_signature() {
     let body = tok.strip_prefix("bbk_").unwrap();
     let (payload_b64, _sig_b64) = body.split_once('.').unwrap();
 
-    let forged_sig = ring::hmac::sign(
-        &ring::hmac::Key::new(ring::hmac::HMAC_SHA512, &SEED),
-        b"user:vk_deadbeef#0",
-    );
+    let forged_sig = busbar_contract::crypto::hmac_sha512(&SEED, b"user:vk_deadbeef#0")
+        .expect("a 32-byte HMAC key");
     use base64::Engine;
     let forged = format!(
         "bbk_{}.{}",

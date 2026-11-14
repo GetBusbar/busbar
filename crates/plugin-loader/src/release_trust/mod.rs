@@ -26,7 +26,7 @@ fn clock_secs(at: std::time::SystemTime) -> u64 {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ReleaseKey {
     /// An ed25519 public key.
-    Ed25519(ed25519_dalek::VerifyingKey),
+    Ed25519(crate::sign::VerifyingKey),
     /// An ECDSA P-256 public key: its 65-byte uncompressed SEC1 point (`04 || x || y`).
     P256([u8; 65]),
 }
@@ -70,8 +70,8 @@ impl std::fmt::Debug for ReleaseKey {
     }
 }
 
-impl PartialEq<ed25519_dalek::VerifyingKey> for ReleaseKey {
-    fn eq(&self, other: &ed25519_dalek::VerifyingKey) -> bool {
+impl PartialEq<crate::sign::VerifyingKey> for ReleaseKey {
+    fn eq(&self, other: &crate::sign::VerifyingKey) -> bool {
         matches!(self, ReleaseKey::Ed25519(k) if k == other)
     }
 }

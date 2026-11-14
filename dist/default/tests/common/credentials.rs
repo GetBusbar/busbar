@@ -6,22 +6,19 @@ use std::path::Path;
 const ISSUER: &str = "https://issuer.e2e.invalid";
 const KEY_ID: &str = "distribution-oidc";
 
-type Idp = (ring::signature::EcdsaKeyPair, String, String);
+type Idp = (busbar_contract::crypto::ecdsa_p256::KeyPair, String, String);
 
 fn idp() -> &'static Idp {
     use base64::Engine as _;
-    use ring::signature::KeyPair as _;
     static IDP: std::sync::OnceLock<Idp> = std::sync::OnceLock::new();
     IDP.get_or_init(|| {
-        let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
+        let certificate = busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
             .expect("the local IdP certificate");
-        let signing_key = ring::signature::EcdsaKeyPair::from_pkcs8(
-            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        let signing_key = busbar_contract::crypto::ecdsa_p256::from_pkcs8(
             &certificate.signing_key.serialize_der(),
-            &ring::rand::SystemRandom::new(),
         )
         .expect("the IdP's P-256 signing key");
-        let point = signing_key.public_key().as_ref();
+        let point = &signing_key.public_key();
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let jwks = serde_json::json!({"keys": [{
             "kty": "EC", "crv": "P-256", "kid": KEY_ID, "alg": "ES256", "use": "sig",
@@ -32,16 +29,11 @@ fn idp() -> &'static Idp {
         let private = rustls_pki_types::PrivateKeyDer::Pkcs8(
             rustls_pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()),
         );
-        let tls = std::sync::Arc::new(
-            rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .expect("TLS versions")
-            .with_no_client_auth()
-            .with_single_cert(vec![certificate.cert.der().clone()], private)
-            .expect("the IdP TLS certificate"),
-        );
+        let tls = busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth()
+                .with_single_cert(vec![certificate.cert.der().clone()], private)
+        })
+        .expect("the IdP TLS certificate");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("the local IdP port");
         let jwks_url = format!("https://{}/jwks", listener.local_addr().expect("the IdP address"));
         std::thread::spawn(move || {
@@ -145,9 +137,9 @@ pub fn token_with_claims(sub: &str, roles: &[&str], aud: &str, extra: serde_json
     let signed = format!("{header}.{claims}");
     let signature = idp()
         .0
-        .sign(&ring::rand::SystemRandom::new(), signed.as_bytes())
+        .sign_fixed(signed.as_bytes())
         .expect("sign the IdP token");
-    format!("{signed}.{}", b64.encode(signature.as_ref()))
+    format!("{signed}.{}", b64.encode(signature))
 }
 
 pub fn issuer_settings_yaml(audience: &str, indent: usize) -> String {
@@ -224,7 +216,6 @@ pub fn generate_signing_key() -> ([u8; 32], String) {
 
 pub fn bind_key(secret: &[u8; 32], plain: &str, audience: &str) -> String {
     use base64::Engine as _;
-    use ed25519_dalek::Signer as _;
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let body = plain
         .strip_prefix("bbk_")
@@ -242,6 +233,8 @@ pub fn bind_key(secret: &[u8; 32], plain: &str, audience: &str) -> String {
         bound["g"] = g.clone();
     }
     let raw = serde_json::to_vec(&bound).expect("claims serialize");
-    let sig = ed25519_dalek::SigningKey::from_bytes(secret).sign(&raw);
-    format!("bbk_{}.{}", b64.encode(&raw), b64.encode(sig.to_bytes()))
+    let sig = busbar_contract::crypto::ed25519::SigningKey::from_seed(secret)
+        .expect("the signing key is a valid Ed25519 seed")
+        .sign(&raw);
+    format!("bbk_{}.{}", b64.encode(&raw), b64.encode(sig))
 }

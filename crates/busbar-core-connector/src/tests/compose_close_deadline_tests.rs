@@ -13,13 +13,15 @@ use std::task::Poll;
 
 fn tls_pair() -> (tokio_rustls::TlsAcceptor, Arc<rustls::ClientConfig>) {
     let (ca, leaf, key) = localhost_cert();
-    let server = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![leaf.into()],
-            rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-        )
-        .unwrap();
+    let server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
     let trust = busbar_contract::transport::trust::EgressTrust {
         extra_anchors: vec![ca],
         ..Default::default()
@@ -45,7 +47,6 @@ fn secure_door() -> Arc<TestDoor> {
 /// The body is consumed before the peer closes, so an abrupt end cannot be mistaken for a
 #[test]
 fn tls_eof_requires_close_notify_and_fresh_retains_the_failure() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         for (clean, fresh) in [(false, false), (true, false), (false, true)] {
             let (acceptor, client) = tls_pair();
@@ -151,7 +152,6 @@ fn through(
 /// Neither waiting for CONNECT nor the subsequent TLS handshake may extend a short overall
 #[test]
 fn the_overall_open_deadline_survives_connect_and_the_tls_transition() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         for answer_connect in [false, true] {
             let (_, client) = tls_pair();
@@ -203,7 +203,6 @@ fn the_overall_open_deadline_survives_connect_and_the_tls_transition() {
 /// A completed CONNECT no longer owns a timer. A real TLS handshake begun after its ten-second
 #[test]
 fn tls_after_connect_keeps_the_remaining_long_overall_budget() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let (acceptor, client) = tls_pair();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -233,7 +232,6 @@ fn tls_after_connect_keeps_the_remaining_long_overall_budget() {
 /// Keeping the caller's longer bound must not remove the existing CONNECT-only cap.
 #[test]
 fn an_unanswered_connect_still_has_its_own_bound() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let (_, client) = tls_pair();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -292,7 +290,6 @@ fn a_failed_write_whole_records_the_connection_cause() {
 
 #[test]
 fn an_untrusted_midstream_upgrade_records_the_security_cause() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let (acceptor, _) = tls_pair();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -329,7 +326,6 @@ fn an_untrusted_midstream_upgrade_records_the_security_cause() {
 /// The proxy has already buffered a valid 200, but the caller resumes after CONNECT's bound.
 #[test]
 fn a_buffered_connect_reply_cannot_erase_an_expired_stage_bound() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let (_, client) = tls_pair();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -373,7 +369,6 @@ fn a_buffered_connect_reply_cannot_erase_an_expired_stage_bound() {
 /// A TLS 1.3 server's first flight contains its Finished. Drive until that real flight is
 #[test]
 fn a_buffered_tls_finished_cannot_erase_an_expired_overall_bound() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         for late in [false, true] {
             let (acceptor, client) = tls_pair();
@@ -518,7 +513,6 @@ fn tls_close_notify_ignores_later_carrier_bytes_without_spinning() {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let (acceptor, client) = tls_pair();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

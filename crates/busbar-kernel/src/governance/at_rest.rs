@@ -6,9 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use base64::Engine as _;
+use busbar_contract::crypto::{self, Aes256Gcm};
 use busbar_contract::records::CredentialMeta;
-use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
-use ring::hkdf;
 use zeroize::Zeroizing;
 
 pub const LABEL: &[u8] = b"busbar credential-at-rest v1";
@@ -31,16 +30,11 @@ static REFUSED_KIDS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 struct CredentialKek {
     kid: String,
-    key: LessSafeKey,
+    key: Aes256Gcm,
 }
 
-struct Len(usize);
-
-impl hkdf::KeyType for Len {
-    fn len(&self) -> usize {
-        self.0
-    }
-}
+const NONCE_LEN: usize = 12;
+const TAG_LEN: usize = 16;
 
 thread_local! {
     /// The thread's reused AAD buffer: a row's associated data is rebuilt into it per seal/open.
@@ -65,21 +59,20 @@ fn b64() -> base64::engine::GeneralPurpose {
 
 impl CredentialKek {
     fn derive(material: &[u8]) -> Self {
-        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(material);
         let expand = |label: &[u8]| {
             let mut out = Zeroizing::new([0_u8; 32]);
-            prk.expand(&[label], Len(out.len()))
-                .and_then(|okm| okm.fill(&mut out[..]))
+            crypto::hkdf_sha256(&[], material, label, &mut out[..])
                 .expect("32 bytes is within HKDF-SHA256's output bound");
             out
         };
         let raw = expand(LABEL);
         let kid_input = expand(KID_LABEL);
-        let digest = ring::digest::digest(&ring::digest::SHA256, &kid_input[..]);
-        let key = UnboundKey::new(&AES_256_GCM, &raw[..]).expect("an AES-256 key is 32 bytes");
+        let digest = crypto::sha256(&kid_input[..]);
+        // PANIC: `raw` is a fixed 32-byte derived key, so AES-256 cannot reject its length.
+        let key = Aes256Gcm::new(&raw).expect("an AES-256 key is 32 bytes");
         Self {
-            kid: hex::encode(&digest.as_ref()[..8]),
-            key: LessSafeKey::new(key),
+            kid: hex::encode(&digest[..8]),
+            key,
         }
     }
 

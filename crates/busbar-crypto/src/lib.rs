@@ -21,6 +21,8 @@ use core::fmt;
 #[cfg(feature = "test-support")]
 pub mod conformance;
 mod contract;
+#[cfg(feature = "tls")]
+pub mod dtls;
 mod signer;
 #[cfg(feature = "test-support")]
 pub mod testing;

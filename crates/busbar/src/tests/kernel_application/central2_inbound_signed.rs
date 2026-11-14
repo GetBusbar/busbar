@@ -30,7 +30,6 @@ fn sign_fixture(
     datestamp: &str,
 ) -> (String, String) {
     use busbar_contract::abi::sdk::hmac::hmac_sha256;
-    use sha2::Digest as _;
     let canonical_value = |value: &str| {
         let mut out = String::with_capacity(value.len());
         let mut pending_space = false;
@@ -80,7 +79,9 @@ fn sign_fixture(
         payload_hash,
     ]
     .join("\n");
-    let request_hash = hex::encode(sha2::Sha256::digest(canonical_request.as_bytes()));
+    let request_hash = hex::encode(busbar_contract::crypto::sha256(
+        canonical_request.as_bytes(),
+    ));
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{amzdate}\n{datestamp}/{region}/{service}/aws4_request\n{request_hash}"
     );
@@ -309,8 +310,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         .unwrap()
         .trim()
         .to_string();
-    use sha2::Digest as _;
-    let hash = hex::encode(sha2::Sha256::digest(&body));
+    let hash = hex::encode(busbar_contract::crypto::sha256(&body));
     let headers = vec![
         ("host".to_string(), "inbound.busbar.test".to_string()),
         ("x-amz-date".to_string(), timestamp.clone()),

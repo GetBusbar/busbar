@@ -27,31 +27,44 @@ mod registration_tests;
 fn tls_identity() -> (Arc<rustls::ServerConfig>, &'static str) {
     static IDENTITY: std::sync::LazyLock<(Arc<rustls::ServerConfig>, String)> =
         std::sync::LazyLock::new(|| {
-            let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
-                .expect("the actual OAuth TLS identity");
-            let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .expect("OAuth TLS versions")
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![cert.cert.der().clone()],
-                rustls_pki_types::PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(
-                    cert.signing_key.serialize_der(),
-                )),
-            )
+            let cert = busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec![
+                "127.0.0.1".into(),
+            ])
+            .expect("the actual OAuth TLS identity");
+            let config = busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(
+                    vec![cert.cert.der().clone()],
+                    rustls_pki_types::PrivateKeyDer::Pkcs8(
+                        rustls_pki_types::PrivatePkcs8KeyDer::from(
+                            cert.signing_key.serialize_der(),
+                        ),
+                    ),
+                )
+            })
             .expect("the actual OAuth TLS certificate and key");
-            (Arc::new(config), cert.cert.pem())
+            (config, cert.cert.pem())
         });
     (Arc::clone(&IDENTITY.0), &IDENTITY.1)
 }
 
+/// A reqwest TLS config trusting the OAuth test CA, built through the crypto facade.
+fn client_tls(ca_pem: &str) -> rustls::ClientConfig {
+    use rustls::pki_types::{pem::PemObject as _, CertificateDer};
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in CertificateDer::pem_slice_iter(ca_pem.as_bytes()) {
+        roots
+            .add(cert.expect("the explicit OAuth test CA"))
+            .expect("root");
+    }
+    let config = busbar_contract::crypto::tls::client_config(|b| {
+        Ok(b.with_root_certificates(roots).with_no_client_auth())
+    })
+    .expect("the OAuth TLS client config");
+    (*config).clone()
+}
+
 fn client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().add_root_certificate(
-        reqwest::Certificate::from_pem(tls_identity().1.as_bytes())
-            .expect("the explicit OAuth test CA"),
-    )
+    reqwest::Client::builder().use_preconfigured_tls(client_tls(tls_identity().1))
 }
 
 fn client() -> reqwest::Client {

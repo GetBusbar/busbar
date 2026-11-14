@@ -314,10 +314,7 @@ impl CardFields {
 
 #[must_use]
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
-    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(digest.as_ref());
-    out
+    busbar_contract::crypto::sha256(bytes)
 }
 
 /// A card's rates, owned: what [`crate::rate_apply::RawRates`] borrows.

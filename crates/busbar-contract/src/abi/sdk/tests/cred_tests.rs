@@ -165,22 +165,18 @@ fn a_jws_assertion_verifies_under_the_keys_public_half() {
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(sig.wire())
         .expect("b64url");
-    let pair = ring::signature::RsaKeyPair::from_pkcs8(&der).expect("key");
-    let mut expected = zeroize::Zeroizing::new(vec![0; pair.public().modulus_len()]);
-    pair.sign(
-        &ring::signature::RSA_PKCS1_SHA256,
-        &ring::rand::SystemRandom::new(),
-        input.as_bytes(),
-        &mut expected,
-    )
-    .expect("reference signature");
+    let pair = crate::crypto::rsa::SigningKey::from_pkcs8(&der).expect("key");
+    let expected = zeroize::Zeroizing::new(
+        pair.sign_pkcs1_sha256(input.as_bytes())
+            .expect("reference signature"),
+    );
     assert_eq!(raw.as_slice(), expected.as_slice());
-    use ring::signature::KeyPair as _;
-    ring::signature::UnparsedPublicKey::new(
-        &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-        pair.public_key().as_ref(),
+    crate::crypto::rsa::verify(
+        crate::crypto::rsa::Scheme::Pkcs1Sha256,
+        &pair.public_key(),
+        input.as_bytes(),
+        &raw,
     )
-    .verify(input.as_bytes(), &raw)
     .expect("verifies");
     let body = super::FormBody::new().value(
         "assertion",

@@ -11,6 +11,7 @@ use super::{
     Transform,
 };
 use async_trait::async_trait;
+use busbar_contract::crypto::Sha256;
 use busbar_contract::{
     persistence::{
         archive::{self, Header, Table, VerifiedArchive},
@@ -18,7 +19,6 @@ use busbar_contract::{
     },
     Secret,
 };
-use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Seek},
     sync::{Arc, Mutex, Weak},
@@ -257,12 +257,12 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
         });
         let mut coverage = Sha256::new();
         coverage.update(b"busbar.archive.groups.v1\0");
-        coverage.update(summary.digest);
+        coverage.update(&summary.digest[..]);
         for member in &members {
-            coverage.update(member.family);
-            coverage.update((member.group.expose(&seal).len() as u64).to_le_bytes());
+            coverage.update(&member.family[..]);
+            coverage.update(&(member.group.expose(&seal).len() as u64).to_le_bytes());
             coverage.update(member.group.expose(&seal));
-            coverage.update(member.ordinal.to_le_bytes());
+            coverage.update(&member.ordinal.to_le_bytes());
         }
         let dataset: [u8; 16] = summary.digest[..16]
             .try_into()
@@ -281,7 +281,7 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
             source: dataset,
             snapshot: dataset,
             content_digest: summary.digest,
-            coverage_digest: coverage.finalize().into(),
+            coverage_digest: coverage.finish(),
         };
         Ok(Self {
             archive: Mutex::new(archive),
@@ -729,22 +729,20 @@ impl<R: Read + Seek + Send> super::legacy::projection::ProjectionSource for Arch
         let archive = self.archive.lock().map_err(|_| Error::Corrupt)?;
         let mut hash = Sha256::new();
         hash.update(b"busbar.archive.projection.inventory.v1\0");
-        hash.update(self.identity.artifact_digest);
-        hash.update(family);
-        hash.update((key.expose(&seal).len() as u64).to_le_bytes());
+        hash.update(&self.identity.artifact_digest[..]);
+        hash.update(&family[..]);
+        hash.update(&(key.expose(&seal).len() as u64).to_le_bytes());
         hash.update(key.expose(&seal));
-        hash.update(((end - begin) as u64).to_le_bytes());
+        hash.update(&((end - begin) as u64).to_le_bytes());
         for member in &self.members[begin..end] {
-            hash.update(member.ordinal.to_le_bytes());
+            hash.update(&member.ordinal.to_le_bytes());
             hash.update(
-                archive
+                &archive
                     .row_frame_digest(member.ordinal)
-                    .map_err(archive_error)?,
+                    .map_err(archive_error)?[..],
             );
         }
-        Ok(super::legacy::projection::InventoryDigest(
-            hash.finalize().into(),
-        ))
+        Ok(super::legacy::projection::InventoryDigest(hash.finish()))
     }
     fn visit(
         &self,

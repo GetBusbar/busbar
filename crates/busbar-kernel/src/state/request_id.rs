@@ -9,7 +9,7 @@ pub(super) fn next(counter: &AtomicU64) -> u64 {
 
 pub(super) fn seed() -> u64 {
     let mut buf = [0u8; 8];
-    match getrandom::fill(&mut buf) {
+    match busbar_contract::crypto::fill(&mut buf) {
         Ok(()) => u64::from_le_bytes(buf),
         Err(_) => std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

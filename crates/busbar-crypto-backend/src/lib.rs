@@ -13,6 +13,8 @@
 #![deny(unsafe_code)]
 
 mod aead;
+#[cfg(feature = "tls")]
+mod dtls;
 mod ecdh;
 mod hash;
 mod legacy_impl;
@@ -27,6 +29,8 @@ pub mod testing;
 mod tls;
 
 pub use aead::{aes_block_encrypt, Aes128Gcm, Aes256Gcm};
+#[cfg(feature = "tls")]
+pub use dtls::{dtls_provider, dtls_self_signed, DtlsCert};
 pub use ecdh::ecdh_p256;
 pub use hash::{sha256, sha384, sha512, Sha256State};
 pub use mac::{ct_eq, hmac_sha256, hmac_sha256_verify, hmac_sha512, HmacSha256Key};

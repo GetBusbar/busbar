@@ -10,6 +10,7 @@ use crate::{
     source_facts::{FactRow, View},
     Bounds, Edge, Error, Family, Format, Record, Registry, TargetRow, Transform,
 };
+use busbar_contract::crypto::Sha256;
 use busbar_contract::{
     persistence::{archive::Table, lifecycle::source::HistoricalFact, Address},
     Secret,
@@ -86,7 +87,7 @@ impl FactTransform {
             target_namespace,
         })
         .collect();
-        let edge = registered_edge(source, hash.finalize().into(), families, bounds)?;
+        let edge = registered_edge(source, hash.finish(), families, bounds)?;
         Ok(Self {
             edge,
             provenance,
@@ -129,7 +130,7 @@ impl FactTransform {
         });
         self.edge = super::transform::registered_edge(
             self.edge.source,
-            hash.finalize().into(),
+            hash.finish(),
             families,
             self.edge.bounds,
         )?;
@@ -438,7 +439,7 @@ impl FactTransform {
                 }
             }
         }
-        verified.semantics_digest = semantic.finalize().into();
+        verified.semantics_digest = semantic.finish();
         Ok(verified)
     }
 }

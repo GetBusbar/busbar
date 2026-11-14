@@ -16,30 +16,11 @@ use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::sections::TlsCfg;
 use busbar_kernel::config::SecretRef;
 
+use busbar_contract::crypto::tls as crypto_tls;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
-
-/// Install ring's [`rustls::crypto::CryptoProvider`] as the process default. Must run before
-pub fn install_crypto_provider() {
-    let _ = ring().install_default();
-}
-
-/// Ring's crypto backend, the one backend busbar links.
-pub(crate) fn ring() -> rustls::crypto::CryptoProvider {
-    rustls::crypto::ring::default_provider()
-}
-
-/// The process's crypto backend, installed first ([`install_crypto_provider`]): the default the
-#[must_use]
-pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
-    let _ = ring().install_default();
-    rustls::crypto::CryptoProvider::get_default()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(ring()))
-}
 
 /// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
 fn read_pem(
@@ -246,17 +227,16 @@ impl<S: futures::io::AsyncWrite + Unpin> futures::io::AsyncWrite for Preface<S> 
     }
 }
 
-/// Construct the rustls [`ServerConfig`] from the operator's [`TlsCfg`].
+/// Construct the rustls [`ServerConfig`] from the operator's [`TlsCfg`], through the crypto
+/// backend (`busbar_contract::crypto::tls`), which approves it; returned frozen.
 pub fn build_server_config(
     tls: &TlsCfg,
     resolver: &SecretResolver,
-) -> Result<ServerConfig, String> {
+) -> Result<Arc<ServerConfig>, String> {
     let certs = load_cert_chain(resolver, &tls.cert)?;
     let key = load_private_key(resolver, &tls.key)?;
 
-    let builder = ServerConfig::builder();
-
-    let builder = match &tls.client_ca {
+    let verifier = match &tls.client_ca {
         Some(ca) => {
             let roots = load_client_roots(resolver, ca)?;
             #[expect(
@@ -273,7 +253,7 @@ pub fn build_server_config(
                 })?;
             builder.with_client_cert_verifier(verifier)
         }
-        None => builder.with_no_client_auth(),
+        None => None,
     };
 
     #[expect(

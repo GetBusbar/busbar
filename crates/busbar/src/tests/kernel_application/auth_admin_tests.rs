@@ -975,7 +975,6 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
 #[test]
 fn a_slow_admin_door_does_not_stall_healthz() {
     use base64::Engine as _;
-    use ring::signature::KeyPair as _;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::time::{Duration, Instant};
@@ -1016,35 +1015,29 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     let mut oidc_settings = common::credentials::settings("api://auth-admin-pending");
     // READY sees an empty (valid) key set. Only VERIFY's missing-key rotation
     // needs the second fetch, so a background refresh cannot satisfy this gate.
-    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
-    let signing_key = ring::signature::EcdsaKeyPair::from_pkcs8(
-        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-        &certificate.signing_key.serialize_der(),
-        &ring::rand::SystemRandom::new(),
-    )
+    let certificate = busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec![
+        "127.0.0.1".into(),
+    ])
     .unwrap();
-    let point = signing_key.public_key().as_ref();
+    let signing_key =
+        busbar_contract::crypto::ecdsa_p256::from_pkcs8(&certificate.signing_key.serialize_der())
+            .unwrap();
+    let point = &signing_key.public_key();
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let jwks = serde_json::json!({"keys": [{
         "kty": "EC", "crv": "P-256", "kid": "held-verifier", "alg": "ES256", "use": "sig",
         "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
     }]})
     .to_string();
-    let tls = Arc::new(
-        rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
+    let tls = busbar_contract::crypto::tls::server_config(|b| {
+        b.with_no_client_auth().with_single_cert(
             vec![certificate.cert.der().clone()],
             rustls_pki_types::PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(
                 certificate.signing_key.serialize_der(),
             )),
         )
-        .unwrap(),
-    );
+    })
+    .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the actual TLS issuer");
     listener.set_nonblocking(true).unwrap();
     oidc_settings.insert(
@@ -1061,11 +1054,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     let claims = valid.split('.').nth(1).unwrap();
     let header = b64.encode(br#"{"alg":"ES256","typ":"JWT","kid":"held-verifier"}"#);
     let signed = format!("{header}.{claims}");
-    let mut signature = signing_key
-        .sign(&ring::rand::SystemRandom::new(), signed.as_bytes())
-        .unwrap()
-        .as_ref()
-        .to_vec();
+    let mut signature = signing_key.sign_fixed(signed.as_bytes()).unwrap().to_vec();
     signature[0] ^= 1;
     let token = format!("{signed}.{}", b64.encode(signature));
 

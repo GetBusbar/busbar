@@ -11,18 +11,15 @@ struct Idp {
 
 fn idp() -> &'static Idp {
     use base64::Engine as _;
-    use ring::signature::KeyPair as _;
     static IDP: std::sync::OnceLock<Idp> = std::sync::OnceLock::new();
     IDP.get_or_init(|| {
-        let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
+        let certificate = busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
             .expect("the local IdP certificate");
-        let signing_key = ring::signature::EcdsaKeyPair::from_pkcs8(
-            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        let signing_key = busbar_contract::crypto::ecdsa_p256::from_pkcs8(
             &certificate.signing_key.serialize_der(),
-            &ring::rand::SystemRandom::new(),
         )
         .expect("the IdP's P-256 signing key");
-        let point = signing_key.public_key().as_ref();
+        let point = &signing_key.public_key();
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let jwks = serde_json::json!({"keys": [{
             "kty": "EC", "crv": "P-256", "kid": KEY_ID, "alg": "ES256", "use": "sig",
@@ -33,16 +30,11 @@ fn idp() -> &'static Idp {
         let private = rustls_pki_types::PrivateKeyDer::Pkcs8(
             rustls_pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()),
         );
-        let tls = std::sync::Arc::new(
-            rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .expect("TLS versions")
-            .with_no_client_auth()
-            .with_single_cert(vec![certificate.cert.der().clone()], private)
-            .expect("the IdP TLS certificate"),
-        );
+        let tls = busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth()
+                .with_single_cert(vec![certificate.cert.der().clone()], private)
+        })
+        .expect("the IdP TLS certificate");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("the local IdP port");
         let jwks_url = format!("https://{}/jwks", listener.local_addr().expect("the IdP address"));
         let issuer = jwks_url.trim_end_matches("/jwks").to_owned();
@@ -97,8 +89,8 @@ fn idp() -> &'static Idp {
                         "iat":now,"exp":now+3600,"nonce":code,
                     }).to_string());
                     let input = format!("{header}.{claims}");
-                    let signature = signing_key.sign(&ring::rand::SystemRandom::new(),input.as_bytes()).expect("sign actual IdP token");
-                    let token = format!("{input}.{}",b64.encode(signature.as_ref()));
+                    let signature = signing_key.sign_fixed(input.as_bytes()).expect("sign actual IdP token");
+                    let token = format!("{input}.{}",b64.encode(signature));
                     ("200 OK",serde_json::json!({"token_type":"Bearer","access_token":"local-oidc-access","id_token":token}).to_string())
                 } else {
                     ("404 Not Found", "{}".into())

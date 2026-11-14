@@ -12,7 +12,7 @@ use busbar_kernel::diagnostics::{
     diag_debug, diag_warn, OAUTH_AS_EPHEMERAL_SIGNING_KEY, OAUTH_AS_SWEEP_FAILED,
 };
 
-use super::signer::{RingEs256Key, RingEs256Verifier, RingPs256Verifier};
+use super::signer::{Es256Key, Es256Verifier, Ps256Verifier};
 
 pub(crate) type AsStore = super::cimd::CimdStore;
 
@@ -279,7 +279,7 @@ impl AsPlane {
                 let der = base64::engine::general_purpose::STANDARD
                     .decode(b64.trim())
                     .map_err(|e| AsBuildError::SigningKeyMaterial(e.to_string()))?;
-                RingEs256Key::from_pkcs8_der(identity.key_id(), &der)
+                Es256Key::from_pkcs8_der(identity.key_id(), &der)
                     .map_err(AsBuildError::SigningKey)?
             }
             None => {
@@ -293,18 +293,16 @@ impl AsPlane {
                         let fresh = match carried.store() {
                             Some(store) => store
                                 .signing_key(|| {
-                                    RingEs256Key::generate_pkcs8().map_err(|e| e.to_string())
+                                    Es256Key::generate_pkcs8().map_err(|e| e.to_string())
                                 })
                                 .await
                                 .map_err(AsBuildError::SigningKeyMaterial)?,
-                            None => {
-                                RingEs256Key::generate_pkcs8().map_err(AsBuildError::SigningKey)?
-                            }
+                            None => Es256Key::generate_pkcs8().map_err(AsBuildError::SigningKey)?,
                         };
                         carried.ephemeral_key.get_or_init(|| fresh)
                     }
                 };
-                RingEs256Key::from_pkcs8_der(identity.key_id(), der)
+                Es256Key::from_pkcs8_der(identity.key_id(), der)
                     .map_err(AsBuildError::SigningKey)?
             }
         };
@@ -377,8 +375,8 @@ impl AsPlane {
         );
         let server = Arc::new(
             AuthorizationServer::new(config, store)
-                .with_jws_verifier(Arc::new(RingEs256Verifier))
-                .with_jws_verifier(Arc::new(RingPs256Verifier))
+                .with_jws_verifier(Arc::new(Es256Verifier))
+                .with_jws_verifier(Arc::new(Ps256Verifier))
                 .with_registration_policy(Box::new(super::policy::OpenRegistration))
                 .with_rate_limiter(Box::new(Throttle {
                     limiter: Arc::clone(&carried.limiter),
@@ -412,8 +410,8 @@ impl AsPlane {
             .map_err(AsBuildError::Service)?;
         let plain_metadata = (!identity.fapi2()).then(|| plain_metadata(&server));
         let mut dpop_verifiers = oauth_as::jwt::JwsVerifiers::new();
-        dpop_verifiers.install(Arc::new(RingEs256Verifier));
-        dpop_verifiers.install(Arc::new(RingPs256Verifier));
+        dpop_verifiers.install(Arc::new(Es256Verifier));
+        dpop_verifiers.install(Arc::new(Ps256Verifier));
 
         Ok(Self {
             identity,
@@ -443,9 +441,8 @@ impl AsPlane {
         ) else {
             return false;
         };
-        let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-            ring::digest::digest(&ring::digest::SHA256, presented.token.as_bytes()).as_ref(),
-        );
+        let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(busbar_contract::crypto::sha256(presented.token.as_bytes()));
         let ath_matches = oauth_as::jwt::CompactJws::parse(&presented.proof)
             .is_ok_and(|jws| jws.claim_str("ath") == Some(ath.as_str()));
         let bound_to_proof_key =

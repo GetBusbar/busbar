@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use base64::Engine as _;
-use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
+use busbar_contract::crypto::{ecdsa_p256, rsa as crypto_rsa};
 use serde_json::{json, Value};
 
 use busbar_core_oauth2::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
@@ -41,22 +41,19 @@ fn now() -> u64 {
 }
 
 struct Key {
-    pair: EcdsaKeyPair,
+    pair: ecdsa_p256::KeyPair,
     kid: &'static str,
 }
 
 impl Key {
     fn new(kid: &'static str) -> Self {
-        let rng = ring::rand::SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
-            .expect("generate a P-256 key");
-        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
-            .expect("load the key just generated");
+        let pkcs8 = ecdsa_p256::generate_pkcs8().expect("generate a P-256 key");
+        let pair = ecdsa_p256::from_pkcs8(&pkcs8).expect("load the key just generated");
         Self { pair, kid }
     }
 
     fn coordinates(&self) -> (String, String) {
-        let point = self.pair.public_key().as_ref();
+        let point = &self.pair.public_key();
         (B64.encode(&point[1..33]), B64.encode(&point[33..65]))
     }
 
@@ -83,7 +80,7 @@ impl Key {
     fn thumbprint(&self) -> String {
         let (x, y) = self.coordinates();
         let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
-        B64.encode(ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes()).as_ref())
+        B64.encode(busbar_contract::crypto::sha256(canonical.as_bytes()))
     }
 
     fn sign(&self, header: &Value, claims: &Value) -> String {
@@ -92,11 +89,8 @@ impl Key {
             B64.encode(header.to_string()),
             B64.encode(claims.to_string())
         );
-        let sig = self
-            .pair
-            .sign(&ring::rand::SystemRandom::new(), input.as_bytes())
-            .expect("sign");
-        format!("{input}.{}", B64.encode(sig.as_ref()))
+        let sig = self.pair.sign_fixed(input.as_bytes()).expect("sign");
+        format!("{input}.{}", B64.encode(sig))
     }
 
     fn assertion(&self, client_id: &str, aud: Value) -> String {
@@ -152,8 +146,39 @@ const RSA_TEST_KEY_PKCS8: &str = concat!(
     "HRBoliBzaqJOZhTG+2OSQ8VvI4b+/Z0lGlb4QSeZv1a7FC4nvmth3G4lO1WcnAmlUao4SZ9idGlNj5imrqqIOys=",
 );
 
+/// The big-endian modulus and exponent (no leading zeros) of a PKCS#1 `RSAPublicKey` DER.
+fn rsa_components(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    fn header(b: &[u8], tag: u8) -> (usize, usize) {
+        assert_eq!(b[0], tag, "unexpected DER tag");
+        if b[1] < 0x80 {
+            (usize::from(b[1]), 2)
+        } else {
+            let n = usize::from(b[1] & 0x7f);
+            (
+                b[2..2 + n]
+                    .iter()
+                    .fold(0, |a, &x| (a << 8) | usize::from(x)),
+                2 + n,
+            )
+        }
+    }
+    fn integer(b: &[u8]) -> (Vec<u8>, &[u8]) {
+        let (len, offset) = header(b, 0x02);
+        let value = &b[offset..offset + len];
+        let start = value
+            .iter()
+            .position(|x| *x != 0)
+            .unwrap_or(value.len() - 1);
+        (value[start..].to_vec(), &b[offset + len..])
+    }
+    let (_, offset) = header(der, 0x30);
+    let (n, rest) = integer(&der[offset..]);
+    let (e, _) = integer(rest);
+    (n, e)
+}
+
 struct RsaKey {
-    pair: ring::signature::RsaKeyPair,
+    pair: crypto_rsa::SigningKey,
     kid: &'static str,
 }
 
@@ -162,13 +187,13 @@ impl RsaKey {
         let der = base64::engine::general_purpose::STANDARD
             .decode(RSA_TEST_KEY_PKCS8)
             .expect("the fixture is base64");
-        let pair = ring::signature::RsaKeyPair::from_pkcs8(&der).expect("the fixture is PKCS#8");
+        let pair = crypto_rsa::SigningKey::from_pkcs8(&der).expect("the fixture is PKCS#8");
         Self { pair, kid }
     }
 
     fn components(&self) -> (String, String) {
-        let c = ring::signature::RsaPublicKeyComponents::<Vec<u8>>::from(self.pair.public());
-        (B64.encode(&c.n), B64.encode(&c.e))
+        let (n, e) = rsa_components(&self.pair.public_key());
+        (B64.encode(&n), B64.encode(&e))
     }
 
     fn static_jwk(&self) -> StaticClientJwk {
@@ -194,7 +219,7 @@ impl RsaKey {
     fn thumbprint(&self) -> String {
         let (n, e) = self.components();
         let canonical = format!(r#"{{"e":"{e}","kty":"RSA","n":"{n}"}}"#);
-        B64.encode(ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes()).as_ref())
+        B64.encode(busbar_contract::crypto::sha256(canonical.as_bytes()))
     }
 
     fn sign(&self, alg: &str, header: &Value, claims: &Value) -> String {
@@ -205,19 +230,11 @@ impl RsaKey {
             B64.encode(header.to_string()),
             B64.encode(claims.to_string())
         );
-        let padding: &'static dyn ring::signature::RsaEncoding = match alg {
-            "PS256" => &ring::signature::RSA_PSS_SHA256,
-            _ => &ring::signature::RSA_PKCS1_SHA256,
-        };
-        let mut sig = vec![0u8; self.pair.public().modulus_len()];
-        self.pair
-            .sign(
-                padding,
-                &ring::rand::SystemRandom::new(),
-                input.as_bytes(),
-                &mut sig,
-            )
-            .expect("sign");
+        let sig = match alg {
+            "PS256" => self.pair.sign_pss_sha256(input.as_bytes()),
+            _ => self.pair.sign_pkcs1_sha256(input.as_bytes()),
+        }
+        .expect("sign");
         format!("{input}.{}", B64.encode(&sig))
     }
 
@@ -931,7 +948,7 @@ async fn the_token_endpoint_refuses_what_the_profile_forbids() {
 }
 
 fn ath(token: &str) -> String {
-    B64.encode(ring::digest::digest(&ring::digest::SHA256, token.as_bytes()).as_ref())
+    B64.encode(busbar_contract::crypto::sha256(token.as_bytes()))
 }
 
 async fn bound_token(s: &Subject, dpop: &Key) -> String {

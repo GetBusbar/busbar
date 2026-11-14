@@ -11,8 +11,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 fn identity() -> (super::tests::TlsFixture, String) {
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("a test cert");
+    let busbar_contract::crypto::testing::rcgen::CertifiedKey { cert, signing_key } =
+        busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec![
+            "localhost".to_string()
+        ])
+        .expect("a test cert");
     let cert_pem = cert.pem();
     let tls = super::tests::tls_fixture(&cert_pem, &signing_key.serialize_pem(), None);
     (tls, cert_pem)
@@ -52,16 +55,14 @@ async fn connect(
     for cert in rustls::pki_types::CertificateDer::pem_slice_iter(cert_pem.as_bytes()) {
         roots.add(cert.expect("cert PEM")).expect("root");
     }
-    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .expect("protocol versions")
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    config.alpn_protocols = protocols.iter().map(|p| p.to_vec()).collect();
+    let config = busbar_contract::crypto::tls::client_config(|b| {
+        let mut config = b.with_root_certificates(roots).with_no_client_auth();
+        config.alpn_protocols = protocols.iter().map(|p| p.to_vec()).collect();
+        Ok(config)
+    })
+    .expect("a client config");
     let socket = tokio::net::TcpStream::connect(addr).await.expect("connect");
-    tokio_rustls::TlsConnector::from(Arc::new(config))
+    tokio_rustls::TlsConnector::from(config)
         .connect(
             rustls::pki_types::ServerName::try_from("localhost").expect("name"),
             socket,

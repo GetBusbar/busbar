@@ -192,7 +192,6 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                     .await
                     .unwrap();
 
-                use sha2::Digest as _;
                 let schema = "busbar.config.overlay.v1";
                 let raw = calls.get(schema, b"head").await.unwrap().unwrap();
                 let mut head: serde_json::Value =
@@ -210,7 +209,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                     .await
                     .unwrap();
                 head["length"] = serde_json::json!(bytes.len());
-                let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+                let digest: [u8; 32] = busbar_contract::crypto::sha256(&bytes).into();
                 head["digest"] = serde_json::json!(digest);
                 calls
                     .put(

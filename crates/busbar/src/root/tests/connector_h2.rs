@@ -143,26 +143,33 @@ async fn tls_far_end() -> (u16, Arc<FarEnd>, Vec<u8>) {
 }
 
 fn tls_server() -> (Arc<rustls::ServerConfig>, Vec<u8>) {
-    let ca_key = rcgen::KeyPair::generate().expect("a CA key");
-    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("CA params");
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_key = busbar_contract::crypto::testing::rcgen::KeyPair::generate().expect("a CA key");
+    let mut ca_params =
+        busbar_contract::crypto::testing::rcgen::CertificateParams::new(Vec::<String>::new())
+            .expect("CA params");
+    ca_params.is_ca = busbar_contract::crypto::testing::rcgen::IsCa::Ca(
+        busbar_contract::crypto::testing::rcgen::BasicConstraints::Unconstrained,
+    );
     let ca = ca_params.self_signed(&ca_key).expect("the CA");
-    let issuer = rcgen::Issuer::from_params(&ca_params, ca_key);
-    let leaf_key = rcgen::KeyPair::generate().expect("a leaf key");
-    let leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()])
-        .expect("leaf params")
-        .signed_by(&leaf_key, &issuer)
-        .expect("the leaf");
-    busbar_core_connector::tls::install_crypto_provider();
-    let mut config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
+    let issuer = busbar_contract::crypto::testing::rcgen::Issuer::from_params(&ca_params, ca_key);
+    let leaf_key =
+        busbar_contract::crypto::testing::rcgen::KeyPair::generate().expect("a leaf key");
+    let leaf = busbar_contract::crypto::testing::rcgen::CertificateParams::new(vec![
+        "127.0.0.1".to_owned()
+    ])
+    .expect("leaf params")
+    .signed_by(&leaf_key, &issuer)
+    .expect("the leaf");
+    let config = busbar_contract::crypto::tls::server_config(|b| {
+        let mut config = b.with_no_client_auth().with_single_cert(
             vec![leaf.der().clone()],
             rustls_pki_types::PrivateKeyDer::try_from(leaf_key.serialize_der()).expect("a key"),
-        )
-        .expect("a server config");
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    (Arc::new(config), ca.der().to_vec())
+        )?;
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        Ok(config)
+    })
+    .expect("a server config");
+    (config, ca.der().to_vec())
 }
 
 async fn accept_tls(

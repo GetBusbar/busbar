@@ -45,11 +45,9 @@ fn the_reference_is_hmac_sha256_under_the_hkdf_derived_key() {
         pinned,
         CallerRefKey::derive(MATERIAL).caller_ref("vk-alice")
     );
-    use ring::{hkdf, hmac};
-    let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(MATERIAL);
-    let okm = prk
-        .expand(&[b"busbar caller-ref v1"], hmac::HMAC_SHA256)
+    let mut okm = [0_u8; 32];
+    busbar_contract::crypto::hkdf_sha256(&[], MATERIAL, b"busbar caller-ref v1", &mut okm)
         .expect("expands");
-    let k = hmac::Key::from(okm);
-    assert_eq!(pinned, hex::encode(hmac::sign(&k, b"vk-alice").as_ref()));
+    let tag = busbar_contract::crypto::hmac_sha256(&okm, b"vk-alice").expect("a 32-byte key");
+    assert_eq!(pinned, hex::encode(tag));
 }

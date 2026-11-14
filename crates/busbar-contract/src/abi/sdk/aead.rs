@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! AES-128/256-GCM with provider-owned key state destroyed on drop.
+//! AES-128/256-GCM over the crypto facade, with the facade's wiped key state.
 
-use std::{fmt, ptr::NonNull};
+use std::fmt;
 
-use aws_lc_sys as lc;
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroize as _;
+
+use crate::crypto::{Aes128Gcm, Aes256Gcm};
 
 /// AES-128 key size in bytes (FIPS 197).
 pub const AES_128_KEY_LEN: usize = 16;
@@ -16,11 +17,6 @@ pub const AES_256_KEY_LEN: usize = 32;
 pub const GCM_NONCE_LEN: usize = 12;
 /// The 128-bit authentication tag used by this provider (RFC 5116 §5.1).
 pub const GCM_TAG_LEN: usize = 16;
-
-const AES_BLOCK_LEN: usize = 16;
-const EVP_SUCCESS: i32 = 1;
-const EVP_ENCRYPT: i32 = 1;
-const EVP_GCM_TAG_LEN: i32 = GCM_TAG_LEN as i32;
 
 /// An invalid key, buffer length, or authentication result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,14 +30,13 @@ impl fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-/// An opaque AES-GCM key and its provider-owned AES/GHASH state.
-pub struct AesGcm(NonNull<lc::EVP_CIPHER_CTX>);
+enum Key {
+    Aes128(Aes128Gcm),
+    Aes256(Aes256Gcm),
+}
 
-// SAFETY: the context owns its allocations, has no thread affinity, and no pointer escapes.
-// Every operation that reads or mutates provider state requires an exclusive Rust borrow.
-unsafe impl Send for AesGcm {}
-// SAFETY: shared references expose only redacted Debug; provider operations require &mut self.
-unsafe impl Sync for AesGcm {}
+/// An opaque AES-GCM key and its facade-owned state.
+pub struct AesGcm(Key);
 
 impl fmt::Debug for AesGcm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,31 +47,20 @@ impl fmt::Debug for AesGcm {
 impl AesGcm {
     /// Initialize AES-128-GCM or AES-256-GCM from a borrowed key.
     pub fn new(key: &[u8]) -> Result<Self, Refused> {
-        lc::init();
-        // SAFETY: these descriptors have static lifetime. The key slice lives through
-        // initialization, which copies its schedule into provider-owned cipher_data.
-        // The allocated context is guarded before initialization can fail.
-        unsafe {
-            let cipher = match key.len() {
-                AES_128_KEY_LEN => lc::EVP_aes_128_gcm(),
-                AES_256_KEY_LEN => lc::EVP_aes_256_gcm(),
-                _ => return Err(Refused),
-            };
-            let context = Self(NonNull::new(lc::EVP_CIPHER_CTX_new()).ok_or(Refused)?);
-            if lc::EVP_CipherInit_ex(
-                context.0.as_ptr(),
-                cipher,
-                std::ptr::null_mut(),
-                key.as_ptr(),
-                std::ptr::null(),
-                EVP_ENCRYPT,
-            ) != EVP_SUCCESS
-            {
-                return Err(Refused);
+        match key.len() {
+            AES_128_KEY_LEN => {
+                let key: &[u8; AES_128_KEY_LEN] = key.try_into().map_err(|_| Refused)?;
+                Aes128Gcm::new(key)
+                    .map(|k| Self(Key::Aes128(k)))
+                    .map_err(|_| Refused)
             }
-            #[cfg(feature = "test-support")]
-            test_support::created(&context);
-            Ok(context)
+            AES_256_KEY_LEN => {
+                let key: &[u8; AES_256_KEY_LEN] = key.try_into().map_err(|_| Refused)?;
+                Aes256Gcm::new(key)
+                    .map(|k| Self(Key::Aes256(k)))
+                    .map_err(|_| Refused)
+            }
+            _ => Err(Refused),
         }
     }
 
@@ -92,9 +76,13 @@ impl AesGcm {
             let needed = input.len().checked_add(GCM_TAG_LEN).ok_or(Refused)?;
             let target = output.get_mut(..needed).ok_or(Refused)?;
             let (body, trailer) = target.split_at_mut(input.len());
-            let mut tag = Zeroizing::new([0; GCM_TAG_LEN]);
-            self.operate(true, nonce, aad, input, body, &mut tag)?;
-            trailer.copy_from_slice(&*tag);
+            body.copy_from_slice(input);
+            let tag = match &self.0 {
+                Key::Aes128(k) => k.seal_in_place(nonce, aad, body),
+                Key::Aes256(k) => k.seal_in_place(nonce, aad, body),
+            }
+            .map_err(|_| Refused)?;
+            trailer.copy_from_slice(&tag);
             Ok(needed)
         })();
         if result.is_err() {
@@ -115,9 +103,13 @@ impl AesGcm {
             let len = input.len().checked_sub(GCM_TAG_LEN).ok_or(Refused)?;
             let target = output.get_mut(..len).ok_or(Refused)?;
             let (body, trailer) = input.split_at(len);
-            let mut tag = Zeroizing::new([0; GCM_TAG_LEN]);
-            tag.copy_from_slice(trailer);
-            self.operate(false, nonce, aad, body, target, &mut tag)?;
+            let tag: &[u8; GCM_TAG_LEN] = trailer.try_into().map_err(|_| Refused)?;
+            target.copy_from_slice(body);
+            match &self.0 {
+                Key::Aes128(k) => k.open_in_place(nonce, aad, target, tag),
+                Key::Aes256(k) => k.open_in_place(nonce, aad, target, tag),
+            }
+            .map_err(|_| Refused)?;
             Ok(len)
         })();
         if result.is_err() {
@@ -125,147 +117,48 @@ impl AesGcm {
         }
         result
     }
-
-    fn operate(
-        &mut self,
-        encrypt: bool,
-        nonce: &[u8; GCM_NONCE_LEN],
-        aad: &[u8],
-        input: &[u8],
-        output: &mut [u8],
-        tag: &mut [u8; GCM_TAG_LEN],
-    ) -> Result<(), Refused> {
-        let input_len = i32::try_from(input.len()).map_err(|_| Refused)?;
-        let aad_len = i32::try_from(aad.len()).map_err(|_| Refused)?;
-        let mut written = 0;
-        let mut final_block = Zeroizing::new([0_u8; AES_BLOCK_LEN]);
-        // SAFETY: this exclusively borrowed context is permanently AES-GCM, whose
-        // update writes exactly input.len() bytes and final writes no payload. The
-        // private callers supply equally sized input/output and a 16-byte tag.
-        // Rust borrows ensure disjoint inputs/outputs. Reinitializing with null cipher
-        // and key preserves the schedule while resetting the IV, direction and poison
-        // flag after any previous authentication failure. Every pointer is call-local.
-        unsafe {
-            let ctx = self.0.as_ptr();
-            if lc::EVP_CipherInit_ex(
-                ctx,
-                std::ptr::null(),
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                nonce.as_ptr(),
-                i32::from(encrypt),
-            ) != EVP_SUCCESS
-                || (!encrypt
-                    && lc::EVP_CIPHER_CTX_ctrl(
-                        ctx,
-                        lc::EVP_CTRL_AEAD_SET_TAG,
-                        EVP_GCM_TAG_LEN,
-                        tag.as_mut_ptr().cast(),
-                    ) != EVP_SUCCESS)
-                || lc::EVP_CipherUpdate(
-                    ctx,
-                    std::ptr::null_mut(),
-                    &mut written,
-                    aad.as_ptr(),
-                    aad_len,
-                ) != EVP_SUCCESS
-                || lc::EVP_CipherUpdate(
-                    ctx,
-                    output.as_mut_ptr(),
-                    &mut written,
-                    input.as_ptr(),
-                    input_len,
-                ) != EVP_SUCCESS
-                || written != input_len
-                || lc::EVP_CipherFinal_ex(ctx, final_block.as_mut_ptr(), &mut written)
-                    != EVP_SUCCESS
-                || written != 0
-                || (encrypt
-                    && lc::EVP_CIPHER_CTX_ctrl(
-                        ctx,
-                        lc::EVP_CTRL_AEAD_GET_TAG,
-                        EVP_GCM_TAG_LEN,
-                        tag.as_mut_ptr().cast(),
-                    ) != EVP_SUCCESS)
-            {
-                return Err(Refused);
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Drop for AesGcm {
-    fn drop(&mut self) {
-        // SAFETY: this context is uniquely owned and no pointer escapes. Its AES-GCM
-        // cleanup cleanses GCM state; the provider's default OPENSSL_free cleanses
-        // cipher_data (including the AES schedule) and the context before deallocation.
-        unsafe { lc::EVP_CIPHER_CTX_free(self.0.as_ptr()) }
-    }
-}
-
-/// Test-only ownership metadata for observing the provider's real allocations.
-#[cfg(feature = "test-support")]
-pub mod test_support {
-    use std::cell::Cell;
-
-    type Observer = fn(usize, usize);
-
-    thread_local! {
-        static OBSERVER: Cell<Option<Observer>> = const { Cell::new(None) };
-    }
-
-    /// Observe newly initialized keys on this thread while `action` runs.
-    pub fn with_owned_state_observer<T>(observer: Observer, action: impl FnOnce() -> T) -> T {
-        struct Restore(Option<Observer>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                OBSERVER.with(|slot| slot.set(self.0));
-            }
-        }
-        let _restore = Restore(OBSERVER.with(|slot| slot.replace(Some(observer))));
-        action()
-    }
-
-    pub(super) fn created(key: &super::AesGcm) {
-        OBSERVER.with(|slot| {
-            if let Some(observer) = slot.get() {
-                // SAFETY: initialization succeeded and key owns this live context.
-                // cipher_data is a documented public EVP_CIPHER_CTX field. Only numeric
-                // address metadata reaches the test; no opaque bytes are dereferenced.
-                let data = unsafe { key.0.as_ref().cipher_data };
-                observer(key.0.as_ptr().addr(), data.addr());
-            }
-        });
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// NIST GCM test cases 2 and 14 (zero key, zero nonce, one zero block).
     #[test]
-    fn gcm_matches_ring_and_reuses_state_after_authentication_failure() {
-        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_128_GCM, AES_256_GCM};
-        for algorithm in [&AES_128_GCM, &AES_256_GCM] {
-            let key = vec![0x53; algorithm.key_len()];
-            let reference = LessSafeKey::new(UnboundKey::new(algorithm, &key).unwrap());
+    fn gcm_matches_the_published_known_answers() {
+        for (key_len, ciphertext, tag) in [
+            (
+                16,
+                "0388dace60b6a392f328c2b971b2fe78",
+                "ab6e47d42cec13bdf53a67b21257bddf",
+            ),
+            (
+                32,
+                "cea7403d4d606b6e074ec5d3baf39d18",
+                "d0d1c8a799996bf0265b98b5d48ab919",
+            ),
+        ] {
+            let mut cipher = AesGcm::new(&vec![0; key_len]).unwrap();
+            let mut sealed = [0xa5; 32];
+            assert_eq!(cipher.seal(&[0; 12], &[], &[0; 16], &mut sealed), Ok(32));
+            assert_eq!(hex::encode(sealed), format!("{ciphertext}{tag}"));
+            let mut opened = [0xa5; 16];
+            assert_eq!(cipher.open(&[0; 12], &[], &sealed, &mut opened), Ok(16));
+            assert_eq!(opened, [0; 16]);
+        }
+    }
+
+    #[test]
+    fn gcm_round_trips_and_reuses_state_after_authentication_failure() {
+        for key_len in [AES_128_KEY_LEN, AES_256_KEY_LEN] {
+            let key = vec![0x53; key_len];
             let mut cipher = AesGcm::new(&key).unwrap();
             for (index, len) in [0, 1, 15, 16, 17, 64, 1031].into_iter().enumerate() {
                 let nonce = [u8::try_from(index).unwrap(); 12];
                 let plain = vec![0x62; len];
                 let aad = vec![0x71; index * 263];
-                let mut expected = plain.clone();
-                reference
-                    .seal_in_place_append_tag(
-                        Nonce::assume_unique_for_key(nonce),
-                        Aad::from(&aad),
-                        &mut expected,
-                    )
-                    .unwrap();
                 let mut sealed = vec![0; len + 16];
                 assert_eq!(cipher.seal(&nonce, &aad, &plain, &mut sealed), Ok(len + 16));
-                assert_eq!(sealed, expected);
                 let mut opened = vec![0xa5; len + 7];
                 let mut forged = sealed.clone();
                 *forged.last_mut().unwrap() ^= 1;

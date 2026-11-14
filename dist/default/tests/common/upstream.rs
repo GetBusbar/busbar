@@ -97,29 +97,36 @@ impl Responder {
     }
 
     pub fn start_tls(methods: BTreeMap<String, Answer>) -> Responder {
-        use rcgen::PublicKeyData as _;
-        busbar_core_connector::tls::install_crypto_provider();
-        let ca_key = rcgen::KeyPair::generate().expect("the responder CA key");
-        let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("CA parameters");
-        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        use busbar_contract::crypto::testing::rcgen::PublicKeyData as _;
+        let ca_key = busbar_contract::crypto::testing::rcgen::KeyPair::generate()
+            .expect("the responder CA key");
+        let mut ca_params =
+            busbar_contract::crypto::testing::rcgen::CertificateParams::new(Vec::new())
+                .expect("CA parameters");
+        ca_params.is_ca = busbar_contract::crypto::testing::rcgen::IsCa::Ca(
+            busbar_contract::crypto::testing::rcgen::BasicConstraints::Unconstrained,
+        );
         let ca = ca_params.self_signed(&ca_key).expect("the responder CA");
-        let issuer = rcgen::Issuer::new(ca_params, ca_key);
-        let leaf_key = rcgen::KeyPair::generate().expect("the responder leaf key");
-        let params = rcgen::CertificateParams::new(vec!["127.0.0.1".into()])
-            .expect("the responder's IP SAN");
+        let issuer = busbar_contract::crypto::testing::rcgen::Issuer::new(ca_params, ca_key);
+        let leaf_key = busbar_contract::crypto::testing::rcgen::KeyPair::generate()
+            .expect("the responder leaf key");
+        let params = busbar_contract::crypto::testing::rcgen::CertificateParams::new(vec![
+            "127.0.0.1".into(),
+        ])
+        .expect("the responder's IP SAN");
         let leaf = params
             .signed_by(&leaf_key, &issuer)
             .expect("the responder leaf");
         let spki = busbar_contract::transport::trust::key_pin(&leaf_key.subject_public_key_info());
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
+        let config = busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
                 vec![leaf.der().clone()],
                 rustls::pki_types::PrivateKeyDer::try_from(leaf_key.serialize_der())
                     .expect("the responder leaf key DER"),
             )
-            .expect("the actual responder TLS configuration");
-        Self::start_with(methods, Some((Arc::new(config), ca.pem(), spki)))
+        })
+        .expect("the actual responder TLS configuration");
+        Self::start_with(methods, Some((config, ca.pem(), spki)))
     }
 
     fn start_with(

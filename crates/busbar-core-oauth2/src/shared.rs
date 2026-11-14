@@ -65,7 +65,6 @@ fn digest(value: &str) -> String {
 }
 
 fn nonce() -> Result<String, StorageError> {
-    use ring::rand::SecureRandom as _;
     let mut bytes = [0u8; 16];
     ring::rand::SystemRandom::new()
         .fill(&mut bytes)

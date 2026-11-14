@@ -6,10 +6,10 @@ use crate::governance::{
     unit_checkpoint::{UnitCheckpoint, UnitTarget},
     GovState,
 };
+use crate::hashing::Sha256;
 use busbar_contract::{caps::KernelSeal, services::Caller, Count};
 use busbar_kernel_ledger::cost::{measurement_lane, RawRateEra};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -301,7 +301,7 @@ impl MeasurementRuntime {
             ),
         };
         let mut id = [0; 16];
-        getrandom::fill(&mut id).map_err(|_| Refusal::Unavailable)?;
+        busbar_contract::crypto::fill(&mut id).map_err(|_| Refusal::Unavailable)?;
         if id == [0; 16] || operations.contains_key(&id) {
             return Err(Refusal::Unavailable);
         }

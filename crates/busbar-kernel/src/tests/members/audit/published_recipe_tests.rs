@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use sha2::{Digest as _, Sha256};
+use crate::hashing::Sha256;
 
 fn published_spec() -> String {
     published_page("audit-chain-digest-v4.md")
@@ -384,9 +384,10 @@ fn the_published_key_set_checks_the_published_examples_signature() {
         *slot = u8::from_str_radix(&sig_hex[i * 2..i * 2 + 2], 16).expect("the signature is hex");
     }
 
-    let verifying = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).expect("a public key");
+    let verifying = busbar_contract::crypto::ed25519::VerifyingKey::from_bytes(&key_bytes)
+        .expect("a public key");
     verifying
-        .verify_strict(&preimage, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
+        .verify_strict(&preimage, &sig_bytes)
         .expect("the published example's signature does not verify under the published recipe");
 }
 

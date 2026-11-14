@@ -44,8 +44,6 @@ use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use sha2::{Digest, Sha256};
-
 const ADMIN_TOKEN: &str = "sigv4-both-ways-admin";
 
 const UPSTREAM_CREDS_ENV: &str = "SIGV4_E2E_UPSTREAM_CREDS";
@@ -539,28 +537,13 @@ fn signature(
 }
 
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
-    const BLOCK: usize = 64;
-    let mut k = if key.len() > BLOCK {
-        Sha256::digest(key).to_vec()
-    } else {
-        key.to_vec()
-    };
-    k.resize(BLOCK, 0);
-    let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
-    let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
-    let inner = Sha256::new()
-        .chain_update(&ipad)
-        .chain_update(msg)
-        .finalize();
-    Sha256::new()
-        .chain_update(&opad)
-        .chain_update(inner)
-        .finalize()
+    busbar_contract::crypto::hmac_sha256(key, msg)
+        .expect("HMAC-SHA256")
         .to_vec()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+    hex::encode(busbar_contract::crypto::sha256(bytes))
 }
 
 fn uri_encode(path: &str) -> String {

@@ -3,7 +3,8 @@
 
 //! The STUN core speaks itself: recognising a connectivity check addressed to THIS session, and
 
-use ring::hmac;
+use busbar_contract::crypto;
+use zeroize::Zeroizing;
 
 /// STUN's magic cookie (RFC 8489 §5).
 const MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
@@ -52,8 +53,10 @@ impl std::fmt::Debug for IceCredentials {
 /// The keys an association checks and signs with, built once.
 pub(crate) struct Keys {
     local_ufrag_prefix: Vec<u8>,
-    local: hmac::Key,
-    remote: hmac::Key,
+    /// The local ICE password: the MESSAGE-INTEGRITY (HMAC-SHA1) key of checks to us.
+    local: Zeroizing<Vec<u8>>,
+    /// The remote ICE password: the key of our probes and of their answers.
+    remote: Zeroizing<Vec<u8>>,
     probe_username: Vec<u8>,
 }
 
@@ -109,7 +112,7 @@ fn walk(d: &[u8], kind: [u8; 2]) -> Option<Walk<'_>> {
 }
 
 /// Does the MESSAGE-INTEGRITY at `mi_at` verify under `key` (RFC 8489 §14.5: over the message up to
-fn integrity_ok(d: &[u8], mi_at: usize, mac: &[u8], key: &hmac::Key) -> bool {
+fn integrity_ok(d: &[u8], mi_at: usize, mac: &[u8], key: &[u8]) -> bool {
     let Ok(covered_len) = u16::try_from(mi_at + 4 + MI_LEN - HEADER) else {
         return false;
     };
@@ -120,7 +123,7 @@ fn integrity_ok(d: &[u8], mi_at: usize, mac: &[u8], key: &hmac::Key) -> bool {
     };
     dst.copy_from_slice(&d[..mi_at]);
     dst[2..4].copy_from_slice(&covered_len.to_be_bytes());
-    hmac::verify(key, dst, mac).is_ok()
+    crypto::legacy::hmac_sha1(key, dst).is_ok_and(|tag| crypto::ct_eq(&tag, mac))
 }
 
 /// `true` when `d` is a Binding request whose USERNAME names the local ufrag first and whose
@@ -181,12 +184,13 @@ fn set_len(m: &mut [u8], body: usize) {
 }
 
 /// A consent probe: a Binding request to the peer under the REMOTE credentials (USERNAME
+/// …). `None` when the crypto backend does not provide HMAC-SHA1.
 pub(crate) fn probe(
     keys: &Keys,
     txid: [u8; 12],
     tie_breaker: [u8; 8],
     controlling: bool,
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
     let mut m = Vec::with_capacity(128);
     m.extend_from_slice(&BINDING_REQUEST);
     m.extend_from_slice(&[0, 0]);
@@ -202,11 +206,11 @@ pub(crate) fn probe(
     attr(&mut m, role, &tie_breaker);
     let body = m.len() - HEADER + 4 + MI_LEN;
     set_len(&mut m, body);
-    let mac = hmac::sign(&keys.remote, &m);
-    attr(&mut m, MESSAGE_INTEGRITY, mac.as_ref());
+    let mac = crypto::legacy::hmac_sha1(&keys.remote, &m).ok()?;
+    attr(&mut m, MESSAGE_INTEGRITY, &mac);
     let body = m.len() - HEADER + 8;
     set_len(&mut m, body);
     let crc = crc32fast::hash(&m) ^ FINGERPRINT_XOR;
     attr(&mut m, FINGERPRINT, &crc.to_be_bytes());
-    m
+    Some(m)
 }

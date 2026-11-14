@@ -46,7 +46,7 @@ impl tracing::Subscriber for Capture {
 fn tmpdir() -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
     let mut rnd = [0u8; 8];
-    let _ = getrandom::fill(&mut rnd);
+    let _ = busbar_contract::crypto::fill(&mut rnd);
     p.push(format!(
         "busbar-fetch-scrub-test-{}",
         rnd.iter().map(|b| format!("{b:02x}")).collect::<String>()
