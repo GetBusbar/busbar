@@ -213,9 +213,12 @@ fn v4_native_pending_short_retry_metadata_and_cancel() {
     assert_eq!(table().head.slots, wire::TABLE_SLOTS);
     // SAFETY: generated statement is static and initialized.
     let statement = unsafe { &*door.statement() };
-    assert_eq!(statement.kind_abi, 3);
+    assert_eq!(statement.kind_abi, crate::abi::versions::STORE.raw());
     assert!(statement.kind_tail().is_null());
-    assert_eq!(<crate::abi::store::v4::Ops as KindOps>::ABI_VERSION, 3);
+    assert_eq!(
+        <crate::abi::store::v4::Ops as KindOps>::ABI_VERSION,
+        crate::abi::versions::STORE.raw()
+    );
     assert_eq!(
         <crate::abi::store::v4::Ops as KindOps>::LAYOUT_FINGERPRINT,
         crate::abi::store::LAYOUT_FINGERPRINT
