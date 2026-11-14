@@ -3732,3 +3732,7 @@ mod refresh_binding_tests;
 #[cfg(test)]
 #[path = "tests/completed_head_tests.rs"]
 mod completed_head_tests;
+
+#[cfg(test)]
+#[path = "tests/declared_need_arc_tests.rs"]
+mod declared_need_arc_tests;
