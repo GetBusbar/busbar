@@ -1372,12 +1372,7 @@ pub fn budget_window(period: &str, now: u64) -> u64 {
         WINDOW_MINUTE => now / 60 * 60,
         WINDOW_HOUR => now / 3600 * 3600,
         WINDOW_DAY => now / SECS_PER_DAY * SECS_PER_DAY,
-        WINDOW_MONTH => {
-            let days = (now / SECS_PER_DAY) as i64;
-            let (y, m, _) = busbar_contract::civil::civil_from_days(days);
-            let m = i64::from(m);
-            (days_from_civil(y, m, 1) as u64) * SECS_PER_DAY
-        }
+        WINDOW_MONTH => month_window_days(now).0 * SECS_PER_DAY,
         WINDOW_TOTAL => 0,
 
         other => {
@@ -1396,24 +1391,18 @@ pub fn window_end(period: &str, now: u64) -> Option<u64> {
         WINDOW_MINUTE => Some(now / 60 * 60 + 60),
         WINDOW_HOUR => Some(now / 3600 * 3600 + 3600),
         WINDOW_DAY => Some(now / SECS_PER_DAY * SECS_PER_DAY + SECS_PER_DAY),
-        WINDOW_MONTH => {
-            let days = (now / SECS_PER_DAY) as i64;
-            let (y, m, _) = busbar_contract::civil::civil_from_days(days);
-            let m = i64::from(m);
-            let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-            Some((days_from_civil(ny, nm, 1) as u64) * SECS_PER_DAY)
-        }
+        WINDOW_MONTH => Some(month_window_days(now).1 * SECS_PER_DAY),
         _ => None,
     }
 }
 
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+/// The calendar month holding `now`, as (first day, first day of the next month) in days since the
+/// epoch, on the `time` calendar (DEPENDENCY-LADDER C10).
+fn month_window_days(now: u64) -> (u64, u64) {
+    let days = now / SECS_PER_DAY;
+    let date = busbar_contract::civil::date_from_days(i64::try_from(days).unwrap_or(i64::MAX));
+    let start = days.saturating_sub(u64::from(date.day()) - 1);
+    (start, start + u64::from(date.month().length(date.year())))
 }
 
 pub use busbar_contract::records::{
