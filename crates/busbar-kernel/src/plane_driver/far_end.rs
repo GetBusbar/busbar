@@ -805,22 +805,6 @@ fn split(url: &str) -> (&str, &str) {
     }
 }
 
-struct Head(Vec<(String, Vec<u8>)>);
-
-impl Head {
-    fn wipe(&mut self) {
-        for (_, v) in &mut self.0 {
-            zeroize::Zeroize::zeroize(v);
-        }
-    }
-}
-
-impl Drop for Head {
-    fn drop(&mut self) {
-        self.wipe();
-    }
-}
-
 struct Scratch<'a> {
     buf: Vec<u8>,
     home: &'a Mutex<Vec<u8>>,
@@ -1488,17 +1472,17 @@ impl EgressFarEnd<'_> {
         let (_, path) = split(&url);
 
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::OutboundHead);
-        let mut head = Head(Vec::with_capacity(
+        let mut head = busbar_contract::conn::OwnedHead::with_capacity(
             request.fields.len() + auth.len() + defaults.len(),
-        ));
+        );
 
-        head.0.extend(auth.iter().filter(|f| !f.query).map(|f| {
+        head.extend(auth.iter().filter(|f| !f.query).map(|f| {
             (
                 String::from_utf8_lossy(&f.name).into_owned(),
                 f.value.expose(&crate::seal::lend()).clone(),
             )
         }));
-        head.0.extend(auth.iter().filter(|f| f.query).map(|f| {
+        head.extend(auth.iter().filter(|f| f.query).map(|f| {
             (
                 busbar_contract::conn::SEALED_QUERY_FIELD.to_owned(),
                 f.query_pair(&crate::seal::lend())
@@ -1506,7 +1490,7 @@ impl EgressFarEnd<'_> {
             )
         }));
 
-        head.0.extend(
+        head.extend(
             request
                 .fields
                 .iter()
@@ -1520,7 +1504,7 @@ impl EgressFarEnd<'_> {
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
 
-        head.0.extend(
+        head.extend(
             defaults
                 .iter()
                 .filter(|(n, _)| {
@@ -1538,18 +1522,13 @@ impl EgressFarEnd<'_> {
             .map(|f| String::from_utf8_lossy(&f.name).to_ascii_lowercase())
             .collect();
         if !sealed.is_empty() {
-            head.0.push((
+            head.push(
                 busbar_contract::conn::SEALED_FIELDS_FIELD.to_owned(),
                 sealed.join(",").into_bytes(),
-            ));
+            );
         }
         let require_secure = protected || auth.iter().any(|f| f.require_secure);
         drop(auth);
-        let borrowed: Vec<(&str, &[u8])> = head
-            .0
-            .iter()
-            .map(|(n, v)| (n.as_str(), v.as_slice()))
-            .collect();
         let cap_ms = self.attempt_cap();
         let (pool, stated, degraded) = {
             let w = self.lock();
@@ -1570,13 +1549,15 @@ impl EgressFarEnd<'_> {
             return false;
         }
 
-        let opened = e.conns.open_located(
+        // The head built above is the one the open sends: it moves into the connection, which
+        // keeps it for the dial (and wipes it) without copying it again.
+        let opened = e.conns.open_owned(
             e.caller,
             need,
             &OpenDesc {
                 completed_head: None,
                 target: &url,
-                fields: &borrowed,
+                fields: &[],
 
                 body: if let Some(prepared) = prepared {
                     bytes::Bytes::from_owner(prepared)
@@ -1594,6 +1575,7 @@ impl EgressFarEnd<'_> {
 
                 unit: self.route.unit.get(),
             },
+            head,
             require_secure,
             carried.as_deref(),
         );
