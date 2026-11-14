@@ -242,18 +242,20 @@ where
         None => None,
         Some(v) => {
             let word = v.as_str().map(str::to_owned);
-            Some(crate::config::UpstreamCreds::deserialize(v).map_err(|e| {
-                // A scalar that names no mode keeps 1.5.5's sentence byte for byte; the
-                // enum's own list is not the operator-facing wording of this default.
-                let why = word.map_or_else(
-                    || e.to_string(),
-                    |word| format!("unknown variant `{word}`, expected `own` or `passthrough`"),
-                );
-                D::Error::custom(format!(
+            Some(
+                crate::yaml::from_value::<crate::config::UpstreamCreds>(v).map_err(|e| {
+                    // A scalar that names no mode keeps 1.5.5's sentence byte for byte; the
+                    // enum's own list is not the operator-facing wording of this default.
+                    let why = word.map_or_else(
+                        || e.to_string(),
+                        |word| format!("unknown variant `{word}`, expected `own` or `passthrough`"),
+                    );
+                    D::Error::custom(format!(
                     "the reserved `{section}.upstream_credentials:` all-{section} default must be \
                      `own` or `passthrough`: {why}"
                 ))
-            })?)
+                })?,
+            )
         }
     };
 

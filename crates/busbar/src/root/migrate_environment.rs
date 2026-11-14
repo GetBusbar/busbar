@@ -112,7 +112,10 @@ pub(crate) fn capture(
             // The old runtime capped this value at 128. Invalid values fell through to
             // configured workers, TOKIO_WORKER_THREADS, and available parallelism.
             Ok(count) if count > 0 => {
-                advanced(root)?.insert(Value::from("worker_threads"), Value::from(count.min(128)));
+                advanced(root)?.insert_key(
+                    Value::from("worker_threads"),
+                    Value::from(count.min(128) as u64),
+                );
                 changes.push(format!(
                     "{} -> advanced.worker_threads",
                     RETIRED_LAUNCH_ENV[WORKERS].name
