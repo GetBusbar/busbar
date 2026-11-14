@@ -934,7 +934,7 @@ macro_rules! hook_op {
             fn call(
                 $i: Instance<'_, Held<HookLife<P>>>,
                 $input: Lent<'_, $in>,
-                $o: Out<'_, $out>,
+                mut $o: Out<'_, $out>,
             ) -> Outcome {
                 let Some($held) = $i.get() else {
                     return Outcome::Fault;

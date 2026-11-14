@@ -45,7 +45,7 @@ use crate::abi::mechanism::call::{
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
 use crate::redacted::{OwnerSeal, Secret};
-use crate::secure::{SecureString, SecureVec};
+use crate::secure::SecureVec;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Public scope of host-held outbound custody. Connection identity carries no authority.
@@ -2691,7 +2691,7 @@ mod snapshot {
                 };
                 sample.name = text(laid, s.name)??;
                 for l in list::<ScrapeLabel>(laid, s.labels, s.labels_len)? {
-                    let key = SecureString::from(text(laid, l.key)??);
+                    let key = crate::secure::SecureString::from(text(laid, l.key)??);
                     let value = text(laid, l.value)??;
                     sample.labels.push((key.into_string(), value));
                 }
