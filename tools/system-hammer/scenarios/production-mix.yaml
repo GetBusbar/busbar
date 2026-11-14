@@ -1,6 +1,6 @@
 name: production-mix
 group: mix
-description: "Everything the default build links, on at once: keys auth, prometheus + OTLP + request-log file exports, a ranking hook, LLM (six providers, whole and streamed), MCP, A2A, decisions, streams mint, with admin ops in the background."
+description: "Everything the default build links, on at once: keys auth, prometheus + OTLP + request-log file exports, a ranking hook, LLM (four providers: openai, anthropic, gemini, bedrock; whole and streamed), MCP, A2A, decisions, streams mint, with admin ops in the background."
 config: |
   listen: "{LISTEN}"
   admin_listen: "{ADMIN}"
@@ -89,7 +89,7 @@ cases:
       - { path: /v1/chat/completions, weight: 30, contains: hammer-ok, headers: { authorization: "Bearer {KEY}", content-type: application/json }, body: '{"model":"m-openai","messages":[{"role":"user","content":"hello"}],"max_tokens":16}' }
       - { path: /v1/chat/completions, weight: 10, contains: "[DONE]", headers: { authorization: "Bearer {KEY}", content-type: application/json }, body: '{"model":"m-openai","stream":true,"messages":[{"role":"user","content":"hello"}],"max_tokens":16}' }
       - { path: /v1/messages, weight: 15, contains: hammer-ok, headers: { x-api-key: "{KEY}", anthropic-version: "2023-06-01", content-type: application/json }, body: '{"model":"m-anthropic","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}' }
-      - { path: "/v1beta/models/m-openai:generateContent", weight: 8, contains: hammer-ok, headers: { x-goog-api-key: "{KEY}", content-type: application/json }, body: '{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}' }
+      - { path: "/v1beta/models/m-gemini:generateContent", weight: 8, contains: hammer-ok, headers: { x-goog-api-key: "{KEY}", content-type: application/json }, body: '{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}' }
       - { path: /v1/chat/completions, weight: 7, contains: hammer-ok, headers: { authorization: "Bearer {KEY}", content-type: application/json }, body: '{"model":"m-bedrock","messages":[{"role":"user","content":"hello"}],"max_tokens":16}' }
       - { path: /v1/chat/completions, weight: 5, contains: hammer-ok, headers: { authorization: "Bearer {KEY}", content-type: application/json }, body: '{"model":"p-cheapest","messages":[{"role":"user","content":"hello"}],"max_tokens":16}' }
       - { path: /mcp, weight: 10, contains: "ping: hammer", headers: { authorization: "Bearer {AT_MCP}", content-type: application/json, mcp-method: tools/call, mcp-protocol-version: "2026-07-28", Mcp-Name: probe_ping }, body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"probe_ping","arguments":{"label":"hammer"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' }
