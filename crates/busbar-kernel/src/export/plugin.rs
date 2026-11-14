@@ -73,6 +73,10 @@ pub(crate) fn configured_instance(
             Some(settings)
         }
         None => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
             errors.push(
                 coded::config_export_invalid(format!(
                     "export.{name}.module: unknown exporter '{}'; the built-in export modules are \
@@ -419,6 +423,10 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         let settings = match sink_settings(axis, module, &def.settings) {
             Ok(settings) => settings,
             Err(e) => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: an export sink refused when it opens"
+                )]
                 errors.push(
                     coded::config_export_invalid(format!("export.{name}.settings: {e}")).into(),
                 );
@@ -454,6 +462,10 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             None
         };
         if opened_recorder != expected_recorder {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: an export sink refused when it opens"
+            )]
             errors.push(
                 coded::config_export_invalid(format!(
                     "export.{name}: recorder declaration changed since configuration admission"
@@ -713,9 +725,14 @@ fn deliver_one(
 }
 
 pub fn start() -> Result<(), String> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the export sinks start once, at boot")
     let mut errors: Vec<String> = Vec::new();
     for s in sinks() {
         if let Err(e) = s.sink.start() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: an export sink refused when it starts"
+            )]
             errors.push(coded::config_export_invalid(format!("export.{}: {e}", s.name)).into());
             continue;
         }
