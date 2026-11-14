@@ -6,4 +6,5 @@
 mod amend_tests;
 mod journal_tests;
 mod record_tests;
+mod sign_hex_tests;
 mod wiped_tests;
