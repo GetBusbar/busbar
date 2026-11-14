@@ -41,6 +41,10 @@ pub(crate) struct Derived {
 
 impl Derived {
     /// The plane admission (audience, resource metadata) for the unit's original head.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "R23: owner of the unit's plane admission"
+    )]
     pub(crate) fn admission(
         &self,
         listener: &Listener,
@@ -52,6 +56,10 @@ impl Derived {
     }
 
     /// The unit's original head as an HTTP header map; the one `header_map` build per unit.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "R23: owner of the unit's original-head HeaderMap"
+    )]
     pub(crate) fn headers(&self, original: &Head) -> &axum::http::HeaderMap {
         self.headers.get_or_init(|| header_map(original))
     }
