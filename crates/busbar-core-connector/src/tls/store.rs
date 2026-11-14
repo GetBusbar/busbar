@@ -884,15 +884,19 @@ struct CaFacts {
 
 /// The CA rules an operator anchor is held to, at `now`.
 fn ca_facts(der: &[u8], now: SystemTime) -> Result<CaFacts, String> {
-    let (_, cert) = x509_parser::parse_x509_certificate(der)
+    use x509_cert::der::Decode as _;
+    use x509_cert::ext::pkix::{BasicConstraints, KeyUsage};
+    use x509_cert::Version;
+    let cert = x509_cert::Certificate::from_der(der)
         .map_err(|e| format!("it is not an X.509 certificate: {e}"))?;
-    if cert.version().0 != 2 {
+    let tbs = cert.tbs_certificate();
+    if tbs.version() != Version::V3 {
         return Err("it is not an X.509 v3 certificate".into());
     }
-    let ca = cert
-        .basic_constraints()
+    let ca = tbs
+        .get_extension::<BasicConstraints>()
         .map_err(|e| format!("its basicConstraints do not parse: {e}"))?
-        .is_some_and(|bc| bc.value.ca);
+        .is_some_and(|(_, bc)| bc.ca);
     if !ca {
         return Err(
             "it is not a CA certificate (basicConstraints CA:TRUE is absent): list the CA that \
@@ -900,16 +904,19 @@ fn ca_facts(der: &[u8], now: SystemTime) -> Result<CaFacts, String> {
                 .into(),
         );
     }
-    if let Some(ku) = cert
-        .key_usage()
+    if let Some((_, ku)) = tbs
+        .get_extension::<KeyUsage>()
         .map_err(|e| format!("its keyUsage does not parse: {e}"))?
     {
-        if !ku.value.key_cert_sign() {
+        if !ku.key_cert_sign() {
             return Err("its keyUsage does not include keyCertSign".into());
         }
     }
-    let not_before = cert.validity().not_before.timestamp();
-    let not_after = cert.validity().not_after.timestamp();
+    let secs = |t: x509_cert::time::Time| {
+        i64::try_from(t.to_unix_duration().as_secs()).unwrap_or(i64::MAX)
+    };
+    let not_before = secs(tbs.validity().not_before);
+    let not_after = secs(tbs.validity().not_after);
     let t = unix(now);
     let tolerance = i64::try_from(NOT_BEFORE_TOLERANCE.as_secs()).unwrap_or(0);
     if not_before - tolerance > t {
@@ -919,8 +926,8 @@ fn ca_facts(der: &[u8], now: SystemTime) -> Result<CaFacts, String> {
         return Err(format!("it has expired (notAfter {not_after})"));
     }
     Ok(CaFacts {
-        subject: cert.subject().to_string(),
-        issuer: cert.issuer().to_string(),
+        subject: tbs.subject().to_string(),
+        issuer: tbs.issuer().to_string(),
         not_after,
     })
 }
