@@ -584,6 +584,54 @@ mod linked {
         SCANS.lock().unwrap().clear();
     }
 
+    /// A submit the saturated dispatcher refuses with `Overloaded` never reached the store, so it
+    /// is not a store round trip (`Work::StoreRoundTrip`: "submitted to the store plugin and
+    /// answered").
+    #[tokio::test]
+    async fn overloaded_submit_is_not_counted_as_a_store_round_trip() {
+        use busbar_contract::work_count::Tally;
+        use owned::axis::{PersistenceAxis, StoreDoor};
+        let axis = axis();
+        let dispatcher = axis.dispatcher.clone();
+        let backend = axis
+            .open(StoreDoor::Linked(door), "overloaded-tally", b"{}")
+            .await
+            .unwrap();
+        let held: Vec<_> = (0..dispatcher.workers())
+            .flat_map(|worker| {
+                let dispatcher = &dispatcher;
+                std::iter::from_fn(move || dispatcher.mint(worker))
+            })
+            .collect();
+        assert!(!held.is_empty());
+        let scan = Arc::new(owned::Scan {
+            dataset: info().dataset,
+            namespace: owned::NamespaceId([9; 16]),
+            prefix: b"k".to_vec(),
+            after: None,
+            generation: None,
+            allow_change: false,
+            max_items: 16,
+            max_bytes: 4096,
+        });
+        // The counters are process-wide and other tests submit concurrently: like the work-budget
+        // gate, take the lowest of several identical refused submits.
+        let mut lowest = u64::MAX;
+        for _ in 0..8 {
+            let before = Tally::now();
+            assert_eq!(
+                backend.scan(scan.clone()).await.unwrap_err(),
+                Failure::Overloaded
+            );
+            lowest = lowest.min(Tally::now().since(before).store_round_trips);
+        }
+        assert_eq!(
+            lowest, 0,
+            "a submit refused before reaching the store counted as a store round trip"
+        );
+        drop(held);
+    }
+
     #[tokio::test]
     async fn axis_rejects_v3_before_any_lifecycle_or_business_crossing() {
         use owned::axis::{PersistenceAxis, StoreDoor};
