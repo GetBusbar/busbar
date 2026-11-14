@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn overlay_command_refuses_serving_or_principal_flags() {
         assert!(command(
-            [FLAG, "old.yaml", "--safe-mode"]
+            [FLAG, "old.yaml", "--ignore-overlay"]
                 .into_iter()
                 .map(str::to_owned)
         )

@@ -4760,13 +4760,13 @@
       "op": [
         {
           "args": [
-            "--safe-mode"
+            "--ignore-overlay"
           ]
         }
       ],
       "expect": {
         "exit": 0,
-        "stderr_contains": "SAFE MODE: config overlay NOT merged \u2014 running on base config.yaml alone",
+        "stderr_contains": "IGNORE OVERLAY: config overlay NOT merged \u2014 running on base config.yaml/providers.yaml alone",
         "stdout_contains": null
       },
       "notes": "\u00a73.4 W20 (main.rs:1695-1698): the flag alone; the baseline has no overlay file, which does not matter for the banner."

@@ -70,10 +70,10 @@ fn die(msg: impl std::fmt::Display) -> ! {
     std::process::exit(1);
 }
 
-const OPTION_SAFE_MODE: &str = "--safe-mode";
+const OPTION_IGNORE_OVERLAY: &str = "--ignore-overlay";
 
-fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
-    args.any(|a| a == OPTION_SAFE_MODE)
+fn ignore_overlay_requested(mut args: impl Iterator<Item = String>) -> bool {
+    args.any(|a| a == OPTION_IGNORE_OVERLAY)
 }
 
 fn line_flag_passed(args: impl Iterator<Item = String>) -> bool {
@@ -573,7 +573,11 @@ async fn run(
     let providers_override = root::cli::providers_override();
     let config_path =
         std::path::PathBuf::from(root::cli::resolve_config_path(cli_config.as_deref()));
-    let safe_mode = safe_mode_requested(std::env::args());
+    let ignore_overlay = ignore_overlay_requested(std::env::args());
+    if ignore_overlay {
+        busbar_kernel::appbuild::IGNORE_OVERLAY_FLAG
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let overlay_migration =
         root::overlay_migrate::command(std::env::args().skip(1)).unwrap_or_else(|error| die(error));
     let principal_transition = root::principal_transition::command(std::env::args().skip(1))
@@ -597,7 +601,7 @@ async fn run(
     let loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
         &config_path,
         providers_override.as_deref(),
-        safe_mode,
+        ignore_overlay,
         config::EnvSubst::Strict,
         &bootstrap_rules,
     )
@@ -683,7 +687,7 @@ async fn run(
                 documents.clone(),
                 config_path.clone(),
                 providers_override.clone(),
-                safe_mode,
+                ignore_overlay,
                 base_cfg.limits.migration_index_bytes,
                 base_cfg.limits.migration_value_bytes,
                 &binding_inventory,
@@ -734,7 +738,7 @@ async fn run(
             let normalized = busbar_kernel::appbuild::load_config_from_disk_judged(
                 &config_path,
                 providers_override.as_deref(),
-                safe_mode,
+                ignore_overlay,
                 config::EnvSubst::Strict,
                 &bootstrap_rules,
             )
@@ -802,7 +806,7 @@ async fn run(
         let resumed = busbar_kernel::appbuild::load_config_from_disk_judged(
             &config_path,
             providers_override.as_deref(),
-            safe_mode,
+            ignore_overlay,
             config::EnvSubst::Strict,
             &bootstrap_rules,
         )
@@ -821,7 +825,7 @@ async fn run(
         let mut deploy = resumed.deploy;
         let mut defs = resumed.defs;
         let mut providers_path = resumed.providers_path;
-        // Even safe-mode must observe a pending transition in the anchor namespace before
+        // Even --ignore-overlay must observe a pending transition in the anchor namespace before
         // overlay recovery or application construction can open another effective Store.
         if principal_transition.is_none() {
             busbar_kernel::governance::principal_transition::pending_guard_native(anchor_store.clone())
@@ -852,7 +856,7 @@ async fn run(
                     .unwrap_or_else(|error| die(boot_error("Store overlay unavailable", error))),
             )
         };
-        let overlay_doc = if safe_mode {
+        let overlay_doc = if ignore_overlay {
             None
         } else if let Some(store) = overlay_path.as_ref() {
             store
@@ -1042,6 +1046,14 @@ async fn run(
         Err(e @ busbar_kernel::observability::LoggingError::AlreadyInitialized(_)) => {
             eprintln!("busbar: {e}");
         }
+    }
+
+    if ignore_overlay {
+        tracing::warn!(
+            diag = %diagnostics::OVERLAY_IGNORED.banner(),
+            "IGNORE OVERLAY: config overlay NOT merged — running on base config.yaml/providers.yaml alone \
+             (the Store overlay is untouched; boot without --ignore-overlay to re-apply it)"
+        );
     }
 
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "busbar starting");

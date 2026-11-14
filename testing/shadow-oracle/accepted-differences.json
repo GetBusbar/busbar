@@ -6712,6 +6712,34 @@
         "status": 1
       },
       "rationale": "Owner signed 2026-11-12: the reserved-name refusal is one generic sentence that names the offending word and links the one docs page listing every reserved name (crates/busbar-contract/src/section.rs reserved_name_refusal). CELL: boot.refusal|BOOT-P07|validate (a pool named `hooks`). BYTES MOVED (golden -> candidate): effects.stderr, the refusal sentence only. The transform rewrites that one sentence back to 1.5.5's wording so only it is forgiven; the cell reports ACCEPTED, never PASS, and the golden is untouched."
+    },
+    {
+      "id": "IGNORE-OVERLAY --safe-mode renamed --ignore-overlay (rule 263)",
+      "kind": "breaking",
+      "changelog": "`--safe-mode` is renamed `--ignore-overlay` (no alias; `--safe-mode` is refused anywhere on the command line); `GET /api/v1/admin/info` reports `overlay_ignored: true` when the process was booted with it.",
+      "by": "owner (Matthew Jackson), 2026-11-14 (rule 263, AGREED.md)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "signed": "owner direct, rule 263 (AGREED.md), verbatim 'if you have access to the disk to run it we assume you could edit the config anyways so ignore is just as safe'",
+        "when": "2026-11-14",
+        "ruling": "owner rule 263: --safe-mode is renamed --ignore-overlay, no alias, no admin-only gating; the upgrade-test cell moves to the 1.6.0 behaviour"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^boot\\.warning\\|BOOT-W20\\|boot$",
+      "expected_cells": 1,
+      "classes": [
+        "status",
+        "body",
+        "effects.stderr"
+      ],
+      "premise": {
+        "cell": "boot.warning|BOOT-W20|boot",
+        "status": 0
+      },
+      "rationale": "Owner rule 263: `--safe-mode` is renamed `--ignore-overlay` with no alias. CELL: boot.warning|BOOT-W20|boot now boots with `--ignore-overlay`. BYTES MOVED (golden -> candidate): status (2 -> 0), body (the boot listing) and effects.stderr (the 1.5.5 golden refused the flag as unrecognized; the candidate boots on base config.yaml/providers.yaml, logs the BUSBAR-8012 IGNORE OVERLAY warning once and serves). The fixture's `stderr_contains` proves the warning reaches stderr. cli|--safe-mode|first-arg is unchanged (exit 2 unrecognized, as 1.5.5)."
     }
   ]
 }

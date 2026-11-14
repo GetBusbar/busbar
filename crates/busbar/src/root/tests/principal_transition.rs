@@ -74,7 +74,14 @@ fn cold_flags_accept_config_locations_and_require_a_fresh_apply_attestation() {
         "cold.json"
     ])
     .is_err());
-    assert!(parse(&[INPUT_FLAG, "plan.json", ACTION_FLAG, "check", "--safe-mode"]).is_err());
+    assert!(parse(&[
+        INPUT_FLAG,
+        "plan.json",
+        ACTION_FLAG,
+        "check",
+        "--ignore-overlay"
+    ])
+    .is_err());
     assert!(parse(&[INPUT_FLAG, "plan.json", ACTION_FLAG, "check", "--validate"]).is_err());
     assert!(parse(&[ACTION_FLAG, "check"]).is_err());
     assert!(parse(&[
@@ -133,7 +140,7 @@ fn only_explicit_ephemeral_initialization_continues_ordinary_boot() {
         "fresh.json",
         ACTION_FLAG,
         "initialize-fresh-and-serve",
-        "--safe-mode"
+        "--ignore-overlay"
     ])
     .is_err());
     for action in [
