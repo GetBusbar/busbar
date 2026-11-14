@@ -131,6 +131,10 @@ impl std::fmt::Debug for CallerCredential {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "R23: test input differs: the test builds a credential directly"
+)]
 #[path = "tests/caller_credential_tests.rs"]
 mod caller_credential_tests;
 
