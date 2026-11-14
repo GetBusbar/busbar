@@ -82,29 +82,16 @@ pub(crate) fn code_digest() -> [u8; 32] {
     for bytes in [
         include_bytes!("mod.rs").as_slice(),
         include_bytes!("group.rs"),
-        include_bytes!("journal_binding.rs"),
-        include_bytes!("journal.rs"),
         include_bytes!("projection.rs"),
-        include_bytes!("recovery.rs"),
-        include_bytes!("receipt_codec.rs"),
         include_bytes!("overlay.rs"),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../busbar-kernel/src/config/overlay_native.rs"
         )),
-        include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../busbar-kernel/src/governance/persistence/recovery_import.rs"
-        )),
         include_bytes!("../routes.rs"),
-        include_bytes!("../routes/parents.rs"),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../busbar-kernel-audit/src/digest.rs"
-        )),
-        include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../busbar-kernel/src/persistence/journal/migration.rs"
         )),
         include_bytes!("../archive_source.rs"),
         include_bytes!("../source_interpretation.rs"),
@@ -261,68 +248,6 @@ pub(crate) fn bind_config(
         busbar_kernel::persistence::import_target::records::AUDIT_OWNER.as_bytes(),
     );
 }
-pub(super) fn archival_authorizes(
-    records: &[RecordBinding],
-    histories: &[HistoryBinding],
-    tokens: &[TokenBinding],
-    address: &Address,
-) -> bool {
-    busbar_kernel::persistence::import_target::journal::authorizes(address)
-        || busbar_kernel::persistence::import_target::records::trust::migration_trust_authorizes(address)
-        || busbar_kernel::persistence::import_target::records::ticket::legacy_ticket_authorizes(address)
-        || busbar_kernel::persistence::import_target::records::recovery::legacy_head_authorizes(address)
-        || busbar_kernel::persistence::import_target::records::bootstrap::migration_receipt_authorizes(address)
-        || [
-            (
-                "busbar.principal-transition",
-                "busbar.principal-transition.v1",
-            ),
-            ("busbar.config.overlay", "busbar.config.overlay.v1"),
-            ("busbar.admin", "busbar.admin-idempotency"),
-        ]
-        .iter()
-        .any(|(instance, schema)| {
-            busbar_kernel::persistence::import_target::records::scoped::migration_authorizes(true, instance, schema, address)
-        })
-        || [
-            "busbar.node.v1",
-            "busbar.keyset.v1",
-            "busbar.plugin_floor.v1",
-            "busbar.release_keys_floor.v1",
-        ]
-        .iter()
-        .any(|schema| {
-            busbar_kernel::persistence::import_target::records::scoped::migration_authorizes(true, "busbar.boot", schema, address)
-        })
-        || busbar_kernel::persistence::import_target::records::scoped::migration_claim_authorizes(
-            "busbar.auth-replay",
-            "auth-replay",
-            address,
-        )
-        || busbar_kernel::persistence::import_target::records::scoped::migration_claim_authorizes(
-            "busbar.admin",
-            "busbar.admin-idempotency",
-            address,
-        )
-        || tokens.iter().any(|token| {
-            busbar_kernel::persistence::import_target::records::scoped::migration_claim_authorizes(
-                &token.instance,
-                &token.kind,
-                address,
-            )
-        })
-        || records.iter().any(|b| {
-            busbar_kernel::persistence::import_target::records::scoped::migration_authorizes(
-                b.private,
-                &b.instance,
-                &b.schema,
-                address,
-            )
-        })
-        || histories.iter().any(|h| {
-            busbar_kernel::persistence::import_target::records::history::migration_authorizes(&h.owner, h.declarations(), address)
-        })
-}
 pub(super) fn registered_edge(
     source: Format,
     preconditions_digest: [u8; 32],
@@ -416,14 +341,7 @@ impl Output {
     }
 }
 
-pub trait NativeProofs: archive::HistoricalReceiptResolution {
-    fn parent_present(
-        &self,
-        provenance: archive::Provenance,
-        owner: &str,
-        kind: &str,
-        id: &str,
-    ) -> Result<[u8; 32], super::super::Error>;
+pub trait NativeProofs: Send + Sync {
     fn historical_audit(
         &self,
         provenance: archive::Provenance,
@@ -484,26 +402,7 @@ impl ReleasedProofs {
         })
     }
 }
-impl archive::HistoricalReceiptResolution for ReleasedProofs {
-    fn resolve_original(
-        &self,
-        _provenance: archive::Provenance,
-        _address: &Address,
-        _receipt: &archive::Receipt<'_>,
-    ) -> Result<[u8; 32], super::super::Error> {
-        Err(super::super::Error::ReconciliationRequired)
-    }
-}
 impl NativeProofs for ReleasedProofs {
-    fn parent_present(
-        &self,
-        _provenance: archive::Provenance,
-        _owner: &str,
-        _kind: &str,
-        _id: &str,
-    ) -> Result<[u8; 32], super::super::Error> {
-        Err(super::super::Error::MissingCapability)
-    }
     fn historical_audit(
         &self,
         provenance: archive::Provenance,

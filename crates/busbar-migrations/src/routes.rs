@@ -18,8 +18,6 @@ use busbar_contract::{
 };
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-mod parents;
-pub use parents::with_parent_graph_from_facts;
 
 #[derive(Clone, Default)]
 pub struct Bindings {
@@ -151,9 +149,7 @@ pub fn dormant_safe_bindings(
 }
 #[derive(Default)]
 pub struct FrozenCapabilities {
-    pub journal: Option<Arc<dyn legacy::journal_binding::JournalMigration>>,
     pub overlay: Option<Arc<legacy::overlay::PreparedOverlay>>,
-    pub recovery: Option<Arc<legacy::recovery::FencedReceiptProofs>>,
 }
 pub struct PreparedRoute {
     reader: lifecycle::SourceReader,
@@ -368,11 +364,7 @@ impl PreparedRoute {
             histories,
             tokens,
         } = self.bindings;
-        let FrozenCapabilities {
-            journal,
-            overlay,
-            recovery,
-        } = capabilities;
+        let FrozenCapabilities { overlay } = capabilities;
         let view = projection
             .fact_view()
             .ok_or(Error::MissingCapability)?
@@ -392,14 +384,8 @@ impl PreparedRoute {
             },
             self.bounds,
         )?;
-        if let Some(journal) = journal {
-            compiled = compiled.with_journal(journal)?;
-        }
         if let Some(overlay) = overlay {
             compiled = compiled.with_overlay(overlay)?;
-        }
-        if let Some(recovery) = recovery {
-            compiled = compiled.with_recovery(recovery)?;
         }
         let compiled = compiled.with_projection(projection)?;
         let compiled = Arc::new(compiled);
@@ -727,7 +713,6 @@ pub fn proofs_from_facts(
     provenance: Provenance,
     source: &mut dyn crate::archive_source::ArchiveRows,
     semantic_bytes: usize,
-    ancestry: Option<Arc<dyn NativeProofs>>,
 ) -> Result<Arc<dyn NativeProofs>, Error> {
     if source.header().owner != format.owner
         || source.header().physical != format.physical
@@ -764,61 +749,7 @@ pub fn proofs_from_facts(
     let count = u64::try_from(audit.len()).map_err(|_| Error::Bounds)?;
     let audit =
         legacy::transform::CompleteAuditProofs::from_complete_facts(provenance, audit, count)?;
-    Ok(Arc::new(FrozenProofs {
-        audit: Arc::new(audit),
-        ancestry,
-    }))
-}
-pub fn with_ancestry(
-    audit: Arc<dyn NativeProofs>,
-    ancestry: Arc<dyn NativeProofs>,
-) -> Arc<dyn NativeProofs> {
-    Arc::new(FrozenProofs {
-        audit,
-        ancestry: Some(ancestry),
-    })
-}
-struct FrozenProofs {
-    audit: Arc<dyn NativeProofs>,
-    ancestry: Option<Arc<dyn NativeProofs>>,
-}
-impl legacy::archive::HistoricalReceiptResolution for FrozenProofs {
-    fn resolve_original(
-        &self,
-        provenance: Provenance,
-        address: &Address,
-        receipt: &legacy::archive::Receipt<'_>,
-    ) -> Result<Digest32, Error> {
-        self.ancestry
-            .as_deref()
-            .ok_or(Error::ReconciliationRequired)?
-            .resolve_original(provenance, address, receipt)
-    }
-}
-impl NativeProofs for FrozenProofs {
-    fn parent_present(
-        &self,
-        provenance: Provenance,
-        owner: &str,
-        kind: &str,
-        id: &str,
-    ) -> Result<Digest32, Error> {
-        match self.audit.parent_present(provenance, owner, kind, id) {
-            Err(Error::MissingCapability) => self
-                .ancestry
-                .as_deref()
-                .ok_or(Error::MissingCapability)?
-                .parent_present(provenance, owner, kind, id),
-            result => result,
-        }
-    }
-    fn historical_audit(
-        &self,
-        provenance: Provenance,
-        record: &busbar_contract::records::AuditRecord,
-    ) -> Result<Digest32, Error> {
-        self.audit.historical_audit(provenance, record)
-    }
+    Ok(Arc::new(audit))
 }
 
 #[cfg(test)]
@@ -1021,50 +952,36 @@ mod binding_tests {
             .is_empty());
     }
 
-    #[tokio::test]
-    async fn actual_token_fact_with_ambiguous_historical_owner_refuses() {
-        let bindings = dormant_safe_bindings(&competing_inventory(), 65536).unwrap();
-        let source = crate::source_facts::test_archive(
-            vec![lifecycle::source::HistoricalFact::Token {
+    #[test]
+    fn unreleased_dev_facts_are_refused_before_any_route() {
+        use lifecycle::source::HistoricalFact;
+        for fact in [
+            HistoricalFact::Token {
                 kind: "shared".into(),
                 token: Secret::new(b"spent".to_vec()),
                 expires_at: 6000,
-            }],
-            65536,
-        );
-        let identity = source.identity();
-        let bounds = Bounds {
-            items: 16,
-            bytes: 65536,
-        };
-        let transform = legacy::fact_transform::FactTransform::registered(
-            identity.format,
-            Provenance {
-                dataset: identity.dataset,
-                catalogue: source.header().catalogue_digest,
             },
-            &source.header().tables,
-            source.interpretation().unwrap().clone(),
-            bindings,
-            bounds,
-        )
-        .unwrap()
-        .with_projection(source.clone())
-        .unwrap();
-        let family = transform
-            .edge()
-            .families
-            .iter()
-            .find(|family| family.id == legacy::transform::ARCHIVAL)
-            .unwrap();
-        let page = source
-            .page(&source.snapshot(), family, 0, bounds)
-            .await
-            .unwrap();
-        assert!(matches!(
-            transform.transform(family, &page.records, bounds),
-            Err(Error::MissingCapability)
-        ));
+            HistoricalFact::Record {
+                schema: "busbar.journal.v1".into(),
+                key: Secret::new(vec![1; 18]),
+                value: Secret::new(b"frame".to_vec()),
+            },
+            HistoricalFact::History {
+                kind: "ticket".into(),
+                id: "id".into(),
+                parent: None,
+                sequence: 0,
+                timestamp: 17,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
+                body: Secret::new(b"body".to_vec()),
+                append: Some(false),
+            },
+        ] {
+            assert!(matches!(
+                crate::source_facts::try_test_archive(vec![fact], 65536),
+                Err(Error::UnsupportedPath)
+            ));
+        }
     }
     #[test]
     fn exact_reader_identity_pins_resume_descriptor() {
