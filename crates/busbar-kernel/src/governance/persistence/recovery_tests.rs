@@ -1347,3 +1347,24 @@ async fn inspect_foreign_refuses_after_cold_cutover_mid_scan() {
     assert!(fired.load(Ordering::SeqCst), "cutover never ran");
     assert!(matches!(listed, Err(RecoveryError::Unavailable(_))));
 }
+
+/// The observing History confirms this node's proof as a prefix of the live
+/// owner's admitted head; a plain History still pins the exact head.
+#[tokio::test]
+async fn observing_history_confirms_extended_local_head() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    recovery.persist(&intent()).await.unwrap();
+    let mut observing = History::observing(&recovery.store, &recovery.journal);
+    let mut pinned = History::new(&recovery.store);
+    observing.proof(7).await.unwrap();
+    pinned.proof(7).await.unwrap();
+    live_append(&recovery.journal).await;
+    observing.finish().await.unwrap();
+    assert!(pinned.finish().await.is_err());
+    set_root_epoch(&backend, 3);
+    assert!(matches!(
+        observing.finish().await,
+        Err(RecoveryError::Unavailable(_))
+    ));
+}

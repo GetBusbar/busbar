@@ -372,6 +372,46 @@ impl RuntimeJournal {
         self.drive_through(target).await
     }
 
+    /// Confirm live admission of this owner for a read-only observation.
+    ///
+    /// This owner is the only writer of the node's selected head, and every
+    /// append is serialised by the publication driver. Holding that driver fixes
+    /// the head, so the owner's current verified head is checked against native
+    /// custody and execution admission in one authoritative read.
+    ///
+    /// A `prior` proof of this node taken earlier in the same observation must
+    /// be a prefix of the current verified head: same dataset, node and owner,
+    /// and no later sequence. Appends are guarded Absent-key writes by one
+    /// admitted owner, so records already read against `prior` remain in the
+    /// current history. A cold cutover, fence or epoch change fails admission.
+    pub(crate) async fn confirm_live_owned(
+        &self,
+        prior: Option<&VerifiedHead>,
+    ) -> std::result::Result<(), RuntimeError> {
+        let _driver = self.driving.lock().await;
+        let verified = {
+            let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+            if let Some(error) = state.failed {
+                return Err(error);
+            }
+            state.verified.clone()
+        };
+        if let Some(prior) = prior {
+            if prior.dataset != verified.dataset
+                || prior.node != verified.node
+                || prior.owner != verified.owner
+                || prior.head.sequence > verified.head.sequence
+            {
+                return Err(RuntimeError::Authority);
+            }
+        }
+        StoreJournal::new(&self.store, self.node)
+            .map_err(RuntimeError::from)?
+            .confirm_owned(&verified)
+            .await
+            .map_err(RuntimeError::from)
+    }
+
     async fn drive_through(&self, target: u64) -> std::result::Result<(), RuntimeError> {
         let _driver = self.driving.lock().await;
         loop {
