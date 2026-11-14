@@ -200,12 +200,6 @@ impl DoorPools {
         by_entry
     }
 
-    /// Whether the section states `name` as one of its entries.
-    #[must_use]
-    pub fn has_entry(&self, name: &str) -> bool {
-        self.entry_set.contains(name)
-    }
-
     #[must_use]
     pub fn breaker(&self, pool: &str) -> Option<&busbar_kernel::config::BreakerCfg> {
         self.breakers.get(pool)
@@ -245,7 +239,7 @@ impl DoorPools {
         downgraded
             .map(str::to_string)
             .or_else(|| named.map(|p| String::from_utf8_lossy(p).into_owned()))
-            .filter(|name| self.pools.contains_key(name) || self.entries.iter().any(|e| e == name))
+            .filter(|name| self.pools.contains_key(name) || self.entry_set.contains(name.as_str()))
             .unwrap_or_else(|| "unresolved".to_string())
             .into()
     }
@@ -333,10 +327,10 @@ impl DoorPools {
 }
 
 impl DoorPools {
-    /// Whether `name` is one of this section's entries: a re-scan by name (SP-V1 counts it).
+    /// Whether `name` is one of this section's entries: an entry-index lookup (SP-V1 counts it).
     fn has_entry(&self, name: &str) -> bool {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::EntryResolve);
-        self.entries.iter().any(|e| e == name)
+        self.entry_set.contains(name)
     }
 
     #[must_use]
@@ -956,12 +950,14 @@ impl<'s> DoorSteps<'s> {
         {
             return false;
         }
-        let mut seen: Vec<&str> = Vec::new();
+        // Only a configured pool names a fallback, so the chain reaches every distinct name within
+        // `pools.len() + 1` steps before it ends or comes back round; a pool it comes back to was
+        // already judged, and judging it again gives the same answer. No visited list is kept.
         let mut at = Some(to);
-        while let Some(pool) = at {
-            if seen.contains(&pool) {
+        for _ in 0..=pools.len() {
+            let Some(pool) = at else {
                 break;
-            }
+            };
             if !self.pools.granted(
                 self.facts.scope_kind.as_deref(),
                 Some(key),
@@ -970,7 +966,6 @@ impl<'s> DoorSteps<'s> {
             ) {
                 return false;
             }
-            seen.push(pool);
             at = self.pools.fallback(pool);
         }
         true
@@ -1015,10 +1010,7 @@ impl<'s> DoorSteps<'s> {
                 estimate,
                 chain,
             }) => (units, Some((pool, lanes, estimate, chain))),
-            None => {
-                let expected = self.lock().expected.clone();
-                (self.expected_units(&expected)?, None)
-            }
+            None => (self.expected_units(&self.lock().expected)?, None),
         };
         let lanes_of = |routed: &Option<Routed>| -> Vec<String> {
             routed
@@ -1318,13 +1310,20 @@ impl DriverSteps for DoorSteps<'_> {
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
     ) -> Result<busbar_contract::ScopeFacts, Refusal> {
-        let (class, named) = self.lock().named.clone().unwrap_or((ROUTE_POOL, None));
-        let counterparty = self.lock().counterparty.clone();
-        let selected = self.lock().resolved.clone();
-        let entry_known = self.lock().entry_known;
+        // One guard for the whole judgement: the unit's words are read in place, not copied out.
+        let u = self.lock();
+        let (class, named) = u
+            .named
+            .as_ref()
+            .map_or((ROUTE_POOL, None), |(class, named)| {
+                (*class, named.as_deref())
+            });
+        let counterparty = u.counterparty.as_deref();
+        let selected = u.resolved.as_deref();
+        let entry_known = u.entry_known;
         if class == ROUTE_SCOPE_LOCAL
             && named.is_some()
-            && selected.as_ref().is_some_and(|entry| {
+            && selected.is_some_and(|entry| {
                 self.facts.secondary_scopes.get(entry).is_some_and(|kind| {
                     self.key
                         .as_ref()
@@ -1336,7 +1335,7 @@ impl DriverSteps for DoorSteps<'_> {
         }
 
         if class == ROUTE_SCOPE_LOCAL
-            && counterparty.as_deref().is_some_and(|counterparty| {
+            && counterparty.is_some_and(|counterparty| {
                 !self.pools.granted(
                     self.facts.scope_kind.as_deref(),
                     self.key.as_deref(),
@@ -1353,8 +1352,8 @@ impl DriverSteps for DoorSteps<'_> {
             || self.pools.granted_to(
                 self.facts.scope_kind.as_deref(),
                 self.key.as_deref(),
-                (class, named.as_deref()),
-                counterparty.as_deref(),
+                (class, named),
+                counterparty,
                 entry_known,
             )
         {
@@ -1379,7 +1378,7 @@ impl DriverSteps for DoorSteps<'_> {
         let (Some(gov), Some(key)) = (self.app.governance.as_ref(), self.key.as_ref()) else {
             return Ok(());
         };
-        let (routed, expected) = {
+        let (routed, units) = {
             let unit = self.lock();
             let local = unit
                 .named
@@ -1392,9 +1391,8 @@ impl DriverSteps for DoorSteps<'_> {
             {
                 return Ok(());
             }
-            (unit.routed.clone(), unit.expected.clone())
+            (unit.routed.clone(), self.expected_units(&unit.expected)?)
         };
-        let units = self.expected_units(&expected)?;
         let pool = self.charged_pool(routed.as_ref().map_or("", |(label, _)| label));
         let lanes: Vec<_> = routed
             .iter()
@@ -1843,8 +1841,8 @@ pub fn door_facts(
             .collect(),
         audit_kind: OpClassId::new(audit_kind),
         keeps,
-        translations: (Arc::from(Vec::new()), Arc::default()),
-        dialects: Arc::from(Vec::new()),
+        translations: (Arc::default(), Arc::default()),
+        dialects: Arc::default(),
         bench_below_trip_threshold: None,
         metric_lanes: Vec::new(),
         stream_ceiling_secs: 0,
@@ -2374,7 +2372,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
 
 /// The composition root's rules that read only the resolved config: no I/O, no loaded plugin
 /// state. Boot/apply (`Rules::check`) and `--validate` both run exactly this, so they agree.
-pub fn offline_root_rules(cfg: &busbar_kernel::config::RootCfg) -> Result<(), Vec<String>> {
+fn offline_root_rules(cfg: &busbar_kernel::config::RootCfg) -> Result<(), Vec<String>> {
     kernel_sections(cfg).map_err(|e| vec![e])?;
     if let Some(url) = cfg.public_url.as_deref() {
         busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)?;
@@ -2772,19 +2770,21 @@ pub fn provider_routes(
     providers
         .iter()
         .map(|(name, p)| (name, RouteFacts::of(p)))
-        .map(|(name, p)| {
+        .map(|(name, facts)| {
+            // The route takes the facts' owned words; the provider itself is only borrowed.
+            let RouteFacts {
+                provider: p,
+                protocol,
+                error_map,
+            } = facts;
             (
                 name.clone(),
                 ProviderRoute {
                     base_url: busbar_kernel_egress::trust::net::strip_userinfo(&p.base_url)
                         .into_owned(),
                     userinfo: crate::root::userinfo::UserinfoBasic::of(&p.base_url),
-                    protocol: p.protocol.clone(),
-                    error_map: p
-                        .error_map
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
+                    protocol,
+                    error_map,
                     credential: p.api_key.clone(),
                     style: p.auth.as_ref().map(|a| style_word(a).to_string()),
                     params: StyleParams {
@@ -2793,7 +2793,7 @@ pub fn provider_routes(
                         scope: p.scope.clone(),
                         subject: p.subject.clone(),
                     },
-                    metadata: security.for_provider(&p),
+                    metadata: security.for_provider(p),
                 },
             )
         })
