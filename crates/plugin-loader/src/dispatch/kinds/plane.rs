@@ -1376,11 +1376,11 @@ fn check_tail_text(text: AbiStr, field: &'static str) -> Result<(), Fault> {
     Ok(())
 }
 
-/// BUSBAR-6013 (`PLUGIN_DECLARES_RETIRED_ABI_VALUE`): a plane declaring the retired trust role
+/// BUSBAR-6017 (`PLUGIN_DECLARES_RETIRED_ABI_VALUE`): a plane declaring the retired trust role
 /// `TRUST_PRIVATE_REACH` (4) is refused, naming the key and the role, before any other trust-key
 /// rule reads it.
 fn refuse_retired_trust_roles(tail: &PlaneTail) -> Result<(), String> {
-    const CODE: busbar_contract::diagnostic::Banner = busbar_contract::diagnostic::Banner(6013);
+    const CODE: busbar_contract::diagnostic::Banner = busbar_contract::diagnostic::Banner(6017);
     for key in listed(tail.trust_keys, tail.trust_keys_len) {
         if key.role == plane::TRUST_PRIVATE_REACH {
             return Err(format!(

@@ -1216,7 +1216,7 @@ pub const TRUST_REVERIFY_TTL: u32 = 2;
 /// [`TrustKey::role`]: the key holds how long after a drift a clean answer is disbelieved, a
 pub const TRUST_RECOVERY_BACKOFF: u32 = 3;
 /// [`TrustKey::role`] RESERVED, RETIRED in 1.6.0: once a registration's PRIVATE REACH. A plane
-/// declaring it is refused at load (BUSBAR-6013): one core setting, `advanced.allow_destinations`,
+/// declaring it is refused at load (BUSBAR-6017): one core setting, `advanced.allow_destinations`,
 /// governs every private destination. The value is never reused.
 pub const TRUST_PRIVATE_REACH: u32 = 4;
 /// [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to

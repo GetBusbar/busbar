@@ -1223,7 +1223,7 @@ pub struct Connector {
     auths: Mutex<Auths>,
     /// The instances whose connections' authority the host writes
     authority_held: Mutex<HashSet<InstanceId>>,
-    /// THE ABI RULES FLAGGED, once per instance and code ([`Connector::flag_once`]): BUSBAR-6013 (a
+    /// THE ABI RULES FLAGGED, once per instance and code ([`Connector::flag_once`]): BUSBAR-6017 (a
     /// retired need shape), 6014 (a refused call) and 6015 (an honoured deprecated value), each
     /// logged and audited the first time an instance meets it.
     flagged: Mutex<HashSet<(InstanceId, u16)>>,

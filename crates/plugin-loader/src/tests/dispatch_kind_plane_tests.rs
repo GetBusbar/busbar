@@ -155,7 +155,7 @@ fn plane_context_refuses_nested_pin_counts_before_forming_a_slice() {
     );
 }
 
-/// BUSBAR-6013: a plane declaring the retired trust role `TRUST_PRIVATE_REACH` (4) is refused at
+/// BUSBAR-6017: a plane declaring the retired trust role `TRUST_PRIVATE_REACH` (4) is refused at
 /// load, the refusal naming the key and the role.
 #[test]
 fn plane_context_refuses_the_retired_private_reach_role() {
@@ -178,7 +178,7 @@ fn plane_context_refuses_the_retired_private_reach_role() {
     .err()
     .expect("a retired trust role refuses the plane");
     for part in [
-        "BUSBAR-6013",
+        "BUSBAR-6017",
         "`allow_private`",
         "TRUST_PRIVATE_REACH (4)",
         "retired",
