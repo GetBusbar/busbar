@@ -186,7 +186,7 @@ impl Drop for QueueRelease {
 }
 
 #[test]
-fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock() {
+fn an_abandoned_stop_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock() {
     let guard = crate::observe::testing::exclusive();
     let dispatcher = Arc::new(Dispatcher::new(
         DispatchConfig::default(),
@@ -219,6 +219,8 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
         plugin,
         dispatcher,
         queue: Mutex::default(),
+        queued_bytes: AtomicUsize::new(0),
+        shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
@@ -246,7 +248,10 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
         );
     }
     crate::observe::testing::clear(&guard);
+    // A stop drains the queue; only lines still queued once STOP_GRACE has
+    // abandoned the drain are shed.
     shared.stop.store(true, Ordering::Release);
+    shared.abandon.store(true, Ordering::Release);
     Arc::clone(&shared).flush();
     assert_eq!(sink.queued(), 0);
     assert_eq!(
@@ -795,6 +800,8 @@ fn a_batch_dropped_after_failed_delivery_is_counted_as_shed() {
         plugin,
         dispatcher,
         queue: Mutex::default(),
+        queued_bytes: AtomicUsize::new(0),
+        shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
@@ -927,6 +934,8 @@ fn counting_sink() -> (ExportInstance, Arc<Shared>) {
         plugin,
         dispatcher,
         queue: Mutex::default(),
+        queued_bytes: AtomicUsize::new(0),
+        shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
