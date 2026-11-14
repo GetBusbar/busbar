@@ -130,6 +130,12 @@ pub trait FramerDoor: Send + Sync {
     }
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
+    /// The entry's SETTINGS EPOCH: a number that changes whenever a settings refresh it took has
+    /// returned, so a place it located before then may no longer be what it locates now (its
+    /// protocol offer can follow its settings). An entry with no live settings keeps `0`.
+    fn settings_epoch(&self) -> u64 {
+        0
+    }
     /// A bounded retirement failed to release plugin framing state. Production doors use their
     /// existing instance fault lifecycle; contextless doubles may record the failure.
     fn incomplete_retirement(&self, error: &Refused) {

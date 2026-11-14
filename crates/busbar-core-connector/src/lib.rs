@@ -470,6 +470,53 @@ struct DeclaredNeed {
     /// names one and leases its one long-lived program connection.
     members: Option<Arc<program::Members>>,
     member_spec: Option<ReadNeed>,
+    /// Where the declared target is, as the first open that located it found it (WASTE-EGRESS
+    /// W4): empty at declare, filled lazily, used only through the very door that located it and
+    /// under the same settings epoch ([`DeclaredNeed::place`]). Locked only to clone or replace the
+    /// `Arc`, never across a plugin call.
+    declared_place: Mutex<Option<Arc<Place>>>,
+}
+
+/// A declared target's place: the door that located it (weakly, so an unloaded door is not kept
+/// and its address is not reused while this is held), that door's settings epoch then, and its
+/// deadline-0 answer.
+struct Place {
+    door: std::sync::Weak<dyn FramerDoor>,
+    epoch: u64,
+    located: framer::Located,
+}
+
+impl DeclaredNeed {
+    /// Where `target` is per `door`, by `locate` (today's call) unless `target` is the declared
+    /// target and this record keeps its place as located by `door` under `door`'s current settings
+    /// epoch. A fresh answer is kept for the next open when no settings refresh returned while it
+    /// was asked; a failure keeps nothing.
+    fn place<E>(
+        &self,
+        door: &Arc<dyn FramerDoor>,
+        target: &str,
+        locate: impl FnOnce() -> Result<framer::Located, E>,
+    ) -> Result<framer::Located, E> {
+        if self.declared_target.as_deref() != Some(target) {
+            return locate();
+        }
+        let epoch = door.settings_epoch();
+        let kept = self.declared_place.lock().expect("place").clone();
+        if let Some(place) = kept
+            .filter(|p| p.epoch == epoch && std::sync::Weak::ptr_eq(&p.door, &Arc::downgrade(door)))
+        {
+            return Ok(place.located.clone());
+        }
+        let located = locate()?;
+        if door.settings_epoch() == epoch {
+            *self.declared_place.lock().expect("place") = Some(Arc::new(Place {
+                door: Arc::downgrade(door),
+                epoch,
+                located: located.clone(),
+            }));
+        }
+        Ok(located)
+    }
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
@@ -1410,6 +1457,29 @@ impl Connector {
         }
     }
 
+    /// [`Connector::plan`] for a dial of `record`'s need over `door`: a framer locates a declared
+    /// target from the record's kept place ([`DeclaredNeed::place`]) instead of asking again.
+    fn plan_declared(
+        &self,
+        record: &DeclaredNeed,
+        door: &Arc<dyn FramerDoor>,
+        dial: Dial,
+    ) -> Result<Planned, Failure> {
+        match self.ride_on(door) {
+            Some((Some(framer), via))
+                if record.declared_target.as_deref() == Some(dial.target.as_str()) =>
+            {
+                endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
+                let located = record.place(door, &dial.target, || {
+                    framer::locate(framer.as_ref(), &dial.target)
+                        .map_err(|e| Failure::Refused(e.to_string()))
+                })?;
+                Planned::located(framer, via, dial, located)
+            }
+            _ => self.plan(door, dial),
+        }
+    }
+
     /// The framer `owner`'s `need` rides, located at `target` (empty = the need's own, as an open
     fn framer_head(
         &self,
@@ -1764,6 +1834,7 @@ impl Connector {
                 program: None,
                 members: None,
                 member_spec: None,
+                declared_place: Mutex::new(None),
             }),
         );
         Ok(())
@@ -1946,6 +2017,7 @@ impl Connector {
                 program: None,
                 members: Some(Arc::new(members)),
                 member_spec: Some(spec.clone()),
+                declared_place: Mutex::new(None),
             }),
         );
         Ok(())
@@ -1992,6 +2064,7 @@ impl Connector {
                 )),
                 members: None,
                 member_spec: None,
+                declared_place: Mutex::new(None),
             }),
         );
         Ok(())
@@ -3066,7 +3139,8 @@ impl DeclaredConns for Connector {
         }
         let target = line.target().ok_or(ConnError::Closed)?;
         let planned = self
-            .plan(
+            .plan_declared(
+                &declared,
                 &declared.door,
                 Dial {
                     tls: match declared.tls {
@@ -3779,8 +3853,8 @@ impl Connector {
 
         let anchors = if let Some(sealed) = anchors.as_ref().filter(|s| !s.extra_anchors.is_empty())
         {
-            let current = if declared.tls.is_some() {
-                declared.tls_policy.as_ref()
+            let current = if record.tls.is_some() {
+                record.tls_policy.as_ref()
             } else {
                 self.tls_policy.as_ref()
             };
@@ -3959,6 +4033,7 @@ impl Connector {
             program,
             members,
             member_spec: _,
+            declared_place: _,
         } = &*declared;
         let egress_class = *egress_class;
         if members.is_none()
