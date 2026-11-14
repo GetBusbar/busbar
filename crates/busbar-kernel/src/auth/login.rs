@@ -237,22 +237,8 @@ impl LoginMethods {
         }
     }
 
-    pub(crate) fn build(
-        cfg: &AuthCfg,
-        registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-        secret_resolver: &crate::config::secret::SecretResolver,
-    ) -> Result<Self, String> {
-        Self::build_on(
-            cfg,
-            registry.as_ref(),
-            secret_resolver,
-            &mut super::instances::AuthInstances::default(),
-            &|| crate::preflight::auth_axis(registry.clone()),
-        )
-    }
-
-    /// [`Self::build`] over the build's shared `instances`: a provider the chain or admin_auth
-    /// already opened is handed over, not opened again (WASTE-AUTH-SECRETS W1).
+    /// The hosted login methods over the build's shared `instances`: a provider the chain or
+    /// admin_auth already opened is handed over, not opened again (WASTE-AUTH-SECRETS W1).
     pub(crate) fn build_on(
         cfg: &AuthCfg,
         registry: &dyn busbar_contract::plugin_rows::PluginRows,
