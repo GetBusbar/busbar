@@ -6,6 +6,7 @@ use crate::root::serve::{neutral, Stated};
 use busbar_contract::abi::host::service::UnitRef;
 use busbar_kernel::inbound::{HandIn, Head, Inbound, Listener, RequestAdmission, Seals};
 use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 const OWNER: u64 = 7101;
@@ -18,6 +19,8 @@ struct Output {
     head: Mutex<Option<(u32, HeadFields)>>,
     body: Mutex<Vec<u8>>,
     trailers: Mutex<Option<HeadFields>>,
+    /// Set when a whole body arrives through the zero-copy `write_owned` seam.
+    owned: AtomicBool,
 }
 impl CallerEnd for Output {
     fn head(&self, status: u32, fields: HeadFields) {
@@ -46,6 +49,11 @@ impl Stated for Output {
 impl neutral::Output for Output {
     fn trailers(&self, fields: HeadFields) {
         *self.trailers.lock().unwrap() = Some(fields);
+    }
+    async fn write_owned(&self, bytes: bytes::Bytes) -> bool {
+        self.owned.store(true, Ordering::SeqCst);
+        self.body.lock().unwrap().extend_from_slice(&bytes);
+        true
     }
 }
 
@@ -200,6 +208,76 @@ async fn a_third_claim_dispatches_opaque_heads_through_the_governed_plane_once()
         1,
         "one fixed audit record"
     );
+}
+
+/// A rendered whole body is owned; it crosses to the caller through the zero-copy
+/// `write_owned` seam rather than being borrowed and copied again by `write`.
+#[tokio::test]
+async fn a_rendered_body_is_handed_to_the_caller_without_a_copy() {
+    let output = Output::default();
+    neutral::render(
+        &output,
+        busbar_kernel::plane_driver::Rendered {
+            status: 200,
+            fields: vec![],
+            body: b"abc".to_vec(),
+        },
+    )
+    .await;
+    assert_eq!(output.stated(), Some(200));
+    assert!(
+        output.owned.load(Ordering::SeqCst),
+        "the owned body goes through write_owned"
+    );
+    assert_eq!(*output.body.lock().unwrap(), b"abc");
+}
+
+/// The unmetered completion (a plane's protected-resource document) also hands its owned body
+/// to the caller through `write_owned`.
+#[tokio::test]
+async fn an_unmetered_completion_hands_its_body_to_the_caller_without_a_copy() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("neutral-unmetered-owned", false).await;
+    let mut served = g.served.clone();
+    // The third claim serves the plane's protected-resource document: an unmetered completion.
+    let snapshot = &mut served.planes[0].snapshot;
+    snapshot.claims[2].verb = "GET".into();
+    snapshot.audience = Some("https://resource.test".into());
+    snapshot.resource_metadata = Some("https://resource.test/framed".into());
+    let routes = crate::root::serve::door_mounts(served, || None, &[], &[], &[], &[])
+        .unwrap()
+        .data;
+    let head = Head {
+        method: "GET".into(),
+        target: "/framed".into(),
+        authority: String::new(),
+        query: None,
+        fields: Vec::new(),
+    };
+    let (_host, admission) = admission(Arc::clone(&g.app), routes.guests.clone(), &head);
+    let context = busbar_kernel::auth::admitted_context(&admission)
+        .await
+        .unwrap();
+    let output = Arc::new(Output::default());
+    let pipe = routes
+        .serve_admitted(
+            &admission,
+            context,
+            bytes::Bytes::new(),
+            busbar_contract::abi::host::service::SCHEME_SECURE,
+            busbar_kernel::plane_routes::FramedSession::default(),
+            Arc::clone(&output),
+        )
+        .await;
+    assert!(pipe.is_none());
+    assert_eq!(output.stated(), Some(200));
+    assert!(
+        output.owned.load(Ordering::SeqCst),
+        "the owned document goes through write_owned"
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.body.lock().unwrap()).unwrap();
+    assert_eq!(document["resource"], "https://resource.test");
+    assert_eq!(g.money.open_units(), 0);
 }
 
 #[tokio::test]
