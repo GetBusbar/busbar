@@ -1574,6 +1574,22 @@ fn resolve_upgrading(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     upgrades: Vec<&'static str>,
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    resolve_with_secrets(
+        section,
+        providers,
+        served,
+        upgrades,
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+    )
+}
+
+fn resolve_with_secrets(
+    section: &str,
+    providers: &[(&str, super::ProviderRoute)],
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    upgrades: Vec<&'static str>,
+    secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
     let section: serde_yaml::Value = serde_yaml::from_str(section).expect("yaml");
@@ -1595,8 +1611,6 @@ fn resolve_upgrading(
         crate::root::loader::dispatch::ConnTable::NoNeeds,
         busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
-    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
-        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let conns: std::sync::Arc<dyn busbar_contract::conn::PollConns> =
         std::sync::Arc::new(busbar_core_connector::Connector::new());
     let reach = super::DoorReach {
@@ -4852,6 +4866,148 @@ fn settings_only_validation_requires_the_auth_declaration_capability() {
     let error = check_settings(&plugin, "foreign-settings", b"{}").unwrap_err();
     assert!(error.contains("no settings-only validator"), "{error}");
     assert!(!plugin.is_open());
+}
+
+fn vault_backed(key_file: &std::path::Path) -> super::ProviderRoute {
+    super::ProviderRoute {
+        credential: source_path(key_file.display().to_string()),
+        style: Some("bearer".to_string()),
+        ..provider("d", None)
+    }
+}
+
+fn counting_resolver() -> std::sync::Arc<CountingResolves> {
+    std::sync::Arc::new(CountingResolves {
+        inner: busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        resolved: std::sync::atomic::AtomicUsize::new(0),
+    })
+}
+
+fn models_on(providers: &[(&str, usize)]) -> String {
+    let members: Vec<String> = providers
+        .iter()
+        .flat_map(|(p, n)| (0..*n).map(move |i| format!("{p}-m{i}: {{provider: {p}}}")))
+        .collect();
+    format!("models: {{{}}}", members.join(", "))
+}
+
+fn resolves_in_one_door_step(
+    resolver: &std::sync::Arc<CountingResolves>,
+    section: &str,
+    providers: &[(&str, super::ProviderRoute)],
+) -> (
+    usize,
+    std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
+) {
+    let before = resolver.resolved.load(std::sync::atomic::Ordering::SeqCst);
+    let routes = resolve_with_secrets(
+        section,
+        providers,
+        &styled(),
+        Vec::new(),
+        std::sync::Arc::clone(resolver)
+            as std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
+    )
+    .expect("the members resolve");
+    let after = resolver.resolved.load(std::sync::atomic::Ordering::SeqCst);
+    (after - before, routes)
+}
+
+fn bearer_of(route: &busbar_kernel::plane_driver::MemberRoute) -> String {
+    use busbar_contract::auth_calls::{Fields, FieldsRequest};
+    let binding = route.auth.as_ref().expect("its credential is bound");
+    let Some(Fields::Ready(fields)) = binding
+        .auth
+        .fields_now(binding.handle, &FieldsRequest::default())
+    else {
+        panic!("the bearer binding answers on the spot");
+    };
+    fields
+        .iter()
+        .find(|f| f.name.eq_ignore_ascii_case(b"authorization"))
+        .map(|f| String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend())).into_owned())
+        .expect("an authorization field")
+}
+
+// WASTE-AUTH-SECRETS W3 (T3a): ten models on one provider share one credential reference, so the
+// door step resolves it once, not once per model.
+#[cfg(feature = "auth-header")]
+#[test]
+fn door_step_ten_models_one_vault_ref_resolves_once() {
+    let key_file = own_secret("w3-ten", "sk-ten-models");
+    let resolver = counting_resolver();
+    let (resolves, routes) = resolves_in_one_door_step(
+        &resolver,
+        &models_on(&[("p", 10)]),
+        &[("p", vault_backed(&key_file))],
+    );
+    assert_eq!(routes.len(), 10, "every model is routed");
+    for route in routes.values() {
+        assert_eq!(bearer_of(route), "Bearer sk-ten-models");
+    }
+    assert_eq!(
+        resolves, 1,
+        "one resolve per provider per door step, not one per model"
+    );
+    let _ = std::fs::remove_file(&key_file);
+}
+
+// T3b: two providers with three models each resolve two references, one per provider.
+#[cfg(feature = "auth-header")]
+#[test]
+fn door_step_two_providers_two_refs_resolve_once_each() {
+    let first = own_secret("w3-two-a", "sk-first");
+    let second = own_secret("w3-two-b", "sk-second");
+    let resolver = counting_resolver();
+    let (resolves, routes) = resolves_in_one_door_step(
+        &resolver,
+        &models_on(&[("a", 3), ("b", 3)]),
+        &[("a", vault_backed(&first)), ("b", vault_backed(&second))],
+    );
+    assert_eq!(routes.len(), 6);
+    for (name, route) in &routes {
+        let want = if name.starts_with("a-") {
+            "Bearer sk-first"
+        } else {
+            "Bearer sk-second"
+        };
+        assert_eq!(
+            bearer_of(route),
+            want,
+            "{name} carries its own provider's key"
+        );
+    }
+    assert_eq!(resolves, 2, "one resolve per provider");
+    let _ = std::fs::remove_file(&first);
+    let _ = std::fs::remove_file(&second);
+}
+
+// T3c: nothing is kept across door-step calls: each call (boot, each reload) resolves fresh, so a
+// rotated value reaches the models on the next call.
+#[cfg(feature = "auth-header")]
+#[test]
+fn door_step_each_call_resolves_fresh() {
+    let key_file = own_secret("w3-fresh", "sk-before");
+    let resolver = counting_resolver();
+    let section = models_on(&[("p", 10)]);
+    let providers = [("p", vault_backed(&key_file))];
+    let (boot, _) = resolves_in_one_door_step(&resolver, &section, &providers);
+    let (reload, _) = resolves_in_one_door_step(&resolver, &section, &providers);
+    rotate(&key_file, "sk-after");
+    let (rotated, routes) = resolves_in_one_door_step(&resolver, &section, &providers);
+    assert_eq!(
+        (boot, reload, rotated),
+        (1, 1, 1),
+        "one fresh resolve per call"
+    );
+    for route in routes.values() {
+        assert_eq!(
+            bearer_of(route),
+            "Bearer sk-after",
+            "the rotated value reaches every model"
+        );
+    }
+    let _ = std::fs::remove_file(&key_file);
 }
 
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
