@@ -1481,6 +1481,10 @@ mod tests;
 #[path = "tests/failed_policy_tests.rs"]
 mod failed_policy_tests;
 
+#[cfg(test)]
+#[path = "tests/reads_request_tests.rs"]
+mod reads_request_tests;
+
 pub type TapEntry = (
     std::time::Duration,
     bool,
@@ -1553,6 +1557,23 @@ pub enum ResolvedPolicy {
         /// policies (native/order-only), which never produce an empty intersection.
         on_empty: crate::config::PolicyOnError,
     },
+}
+
+impl ResolvedPolicy {
+    /// Whether this policy may stop, change or route the unit on the request's content: true
+    /// unless its policy is content-blind ([`RoutingPolicy::content_blind`], a built-in ranking
+    /// strategy), it is sent no prompt and it has no fallback chain (any link of which may be a
+    /// hook that reads the request).
+    #[must_use]
+    pub fn reads_request(&self) -> bool {
+        let Self::Policy {
+            policy,
+            send_prompt,
+            on_error_chain,
+            ..
+        } = self;
+        !(policy.content_blind() && !*send_prompt && on_error_chain.is_empty())
+    }
 }
 
 pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;

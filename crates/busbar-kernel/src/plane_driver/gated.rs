@@ -149,7 +149,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         binder: &dyn HookBinder,
         ran: &mut Vec<HookApplied>,
     ) -> Result<(), Stopped> {
-        let first = self.project(None, false);
+        let first = self.project(None, false, false);
         let (principal, recorded, route) = {
             let st = self.lock();
             (
@@ -224,7 +224,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
-                    let mut next = match self.project(Some(&bytes), true) {
+                    let mut next = match self.project(Some(&bytes), true, false) {
                         Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => next,
 
                         Ok(next) if next.rewrite_not_applicable => {
