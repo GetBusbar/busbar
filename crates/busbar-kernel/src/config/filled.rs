@@ -222,6 +222,8 @@ fn plane_bound_with_sources(
     value: serde_json::Value,
     sources: &busbar_contract::secret_ref::Sugars,
 ) -> Result<serde_json::Value, String> {
+    let mut value = value;
+    crate::plane_driver::door::canonical_sources(prefix, &mut value, sources)?;
     let ledger = LEDGER
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -229,7 +231,6 @@ fn plane_bound_with_sources(
         return Ok(value);
     }
     let mut path: Vec<Seg> = prefix.iter().map(|k| Seg::Key((*k).to_string())).collect();
-    let mut value = value;
     project(&ledger, &mut path, &mut value, 0, sources)?;
     Ok(value)
 }

@@ -32,7 +32,7 @@ fn backend(value: Option<&OverlayStore>) -> Result<&OverlayStore, String> {
     value.ok_or_else(|| NO_WRITABLE_OVERLAY_MSG.to_string())
 }
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct RootSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen: Option<String>,
@@ -62,6 +62,23 @@ pub struct RootSettings {
     pub health: Option<crate::config::patch::HealthPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<crate::config::patch::RoutingPatch>,
+}
+/// Root settings read through serde, by any caller (the admin `config/settings` body, the stored
+/// overlay), read the source shorthand the admitted owners declare, as `config.yaml` does.
+impl<'de> Deserialize<'de> for RootSettings {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct Written(RootSettings);
+        impl<'de> Deserialize<'de> for Written {
+            fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+                RootSettings::deserialize(de).map(Written)
+            }
+        }
+        busbar_contract::secret_ref::context::deserialize::<Written, _>(
+            de,
+            &super::secret::sugars(),
+        )
+        .map(|written| written.0)
+    }
 }
 impl RootSettings {
     /// Borrow the exact authoring representation under concrete kernel authority.

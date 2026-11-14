@@ -406,6 +406,78 @@ fn collect_refs(
     }
 }
 
+/// Write each admitted source shorthand at a door's declared secret path as its canonical
+/// `{module, settings}` reference, so a plane is only ever handed canonical references and never
+/// needs the host's source declarations to read its own section. `prefix` is where `value` sits in
+/// the document: a door's own section (`[section]`), or the keyed blob of sections (`[]`).
+pub(crate) fn canonical_sources(
+    prefix: &[&str],
+    value: &mut serde_json::Value,
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Result<(), String> {
+    for door in crate::plane_driver::registry::plane_decls()
+        .iter()
+        .filter_map(|d| d.door)
+    {
+        let section = match prefix {
+            [] => match value.get_mut(door.reg.section) {
+                Some(section) => section,
+                None => continue,
+            },
+            [only] if *only == door.reg.section => &mut *value,
+            _ => continue,
+        };
+        for path in &door.reg.secret_refs {
+            let Some(rest) = path.strip_prefix("settings.") else {
+                continue;
+            };
+            let segments: Vec<&str> = rest.split('.').collect();
+            canonical_at(section, &segments, sources)?;
+        }
+    }
+    Ok(())
+}
+
+fn canonical_at(
+    value: &mut serde_json::Value,
+    segments: &[&str],
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Result<(), String> {
+    let Some((head, rest)) = segments.split_first() else {
+        let declared = value.as_object().is_some_and(|object| {
+            object.len() == 1 && object.keys().all(|word| sources.get(word).is_some())
+        });
+        if declared {
+            let reference: busbar_contract::secret_ref::SecretRef =
+                busbar_contract::secret_ref::context::deserialize(value.clone(), sources).map_err(
+                    |_| "invalid admitted source shorthand (value not echoed)".to_owned(),
+                )?;
+            *value = serde_json::to_value(reference.authoring(&crate::seal::acquire()))
+                .map_err(|_| "cannot encode admitted source reference".to_owned())?;
+        }
+        return Ok(());
+    };
+    match value {
+        serde_json::Value::Array(items) if *head == "*" => {
+            for item in items {
+                canonical_at(item, rest, sources)?;
+            }
+        }
+        serde_json::Value::Object(map) if *head == "*" => {
+            for item in map.values_mut() {
+                canonical_at(item, rest, sources)?;
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(item) = map.get_mut(*head) {
+                canonical_at(item, rest, sources)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
     if settings.is_empty() {
         return Ok(settings);
