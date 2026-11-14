@@ -16,6 +16,10 @@ use crate::root::loader::dispatch::auth_handle::{self, RefSpace};
 const OWNER: u64 = 11;
 const GEN: u64 = 1;
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "R23: test input differs: tests read carriers from hand-built headers"
+)]
 #[path = "inbound_admin_sender_constraint.rs"]
 mod admin_sender_constraint;
 
