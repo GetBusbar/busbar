@@ -10,10 +10,8 @@ unique. Nodes share one store, and a monotonic reading compares only against rea
 that took it, so `node` — which node sealed the record — follows `mono` directly (the fixed record's
 WHEN is "wall + monotonic, node"). `v4` adds those two number fields and changes nothing else: no
 field is renamed, reordered or re-framed, and the signature domain is unchanged. `v3` never shipped,
-so no node holds a `v3` record; its page,
-[`audit-chain-digest-v3.md`](audit-chain-digest-v3.md), stays published as it was (and `v2` by
-[`audit-chain-digest-v2.md`](audit-chain-digest-v2.md), `v1` by
-[`audit-chain-digest-v1.md`](audit-chain-digest-v1.md)). Every record in a range body names the
+so no node holds a `v3` record; a `v2` record is checked by
+[`audit-chain-digest-v2.md`](audit-chain-digest-v2.md). Every record in a range body names the
 recipe it was sealed under in its own `recipe` member, so a window that straddles the change says
 which page checks which record.
 
