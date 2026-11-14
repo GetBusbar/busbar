@@ -179,7 +179,8 @@ impl SealedJson {
         let mut len = 0;
         self.write(&mut |b| len += b.len())?;
         let mut buf = Zeroizing::new(Vec::with_capacity(len));
-        self.write(&mut |b| buf.extend_from_slice(b))?;
+        // Sized by the counting pass, so the wiping buffer never grows (LINT-RULES LR-117).
+        self.write(&mut |b| crate::secure::append(&mut buf, b))?;
         debug_assert_eq!(buf.len(), buf.capacity());
         let secure = self.members.iter().any(|(_, m)| match m {
             Member::Sealed(c) => c.secure_required(),
