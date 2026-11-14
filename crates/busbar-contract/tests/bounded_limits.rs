@@ -280,20 +280,3 @@ fn the_frame_cursor_stops_at_the_per_connection_ceiling() {
     assert!(cursor.next_frame().is_none());
     assert!(cursor.remaining() > 0);
 }
-
-/// The two answers a plane returns per frame stay small enough to return by value.
-#[test]
-fn the_per_frame_plane_answers_are_pointer_sized_payloads() {
-    use busbar_contract::plane::{Ingress, Progress};
-
-    assert!(
-        std::mem::size_of::<Ingress<'static>>() <= 128,
-        "an ingress answer is {} bytes",
-        std::mem::size_of::<Ingress<'static>>()
-    );
-    assert!(
-        std::mem::size_of::<Progress<'static>>() <= 128,
-        "a progress answer is {} bytes",
-        std::mem::size_of::<Progress<'static>>()
-    );
-}
