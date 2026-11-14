@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::transport::TransportSettings;
-
 use crate::root::linked::linked_transport;
-use crate::root::registry::{compose, Dropped};
 use busbar_core_connector::doors::{row_facts, stated_row, RowFacts};
 
 #[test]
@@ -23,7 +20,7 @@ fn every_linked_transport_row_is_keyed_by_its_doors_statement() {
     let rows: Vec<(&str, Vec<&str>)> = crate::LINKED
         .transports
         .iter()
-        .map(|t| ((t.key)(), (t.composes_over)().to_vec()))
+        .map(|t| ((t.claims)()[0], (t.composes_over)().to_vec()))
         .collect();
     assert_eq!(
         stated

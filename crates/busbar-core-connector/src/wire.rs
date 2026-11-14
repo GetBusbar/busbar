@@ -1,43 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A TRANSPORT ENTRY AS THE BOOT FOLD ADMITS IT: [`HostWire`] is the composition root's record of one
+//! THE ONE COMPOSITION RULE A SERVED TRANSPORT ENTRY KEEPS: it names no layer. The carrier is the
+//! connector's choice from the target's scheme, so an entry that composes over another is refused
+//! where the connector opens it.
 
 use crate::framer::FramerDoor;
 
-/// One transport entry the boot fold admitted: its registry key, read off its door's facts.
-pub struct HostWire {
-    key: &'static str,
-}
-
-impl std::fmt::Debug for HostWire {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HostWire").field("key", &self.key).finish()
+/// Refuse `door` if it names a transport it composes over.
+pub fn unlayered(door: &dyn FramerDoor) -> Result<(), String> {
+    let facts = door.facts();
+    if facts.composes_over.is_empty() {
+        return Ok(());
     }
-}
-
-impl HostWire {
-    /// The entry behind `door`, admitted to be served over the host's sockets. Its registry key is
-    pub fn new(door: &dyn FramerDoor) -> Result<Self, String> {
-        let facts = door.facts();
-        let Some(&key) = facts.claims.first() else {
-            return Err(format!("transport `{}` states no claim", facts.name));
-        };
-        if !facts.composes_over.is_empty() {
-            return Err(format!(
-                "transport `{}` names a transport it composes over; no transport names another \
-                 (the carrier is the connector's choice from the target's scheme)",
-                facts.name
-            ));
-        }
-        Ok(Self { key })
-    }
-
-    /// The entry's registry key: its first claim.
-    #[must_use]
-    pub fn key(&self) -> &'static str {
-        self.key
-    }
+    Err(format!(
+        "transport `{}` names a transport it composes over; no transport names another \
+         (the carrier is the connector's choice from the target's scheme)",
+        facts.name
+    ))
 }
 
 #[cfg(test)]

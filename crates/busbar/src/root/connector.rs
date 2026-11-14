@@ -73,6 +73,7 @@ pub fn entries(
                 .map_err(|e| format!("transport `{key}`: {e}"))?;
             let door: Arc<dyn FramerDoor> =
                 Arc::new(crate::root::doors::Dispatched::open(plugin, settings)?);
+            busbar_core_connector::wire::unlayered(door.as_ref())?;
             Ok(Entry {
                 door,
                 alpn: Vec::new(),
@@ -98,6 +99,7 @@ pub(crate) fn entries_on(
                 settings,
                 Arc::clone(on),
             )?);
+            busbar_core_connector::wire::unlayered(door.as_ref())?;
             Ok(Entry {
                 door,
                 alpn: Vec::new(),

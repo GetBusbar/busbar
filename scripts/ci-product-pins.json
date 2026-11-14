@@ -158,7 +158,7 @@
     {
       "repo": "busbar-transport-http",
       "url": "https://github.com/GetBusbar/busbar-transport-http",
-      "commit": "203b0cf4c18a01d8714deb9c97074793ba4e4f95",
+      "commit": "29b4f24e4a2d31a1baf6d2b7cb186ae67b768029",
       "package": "busbar-transport-http-plugin",
       "kind": "transport",
       "alias": "http",
@@ -180,7 +180,7 @@
     {
       "repo": "busbar-transport-tcp",
       "url": "https://github.com/GetBusbar/busbar-transport-tcp",
-      "commit": "86e640a36c57ea7739f3074add260fe824aa7256",
+      "commit": "8c8932c9542b9ead0e367f285e09ab566f785bf4",
       "package": "busbar-transport-tcp-plugin",
       "kind": "transport",
       "alias": "tcp",
@@ -312,7 +312,7 @@
     {
       "repo": "busbar-plane-streaming",
       "url": "https://github.com/GetBusbar/busbar-plane-streaming",
-      "commit": "a27ecaf51f34a170e0f145e8aef146db53fc8f43",
+      "commit": "26c8a71c163119eca2bccd074e88ac21847a22f8",
       "package": "busbar-plane-streaming-plugin",
       "kind": "plane",
       "alias": "streaming",

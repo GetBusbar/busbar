@@ -1112,7 +1112,7 @@ async fn run(
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
 
-    let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
+    root::registry::check_or_exit(LINKED.claims);
 
     let dropped_doors =
         root::boot::dropped_transports(&root::policy::client_settings(&cfg.limits)).doors;

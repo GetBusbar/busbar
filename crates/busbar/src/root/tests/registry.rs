@@ -1,26 +1,28 @@
 use super::*;
 use busbar_contract::grammar::{Claim, Selector};
-use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, PluginKind};
+use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason};
+
+use crate::root::linked::LinkedTransport;
 
 fn linked_claims() -> Vec<PlaneClaim> {
     plane_claims(crate::LINKED.claims)
 }
 
-fn linked_fold() -> Vec<Built> {
-    compose(
-        crate::LINKED.transports,
-        Dropped::NONE,
-        &TransportSettings::default(),
-    )
-    .expect("the stack composes")
+/// Every scheme the linked transport rows serve, each row's own claim first.
+fn linked_schemes() -> Vec<&'static str> {
+    crate::LINKED
+        .transports
+        .iter()
+        .flat_map(|t| (t.claims)())
+        .collect()
 }
 
-fn linked_rows() -> Vec<Registered> {
-    linked_fold().into_iter().map(|(row, _)| row).collect()
-}
-
-fn linked_registry() -> Registry {
-    register_all(&linked_rows(), crate::LINKED.claims).expect("nothing collides on a key")
+fn linked_keys() -> Vec<&'static str> {
+    crate::LINKED
+        .claims
+        .iter()
+        .map(|row| (row.plane)().key())
+        .collect()
 }
 
 fn upgrade_wire_linked() -> bool {
@@ -32,52 +34,21 @@ fn upgrade_wire_linked() -> bool {
 
 #[cfg(linked_axis_transport_door)]
 #[test]
-fn every_linked_transport_and_plane_registers() {
-    let registry = linked_registry();
+fn every_linked_plane_is_one_key_and_every_claim_is_served() {
+    let schemes = linked_schemes();
+    check(crate::LINKED.claims, &|s| schemes.contains(&s))
+        .expect("no two planes share a key and every claim names a served transport");
 
-    let rows = linked_rows();
-    assert_eq!(registry.count(PluginKind::Transport), rows.len());
-    for row in &rows {
-        assert!(
-            registry.resolve(PluginKind::Transport, row.key).is_some(),
-            "transport `{}` is not registered",
-            row.key
-        );
-    }
-
-    assert_eq!(
-        registry.count(PluginKind::Plane),
-        crate::LINKED.claims.len(),
-        "the plane registry holds something no linked plane row declares"
-    );
-
-    let linked_keys: Vec<&str> = crate::LINKED
-        .claims
-        .iter()
-        .map(|row| (row.plane)().key())
-        .collect();
-    let mut claimed: Vec<&str> = linked_claims().iter().map(|c| c.plane).collect();
-    claimed.sort_unstable();
-    claimed.dedup();
-    for key in &claimed {
-        let registered = registry.resolve(PluginKind::Plane, key).is_some();
-        if linked_keys.contains(key) {
-            assert!(registered, "plane `{key}` is not registered");
-        } else {
-            assert!(
-                !registered,
-                "the claimant `{key}` is no linked plane, yet it is registered as a plane-kind \
-                 plugin"
-            );
-        }
-    }
-
+    let keys = linked_keys();
     for claim in &linked_claims() {
         assert!(
-            registry
-                .resolve(PluginKind::Transport, claim.claim.transport)
-                .is_some(),
-            "plane `{}` claims on transport `{}`, which is not registered",
+            keys.contains(&claim.plane) || core_claims().any(|core| core.plane == claim.plane),
+            "claim names plane `{}`, which no linked plane row declares",
+            claim.plane
+        );
+        assert!(
+            schemes.contains(&claim.claim.transport),
+            "plane `{}` claims on transport `{}`, which no linked row serves",
             claim.plane,
             claim.claim.transport
         );
@@ -382,74 +353,26 @@ fn a_planes_own_claims_may_overlap() {
 
 #[cfg(linked_axis_transport_door)]
 #[test]
-fn the_shipped_transport_stack_composes() {
-    let rows = linked_rows();
-    assert!(check_composition(&rows).is_ok());
-    let composed_over = |key: &str| {
-        rows.iter()
-            .find(|r| r.key == key)
-            .expect("registered")
-            .composed_over
-    };
-
-    for row in &rows {
-        assert!(row.composes_over.is_empty(), "`{}` names a layer", row.key);
-        assert_eq!(
-            composed_over(row.key),
-            None,
-            "`{}` is built over a layer",
-            row.key
+fn no_shipped_transport_names_a_layer() {
+    for row in crate::LINKED.transports {
+        assert!(
+            (row.composes_over)().is_empty(),
+            "`{}` names a layer",
+            (row.claims)()[0]
         );
     }
 }
 
-#[cfg(linked_axis_transport_door)]
 #[test]
-fn an_undeclared_composition_refuses_at_boot() {
-    let mut rows = linked_rows();
-    let used = rows[0].key;
-    let own = rows
-        .iter_mut()
-        .rev()
-        .find(|r| r.composes_over.is_empty())
-        .expect("a wire that declares no layer");
-    let transport = own.key;
-    own.composed_over = Some(used);
-
-    let err = check_composition(&rows).expect_err("the wire composes over nothing");
-    assert_eq!(
-        err,
-        CompositionError::UndeclaredComposition { transport, used }
-    );
-}
-
-#[test]
-fn an_unregistered_layer_refuses_at_boot() {
-    let rows = vec![Registered {
-        key: "upper-wire",
-        composes_over: std::borrow::Cow::Borrowed(&["floor-wire"]),
-        composed_over: None,
-    }];
-    let err = check_composition(&rows).expect_err("nothing registered the floor wire");
-    assert_eq!(
-        err,
-        CompositionError::UnregisteredLayer {
-            transport: "upper-wire",
-            layer: "floor-wire",
-        }
-    );
-}
-
-#[test]
-fn every_claimed_plane_key_is_a_registered_plane() {
-    let registry = linked_registry();
+fn every_claimed_plane_key_is_a_linked_plane() {
+    let keys = linked_keys();
     for claim in &linked_claims() {
         if core_claims().any(|core| core.plane == claim.plane) {
             continue;
         }
         assert!(
-            registry.resolve(PluginKind::Plane, claim.plane).is_some(),
-            "claim names plane `{}`, which is not registered",
+            keys.contains(&claim.plane),
+            "claim names plane `{}`, which is not a linked plane",
             claim.plane
         );
     }
@@ -471,7 +394,8 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
             idempotency: None,
         },
     }];
-    let refusal = check_claim_transports(&telephony, &linked_rows())
+    let schemes = linked_schemes();
+    let refusal = check_claim_transports(&telephony, &|s| schemes.contains(&s))
         .expect_err("`twilio-media` has no crate");
     assert!(matches!(
         refusal,
@@ -484,171 +408,23 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 
 #[cfg(linked_every_plane_door)]
 #[test]
-fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
-    let sealed = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default())
+fn the_check_answers_now_that_every_claim_names_a_served_transport() {
+    let schemes = linked_schemes();
+    check(crate::LINKED.claims, &|s| schemes.contains(&s))
         .expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), linked_claims().len());
-    assert_eq!(sealed.precedence.len(), sealed.claims.len());
-}
-
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
-    const CAP: usize = 1024;
-    static SEEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
-    fn recording(settings: &TransportSettings) -> Arc<HostWire> {
-        SEEN.lock()
-            .expect("seen")
-            .push(settings.request_body_max_bytes);
-        let own = crate::LINKED
-            .transports
-            .iter()
-            .find(|r| (r.composes_over)().is_empty());
-        (own.expect("a wire that opens its own socket").build)(settings)
-    }
-    let limits = busbar_kernel::config::limits::LimitsResolved {
-        request_body_max_bytes: CAP,
-        ..busbar_kernel::config::limits::LimitsResolved::default()
-    };
-    let rows: Vec<LinkedTransport> = crate::LINKED
-        .transports
-        .iter()
-        .map(|row| LinkedTransport {
-            build: recording,
-            ..*row
-        })
-        .collect();
-    compose(
-        &rows,
-        Dropped::NONE,
-        &crate::root::policy::client_settings(&limits),
-    )
-    .expect("the stack composes");
-    assert_eq!(
-        *SEEN.lock().expect("seen"),
-        vec![CAP; rows.len()],
-        "every linked wire is built from the operator's cap"
-    );
-
-    seal(
-        &crate::LINKED,
-        Dropped::NONE,
-        crate::root::policy::client_settings(&limits),
-    )
-    .expect("the capped composition seals");
-}
-
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn the_fold_builds_bottom_up_in_composes_over_order() {
-    let rows = linked_rows();
-    let linked: Vec<&str> = crate::LINKED
-        .transports
-        .iter()
-        .flat_map(|r| (r.claims)())
-        .collect();
-    let built: Vec<&str> = rows.iter().map(|r| r.key).collect();
-    let position = |key: &str| built.iter().position(|k| *k == key);
-    let mut last = None;
-    for entry in crate::LINKED.transports {
-        let key = (entry.key)();
-
-        let at = position(key).unwrap_or_else(|| panic!("`{key}` is not built"));
-        assert!(
-            last.is_none_or(|l| l < at),
-            "`{key}` was built out of the table's order: {built:?}"
-        );
-        last = Some(at);
-
-        let past: Vec<&str> = (entry.claims)().into_iter().filter(|c| *c != key).collect();
-        for (n, claim) in past.iter().enumerate() {
-            assert_eq!(
-                position(claim),
-                Some(at + 1 + n),
-                "`{claim}`, which `{key}` claims, is not registered right after it: {built:?}"
-            );
-        }
-        if !past.is_empty() {
-            last = Some(at + past.len());
-        }
-    }
-    for row in &rows {
-        assert_eq!(
-            row.composed_over, None,
-            "`{}` was built over a layer",
-            row.key
-        );
-    }
-    let mut reversed = crate::LINKED.transports.to_vec();
-    reversed.reverse();
-    let refolded: Vec<Registered> =
-        compose(&reversed, Dropped::NONE, &TransportSettings::default())
-            .expect("the reversed table composes")
-            .into_iter()
-            .map(|(row, _)| row)
-            .collect();
-    for (i, row) in refolded.iter().enumerate() {
-        for layer in row.composes_over.iter() {
-            if linked.contains(layer) {
-                assert!(
-                    refolded[..i].iter().any(|r| r.key == *layer),
-                    "`{}` was built before its layer `{layer}`",
-                    row.key
-                );
-            }
-        }
-        let same = rows.iter().find(|r| r.key == row.key).expect("same rows");
-        assert_eq!(row.composed_over, same.composed_over, "`{}` moved", row.key);
-    }
-    assert!(check_composition(&refolded).is_ok());
+    let claims = linked_claims();
+    let sealed = seal_claims(&claims);
+    assert!(sealed.refused.is_empty());
+    assert_eq!(sealed.order.len(), claims.len());
 }
 
 #[test]
-fn transports_layered_over_each_other_refuse_at_boot() {
-    let own = *crate::LINKED
-        .transports
-        .iter()
-        .find(|r| (r.composes_over)().is_empty())
-        .expect("a wire that opens its own socket");
-    let rows = [
-        LinkedTransport {
-            key: || "upper",
-            composes_over: || &["lower"],
-            ..own
-        },
-        LinkedTransport {
-            key: || "lower",
-            composes_over: || &["upper"],
-            ..own
-        },
-    ];
-    let Err(refusal) = compose(&rows, Dropped::NONE, &TransportSettings::default()) else {
-        panic!("no order builds either");
-    };
-    assert!(matches!(
-        refusal,
-        BootRefusal::Uncomposable { transport: "upper" }
-    ));
-    assert!(refusal.to_string().contains("`upper`"));
-}
-
-#[test]
-fn every_planes_claims_name_a_registered_transport() {
-    let registered = linked_rows();
-    let registry = linked_registry();
+fn every_planes_claims_name_a_served_transport() {
+    let schemes = linked_schemes();
     for claim in linked_claims().iter() {
         assert!(
-            registered.iter().any(|r| r.key == claim.claim.transport),
-            "claim of plane `{}` names transport `{}`, which is not registered",
-            claim.plane,
-            claim.claim.transport
-        );
-
-        assert!(
-            registry
-                .resolve(PluginKind::Transport, claim.claim.transport)
-                .is_some(),
-            "claim of plane `{}` names transport `{}`, which the registry does not resolve",
+            schemes.contains(&claim.claim.transport),
+            "claim of plane `{}` names transport `{}`, which is not served",
             claim.plane,
             claim.claim.transport
         );
@@ -666,7 +442,7 @@ fn dropped_doors() -> &'static [DroppedDoor] {
             .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
             .expect("the transport facts")
             .clone();
-        let (door, wire) = crate::root::doors::served(
+        let door = crate::root::doors::served(
             plugin,
             &busbar_contract::transport::TransportSettings::default(),
         )
@@ -677,7 +453,6 @@ fn dropped_doors() -> &'static [DroppedDoor] {
             composes_over: Vec::new(),
             offered: facts.offered,
             upgrades: facts.upgrades,
-            wire,
             door,
         }]
     })
@@ -699,7 +474,6 @@ fn a_dropped_in_transports_offered_points_reach_the_guest_list_seal() {
         composes_over: Vec::new(),
         offered: AuthPoints::PEER,
         upgrades: Vec::new(),
-        wire: fixture.wire.clone(),
         door: fixture.door.clone(),
     };
     let offers = crate::root::serve::transport_offers(&[], std::slice::from_ref(&peer_only));
@@ -738,7 +512,6 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
         composes_over: under,
         offered,
         upgrades,
-        wire: fixture.wire.clone(),
         door: fixture.door.clone(),
     };
     let dropped = [
@@ -752,18 +525,14 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
     ];
     let linked = [
         LinkedTransport {
-            key: || "framed",
             composes_over: || &[],
-            build: |_| dropped_doors()[0].wire.clone(),
             claims: || vec!["framed"],
             upgrades: Vec::new,
             lines: Vec::new,
             offered: || AuthPoints::PEER,
         },
         LinkedTransport {
-            key: || "upgraded",
             composes_over: || &["framed"],
-            build: |_| dropped_doors()[0].wire.clone(),
             claims: || vec!["upgraded"],
             upgrades: || vec!["upgraded"],
             lines: Vec::new,
@@ -831,18 +600,6 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
     );
 }
 
-fn the_wires_linked_row() -> LinkedTransport {
-    LinkedTransport {
-        key: || dropped_doors()[0].key,
-        composes_over: || &[],
-        build: |_| dropped_doors()[0].wire.clone(),
-        claims: || vec![dropped_doors()[0].key],
-        upgrades: Vec::new,
-        lines: Vec::new,
-        offered: crate::root::doors::offers_unstated,
-    }
-}
-
 #[test]
 fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
     let (a, b) = (
@@ -863,104 +620,88 @@ fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
     );
 }
 
-fn one_door() -> Dropped {
-    Dropped {
-        doors: std::borrow::Cow::Borrowed(&dropped_doors()[..1]),
+#[cfg(linked_axis_transport_door)]
+#[test]
+fn a_dropped_in_wire_is_served_beside_the_linked_rows_and_answers_the_check() {
+    let wire = &dropped_doors()[0];
+    let entries = crate::root::connector::declared(Vec::new(), std::slice::from_ref(wire))
+        .expect("the dropped-in door is declared");
+    let view = busbar_core_connector::registry::Transports::new(entries)
+        .expect("one dropped-in door claims its schemes once");
+    assert!(
+        view.serving(wire.key).is_some(),
+        "the dropped-in key is served"
+    );
+
+    let mut schemes = linked_schemes();
+    schemes.extend(wire.claims.iter().copied());
+    check(crate::LINKED.claims, &|s| schemes.contains(&s))
+        .expect("the composition answers with the dropped-in wire beside the linked rows");
+}
+
+#[test]
+fn a_second_door_on_a_served_key_is_refused_at_the_connector() {
+    let wire = &dropped_doors()[0];
+    let entries = crate::root::connector::declared(Vec::new(), &[wire.clone(), wire.clone()])
+        .expect("both doors are declared");
+    let refused = busbar_core_connector::registry::Transports::new(entries)
+        .err()
+        .expect("a second door on one key is refused");
+    assert!(
+        matches!(
+            &refused,
+            busbar_core_connector::registry::ViewRefusal::ClaimedTwice { scheme, .. }
+                if scheme == wire.key
+        ),
+        "{refused}"
+    );
+}
+
+struct Plane(&'static str);
+
+impl busbar_contract::Plugin for Plane {
+    fn key(&self) -> &'static str {
+        self.0
+    }
+    fn kind(&self) -> busbar_contract::Kind {
+        busbar_contract::Kind::Plane
+    }
+    fn abi(&self) -> busbar_contract::AbiVersion {
+        busbar_contract::AbiVersion(1)
     }
 }
 
-#[test]
-fn composing_an_owned_inventory_retains_its_dynamic_declaration_without_leaking_it() {
-    let mut door = dropped_doors()[0].clone();
-    door.composes_over = vec!["declared-layer"];
-    let key = door.key;
-    let built = compose(
-        &[],
-        Dropped {
-            doors: std::borrow::Cow::Owned(vec![door]),
-        },
-        &TransportSettings::default(),
-    )
-    .unwrap();
-    let row = &built.iter().find(|(row, _)| row.key == key).unwrap().0;
-    assert_eq!(row.composes_over.as_ref(), &["declared-layer"]);
-    assert!(matches!(&row.composes_over, std::borrow::Cow::Owned(_)));
-    assert!(matches!(
-        check_composition(&built.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>()),
-        Err(CompositionError::UnregisteredLayer { .. })
-    ));
-}
-
-fn rows_of(
-    slot: &'static std::sync::OnceLock<Vec<LinkedTransport>>,
-    rows: impl FnOnce() -> Vec<LinkedTransport>,
-) -> &'static [LinkedTransport] {
-    slot.get_or_init(rows)
-}
-
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
-    let wire = &dropped_doors()[0];
-    static ROWS: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
-    let with = crate::root::linked::Linked {
-        transports: rows_of(&ROWS, || {
-            [crate::LINKED.transports, &[the_wires_linked_row()]].concat()
-        }),
-        ..crate::LINKED
-    };
-    let sealed = seal(&crate::LINKED, one_door(), TransportSettings::default())
-        .expect("the composition seals");
-    let linked = seal(&with, Dropped::NONE, TransportSettings::default()).expect("it seals linked");
-
-    let by_key = |mut rows: Vec<Registered>| {
-        rows.sort_by_key(|r| r.key);
-        rows
-    };
-    assert_eq!(
-        by_key(sealed.registered.clone()),
-        by_key(linked.registered.clone()),
-        "the dropped-in wire takes its linked row's place in the one composition"
-    );
-    assert_eq!(sealed.dropped, [wire.key]);
-    assert!(linked.dropped.is_empty());
-    assert!(sealed
-        .registry
-        .resolve(PluginKind::Transport, wire.key)
-        .is_some());
+fn plane_row(plane: fn() -> Arc<dyn busbar_contract::Plugin>) -> crate::root::linked::LinkedClaims {
+    crate::root::linked::LinkedClaims { plane, claims: &[] }
 }
 
 #[test]
-fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
-    let wire = &dropped_doors()[0];
-    let row = the_wires_linked_row();
-    static ONCE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
-    let with = crate::root::linked::Linked {
-        transports: rows_of(&ONCE, || [crate::LINKED.transports, &[row]].concat()),
-        ..crate::LINKED
-    };
-    let dropped = seal(&with, one_door(), Default::default())
-        .err()
-        .expect("a dropped-in wire on a linked key is refused");
-    static TWICE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
-    let twice = crate::root::linked::Linked {
-        transports: rows_of(&TWICE, || [crate::LINKED.transports, &[row, row]].concat()),
-        ..crate::LINKED
-    };
-    let linked = seal(&twice, Dropped::NONE, Default::default())
-        .err()
-        .expect("a second linked row on one key is refused");
+fn two_planes_declaring_one_key_are_refused_at_boot() {
+    let rows = [
+        plane_row(|| Arc::new(Plane("twice"))),
+        plane_row(|| Arc::new(Plane("twice"))),
+    ];
+    let refused = check(&rows, &|_| true).expect_err("one key, two planes");
     assert!(
         matches!(
-            &dropped,
-            BootRefusal::Registry(busbar_kernel::registry::RegistryError::DuplicateKey {
-                kind: PluginKind::Transport,
-                key,
-            }) if *key == wire.key
+            refused,
+            BootRefusal::DuplicateKey {
+                kind: busbar_contract::Kind::Plane,
+                key: "twice",
+            }
         ),
-        "{dropped}"
+        "{refused}"
     );
-    assert_eq!(dropped.to_string(), linked.to_string());
+    assert_eq!(
+        refused.to_string(),
+        "two Plane plugins both declare the key \"twice\""
+    );
+}
+
+#[test]
+fn a_transport_and_a_plane_may_share_a_key() {
+    let rows = [plane_row(|| Arc::new(Plane("shared")))];
+    check(&rows, &|scheme| scheme == "shared").expect("a plane may share a transport's key");
 }
 
 #[test]
