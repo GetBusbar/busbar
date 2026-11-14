@@ -12,27 +12,25 @@
 
 pub const DETACHED_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The worker's live detached tasks, counted by a `tokio_util` `TaskTracker`. A task's count is
+/// released only after its future (and so any custody it holds) has dropped, so `drained` cannot
+/// return while accepted work is still cleaning up.
 pub struct DetachedTasks {
-    count: std::sync::atomic::AtomicUsize,
-    notify: tokio::sync::Notify,
+    tracker: tokio_util::task::TaskTracker,
 }
 
 impl DetachedTasks {
     pub fn new() -> std::sync::Arc<DetachedTasks> {
         std::sync::Arc::new(DetachedTasks {
-            count: std::sync::atomic::AtomicUsize::new(0),
-            notify: tokio::sync::Notify::new(),
+            tracker: tokio_util::task::TaskTracker::new(),
         })
     }
 
+    /// Finishes once no detached task is live. Closing the tracker only lets `wait` finish when it
+    /// is empty; later spawns are still counted.
     pub async fn drained(&self) {
-        loop {
-            let notified = self.notify.notified();
-            if self.count.load(std::sync::atomic::Ordering::Acquire) == 0 {
-                return;
-            }
-            notified.await;
-        }
+        self.tracker.close();
+        self.tracker.wait().await;
     }
 
     pub fn spawn_on<F>(
@@ -44,42 +42,7 @@ impl DetachedTasks {
         F: std::future::Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        self.count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        let guard = DetachedGuard(std::sync::Arc::clone(self));
-        runtime.spawn(DetachedFuture {
-            future: Box::pin(fut),
-            _guard: guard,
-        })
-    }
-}
-
-struct DetachedFuture<F: std::future::Future> {
-    future: std::pin::Pin<Box<F>>,
-    _guard: DetachedGuard,
-}
-
-impl<F: std::future::Future> std::future::Future for DetachedFuture<F> {
-    type Output = F::Output;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        self.get_mut().future.as_mut().poll(cx)
-    }
-}
-
-struct DetachedGuard(std::sync::Arc<DetachedTasks>);
-impl Drop for DetachedGuard {
-    fn drop(&mut self) {
-        if self
-            .0
-            .count
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
-            == 1
-        {
-            self.0.notify.notify_waiters();
-        }
+        self.tracker.spawn_on(fut, runtime)
     }
 }
 
