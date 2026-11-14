@@ -502,7 +502,6 @@ fn an_ungranted_tool_is_refused_per_call_on_the_line() {
 tools:
   ws:
     url: "http://127.0.0.1:9/rpc"
-    allow_private: true
     pin: { mechanism: cert_spki, key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }
     tools_allow:
       read: { schema_hash: "sha256:0000" }

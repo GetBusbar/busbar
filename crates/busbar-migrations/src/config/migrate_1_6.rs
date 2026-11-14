@@ -10,6 +10,7 @@ pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, warnings: &
     drop_hostless_metadata_entries(root, changes);
     price_open_units(root, changes);
     bind_ungoverned_principals(root, changes, warnings);
+    retire_private_reach(root, changes, warnings);
 }
 
 pub(super) fn migrate_bootstrap(root: &mut Mapping, changes: &mut Vec<String>) {
@@ -67,6 +68,127 @@ fn drop_hostless_metadata_entries(root: &mut Mapping, changes: &mut Vec<String>)
             let path = format!("providers.{name}.allow_metadata_hosts");
             drop_hostless(provider, "allow_metadata_hosts", &path, changes);
         }
+    }
+}
+
+/// The retired per-registration private-address switch, by the section that carried it.
+const PRIVATE_REACH_KEY: &str = "allow_private";
+
+/// The sections whose registrations carried [`PRIVATE_REACH_KEY`] (`tools.<server>`,
+/// `agents.<agent>`), and the URL-valued fields of a registration its opens dial: the
+/// registration's own `url`, and the token endpoints its credential exchange dials.
+const PRIVATE_REACH_SECTIONS: &[&str] = &["tools", "agents"];
+const PRIVATE_REACH_URLS: &[&[&str]] = &[
+    &["url"],
+    &["token_exchange", "token_url"],
+    &["oauth", "token_endpoint"],
+];
+
+/// `allow_private: true` lifted the private-address refusal for one registration's dials. 1.6.0 has
+/// one policy for every outbound connection, `advanced.allow_destinations`, so the key is removed
+/// and EXACTLY the hosts that registration dials are listed there (no wildcard, no network). A
+/// metadata or unjudgeable host is never listed. `allow_private: false` said nothing and is dropped.
+fn retire_private_reach(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
+    let mut hosts: Vec<(String, String, bool)> = Vec::new();
+    for section in PRIVATE_REACH_SECTIONS {
+        let Some(registrations) = mapping_mut(root, section) else {
+            continue;
+        };
+        for (name, entry) in registrations.iter_mut() {
+            let (Some(name), Value::Mapping(entry)) = (name.as_str(), entry) else {
+                continue;
+            };
+            let at = format!("{section}.{name}");
+            let Some(value) = entry.remove(Value::from(PRIVATE_REACH_KEY)) else {
+                continue;
+            };
+            if value.as_bool() != Some(true) {
+                changes.push(format!(
+                    "{at}.{PRIVATE_REACH_KEY}: removed (it was not `true`, so it admitted nothing; \
+                     1.6.0 refuses the key)"
+                ));
+                continue;
+            }
+            let urls: Vec<(String, bool)> = PRIVATE_REACH_URLS
+                .iter()
+                .filter_map(|path| {
+                    let mut at: &Value = entry.get(Value::from(path[0]))?;
+                    for key in &path[1..] {
+                        at = at.get(*key)?;
+                    }
+                    at.as_str()
+                        .map(|u| (u.to_owned(), busbar_contract::net::scheme_is(u, "http")))
+                })
+                .collect();
+            if urls.is_empty() {
+                changes.push(format!(
+                    "{at}.{PRIVATE_REACH_KEY}: removed; the registration names no URL it dials, so \
+                     nothing was added to advanced.allow_destinations"
+                ));
+            }
+            for (url, plaintext) in urls {
+                hosts.push((at.clone(), url, plaintext));
+            }
+        }
+    }
+    for (at, url, plaintext) in hosts {
+        allow_registration_host(root, &at, &url, changes, warnings);
+        if plaintext {
+            warnings.push(format!(
+                "{at}: `{url}` is plaintext http://, which `{PRIVATE_REACH_KEY}: true` also let the \
+                 registration use; the scheme a destination may use is now decided by the one \
+                 destination guard for every connection. Serve it over https://, or check \
+                 docs/configuration.md#advanced for whether plaintext to this host is admitted"
+            ));
+        }
+    }
+}
+
+/// List exactly the host `url` names in `advanced.allow_destinations` for the registration at `at`.
+fn allow_registration_host(
+    root: &mut Mapping,
+    at: &str,
+    url: &str,
+    changes: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    use busbar_contract::net::{host_is_cloud_metadata, is_alternate_ipv4_encoding, judged_host};
+    let host = busbar_contract::net::target_host(url)
+        .and_then(|h| judged_host(&h).ok())
+        .filter(|h| !h.is_empty());
+    let Some(host) = host else {
+        warnings.push(format!(
+            "{at}.{PRIVATE_REACH_KEY}: removed; its URL names no host the destination guard can \
+             judge, so nothing was added to advanced.allow_destinations; add the host by hand"
+        ));
+        return;
+    };
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_owned();
+    if host_is_cloud_metadata(&host) || is_alternate_ipv4_encoding(&host) {
+        warnings.push(format!(
+            "{at}.{PRIVATE_REACH_KEY}: removed; '{host}' was not added to \
+             advanced.allow_destinations: a cloud-metadata host or an alternate IPv4 spelling is \
+             refused whatever the list says (it was refused under `{PRIVATE_REACH_KEY}` too)"
+        ));
+        return;
+    }
+    if crate::config::migrate_plugins::already_allowed(root, &host) {
+        changes.push(format!(
+            "{at}.{PRIVATE_REACH_KEY}: removed; '{host}' is already listed in \
+             advanced.allow_destinations, which now governs it"
+        ));
+        return;
+    }
+    match crate::config::migrate_plugins::push_allowed(root, at, &host) {
+        Ok(_) => changes.push(format!(
+            "{at}.{PRIVATE_REACH_KEY}: replaced by advanced.allow_destinations: '{host}' (one \
+             setting governs every outbound connection in 1.6.0; exactly this host is allowed, \
+             not every private address)"
+        )),
+        Err(todo) => warnings.push(todo),
     }
 }
 

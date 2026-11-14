@@ -461,6 +461,17 @@ A plugin declares billable classes for a configured lane, but that lane lacks on
 
 **What to do:** Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup.
 
+<a id="config-private-reach-retired"></a>
+### BUSBAR-3027 — A registration still carries the retired per-registration private-address switch
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-private-reach-retired`
+
+A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.
+
+**What to do:** Run `busbar --migrate-config`: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>
