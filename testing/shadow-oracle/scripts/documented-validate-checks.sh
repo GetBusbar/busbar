@@ -90,13 +90,8 @@ YAML
 # each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
 "${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/s1/config.yaml" || exit 1
 # overwrite the provider's api_key with an unresolvable env ref
-python3 - "$W/s1/config.yaml" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-s = s.replace("api_key: { env: ORACLE_UPSTREAM_KEY }", "api_key: { env: DOES_NOT_EXIST_ORACLE_SECRET_REF }")
-open(p, "w").write(s)
-PY
+"${BUSBAR_ORACLE_BIN:?}" util replace "$W/s1/config.yaml" \
+  "api_key: { env: ORACLE_UPSTREAM_KEY }" "api_key: { env: DOES_NOT_EXIST_ORACLE_SECRET_REF }" || exit 1
 rc1=0
 env BUSBAR_CONFIG="$W/s1/config.yaml" BUSBAR_PROVIDERS="$W/s1/providers.yaml" \
   BUSBAR_ADMIN_TOKEN=shadow-oracle-admin RUST_LOG=warn \

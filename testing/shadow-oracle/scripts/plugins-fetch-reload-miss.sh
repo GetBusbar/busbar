@@ -88,7 +88,7 @@ EOF
 # each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
 "${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/config.yaml" || exit 1
 
-( cd "$W/serve" && exec python3 -m http.server "$FP" --bind 127.0.0.1 ) >"$W/fileserver.log" 2>&1 &
+( exec "$ORACLE_BIN" util serve-dir "$W/serve" "$FP" ) >"$W/fileserver.log" 2>&1 &
 fs_pid=$!; track_pid "$fs_pid"
 wait_for_http "http://127.0.0.1:${FP}/${asset}" 8 || fail "throwaway file server did not come up"
 
