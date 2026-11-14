@@ -119,23 +119,16 @@ fn info() -> BackendInfo {
         durability: Durability::Local,
     }
 }
-fn receipt(phase: CompletionPhase) -> ActivationReceipt {
-    ActivationReceipt {
-        attempt: AttemptId {
-            dataset: DatasetId([7; 16]),
-            writer_epoch: 1,
-            writer: [8; 16],
-            execution_epoch: 2,
-            operation: [9; 16],
-        },
-        candidate_fingerprint: [10; 32],
-        original_result: Secret::new(vec![0, 255, 128]),
+fn decision(phase: CompletionPhase) -> FinishDecision {
+    FinishDecision {
+        phase,
+        phase_digest: [10; 32],
         checkpoint_address: Address {
             namespace: [11; 16],
             key: vec![0, 255],
         },
         checkpoint_value_digest: [12; 32],
-        phase,
+        marker_value_digest: [13; 32],
     }
 }
 fn recovery() -> RecoveryReady {
@@ -205,30 +198,25 @@ fn request_roundtrips_all_tags_and_receipt_phases() {
     for phase in [CompletionPhase::Activation, CompletionPhase::Complete] {
         request_roundtrip(Request::Finish {
             upgrade: reference(),
-            activation_receipt: receipt(phase),
+            decision: decision(phase),
         });
     }
 }
 #[test]
-fn finish_roundtrips_exact_empty_applied_results_for_both_phases() {
+fn finish_roundtrips_the_host_decision_for_both_phases() {
     for phase in [CompletionPhase::Activation, CompletionPhase::Complete] {
-        let mut proof = receipt(phase);
-        proof.original_result = Secret::new(Vec::new());
         let request = Request::Finish {
             upgrade: reference(),
-            activation_receipt: proof,
+            decision: decision(phase),
         };
         let encoded = encode_request(&request, BOUNDS).unwrap();
         let Request::Finish {
-            activation_receipt, ..
+            decision: decoded, ..
         } = decode_request(&encoded.0, BOUNDS).unwrap()
         else {
             panic!("Finish changed its request tag");
         };
-        assert!(activation_receipt.original_result.0.is_empty());
-        assert_eq!(activation_receipt.phase, phase);
-        assert_eq!(activation_receipt.candidate_fingerprint, [10; 32]);
-        assert_eq!(activation_receipt.checkpoint_value_digest, [12; 32]);
+        assert_eq!(decoded, decision(phase));
         request_roundtrip(request);
     }
 }
