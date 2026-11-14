@@ -469,10 +469,22 @@ impl std::fmt::Debug for Planned {
 
 impl Planned {
     /// The target names a host, the entry's `locate`, and the authority it named names one too.
-    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, mut dial: Dial) -> Result<Self, Failure> {
+    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, dial: Dial) -> Result<Self, Failure> {
         endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let located = framer::locate(door.as_ref(), &dial.target)
             .map_err(|e| Failure::Refused(e.to_string()))?;
+        Self::located(door, via, dial, located)
+    }
+
+    /// [`Planned::locate`] with the entry's answer already in hand (a declared target's kept
+    /// place, located by this very entry at deadline 0): the same checks, the same head.
+    pub fn located(
+        door: Arc<dyn FramerDoor>,
+        via: Via,
+        mut dial: Dial,
+        located: framer::Located,
+    ) -> Result<Self, Failure> {
+        endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
         complete_opening(&mut dial, &located);
         Ok(Self {

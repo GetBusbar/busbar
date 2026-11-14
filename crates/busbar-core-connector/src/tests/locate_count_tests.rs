@@ -6,7 +6,7 @@
 //! reuse the place the first open located through the same door, under the same settings.
 //! Counted at the far end: every Locate crossing the test door answers.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -266,5 +266,159 @@ fn head_defaults_unchanged() {
         c.close(OWNER, first).unwrap();
         c.close(OWNER, second).unwrap();
         drop(listener);
+    });
+}
+
+/// A framer whose settings the test refreshes, as `Live::refresh` does a loaded transport's:
+/// Locate answers through `before` until `refreshed`, then through `after` (another authority),
+/// and its settings epoch is the test's. With `bump_in_locate` set, the next Locate itself moves
+/// the epoch, as a refresh returning during the call does.
+struct Refreshing {
+    before: TestDoor,
+    after: TestDoor,
+    refreshed: AtomicBool,
+    epoch: AtomicU64,
+    bump_in_locate: AtomicBool,
+    locates: AtomicUsize,
+}
+
+impl Refreshing {
+    fn new(after: &'static str) -> Self {
+        Self {
+            before: framer(),
+            after: TestDoor::new(
+                "bytes",
+                &["bytes"],
+                &[],
+                Knobs {
+                    authority: Some(after),
+                    head_lines: Some(b"x-place: 1\r\n"),
+                    ..Knobs::default()
+                },
+            ),
+            refreshed: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            bump_in_locate: AtomicBool::new(false),
+            locates: AtomicUsize::new(0),
+        }
+    }
+
+    fn locates(&self) -> usize {
+        self.locates.load(Ordering::SeqCst)
+    }
+}
+
+impl FramerDoor for Refreshing {
+    fn io_owner(&self) -> Option<u64> {
+        self.before.io_owner()
+    }
+    fn facts(&self) -> &DoorFacts {
+        self.before.facts()
+    }
+    fn settings_epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        if matches!(call, Call::Locate(..)) {
+            self.locates.fetch_add(1, Ordering::SeqCst);
+            if self.bump_in_locate.swap(false, Ordering::SeqCst) {
+                self.epoch.fetch_add(1, Ordering::SeqCst);
+            }
+            if self.refreshed.load(Ordering::SeqCst) {
+                return self.after.cross(call);
+            }
+        }
+        self.before.cross(call)
+    }
+}
+
+/// Drive `id` until `listener` accepted a connection.
+async fn reached(c: &Connector, id: ConnId, listener: &tokio::net::TcpListener) {
+    let mut buf = [0_u8; 16];
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let accept = listener.accept();
+        tokio::pin!(accept);
+        loop {
+            tokio::select! {
+                accepted = &mut accept => {
+                    accepted.unwrap();
+                    break;
+                }
+                () = tokio::task::yield_now() => {
+                    let _ = c.read(OWNER, id, 7, &mut buf);
+                }
+            }
+        }
+    })
+    .await
+    .expect("the open reaches the far end its place names");
+}
+
+/// A settings refresh moves the door's epoch, so the kept place is stale: the next open locates
+/// again under the new settings and dials what they name; the one after reuses the new place.
+#[test]
+fn refresh_changes_place_relocates() {
+    worker().block_on(async {
+        let before = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let after = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let before_at = before.local_addr().unwrap().to_string();
+        let after_at: &'static str = Box::leak(after.local_addr().unwrap().to_string().into());
+        let door = Arc::new(Refreshing::new(after_at));
+        let c = connector(door.clone());
+        c.declare_need_to(OWNER, NEED, "bytes", crate::DEFAULT_CLASS, &before_at)
+            .unwrap();
+        let first = c.open(OWNER, NEED, &desc("")).unwrap();
+        reached(&c, first, &before).await;
+        let counted = door.locates();
+        let kept = c.open(OWNER, NEED, &desc("")).unwrap();
+        assert_eq!(door.locates() - counted, 0, "the place is kept");
+        reached(&c, kept, &before).await;
+
+        door.refreshed.store(true, Ordering::SeqCst);
+        door.epoch.fetch_add(1, Ordering::SeqCst);
+        let counted = door.locates();
+        let moved = c.open(OWNER, NEED, &desc("")).unwrap();
+        assert_eq!(
+            door.locates() - counted,
+            1,
+            "a stale place is located again"
+        );
+        reached(&c, moved, &after).await;
+        let counted = door.locates();
+        let next = c.open(OWNER, NEED, &desc("")).unwrap();
+        assert_eq!(door.locates() - counted, 0, "the refreshed place is kept");
+        reached(&c, next, &after).await;
+        for id in [first, kept, moved, next] {
+            c.close(OWNER, id).unwrap();
+        }
+    });
+}
+
+/// A refresh that returns while a place is being located stores nothing from that answer: the
+/// open goes on with it, and the next site locates again.
+#[test]
+fn refresh_during_fill_stores_nothing() {
+    worker().block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let at = listener.local_addr().unwrap().to_string();
+        let door = Arc::new(Refreshing::new("127.0.0.1:9"));
+        let c = connector(door.clone());
+        c.declare_need_to(OWNER, NEED, "bytes", crate::DEFAULT_CLASS, &at)
+            .unwrap();
+        door.bump_in_locate.store(true, Ordering::SeqCst);
+        let first = c
+            .open(OWNER, NEED, &desc(""))
+            .expect("the open uses its own answer");
+        assert_eq!(
+            door.locates(),
+            2,
+            "the plan's answer was not kept, so the authority pin located again"
+        );
+        reached(&c, first, &listener).await;
+        let counted = door.locates();
+        let next = c.open(OWNER, NEED, &desc("")).unwrap();
+        assert_eq!(door.locates() - counted, 0, "the pin's answer was kept");
+        c.close(OWNER, first).unwrap();
+        c.close(OWNER, next).unwrap();
     });
 }
