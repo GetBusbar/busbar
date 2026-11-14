@@ -18,12 +18,17 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod alloc;
+mod auth;
+mod export;
 mod frames;
+mod hook;
 mod host;
 mod plane;
 mod report;
+mod secret;
 pub mod stats;
 mod store;
+mod transport;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
@@ -249,9 +254,14 @@ fn run_with(cfg: &Config, target: &Target) -> Result<bool, String> {
     let specs = match cfg.kind.as_str() {
         "store" => store::specs(cfg, target)?,
         "plane" => plane::specs(cfg, target)?,
+        "secret" => secret::specs(cfg, target)?,
+        "auth" => auth::specs(cfg, target)?,
+        "hook" => hook::specs(cfg, target)?,
+        "export" => export::specs(cfg, target)?,
+        "transport" => transport::specs(cfg, target)?,
         other => {
             return Err(format!(
-                "kind {other:?} has no workload yet (store, plane are wired; see the README)"
+                "kind {other:?} has no workload yet (see the README)"
             ))
         }
     };
