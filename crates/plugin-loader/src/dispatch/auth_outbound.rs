@@ -130,7 +130,8 @@ impl OutboundInstance {
     }
 
     pub async fn ticks(self: Arc<Self>) {
-        super::ticks::ticks(&self.plugin, &self.dispatcher, self.worker).await;
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        super::ticks::ticks(&self.plugin, &self.dispatcher, self.worker, &failed).await;
     }
 }
 

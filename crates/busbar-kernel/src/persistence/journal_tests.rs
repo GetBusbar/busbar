@@ -75,6 +75,8 @@ struct Backend {
     lose_reply: AtomicBool,
     expire_receipt: AtomicBool,
     hang: AtomicBool,
+    /// Called with every read request before it is answered.
+    on_read: Mutex<Option<ReadProbe>>,
     /// Hang every commit from this send count on (0: never).
     hang_from: std::sync::atomic::AtomicUsize,
     /// Hold the first commit until `release_first` is notified.
@@ -336,6 +338,7 @@ fn historical_snapshot_refuses_changed_frame_or_unverified_bridge_anchor() {
 }
 
 #[tokio::test]
+#[expect(clippy::disallowed_methods, reason = "tests the replay proof itself")]
 async fn store_snapshot_binds_historical_frames_to_exact_selected_head() {
     let backend = Arc::new(Backend::default());
     let store = attach(backend.clone(), 4).await;
@@ -1393,6 +1396,7 @@ async fn bounds_and_unported_bridge_histories_refuse_before_commit() {
 }
 
 #[tokio::test]
+#[expect(clippy::disallowed_methods, reason = "tests the replay proof itself")]
 async fn verified_original_prefix_survives_append_without_granting_stale_selection() {
     let backend = Arc::new(Backend::default());
     let (store, first) = old_journal(&backend).await;
@@ -1647,10 +1651,9 @@ async fn group_retry_after_cancel_is_exact() {
 
 /// WHO: a domain owner selecting an original written before a quarantine
 /// bridge (recovery after a chain break). DOES: the live selection locates it
-/// with the historical replay, and every original-frame read of that replay
-/// happens while the publication driver is free; an original after the bridge
-/// is located by arithmetic with no original-frame read. WHY: no journal
-/// replay may run while appends queue behind the driver.
+/// by arithmetic over the open replay's segment map (W1), with no original-frame
+/// read, as it does an original after the bridge. WHY: no journal replay may
+/// run while appends queue behind the driver.
 #[tokio::test]
 async fn cold_record_before_bridge_still_selects() {
     let backend = Arc::new(Backend::default());
@@ -1729,14 +1732,9 @@ async fn cold_record_before_bridge_still_selects() {
         .unwrap()
         .as_ref()
         .is_some_and(|kept| Arc::ptr_eq(kept, &proof)));
-    let seen = std::mem::take(&mut *probe.lock().unwrap());
     assert!(
-        !seen.is_empty(),
-        "the cold original is located by the historical replay"
-    );
-    assert!(
-        seen.iter().all(|free| *free),
-        "every replay read happens while the publication driver is free"
+        probe.lock().unwrap().is_empty(),
+        "an original before the bridge is located without reading frames"
     );
     assert_eq!(
         backend
@@ -1773,4 +1771,61 @@ async fn cold_record_before_bridge_still_selects() {
         probe.lock().unwrap().is_empty(),
         "an original after the bridge is located without reading frames"
     );
+}
+
+/// WASTE-CORE-LIFECYCLE W1 steps 1-2: the runtime owner answers its live head and any frame's
+/// ordinal without a replay, for live appends and for a reopened journal alike, and a located
+/// frame is one point read.
+#[tokio::test]
+async fn runtime_locates_frames_without_replay_live_and_reopened() {
+    let backend = Arc::new(Backend::default());
+    let store = Arc::new(attach(backend.clone(), 4).await);
+    let budget = BufferBudget {
+        records: 4,
+        bytes: 4096,
+    };
+    let owner = RuntimeJournal::open(store.clone(), 7, budget)
+        .await
+        .unwrap();
+    for body in 1..=3u8 {
+        let run = owner
+            .stage_run(&[busbar_kernel_wal::Entry::new(
+                RecordClass::Transaction,
+                vec![body],
+            )])
+            .unwrap();
+        owner.confirm(&run).await.unwrap();
+    }
+    let before = replays_on_this_thread();
+    let proof = owner.live_proof().await.unwrap();
+    let journal = StoreJournal::new(&store, 7).unwrap();
+    for sequence in 1..=3u64 {
+        let ordinal = owner.locate(&proof, sequence).unwrap();
+        assert_eq!(
+            ordinal, sequence,
+            "an unbridged journal's ordinal is its sequence"
+        );
+        let record = journal
+            .read_verified_record_at(&proof, sequence, ordinal)
+            .await
+            .unwrap();
+        assert_eq!(record.node_seq, sequence);
+    }
+    assert_eq!(owner.locate(&proof, 4), Err(RuntimeError::Invalid));
+    assert_eq!(owner.locate(&proof, 0), Err(RuntimeError::Invalid));
+    assert!(
+        journal.read_verified_record_at(&proof, 2, 3).await.is_err(),
+        "a wrong ordinal fails closed"
+    );
+    assert_eq!(
+        replays_on_this_thread() - before,
+        0,
+        "live head, locate and point reads replay nothing"
+    );
+    drop(owner);
+    let reopened = RuntimeJournal::open(store, 7, budget).await.unwrap();
+    let proof = reopened.live_proof().await.unwrap();
+    for sequence in 1..=3u64 {
+        assert_eq!(reopened.locate(&proof, sequence).unwrap(), sequence);
+    }
 }
