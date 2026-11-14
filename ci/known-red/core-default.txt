@@ -2,11 +2,9 @@ busbar-default::bin/busbar distribution::admin_cross_plane::openapi::openapi_jso
 busbar-default::bin/busbar distribution::admin_settings_persistence::test_admin_v1_config_settings_process_level_flagged_reload_to_apply	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_parser_deploy::pools_reserved_section_keys_are_frozen	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_parser_deploy::test_identity_provider_definition_is_referenced_by_name_from_both_planes	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar distribution::config_parser_deploy::test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_parser_deploy::test_token_on_a_non_operator_provider_is_an_error	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_validation_application::test_validate_runs_on_resolved_root_cfg_clean_config	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_validation_application::test_validate_runs_on_resolved_root_cfg_collects_new_surface_faults	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar distribution::config_validation_models::test_validate_token_url_ssrf_and_scheme	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::config_validation_store::migrate_inserts_the_memory_store_into_a_config_without_one	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::decisions_hooks::a_decisions_hooks_rewrite_alters_the_request_the_provider_receives	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::decisions_hooks::a_gate_named_in_decisions_hooks_refuses_the_unit	CDT-KNOWN-RED	stable
@@ -104,8 +102,6 @@ busbar-default::cli_validate validate_refuses_a_decisions_block_its_door_does_no
 busbar-default::cli_validate validate_refuses_a_decisions_hook_naming_an_undefined_hook	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_refuses_a_decisions_model_naming_an_undefined_provider	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect	CDT-KNOWN-RED	stable
-busbar-default::cli_validate validate_refuses_an_unmigrated_jwt_bearer_filename_credential	CDT-KNOWN-RED	stable
-busbar-default::cli_validate validate_refuses_every_public_url_that_boot_refuses	CDT-KNOWN-RED	stable
 busbar-default::cli_validate validate_refuses_the_planes_protocol_when_its_section_is_not_configured	CDT-KNOWN-RED	stable
 busbar-default::config_migrate_1_5_5 a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration	CDT-KNOWN-RED	stable
 busbar-default::config_migrate_cross_plane end_to_end_a_full_legacy_config_migrates_validates_and_drops_every_deprecated_spelling	CDT-KNOWN-RED	stable

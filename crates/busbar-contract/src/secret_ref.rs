@@ -625,6 +625,31 @@ impl Sugars {
         self.sugars.iter().find(|s| s.word == word)
     }
 
+    /// A reference in the shorthand its admitted owner declared, `word:value` (1.5.5's `env:VAR`
+    /// and `file:/path`), when it is exactly one declared sugar's single setting; any other
+    /// reference is named by its source metadata alone ([`SecretRef::describe`]). The value of a
+    /// declared sugar is the locator the operator wrote, never resolved material.
+    pub fn describe(&self, reference: &SecretRef) -> String {
+        let SecretRef::Source(source) = reference else {
+            return reference.describe();
+        };
+        let serde_json::Value::Object(settings) = &source.settings.0 .0 else {
+            return reference.describe();
+        };
+        let mut only = settings.iter();
+        let (Some((key, serde_json::Value::String(value))), None) = (only.next(), only.next())
+        else {
+            return reference.describe();
+        };
+        self.sugars
+            .iter()
+            .find(|sugar| sugar.plugin == source.module && sugar.setting == *key)
+            .map_or_else(
+                || reference.describe(),
+                |sugar| format!("{}:{value}", sugar.word),
+            )
+    }
+
     /// The sugar the core grammar's `role` names ([`SUGAR_ROLE_FILL`], [`SUGAR_ROLE_PATH`]).
     pub fn with_role(&self, role: &str) -> Option<&Sugar> {
         self.roles
