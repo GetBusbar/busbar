@@ -191,3 +191,27 @@ fn the_dev_edge_scan_refuses_every_non_dev_edge() {
         assert_eq!(o.len(), 1, "not refused:\n{planted}");
     }
 }
+
+/// THE `stage-probe` COUNTERS MAY NEVER REACH A RELEASE BUILD EITHER (SINGLE-PATH §8): the same
+/// dev-edge scan, for the single-path count probes.
+#[test]
+fn the_stage_probe_feature_is_named_only_on_dev_dependency_edges() {
+    let root = workspace_root();
+    let mut found = Vec::new();
+    manifests(&root, &mut found);
+    assert!(found.len() > 10, "the manifest walk is broken");
+
+    let (offenders, dev_edges) = edges_of("stage-probe", &found, &root);
+
+    assert!(
+        offenders.is_empty(),
+        "`stage-probe` is enabled outside [dev-dependencies], which puts the single-path count \
+         probes into a release build. Move these to [dev-dependencies] or drop them:\n  {}",
+        offenders.join("\n  ")
+    );
+    assert!(
+        dev_edges > 0,
+        "no crate enables `stage-probe` on a dev edge, so the single-path count tests prove \
+         nothing. Either delete the feature and this test or fix the scan."
+    );
+}

@@ -89,6 +89,7 @@ pub mod services;
 pub mod signal;
 
 pub mod spans;
+pub mod stage_probe;
 pub mod surface;
 pub mod transport;
 pub mod unit;
