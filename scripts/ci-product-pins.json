@@ -224,13 +224,13 @@
     {
       "repo": "busbar-auth-oauth",
       "url": "https://github.com/GetBusbar/busbar-auth-oauth",
-      "commit": "27d76bf96179c619e3375ca2343da453592ea264",
+      "commit": "0440e714ea984a209f32294da83fac7a5730db79",
       "package": "busbar-auth-oauth-plugin",
       "kind": "auth",
       "alias": "oauth",
       "image": "libbusbar_auth_oauth_plugin.so",
       "declares": "auth-oauth/declares.json",
-      "lock_sha256": "98457446bf3e80d8d91a2e968e2cccf0e90b96b427f1dcd6016cc3a01ca2ba75"
+      "lock_sha256": "268a1cbbc4a6d2b1ebd01e49de3e4e433b3ccae2086dd66803b1a38c268eac8b"
     },
     {
       "repo": "busbar-auth-oidc",

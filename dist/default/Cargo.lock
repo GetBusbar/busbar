@@ -308,10 +308,11 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=27d76bf96179c619e3375ca2343da453592ea264#27d76bf96179c619e3375ca2343da453592ea264"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=0440e714ea984a209f32294da83fac7a5730db79#0440e714ea984a209f32294da83fac7a5730db79"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "foldhash 0.2.0",
  "http",
  "ring",
  "serde",
