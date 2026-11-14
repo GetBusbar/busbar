@@ -95,6 +95,7 @@ pub mod unit;
 pub mod upstream;
 pub mod vocab;
 pub mod wire;
+pub mod work_count;
 
 /// THE HEADER VOCABULARY the protocol-seam shapes name (`HeaderMap`, `HeaderName`, `HeaderValue`,
 pub use http;
@@ -131,19 +132,14 @@ pub use kinds::{
     Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, RecordBytes,
     SecretRef, StoreError,
 };
-pub use plane::{
-    Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
-};
-
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin};
 pub use redacted::{constant_time_eq, sha256_hex, OwnerSeal, Secret};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
 pub use unit::{
-    AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
-    Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    AbortBy, AdmitFacts, AuditFacts, FailureReason, FinishClass, LegResult, Origin, Refusal,
+    RefusalReason, ResourceLocator, ScopeFacts, Step, Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
