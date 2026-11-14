@@ -689,6 +689,18 @@ crate::dispatch_tests::c_abi! {
         }
         let capability=wire::read_capability(bytes).unwrap().expect("negotiated host");
         let request=state.request.get_or_insert_with(||Request{capability,candidate:candidate(1)});
+        if i.op==busbar_contract::abi::plane::slot::ON_PIECE {
+            // A lost commit answered with a caller-only 503 that carries no audit row.
+            let outcome=if let Some(result)=wire::read_result(bytes,request).unwrap() {
+                assert_eq!(result.decision,Ok(Decision::ConditionConflict));
+                state.observed.lock().unwrap().push((i.op,i.flags&FLAG_RESUME!=0));
+                unsafe{let p=out.cast::<OnPieceOut>();(*p).reply_status=503;(*p).flags=busbar_contract::abi::plane::EMIT_DONE;}
+                Outcome::Ready
+            } else {
+                let bytes=wire::encode_request(request).unwrap();o.extensions=Blob{ptr:bytes.as_ptr(),len:bytes.len(),fmt:BLOB_OCTETS,flags:0};o.lease=1;state.leases.insert(1,bytes);Outcome::Pending
+            };
+            o.outcome=RawOutcome::of(outcome);return RawOutcome::of(outcome);
+        }
         let outcome=if let Some(result)=wire::read_result(bytes,request).unwrap() {
             assert_eq!(result.decision,Ok(Decision::Applied));
             state.observed.lock().unwrap().push((i.op,i.flags&FLAG_RESUME!=0));
@@ -709,7 +721,7 @@ crate::dispatch_tests::c_abi! {
             use busbar_contract::abi::mechanism::door::{Door,DoorParts};
             let real=crate::plane_door_plugin::door().parts();
             let mut ops=unsafe{*real.ops.cast::<busbar_contract::abi::plane::Ops>()};
-            ops.head.open=Some(opened);ops.head.close=Some(closed);ops.head.retire=Some(empty);ops.head.cancel=Some(empty);ops.head.release=Some(released);ops.head.tick=Some(crossed);ops.head.drive=Some(crossed);ops.serve=Some(crossed);
+            ops.head.open=Some(opened);ops.head.close=Some(closed);ops.head.retire=Some(empty);ops.head.cancel=Some(empty);ops.head.release=Some(released);ops.head.tick=Some(crossed);ops.head.drive=Some(crossed);ops.serve=Some(crossed);ops.on_piece=Some(crossed);
             let ops=Box::leak(Box::new(ops));let mut statement=unsafe{*real.statement};
             let bytes=wire::statement(&[]).unwrap().into_boxed_slice();let bytes=Box::leak(bytes);
             statement.extensions=Blob{ptr:bytes.as_ptr(),len:bytes.len(),fmt:BLOB_OCTETS,flags:0};
@@ -1983,4 +1995,251 @@ fn conditional_extension_from_another_kind_refuses_before_accepting_a_candidate(
     );
     assert!(route.provider.accepted.lock().unwrap().is_empty());
     assert_eq!(route.wakes.load(Ordering::SeqCst), 0);
+}
+
+/// A begun commit whose receipt is `Blocked` (a lost commit), optionally followed by an
+/// `Observed` fresh read, lent to the next crossing: `commit_owed` stays set throughout.
+fn abandoned_commit(
+    route: &Route,
+    wake: &'static InstanceWake,
+    input: &mut InHead,
+    observed: bool,
+) {
+    let candidate = request(wake, input, None, 1);
+    assert_eq!(
+        tick_answer(wake, input, None, &candidate, Outcome::Pending),
+        Ok(true)
+    );
+    complete(route, Ok(Decision::ConditionConflict));
+    if observed {
+        observed_exchange(route, wake, input, 2);
+    }
+    lend_conditional_receipt(wake, input);
+    assert!(!route
+        .store
+        .conditional_output_allowed(caller(wake), input.ticket, None));
+}
+
+/// A caller-only ON_PIECE 503 carrying `records` as `(op, outcome)` pairs.
+fn caller_piece(
+    wake: &'static InstanceWake,
+    input: &InHead,
+    records: &[(u32, u32)],
+    units: u32,
+    flags: u32,
+    lane: bool,
+    inspection: bool,
+) -> Result<bool, ()> {
+    let mut buf: Vec<busbar_contract::abi::plane::RecordWrite> = records
+        .iter()
+        .map(|&(op, kind)| busbar_contract::abi::plane::RecordWrite {
+            kind,
+            op,
+            key: Default::default(),
+            value: Default::default(),
+        })
+        .collect();
+    let ext = busbar_contract::abi::mechanism::extensions::encode(&[(
+        busbar_contract::abi::mechanism::inspection::EXT_REQUEST,
+        &b"inspect"[..],
+    )]);
+    let mut i: OnPieceIn = unsafe { std::mem::zeroed() };
+    i.head = *input;
+    i.records_buf = buf.as_mut_ptr();
+    i.records_cap = buf.len();
+    let mut o: OnPieceOut = unsafe { std::mem::zeroed() };
+    o.head = out_head();
+    o.reply_status = 503;
+    o.records_written = u32::try_from(records.len()).unwrap();
+    o.units_written = units;
+    o.flags = flags;
+    if lane {
+        o.lane.len = 1;
+    }
+    if inspection {
+        o.head.extensions = Blob {
+            ptr: ext.as_ptr(),
+            len: ext.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+    }
+    // SAFETY: both complete frames, the record buffer and the extension bytes live for the call.
+    let frame = unsafe {
+        Answer::new(
+            busbar_contract::abi::plane::slot::ON_PIECE,
+            Outcome::Ready,
+            &i.head,
+            std::mem::size_of_val(&i),
+            &o.head,
+            std::mem::size_of_val(&o),
+        )
+    };
+    unsafe { answer(wake, KindCode::Plane, input.ticket, None, &o.head, &frame) }
+}
+
+#[test]
+fn a_lost_commit_answers_only_a_caller_refusal_with_a_mandatory_audit_row() {
+    use busbar_contract::abi::plane::{
+        AUDIT_APPLIED, AUDIT_REJECTED, EMIT_DONE, EMIT_TO_FAR_END, RECORD_AUDIT, RECORD_PUT,
+    };
+    let rejected = (RECORD_AUDIT, AUDIT_REJECTED);
+    for observed in [false, true] {
+        let shape = if observed {
+            "Blocked+Observed"
+        } else {
+            "Blocked"
+        };
+        // (a) caller-only 503 with one AUDIT_REJECTED record: accepted.
+        let (route, wake, mut input) = rig();
+        abandoned_commit(&route, wake, &mut input, observed);
+        assert_eq!(
+            caller_piece(wake, &input, &[rejected], 0, EMIT_DONE, false, false),
+            Ok(false),
+            "{shape}: (a) an audited caller-only refusal is the lost commit's exit"
+        );
+        // (b) the same without the record, or with only non-rejecting audit rows: Fault.
+        for records in [&[][..], &[(RECORD_AUDIT, AUDIT_APPLIED)][..]] {
+            let (route, wake, mut input) = rig();
+            abandoned_commit(&route, wake, &mut input, observed);
+            assert_eq!(
+                caller_piece(wake, &input, records, 0, EMIT_DONE, false, false),
+                Err(()),
+                "{shape}: (b) a lost commit cannot be answered silently: {records:?}"
+            );
+        }
+        // (c) units, a lane, a non-audit record or a far-end emission: Fault.
+        for (records, units, flags, lane) in [
+            (&[rejected][..], 1, EMIT_DONE, false),
+            (&[rejected][..], 0, EMIT_DONE, true),
+            (
+                &[rejected, (RECORD_PUT, AUDIT_REJECTED)][..],
+                0,
+                EMIT_DONE,
+                false,
+            ),
+            (&[rejected][..], 0, EMIT_DONE | EMIT_TO_FAR_END, false),
+        ] {
+            let (route, wake, mut input) = rig();
+            abandoned_commit(&route, wake, &mut input, observed);
+            assert_eq!(
+                caller_piece(wake, &input, records, units, flags, lane, false),
+                Err(()),
+                "{shape}: (c) {records:?} units={units} flags={flags} lane={lane}"
+            );
+        }
+        // (d) (a) as an inspection reply: Fault.
+        let (route, wake, mut input) = rig();
+        abandoned_commit(&route, wake, &mut input, observed);
+        assert_eq!(
+            caller_piece(wake, &input, &[rejected], 0, EMIT_DONE, false, true),
+            Err(()),
+            "{shape}: (d) a lost commit established no state to inspect"
+        );
+    }
+    // (e) the Refused arm's caller-only shape is unchanged.
+    for (records, allowed) in [(&[][..], true), (&[rejected][..], false)] {
+        let (route, wake, mut input) = rig();
+        let candidate = request(wake, &mut input, None, 1);
+        assert_eq!(
+            tick_answer(wake, &input, None, &candidate, Outcome::Pending),
+            Ok(true)
+        );
+        complete(
+            &route,
+            Err(ConditionalFailure::Refused("definite storage refusal")),
+        );
+        lend_conditional_receipt(wake, &mut input);
+        assert_eq!(
+            caller_piece(wake, &input, records, 0, EMIT_DONE, false, false),
+            if allowed { Ok(false) } else { Err(()) },
+            "(e) Refused arm with {records:?}"
+        );
+    }
+}
+
+struct Warns(Arc<Mutex<Vec<String>>>);
+struct WarnFields<'a>(&'a mut Vec<String>);
+impl tracing::field::Visit for WarnFields<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.push(format!("{}={value:?}", field.name()));
+    }
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0.push(format!("{}={value}", field.name()));
+    }
+}
+impl tracing::Subscriber for Warns {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() <= tracing::Level::WARN
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if *event.metadata().level() == tracing::Level::WARN {
+            let mut fields = Vec::new();
+            event.record(&mut WarnFields(&mut fields));
+            self.0.lock().unwrap().push(fields.join(" "));
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+#[test]
+fn actual_dispatch_lost_commit_without_audit_faults_with_one_host_warn() {
+    use super::super::Frame;
+    use busbar_contract::abi::mechanism::call::DeadlineClass;
+    let (dispatcher, plugin, provider, state) = plane_rig();
+    let ticket = dispatcher.mint(0).unwrap();
+    let warns = Arc::new(Mutex::new(Vec::new()));
+    let done = tracing::subscriber::with_default(Warns(Arc::clone(&warns)), || {
+        let mut i: OnPieceIn = unsafe { std::mem::zeroed() };
+        let mut o: OnPieceOut = unsafe { std::mem::zeroed() };
+        i.head = in_head();
+        o.head = out_head();
+        let reply = dispatcher.submit(
+            &plugin,
+            ticket,
+            busbar_contract::abi::plane::slot::ON_PIECE,
+            Frame::new(i, o),
+            DeadlineClass::Stream,
+            0,
+        );
+        let start = std::time::Instant::now();
+        while provider.accepted.lock().unwrap().is_empty() {
+            if let Some(done) = reply.wait(std::time::Duration::ZERO) {
+                panic!(
+                    "on_piece ended before the provider received its transaction: {:?}",
+                    done.outcome
+                );
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+        let (candidate, acked) = provider.accepted.lock().unwrap().remove(0);
+        acked(ConditionalResult {
+            correlation: candidate.correlation,
+            decision: Ok(Decision::ConditionConflict),
+        });
+        reply.wait(std::time::Duration::from_secs(10)).unwrap()
+    });
+    assert_eq!(
+        &*unsafe { &*state }.observed.lock().unwrap(),
+        &[(busbar_contract::abi::plane::slot::ON_PIECE, true)],
+        "the plane answered its lost commit"
+    );
+    assert_eq!(done.outcome, Outcome::Fault);
+    let warns = warns.lock().unwrap().clone();
+    let faults: Vec<&String> = warns
+        .iter()
+        .filter(|w| w.contains("failed the host's answer check"))
+        .collect();
+    assert_eq!(faults.len(), 1, "exactly one host warn: {warns:?}");
+    for field in ["plugin=", "kind=", "op=on_piece", "reason="] {
+        assert!(faults[0].contains(field), "{field} in {}", faults[0]);
+    }
+    dispatcher.recycle(ticket);
 }
