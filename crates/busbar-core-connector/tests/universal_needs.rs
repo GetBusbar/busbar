@@ -983,4 +983,105 @@ fn a_download_the_guard_refuses_never_reaches_the_registry() {
     let err = got.expect_err("an address the guard refuses is never downloaded from");
     assert!(err.contains("error sending request"), "{err}");
     assert!(head.is_empty(), "no request reached the far end: {head}");
+    assert!(
+        err.ends_with(
+            ": busbar refused it before connecting: the destination guard refuses a \
+             cloud-metadata host or a host listed in security.blocked_metadata_hosts"
+        ),
+        "{err}"
+    );
+}
+
+/// A loopback far end that counts every connection it accepts: its port and the count.
+fn counting_listener() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counting = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            if s.is_ok() {
+                counting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    });
+    (port, seen)
+}
+
+/// RED (F-013): THE PRODUCTION GUARD PATH NAMES BUSBAR'S REFUSAL. A registry NAME the guard
+/// refuses only once its resolution answers (a pended verdict) fails the download with the
+/// guard's own reason, and nothing is dialled.
+#[test]
+fn a_pended_guard_refusal_names_busbars_policy_and_dials_nothing() {
+    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    let judge = |_: &str, _: u32, done: busbar_core_connector::Judged| {
+        std::thread::spawn(move || done(Err(DEST_INTERNAL)));
+        None
+    };
+    let (scheme, table) = fetch_table_judged(std::sync::Arc::new(judge));
+    let (port, seen) = counting_listener();
+    let url = format!("{scheme}://registry.localhost:{port}/a.tar.gz");
+    let err = busbar_core_connector::fetch::download(&table, &url, &[], 4096)
+        .expect_err("a refused registry is never downloaded from");
+    assert!(
+        err.ends_with(
+            ": busbar refused it before connecting: the destination guard refuses an internal or \
+             loopback address (list it in advanced.allow_destinations to allow it)"
+        ),
+        "{err}"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing was dialled"
+    );
+}
+
+/// RED (F-013): A DIAL FAILURE NAMES THE PATH, NEVER BUSBAR'S POLICY: an unbound port under the
+/// deployment's guard fails with "could not connect to the registry" and the OS's own text.
+#[test]
+fn a_dial_failure_names_the_registry_not_busbars_policy() {
+    let (scheme, table) = fetch_table_judged(guarded(&[]));
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let url = format!("{scheme}://127.0.0.1:{port}/a.tar.gz");
+    let err = busbar_core_connector::fetch::download(&table, &url, &[], 4096)
+        .expect_err("nothing listens");
+    let sending = format!("error sending request for url ({url})");
+    let rest = err
+        .split_once(&sending)
+        .map(|(_, r)| r)
+        .expect("the 1.5.5 prefix is kept");
+    let os = rest
+        .strip_prefix(": could not connect to the registry: ")
+        .unwrap_or_else(|| panic!("the path is named: {err}"));
+    assert!(!os.is_empty(), "{err}");
+    assert!(!err.contains("busbar refused"), "{err}");
+    assert!(!err.contains("destination guard"), "{err}");
+}
+
+/// RED (F-013): A URL CARRYING USERINFO IS REFUSED IN WORDS, before anything is dialled.
+#[test]
+fn a_download_url_with_userinfo_is_refused_in_words() {
+    let (scheme, table) = fetch_table();
+    let (port, seen) = counting_listener();
+    let url = format!("{scheme}://fetcher:pw-H10-s3cr3t@127.0.0.1:{port}/a.tar.gz");
+    let err = busbar_core_connector::fetch::download(&table, &url, &[], 4096)
+        .expect_err("a credentialed URL is never requested");
+    assert!(
+        err.ends_with(
+            ": busbar refused it before connecting: the URL carries userinfo; busbar never \
+             sends credentials embedded in a URL"
+        ),
+        "{err}"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing was dialled"
+    );
 }
