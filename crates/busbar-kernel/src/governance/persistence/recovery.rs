@@ -556,6 +556,10 @@ impl<'a> History<'a> {
         }
         let journal = StoreJournal::new(self.store, node).map_err(unavailable)?;
         let local = self.live.is_some_and(|live| live.node() == node);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "recovery and read-only observation: one cached proof per node"
+        )]
         let mut cursor = match self.base.as_deref().filter(|_| local) {
             Some(base) => journal.historical_replay_after(base).await,
             None => journal.historical_replay().await,
@@ -593,6 +597,10 @@ impl<'a> History<'a> {
                 .map_err(unavailable)?;
             return Self::decode_candidate(record);
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "recovery: a record the cached replay did not retain"
+        )]
         let record = journal
             .read_verified_record(&proof, at.sequence)
             .await
