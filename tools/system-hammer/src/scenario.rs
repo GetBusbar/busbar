@@ -45,10 +45,10 @@ pub struct Scenario {
     pub providers_1_5: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Setup steps (see [`Step`]); kept as YAML values and read as single-key maps, because
-    /// YAML externally tagged enums otherwise need `!tags`, and `- mint_key: {...}` reads better.
+    /// Setup steps (see [`Step`]), each a single-key map (`- mint_key: {...}`): serde-saphyr reads an
+    /// externally tagged enum that way, no `!tags`.
     #[serde(default)]
-    pub setup: Vec<serde_yaml::Value>,
+    pub setup: Vec<Step>,
     #[serde(default)]
     pub cases: Vec<CaseSpec>,
     /// Generated LLM cases (ingress x egress x stream x pad x tools), one list per block.
@@ -261,19 +261,6 @@ fn m_prefix() -> String {
     "m-".into()
 }
 
-impl Scenario {
-    /// The setup steps, parsed.
-    pub fn steps(&self) -> Result<Vec<Step>, String> {
-        self.setup
-            .iter()
-            .map(|v| {
-                serde_yaml::with::singleton_map_recursive::deserialize::<Step, _>(v.clone())
-                    .map_err(|e| format!("setup step {v:?}: {e}"))
-            })
-            .collect()
-    }
-}
-
 /// Names of the suites and the scenarios each runs.
 pub type Suites = BTreeMap<String, Vec<String>>;
 
@@ -314,7 +301,6 @@ pub fn load(dir: &Path, name: &str) -> Result<Scenario, String> {
     };
     let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
     let s: Scenario = yaml(&text).map_err(|e| format!("{}: {e}", p.display()))?;
-    s.steps().map_err(|e| format!("{}: {e}", p.display()))?;
     // Every request path is checked here, before anything boots (placeholders survive the check;
     // `to_req` checks the filled path again).
     for c in &s.cases {
@@ -594,11 +580,10 @@ mod tests {
     #[test]
     fn a_request_path_that_is_not_a_uri_path_is_refused() {
         for bad in ["/v1/chat completions", "v1/chat/completions", ""] {
-            let r: ReqSpec = serde_yaml::from_str(&format!("path: {bad:?}")).unwrap();
+            let r: ReqSpec = yaml(&format!("path: {bad:?}")).unwrap();
             assert!(to_req(&r, &BTreeMap::new()).is_err(), "{bad:?}");
         }
-        let r: ReqSpec =
-            serde_yaml::from_str("path: \"/v1beta/models/m:generateContent?alt=sse\"").unwrap();
+        let r: ReqSpec = yaml("path: \"/v1beta/models/m:generateContent?alt=sse\"").unwrap();
         assert!(to_req(&r, &BTreeMap::new()).is_ok());
     }
 
@@ -606,29 +591,88 @@ mod tests {
     /// the matrix refuses it.
     #[test]
     fn a_matrix_cell_that_streams_with_tools_is_refused() {
-        let m: LlmMatrix = serde_yaml::from_str(
-            "ingress: [openai]\negress: [anthropic]\nstream: [true]\ntools: [true]\n",
-        )
-        .unwrap();
+        let m: LlmMatrix =
+            yaml("ingress: [openai]\negress: [anthropic]\nstream: [true]\ntools: [true]\n")
+                .unwrap();
         let e = expand_matrix(&m).unwrap_err();
         assert!(e.contains("stream") && e.contains("tools"), "{e}");
     }
 
-    fn yaml_strings<'a>(v: &'a serde_yaml::Value, out: &mut Vec<&'a str>) {
+    /// A YAML document as a tree, read through `yaml()`: strings, sequences and mappings (keys in
+    /// order); every other scalar is `Other`.
+    enum Yv {
+        Str(String),
+        Seq(Vec<Yv>),
+        Map(Vec<(Yv, Yv)>),
+        Other,
+    }
+
+    impl<'de> serde::Deserialize<'de> for Yv {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> serde::de::Visitor<'de> for V {
+                type Value = Yv;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("a YAML value")
+                }
+                fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Yv, E> {
+                    Ok(Yv::Str(s.to_owned()))
+                }
+                fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Yv, E> {
+                    Ok(Yv::Other)
+                }
+                fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Yv, E> {
+                    Ok(Yv::Other)
+                }
+                fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Yv, E> {
+                    Ok(Yv::Other)
+                }
+                fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Yv, E> {
+                    Ok(Yv::Other)
+                }
+                fn visit_unit<E: serde::de::Error>(self) -> Result<Yv, E> {
+                    Ok(Yv::Other)
+                }
+                fn visit_none<E: serde::de::Error>(self) -> Result<Yv, E> {
+                    Ok(Yv::Other)
+                }
+                fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<Yv, D::Error> {
+                    serde::Deserialize::deserialize(d)
+                }
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut a: A) -> Result<Yv, A::Error> {
+                    let mut xs = Vec::new();
+                    while let Some(x) = a.next_element()? {
+                        xs.push(x);
+                    }
+                    Ok(Yv::Seq(xs))
+                }
+                fn visit_map<A: serde::de::MapAccess<'de>>(self, mut a: A) -> Result<Yv, A::Error> {
+                    let mut kv = Vec::new();
+                    while let Some(e) = a.next_entry()? {
+                        kv.push(e);
+                    }
+                    Ok(Yv::Map(kv))
+                }
+            }
+            d.deserialize_any(V)
+        }
+    }
+
+    fn yaml_strings<'a>(v: &'a Yv, out: &mut Vec<&'a str>) {
         match v {
-            serde_yaml::Value::String(s) => out.push(s),
-            serde_yaml::Value::Sequence(xs) => {
+            Yv::Str(s) => out.push(s),
+            Yv::Seq(xs) => {
                 for x in xs {
                     yaml_strings(x, out);
                 }
             }
-            serde_yaml::Value::Mapping(m) => {
+            Yv::Map(m) => {
                 for (k, x) in m {
                     yaml_strings(k, out);
                     yaml_strings(x, out);
                 }
             }
-            _ => {}
+            Yv::Other => {}
         }
     }
 
@@ -644,22 +688,27 @@ mod tests {
             if !s.llm_matrix.is_empty() {
                 continue;
             }
-            let mut cfg: serde_yaml::Value =
-                serde_yaml::from_str(&s.config).unwrap_or_else(|e| panic!("{n} config yaml: {e}"));
-            let Some(map) = cfg.as_mapping_mut() else {
+            let cfg: Yv = yaml(&s.config).unwrap_or_else(|e| panic!("{n} config yaml: {e}"));
+            let Yv::Map(mut map) = cfg else {
                 continue;
             };
+            let is = |k: &Yv, name: &str| matches!(k, Yv::Str(s) if s == name);
             let models: Vec<String> = map
-                .get("models")
-                .and_then(|v| v.as_mapping())
-                .map(|m| {
-                    m.keys()
-                        .filter_map(|k| k.as_str().map(str::to_owned))
-                        .collect()
+                .iter()
+                .find(|(k, _)| is(k, "models"))
+                .map(|(_, v)| match v {
+                    Yv::Map(m) => m
+                        .iter()
+                        .filter_map(|(k, _)| match k {
+                            Yv::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
                 })
                 .unwrap_or_default();
-            map.remove("models");
-            map.remove("rate_card");
+            map.retain(|(k, _)| !is(k, "models") && !is(k, "rate_card"));
+            let cfg = Yv::Map(map);
             let mut refs = Vec::new();
             yaml_strings(&cfg, &mut refs);
             let reqs: String = s
