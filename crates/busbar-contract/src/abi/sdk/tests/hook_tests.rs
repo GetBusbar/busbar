@@ -2789,3 +2789,73 @@ fn status_wipes_its_owned_json_tree_and_returned_bytes_on_release_or_close() {
         }
     }
 }
+
+/// What [`Integers`] read for its `x` setting at each configure: `(as_u64, as_i64)`.
+static CONFIGURED_X: std::sync::Mutex<Vec<(Option<u64>, Option<i64>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// A hook that records how its `x` setting reads as an integer.
+struct Integers;
+impl Hook for Integers {
+    fn configure(
+        &self,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        _: u64,
+    ) -> Result<(), String> {
+        let x = &settings["x"];
+        CONFIGURED_X
+            .lock()
+            .expect("configured x")
+            .push((x.as_u64(), x.as_i64()));
+        Ok(())
+    }
+}
+struct OpenIntegers;
+impl HookOpen for OpenIntegers {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Ok(Box::new(Integers))
+    }
+}
+
+#[test]
+fn configure_reads_each_number_token_as_the_typed_parser_reads_it() {
+    let p = opened_with::<OpenIntegers>(&zeroed());
+    for token in [
+        "-0",
+        "0",
+        "1",
+        "-1",
+        "1.0",
+        "1e0",
+        "-0.0",
+        "18446744073709551615",
+        "18446744073709551616",
+    ] {
+        let doc = format!(r#"{{"x":{token}}}"#);
+        assert_eq!(
+            configured::<OpenIntegers>(p, doc.as_bytes(), 3),
+            (Outcome::Ready, 3, String::new()),
+            "{token}"
+        );
+        let read = CONFIGURED_X
+            .lock()
+            .expect("configured x")
+            .pop()
+            .expect(token);
+        assert_eq!(
+            read,
+            (
+                serde_json::from_str::<u64>(token).ok(),
+                serde_json::from_str::<i64>(token).ok()
+            ),
+            "{token}"
+        );
+    }
+    configured::<OpenIntegers>(p, br#"{"x":-0}"#, 4);
+    assert_eq!(
+        CONFIGURED_X.lock().expect("configured x").pop(),
+        Some((None, None)),
+        "-0 is no integer setting"
+    );
+    closed::<OpenIntegers>(p);
+}
