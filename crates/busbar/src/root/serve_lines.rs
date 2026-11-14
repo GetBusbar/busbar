@@ -68,7 +68,7 @@ pub fn refuse(plane: &str, carrier: &str, sentence: &str) {
     eprintln!("busbar: {plane} {carrier} serve refused to start: {sentence}");
 }
 
-async fn session(
+pub(crate) async fn session(
     app: Arc<busbar_kernel::state::App>,
     plane: &str,
     carrier: &str,

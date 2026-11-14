@@ -3,10 +3,18 @@
 
 use crate::root::test_plugins as plugins;
 use crate::test_common as common;
-use std::sync::Arc;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 
-#[tokio::test]
-async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() {
+const AUDIENCE: &str = "api://auth-self-groups";
+
+/// What a deployment with no `oauth_as` answers for any DPoP-bound or DPoP-scheme presentation.
+const UNVERIFIABLE: &str = "This deployment does not verify DPoP proofs, so a DPoP-bound or \
+                            DPoP-scheme presentation cannot be accepted (RFC 9449). Present an \
+                            unbound bearer token.";
+
+/// The actual product, with an actual OIDC chain and Store, and no authorization server.
+async fn no_authorization_server(tag: &str) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -22,7 +30,10 @@ async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() 
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("auth-dpop-no-as");
+    let directory = plugins::scratch(&format!(
+        "auth-dpop-no-as-{tag}-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -48,7 +59,7 @@ async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() 
         "providers": {},
         "models": {},
         "identity-providers": {
-            "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
+            "corp": { "module": oidc_module, "settings": common::credentials::settings(AUDIENCE) }
         },
         "auth": {
             "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
@@ -101,101 +112,331 @@ async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() 
         app.oauth_as.is_none(),
         "precondition: no actual authorization server is configured"
     );
-    let token = common::credentials::token_for("alice", &["eng"], "api://auth-self-groups");
-    let router = busbar_kernel::build_router(app);
-    let absent = tokio::time::timeout(
+    app
+}
+
+async fn answer(
+    router: &axum::Router,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, String)],
+) -> (u16, String) {
+    let mut request = axum::http::Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        request = request.header(*name, value);
+    }
+    let response = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         tower::ServiceExt::oneshot(
             router.clone(),
-            axum::http::Request::builder()
-                .uri("/stats")
-                .body(axum::body::Body::empty())
-                .unwrap(),
+            request.body(axum::body::Body::empty()).unwrap(),
         ),
     )
     .await
-    .expect("the actual absent-credential request is bounded")
+    .expect("the actual request is bounded")
     .unwrap();
-    let absent_status = absent.status().as_u16();
-    let absent_body = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        axum::body::to_bytes(absent.into_body(), 64 * 1024),
-    )
-    .await
-    .expect("the actual refusal body is bounded")
-    .unwrap();
-    let presented = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tower::ServiceExt::oneshot(
-            router.clone(),
-            axum::http::Request::builder()
-                .uri("/stats")
-                .header("authorization", format!("DPoP {token}"))
-                .header("dpop", "a.b.c")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        ),
-    )
-    .await
-    .expect("the actual no-AS DPoP request is bounded")
-    .unwrap();
-    let presented_status = presented.status().as_u16();
-    let presented_body = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        axum::body::to_bytes(presented.into_body(), 64 * 1024),
-    )
-    .await
-    .expect("the actual no-AS DPoP body is bounded")
-    .unwrap();
-    assert_eq!(absent_status, 401, "the actual chain requires a credential");
-    assert_eq!(
-        (presented_status, presented_body),
-        (absent_status, absent_body),
-        "the DPoP header is not a credential carrier with no authorization server"
-    );
-    let genuine = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tower::ServiceExt::oneshot(
-            router.clone(),
-            axum::http::Request::builder()
-                .uri("/stats")
-                .header("authorization", format!("Bearer {token}"))
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        ),
-    )
-    .await
-    .expect("the actual genuine OIDC bearer request is bounded")
-    .unwrap();
-    assert_eq!(
-        genuine.status().as_u16(),
-        200,
-        "a genuinely signed OIDC bearer is admitted"
-    );
-    let anonymous_exchange = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tower::ServiceExt::oneshot(
-            router,
-            axum::http::Request::builder()
-                .method("POST")
-                .uri("/auth/token")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        ),
-    )
-    .await
-    .expect("the actual anonymous exchange is bounded")
-    .unwrap();
-    let status = anonymous_exchange.status().as_u16();
+    let status = response.status().as_u16();
     let bytes = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        axum::body::to_bytes(anonymous_exchange.into_body(), 64 * 1024),
+        axum::body::to_bytes(response.into_body(), 64 * 1024),
     )
     .await
-    .expect("the actual anonymous exchange body is bounded")
+    .expect("the actual body is bounded")
     .unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[derive(Clone, Default)]
+struct Buf(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Buf {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Buf {
+    fn take(&self) -> String {
+        String::from_utf8(std::mem::take(&mut *self.0.lock().unwrap())).unwrap()
+    }
+}
+
+/// Capture this (current-thread) test's diagnostics for as long as the guard lives.
+fn capture() -> (Buf, tracing::subscriber::DefaultGuard) {
+    let buf = Buf::default();
+    let writer = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_target(false)
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    tracing::callsite::rebuild_interest_cache();
+    (buf, guard)
+}
+
+fn assert_refused_record(text: &str, surface: &str, reason: &str, case: &str) {
+    assert!(
+        text.lines().any(|line| line.contains("diag=BUSBAR-4032")
+            && line.contains(&format!("surface={surface}"))
+            && line.contains(&format!("reason={reason}"))),
+        "{case}: BUSBAR-4032 surface={surface} reason={reason} is recorded; got: {text:?}"
+    );
+}
+
+fn bound_token(jkt: serde_json::Value) -> String {
+    common::credentials::token_with_claims(
+        "alice",
+        &["eng"],
+        AUDIENCE,
+        serde_json::json!({ "cnf": { "jkt": jkt } }),
+    )
+}
+
+#[tokio::test]
+async fn without_an_authorization_server_a_dpop_presentation_is_refused_and_explained() {
+    let app = no_authorization_server("presentation").await;
+    let token = common::credentials::token_for("alice", &["eng"], AUDIENCE);
+    let router = busbar_kernel::build_router(app);
+    let (absent_status, absent_body) = answer(&router, "GET", "/stats", &[]).await;
+    assert_eq!(absent_status, 401, "the actual chain requires a credential");
+    let (buf, _guard) = capture();
+    let (presented_status, presented_body) = answer(
+        &router,
+        "GET",
+        "/stats",
+        &[
+            ("authorization", format!("DPoP {token}")),
+            ("dpop", "a.b.c".to_owned()),
+        ],
+    )
+    .await;
+    assert_eq!(presented_status, 401, "a DPoP presentation is refused");
+    assert!(
+        presented_body.contains(UNVERIFIABLE),
+        "the refusal explains itself: {presented_body}"
+    );
+    assert_ne!(
+        presented_body, absent_body,
+        "a refused DPoP presentation is not answered as an absent credential"
+    );
+    assert_refused_record(&buf.take(), "door", "unverifiable", "DPoP scheme");
+    let (genuine, _) = answer(
+        &router,
+        "GET",
+        "/stats",
+        &[("authorization", format!("Bearer {token}"))],
+    )
+    .await;
     assert_eq!(
-        (status, std::str::from_utf8(&bytes).unwrap()),
+        genuine, 200,
+        "a genuinely signed unbound OIDC bearer is admitted"
+    );
+    let anonymous = answer(&router, "POST", "/auth/token", &[]).await;
+    assert_eq!(
+        (anonymous.0, anonymous.1.as_str()),
         (401, r#"{"error":"not authenticated"}"#)
     );
+}
+
+#[tokio::test]
+async fn without_an_authorization_server_a_dpop_bound_token_is_refused_at_the_door() {
+    let app = no_authorization_server("door").await;
+    let router = busbar_kernel::build_router(app);
+    let unbound = common::credentials::token_for("alice", &["eng"], AUDIENCE);
+    let (precondition, _) =
+        answer(&router, "GET", "/stats", &[("x-api-key", unbound.clone())]).await;
+    assert_eq!(
+        precondition, 200,
+        "precondition: x-api-key carries a credential here"
+    );
+    let bound = bound_token(serde_json::json!(
+        "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+    ));
+    let cases: Vec<(&str, Vec<(&str, String)>, &str)> = vec![
+        (
+            "bound bearer",
+            vec![("authorization", format!("Bearer {bound}"))],
+            "bound_bearer",
+        ),
+        (
+            "bound x-api-key",
+            vec![("x-api-key", bound.clone())],
+            "bound_bearer",
+        ),
+        (
+            "hidden behind an unbound bearer",
+            vec![
+                ("authorization", format!("Bearer {unbound}")),
+                ("x-api-key", bound.clone()),
+            ],
+            "bound_bearer",
+        ),
+        (
+            "second x-api-key occurrence",
+            vec![("x-api-key", unbound.clone()), ("x-api-key", bound.clone())],
+            "bound_bearer",
+        ),
+        (
+            "malformed numeric jkt",
+            vec![(
+                "authorization",
+                format!("Bearer {}", bound_token(serde_json::json!(123))),
+            )],
+            "bound_bearer",
+        ),
+        (
+            "malformed object jkt",
+            vec![("x-api-key", bound_token(serde_json::json!({})))],
+            "bound_bearer",
+        ),
+        (
+            "DPoP scheme with a bound x-api-key",
+            vec![
+                ("authorization", "DPoP anything".to_owned()),
+                ("x-api-key", bound.clone()),
+            ],
+            "unverifiable",
+        ),
+        (
+            "DPoP scheme with an unbound x-api-key",
+            vec![
+                ("authorization", "DPoP anything".to_owned()),
+                ("x-api-key", unbound.clone()),
+            ],
+            "unverifiable",
+        ),
+        (
+            "DPoP scheme alone",
+            vec![("authorization", format!("DPoP {bound}"))],
+            "unverifiable",
+        ),
+    ];
+    let (buf, _guard) = capture();
+    for (case, headers, reason) in cases {
+        let (status, body) = answer(&router, "GET", "/stats", &headers).await;
+        assert_eq!(status, 401, "{case}: refused");
+        assert!(body.contains(UNVERIFIABLE), "{case}: explained: {body}");
+        assert_refused_record(&buf.take(), "door", reason, case);
+    }
+}
+
+#[tokio::test]
+async fn without_an_authorization_server_a_dpop_bound_token_is_never_exchanged() {
+    let app = no_authorization_server("exchange").await;
+    let gov = app.governance.clone().expect("governance mints keys here");
+    let router = busbar_kernel::build_router(app);
+    let bound = bound_token(serde_json::json!(
+        "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+    ));
+    let refused = serde_json::json!({
+        "error": "sender_constrained",
+        "error_description": UNVERIFIABLE,
+    });
+    let cases: Vec<(&str, Vec<(&str, String)>, &str)> = vec![
+        (
+            "bound bearer",
+            vec![("authorization", format!("Bearer {bound}"))],
+            "bound_bearer",
+        ),
+        (
+            "bound x-api-key",
+            vec![("x-api-key", bound.clone())],
+            "bound_bearer",
+        ),
+        (
+            "DPoP scheme with a bound x-api-key",
+            vec![
+                ("authorization", "DPoP x".to_owned()),
+                ("x-api-key", bound.clone()),
+            ],
+            "unverifiable",
+        ),
+        (
+            "malformed jkt",
+            vec![(
+                "authorization",
+                format!("Bearer {}", bound_token(serde_json::json!(123))),
+            )],
+            "bound_bearer",
+        ),
+    ];
+    let (buf, _guard) = capture();
+    for (case, headers, reason) in cases {
+        let (status, body) = answer(&router, "POST", "/auth/token", &headers).await;
+        assert_eq!(
+            (
+                status,
+                serde_json::from_str::<serde_json::Value>(&body).ok()
+            ),
+            (401, Some(refused.clone())),
+            "{case}: refused and explained"
+        );
+        assert_refused_record(&buf.take(), "exchange", reason, case);
+        assert!(
+            gov.all_keys_async().await.unwrap().is_empty(),
+            "{case}: no key is minted"
+        );
+    }
+    let unbound = common::credentials::token_for("alice", &["eng"], AUDIENCE);
+    let (status, body) = answer(
+        &router,
+        "POST",
+        "/auth/token",
+        &[("authorization", format!("Bearer {unbound}"))],
+    )
+    .await;
+    assert_eq!(status, 200, "an unbound IdP token still exchanges: {body}");
+    assert_eq!(gov.all_keys_async().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_dpop_bound_line_session_credential_is_refused_and_explained() {
+    let app = no_authorization_server("session").await;
+    let mut with_as = (*app).clone();
+    with_as.oauth_as = Some(Arc::new(()));
+    let env = crate::root::serve::lines::env_credential("mcp", "stdio");
+    let bound = bound_token(serde_json::json!(
+        "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+    ));
+    let unbound = common::credentials::token_for("alice", &["eng"], AUDIENCE);
+    for app in [app, Arc::new(with_as)] {
+        let configured = app.oauth_as.is_some();
+        let (buf, guard) = capture();
+        let refused = crate::root::serve::lines::session(
+            app.clone(),
+            "mcp",
+            "stdio",
+            Some(AUDIENCE),
+            Some(&bound),
+        )
+        .await;
+        drop(guard);
+        let sentence = refused.err().unwrap_or_else(|| {
+            panic!("a bound session credential is refused (oauth_as configured: {configured})")
+        });
+        assert!(
+            sentence.contains("DPoP-bound") && sentence.contains(&env),
+            "the refusal names the binding and {env}: {sentence}"
+        );
+        assert_refused_record(&buf.take(), "session", "unverifiable", "line session");
+        assert!(
+            crate::root::serve::lines::session(
+                app.clone(),
+                "mcp",
+                "stdio",
+                Some(AUDIENCE),
+                Some(&unbound),
+            )
+            .await
+            .is_ok(),
+            "an unbound audience-bound credential still reaches the chain and is admitted \
+             (oauth_as configured: {configured})"
+        );
+    }
 }
