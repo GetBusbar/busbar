@@ -179,23 +179,23 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
         return Err(failed.refused(config::store_required()));
     };
     let store_module = store.module.clone();
-    let (mut app, rotation, limits) = match Box::pin(appbuild::build_app_from_config_with_store(
-        config,
-        plugins,
-        overlay.clone(),
-        base_hook_names,
-        base_group_names,
-        (Some(config_path), Some(providers_path)),
-        None,
-        &rules,
-        Some(core.clone()),
-        true,
-    ))
-    .await
-    {
-        Ok(built) => built,
-        Err(reason) => return Err(failed.refused(reason)),
-    };
+    let (mut app, rotation, limits) =
+        match Box::pin(appbuild::build_boot_app(appbuild::BootBuild {
+            cfg: config,
+            judged,
+            plugins_cfg: plugins,
+            overlay_path: overlay.clone(),
+            base_hook_names,
+            base_group_names,
+            config_paths: (Some(config_path), Some(providers_path)),
+            rules: &rules,
+            boot_store: core.clone(),
+        }))
+        .await
+        {
+            Ok(built) => built,
+            Err(reason) => return Err(failed.refused(reason)),
+        };
     if rotation.is_some() {
         failed.app = Some(Arc::new(app));
         failed.limits = Some(limits);
