@@ -411,3 +411,35 @@ impl GovState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+impl GovState {
+    /// Holds the book's lock, as the flusher's id snapshot and the request-path writers do.
+    pub(crate) fn hold_unit_checkpoint_book(&self) -> impl Drop + '_ {
+        self.unit_checkpoints
+            .pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The reference answer: a full walk of the book.
+    pub(crate) fn reference_unresolved_unit_target(&self, bucket: &str, window: u64) -> bool {
+        self.unit_checkpoints
+            .pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .any(|entry| {
+                entry.recovered
+                    && entry
+                        .snapshot
+                        .targets
+                        .iter()
+                        .any(|target| target.bucket == bucket && target.window == window)
+            })
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/unit_checkpoint_book_tests.rs"]
+mod book_tests;
