@@ -355,11 +355,17 @@ fn failed(e: impl std::fmt::Display) -> Failure {
     Failure::Failed(e.to_string())
 }
 
-/// One read of the clock by a drive, counted.
-fn clock_read() -> Instant {
-    #[cfg(test)]
-    clock_reads::read();
-    Instant::now()
+/// THE DRIVE'S CLOCK: `now`, read the first time the drive compares or arms a deadline and kept
+/// for the rest of it, so a drive reads the clock at most once, and not at all when no deadline is
+/// set. A reading taken earlier in the drive is a few µs early: it can only judge a deadline not yet
+/// due, never fire one late, and the timer [`Connection::keep_deadlines`] arms wakes the drive for it.
+fn clock(now: &mut Option<Instant>) -> Instant {
+    *now.get_or_insert_with(|| {
+        busbar_contract::work_count::tally(busbar_contract::work_count::Work::ClockRead);
+        #[cfg(test)]
+        clock_reads::read();
+        Instant::now()
+    })
 }
 
 /// What the drives on this thread did with the clock (tests only): how many drives ran, how many
@@ -1603,10 +1609,8 @@ impl Connection {
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         #[cfg(test)]
         clock_reads::drove();
-        // RED STUB (TRANSPORT-TLS T10, rejected forms): the clock is read eagerly at every site, and
-        // the framer deadline is the one seen when the drive started.
-        let framer_at_start = self.framer_deadline;
-        self.check_open_deadlines(clock_read())?;
+        let mut now = None;
+        self.check_open_deadlines(&mut now)?;
         let mut moved = false;
         if self.tunnel.as_ref().is_some_and(|t| t.asked) {
             moved |= self.flush(cx)?;
@@ -1617,7 +1621,7 @@ impl Connection {
                     moved = true;
                     if let Some(t) = self.tunnel.as_mut() {
                         t.asked = true;
-                        t.deadline = Some(clock_read() + crate::proxy::CONNECT_HANDSHAKE);
+                        t.deadline = Some(clock(&mut now) + crate::proxy::CONNECT_HANDSHAKE);
                         let request = std::mem::take(&mut t.request);
                         self.queue(&request, false);
                         moved |= self.flush(cx)?;
@@ -1644,7 +1648,7 @@ impl Connection {
                 moved |= self.read(cx)?;
             }
         }
-        moved |= self.keep_deadlines(cx, framer_at_start)?;
+        moved |= self.keep_deadlines(cx, &mut now)?;
         Ok(moved)
     }
 
@@ -1773,14 +1777,15 @@ impl Connection {
     }
 
     /// Check opening bounds before advancing their stages, and again when arming their timer.
-    fn check_open_deadlines(&self, now: Instant) -> Result<(), Failure> {
-        if (matches!(self.phase, Phase::Connecting | Phase::Handshaking) || self.handshaking())
-            && self.open_deadline.is_some_and(|at| at <= now)
-        {
+    fn check_open_deadlines(&self, now: &mut Option<Instant>) -> Result<(), Failure> {
+        let opening =
+            matches!(self.phase, Phase::Connecting | Phase::Handshaking) || self.handshaking();
+        let open_deadline = self.open_deadline.filter(|_| opening);
+        if open_deadline.is_some_and(|at| at <= clock(now)) {
             return Err(Failure::Timeout);
         }
         let tunnel_deadline = self.tunnel.as_ref().and_then(|t| t.deadline);
-        if tunnel_deadline.is_some_and(|at| at <= now) {
+        if tunnel_deadline.is_some_and(|at| at <= clock(now)) {
             return Err(Failure::Timeout);
         }
         Ok(())
@@ -1790,9 +1795,8 @@ impl Connection {
     fn keep_deadlines(
         &mut self,
         cx: &mut Context<'_>,
-        framer_at_start: Option<Instant>,
+        now: &mut Option<Instant>,
     ) -> Result<bool, Failure> {
-        let now = clock_read();
         self.check_open_deadlines(now)?;
         if !matches!(self.phase, Phase::Connecting | Phase::Handshaking) && !self.handshaking() {
             self.open_deadline = None;
@@ -1800,8 +1804,8 @@ impl Connection {
         let tunnel_deadline = self.tunnel.as_ref().and_then(|t| t.deadline);
         let mut moved = false;
 
-        let framer_deadline = framer_at_start.filter(|_| !self.begin_parked());
-        if framer_deadline.is_some_and(|at| at <= now) {
+        let framer_deadline = self.framer_deadline.filter(|_| !self.begin_parked());
+        if framer_deadline.is_some_and(|at| at <= clock(now)) {
             self.framer_deadline = None;
             if let Some(framing) = self.framing.as_mut() {
                 let y = framing.timer().map_err(|e| match e.outcome {
@@ -1812,9 +1816,7 @@ impl Connection {
                 moved = true;
             }
         }
-        let framer_deadline = framer_at_start
-            .and(self.framer_deadline)
-            .filter(|_| !self.begin_parked());
+        let framer_deadline = self.framer_deadline.filter(|_| !self.begin_parked());
         let next = [self.open_deadline, tunnel_deadline, framer_deadline]
             .into_iter()
             .flatten()
