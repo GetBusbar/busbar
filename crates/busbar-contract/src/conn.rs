@@ -248,6 +248,21 @@ pub trait Conns: Send + Sync {
         self.open(caller, need, desc)
     }
 
+    /// [`Conns::open_with_security`], dialling the answer [`PollConns::locate_head`] already
+    /// located for this open where the table carries one. A table that carries none (the default)
+    /// ignores `located` and locates as it always does.
+    fn open_located(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+        located: Option<&LocatedTarget>,
+    ) -> Result<ConnId, ConnError> {
+        let _ = located;
+        self.open_with_security(caller, need, desc, require_secure)
+    }
+
     /// Offer `bytes` to the connection (`end` = the caller's message is complete, `text` = it is a
     fn write(
         &self,
@@ -594,6 +609,95 @@ impl CompletedHead {
             return None;
         }
         Some(count)
+    }
+}
+
+/// ONE LOCATE ANSWER, carried from the head's completion to the open that dials it
+/// ([`PollConns::locate_head`], [`Conns::open_located`]): where the framer `need` rides said
+/// `target` is. A table reads it only when the caller, need and target all equal the dial's own;
+/// any other open locates afresh.
+#[doc = "host-side; no ABI representation"]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedTarget {
+    caller: InstanceId,
+    need: NeedId,
+    target: String,
+    authority: String,
+    name: Option<String>,
+    secure: bool,
+    offer: Vec<Vec<u8>>,
+    defaults: Vec<(Vec<u8>, Vec<u8>)>,
+    states_length: bool,
+}
+
+impl LocatedTarget {
+    /// The answer the framer gave for `caller`'s `need` at `target`.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        caller: InstanceId,
+        need: NeedId,
+        target: String,
+        authority: String,
+        name: Option<String>,
+        secure: bool,
+        offer: Vec<Vec<u8>>,
+        defaults: Vec<(Vec<u8>, Vec<u8>)>,
+        states_length: bool,
+    ) -> Self {
+        Self {
+            caller,
+            need,
+            target,
+            authority,
+            name,
+            secure,
+            offer,
+            defaults,
+            states_length,
+        }
+    }
+
+    /// Whether this answer was located for `caller`'s `need` at exactly `target`.
+    #[must_use]
+    pub fn answers(&self, caller: InstanceId, need: NeedId, target: &str) -> bool {
+        self.caller == caller && self.need == need && self.target == target
+    }
+
+    /// The authority to dial (`host:port`).
+    #[must_use]
+    pub fn authority(&self) -> &str {
+        &self.authority
+    }
+
+    /// The name to offer the far end, where one is.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Whether the target asks for connection security.
+    #[must_use]
+    pub fn secure(&self) -> bool {
+        self.secure
+    }
+
+    /// The framer's protocol offer for the handshake, most preferred first.
+    #[must_use]
+    pub fn offer(&self) -> &[Vec<u8>] {
+        &self.offer
+    }
+
+    /// The framer's own head lines, in its order.
+    #[must_use]
+    pub fn defaults(&self) -> &[(Vec<u8>, Vec<u8>)] {
+        &self.defaults
+    }
+
+    /// Whether the framer's head states its body's length.
+    #[must_use]
+    pub fn states_length(&self) -> bool {
+        self.states_length
     }
 }
 
@@ -961,6 +1065,19 @@ pub trait PollConns: Conns {
     ) -> Result<HeadDefaults, ConnError> {
         let _ = (owner, need, target, timeout_ms);
         Ok(HeadDefaults::default())
+    }
+
+    /// [`PollConns::head_defaults`], with the locate answer behind them where the table carries
+    /// one, for [`Conns::open_located`] to dial instead of locating again. The default carries
+    /// none.
+    fn locate_head(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<(HeadDefaults, Option<Arc<LocatedTarget>>), ConnError> {
+        Ok((self.head_defaults(owner, need, target, timeout_ms)?, None))
     }
 
     /// SEAL ONE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4k: keyed
