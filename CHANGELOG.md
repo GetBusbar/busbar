@@ -20,6 +20,12 @@ All notable changes to Busbar are documented here. The format is based on
   status, latency and failover reason, outcome, status and total latency. No body, header or
   credential is logged. At the default level none of it is computed.
 
+- A walk whose last attempted member could not present its own credential (its auth answered
+  nothing, or the credential was refused on the open or first read) now answers the
+  `credential_unavailable` refusal (503, no `Retry-After`) instead of "overloaded, retry", and a
+  WARN names the provider and the cause once per change. A walk whose last member shed still
+  answers "overloaded" with `Retry-After`.
+
 - Cross-dialect Bedrock document requests use a neutral attachment label when the source filename is not a valid native document name.
 - Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.
 - Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.

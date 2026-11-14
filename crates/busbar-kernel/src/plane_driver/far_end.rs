@@ -338,6 +338,7 @@ impl Egress {
                 probe: None,
                 refused: None,
                 unsent: None,
+                credential_refused: false,
                 sent: false,
                 failed: None,
             }),
@@ -377,6 +378,7 @@ impl Egress {
                 probe: Some(member),
                 refused: None,
                 unsent: None,
+                credential_refused: false,
                 sent: false,
                 failed: None,
             }),
@@ -477,6 +479,10 @@ struct State {
     refused: Option<ReasonCode>,
 
     unsent: Option<RefusalCode>,
+
+    /// The attempt in hand failed on its member's own credential. Attempt-scoped, as `unsent`
+    /// is: both are cleared when each attempt is installed (`EgressFarEnd::admit_taken`).
+    credential_refused: bool,
 
     sent: bool,
 
@@ -876,6 +882,38 @@ fn fail_over() -> FarPiece {
     }
 }
 
+/// Say, at WARN, why `provider`'s credential could not be presented to its upstream `base_url`:
+/// once per (provider, cause) change, never per request (a refusal repeats on every request until
+/// the configuration changes). The upstream is named by its scheme and host only.
+fn warn_credential_refused(provider: &str, base_url: &str, err: ConnError) {
+    static LAST: std::sync::OnceLock<Mutex<HashMap<String, ConnError>>> =
+        std::sync::OnceLock::new();
+    {
+        let mut last = LAST
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.get(provider) == Some(&err) {
+            return;
+        }
+        last.insert(provider.to_owned(), err);
+    }
+    if err == ConnError::AuthRefused {
+        let (scheme, rest) = base_url.split_once("://").unwrap_or(("", base_url));
+        let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        tracing::warn!(
+            provider,
+            "{provider}: the credential requires a secure connection; upstream `{scheme}://{host}` \
+             is plaintext, so it is not presented (credential_unavailable)"
+        );
+    } else {
+        tracing::warn!(
+            provider,
+            "{provider}: the provider refused the credential (credential_unavailable)"
+        );
+    }
+}
+
 impl EgressFarEnd<'_> {
     fn breaker(&self) -> &dyn Breaker {
         self.breaker.as_ref()
@@ -1104,7 +1142,12 @@ impl EgressFarEnd<'_> {
             kept: false,
             call,
         };
-        let old = { self.lock().live.replace(live) };
+        let old = {
+            let mut w = self.lock();
+            w.credential_refused = false;
+            w.unsent = None;
+            w.live.replace(live)
+        };
         self.retire(old);
         Pick::Member {
             name,
@@ -1476,7 +1519,11 @@ impl EgressFarEnd<'_> {
             {
                 Some(fields) => auth = fields,
                 None => {
-                    self.lock().unsent = Some(RefusalCode::UnsentAuthFailed);
+                    {
+                        let mut w = self.lock();
+                        w.unsent = Some(RefusalCode::UnsentAuthFailed);
+                        w.credential_refused = true;
+                    }
                     self.settle_attempt(&record);
                     return false;
                 }
@@ -1624,6 +1671,14 @@ impl EgressFarEnd<'_> {
             }
 
             Err(err) if err.is_auth() => {
+                if self.owns_attempt(record.attempt, destination) {
+                    {
+                        let mut w = self.lock();
+                        w.unsent = Some(RefusalCode::UnsentAuthFailed);
+                        w.credential_refused = true;
+                    }
+                    warn_credential_refused(&route.provider, &route.base_url, err);
+                }
                 self.settle_attempt(&record);
                 false
             }
@@ -1721,6 +1776,10 @@ impl EgressFarEnd<'_> {
             }
 
             Ok(Err(err)) if !answered && err.is_auth() => {
+                self.lock().credential_refused = true;
+                if let Some(route) = e.routes.get(&target.1) {
+                    warn_credential_refused(&route.provider, &route.base_url, err);
+                }
                 self.settle();
                 return Some(fail_over());
             }
@@ -2452,6 +2511,10 @@ impl FarEnd for EgressFarEnd<'_> {
     fn unsent(&self, _token: &Pass<Route>) -> Option<RefusalCode> {
         let w = self.lock();
         w.unsent.filter(|_| !w.sent)
+    }
+
+    fn credential_refused(&self, _token: &Pass<Route>) -> bool {
+        self.lock().credential_refused
     }
 
     fn constrain(&self, _token: &Pass<Route>, constraint: Constraint) {
