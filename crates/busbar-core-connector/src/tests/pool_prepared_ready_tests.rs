@@ -476,7 +476,7 @@ fn connector(
 // Exchanges.
 
 /// A request to `far` carrying `body`, bounded by `timeout_ms` (`0`: unbounded).
-fn request(far: &str, body: &'static [u8], timeout_ms: u64) -> OpenDesc<'_> {
+fn request<'a>(far: &'a str, body: &'static [u8], timeout_ms: u64) -> OpenDesc<'a> {
     OpenDesc {
         target: far,
         body: Bytes::from_static(body),
