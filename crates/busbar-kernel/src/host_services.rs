@@ -27,7 +27,7 @@ pub use recovery_runtime::RecoveryWork;
 pub const QUEUE_FULL: &str = "the record write queue is full";
 
 use crate::host_records::{
-    record_key, Acked, Owed as WriteOwed, PendingRecords, RecordRows, Write, WriteBehind,
+    record_key, Acked, Owed as WriteOwed, PendingRecords, Write, WriteBehind,
 };
 use crate::host_units::StageAnswer;
 use crate::host_work::{
@@ -769,10 +769,6 @@ struct NativeRecordScope {
     facts: Arc<InstanceFacts>,
 }
 
-struct Records {
-    reads: Arc<dyn RecordRows>,
-}
-
 pub type WallMs = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 pub type MonoNs = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -932,7 +928,6 @@ pub struct KernelServices {
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
     native_record_bootstrap: Mutex<HashMap<String, crate::host_record_bootstrap::Bootstrap>>,
     plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
-    records: OnceLock<Records>,
     persistence: OnceLock<Arc<crate::persistence::facade::CoreStore>>,
     native_claims: NativeClaims,
     pool: OnceLock<Arc<dyn Offload>>,
@@ -1063,7 +1058,6 @@ impl KernelServices {
             record_bootstrap: Mutex::default(),
             native_record_bootstrap: Mutex::default(),
             plane_cleanup: Mutex::default(),
-            records: OnceLock::new(),
             persistence: OnceLock::new(),
             native_claims: Arc::default(),
             pool: OnceLock::new(),
@@ -1342,16 +1336,6 @@ impl KernelServices {
     pub fn with_disk_lane(mut self, lane: Arc<crate::host_disk::DiskLane>) -> Self {
         self.disk = lane;
         self
-    }
-
-    #[must_use]
-    pub fn with_records(self, reads: Arc<dyn RecordRows>) -> Self {
-        self.attach_records(reads);
-        self
-    }
-
-    pub fn attach_records(&self, reads: Arc<dyn RecordRows>) -> bool {
-        self.records.set(Records { reads }).is_ok()
     }
 
     /// Attach the canonical host persistence owner before admitting instances.
@@ -1841,43 +1825,27 @@ impl KernelServices {
         value: RecordBytes,
         acked: Acked,
     ) -> Result<(), &'static str> {
-        let native = self.persistence.get();
-        let native_facts = if native.is_some() {
-            Some(self.facts(caller).ok_or(NOT_ADMITTED)?)
-        } else {
-            None
+        let Some(store) = self.persistence.get() else {
+            return Err(self.unbound(caller, kind).error);
         };
-        let (schema, records, pool) = if let Some(facts) = native_facts.as_ref() {
-            let schema = facts
+        let facts = self.facts(caller).ok_or(NOT_ADMITTED)?;
+        let schema = facts
+            .record_kinds
+            .iter()
+            .find(|schema| schema.as_str() == kind)
+            .copied()
+            .ok_or(NOT_A_KIND)?;
+        let pool = self.pool().ok_or(NO_POOL)?;
+        let conditional = facts.conditional_record_kinds.iter().any(|index| {
+            facts
                 .record_kinds
-                .iter()
-                .find(|schema| schema.as_str() == kind)
-                .copied()
-                .ok_or(NOT_A_KIND)?;
-            (schema, None, self.pool().ok_or(NO_POOL)?)
-        } else {
-            let (schema, records, pool) =
-                self.scope(caller, kind).map_err(|stored| stored.error)?;
-            (schema, Some(records), pool)
-        };
-        let conditional = if let Some(facts) = native_facts.as_ref() {
-            facts.conditional_record_kinds.iter().any(|index| {
-                facts
-                    .record_kinds
-                    .get(*index as usize)
-                    .is_some_and(|schema| schema.as_str() == kind)
-            })
-        } else {
-            self.conditional_kind(caller.namespace(), kind)
-        };
+                .get(*index as usize)
+                .is_some_and(|schema| schema.as_str() == kind)
+        });
         if conditional {
             return Err("this record kind requires conditional publication");
         }
-        let chain = if let Some(facts) = native_facts.as_ref() {
-            Self::chain_of_facts(facts, kind)
-        } else {
-            self.chain_of(caller, kind)
-        };
+        let chain = Self::chain_of_facts(&facts, kind);
         if chain.is_some() {
             if crate::host_chains::scope_of(key).is_none() {
                 return Err(crate::host_chains::CHAIN_SCOPE_UNFIT);
@@ -1904,19 +1872,8 @@ impl KernelServices {
                 chain,
             }
         };
-        let started = if native.is_some() {
-            self.batcher.push_native_with(make)
-        } else {
-            self.batcher.push_with(make)
-        };
-        match started {
-            Some(true) => {
-                if let Some(store) = native {
-                    self.start_native_flush(store, pool)
-                } else if let Some(records) = records {
-                    self.start_flush(records, pool)
-                }
-            }
+        match self.batcher.push_native_with(make) {
+            Some(true) => self.start_native_flush(store, pool),
             Some(false) => {}
             None => return Err(QUEUE_FULL),
         }
@@ -1937,10 +1894,6 @@ impl KernelServices {
     #[must_use]
     pub fn supports_record_transactions(&self) -> bool {
         self.persistence.get().is_some()
-            || self
-                .records
-                .get()
-                .is_some_and(|r| r.reads.supports_record_transaction())
     }
 
     pub fn observe_chain_life(
@@ -1965,34 +1918,17 @@ impl KernelServices {
         let scope = crate::host_chains::scope_of(scope)
             .ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?
             .to_string();
-        if self.persistence.get().is_some() {
-            let rows = self
-                .native_records(caller, schema.as_str())
-                .map_err(|stored| stored.error)?
-                .ok_or(NO_STORE)?;
-            let pool = self.pool().ok_or(NO_POOL)?;
-            let instance = Arc::clone(caller.namespace());
-            let owed = LifeObservationOwed(Some(done));
-            pool.run_async(Box::pin(async move {
-                owed.answer(
-                    crate::host_chains::observe_life_async(&rows.rows, &instance, schema, &scope)
-                        .await,
-                );
-            }));
-            return Ok(());
-        }
-        let records = self.records.get().ok_or(NO_STORE)?;
+        let rows = self
+            .native_records(caller, schema.as_str())
+            .map_err(|stored| stored.error)?
+            .ok_or(NO_STORE)?;
         let pool = self.pool().ok_or(NO_POOL)?;
-        if !records.reads.supports_record_transaction() {
-            return Err("record transactions are unsupported");
-        }
-        let rows = Arc::clone(&records.reads);
         let instance = Arc::clone(caller.namespace());
         let owed = LifeObservationOwed(Some(done));
-        pool.run(Box::new(move || {
-            owed.answer(crate::host_chains::observe_life(
-                &*rows, &instance, schema, &scope,
-            ));
+        pool.run_async(Box::pin(async move {
+            owed.answer(
+                crate::host_chains::observe_life_async(&rows.rows, &instance, schema, &scope).await,
+            );
         }));
         Ok(())
     }
@@ -2011,13 +1947,10 @@ impl KernelServices {
         use busbar_contract::host_records::conditional::{Mutation, Predicate, Request, VERSION};
         let facts = self.facts(caller).ok_or(NOT_A_KIND)?;
         let native = self.persistence.get();
-        let records = self.records.get();
         let pool = self.pool().ok_or(NO_POOL)?;
-        if native.is_none()
-            && !records.is_some_and(|records| records.reads.supports_record_transaction())
-        {
+        let Some(store) = native else {
             return Err("record transactions are unsupported");
-        }
+        };
         let unit = unit
             .map(|id| self.units.get(id).ok_or("record transaction unit ended"))
             .transpose()?;
@@ -2143,22 +2076,11 @@ impl KernelServices {
             unit,
         );
         match self.batcher.push_conditional(write) {
-            Some(true) => {
-                if let Some(store) = native {
-                    self.start_native_flush(store, pool)
-                } else if let Some(records) = records {
-                    self.start_flush(records, pool)
-                }
-            }
+            Some(true) => self.start_native_flush(store, pool),
             Some(false) => {}
             None => return Err(QUEUE_FULL),
         }
         Ok(())
-    }
-
-    fn chain_of(&self, caller: &Caller, kind: &str) -> Option<crate::host_chains::ChainFraming> {
-        let facts = self.facts(caller)?;
-        Self::chain_of_facts(facts.as_ref(), kind)
     }
 
     fn chain_of_facts(
@@ -2224,18 +2146,6 @@ impl KernelServices {
             .await
     }
 
-    fn start_flush(&self, records: &Records, pool: &dyn Offload) {
-        let unrun = Unrun(Some(Arc::clone(&self.batcher)));
-        let pending = Arc::clone(&self.pending);
-        let chains = Arc::clone(&self.chains);
-        let rows = Arc::clone(&records.reads);
-        pool.run(Box::new(move || {
-            if let Some(batcher) = unrun.run() {
-                batcher.flush(&pending, &*rows, &chains);
-            }
-        }));
-    }
-
     fn start_native_flush(
         &self,
         store: &Arc<crate::persistence::facade::CoreStore>,
@@ -2253,17 +2163,9 @@ impl KernelServices {
     }
 
     pub fn flush_tick(&self) {
-        if let Some(store) = self.persistence.get() {
-            if let Some(pool) = self.pool() {
-                if self.batcher.start() {
-                    self.start_native_flush(store, pool);
-                }
-            }
-            return;
-        }
-        if let (Some(records), Some(pool)) = (self.records.get(), self.pool()) {
+        if let (Some(store), Some(pool)) = (self.persistence.get(), self.pool()) {
             if self.batcher.start() {
-                self.start_flush(records, pool);
+                self.start_native_flush(store, pool);
             }
         }
     }
@@ -2425,28 +2327,6 @@ impl KernelServices {
             return None;
         }
         Some(facts)
-    }
-
-    fn scope(
-        &self,
-        caller: &Caller,
-        kind: &str,
-    ) -> Result<(RecordSchemaId, &Records, &dyn Offload), Stored> {
-        let facts = self
-            .facts(caller)
-            .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
-        let schema = facts
-            .record_kinds
-            .iter()
-            .find(|k| k.as_str() == kind)
-            .copied()
-            .ok_or_else(|| Stored::refused(NOT_A_KIND))?;
-        let records = self
-            .records
-            .get()
-            .ok_or_else(|| Stored::refused(NO_STORE))?;
-        let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
-        Ok((schema, records, pool))
     }
 
     /// The refusal of a record read or claim on a host with no persistence bound.

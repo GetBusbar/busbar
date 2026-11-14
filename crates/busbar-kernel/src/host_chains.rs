@@ -16,7 +16,7 @@ use busbar_contract::services::{chain_key, chain_key_parts};
 
 use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord, Framing};
-use crate::host_records::{record_key, RecordRows, CLAIM_KIND, WRITE_FAILED};
+use crate::host_records::{record_key, WRITE_FAILED};
 
 pub const CHAIN_SCOPE_UNFIT: &str =
     "a chained record's key is its chain's scope: UTF-8, not empty, not ending in `/<20 digits>`";
@@ -31,8 +31,6 @@ const BODY_VERSION: u8 = 1;
 pub const CHAIN_OVERHEAD: usize = 1 + 8 + 1 + 64 + 1 + 64;
 
 pub const POSITIONS_CAP: usize = 65_536;
-
-const CLAIM_SECS: u64 = 60;
 
 pub const CHAIN_LIFE_SCHEMA: RecordSchemaId = RecordSchemaId::new("kernel-chain-life");
 
@@ -128,18 +126,10 @@ pub(crate) struct Held {
 
 type Positions = IndexMap<Position, Held>;
 
-struct RetainedClaim {
-    token: zeroize::Zeroizing<String>,
-    expires_at: u64,
-}
-
 /// THE CHAIN POSITIONS of every instance's chained kinds, the flush's to keep.
 #[derive(Default)]
 pub struct ChainBook {
     positions: Mutex<Positions>,
-    /// The position claims this node won and has not yet stored a record under: a write the store
-    /// refused after its claim was won is retried under the claim it already holds.
-    claimed: Mutex<BTreeMap<Position, RetainedClaim>>,
 }
 
 impl std::fmt::Debug for ChainBook {
@@ -163,48 +153,6 @@ pub(crate) struct OrdinaryChain<'a> {
 impl ChainBook {
     fn lock(&self) -> MutexGuard<'_, Positions> {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn holds(&self, at: &Position, token: &str, now: u64) -> Option<u64> {
-        let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
-        claimed.retain(|_, held| held.expires_at > now);
-        match claimed.get(at) {
-            Some(held) if held.token.as_str() == token => Some(held.expires_at),
-            _ => {
-                claimed.remove(at);
-                None
-            }
-        }
-    }
-
-    fn hold(&self, at: &Position, token: String, expires_at: u64) {
-        let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
-        if claimed.contains_key(at) || claimed.len() < POSITIONS_CAP {
-            claimed.insert(
-                at.clone(),
-                RetainedClaim {
-                    token: token.into(),
-                    expires_at,
-                },
-            );
-        }
-    }
-
-    fn retire(&self, at: &Position) {
-        self.claimed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(at);
-    }
-
-    fn commit(&self, at: Position, chain: Held) {
-        self.retire(&at);
-        let mut positions = self.lock();
-        positions.shift_remove(&at);
-        positions.insert(at, chain);
-        while positions.len() > POSITIONS_CAP {
-            positions.shift_remove_index(0);
-        }
     }
 
     pub(crate) async fn prepare_ordinary_async(
@@ -272,140 +220,6 @@ impl ChainBook {
         let position = chain.prepare_observed(instance, &mut request, observed)?;
         Ok((request, position))
     }
-
-    pub(crate) fn append(
-        &self,
-        rows: &dyn RecordRows,
-        instance: &Arc<str>,
-        schema: RecordSchemaId,
-        scope: &str,
-        content: &[u8],
-        f: ChainFraming,
-    ) -> Result<(), &'static str> {
-        let at: Position = (
-            Arc::clone(instance),
-            schema.as_str().to_string(),
-            scope.to_string(),
-        );
-        for _ in 0..CLAIM_ATTEMPTS {
-            let observed_life = life_of(rows, instance, schema, scope)?;
-            let cached = self.lock().get(&at).cloned();
-            let held = match cached {
-                Some(held) if held.life == observed_life => held,
-                Some(_) => {
-                    self.retire(&at);
-                    self.lock().shift_remove(&at);
-                    resume(rows, instance, schema, scope, f)?
-                }
-                None => resume(rows, instance, schema, scope, f)?,
-            };
-            let (mut chain, life) = (held.chain, held.life);
-            let record = chain.append(
-                scope,
-                StreamInput::new(content.to_vec(), f.framing, f.digests_scope),
-            );
-            let body = encode(&record).ok_or(CHAIN_RECORD_TOO_LARGE)?;
-            let body = RecordBytes::new(body).map_err(|_| CHAIN_RECORD_TOO_LARGE)?;
-            let key = record_key(instance, &chain_key(scope.as_bytes(), record.seq()));
-            let now = busbar_kernel::store::now();
-            let token = position_token(instance, schema, scope, life, &record);
-            let expires_at = match self.holds(&at, &token, now) {
-                Some(expires_at) => expires_at,
-                None => {
-                    let expires_at = now.saturating_add(CLAIM_SECS);
-                    if !rows
-                        .claim(CLAIM_KIND, &token, expires_at, now)
-                        .map_err(|_| WRITE_FAILED)?
-                    {
-                        self.lock().shift_remove(&at);
-                        continue;
-                    }
-                    self.hold(&at, token, expires_at);
-                    expires_at
-                }
-            };
-            let ours = rows
-                .record_get(schema, &key)
-                .map_err(|_| WRITE_FAILED)?
-                .is_none_or(|held| held.as_slice().is_empty())
-                && life_of(rows, instance, schema, scope)? == life
-                && busbar_kernel::store::now() < expires_at;
-            if !ours {
-                self.retire(&at);
-                self.lock().shift_remove(&at);
-                continue;
-            }
-
-            rows.record_put(schema, &key, &body)
-                .map_err(|_| WRITE_FAILED)?;
-            self.commit(
-                at,
-                Held {
-                    chain,
-                    life,
-                    tail: None,
-                    conditional: false,
-                },
-            );
-            return Ok(());
-        }
-        crate::diagnostics::diag_error!(
-            crate::diagnostics::PLANE_JOURNAL_RESUME_CHAIN_BROKEN,
-            instance = %instance,
-            stream = %schema.as_str(),
-            break_detail = "other writers kept taking the chain's next position",
-            "a plane record chain append could not take a position: the write is refused, not \
-             stored over another writer's record"
-        );
-        Err(WRITE_FAILED)
-    }
-
-    pub(crate) fn drop_chain(
-        &self,
-        rows: &dyn RecordRows,
-        instance: &Arc<str>,
-        schema: RecordSchemaId,
-        scope: &str,
-    ) -> Result<(), &'static str> {
-        let at: Position = (
-            Arc::clone(instance),
-            schema.as_str().to_string(),
-            scope.to_string(),
-        );
-
-        let dropped = raise_life(rows, instance, schema, scope)
-            .and_then(|()| tombstone(rows, instance, schema, scope));
-        if dropped.is_ok() {
-            self.retire(&at);
-        }
-
-        self.lock().shift_remove(&at);
-        dropped
-    }
-}
-
-fn tombstone(
-    rows: &dyn RecordRows,
-    instance: &str,
-    schema: RecordSchemaId,
-    scope: &str,
-) -> Result<(), &'static str> {
-    let tomb = RecordBytes::new(Vec::new()).map_err(|_| WRITE_FAILED)?;
-    let unscoped = record_key(instance, &[]).len();
-    for (key, value) in held(rows, instance, schema, scope)? {
-        if value.as_slice().is_empty() {
-            continue;
-        }
-        let ours = key
-            .get(unscoped..)
-            .and_then(chain_key_parts)
-            .is_some_and(|(s, _)| s == scope.as_bytes());
-        if ours {
-            rows.record_put(schema, &key, &tomb)
-                .map_err(|_| WRITE_FAILED)?;
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn life_key(instance: &str, schema: RecordSchemaId, scope: &str) -> Vec<u8> {
@@ -417,32 +231,6 @@ pub(crate) fn life_key(instance: &str, schema: RecordSchemaId, scope: &str) -> V
     record_key(instance, &key)
 }
 
-fn life_of(
-    rows: &dyn RecordRows,
-    instance: &str,
-    schema: RecordSchemaId,
-    scope: &str,
-) -> Result<u64, &'static str> {
-    let held = rows
-        .record_get(CHAIN_LIFE_SCHEMA, &life_key(instance, schema, scope))
-        .map_err(|_| WRITE_FAILED)?;
-    parse_life(held.as_ref().map(RecordBytes::as_slice))
-}
-
-fn raise_life(
-    rows: &dyn RecordRows,
-    instance: &str,
-    schema: RecordSchemaId,
-    scope: &str,
-) -> Result<(), &'static str> {
-    let next = life_of(rows, instance, schema, scope)?
-        .checked_add(1)
-        .ok_or("chain life overflow")?;
-    let body = RecordBytes::new(next.to_be_bytes().to_vec()).map_err(|_| WRITE_FAILED)?;
-    rows.record_put(CHAIN_LIFE_SCHEMA, &life_key(instance, schema, scope), &body)
-        .map_err(|_| WRITE_FAILED)
-}
-
 fn parse_life(bytes: Option<&[u8]>) -> Result<u64, &'static str> {
     match bytes {
         None => Ok(0),
@@ -450,21 +238,6 @@ fn parse_life(bytes: Option<&[u8]>) -> Result<u64, &'static str> {
             .map(u64::from_be_bytes)
             .map_err(|_| "malformed chain life"),
     }
-}
-
-pub(crate) fn observe_life(
-    rows: &dyn RecordRows,
-    instance: &str,
-    schema: RecordSchemaId,
-    scope: &str,
-) -> Result<Expected, &'static str> {
-    let bytes = rows
-        .record_get(CHAIN_LIFE_SCHEMA, &life_key(instance, schema, scope))
-        .map_err(|_| WRITE_FAILED)?;
-    parse_life(bytes.as_ref().map(RecordBytes::as_slice))?;
-    Ok(bytes.map_or(Expected::Absent, |value| {
-        Expected::Bytes(value.as_slice().to_vec())
-    }))
 }
 
 #[derive(Debug)]
@@ -540,45 +313,6 @@ impl ChainBook {
 }
 
 impl ConditionalChain {
-    pub(crate) fn prepare(
-        &self,
-        rows: &dyn RecordRows,
-        instance: &str,
-        request: &mut Request,
-        book: &ChainBook,
-    ) -> Result<ConditionalPosition, &'static str> {
-        let life = parse_life(match &self.life {
-            Expected::Absent => None,
-            Expected::Bytes(bytes) => Some(bytes),
-        })?;
-        let at = (
-            Arc::from(instance),
-            self.schema.as_str().to_string(),
-            self.scope.clone(),
-        );
-        let observed = if matches!(self.action, ConditionalChainAction::Append(_)) {
-            match book
-                .lock()
-                .get(&at)
-                .filter(|held| held.conditional && held.life == life)
-                .cloned()
-            {
-                Some(held) => Some(held),
-                None => Some(resume_conditional(
-                    rows,
-                    instance,
-                    self.schema,
-                    &self.scope,
-                    self.framing,
-                    life,
-                )?),
-            }
-        } else {
-            None
-        };
-        self.prepare_observed(instance, request, observed)
-    }
-
     pub(crate) async fn prepare_async(
         &self,
         rows: &crate::host_records_async::AsyncRecords,
@@ -720,18 +454,6 @@ impl ConditionalChain {
     }
 }
 
-fn resume_conditional(
-    rows: &dyn RecordRows,
-    instance: &str,
-    schema: RecordSchemaId,
-    scope: &str,
-    framing: ChainFraming,
-    life: u64,
-) -> Result<Held, &'static str> {
-    let stored = held(rows, instance, schema, scope)?;
-    resume_conditional_rows(instance, schema, scope, framing, life, stored)
-}
-
 async fn resume_conditional_async(
     rows: &crate::host_records_async::AsyncRecords,
     instance: &str,
@@ -798,18 +520,6 @@ fn resume_conditional_rows(
     })
 }
 
-fn held(
-    rows: &dyn RecordRows,
-    instance: &str,
-    schema: RecordSchemaId,
-    scope: &str,
-) -> Result<Vec<(Vec<u8>, RecordBytes)>, &'static str> {
-    let mut prefix = scope.as_bytes().to_vec();
-    prefix.push(b'/');
-    rows.record_scan(schema, &record_key(instance, &prefix), u32::MAX)
-        .map_err(|_| WRITE_FAILED)
-}
-
 async fn held_async(
     rows: &crate::host_records_async::AsyncRecords,
     instance: &str,
@@ -858,38 +568,6 @@ pub(crate) async fn observe_life_async(
     Ok(bytes.map_or(Expected::Absent, |value| {
         Expected::Bytes(value.expose(&seal).clone())
     }))
-}
-
-pub(crate) fn position_token(
-    instance: &str,
-    schema: RecordSchemaId,
-    scope: &str,
-    life: u64,
-    record: &StreamRecord,
-) -> String {
-    let mut framed = Vec::new();
-    for field in [instance, schema.as_str(), scope, record.prev_hash()] {
-        framed.extend_from_slice(&(field.len() as u64).to_be_bytes());
-        framed.extend_from_slice(field.as_bytes());
-    }
-    framed.extend_from_slice(&life.to_be_bytes());
-    framed.extend_from_slice(&record.seq().to_be_bytes());
-    busbar_contract::redacted::sha256_hex(&framed)
-}
-
-fn resume(
-    rows: &dyn RecordRows,
-    instance: &str,
-    schema: RecordSchemaId,
-    scope: &str,
-    f: ChainFraming,
-) -> Result<Held, &'static str> {
-    let life = life_of(rows, instance, schema, scope)?;
-    let found = held(rows, instance, schema, scope)?;
-    if life_of(rows, instance, schema, scope)? != life {
-        return Err(WRITE_FAILED);
-    }
-    resume_ordinary_rows(instance, schema, scope, f, life, found)
 }
 
 fn resume_ordinary_rows(

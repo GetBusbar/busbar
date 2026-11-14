@@ -27,136 +27,63 @@ const STATE: RecordSchemaId = RecordSchemaId::new("state");
 const EVENTS: RecordSchemaId = RecordSchemaId::new("events");
 const INSTANCE: &str = "instance";
 
-type Address = (String, Vec<u8>);
+use crate::record_rows_fixture::Rows as AtomicRows;
 
-#[derive(Default)]
-struct AtomicState {
-    rows: BTreeMap<Address, Vec<u8>>,
-    receipts: HashMap<[u8; 16], [u8; 32]>,
-    calls: Vec<Request>,
-    lose_reply: bool,
-    fail_before_commit: bool,
-    refuse: bool,
-    scans: usize,
-    refuse_scan: bool,
+fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
+    futures::FutureExt::now_or_never(future)
+        .expect("the native in-memory fixture finishes in one poll")
 }
 
-#[derive(Default)]
-struct AtomicRows(Mutex<AtomicState>);
-
-impl RecordRows for AtomicRows {
-    fn supports_record_transaction(&self) -> bool {
-        true
+/// Fixture adapter: the production `prepare_async` over the fixture's CoreStore.
+impl ConditionalChain {
+    fn prepare(
+        &self,
+        rows: &AtomicRows,
+        instance: &str,
+        request: &mut Request,
+        book: &crate::host_chains::ChainBook,
+    ) -> Result<crate::host_chains::ConditionalPosition, &'static str> {
+        ready(self.prepare_async(&rows.records(instance), instance, request, book))
     }
+}
 
-    fn record_transaction(&self, request: &Request) -> Result<Decision, RecordFailure> {
-        let mut state = self.0.lock().unwrap();
-        state.calls.push(request.clone());
-        if state.refuse {
-            return Err(RecordFailure::Refused("temporarily unsupported".into()));
-        }
-        let fingerprint = request.fingerprint();
-        if let Some(held) = state.receipts.get(&request.op_id.0) {
-            return if *held == fingerprint {
-                Ok(Decision::Applied)
-            } else {
-                Err(RecordFailure::Conflict)
-            };
-        }
-        for predicate in &request.predicates {
-            let held = state
-                .rows
-                .get(&(predicate.schema.clone(), predicate.key.clone()));
-            let matches = match &predicate.expected {
-                Expected::Absent => held.is_none(),
-                Expected::Bytes(bytes) => held == Some(bytes),
-            };
-            if !matches {
-                return Ok(Decision::ConditionConflict);
+/// Fixture adapter: the production `observe_life_async` over the fixture's CoreStore.
+fn observe_life(
+    rows: &AtomicRows,
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+) -> Result<Expected, &'static str> {
+    ready(crate::host_chains::observe_life_async(
+        &rows.records(instance),
+        instance,
+        schema,
+        scope,
+    ))
+}
+
+/// Fixture adapter: one production `attempt_native`, answered or retained as `flush_native` does.
+impl ConditionalWrite {
+    fn attempt(mut self, rows: &AtomicRows, book: &crate::host_chains::ChainBook) -> Option<Self> {
+        match ready(self.attempt_native(&rows.store(), book)) {
+            Some(result) => {
+                self.owed.answer(result);
+                None
             }
-        }
-        if state.fail_before_commit {
-            state.fail_before_commit = false;
-            return Err(RecordFailure::Failed("rolled back".into()));
-        }
-        for mutation in &request.mutations {
-            match mutation {
-                Mutation::Put { schema, key, value } => {
-                    state
-                        .rows
-                        .insert((schema.clone(), key.clone()), value.clone());
-                }
-                Mutation::Delete { schema, key } => {
-                    state.rows.remove(&(schema.clone(), key.clone()));
-                }
-                Mutation::DeleteRange {
-                    schema,
-                    prefix,
-                    exact_key_length,
-                } => {
-                    state.rows.retain(|(held_schema, key), _| {
-                        held_schema != schema
-                            || !key.starts_with(prefix)
-                            || key.len() as u64 != *exact_key_length
-                    });
-                }
-            }
-        }
-        state.receipts.insert(request.op_id.0, fingerprint);
-        if state.lose_reply {
-            state.lose_reply = false;
-            Err(RecordFailure::Fault("lost commit answer".into()))
-        } else {
-            Ok(Decision::Applied)
+            None => Some(self),
         }
     }
+}
 
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        self.0.lock().unwrap().rows.insert(
-            (schema.as_str().into(), key.to_vec()),
-            value.as_slice().to_vec(),
-        );
-        Ok(())
-    }
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        Ok(self
-            .0
-            .lock()
-            .unwrap()
-            .rows
-            .get(&(schema.as_str().into(), key.to_vec()))
-            .map(|bytes| RecordBytes::new(bytes.clone()).unwrap()))
-    }
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        let mut state = self.0.lock().unwrap();
-        state.scans += 1;
-        if state.refuse_scan {
-            return Err(StoreError::Unavailable);
-        }
-        Ok(state
-            .rows
-            .iter()
-            .filter(|((s, key), _)| s == schema.as_str() && key.starts_with(prefix))
-            .take(limit as usize)
-            .map(|((_, key), value)| (key.clone(), RecordBytes::new(value.clone()).unwrap()))
-            .collect())
-    }
-    fn claim(&self, _: &str, _: &str, _: u64, _: u64) -> Result<bool, StoreError> {
-        panic!("conditional publication never claims a position")
+/// Fixture adapter: the production `flush_native` over the fixture's CoreStore.
+impl WriteBehind {
+    fn flush(
+        self: &Arc<Self>,
+        pending: &PendingRecords,
+        rows: &AtomicRows,
+        chains: &crate::host_chains::ChainBook,
+    ) {
+        ready(self.flush_native(pending, &rows.store(), chains));
     }
 }
 
@@ -207,8 +134,7 @@ fn prepared(
 ) -> Request {
     let mut request = request(expected, value);
     let mut chain = operation(content);
-    chain.life =
-        crate::host_chains::observe_life(rows, INSTANCE, EVENTS, "principal/task").unwrap();
+    chain.life = observe_life(rows, INSTANCE, EVENTS, "principal/task").unwrap();
     chain
         .prepare(
             rows,
@@ -356,7 +282,7 @@ fn malformed_life_and_drop_overflow_refuse_before_submission() {
         )
         .unwrap();
         let mut candidate = request(Expected::Absent, b"next");
-        match crate::host_chains::observe_life(&rows, INSTANCE, EVENTS, "principal/task") {
+        match observe_life(&rows, INSTANCE, EVENTS, "principal/task") {
             Err(_) => {}
             Ok(life) => {
                 let mut chain = operation(None);
@@ -395,7 +321,7 @@ fn unknown_commit_replays_exact_body_and_identity_without_optimistic_visibility(
     let rows = AtomicRows::default();
     rows.0.lock().unwrap().lose_reply = true;
     let pending = PendingRecords::default();
-    let queue = WriteBehind::default();
+    let queue = Arc::new(WriteBehind::default());
     let answers = Arc::new(Mutex::new(Vec::new()));
     assert_eq!(
         queue.push_conditional(queued(
@@ -441,7 +367,7 @@ fn rollback_retries_same_request_and_condition_conflict_has_no_receipt() {
     let rows = AtomicRows::default();
     rows.0.lock().unwrap().fail_before_commit = true;
     let pending = PendingRecords::default();
-    let queue = WriteBehind::default();
+    let queue = Arc::new(WriteBehind::default());
     let answers = Arc::new(Mutex::new(Vec::new()));
     queue
         .push_conditional(queued(
@@ -535,36 +461,13 @@ fn changed_body_operation_identity_is_distinct_from_condition_conflict() {
     );
 }
 
-#[test]
-fn replay_horizon_reports_indeterminate_without_new_dispatch_or_loss_of_custody() {
-    let rows = AtomicRows::default();
-    let answers = Arc::new(Mutex::new(Vec::new()));
-    let mut write = queued(request(Expected::Absent, b"state"), Arc::clone(&answers));
-    write.prepared = true;
-    write.submitted = Some(
-        std::time::Instant::now()
-            - std::time::Duration::from_secs(busbar_contract::abi::store::OP_ID_RETENTION_SECS),
-    );
-    let identity = write.request.clone();
-    let retained = write
-        .attempt(&rows, &crate::host_chains::ChainBook::default())
-        .expect("expired ambiguous operation remains owned");
-    assert_eq!(retained.request, identity);
-    assert_eq!(
-        answers.lock().unwrap()[0].decision,
-        Err(ConditionalFailure::Indeterminate)
-    );
-    assert!(rows.0.lock().unwrap().calls.is_empty());
-    assert!(retained
-        .attempt(&rows, &crate::host_chains::ChainBook::default())
-        .is_some());
-    assert_eq!(answers.lock().unwrap().len(), 1);
-}
-
 struct Inline;
 impl crate::host_services::Offload for Inline {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         job();
+    }
+    fn run_async(&self, job: crate::host_services::AsyncJob) {
+        ready(job);
     }
 }
 
@@ -598,9 +501,8 @@ fn logical() -> ConditionalCandidate {
 }
 
 fn services(rows: Arc<AtomicRows>, opted_in: bool) -> crate::host_services::KernelServices {
-    let services = crate::host_services::KernelServices::new()
-        .with_records(rows)
-        .with_pool(Arc::new(Inline));
+    let services = crate::host_services::KernelServices::new().with_pool(Arc::new(Inline));
+    services.attach_persistence(rows.store());
     services
         .admit_ready(
             INSTANCE,
@@ -807,85 +709,13 @@ fn absent_life_is_not_equivalent_to_present_zero_bytes() {
     assert!(rows.0.lock().unwrap().receipts.is_empty());
 }
 
-struct UnsupportedRows(Arc<AtomicRows>);
-impl RecordRows for UnsupportedRows {
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        self.0.record_put(schema, key, value)
-    }
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        self.0.record_get(schema, key)
-    }
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        self.0.record_scan(schema, prefix, limit)
-    }
-    fn claim(&self, _: &str, _: &str, _: u64, _: u64) -> Result<bool, StoreError> {
-        panic!("no claims")
-    }
-}
-
-#[test]
-fn missing_store_capability_refuses_before_transaction_dispatch() {
-    let rows = Arc::new(AtomicRows::default());
-    let host = crate::host_services::KernelServices::new()
-        .with_records(Arc::new(UnsupportedRows(Arc::clone(&rows))))
-        .with_pool(Arc::new(Inline));
-    host.admit_ready(
-        INSTANCE,
-        crate::host_services::InstanceFacts {
-            record_kinds: vec![STATE],
-            conditional_record_kinds: vec![0],
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert!(!host.supports_record_transactions());
-    assert_eq!(
-        host.record_write(
-            &caller(),
-            "state",
-            b"entry",
-            RecordBytes::new(b"forbidden".to_vec()).unwrap(),
-            Box::new(|_| panic!("guarded ordinary write cannot dispatch")),
-        ),
-        Err("this record kind requires conditional publication")
-    );
-    let mut candidate = logical();
-    candidate.chains.clear();
-    assert!(host
-        .record_transaction(
-            &caller(),
-            None,
-            candidate,
-            Box::new(|_| panic!("no submission"))
-        )
-        .is_err());
-    let state = rows.0.lock().unwrap();
-    assert!(state.calls.is_empty());
-    assert!(state.rows.is_empty());
-}
-
 #[test]
 fn read_bound_life_rejects_drop_recreate_before_first_submission() {
     let rows = AtomicRows::default();
     let seed = prepared(&rows, Expected::Absent, b"same", Some(b"same"));
     assert_eq!(rows.record_transaction(&seed), Ok(Decision::Applied));
 
-    let original_life =
-        crate::host_chains::observe_life(&rows, INSTANCE, EVENTS, "principal/task").unwrap();
+    let original_life = observe_life(&rows, INSTANCE, EVENTS, "principal/task").unwrap();
     let original_task = rows
         .record_get(STATE, &record_key(INSTANCE, b"task"))
         .unwrap()
@@ -921,8 +751,7 @@ fn read_bound_life_rejects_drop_recreate_before_first_submission() {
 #[test]
 fn read_bound_life_also_fences_a_plain_config_write_without_chain_mutation() {
     let rows = AtomicRows::default();
-    let original_life =
-        crate::host_chains::observe_life(&rows, INSTANCE, EVENTS, "principal/task").unwrap();
+    let original_life = observe_life(&rows, INSTANCE, EVENTS, "principal/task").unwrap();
     let drop = prepared(&rows, Expected::Absent, b"same", None);
     assert_eq!(rows.record_transaction(&drop), Ok(Decision::Applied));
     let mut stale = request(Expected::Bytes(b"same".to_vec()), b"config-change");
@@ -988,9 +817,8 @@ fn observation_returns_exact_absence_and_bytes_under_declared_instance_scope() {
 #[test]
 fn selected_schema_alias_cannot_admit_a_plain_writer_into_chain_storage() {
     let rows = Arc::new(AtomicRows::default());
-    let host = crate::host_services::KernelServices::new()
-        .with_records(rows.clone())
-        .with_pool(Arc::new(Inline));
+    let host = crate::host_services::KernelServices::new().with_pool(Arc::new(Inline));
+    host.attach_persistence(rows.store());
     assert!(host
         .admit_ready(
             INSTANCE,
