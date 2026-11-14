@@ -43,8 +43,8 @@ throughput windows.
 |---|---|
 | `driver` | HTTP/1.1 keep-alive and h2c clients; closed loop (N in flight) and open loop (fixed rate, latency from the scheduled start, no coordinated omission); warmup; HDR histograms; per-second windows; errors by status |
 | `mock` | one hyper server (h1 + h2c, plaintext and TLS listeners) on its own runtime: the six LLM dialects whole/streamed/tool-call (shapes of the oracle mock that `tests/upgrade` vendors), MCP server, A2A agent (JWS-signed card), OAuth/OIDC IdP token endpoint, Vault KV v2, OTLP and webhook sinks, webrequest sidecar, decisions (jev/nanojev), streams session mint |
-| `gateway` | boots the binary (work dir, `config.yaml`, `providers.yaml`, `signing.key`, admin token), waits for `/healthz`; the shape of the upgrade harness's `Gateway::boot`, to be replaced by it when that lands |
-| `procstat` | process CPU time and RSS on Linux (`/proc`) and macOS (`proc_pidinfo`) |
+| `gateway` | boots the binary (work dir, `config.yaml`, `providers.yaml`, `signing.key`, admin token, listener ports held until spawn), waits for `/healthz` from a listener the child itself owns; the shape of the upgrade harness's `Gateway::boot`, to be replaced by it when that lands |
+| `procstat` | process CPU time and RSS on Linux (`/proc`) and macOS (`proc_pidinfo`); listening-socket ownership (`/proc`, `lsof`) |
 | `scenario` | the data files: `scenarios/*.yaml` (config + setup + cases, or an `llm_matrix`), `scenarios/suites.yaml` |
 
 ## Scenario files
