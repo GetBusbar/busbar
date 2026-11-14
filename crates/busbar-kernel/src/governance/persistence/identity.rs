@@ -17,6 +17,8 @@ use busbar_contract::records::{
 use busbar_contract::Secret;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use super::shape::{self, Allowed, Level, Member};
+
 pub const NAMESPACE: NamespaceId = NamespaceId(*b"busbar.identity1");
 pub const CONFIDENTIAL: NamespaceId = NamespaceId(*b"busbar.secret.v1");
 
@@ -79,7 +81,11 @@ impl From<keys::KeyError> for Error {
 }
 impl From<Error> for RecordStoreError {
     fn from(value: Error) -> Self {
-        Self(match value {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: the refusal text is built only when the store operation fails"
+        )]
+        let message = match value {
             Error::Conflict => "identity conflict retry budget exhausted".into(),
             Error::Invalid(message) => message.into(),
             Error::Backend(failure) => format!("identity backend: {failure:?}"),
@@ -88,7 +94,8 @@ impl From<Error> for RecordStoreError {
                 "identity outcome unresolved; retained operation {}",
                 hex::encode(id.0)
             ),
-        })
+        };
+        Self(message)
     }
 }
 fn corrupt() -> Error {
@@ -158,7 +165,12 @@ struct Denied {
     revision: u64,
 }
 fn encode<T: Serialize>(record: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: identity rows are encoded only by key and credential management"
+    )]
+    let encoded = serde_json::to_vec(&Record { version: 1, record }).map_err(|_| corrupt());
+    encoded
 }
 fn decode<T: DeserializeOwned>(
     bytes: &Secret<Vec<u8>>,
@@ -166,22 +178,26 @@ fn decode<T: DeserializeOwned>(
     scopes: bool,
 ) -> Result<T> {
     let seal = crate::seal::lend();
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes.expose(&seal)).map_err(|_| corrupt())?;
+    let bytes = bytes.expose(&seal);
     if let Some(fields) = fields {
-        let record = value
-            .get("record")
-            .and_then(|v| v.as_object())
-            .ok_or_else(corrupt)?;
-        if record.keys().any(|name| {
-            !fields.contains(&name.as_str())
-                && !(scopes
+        let accepts = |name: &str| {
+            fields.contains(&name)
+                || (scopes
                     && busbar_contract::records::scope_kinds::kind_for_wire_field(name).is_some())
-        }) {
+        };
+        let record = Level {
+            allowed: Allowed::Pred(&accepts),
+            required: None,
+        };
+        let outer = Level {
+            allowed: Allowed::Any,
+            required: Some(("record", Member::Object(&record))),
+        };
+        if !shape::check(bytes, &outer) {
             return Err(corrupt());
         }
     }
-    let record: Record<T> = serde_json::from_value(value).map_err(|_| corrupt())?;
+    let record: Record<T> = serde_json::from_slice(bytes).map_err(|_| corrupt())?;
     if record.version != 1 {
         return Err(corrupt());
     }
@@ -349,6 +365,10 @@ impl<'a> Tx<'a> {
         if meta.revoked_at.is_some() && !secret.expose(&seal).is_empty() {
             return Err(corrupt());
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a stored credential is read only by cache refresh and boot hydration"
+        )]
         let secret = zeroize::Zeroizing::new(
             std::str::from_utf8(secret.expose(&seal))
                 .map_err(|_| corrupt())?
@@ -411,6 +431,10 @@ impl<'a> Tx<'a> {
         meta.revision = self.bump()?;
         self.revision(b'C', &meta.id, old, meta.revision)?;
         self.put(row(b'C', &meta.id)?, encode(&meta)?);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: identity rows are encoded only by key and credential management"
+        )]
         self.put(confidential(&meta.id)?, secret.to_vec());
         Ok(())
     }
@@ -532,6 +556,10 @@ impl<'a> Tx<'a> {
         )
     }
     fn committed(&self, changed: bool) -> Result<IdentityCommit> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an identity commit is reported only by key and credential management"
+        )]
         let mut result = IdentityCommit {
             changed,
             revision: self.revision,
@@ -555,6 +583,10 @@ impl<'a> Tx<'a> {
                         .get(&confidential(&meta.id)?)
                         .and_then(Option::as_ref)
                         .ok_or_else(corrupt)?;
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: an identity commit is reported only by key and credential management"
+                    )]
                     let secret = zeroize::Zeroizing::new(
                         std::str::from_utf8(secret.expose(&crate::seal::lend()))
                             .map_err(|_| corrupt())?
@@ -578,6 +610,10 @@ impl<'a> Tx<'a> {
         }
         let at = address(b'V', &[])?;
         self.put(at.clone(), revision_encode(self.revision));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: identity rows are committed only by key and credential management"
+        )]
         let candidate = PreparedCandidate::new(Candidate {
             codec: CANDIDATE_VERSION,
             id: self.store.next_id()?,
@@ -980,7 +1016,7 @@ impl Identity<'_> {
     }
     fn guard_targets(
         &self,
-        keys: &[&str],
+        keys: Targets<'_>,
         credential: Option<&str>,
         subject: Option<&str>,
     ) -> RecordStoreResult<()> {
@@ -998,31 +1034,23 @@ impl Identity<'_> {
                     match address.key.first() {
                         Some(b'K') => match key_decode(value) {
                             Ok(key) => {
-                                keys.contains(&key.id.as_str())
+                                keys.contains(&key.id)
                                     || subject.is_some_and(|subject| {
                                         key.idp_subject.as_deref() == Some(subject)
-                                            || key.group.as_deref()
-                                                == Some(
-                                                    format!(
-                                                        "{}{}",
-                                                        crate::governance::SELF_KEY_GROUP_PREFIX,
-                                                        subject
-                                                    )
-                                                    .as_str(),
-                                                )
+                                            || is_self_group(key.group.as_deref(), subject)
                                     })
                             }
                             Err(_) => true,
                         },
                         Some(b'C') => match meta_decode(value) {
                             Ok(meta) => {
-                                keys.contains(&meta.key_id.as_str())
+                                keys.contains(&meta.key_id)
                                     || credential == Some(meta.id.as_str())
                             }
                             Err(_) => true,
                         },
                         Some(b'D') => match decode::<Denied>(value, None, false) {
-                            Ok(denied) => keys.contains(&denied.subject.as_str()),
+                            Ok(denied) => keys.contains(&denied.subject),
                             Err(_) => true,
                         },
                         _ => false,
@@ -1041,44 +1069,37 @@ impl Identity<'_> {
     fn guard_change(&self, change: &Change<'_>) -> RecordStoreResult<()> {
         match change {
             Change::PutKey(key) | Change::CompareKey(_, key) | Change::CompareSelfKey(_, key) => {
-                self.guard_targets(&[&key.id], None, None)
+                self.guard_targets(Targets::Ids(&[&key.id]), None, None)
             }
-            Change::ReplaceKey(old, new) => self.guard_targets(&[&old.id, &new.id], None, None),
-            Change::DeleteKey(id) | Change::Deny(id, _) => self.guard_targets(&[id], None, None),
-            Change::PutCredential(credential, _) | Change::Rewrap(credential, _) => {
-                self.guard_targets(&[&credential.meta.key_id], Some(&credential.meta.id), None)
+            Change::ReplaceKey(old, new) => {
+                self.guard_targets(Targets::Ids(&[&old.id, &new.id]), None, None)
             }
-            Change::Revoke(id, _) => self.guard_targets(&[], Some(id), None),
+            Change::DeleteKey(id) | Change::Deny(id, _) => {
+                self.guard_targets(Targets::Ids(&[id]), None, None)
+            }
+            Change::PutCredential(credential, _) | Change::Rewrap(credential, _) => self
+                .guard_targets(
+                    Targets::Ids(&[&credential.meta.key_id]),
+                    Some(&credential.meta.id),
+                    None,
+                ),
+            Change::Revoke(id, _) => self.guard_targets(Targets::Ids(&[]), Some(id), None),
         }
     }
     fn guard_commit(&self, commit: &IdentityCommit) -> RecordStoreResult<()> {
-        let mut keys = commit
-            .keys
-            .iter()
-            .map(|key| key.id.as_str())
-            .collect::<Vec<_>>();
-        keys.extend(
-            commit
-                .credentials
-                .iter()
-                .map(|credential| credential.meta.key_id.as_str()),
-        );
-        keys.extend(commit.denied.iter().map(String::as_str));
-        self.guard_targets(&keys, None, None)
+        self.guard_targets(Targets::Commit(commit), None, None)
     }
     fn guard_query(&self, query: &Query<'_>, output: Option<&Output>) -> RecordStoreResult<()> {
         match query {
             Query::Key(id) | Query::Denied(id) | Query::Credentials(id) => {
-                self.guard_targets(&[id], None, None)
+                self.guard_targets(Targets::Ids(&[id]), None, None)
             }
             Query::SelfKeys(subject) => {
                 let keys = match output {
-                    Some(Output::Keys(keys)) => {
-                        keys.iter().map(|key| key.id.as_str()).collect::<Vec<_>>()
-                    }
-                    _ => Vec::new(),
+                    Some(Output::Keys(keys)) => Targets::Keys(keys),
+                    _ => Targets::Ids(&[]),
                 };
-                self.guard_targets(&keys, None, Some(subject))
+                self.guard_targets(keys, None, Some(subject))
             }
             _ => {
                 if self
@@ -1112,6 +1133,7 @@ impl Identity<'_> {
         let tx = Tx::start(self.store).await?;
         let output = match query {
             Query::Snapshot => {
+                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut keys = Vec::new();
                 for (at, value) in tx.scan(vec![b'K']).await? {
                     let key = key_decode(&value)?;
@@ -1120,6 +1142,7 @@ impl Identity<'_> {
                     }
                     keys.push(key);
                 }
+                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut credentials = Vec::new();
                 for (at, value) in tx.scan(vec![b'C']).await? {
                     let meta = meta_decode(&value)?;
@@ -1128,6 +1151,7 @@ impl Identity<'_> {
                     }
                     credentials.push(tx.credential(&meta.id).await?.ok_or_else(corrupt)?);
                 }
+                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut denied = Vec::new();
                 for (at, value) in tx.scan(vec![b'D']).await? {
                     let entry: Denied = decode(&value, None, false)?;
@@ -1155,17 +1179,22 @@ impl Identity<'_> {
                 {
                     return Err(corrupt());
                 }
-                Output::Denied(denied.into_iter().map(|entry| entry.subject).collect())
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: identity store queries run only for key management, cache refresh and boot hydration"
+                )]
+                let subjects = denied.into_iter().map(|entry| entry.subject).collect();
+                Output::Denied(subjects)
             }
             Query::SelfKeys(subject) => {
+                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut keys = Vec::new();
-                let group = format!("{}{}", crate::governance::SELF_KEY_GROUP_PREFIX, subject);
                 for (address, value) in tx.scan(vec![b'K']).await? {
                     let key = key_decode(&value)?;
                     if row(b'K', &key.id)? != address {
                         return Err(corrupt());
                     }
-                    if key.group.as_deref() == Some(group.as_str())
+                    if is_self_group(key.group.as_deref(), subject)
                         || key.idp_subject.as_deref() == Some(*subject)
                     {
                         keys.push(key);
@@ -1173,8 +1202,17 @@ impl Identity<'_> {
                 }
                 Output::Keys(keys)
             }
-            Query::Key(id) => Output::Keys(tx.key(id).await?.into_iter().collect()),
+            Query::Key(id) => {
+                let key = tx.key(id).await?;
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: identity store queries run only for key management, cache refresh and boot hydration"
+                )]
+                let keys = key.into_iter().collect();
+                Output::Keys(keys)
+            }
             Query::Keys(since) => {
+                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut keys = Vec::new();
                 if let Some(since) = since {
                     for (id, revision) in tx.since(b'K', *since).await? {
@@ -1184,7 +1222,7 @@ impl Identity<'_> {
                         }
                         keys.push(key);
                     }
-                    keys.sort_by_key(|key| key.revision);
+                    keys.sort_unstable_by_key(|key| key.revision);
                 } else {
                     for (at, value) in tx.scan(vec![b'K']).await? {
                         let key = key_decode(&value)?;
@@ -1193,11 +1231,12 @@ impl Identity<'_> {
                         }
                         keys.push(key);
                     }
-                    keys.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+                    keys.sort_unstable_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
                 }
                 Output::Keys(keys)
             }
             Query::Credentials(id) => {
+                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut metas = Vec::new();
                 for (at, value) in tx.scan(keys::framed(b'S', &[id.as_bytes()])?).await? {
                     let index: Index = decode(&value, None, false)?;
@@ -1207,10 +1246,11 @@ impl Identity<'_> {
                     }
                     metas.push(meta);
                 }
-                metas.sort_by(|a, b| (&a.kind, a.slot).cmp(&(&b.kind, b.slot)));
+                metas.sort_unstable_by(|a, b| (&a.kind, a.slot).cmp(&(&b.kind, b.slot)));
                 Output::Metadata(metas)
             }
             Query::CredentialsSince(since) => {
+                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut credentials = Vec::new();
                 for (id, revision) in tx.since(b'C', *since).await? {
                     let credential = tx.credential(&id).await?.ok_or_else(corrupt)?;
@@ -1219,10 +1259,11 @@ impl Identity<'_> {
                     }
                     credentials.push(credential);
                 }
-                credentials.sort_by_key(|c| c.meta.revision);
+                credentials.sort_unstable_by_key(|c| c.meta.revision);
                 Output::Credentials(credentials)
             }
             Query::Denylist => {
+                // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
                 let mut subjects = Vec::new();
                 for (at, value) in tx.scan(vec![b'D']).await? {
                     let denied: Denied = decode(&value, None, false)?;
@@ -1231,7 +1272,7 @@ impl Identity<'_> {
                     }
                     subjects.push(denied.subject);
                 }
-                subjects.sort();
+                subjects.sort_unstable();
                 Output::Denied(subjects)
             }
         };
@@ -1241,6 +1282,34 @@ impl Identity<'_> {
         Ok(output)
     }
 }
+/// Whether `group` is `subject`'s personal self-key group (`<SELF_KEY_GROUP_PREFIX><subject>`).
+fn is_self_group(group: Option<&str>, subject: &str) -> bool {
+    group.and_then(|group| group.strip_prefix(crate::governance::SELF_KEY_GROUP_PREFIX))
+        == Some(subject)
+}
+
+/// The key ids an identity guard checks unresolved native operations against, borrowed.
+#[derive(Clone, Copy)]
+enum Targets<'a> {
+    Ids(&'a [&'a str]),
+    Commit(&'a IdentityCommit),
+    Keys(&'a [VirtualKey]),
+}
+
+impl Targets<'_> {
+    fn contains(self, id: &str) -> bool {
+        match self {
+            Targets::Ids(ids) => ids.contains(&id),
+            Targets::Commit(commit) => {
+                commit.keys.iter().any(|key| key.id == id)
+                    || (commit.credentials.iter()).any(|credential| credential.meta.key_id == id)
+                    || commit.denied.iter().any(|subject| subject == id)
+            }
+            Targets::Keys(keys) => keys.iter().any(|key| key.id == id),
+        }
+    }
+}
+
 enum Query<'a> {
     Denied(&'a str),
     SelfKeys(&'a str),
@@ -1260,6 +1329,7 @@ enum Output {
 }
 impl Tx<'_> {
     async fn since(&self, family: u8, since: u64) -> Result<Vec<(String, u64)>> {
+        // busbar:expect(bp::fresh_buffer, reason = "config: identity store queries run only for key management, cache refresh and boot hydration")
         let mut result = Vec::new();
         let Some(first) = since.checked_add(1) else {
             return Ok(result);
@@ -1326,6 +1396,10 @@ pub(crate) fn migration_credential_rows(
         )
         .into());
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: credential rows are rebuilt only by startup migration"
+    )]
     let mut rows = vec![
         (row(b'C', &meta.id)?, Secret::new(encode(meta)?)),
         (confidential(&meta.id)?, Secret::new(envelope.to_vec())),

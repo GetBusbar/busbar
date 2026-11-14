@@ -90,7 +90,9 @@ pub struct StoredEntry {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EntryJson {
+/// `C` is the card in its canonical JSON form; the codec names that type only inside the
+/// statements that build or read an entry.
+struct EntryJson<C> {
     v: u32,
     from: u64,
     #[serde(default)]
@@ -103,7 +105,7 @@ struct EntryJson {
     writer: u64,
     #[serde(default)]
     set: Vec<String>,
-    card: serde_json::Value,
+    card: C,
     #[serde(default)]
     correction: Option<String>,
 }
@@ -111,8 +113,13 @@ struct EntryJson {
 impl StoredEntry {
     #[must_use]
     pub fn value(&self) -> Vec<u8> {
+        #[expect(
+            clippy::disallowed_types,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let card: serde_json::Value =
             serde_json::from_slice(&self.card.to_bytes()).unwrap_or(serde_json::Value::Null);
+        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let json = EntryJson {
             v: 1,
             from: self.effective_from,
@@ -126,18 +133,40 @@ impl StoredEntry {
             card,
             correction: self.correction.as_deref().map(hex::encode),
         };
-        serde_json::to_vec(&json).unwrap_or_default()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
+        let out = serde_json::to_vec(&json).unwrap_or_default();
+        out
     }
 
     pub fn from_value(key: EntryKey, value: &[u8]) -> std::result::Result<Self, String> {
-        let json: EntryJson = serde_json::from_slice(value)
+        #[expect(
+            clippy::disallowed_methods,
+            clippy::disallowed_types,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
+        let json: EntryJson<serde_json::Value> = serde_json::from_slice(value)
             .map_err(|e| format!("card entry {key}: not an entry: {e}"))?;
         if json.v != 1 {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+            )]
             return Err(format!("card entry {key}: version {} is not known", json.v));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let card = CardFields::from_bytes(
             &serde_json::to_vec(&json.card).map_err(|e| format!("card entry {key}: {e}"))?,
         )?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let base = match json.base {
             Some(hex) => Some(
                 EntryKey::parse_hex(&hex)
@@ -145,6 +174,10 @@ impl StoredEntry {
             ),
             None => None,
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let correction = match json.correction {
             Some(h) => Some(
                 hex::decode(&h)
@@ -263,6 +296,7 @@ impl Snapshot {
         own_opening: Option<EntryKey>,
         rate_card: &impl Fn(&CardFields) -> RateCard,
     ) -> History {
+        // busbar:expect(bp::state_scan, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let winner =
             own_opening.or_else(|| self.entries.values().find(|e| is_opening(e)).map(|e| e.key));
         let mut history = History::new();
@@ -298,6 +332,7 @@ impl Snapshot {
                 },
             );
         }
+        // busbar:expect(bp::state_scan, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         for entry in self
             .entries
             .values()
@@ -390,9 +425,14 @@ fn at(tag: u8, key: Option<EntryKey>) -> Address {
     }
 }
 fn encode<T: Serialize>(v: &T) -> Result<Secret<Vec<u8>>> {
-    serde_json::to_vec(v)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+    )]
+    let out = serde_json::to_vec(v)
         .map(Secret::new)
-        .map_err(|_| Error::Invalid)
+        .map_err(|_| Error::Invalid);
+    out
 }
 fn decode<T: serde::de::DeserializeOwned>(v: &Secret<Vec<u8>>) -> Result<T> {
     serde_json::from_slice(v.expose(&crate::seal::lend())).map_err(|_| Error::Corrupt)
@@ -501,6 +541,10 @@ impl Prices<'_> {
         changes: Vec<(Address, Secret<Vec<u8>>)>,
         publication: Option<StoredIntent>,
     ) -> Result<PricePlan> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let candidate = PreparedCandidate::new(Candidate {
             id: self.store.next_id()?,
             codec: CANDIDATE_VERSION,
@@ -543,6 +587,7 @@ impl Prices<'_> {
             addresses.push(at(b'E', Some(base)));
             addresses.push(at(b'S', Some(base)));
         }
+        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let values = self.read(addresses.clone()).await?;
         if values[0].is_some() || values[1].is_some() {
             return Err(Error::Conflict);
@@ -574,14 +619,23 @@ impl Prices<'_> {
             (at(b'S', Some(entry.key)), status_bytes),
         ];
         if !own && head.is_none_or(|head| entry.key > head) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+            )]
             changes.push((at(b'H', None), Secret::new(entry.key.as_bytes().to_vec())));
         }
         let publication = (!own).then(|| intent(entry, &status));
-        self.plan(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
+        let out = self.plan(
             addresses.into_iter().zip(values).collect(),
             changes,
             publication,
-        )
+        );
+        out
     }
 
     /// Persist authorization and the immutable cutover before final publication.
@@ -617,6 +671,7 @@ impl Prices<'_> {
         activation: Option<Activation>,
     ) -> Result<PricePlan> {
         let addresses = vec![at(b'E', Some(key)), at(b'S', Some(key)), at(b'H', None)];
+        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let values = self.read(addresses.clone()).await?;
         let bytes = values[0].as_ref().ok_or(Error::Missing)?;
         let (entry, mut status) = validated(key, bytes, values[1].as_ref().ok_or(Error::Missing)?)?;
@@ -632,14 +687,23 @@ impl Prices<'_> {
         validated(key, bytes, &status_bytes).map_err(|_| Error::Invalid)?;
         let mut changes = vec![(at(b'S', Some(key)), status_bytes)];
         if to == Phase::Active && head.is_none_or(|head| key > head) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+            )]
             changes.push((at(b'H', None), Secret::new(key.as_bytes().to_vec())));
         }
         let publication = (to == Phase::Active).then(|| intent(entry, &status));
-        self.plan(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
+        let out = self.plan(
             addresses.into_iter().zip(values).collect(),
             changes,
             publication,
-        )
+        );
+        out
     }
 
     /// Persist a future-only void, retaining its audit fields and target identity.
@@ -651,6 +715,7 @@ impl Prices<'_> {
         }
         let void_at = void_address(key, record.voider);
         let addresses = vec![at(b'E', Some(key)), at(b'S', Some(key)), void_at.clone()];
+        // busbar:expect(bp::clone_alloc, reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced")
         let values = self.read(addresses.clone()).await?;
         let (entry, status) = validated(
             key,
@@ -668,11 +733,16 @@ impl Prices<'_> {
         if values[2].is_some() {
             return Err(Error::Conflict);
         }
-        self.plan(
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
+        let out = self.plan(
             addresses.into_iter().zip(values).collect(),
             vec![(void_at, encode(&record)?)],
             None,
-        )
+        );
+        out
     }
 
     pub async fn submit(&self, plan: &mut PricePlan) -> Result<Outcome> {
@@ -718,12 +788,20 @@ impl Prices<'_> {
     pub async fn snapshot(&self) -> Result<Snapshot> {
         let found = self.store.scan(PRICES, vec![], None).await?;
         let guard = scan_guard(PRICES, found.generation);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let mut rows: BTreeMap<_, _> = found.rows.into_iter().collect();
         let head = head_value(rows.remove(&at(b'H', None)).as_ref())?;
         let mut snapshot = Snapshot {
             head,
             ..Snapshot::default()
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: rate-card history is written and read only when rate cards are published, reloaded or re-synced"
+        )]
         let entry_addresses: Vec<_> = rows
             .keys()
             .filter(|a| a.key.first() == Some(&b'E'))

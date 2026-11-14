@@ -277,12 +277,31 @@ pub struct Reauthorization {
     pub attestation: ColdAttestation,
 }
 
+/// The message of a failed store or codec call, for this cold facility's `String` errors.
+fn error_text(error: &dyn std::fmt::Display) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failed store or codec call is reported by its message"
+    )]
+    let text = error.to_string();
+    text
+}
+
 fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     // preserve_order is feature-unified in assembled products. Sort recursively, including
     // nested values, rather than relying on the default serde_json map implementation.
-    let mut value = serde_json::to_value(value).map_err(|e| e.to_string())?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let mut value = serde_json::to_value(value).map_err(|e| error_text(&e))?;
     value.sort_all_objects();
-    serde_json::to_vec(&value).map_err(|e| e.to_string())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let out = serde_json::to_vec(&value).map_err(|e| error_text(&e));
+    out
 }
 
 fn overlay_digest(value: Option<&OverlayDoc>) -> Result<String, String> {
@@ -303,6 +322,7 @@ pub fn store_fingerprint<T: Serialize>(store: &T) -> Result<String, String> {
 }
 
 fn previous_receipt(head: &Head, bytes: &[u8]) -> PreviousReceipt {
+    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     PreviousReceipt {
         head_sha256: hex::encode(Sha256::digest(bytes)),
         requirements: head.requirements.clone(),
@@ -314,7 +334,12 @@ fn previous_receipt(head: &Head, bytes: &[u8]) -> PreviousReceipt {
 }
 
 fn body_prefix(digest: &str) -> Vec<u8> {
-    format!("body:{digest}:").into_bytes()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let out = format!("body:{digest}:").into_bytes();
+    out
 }
 
 fn hash(value: &str) -> bool {
@@ -334,7 +359,12 @@ fn identity(value: &str) -> bool {
 }
 
 fn group(principal: &str) -> String {
-    format!("{}{principal}", super::SELF_KEY_GROUP_PREFIX)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let out = format!("{}{principal}", super::SELF_KEY_GROUP_PREFIX);
+    out
 }
 
 fn validate_spec(spec: &Specification) -> Result<(), String> {
@@ -409,6 +439,7 @@ pub fn role_bindings_after(spec: &Specification) -> Result<crate::config::RoleBi
     let mut sources = BTreeSet::new();
     let mut destinations = BTreeSet::new();
     for disposition in &spec.role_dispositions {
+        // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
         let source = (disposition.provider.clone(), disposition.old_role.clone());
         if disposition.old_role.is_empty()
             || disposition.old_role.chars().any(char::is_control)
@@ -478,11 +509,13 @@ async fn compare_witness(core: &CoreStore, spec: &Specification) -> Result<(), S
             expected,
         )),
     };
-    if !core
-        .guards_hold(&[predicate])
-        .await
-        .map_err(|e| format!("principal witness read: {e:?}"))?
-    {
+    let held = core.guards_hold(&[predicate]).await;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failed witness read is reported by its message"
+    )]
+    let held = held.map_err(|e| format!("principal witness read: {e:?}"))?;
+    if !held {
         return Err("Store namespace witness changed".into());
     }
     Ok(())
@@ -548,18 +581,27 @@ pub fn addresses(
                 (source.clone(), destination.clone()),
                 (super::era_bucket(&source), super::era_bucket(&destination)),
             ] {
-                if let Some(previous) =
-                    cells.insert((source, window), (destination.clone(), period.to_string()))
-                {
-                    if previous != (destination, period.to_string()) {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+                )]
+                let previous =
+                    cells.insert((source, window), (destination.clone(), period.to_string()));
+                if let Some(previous) = previous {
+                    if previous.0 != destination || previous.1 != period {
                         return Err("ambiguous enforcement bucket mapping".into());
                     }
                 }
             }
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let sources: BTreeSet<_> = cells.keys().map(|(s, w)| (s.clone(), *w)).collect();
     let mut destinations = BTreeSet::new();
+    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut result = Vec::new();
     for ((source, window), (destination, period)) in cells {
         if sources.contains(&(destination.clone(), window))
@@ -592,6 +634,7 @@ fn target_key(plan: &Plan, key: &VirtualKey) -> Result<VirtualKey, String> {
             after.group = Some(group(&b.new_principal));
         }
         if bound {
+            // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
             after.idp_subject = Some(b.new_principal.clone());
         }
     }
@@ -601,6 +644,7 @@ fn target_key(plan: &Plan, key: &VirtualKey) -> Result<VirtualKey, String> {
 fn holds(plan: &Plan) -> BTreeSet<String> {
     let prior = plan.previous.as_ref().map(|p| &p.holds);
     let mut held = prior.cloned().unwrap_or_default();
+    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     held.extend(
         plan.specification
             .bindings
@@ -627,6 +671,7 @@ fn holds(plan: &Plan) -> BTreeSet<String> {
 }
 
 fn held_principals(plan: &Plan) -> BTreeMap<String, String> {
+    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut active = plan
         .previous
         .as_ref()
@@ -636,6 +681,7 @@ fn held_principals(plan: &Plan) -> BTreeMap<String, String> {
     for binding in &plan.specification.bindings {
         active.remove(&binding.old_principal);
         if held.contains(&binding.new_principal) {
+            // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
             active.insert(binding.new_principal.clone(), binding.provider.clone());
         }
     }
@@ -650,12 +696,19 @@ fn binding_covers_key(binding: &Binding, key: &VirtualKey) -> bool {
 }
 
 fn carried_denials(plan: &Plan) -> BTreeSet<String> {
-    plan.specification
+    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let out = plan
+        .specification
         .bindings
         .iter()
         .filter(|b| plan.denylist_before.contains(&b.old_principal))
         .map(|b| b.new_principal.clone())
-        .collect()
+        .collect();
+    out
 }
 
 pub fn after_overlay(plan: &Plan) -> Result<OverlayDoc, String> {
@@ -671,23 +724,48 @@ pub fn after_overlay(plan: &Plan) -> Result<OverlayDoc, String> {
     }
     if !plan.specification.role_dispositions.is_empty() {
         let roles = role_bindings_after(&plan.specification)?;
+        #[expect(
+            clippy::disallowed_macros,
+            clippy::disallowed_methods,
+            clippy::disallowed_types,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
         let patch = crate::config::document_patch::DocumentPatch::from_value(
             serde_json::json!({"set": {"/auth/role_bindings": roles}}),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| error_text(&e))?;
         // Ordered composition also handles a preceding whole-auth edit without losing it.
         after.document_patch = Some(match after.document_patch.take() {
             Some(previous) if previous.paths().next().is_none() => patch,
             Some(previous) => {
-                let mut value = serde_json::to_value(previous).map_err(|e| e.to_string())?;
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+                )]
+                let mut value = serde_json::to_value(previous).map_err(|e| error_text(&e))?;
+                #[expect(
+                    clippy::disallowed_types,
+                    reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+                )]
                 let mut stages = value
                     .get_mut("$stages")
                     .and_then(serde_json::Value::as_array_mut)
                     .map(std::mem::take)
                     .unwrap_or_else(|| vec![value]);
-                stages.push(serde_json::to_value(patch).map_err(|e| e.to_string())?);
-                serde_json::from_value(serde_json::json!({"$stages": stages}))
-                    .map_err(|e| e.to_string())?
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+                )]
+                stages.push(serde_json::to_value(patch).map_err(|e| error_text(&e))?);
+                #[expect(
+                    clippy::disallowed_methods,
+                    clippy::disallowed_macros,
+                    clippy::disallowed_types,
+                    reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+                )]
+                let out = serde_json::from_value(serde_json::json!({"$stages": stages}))
+                    .map_err(|e| error_text(&e))?;
+                out
             }
             None => patch,
         });
@@ -707,6 +785,7 @@ pub async fn prepare(
     let previous = read_head(&native_receipt_snapshot(&core).await?)?
         .map(|(head, bytes)| {
             if !head.complete || head.depth >= 64 || head.store_config_sha256 != specification.store_config_sha256 {
+                #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
                 return Err("predecessor must be complete, within the 64-generation bound and on the same Store".to_string());
             }
             Ok(previous_receipt(&head, &bytes))
@@ -715,14 +794,15 @@ pub async fn prepare(
         .identity()
         .list_keys()
         .await
-        .map_err(|e| e.to_string())?;
-    keys_before.sort_by(|a, b| a.id.cmp(&b.id));
+        .map_err(|e| error_text(&e))?;
+    keys_before.sort_unstable_by(|a, b| a.id.cmp(&b.id));
     let mut denylist_before = core
         .identity()
         .list_denylist()
         .await
-        .map_err(|e| e.to_string())?;
-    denylist_before.sort();
+        .map_err(|e| error_text(&e))?;
+    denylist_before.sort_unstable();
+    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut carry = Vec::new();
     for (source, destination, window, period) in
         addresses(&specification, &groups, specification.cutover)?
@@ -731,7 +811,7 @@ pub async fn prepare(
             .ledger()
             .get_usage(&destination, window)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             != UsageLedger::default()
         {
             return Err("destination usage is occupied; merging is forbidden".into());
@@ -740,7 +820,7 @@ pub async fn prepare(
             .ledger()
             .get_usage(&source, window)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| error_text(&e))?;
         carry.push(Carry {
             source,
             destination,
@@ -766,6 +846,10 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
     validate_spec(&plan.specification)?;
     // The existing overlay wire must preserve every policy field. Do not normalize an opaque
     // scope into a different kind merely because the current config grammar cannot encode it.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let roundtrip: BTreeMap<String, GroupCfg> = serde_json::from_value(
         serde_json::to_value(&plan.groups_before).map_err(|_| "group serialization failed")?,
     )
@@ -778,10 +862,15 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
         &plan.groups_before,
         plan.specification.cutover,
     )?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let actual: Vec<_> = plan
         .carry
         .iter()
         .map(|c| {
+            // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
             (
                 c.source.clone(),
                 c.destination.clone(),
@@ -810,6 +899,10 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
             })
         })
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let changed: BTreeSet<_> = plan
         .specification
         .requirements
@@ -860,6 +953,10 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
             );
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let mapped_groups: BTreeSet<_> = plan
         .specification
         .bindings
@@ -876,6 +973,10 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
             .iter()
             .find(|r| r.provider == disposition.provider)
             .ok_or("unaffected principal has no exact admitted provider provenance")?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
         let keys: Vec<_> = plan
             .keys_before
             .iter()
@@ -1006,6 +1107,10 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
             key.idp_subject.as_deref() == Some(binding.old_principal.as_str())
                 || key.group.as_deref() == Some(group(&binding.old_principal).as_str())
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
         let history: Vec<_> = plan.keys_before.iter().filter(belongs).collect();
         if history
             .iter()
@@ -1025,12 +1130,14 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
         target_key(plan, k)?;
     }
     after_overlay(plan)?;
+    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut groups = plan.groups_before.clone();
     for binding in &plan.specification.bindings {
         if let Some(original) = plan.groups_before.get(&group(&binding.old_principal)) {
             groups.insert(group(&binding.new_principal), original.clone());
         }
     }
+    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(&groups, &|_| true, &mut errors);
     if !errors.is_empty() {
@@ -1042,6 +1149,10 @@ pub fn validate_plan(plan: &Plan) -> Result<(), String> {
 }
 
 fn chunk_key(prefix: &[u8], index: usize) -> Vec<u8> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let mut key = prefix.to_vec();
     key.extend_from_slice(&(index as u64).to_be_bytes());
     key
@@ -1051,7 +1162,11 @@ fn chunks(prefix: &[u8], bytes: &[u8]) -> Result<Vec<Mutation>, String> {
     if bytes.is_empty() || bytes.len() > MAX_PLAN_BYTES {
         return Err("principal transition document exceeds its bounded journal capacity".into());
     }
-    Ok(bytes
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let out = Ok(bytes
         .chunks(busbar_contract::MAX_RECORD_BYTES)
         .enumerate()
         .map(|(index, value)| Mutation::Put {
@@ -1059,18 +1174,20 @@ fn chunks(prefix: &[u8], bytes: &[u8]) -> Result<Vec<Mutation>, String> {
             key: chunk_key(prefix, index),
             value: value.to_vec(),
         })
-        .collect())
+        .collect());
+    out
 }
 
 fn read_body(rows: &dyn RecordRows, prefix: &[u8], length: usize) -> Result<Vec<u8>, String> {
     if length == 0 || length > MAX_PLAN_BYTES {
         return Err("invalid principal journal length".into());
     }
+    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut body = Vec::with_capacity(length);
     for index in 0..length.div_ceil(busbar_contract::MAX_RECORD_BYTES) {
         let chunk = rows
             .record_get(SCHEMA, &chunk_key(prefix, index))
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             .ok_or("incomplete principal transition journal")?;
         if chunk.as_slice().len() != (length - body.len()).min(busbar_contract::MAX_RECORD_BYTES) {
             return Err("invalid principal transition journal chunk".into());
@@ -1081,11 +1198,16 @@ fn read_body(rows: &dyn RecordRows, prefix: &[u8], length: usize) -> Result<Vec<
 }
 
 fn read_head(rows: &dyn RecordRows) -> Result<Option<(Head, Vec<u8>)>, String> {
-    let Some(bytes) = rows.record_get(SCHEMA, HEAD).map_err(|e| e.to_string())? else {
+    let Some(bytes) = rows.record_get(SCHEMA, HEAD).map_err(|e| error_text(&e))? else {
         return Ok(None);
     };
     let head = read_generation(rows, bytes.as_slice(), 0)?;
-    Ok(Some((head, bytes.as_slice().to_vec())))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let out = Ok(Some((head, bytes.as_slice().to_vec())));
+    out
 }
 
 fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<Head, String> {
@@ -1098,9 +1220,13 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
         if !hash(reference) {
             return Err("invalid principal predecessor reference".into());
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
         let bytes = rows
             .record_get(SCHEMA, format!("ancestor:{reference}").as_bytes())
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             .ok_or("missing immutable principal predecessor")?;
         if hex::encode(Sha256::digest(bytes.as_slice())) != *reference {
             return Err("principal predecessor digest mismatch".into());
@@ -1110,7 +1236,9 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
             return Err("principal predecessor is not complete".into());
         }
         head.depth = prior.depth + 1;
+        // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
         head.retired_keys = prior.retired_keys.clone();
+        // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
         head.historical_groups = prior.historical_groups.clone();
         Some(previous_receipt(&prior, bytes.as_slice()))
     } else {
@@ -1174,6 +1302,10 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
             if !hash(&reference.digest) {
                 return Err("invalid rollover journal reference".into());
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+            )]
             let body = read_body(
                 rows,
                 format!("rollover:{}:", reference.digest).as_bytes(),
@@ -1190,12 +1322,15 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
             let mut seen = BTreeSet::new();
             for carry in &rollover.carry {
                 let possible = addresses(&plan.specification, &plan.groups_before, carry.window)?;
-                if !possible.contains(&(
-                    carry.source.clone(),
-                    carry.destination.clone(),
-                    carry.window,
-                    carry.period.clone(),
-                )) || !seen.insert((carry.source.clone(), carry.window))
+                if !possible
+                    .iter()
+                    .any(|(source, destination, window, period)| {
+                        *source == carry.source
+                            && *destination == carry.destination
+                            && *window == carry.window
+                            && *period == carry.period
+                    })
+                    || !seen.insert((carry.source.as_str(), carry.window))
                 {
                     return Err("invalid rollover enforcement address".into());
                 }
@@ -1211,6 +1346,10 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
         if !head.complete || !hash(&reference.digest) {
             return Err("invalid principal reauthorization reference".into());
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
         let body = read_body(
             rows,
             format!("authorization:{}:", reference.digest).as_bytes(),
@@ -1298,6 +1437,8 @@ pub async fn guard_startup_native(
         .initialization_witness()
         .await
         .map_err(|_| "native principal initialization ownership refused")?;
+    // busbar:expect(bp::into_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
+    #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
     let receipt = FreshNamespace {
         version: 1,
         store_config_sha256: store_sha256.into(),
@@ -1320,17 +1461,23 @@ pub async fn guard_startup_native(
     };
     let mut identity = Sha256::new();
     identity.update(b"busbar.initial-principal-baseline.v1\0");
-    identity.update(serde_json::to_vec(&(store_sha256, required)).map_err(|e| e.to_string())?);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    identity.update(serde_json::to_vec(&(store_sha256, required)).map_err(|e| error_text(&e))?);
     let binding = InitialBinding {
         instance: NATIVE_INSTANCE.into(),
         digest: identity.finalize().into(),
     };
     loop {
         let (_, mutations) = fresh_mutations(&receipt)?;
+        #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
         let mutations = mutations
             .into_iter()
             .map(|mutation| {
                 let Mutation::Put { schema, key, value } = mutation else {
+                    #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
                     return Err(
                         "fresh principal initialization only writes its own records".to_string()
                     );
@@ -1426,18 +1573,32 @@ async fn native_receipt_snapshot(
 ) -> Result<ReceiptSnapshot, String> {
     use crate::persistence::fences::scan_guard;
     use busbar_contract::persistence::NamespaceId;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let address =
         crate::persistence::scoped::migration_address(true, NATIVE_INSTANCE, SCHEMA.as_str(), &[])
             .map_err(|e| format!("principal receipt address: {e:?}"))?;
     let namespace = NamespaceId(address.namespace);
     let unsettled = || {
-        core.has_pending_namespace(namespace)
-            .map_err(|e| format!("principal receipt custody: {e:?}"))
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
+        let out = core
+            .has_pending_namespace(namespace)
+            .map_err(|e| format!("principal receipt custody: {e:?}"));
+        out
     };
     if unsettled()? {
         return Err("principal receipt has unresolved native writes; serving is fenced".into());
     }
     let prefix = address.key;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let collection = core
         .scan(namespace, prefix.clone(), None)
         .await
@@ -1447,20 +1608,31 @@ async fn native_receipt_snapshot(
         let bytes =
             busbar_contract::kinds::RecordBytes::new(bytes.expose(&crate::seal::lend()).clone())
                 .map_err(|_| "principal receipt exceeds original record bound")?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
         snapshot.insert(address.key[prefix.len()..].to_vec(), bytes);
     }
-    if !core
+    let held = core
         .guards_hold(&[scan_guard(namespace, collection.generation)])
-        .await
-        .map_err(|e| format!("principal receipt generation: {e:?}"))?
-        || unsettled()?
-    {
+        .await;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failed receipt generation read is reported by its message"
+    )]
+    let held = held.map_err(|e| format!("principal receipt generation: {e:?}"))?;
+    if !held || unsettled()? {
         return Err("principal receipt changed during native read; serving is fenced".into());
     }
     Ok(ReceiptSnapshot(snapshot))
 }
 
 fn operation(plan_sha256: &str, phase: &str) -> OpId {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let digest = Sha256::digest(format!("principal-transition:{plan_sha256}:{phase}"));
     OpId(digest[..16].try_into().expect("SHA256 has sixteen bytes"))
 }
@@ -1474,9 +1646,17 @@ async fn transaction(
     use busbar_contract::persistence::{
         ExpectedValue, Mutation as NativeMutation, Predicate as NativePredicate,
     };
-    request.encode_held().map_err(|e| e.to_string())?;
+    request.encode_held().map_err(|e| error_text(&e))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let owner = HostRecords::host_private(core, NATIVE_INSTANCE, [SCHEMA.as_str()])
         .map_err(|e| format!("principal transaction owner: {e:?}"))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let predicates = request
         .predicates
         .into_iter()
@@ -1505,6 +1685,10 @@ async fn transaction(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let mutations = request
         .mutations
         .into_iter()
@@ -1518,7 +1702,8 @@ async fn transaction(
             _ => Err("principal transaction attempted an unauthorized mutation".into()),
         })
         .collect::<Result<Vec<_>, String>>()?;
-    match owner
+    #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
+    let out = match owner
         .conditional_native(request.op_id.0, predicates, mutations)
         .await
         .map_err(|e| format!("principal transition transaction: {e:?}"))?
@@ -1528,7 +1713,8 @@ async fn transaction(
         other => Err(format!(
             "principal transition transaction unresolved or refused ({other:?}); keep senders stopped and retain the exact transition evidence"
         )),
-    }
+    };
+    out
 }
 
 fn same_key(actual: &VirtualKey, expected: &VirtualKey) -> bool {
@@ -1556,7 +1742,7 @@ async fn inspect(
         .identity()
         .list_keys()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| error_text(&e))?;
     if keys.len() != plan.keys_before.len() {
         return Err("key inventory changed".into());
     }
@@ -1573,8 +1759,12 @@ async fn inspect(
         .identity()
         .list_denylist()
         .await
-        .map_err(|e| e.to_string())?;
-    denied.sort();
+        .map_err(|e| error_text(&e))?;
+    denied.sort_unstable();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let mut allowed_denials: BTreeSet<_> = plan.denylist_before.iter().cloned().collect();
     if allow_after {
         allowed_denials.extend(carried_denials(plan));
@@ -1589,7 +1779,7 @@ async fn inspect(
             .ledger()
             .get_usage(&c.source, c.window)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             != c.raw
         {
             return Err("source usage preimage changed".into());
@@ -1598,7 +1788,7 @@ async fn inspect(
             .ledger()
             .get_usage(&c.destination, c.window)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| error_text(&e))?;
         if actual != UsageLedger::default() && !(allow_after && actual == c.raw) {
             return Err("destination usage preimage changed".into());
         }
@@ -1671,7 +1861,7 @@ async fn inspect_extra(
             .ledger()
             .get_usage(&cell.source, cell.window)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             != cell.raw
         {
             return Err("rollover source usage preimage changed".into());
@@ -1680,7 +1870,7 @@ async fn inspect_extra(
             .ledger()
             .get_usage(&cell.destination, cell.window)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| error_text(&e))?;
         if actual != cell.raw && (complete || actual != UsageLedger::default()) {
             return Err("rollover destination usage preimage changed".into());
         }
@@ -1697,6 +1887,10 @@ pub async fn apply(
     now: u64,
     effective_config_sha256: &str,
 ) -> Result<(), String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let started = std::time::Instant::now();
     check(plan, core.clone(), overlay, now, effective_config_sha256).await?;
     let plan_sha256 = digest(&plan.authoring(&crate::seal::acquire()))?;
@@ -1722,6 +1916,7 @@ pub async fn apply(
         return verify(plan, core.clone(), overlay, now).await;
     }
     let mut extra = if resuming {
+        // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
         previous
             .as_ref()
             .map_or_else(Vec::new, |(head, _)| head.extra_carry.clone())
@@ -1743,7 +1938,7 @@ pub async fn apply(
             .ledger()
             .get_usage(&destination, window)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             != UsageLedger::default()
         {
             return Err("rollover destination is occupied; implicit merging is forbidden".into());
@@ -1752,7 +1947,7 @@ pub async fn apply(
             .ledger()
             .get_usage(&source, window)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| error_text(&e))?;
         extra.push(Carry {
             source,
             destination,
@@ -1765,6 +1960,10 @@ pub async fn apply(
     let mut mutations = chunks(&body_prefix(&plan_sha256), &plan_bytes)?;
     if !resuming {
         if let Some((_, bytes)) = &previous {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+            )]
             mutations.push(Mutation::Put {
                 schema: SCHEMA.as_str().into(),
                 key: format!("ancestor:{}", hex::encode(Sha256::digest(bytes))).into_bytes(),
@@ -1781,13 +1980,22 @@ pub async fn apply(
             carry: extra.clone(),
         };
         let digest = digest(&rollover)?;
-        let body = serde_json::to_vec(&rollover).map_err(|e| e.to_string())?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
+        let body = serde_json::to_vec(&rollover).map_err(|e| error_text(&e))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
         mutations.extend(chunks(format!("rollover:{digest}:").as_bytes(), &body)?);
         Some(AuthorizationRef {
             digest,
             length: body.len(),
         })
     };
+    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let head = Head {
         version: 1,
         plan_sha256: plan_sha256.clone(),
@@ -1806,12 +2014,20 @@ pub async fn apply(
         rollover,
         extra_carry: extra.clone(),
     };
-    let pending = serde_json::to_vec(&head).map_err(|e| e.to_string())?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let pending = serde_json::to_vec(&head).map_err(|e| error_text(&e))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let mut epoch_key = b"quiescence:".to_vec();
     epoch_key.extend_from_slice(&epoch);
     if rows
         .record_get(SCHEMA, &epoch_key)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| error_text(&e))?
         .is_some()
     {
         return Err(
@@ -1820,6 +2036,10 @@ pub async fn apply(
         );
     }
     // New invocation, new epoch. Replaying a consumed attestation never establishes quiescence.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let mut predicates = vec![
         Predicate {
             schema: SCHEMA.as_str().into(),
@@ -1841,6 +2061,7 @@ pub async fn apply(
             hex::decode(&plan.specification.witness.value_hex).map_err(|_| "invalid witness")?,
         ),
     });
+    #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
     transaction(
         &core,
         Request {
@@ -1848,21 +2069,24 @@ pub async fn apply(
             op_id: operation(&plan_sha256, &format!("begin:{}", attestation.epoch)),
             predicates,
             mutations: {
+                #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
                 mutations.push(Mutation::Put {
                     schema: SCHEMA.as_str().into(),
                     key: HEAD.to_vec(),
                     value: pending.clone(),
                 });
                 // A compact consumed marker plus bounded immutable attestation chunks.
+                // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
                 mutations.push(Mutation::Put {
                     schema: SCHEMA.as_str().into(),
                     key: epoch_key.clone(),
                     value: digest(attestation)?.into_bytes(),
                 });
                 epoch_key.extend_from_slice(b":body:");
+                #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
                 mutations.extend(chunks(
                     &epoch_key,
-                    &serde_json::to_vec(attestation).map_err(|e| e.to_string())?,
+                    &serde_json::to_vec(attestation).map_err(|e| error_text(&e))?,
                 )?);
                 mutations
             },
@@ -1877,7 +2101,7 @@ pub async fn apply(
             .identity()
             .list_denylist()
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             .contains(&principal)
         {
             core.identity()
@@ -1894,7 +2118,7 @@ pub async fn apply(
             .ledger()
             .get_usage(&c.destination, c.window)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| error_text(&e))?;
         if current != c.raw {
             core.ledger().put_usage(&c.destination,c.window,&c.raw).await.map_err(|_|"usage write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
         }
@@ -1908,7 +2132,7 @@ pub async fn apply(
             .identity()
             .get_key(&before.id)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             .ok_or("key disappeared")?;
         if !same_key(&current, &after) {
             core.identity().put_key(&after).await.map_err(|_|"key write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
@@ -1920,6 +2144,11 @@ pub async fn apply(
     {
         crate::config::overlay::write_async(overlay,&after).await.map_err(|_|"overlay write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
     }
+    // busbar:expect(bp::clock_repeat, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let elapsed = started.elapsed();
     let completion_clock = now
         .checked_add(elapsed.as_secs())
@@ -1930,7 +2159,11 @@ pub async fn apply(
         complete: true,
         ..head
     };
-    transaction(
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let out = transaction(
         &core,
         Request {
             version: VERSION,
@@ -1943,12 +2176,13 @@ pub async fn apply(
             mutations: vec![Mutation::Put {
                 schema: SCHEMA.as_str().into(),
                 key: HEAD.to_vec(),
-                value: serde_json::to_vec(&complete).map_err(|e| e.to_string())?,
+                value: serde_json::to_vec(&complete).map_err(|e| error_text(&e))?,
             }],
         },
         plan.specification.witness_binding.as_ref(),
     )
-    .await
+    .await;
+    out
 }
 
 async fn verify_poststate(
@@ -1974,7 +2208,7 @@ async fn verify_poststate(
         .identity()
         .list_denylist()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| error_text(&e))?;
     if carried_denials(plan).iter().any(|id| !denied.contains(id)) {
         return Err("incomplete principal denial transition".into());
     }
@@ -1983,7 +2217,7 @@ async fn verify_poststate(
             .ledger()
             .get_usage(&c.destination, c.window)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             != c.raw
         {
             return Err("incomplete usage carry".into());
@@ -1994,7 +2228,7 @@ async fn verify_poststate(
             .identity()
             .get_key(&before.id)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| error_text(&e))?
             .ok_or("missing migrated key")?;
         if !same_key(&current, &target_key(plan, before)?) {
             return Err("incomplete key transition".into());
@@ -2029,6 +2263,7 @@ pub fn requirements(
     cfg: &crate::config::RootCfg,
     registry: &dyn busbar_contract::plugin_rows::PluginRows,
 ) -> Result<Vec<Requirement>, String> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut requirements = Vec::new();
     for (provider, definition) in &cfg.identity_providers {
         let Some(row) = registry.resolve(&definition.module) else {
@@ -2037,6 +2272,10 @@ pub fn requirements(
         if row.kind != "auth" {
             continue;
         }
+        #[expect(
+            clippy::disallowed_types,
+            reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+        )]
         let schema: serde_json::Value = match row.settings_schema.as_deref() {
             Some(text) => {
                 serde_json::from_str(text).map_err(|_| "invalid admitted auth settings schema")?
@@ -2084,7 +2323,7 @@ pub fn requirements(
             settings_sha256: digest(&definition.authoring(&crate::seal::acquire()))?,
         });
     }
-    requirements.sort();
+    requirements.sort_unstable();
     Ok(requirements)
 }
 
@@ -2093,12 +2332,12 @@ fn executable_sha256() -> Result<String, String> {
     DIGEST
         .get_or_init(|| {
             use std::io::Read;
-            let path = std::env::current_exe().map_err(|e| e.to_string())?;
-            let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let path = std::env::current_exe().map_err(|e| error_text(&e))?;
+            let mut file = std::fs::File::open(path).map_err(|e| error_text(&e))?;
             let mut digest = Sha256::new();
-            let mut bytes = [0u8; 65536];
+            let mut bytes = [0u8; 16 * 1024];
             loop {
-                let n = file.read(&mut bytes).map_err(|e| e.to_string())?;
+                let n = file.read(&mut bytes).map_err(|e| error_text(&e))?;
                 if n == 0 {
                     break;
                 }
@@ -2189,32 +2428,57 @@ pub async fn reauthorize(
     if witness_value.is_empty() {
         return Err("empty namespace witness".into());
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let mut epoch_key = b"quiescence:".to_vec();
     epoch_key.extend_from_slice(&epoch);
     if rows
         .record_get(SCHEMA, &epoch_key)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| error_text(&e))?
         .is_some()
     {
         return Err("cold reauthorization attestation already consumed".into());
     }
-    let body = serde_json::to_vec(receipt).map_err(|e| e.to_string())?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let body = serde_json::to_vec(receipt).map_err(|e| error_text(&e))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     let mut mutations = chunks(format!("authorization:{receipt_digest}:").as_bytes(), &body)?;
     head.authorization = Some(AuthorizationRef {
         digest: receipt_digest.clone(),
         length: body.len(),
     });
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     mutations.push(Mutation::Put {
         schema: SCHEMA.as_str().into(),
         key: HEAD.to_vec(),
-        value: serde_json::to_vec(&head).map_err(|e| e.to_string())?,
+        value: serde_json::to_vec(&head).map_err(|e| error_text(&e))?,
     });
+    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     mutations.push(Mutation::Put {
         schema: SCHEMA.as_str().into(),
         key: epoch_key.clone(),
         value: receipt_digest.as_bytes().to_vec(),
     });
-    transaction(
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let out = transaction(
         &core,
         Request {
             version: VERSION,
@@ -2240,7 +2504,8 @@ pub async fn reauthorize(
         },
         receipt.witness_binding.as_ref(),
     )
-    .await
+    .await;
+    out
 }
 
 /// Explicit creation proof is supplied by the namespace owner. An empty key scan is never proof.
@@ -2324,7 +2589,12 @@ pub async fn initialize_ephemeral_with_record_bootstrap(
         return Err("fresh principal baseline changed before record bootstrap".into());
     }
     let mut epoch = [0u8; 16];
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     getrandom::fill(&mut epoch).map_err(|_| "fresh record bootstrap entropy unavailable")?;
+    // busbar:expect(bp::into_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     Ok(crate::host_record_bootstrap::ColdRecordReceipt {
         version: 1,
         epoch: hex::encode(epoch),
@@ -2345,8 +2615,13 @@ pub async fn initialize_ephemeral_with_record_bootstrap(
 
 fn fresh_mutations(receipt: &FreshNamespace) -> Result<(String, Vec<Mutation>), String> {
     let receipt_sha256 = digest(receipt)?;
-    let body = serde_json::to_vec(receipt).map_err(|e| e.to_string())?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
+    let body = serde_json::to_vec(receipt).map_err(|e| error_text(&e))?;
     let mut mutations = chunks(&body_prefix(&receipt_sha256), &body)?;
+    // busbar:expect(bp::clone_alloc, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let head = Head {
         version: 1,
         plan_sha256: receipt_sha256.clone(),
@@ -2365,10 +2640,14 @@ fn fresh_mutations(receipt: &FreshNamespace) -> Result<(String, Vec<Mutation>), 
         rollover: None,
         extra_carry: Vec::new(),
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: principal transition runs only at startup or from the offline quiescent CLI"
+    )]
     mutations.push(Mutation::Put {
         schema: SCHEMA.as_str().into(),
         key: HEAD.to_vec(),
-        value: serde_json::to_vec(&head).map_err(|e| e.to_string())?,
+        value: serde_json::to_vec(&head).map_err(|e| error_text(&e))?,
     });
     Ok((receipt_sha256, mutations))
 }
@@ -2394,6 +2673,7 @@ async fn initialize_namespace(
     {
         return Err("explicit new namespace creation/witness receipt required".into());
     }
+    // busbar:expect(bp::fresh_buffer, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")
     let mut predicates = Vec::new();
     if let Some(witness) = &receipt.witness {
         let key = hex::decode(&witness.key_hex).map_err(|_| "invalid namespace witness key")?;
@@ -2419,6 +2699,7 @@ async fn initialize_namespace(
             version: VERSION,
             op_id: operation(&receipt_sha256, "fresh"),
             predicates: {
+                #[expect(clippy::disallowed_methods, reason = "boot: principal transition runs only at startup or from the offline quiescent CLI")]
                 predicates.push(Predicate {
                     schema: SCHEMA.as_str().into(),
                     key: HEAD.to_vec(),
