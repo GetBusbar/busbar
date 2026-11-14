@@ -599,8 +599,55 @@ pub(super) fn deliver_to(
     op: &str,
     mut f: impl FnMut(Projection, bool) -> Rendered,
 ) {
+    let mut handed = Handed::default();
     for s in sinks().filter(|s| s.projection.wants_stream(stream)) {
-        deliver_one(s, stream, op, &mut f);
+        deliver_one(s, stream, &mut f, &mut handed);
+    }
+    handed.record(op);
+}
+
+/// The sinks of one event that queued their line and still owe a durable access amendment.
+/// They are recorded together: one amendment per sink, one durable commit per event.
+#[derive(Default)]
+struct Handed {
+    amendments: Option<Arc<crate::audit::amend::NodeAmendments>>,
+    runtime: Option<tokio::runtime::Handle>,
+    reads: Vec<(String, Arc<Value>)>,
+    sinks: Vec<Arc<dyn ExportCalls>>,
+    permits: Vec<Arc<tokio::sync::OwnedSemaphorePermit>>,
+}
+
+impl Handed {
+    fn record(self, op: &str) {
+        let Handed {
+            amendments,
+            runtime,
+            reads,
+            sinks,
+            permits,
+        } = self;
+        let (Some(amendments), Some(runtime)) = (amendments, runtime) else {
+            return;
+        };
+        if reads.is_empty() {
+            return;
+        }
+        let op = op.to_owned();
+        runtime.spawn(async move {
+            // Retain every sink's admission through its durable access amendment, even if the
+            // sink releases its delivery permit immediately.
+            let _permits = permits;
+            if crate::audit::amend::export_reads(&amendments, &op, &reads)
+                .await
+                .is_err()
+            {
+                // The original access facts remain in the shared native owner's queue; do not
+                // report a durable audit success for any sink of the set.
+                for sink in sinks {
+                    sink.shed();
+                }
+            }
+        });
     }
 }
 
@@ -624,7 +671,11 @@ fn deliver_one(
     let Rendered { line, members } = f(s.projection, s.span_record);
     let amendments = s.reads.get().cloned();
     let runtime = if amendments.is_some() {
-        match tokio::runtime::Handle::try_current() {
+        match handed
+            .runtime
+            .clone()
+            .map_or_else(tokio::runtime::Handle::try_current, Ok)
+        {
             Ok(runtime) => Some(runtime),
             Err(_) => {
                 s.sink.shed();

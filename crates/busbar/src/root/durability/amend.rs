@@ -203,6 +203,63 @@ struct BookAmendments {
     token: Grant<DurableWrite>,
 }
 
+impl BookAmendments {
+    /// Drop pending entries whose run the journal already confirmed, from the oldest. Seqs are
+    /// assigned in run-ticket order and the journal confirms runs in that order, so the first
+    /// unconfirmed entry ends the walk: one `is_confirmed` per amendment amortised, not one per
+    /// pending entry. Entries behind it are removed by their own confirmation futures.
+    fn prune_front(&self, pending: &mut PendingAmendments) {
+        while let Some(front) = pending.first_entry() {
+            if matches!(self.journal.is_confirmed(&front.get().1), Ok(true)) {
+                front.remove();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Stage `amendments` (consecutive, in order) as one journal run, or return the runs already
+    /// staged for them when the sink is re-bound over amendments it holds.
+    fn stage(
+        &self,
+        amendments: &[Amendment],
+    ) -> Result<
+        Vec<Arc<busbar_kernel::persistence::journal::runtime::StagedRun>>,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
+        use busbar_kernel_audit::amend::AmendPersistError;
+        let mut pending = self.pending.lock().map_err(|_| AmendPersistError)?;
+        self.prune_front(&mut pending);
+        let mut held = Vec::new();
+        for amendment in amendments {
+            if let Some((hash, run)) = pending.get(&amendment.seq) {
+                if hash != &amendment.hash {
+                    return Err(AmendPersistError);
+                }
+                if !held.iter().any(|r| Arc::ptr_eq(r, run)) {
+                    held.push(run.clone());
+                }
+            }
+        }
+        if !held.is_empty() {
+            // Re-sealing what is already staged: every original must already be held.
+            if amendments.iter().any(|a| !pending.contains_key(&a.seq)) {
+                return Err(AmendPersistError);
+            }
+            return Ok(held);
+        }
+        let entries: Vec<_> = amendments.iter().map(entry).collect();
+        let run = self
+            .journal
+            .stage_run(&entries)
+            .map_err(|_| AmendPersistError)?;
+        for amendment in amendments {
+            pending.insert(amendment.seq, (amendment.hash.clone(), run.clone()));
+        }
+        Ok(vec![run])
+    }
+}
+
 impl AmendSink for BookAmendments {
     fn sealed(
         &self,
@@ -211,30 +268,32 @@ impl AmendSink for BookAmendments {
         busbar_kernel_audit::amend::AmendCommit,
         busbar_kernel_audit::amend::AmendPersistError,
     > {
+        self.sealed_many(std::slice::from_ref(amendment))
+    }
+
+    fn sealed_many(
+        &self,
+        amendments: &[Amendment],
+    ) -> Result<
+        busbar_kernel_audit::amend::AmendCommit,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
         use busbar_kernel_audit::amend::AmendPersistError;
-        let staged = (|| {
-            let mut pending = self.pending.lock().map_err(|_| AmendPersistError)?;
-            pending.retain(|_, (_, run)| !matches!(self.journal.is_confirmed(run), Ok(true)));
-            if let Some((hash, run)) = pending.get(&amendment.seq) {
-                if hash != &amendment.hash {
-                    return Err(AmendPersistError);
-                }
-                return Ok(run.clone());
-            }
-            let run = self
-                .journal
-                .stage_run(&[entry(amendment)])
-                .map_err(|_| AmendPersistError)?;
-            pending.insert(amendment.seq, (amendment.hash.clone(), run.clone()));
-            Ok(run)
-        })()?;
+        if amendments.is_empty() {
+            return Ok(Box::pin(async { Ok(()) }));
+        }
+        let runs = self.stage(amendments)?;
         let journal = self.journal.clone();
         let pending = self.pending.clone();
-        let seq = amendment.seq;
+        let seqs: Vec<u64> = amendments.iter().map(|a| a.seq).collect();
         Ok(Box::pin(async move {
-            let run = staged;
-            journal.confirm(&run).await.map_err(|_| AmendPersistError)?;
-            pending.lock().map_err(|_| AmendPersistError)?.remove(&seq);
+            for run in &runs {
+                journal.confirm(run).await.map_err(|_| AmendPersistError)?;
+            }
+            let mut pending = pending.lock().map_err(|_| AmendPersistError)?;
+            for seq in seqs {
+                pending.remove(&seq);
+            }
             Ok(())
         }))
     }
