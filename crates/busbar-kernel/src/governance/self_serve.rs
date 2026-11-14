@@ -476,8 +476,3 @@ impl GovState {
         Ok(out)
     }
 }
-
-/// Whether `group` is `user_sub`'s self-serve group (`user:<sub>`), compared in place.
-fn is_self_group(group: Option<&str>, user_sub: &str) -> bool {
-    group.and_then(|group| group.strip_prefix(SELF_KEY_GROUP_PREFIX)) == Some(user_sub)
-}
