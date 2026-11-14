@@ -208,6 +208,8 @@ struct Shared {
     facts: ExportFacts,
     recorder: Option<busbar_contract::export_calls::RecorderRequirements>,
     queue: Mutex<VecDeque<Line>>,
+    /// Lines shed since the flusher last folded them into the observer.
+    shed_pending: AtomicU64,
 
     flusher: Mutex<Option<Waker>>,
     stop: AtomicBool,
@@ -242,10 +244,18 @@ impl Shared {
         }
     }
 
+    /// The next batch for a free slot: the front line's stream, up to the limits. A sink that
+    /// carries a batch line by line gets a per-slot share (`queued / room`), so lines behind a
+    /// stalled one never wait while a slot is free; a whole-batch carrier gets everything queued,
+    /// which costs no line any wait and leaves more slots free.
     fn take(&self, room: usize) -> Option<(u8, Vec<Line>)> {
         let mut q = self.lock();
         let stream = q.front()?.stream;
-        let share = q.len().div_ceil(room.max(1)).clamp(1, MAX_BATCH_LINES);
+        let share = if self.facts.whole_batches {
+            MAX_BATCH_LINES
+        } else {
+            q.len().div_ceil(room.max(1)).clamp(1, MAX_BATCH_LINES)
+        };
         let (mut lines, mut bytes) = (Vec::new(), 0usize);
         while let Some(l) = q.front() {
             let fits = lines.is_empty()
@@ -257,6 +267,18 @@ impl Shared {
             lines.extend(q.pop_front());
         }
         Some((stream, lines))
+    }
+
+    /// Fold the lines shed since the last pass in one observer fold.
+    fn fold_sheds(&self) {
+        let shed = self.shed_pending.swap(0, Ordering::Relaxed);
+        if shed > 0 {
+            fold_shed_lines(
+                self.dispatcher.observing(),
+                self.plugin.name(),
+                shed as usize,
+            );
+        }
     }
 
     async fn deliver(self: Arc<Self>, worker: u32, stream: u8, lines: Vec<Line>) {
@@ -326,6 +348,7 @@ impl Shared {
         futures::executor::block_on(futures::future::poll_fn(|cx| loop {
             while let Poll::Ready(Some(())) = inflight.poll_next_unpin(cx) {}
             *self.flusher.lock().unwrap_or_else(|p| p.into_inner()) = Some(cx.waker().clone());
+            self.fold_sheds();
             if self.stop.load(Ordering::Acquire) {
                 let shed = { std::mem::take(&mut *self.lock()) };
                 if !shed.is_empty() {
@@ -444,6 +467,7 @@ impl ExportInstance {
             facts,
             recorder,
             queue: Mutex::new(VecDeque::new()),
+            shed_pending: AtomicU64::new(0),
             flusher: Mutex::new(None),
             stop: AtomicBool::new(false),
             abandon: AtomicBool::new(false),
@@ -664,7 +688,7 @@ impl ExportCalls for ExportInstance {
         if sh.plugin.is_faulted() || !sh.plugin.is_open() {
             return Delivered::Shed;
         }
-        {
+        let was_empty = {
             let mut q = sh.lock();
             if q.len() >= MAX_QUEUED_LINES {
                 return Delivered::Shed;
@@ -674,8 +698,13 @@ impl ExportCalls for ExportInstance {
                 bytes: line,
                 _hold: hold,
             });
+            q.len() == 1
+        };
+        // Only the empty-to-non-empty push wakes the flusher: it stores its waker before taking,
+        // and leaves lines queued only with every slot busy, where a completion wakes it.
+        if was_empty {
+            sh.notify();
         }
-        sh.notify();
         Delivered::Queued
     }
 
@@ -788,12 +817,12 @@ impl ExportCalls for ExportInstance {
     }
 
     fn shed(&self) {
-        fold_shed(self.shared.dispatcher.observing(), self.plugin().name());
+        // One atomic add per shed line; the flusher folds the total once per
+        // pass. The first shed since the last fold wakes an idle flusher.
+        if self.shared.shed_pending.fetch_add(1, Ordering::Relaxed) == 0 {
+            self.shared.notify();
+        }
     }
-}
-
-fn fold_shed(observing: &crate::observe::Observing, name: &str) {
-    fold_shed_lines(observing, name, 1);
 }
 
 fn fold_shed_lines(observing: &crate::observe::Observing, name: &str, lines: usize) {

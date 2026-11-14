@@ -137,6 +137,21 @@ fn span_records_read_from_the_statement_extensions() {
 }
 
 #[test]
+fn whole_batches_read_from_the_statement_extensions() {
+    use super::{whole_batches, EXT_DECLARES, EXT_WHOLE_BATCHES};
+    assert_eq!(EXT_WHOLE_BATCHES, "whole_batches");
+    let stated =
+        |v: &[u8]| whole_batches(&encode(&[(EXT_DECLARES, b"{}"), (EXT_WHOLE_BATCHES, v)]));
+    assert_eq!(stated(b"true"), Ok(true));
+    assert_eq!(stated(b"false"), Ok(false));
+    assert_eq!(whole_batches(&encode(&[(EXT_DECLARES, b"{}")])), Ok(false));
+    assert_eq!(whole_batches(&[]), Ok(false));
+    for bad in [&b"1"[..], br#""true""#, b"not json"] {
+        assert!(stated(bad).is_err(), "{}", String::from_utf8_lossy(bad));
+    }
+}
+
+#[test]
 fn strict_lookup_rejects_truncation_and_duplicate_target_but_preserves_unknowns() {
     use super::{unique, LookupError};
     let prefix = encode(&[("unknown", b"one"), ("unknown", b"two")]);

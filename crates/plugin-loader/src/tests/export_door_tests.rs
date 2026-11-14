@@ -219,6 +219,7 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
         plugin,
         dispatcher,
         queue: Mutex::default(),
+        shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
@@ -795,6 +796,7 @@ fn a_batch_dropped_after_failed_delivery_is_counted_as_shed() {
         plugin,
         dispatcher,
         queue: Mutex::default(),
+        shed_pending: AtomicU64::new(0),
         flusher: Mutex::default(),
         stop: AtomicBool::new(false),
         abandon: AtomicBool::new(false),
@@ -819,4 +821,333 @@ fn a_batch_dropped_after_failed_delivery_is_counted_as_shed() {
     assert_eq!(shed, 3, "every line lost to a failed delivery is counted");
     let mut close = Frame::new(in_head(), out_head());
     let _ = shared.plugin.call(lc::CLOSE, &mut close);
+}
+
+/// A DELIVER that answers READY and counts each batch and its lines.
+mod counting {
+    use busbar_contract::abi::export::{
+        CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
+        StatusOut, Tail,
+    };
+    use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::leaky::{Leaky, Ready};
+    use busbar_contract::abi::sdk::life::Held;
+
+    pub static DELIVERS: AtomicUsize = AtomicUsize::new(0);
+    pub static LINES: AtomicUsize = AtomicUsize::new(0);
+
+    pub struct Counts;
+    impl SafeSlot for Counts {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
+        type In = DeliverIn;
+        type Out = OutHead;
+        type State = Held<Leaky>;
+        fn call(
+            _: Instance<'_, Held<Leaky>, Self::Kind>,
+            input: Lent<'_, DeliverIn>,
+            _: Out<'_, OutHead>,
+        ) -> Outcome {
+            let lines = input
+                .batch()
+                .bytes()
+                .iter()
+                .filter(|b| **b == b'\n')
+                .count();
+            DELIVERS.fetch_add(1, Ordering::SeqCst);
+            LINES.fetch_add(lines, Ordering::SeqCst);
+            Outcome::Ready
+        }
+    }
+
+    const STREAMS: &[u8] = &[ExportStream::Logs as u8];
+    const TAIL: Tail = Tail {
+        head: KindTailHead {
+            size: std::mem::size_of::<Tail>() as u32,
+            ..KindTailHead::ZERO
+        },
+        streams: STREAMS.as_ptr(),
+        streams_len: STREAMS.len(),
+        ..Tail::ZERO
+    };
+    const STATEMENT: Statement = Statement {
+        kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+        ..busbar_contract::abi::sdk::door::statement("waste-counting-export", "0", 4)
+    };
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::export::Ops,
+        statement: STATEMENT,
+        lifecycle: life(Leaky),
+        kind_ops: {
+            deliver: Safe<Counts>,
+            scrape: Safe<Ready<ScrapeIn, ScrapeOut>>,
+            status: Safe<Ready<InHead, StatusOut>>,
+            check: Safe<Ready<CheckIn, CheckOut>>,
+            serve: Safe<Ready<ServeIn, ServeOut>>,
+        },
+    }
+
+    /// The counting DELIVER with 64 deliveries in flight, stating no carriage
+    /// fact: core treats it as carrying a batch line by line.
+    pub mod per_line {
+        use super::*;
+
+        const STATEMENT: Statement = Statement {
+            kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+            ..busbar_contract::abi::sdk::door::statement("waste-per-line-export", "0", 64)
+        };
+
+        busbar_contract::plugin_door! {
+            ops: busbar_contract::abi::export::Ops,
+            statement: STATEMENT,
+            lifecycle: life(Leaky),
+            kind_ops: {
+                deliver: Safe<Counts>,
+                scrape: Safe<Ready<ScrapeIn, ScrapeOut>>,
+                status: Safe<Ready<InHead, StatusOut>>,
+                check: Safe<Ready<CheckIn, CheckOut>>,
+                serve: Safe<Ready<ServeIn, ServeOut>>,
+            },
+        }
+    }
+
+    /// The counting DELIVER with 64 deliveries in flight, stating
+    /// `whole_batches`: it carries a DELIVER as one unit.
+    pub mod whole {
+        use super::*;
+
+        busbar_contract::statement_extensions!(EXTENSIONS: [("whole_batches", b"true")]);
+        const STATEMENT: Statement = Statement {
+            kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+            extensions: EXTENSIONS,
+            ..busbar_contract::abi::sdk::door::statement("waste-whole-export", "0", 64)
+        };
+
+        busbar_contract::plugin_door! {
+            ops: busbar_contract::abi::export::Ops,
+            statement: STATEMENT,
+            lifecycle: life(Leaky),
+            kind_ops: {
+                deliver: Safe<Counts>,
+                scrape: Safe<Ready<ScrapeIn, ScrapeOut>>,
+                status: Safe<Ready<InHead, StatusOut>>,
+                check: Safe<Ready<CheckIn, CheckOut>>,
+                serve: Safe<Ready<ServeIn, ServeOut>>,
+            },
+        }
+    }
+}
+
+const COUNTING_SHED: &str = "busbar_export_waste_counting_shed";
+
+/// An opened counting sink with no flusher running yet, so a test can queue
+/// lines first and then run the flusher itself.
+fn counting_sink() -> (ExportInstance, Arc<Shared>) {
+    counting_sink_of(counting::door)
+}
+
+/// [`counting_sink`] over `door`, one of the counting doors.
+fn counting_sink_of(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> (ExportInstance, Arc<Shared>) {
+    use std::sync::atomic::Ordering::SeqCst;
+    counting::DELIVERS.store(0, SeqCst);
+    counting::LINES.store(0, SeqCst);
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
+    let plugin = load_linked::<Export>(
+        &LinkedRow::of(door).unwrap(),
+        Bind {
+            instance: Arc::from("export.waste-counting"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: crate::dispatch::ConnTable::NoNeeds,
+        },
+    )
+    .unwrap();
+    let opened = plugin.call(lc::OPEN, &mut open_frame(blob(b"{}", BLOB_JSON)));
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let mut series =
+        busbar_contract::abi::mechanism::observe::SeriesDecl::new(COUNTING_SHED, "counter");
+    series.shed = true;
+    let grant =
+        crate::observe::grant_series(dispatcher.observing(), plugin.name(), true, &[series])
+            .unwrap();
+    let shared = Arc::new(Shared {
+        facts: plugin.context::<ExportFacts>().unwrap().clone(),
+        recorder: None,
+        plugin,
+        dispatcher,
+        queue: Mutex::default(),
+        shed_pending: AtomicU64::new(0),
+        flusher: Mutex::default(),
+        stop: AtomicBool::new(false),
+        abandon: AtomicBool::new(false),
+        node: node_id(),
+        minted: AtomicU64::new(0),
+    });
+    let sink = ExportInstance {
+        shared: Arc::clone(&shared),
+        flusher: Mutex::new(None),
+        _grant: Some(grant),
+    };
+    (sink, shared)
+}
+
+fn queue_lines(sink: &ExportInstance, count: usize) {
+    for i in 0..count {
+        assert_eq!(
+            sink.deliver(
+                ExportStream::Logs as u8,
+                format!("{{\"line\":{i}}}").into_bytes(),
+                Box::new(())
+            ),
+            Delivered::Queued
+        );
+    }
+}
+
+/// Runs the flusher until `lines` lines were delivered (or 10 s), then stops it.
+/// The flusher thread carries this test's observe scope, so what it folds is
+/// read back under the test's `exclusive` guard.
+fn flush_until(shared: &Arc<Shared>, lines: usize) {
+    let scope = crate::observe::testing::scope();
+    let flusher = std::thread::spawn({
+        let shared = Arc::clone(shared);
+        move || {
+            crate::observe::testing::enter(scope);
+            shared.flush();
+        }
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while counting::LINES.load(Ordering::SeqCst) < lines && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    shared.stop.store(true, Ordering::Release);
+    shared.notify();
+    flusher.join().unwrap();
+}
+
+fn counting_shed_folds() -> Vec<u64> {
+    crate::observe::testing::folds()
+        .iter()
+        .flat_map(|(_, _, metrics, _)| metrics)
+        .filter(|metric| metric["name"] == COUNTING_SHED)
+        .map(|metric| metric["value"].as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn shed_folds_once_per_pass() {
+    let guard = crate::observe::testing::exclusive();
+    let (sink, shared) = counting_sink();
+    crate::observe::testing::clear(&guard);
+    for _ in 0..1000 {
+        sink.shed();
+    }
+    flush_until(&shared, 0);
+    let folds = counting_shed_folds();
+    assert_eq!(
+        folds.iter().sum::<u64>(),
+        1000,
+        "every shed line is counted"
+    );
+    assert!(
+        folds.len() <= 2,
+        "1000 sheds are folded in {} observer folds",
+        folds.len()
+    );
+}
+
+/// Queues `count` lines on a fresh counting sink over `door`, runs the flusher
+/// until all are delivered, and returns (DELIVERs, lines delivered).
+fn delivers_for(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    count: usize,
+) -> (usize, usize) {
+    let (sink, shared) = counting_sink_of(door);
+    queue_lines(&sink, count);
+    flush_until(&shared, count);
+    drop(sink);
+    (
+        counting::DELIVERS.load(Ordering::SeqCst),
+        counting::LINES.load(Ordering::SeqCst),
+    )
+}
+
+#[test]
+fn export_batches_low_load() {
+    let guard = crate::observe::testing::exclusive();
+    crate::observe::testing::clear(&guard);
+    assert_eq!(
+        delivers_for(counting::whole::door, 50),
+        (1, 50),
+        "a whole-batch carrier takes 50 queued lines as one DELIVER, not one per free slot"
+    );
+    assert!(counting_shed_folds().is_empty());
+}
+
+#[test]
+fn export_batches_are_full_under_load() {
+    let guard = crate::observe::testing::exclusive();
+    crate::observe::testing::clear(&guard);
+    assert_eq!(
+        delivers_for(counting::whole::door, 1000),
+        (1000usize.div_ceil(MAX_BATCH_LINES), 1000),
+        "a whole-batch carrier takes 1000 queued lines in full batches"
+    );
+    assert!(counting_shed_folds().is_empty());
+}
+
+#[test]
+fn per_line_carriers_keep_dev_cut() {
+    let guard = crate::observe::testing::exclusive();
+    crate::observe::testing::clear(&guard);
+    // dev's cut with 64 free slots: `ceil(queued / room)` lines per DELIVER,
+    // room counting down from 64, so every free slot carries its share.
+    assert_eq!(delivers_for(counting::per_line::door, 50), (50, 50));
+    assert_eq!(delivers_for(counting::per_line::door, 1000), (64, 1000));
+    assert!(counting_shed_folds().is_empty());
+}
+
+/// Counts how often the flusher's waker is woken.
+struct CountWakes(std::sync::atomic::AtomicUsize);
+impl std::task::Wake for CountWakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_busy_flusher_is_not_woken_by_pushes_into_a_non_empty_queue() {
+    let guard = crate::observe::testing::exclusive();
+    crate::observe::testing::clear(&guard);
+    let (sink, shared) = counting_sink();
+    let wakes = Arc::new(CountWakes(std::sync::atomic::AtomicUsize::new(0)));
+    let waker = std::task::Waker::from(Arc::clone(&wakes));
+    *shared.flusher.lock().unwrap() = Some(waker.clone());
+    queue_lines(&sink, 1);
+    assert_eq!(
+        wakes.0.load(Ordering::SeqCst),
+        1,
+        "the first line into an empty queue wakes the flusher"
+    );
+    // The flusher stores its waker again each pass and leaves lines queued only
+    // when every slot is busy; a deliver completion wakes it then, not a push.
+    *shared.flusher.lock().unwrap() = Some(waker);
+    queue_lines(&sink, 999);
+    assert_eq!(
+        wakes.0.load(Ordering::SeqCst),
+        1,
+        "pushes into a non-empty queue do not wake the flusher"
+    );
+    assert!(shared.flusher.lock().unwrap().is_some());
+    assert_eq!(sink.queued(), 1000);
 }
