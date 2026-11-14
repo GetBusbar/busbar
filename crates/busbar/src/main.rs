@@ -633,6 +633,23 @@ async fn run(
         overlay_doc: _,
         unset_env_vars: _,
     } = loaded;
+    // The 1.5.5 overlay selection of the authored deployment, captured while startup custody
+    // is open. Startup conversion drops the selector; the serve gate below still answers for
+    // the data behind it. Nothing is opened here.
+    let legacy_overlay = if principal_transition.is_none() && overlay_migration.is_none() {
+        let (_, detection) = documents
+            .original_deployment(&config_path)
+            .unwrap_or_else(|error| die(error));
+        let env = std::env::var_os("BUSBAR_CONFIG_OVERLAY")
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from);
+        Some(
+            root::overlay_migrate::Legacy::capture(&config_path, &detection, env.as_deref())
+                .unwrap_or_else(|error| die(error)),
+        )
+    } else {
+        None
+    };
 
     let base_cfg = root::startup_upgrade::bootstrap::bootstrap(&deploy).unwrap_or_else(|errors| {
         die(boot_error(
@@ -869,6 +886,15 @@ async fn run(
                     .unwrap_or_else(|error| die(boot_error("Store overlay unavailable", error))),
             )
         };
+        // Serving never reads a 1.5.5 file overlay: refuse while one holds un-imported settings.
+        if let Some(legacy) = legacy_overlay.as_ref() {
+            if let Err(line) =
+                root::overlay_migrate::admit_legacy(legacy, &anchor_store, safe_mode).await
+            {
+                eprintln!("{line}");
+                std::process::exit(1);
+            }
+        }
         let overlay_doc = if safe_mode {
             None
         } else if let Some(store) = overlay_path.as_ref() {
