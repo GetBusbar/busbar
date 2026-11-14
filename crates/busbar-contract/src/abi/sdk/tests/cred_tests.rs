@@ -383,3 +383,16 @@ fn a_settings_enum_object_with_more_than_one_key_is_refused() {
     assert!(settings::<S>(br#"{"mode":{"tls":{},"plain":{}}}"#).is_err());
     assert!(settings::<S>(br#"{"mode":{"plain":{}}}"#).is_ok());
 }
+
+/// SECURE-TYPES (core #164): a plugin captures a credential in a `busbar_contract::secure`
+/// buffer, never in the banned `zeroize::Zeroizing`. RED until `Cred::captured` takes `SecureVec`.
+#[test]
+fn cred_captured_takes_secure_vec() {
+    let c = Cred::captured(crate::secure::SecureVec::from(b"k".to_vec()));
+    assert_eq!(c.wire(), b"k");
+    let w = Parts::new()
+        .public(b"authorization: ")
+        .sealed(c.bearer())
+        .public(b"\r\n");
+    assert_eq!(&SealedWrite::new(w).buf[..], b"authorization: Bearer k\r\n");
+}
