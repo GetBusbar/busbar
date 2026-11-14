@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::config::ExportDefCfg;
+use serde_json::Value;
 
 fn def(module: &str) -> ExportDefCfg {
     serde_json::from_value(serde_json::json!({ "module": module })).expect("a minimal definition")
@@ -518,7 +519,7 @@ async fn opened(
     (
         PluginSink {
             name: module.to_string(),
-            module: module.to_string(),
+            module: module.into(),
             sink: double,
             scrape: false,
             projection: Projection::for_test(&[ExportStream::Logs], &[]),
@@ -550,8 +551,11 @@ fn reads_under(s: &PluginSink, op: &str) -> usize {
         .count()
 }
 
-fn payload(_: Projection, _: bool) -> Arc<Value> {
-    Arc::new(serde_json::json!({ "path": "/v1/x" }))
+fn payload(_: Projection, _: bool) -> Rendered {
+    Rendered {
+        line: br#"{"path":"/v1/x"}"#.to_vec(),
+        members: crate::export::projection::Members::default(),
+    }
 }
 
 #[tokio::test]
@@ -917,7 +921,7 @@ fn export_restart_metadata_compares_boot_membership_module_and_effective_project
     let projection = resolve_projection(
         "sink",
         "neutral-sink",
-        Some(&streams_of(&streams)),
+        Some(&declared_streams(&streams)),
         desired.streams.as_deref(),
         None,
         false,
@@ -964,7 +968,7 @@ fn export_restart_metadata_compares_boot_membership_module_and_effective_project
     let events_projection = resolve_projection(
         "sink",
         "neutral-sink",
-        Some(&streams_of(&streams)),
+        Some(&declared_streams(&streams)),
         narrowed.streams.as_deref(),
         None,
         false,
@@ -980,7 +984,7 @@ fn export_restart_metadata_compares_boot_membership_module_and_effective_project
     let narrow_projection = resolve_projection(
         "sink",
         "neutral-sink",
-        Some(&streams_of(&streams)),
+        Some(&declared_streams(&streams)),
         narrowed.streams.as_deref(),
         narrowed.fields.as_deref(),
         false,

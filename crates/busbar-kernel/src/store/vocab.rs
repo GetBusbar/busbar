@@ -75,6 +75,50 @@ pub fn now() -> u64 {
         .as_secs()
 }
 
+/// Nanoseconds since the epoch: a wall reading that DATES a record (saturating, never panicking).
+pub fn now_ns() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+/// Nanoseconds on the node's monotonic clock since its first reading in this process. It ORDERS
+/// and MEASURES (one reading at each end of an interval, subtracted); it never dates anything.
+pub fn monotonic_ns() -> u64 {
+    static ORIGIN: std::sync::LazyLock<std::time::Instant> =
+        std::sync::LazyLock::new(std::time::Instant::now);
+    u64::try_from(ORIGIN.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// One reading of both node clocks at the same instant: the wall reading DATES a record, the
+/// monotonic one ORDERS and MEASURES it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    pub wall_ns: u64,
+    pub mono_ns: u64,
+}
+
+impl Stamp {
+    #[must_use]
+    pub fn now() -> Stamp {
+        Stamp {
+            wall_ns: now_ns(),
+            mono_ns: monotonic_ns(),
+        }
+    }
+}
+
+/// The monotonic time since `since`, one reading of the node's monotonic clock.
+#[must_use]
+pub fn elapsed(since: std::time::Instant) -> std::time::Duration {
+    since.elapsed()
+}
+
 pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()

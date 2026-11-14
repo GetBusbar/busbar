@@ -29,7 +29,6 @@ pub struct ArrivalPayload {
 }
 
 pub trait ArrivalHost: Send + Sync {
-    #[allow(clippy::too_many_arguments)]
     fn finish_rejected(
         &self,
         ctx: &ArrivalCtx,

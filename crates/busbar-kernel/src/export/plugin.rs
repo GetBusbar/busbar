@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::projection::{resolve_projection, Projection};
-use super::PayloadCache;
+use super::projection::{resolve_projection, Projection, Rendered};
 use crate::config::secret::ResolvedSettings;
 use crate::config::ExportCfg;
 use crate::limits::admission::AdmissionGate;
@@ -11,7 +10,6 @@ use busbar_contract::abi::export::{CheckPhase, ExportStream};
 use busbar_contract::abi::mechanism::endpoint::*;
 use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::export_calls::{Delivered, ExportAxis, ExportCalls, ServeRequest};
-use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
 const MAX_INFLIGHT_PLUGIN_DELIVERIES: usize = 64;
@@ -61,14 +59,23 @@ pub(crate) fn configured_instance(
     match problems {
         Some(problems) => {
             errors.extend(problems);
-            Some(crate::config::PluginExportSettings {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an admitted export instance's settings, kept from config load"
+            )]
+            let settings = crate::config::PluginExportSettings {
                 name: name.to_owned(),
                 def: def.clone(),
                 projection,
                 scrape,
-            })
+            };
+            Some(settings)
         }
         None => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
             errors.push(format!(
                 "export.{name}.module: unknown exporter '{}'; the built-in export modules are \
                  {}",
@@ -97,10 +104,15 @@ pub(crate) fn probe(
         Err(e) => {
             let written = settings.prepare();
             let (streams, _, _) = axis.probe(module, name, &written)?;
-            (streams, vec![format!("export.{name}.settings: {e}")], None)
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an export instance refused at config load"
+            )]
+            let refused = vec![format!("export.{name}.settings: {e}")];
+            (streams, refused, None)
         }
     };
-    let streams = streams.map(|b| streams_of(&b));
+    let streams = streams.map(|b| declared_streams(&b));
     Some((streams, problems, recorder))
 }
 
@@ -125,6 +137,10 @@ fn sink_settings_with_resolver(
 ) -> Result<ResolvedSettings, String> {
     let secret = axis.secret_refs(module);
     let reference = axis.reference_fields(module);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an export module's declared settings slots, read at config load"
+    )]
     let declared = [secret.as_slice(), reference.as_slice()].concat();
     let tree = settings.prepare();
     if declared.is_empty()
@@ -144,11 +160,21 @@ fn sink_settings_with_resolver(
     )
 }
 
-fn streams_of(bytes: &[u8]) -> Vec<ExportStream> {
+/// The streams a sink declares, by their byte codes.
+fn streams_of(bytes: &[u8]) -> impl Iterator<Item = ExportStream> + '_ {
     bytes
         .iter()
         .filter_map(|&b| ExportStream::ALL.get(usize::from(b)).copied())
-        .collect()
+}
+
+/// The streams a sink declares, held for config resolution.
+fn declared_streams(bytes: &[u8]) -> Vec<ExportStream> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a sink's declared streams resolve at config load"
+    )]
+    let streams = streams_of(bytes).collect();
+    streams
 }
 
 pub(crate) fn linked_modules() -> Vec<String> {
@@ -163,7 +189,15 @@ pub(crate) fn check_one_instance(
     module: &str,
     instances: &[(String, busbar_contract::plugin_settings::Settings)],
 ) -> Vec<String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a one-instance module's instances are checked at config load"
+    )]
     let names: Vec<String> = instances.iter().map(|(n, _)| n.clone()).collect();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a one-instance module's instances are checked at config load"
+    )]
     let found = axis()
         .and_then(|axis| {
             let held: Vec<_> = instances
@@ -197,19 +231,29 @@ pub(crate) fn word_one_instance(module: &str, names: &[String], found: Vec<Strin
     let Some((first, rest)) = names.split_first() else {
         return Vec::new();
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an export instance refused at config load"
+    )]
     let why = if found.is_empty() {
         ONE_INSTANCE_WHY.to_string()
     } else {
         found.join(" ")
     };
-    rest.iter()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an export instance refused at config load"
+    )]
+    let refusals = rest
+        .iter()
         .map(|name| {
             format!(
                 "export.{name}: a second `module: {module}` instance (already defined as \
                  '{first}'). {why}"
             )
         })
-        .collect()
+        .collect();
+    refusals
 }
 
 pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>) {
@@ -220,6 +264,7 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
         CheckPhase::Limits => busbar_contract::abi::export::CHECK_PHASE_LIMITS,
         CheckPhase::Instances => busbar_contract::abi::export::CHECK_PHASE_INSTANCES,
     };
+    // busbar:expect(bp::fresh_buffer, reason = "config: each export module is checked once at config load")
     let mut modules: Vec<&str> = Vec::new();
     for p in &cfg.plugins {
         let module = p.def.module.trim();
@@ -228,6 +273,10 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
         }
         modules.push(module);
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: each export module's instances are checked at config load"
+        )]
         let held: Vec<(String, ResolvedSettings)> = cfg
             .plugins
             .iter()
@@ -238,6 +287,10 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
                     .map(|v| (q.name.clone(), v))
             })
             .collect();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: each export module's instances are checked at config load"
+        )]
         let instances: Vec<_> = held
             .iter()
             .map(|(name, settings)| (name.clone(), settings))
@@ -248,7 +301,7 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
 
 pub(super) struct PluginSink {
     name: String,
-    module: String,
+    module: Arc<str>,
     sink: Arc<dyn ExportCalls>,
 
     scrape: bool,
@@ -274,6 +327,10 @@ impl Admission {
             n => usize::try_from(n).unwrap_or(usize::MAX),
         };
         let bound = bound.clamp(1, tokio::sync::Semaphore::MAX_PERMITS);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a sink's admission gate is named once, when the sink starts"
+        )]
         let gate = if gate.is_empty() {
             module.to_string()
         } else {
@@ -306,7 +363,7 @@ pub(crate) fn boot_recorder_requirements(
 
 pub fn requires_restart(name: &str, def: Option<&crate::config::ExportDefCfg>) -> bool {
     let sink = sinks().find(|sink| sink.name == name);
-    let boot = sink.map(|sink| (sink.module.as_str(), sink.projection, sink.sink.streams()));
+    let boot = sink.map(|sink| (&*sink.module, sink.projection, sink.sink.streams()));
     if definition_requires_restart(name, boot, def) {
         return true;
     }
@@ -334,11 +391,12 @@ fn definition_requires_restart(
     if def.module.trim() != module {
         return true;
     }
+    // busbar:expect(bp::fresh_buffer, reason = "config: a reload compares one instance's projection with its boot projection")
     let mut errors = Vec::new();
     let desired = resolve_projection(
         name,
         module,
-        Some(&streams_of(streams)),
+        Some(&declared_streams(streams)),
         def.streams.as_deref(),
         def.fields.as_deref(),
         false,
@@ -351,19 +409,30 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     let Some(axis) = axis() else {
         return Ok(());
     };
-    let (mut errors, mut opened) = (Vec::new(), Vec::new());
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the export sinks open once, at boot")
+    let mut errors = Vec::new();
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the export sinks open once, at boot")
+    let mut opened = Vec::new();
     for p in &cfg.plugins {
         let (name, module, def) = (&p.name, p.def.module.trim(), &p.def);
 
         let settings = match sink_settings(axis, module, &def.settings) {
             Ok(settings) => settings,
             Err(e) => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: an export sink refused when it opens"
+                )]
                 errors.push(format!("export.{name}.settings: {e}"));
                 continue;
             }
         };
         let admitted = busbar_contract::export_calls::ExportOpening::new(def.settings.clone());
         let prepared = admitted.with_settings(settings.clone());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: an export sink is labelled once, when it opens"
+        )]
         let opened_sink = axis.open(module, &format!("export.{name}"), &prepared);
         let Ok(sink) = instance_opened(name, opened_sink).map_err(|e| errors.push(e)) else {
             continue;
@@ -372,7 +441,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         let projection = resolve_projection(
             name,
             module,
-            Some(&streams_of(sink.streams())),
+            Some(&declared_streams(sink.streams())),
             def.streams.as_deref(),
             def.fields.as_deref(),
             false,
@@ -385,6 +454,10 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             None
         };
         if opened_recorder != expected_recorder {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: an export sink refused when it opens"
+            )]
             errors.push(format!(
                 "export.{name}: recorder declaration changed since configuration admission"
             ));
@@ -393,7 +466,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         let span_record = sink.takes_span_records();
         opened.push(PluginSink {
             name: name.clone(),
-            module: module.to_string(),
+            module: module.into(),
             span_record,
             sink,
             scrape: p.scrape,
@@ -403,6 +476,10 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         });
     }
     if !errors.is_empty() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the export sinks' refusals, reported once"
+        )]
         return Err(errors.join("\n  - "));
     }
     let _ = SINKS.set(opened);
@@ -412,7 +489,12 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
 }
 
 fn instance_opened<T>(name: &str, opened: Result<T, String>) -> Result<T, String> {
-    opened.map_err(|error| format!("export.{name}: {error}"))
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: an export sink refused when it opens"
+    )]
+    let opened = opened.map_err(|error| format!("export.{name}: {error}"));
+    opened
 }
 
 #[derive(Default)]
@@ -464,6 +546,10 @@ fn refresh(defs: &crate::config::ExportDefs, generation: u64) {
     let Some(axis) = axis() else {
         return;
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a config reload walks the boot and configured instance names once"
+    )]
     let names: std::collections::BTreeSet<_> = sinks()
         .map(|sink| sink.name.as_str())
         .chain(defs.keys().map(String::as_str))
@@ -479,7 +565,7 @@ fn refresh(defs: &crate::config::ExportDefs, generation: u64) {
     for sink in sinks() {
         let Some(def) = defs
             .get(&sink.name)
-            .filter(|def| def.module.trim() == sink.module)
+            .filter(|def| def.module.trim() == &*sink.module)
         else {
             continue;
         };
@@ -504,19 +590,15 @@ pub(crate) fn record_reads_on(amendments: &Arc<crate::audit::amend::NodeAmendmen
     }
 }
 
-pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
-    let op = cache.facts.ingress_protocol;
-    deliver(ExportStream::Logs, op, |projection| cache.get(projection));
-}
-
-pub(crate) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Arc<Value>) {
+/// Hand each sink subscribed to `stream` its own record, rendered to its projection by `f`.
+pub(crate) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Rendered) {
     deliver_to(stream, op, |projection, _| f(projection));
 }
 
 pub(super) fn deliver_to(
     stream: ExportStream,
     op: &str,
-    mut f: impl FnMut(Projection, bool) -> Arc<Value>,
+    mut f: impl FnMut(Projection, bool) -> Rendered,
 ) {
     for s in sinks().filter(|s| s.projection.wants_stream(stream)) {
         deliver_one(s, stream, op, &mut f);
@@ -527,7 +609,7 @@ fn deliver_one(
     s: &PluginSink,
     stream: ExportStream,
     op: &str,
-    f: &mut impl FnMut(Projection, bool) -> Arc<Value>,
+    f: &mut impl FnMut(Projection, bool) -> Rendered,
 ) {
     let Some(admission) = s.admission.get() else {
         s.sink.shed();
@@ -540,7 +622,7 @@ fn deliver_one(
         s.sink.shed();
         return;
     };
-    let payload = f(s.projection, s.span_record);
+    let Rendered { line, members } = f(s.projection, s.span_record);
     let amendments = s.reads.get().cloned();
     let runtime = if amendments.is_some() {
         match tokio::runtime::Handle::try_current() {
@@ -553,7 +635,6 @@ fn deliver_one(
     } else {
         None
     };
-    let line = serde_json::to_vec(&*payload).unwrap_or_default();
     // Retain admission through both actual delivery and its durable access
     // amendment, even if the sink releases its delivery permit immediately.
     let permit = Arc::new(permit);
@@ -563,11 +644,11 @@ fn deliver_one(
                 return;
             };
             let op = op.to_owned();
-            let module = s.module.clone();
+            let module = Arc::clone(&s.module);
             let sink = s.sink.clone();
             runtime.spawn(async move {
                 let _permit = permit;
-                if crate::audit::amend::export_read(&amendments, &module, &op, &payload)
+                if crate::audit::amend::export_read(&amendments, &module, &op, members)
                     .await
                     .is_err()
                 {
@@ -582,9 +663,14 @@ fn deliver_one(
 }
 
 pub fn start() -> Result<(), String> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the export sinks start once, at boot")
     let mut errors = Vec::new();
     for s in sinks() {
         if let Err(e) = s.sink.start() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: an export sink refused when it starts"
+            )]
             errors.push(format!("export.{}: {e}", s.name));
             continue;
         }
@@ -593,7 +679,12 @@ pub fn start() -> Result<(), String> {
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(errors.join("\n  - "))
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the export sinks' refusals, reported once"
+        )]
+        let refused = errors.join("\n  - ");
+        Err(refused)
     }
 }
 
@@ -628,9 +719,18 @@ fn project_routes(
     boot_sinks: &[PluginSink],
 ) -> (Vec<RouteDecl>, std::collections::HashSet<String>) {
     let (scrape, rest): (Vec<_>, Vec<_>) = cfg.plugins.iter().partition(|p| p.scrape);
+    // busbar:expect(bp::fresh_buffer, reason = "config: the export route table is built once per config generation")
     let mut out = Vec::new();
+    #[expect(
+        clippy::disallowed_types,
+        reason = "config: the export route table is built once per config generation; the route table takes this set type"
+    )]
     let mut withheld = std::collections::HashSet::new();
     for p in scrape.into_iter().chain(rest) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the export route table is built once per config generation"
+        )]
         let owner = if p.scrape {
             p.def.module.trim().to_string()
         } else {
@@ -641,12 +741,16 @@ fn project_routes(
 
         let opened = boot_sinks
             .iter()
-            .find(|s| s.name == p.name && s.module == module && (!p.scrape || s.scrape))
+            .find(|s| s.name == p.name && *s.module == *module && (!p.scrape || s.scrape))
             .or_else(|| {
                 p.scrape
-                    .then(|| boot_sinks.iter().find(|s| s.scrape && s.module == module))
+                    .then(|| boot_sinks.iter().find(|s| s.scrape && *s.module == *module))
                     .flatten()
             });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the export route table is built once per config generation"
+        )]
         let (public_routes, persistent_routes) = match opened {
             Some(s) => (
                 s.sink.public_routes().to_vec(),
@@ -657,6 +761,10 @@ fn project_routes(
                 |a| (a.public_routes(module), a.persistent_routes(module)),
             ),
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the export route table is built once per config generation"
+        )]
         let (routes, dispatch): (Vec<Route>, Arc<dyn PluginHttpDispatch>) = match opened {
             Some(s) => {
                 let served: Arc<dyn PluginHttpDispatch> = Arc::new(Served(s.sink.clone()));
@@ -713,13 +821,17 @@ fn project_routes(
     if let Some(s) = boot_sinks.iter().find(|s| s.scrape) {
         let served: Arc<dyn PluginHttpDispatch> = Arc::new(Served(s.sink.clone()));
         let dispatch: Arc<dyn PluginHttpDispatch> = Arc::new(super::scrape::Granted(served));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the export route table is built once per config generation"
+        )]
         out.extend(
             s.sink
                 .routes()
                 .iter()
                 .filter(|r| s.sink.persistent_routes().contains(&r.path))
                 .map(|route| RouteDecl {
-                    owner: s.module.clone(),
+                    owner: s.module.to_string(),
                     source_instance: s.name.clone(),
                     dispatch_available: true,
                     kind: RouteKind::Export,

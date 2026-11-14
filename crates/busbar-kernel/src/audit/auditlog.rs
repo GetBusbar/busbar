@@ -748,14 +748,14 @@ fn deliver_audit_event(entry: &AuditEntry) {
     use busbar_contract::abi::export::ExportStream;
 
     crate::export::plugin::deliver(ExportStream::Events, &entry.action, |projection| {
-        Arc::new(project_audit_event(projection, entry))
+        project_audit_event(projection, entry)
     });
 }
 
 fn project_audit_event(
     projection: crate::export::projection::Projection,
     entry: &AuditEntry,
-) -> serde_json::Value {
+) -> crate::export::projection::Rendered {
     use busbar_contract::abi::export::{ExportField as F, ExportStream};
 
     let mut record =

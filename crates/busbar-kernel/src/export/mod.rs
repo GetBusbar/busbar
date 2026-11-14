@@ -7,10 +7,10 @@ pub(crate) mod scrape;
 pub mod traces;
 
 use crate::config::ExportCfg;
-use crate::export::projection::ProjectedRecord;
+use crate::export::projection::{ProjectedRecord, Rendered};
 use crate::plugin_routes::RouteDecl;
 use busbar_contract::abi::export::{ExportField, ExportStream};
-use serde_json::Value;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 
 /// Read the real host snapshot service from a test-support crossing. The existing snapshot grant
@@ -36,8 +36,14 @@ pub fn serve_test_sink(
 /// Host-owned user configuration capabilities, derived from the same producer tables used by
 /// export projection resolution. Module-specific carried streams remain an admission check.
 #[cfg(feature = "openapi-schema")]
-pub fn configuration_capabilities() -> Value {
-    serde_json::json!({
+pub fn configuration_capabilities() -> serde_json::Value {
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        reason = "config: the admin configuration schema documents the export producers"
+    )]
+    let capabilities = serde_json::json!({
         "durable": false,
         "request_timing": {
             "profile": "observed-pump-v1",
@@ -77,7 +83,8 @@ pub fn configuration_capabilities() -> Value {
                     && stream.pinned_fields().iter().all(|field| produced.contains(field))
             })
         }).collect::<Vec<_>>()
-    })
+    });
+    capabilities
 }
 
 /// Exercise the owning projection resolver without loading an exporter in focused schema tests.
@@ -86,6 +93,7 @@ pub fn configuration_capabilities() -> Value {
 pub fn validate_configuration_projection(
     def: &crate::config::ExportDefCfg,
 ) -> Result<(), Vec<String>> {
+    // busbar:expect(bp::fresh_buffer, reason = "config: a schema check collects one form's refusals")
     let mut errors = Vec::new();
     projection::resolve_projection(
         "schema-test",
@@ -121,7 +129,11 @@ pub(crate) struct RequestLogFacts<'a> {
     pub(crate) latency_ms: u64,
 }
 
-pub(crate) fn build_request_log(projection: projection::Projection, f: &RequestLogFacts) -> Value {
+/// The request-log record for one sink, written straight to its projection.
+pub(crate) fn build_request_log(
+    projection: projection::Projection,
+    f: &RequestLogFacts,
+) -> Rendered {
     let mut rec = ProjectedRecord::new(projection, ExportStream::Logs);
     rec.set(ExportField::Ts, f.ts)
         .set(ExportField::IngressProtocol, f.ingress_protocol)
@@ -131,32 +143,10 @@ pub(crate) fn build_request_log(projection: projection::Projection, f: &RequestL
     rec.finish()
 }
 
-pub(crate) struct PayloadCache<'a> {
-    facts: &'a RequestLogFacts<'a>,
-    built: Vec<(projection::Projection, Arc<Value>)>,
-}
-
-impl<'a> PayloadCache<'a> {
-    pub(crate) fn new(facts: &'a RequestLogFacts<'a>) -> PayloadCache<'a> {
-        PayloadCache {
-            facts,
-            built: Vec::new(),
-        }
-    }
-
-    pub(crate) fn get(&mut self, projection: projection::Projection) -> Arc<Value> {
-        if let Some((_, v)) = self.built.iter().find(|(p, _)| *p == projection) {
-            return v.clone();
-        }
-        let v = Arc::new(build_request_log(projection, self.facts));
-        self.built.push((projection, v.clone()));
-        v
-    }
-}
-
 pub(crate) fn deliver_request_log(facts: &RequestLogFacts<'_>) {
-    let mut cache = PayloadCache::new(facts);
-    plugin::deliver_logs(&mut cache);
+    plugin::deliver(ExportStream::Logs, facts.ingress_protocol, |projection| {
+        build_request_log(projection, facts)
+    });
 }
 
 #[cfg(test)]

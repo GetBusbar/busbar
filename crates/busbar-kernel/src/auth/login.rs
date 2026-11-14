@@ -61,6 +61,7 @@ impl App {
 
 impl LoginMethods {
     fn inbound_default_auth(&self, style: &str) -> Result<Option<InboundAuthProvider>, String> {
+        // busbar:expect(bp::state_scan, reason = "config: a plane's inbound style resolves to its configured provider once, at config load")
         let Some(provider) = select_inbound_provider(
             style,
             self.methods.iter().filter_map(|(provider, method)| {
@@ -75,12 +76,17 @@ impl LoginMethods {
             .inbound_style
             .as_ref()
             .expect("selected declared style");
-        Ok(Some(InboundAuthProvider {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a plane's inbound auth provider, resolved once at config load"
+        )]
+        let selected = InboundAuthProvider {
             provider: provider.to_string(),
             module: declared.module.clone(),
             calls: Arc::clone(&method.module),
             points: declared.points,
-        }))
+        };
+        Ok(Some(selected))
     }
 }
 
@@ -99,16 +105,28 @@ fn select_inbound_provider<'a>(
             .then_some(provider)
     });
     let Some(provider) = matching.next() else {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an inbound auth style refusal at config load"
+        )]
         return Err(format!(
             "inbound auth style '{style}' has no configured ordinary identity provider"
         ));
     };
     if let Some(other) = matching.next() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an inbound auth style refusal at config load"
+        )]
         return Err(format!(
             "inbound auth style '{style}' is ambiguous between identity providers '{provider}' and '{other}'"
         ));
     }
     if crate::config::is_builtin_identity_module(provider) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an inbound auth style refusal at config load"
+        )]
         return Err(format!(
             "inbound auth style '{style}' selects identity provider '{provider}', whose name is reserved for a configured host auth position"
         ));
@@ -205,23 +223,29 @@ fn finish_door_login(
 impl std::fmt::Debug for LoginMethods {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoginMethods")
-            .field("methods", &self.methods.keys().collect::<Vec<_>>())
+            .field("methods", &self.methods.keys())
             .finish()
     }
 }
 
-fn login_module_refusal(name: &str, module: &str, reason: String) -> String {
-    format!(
+fn login_module_refusal(name: &str, module: &str, reason: &str) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an identity-provider refusal at config load"
+    )]
+    let refusal = format!(
         "identity-providers.{name} (module '{module}') could not be loaded as a `kind: auth` login plugin: {reason}"
-    )
+    );
+    refusal
 }
 
 fn missing_login_axis(name: &str, module: &str) -> String {
-    login_module_refusal(
-        name,
-        module,
-        format!("no `kind: auth` plugin answers to '{module}'"),
-    )
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an identity-provider refusal at config load"
+    )]
+    let reason = format!("no `kind: auth` plugin answers to '{module}'");
+    login_module_refusal(name, module, &reason)
 }
 
 fn unregistered_browser_response() -> axum::response::Response {
@@ -257,6 +281,10 @@ impl LoginMethods {
 
         let mut axis: Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for (name, mc) in &cfg.methods {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an identity-provider refusal at config load"
+            )]
             let mut resolved = crate::config::secret::resolve_settings(
                 &mc.settings,
                 &registry.secret_slots(&mc.module),
@@ -272,7 +300,7 @@ impl LoginMethods {
                     resolved.default_text("client_id", cid.clone());
                 }
             }
-            let refused = |e: String| login_module_refusal(name, &mc.module, e);
+            let refused = |e: String| login_module_refusal(name, &mc.module, &e);
             let axis = match &axis {
                 Some(a) => a.clone(),
                 None => axis
@@ -316,6 +344,10 @@ impl LoginMethods {
                 (Some(kind), _) => kind,
                 (None, None) => busbar_contract::auth::LoginKind::Redirect,
                 (None, Some(_)) => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "config: an identity-provider refusal at config load"
+                    )]
                     return Err(format!(
                         "identity-providers.{name} sets browser_login but its plugin serves \
                          no login; a hosted login button requires a login-capable auth plugin"
@@ -324,6 +356,10 @@ impl LoginMethods {
             };
 
             if let Some(bl) = &mc.browser_login {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: an identity-provider refusal at config load"
+                )]
                 validate_browser_login_secret(login_kind, bl.client_secret.is_some())
                     .map_err(|e| format!("identity-providers.{name} browser_login: {e}"))?;
             }
@@ -355,12 +391,20 @@ fn lend_browser_login_secret(
         return Ok(());
     };
     if !secret_slots.iter().any(|key| key == CLIENT_SECRET_SLOT) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: an identity-provider refusal at config load"
+        )]
         return Err(format!(
             "identity-providers.{name} browser_login.client_secret: the login plugin \
              '{module}' states no `{CLIENT_SECRET_SLOT}` secret reference, so it cannot be \
              lent the client secret as a secret"
         ));
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an identity-provider refusal at config load"
+    )]
     let secret = secret_resolver
         .resolve_string_at_config(
             sref,
@@ -371,7 +415,12 @@ fn lend_browser_login_secret(
 }
 
 fn login_label(name: &str) -> String {
-    format!("{name}#login")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: an identity provider's login label, named once at config load"
+    )]
+    let label = format!("{name}#login");
+    label
 }
 
 /// One hosted-login method: its admitted presentation and login classification.
@@ -389,7 +438,12 @@ pub struct LoginMethodView {
 
 #[must_use]
 pub fn login_methods(app: &App) -> Vec<LoginMethodView> {
-    app.login_methods
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the login page lists the configured identity providers"
+    )]
+    let methods = app
+        .login_methods
         .methods
         .iter()
         .map(|(name, m)| LoginMethodView {
@@ -398,7 +452,8 @@ pub fn login_methods(app: &App) -> Vec<LoginMethodView> {
             presentation: m.module.login_presentation(),
             login_kind: m.login_kind,
         })
-        .collect()
+        .collect();
+    methods
 }
 
 #[must_use]
@@ -453,6 +508,10 @@ pub async fn issue_self_key(
     principal: Principal,
     refresh: bool,
 ) -> SelfKeyIssue {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a self-serve key is provisioned once per login, under its provider's name"
+    )]
     let verdict = ChainVerdict::Identified {
         module: module.to_string(),
         principal,
@@ -478,6 +537,10 @@ pub async fn issue_self_key(
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a self-serve key is provisioned once per login, under its provider's name"
+    )]
     let keys = DeterministicEd25519Keys::new(gov, module.to_string(), team, pools, provisioner);
     match issue_key(&keys, principal, ttl, refresh).await {
         Ok(k) => SelfKeyIssue::Issued {

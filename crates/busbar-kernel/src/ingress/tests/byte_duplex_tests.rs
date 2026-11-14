@@ -218,10 +218,12 @@ fn a_finished_handler_leaves_the_inflight_registry_empty() {
     }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !shared.inflight.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+    while shared.inflight.load(std::sync::atomic::Ordering::Acquire) > 0
+        && std::time::Instant::now() < deadline
+    {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let stranded = shared.inflight.lock().unwrap().len();
+    let stranded = shared.inflight.load(std::sync::atomic::Ordering::Acquire);
     drop(_in_runtime);
     drop(driver);
     assert_eq!(
@@ -264,11 +266,13 @@ async fn a_panicking_handler_releases_its_inflight_slot() {
     spawn_handler(&shared, &handle, &plane, b"frame".to_vec(), permit);
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while !shared.inflight.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+    while shared.inflight.load(std::sync::atomic::Ordering::Acquire) > 0
+        && std::time::Instant::now() < deadline
+    {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     assert!(
-        shared.inflight.lock().unwrap().is_empty(),
+        shared.inflight.load(std::sync::atomic::Ordering::Acquire) == 0,
         "a handler that panicked must still release its in-flight slot"
     );
     assert_eq!(

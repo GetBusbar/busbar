@@ -25,15 +25,30 @@ pub fn auth_failure_status_and_kind(proto: &str) -> (u16, &'static str) {
     (401, busbar_contract::protocol::KIND_AUTHENTICATION)
 }
 
-pub fn error_parts(
+/// The agnostic error envelope, `{"error":{"message":..,"type":..}}`, borrowed from its parts.
+#[derive(serde::Serialize)]
+pub struct ErrorEnvelope<'a> {
+    error: ErrorBody<'a>,
+}
+
+#[derive(serde::Serialize)]
+struct ErrorBody<'a> {
+    message: &'a str,
+    #[serde(rename = "type")]
+    kind: &'a str,
+}
+
+pub fn error_parts<'a>(
     proto: &str,
     status: u16,
-    kind: &str,
-    message: &str,
-) -> (serde_json::Value, Vec<(String, Vec<u8>)>) {
+    kind: &'a str,
+    message: &'a str,
+) -> (ErrorEnvelope<'a>, Vec<(String, Vec<u8>)>) {
     let _ = (proto, status);
     (
-        serde_json::json!({ "error": { "message": message, "type": kind } }),
+        ErrorEnvelope {
+            error: ErrorBody { message, kind },
+        },
         Vec::new(),
     )
 }

@@ -3,14 +3,36 @@
 
 use super::*;
 use busbar_contract::abi::export::{ExportField, ExportStream};
+use serde_json::Value;
 use tracing_subscriber::layer::SubscriberExt as _;
+
+/// A rendered value, read back as JSON.
+fn json(value: FieldValue<'_>) -> Value {
+    let mut out = JsonOut(Vec::new());
+    out.value(value);
+    serde_json::from_slice(&out.0).expect("a JSON value")
+}
+
+/// A span's facts, read back as JSON values.
+fn values(facts: &Fields) -> Vec<(ExportField, Value)> {
+    facts
+        .facts
+        .iter()
+        .map(|(f, fact)| (*f, json(facts.value(*fact))))
+        .collect()
+}
+
+/// A full span record, read back as JSON.
+fn span_json(span: Option<&[u8]>) -> Option<Value> {
+    span.map(|bytes| serde_json::from_slice(bytes).expect("a JSON span record"))
+}
 
 static SEEN: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> = std::sync::Mutex::new(Vec::new());
 
-fn capture(facts: &[(ExportField, Value)], _: Option<&Value>) {
+fn capture(facts: &Fields, _: Option<&[u8]>) {
     SEEN.lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(facts.to_vec());
+        .push(values(facts));
 }
 
 fn field(facts: &[(ExportField, Value)], f: ExportField) -> Option<&Value> {
@@ -53,10 +75,13 @@ fn a_closed_span_becomes_one_record_joined_to_its_trace() {
 
 #[test]
 fn a_traces_record_is_built_to_the_sinks_projection() {
-    let facts = [
-        (ExportField::TraceId, Value::from("01")),
-        (ExportField::Model, Value::from("m1")),
-    ];
+    let facts = Fields {
+        facts: vec![
+            (ExportField::TraceId, Fact::Static("01")),
+            (ExportField::Model, Fact::Static("m1")),
+        ],
+        text: String::new(),
+    };
     let mut errors = Vec::new();
     let sub = crate::export::projection::resolve_projection(
         "t",
@@ -68,27 +93,27 @@ fn a_traces_record_is_built_to_the_sinks_projection() {
         &mut errors,
     );
     assert!(errors.is_empty(), "{errors:?}");
-    let granted = record(sub, &facts, None);
+    let granted: Value = serde_json::from_slice(&record(sub, &facts, None).line).unwrap();
     assert_eq!(
-        *granted,
+        granted,
         serde_json::json!({"trace_id": "01", "model": "m1"})
     );
     let logs_only = crate::export::projection::Projection::for_test(
         &[ExportStream::Logs],
         ExportStream::Logs.default_fields(),
     );
-    let ungranted = record(logs_only, &facts, None);
-    assert_eq!(*ungranted, serde_json::json!({}));
+    let ungranted: Value = serde_json::from_slice(&record(logs_only, &facts, None).line).unwrap();
+    assert_eq!(ungranted, serde_json::json!({}));
 }
 
 static RECORDED: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> =
     std::sync::Mutex::new(Vec::new());
 
-fn capture_recorded(facts: &[(ExportField, Value)], _: Option<&Value>) {
+fn capture_recorded(facts: &Fields, _: Option<&[u8]>) {
     RECORDED
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(facts.to_vec());
+        .push(values(facts));
 }
 
 #[test]
@@ -148,10 +173,10 @@ fn records() -> bool {
 
 static FULL: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
 
-fn capture_full(_: &[(ExportField, Value)], span: Option<&Value>) {
+fn capture_full(_: &Fields, span: Option<&[u8]>) {
     FULL.lock()
         .unwrap_or_else(|e| e.into_inner())
-        .extend(span.cloned());
+        .extend(span_json(span));
 }
 
 #[test]
@@ -243,11 +268,11 @@ fn a_span_record_carries_what_the_previous_exporter_sent() {
 
 static FIRST: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> = std::sync::Mutex::new(Vec::new());
 
-fn capture_first(facts: &[(ExportField, Value)], _: Option<&Value>) {
+fn capture_first(facts: &Fields, _: Option<&[u8]>) {
     FIRST
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(facts.to_vec());
+        .push(values(facts));
 }
 
 #[test]
@@ -269,8 +294,8 @@ fn span_ids_do_not_restart_from_a_fixed_value_in_each_process() {
 
 static WIRE: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
 
-fn capture_wire(_: &[(ExportField, Value)], span: Option<&Value>) {
-    WIRE.lock().unwrap().extend(span.cloned());
+fn capture_wire(_: &Fields, span: Option<&[u8]>) {
+    WIRE.lock().unwrap().extend(span_json(span));
 }
 
 #[test]
@@ -307,16 +332,18 @@ fn trace_wire_keeps_last_attributes_and_typed_nonfinite_floats() {
         event.iter().find(|a| a["key"] == "positive").unwrap()["value"],
         serde_json::json!({"$busbar_f64": "inf"})
     );
-    assert_eq!(float_value(1.25), serde_json::json!(1.25));
+    assert_eq!(json(FieldValue::F64(1.25)), serde_json::json!(1.25));
 }
 
 #[test]
 fn duplicate_trace_keys_preserve_first_key_order_and_last_values() {
-    let result = key_values(vec![
-        ("x".into(), Value::from(1)),
-        ("y".into(), Value::from(2)),
-        ("x".into(), Value::from(3)),
-    ]);
+    let mut bag = Bag::default();
+    bag.push(Key::Static("x"), Attr::I64(1));
+    bag.push(Key::Static("y"), Attr::I64(2));
+    bag.push(Key::Static("x"), Attr::I64(3));
+    let mut out = JsonOut(Vec::new());
+    write_key_values(&mut out, &bag);
+    let result: Value = serde_json::from_slice(&out.0).unwrap();
     assert_eq!(
         result,
         serde_json::json!([{"key":"x","value":3},{"key":"y","value":2}])
@@ -325,8 +352,8 @@ fn duplicate_trace_keys_preserve_first_key_order_and_last_values() {
 
 static TIMING_CLOSE: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
 
-fn capture_timing_close(_: &[(ExportField, Value)], span: Option<&Value>) {
-    TIMING_CLOSE.lock().unwrap().extend(span.cloned());
+fn capture_timing_close(_: &Fields, span: Option<&[u8]>) {
+    TIMING_CLOSE.lock().unwrap().extend(span_json(span));
 }
 
 #[test]
@@ -336,7 +363,7 @@ fn request_timing_export_includes_termination_after_the_last_transport_poll() {
         let span =
             tracing::debug_span!("forward_once", producer_complete_us = tracing::field::Empty);
         span.in_scope(|| {});
-        let finished = now_ns();
+        let finished = crate::store::now_ns();
         span.record("producer_complete_us", 123_u64);
         drop(span);
         finished

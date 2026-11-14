@@ -162,13 +162,13 @@ fn test_constant_time_eq_one_char_diff() {
 #[test]
 fn test_extract_bearer_token_valid() {
     let token = AuthMiddleware::extract_bearer_token("Bearer mytoken123");
-    assert_eq!(token, Some("mytoken123".to_string()));
+    assert_eq!(token, Some("mytoken123"));
 }
 
 #[test]
 fn test_extract_bearer_token_case_insensitive() {
     let token = AuthMiddleware::extract_bearer_token("BEARER mytoken123");
-    assert_eq!(token, Some("mytoken123".to_string()));
+    assert_eq!(token, Some("mytoken123"));
 }
 
 #[test]
@@ -813,7 +813,7 @@ fn the_sync_admin_door_probe_fails_closed_when_the_operator_verifier_is_overload
         project,
     );
     assert_eq!(
-        admin_scope_from_door(door.clone()),
+        admin_scope_from_door(&door),
         busbar_contract::authz::Grants::default()
     );
     assert_eq!(door, AdminDoor::Denied);
@@ -866,7 +866,7 @@ fn the_sync_admin_door_keeps_no_verdict_for_the_root_http_projection() {
             assert!(claim.is_none(), "an unidentified request claims nothing");
             assert!(!admin_door_admits(&door, "GET", "/api/v1/admin/keys"));
             assert_eq!(
-                admin_scope_from_door(door),
+                admin_scope_from_door(&door),
                 busbar_contract::authz::Grants::default(),
                 "an unavailable or rejecting verifier grants nothing"
             );
@@ -1349,7 +1349,7 @@ fn named_credential_stripping_preserves_both_request_targets_and_other_headers()
     strike_named(
         &mut request,
         &mut consumed,
-        &[Strip::field("X-Hook-Secret"), Strip::query("api_key")],
+        [Strip::field("X-Hook-Secret"), Strip::query("api_key")].iter(),
     );
     ConsumedCredentials::strip_from(Some(&consumed), request.headers_mut());
     let headers: Vec<&str> = request.headers().keys().map(|name| name.as_str()).collect();
@@ -1418,7 +1418,7 @@ async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
     );
     let (door, pending, _) = project();
     assert!(
-        admin_scope_from_door(probed_admin_claim(
+        admin_scope_from_door(&probed_admin_claim(
             door,
             pending.as_ref(),
             "GET",
@@ -1618,7 +1618,9 @@ fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
             ..VerifyAnswer::from(verified.clone())
         };
         let mut strips = vec![Strip::field("x-earlier-line")];
-        assert_eq!(signed_verdict_of(answer, false, &mut strips), verified);
+        let (judged, named_lines) = signed_verdict_of(answer, false);
+        strips.extend(named_lines);
+        assert_eq!(judged, verified);
         assert_eq!(
             strips,
             [vec![Strip::field("x-earlier-line")], named.clone()].concat(),
@@ -1629,12 +1631,8 @@ fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
         strips: named.clone(),
         ..VerifyAnswer::from(identity)
     };
-    let mut strips = Vec::new();
-    assert_eq!(
-        signed_verdict_of(faulted, true, &mut strips),
-        Verified::Failed,
-        "a faulted verify never admits"
-    );
+    let (judged, strips) = signed_verdict_of(faulted, true);
+    assert_eq!(judged, Verified::Failed, "a faulted verify never admits");
     assert_eq!(strips, named, "a faulted verify's named lines are kept");
 }
 
@@ -1866,10 +1864,7 @@ fn the_providers_ceiling_caps_a_named_verb() {
 #[test]
 fn bearer_separators_consume_ascii_spaces_without_normalizing_token_bytes() {
     for header in ["Bearer token", "Bearer  token", "bEaReR     token"] {
-        assert_eq!(
-            AuthMiddleware::extract_bearer_token(header).as_deref(),
-            Some("token")
-        );
+        assert_eq!(AuthMiddleware::extract_bearer_token(header), Some("token"));
     }
     for header in [
         "Bearer",
@@ -1887,10 +1882,7 @@ fn bearer_separators_consume_ascii_spaces_without_normalizing_token_bytes() {
         ("Bearer token other", "token other"),
         ("Bearer \ttoken", "\ttoken"),
     ] {
-        assert_eq!(
-            AuthMiddleware::extract_bearer_token(header).as_deref(),
-            Some(expected)
-        );
+        assert_eq!(AuthMiddleware::extract_bearer_token(header), Some(expected));
     }
 }
 
