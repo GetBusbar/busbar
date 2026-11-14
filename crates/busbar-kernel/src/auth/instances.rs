@@ -135,10 +135,13 @@ struct Held {
 
 /// What a role builder prepares for a provider no role of this build has yet: the provider's
 /// resolved settings (the superset, login additions included) and the axis that opens it. The
-/// role's own checks (`answers`) have passed.
+/// role's own checks (`answers`) have passed. `reresolve`, when the plugin lends secret
+/// references, re-resolves those settings so the host re-lends a rotated credential in place
+/// (`auth::relend`).
 pub(crate) struct Prepared {
     pub(crate) axis: Arc<dyn AuthAxis>,
     pub(crate) resolved: ResolvedSettings,
+    pub(crate) reresolve: Option<super::relend::Reresolve>,
 }
 
 /// The instances one build holds, by provider name. Carried into the next build as its prior
@@ -193,6 +196,10 @@ impl AuthInstances {
     /// `provider`'s instance: the one this build already holds for another role; else the prior
     /// build's, when it was opened over the same identity and reports `reusable()`; else a new
     /// OPEN over `prepare()`'s settings. A refusal is not kept.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a provider's instance is opened or carried once per build, under its name"
+    )]
     pub(crate) fn instance(
         &mut self,
         provider: &str,
@@ -204,7 +211,11 @@ impl AuthInstances {
         if let Some(held) = self.by_provider.get(provider) {
             return Ok(Arc::clone(&held.calls));
         }
-        let Prepared { axis, resolved } = prepare()?;
+        let Prepared {
+            axis,
+            resolved,
+            reresolve,
+        } = prepare()?;
         let identity = InstanceIdentity::of(registry, module, &resolved);
         let prior = self
             .prior
@@ -242,7 +253,13 @@ impl AuthInstances {
             );
             return Ok(calls);
         }
-        let opened = axis.open(module, &instance_label(provider), &resolved);
+        let opened = super::relend::open(
+            &axis,
+            module,
+            &instance_label(provider),
+            &resolved,
+            reresolve,
+        );
         drop(resolved);
         let calls = opened.map_err(refused)?;
         tracing::info!(
@@ -265,6 +282,10 @@ impl AuthInstances {
 
 /// The label one provider's shared instance opens under; the role is attributed at the call site.
 #[must_use]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "config: a provider instance's label, named once per build"
+)]
 pub(crate) fn instance_label(provider: &str) -> String {
     format!("identity-providers.{provider}")
 }
@@ -273,6 +294,10 @@ pub(crate) fn instance_label(provider: &str) -> String {
 /// login-only additions when the provider has a `browser_login` block (the same values the plugin
 /// received in its login role; a role-local override cannot exist, `resolve_auth`). `settings_err`
 /// words a resolution refusal in the calling role's terms.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "config: a provider's settings refusal, at config load"
+)]
 pub(crate) fn provider_settings(
     cfg: &crate::config::AuthCfg,
     provider: &str,
@@ -315,6 +340,46 @@ pub(crate) fn lend_login_secret(
         secret_resolver,
         resolved,
     )
+}
+
+/// How one provider's instance re-resolves its settings when the plugin lends secret references
+/// (`auth::relend`): the same steps [`provider_settings`] and [`lend_login_secret`] opened it
+/// with, run again through the build's resolver. `None` when the plugin lends no secrets.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "config: a provider's re-resolver is built once per build, owning its names"
+)]
+pub(crate) fn reresolve(
+    cfg: &crate::config::AuthCfg,
+    provider: &str,
+    module: &str,
+    settings: &busbar_contract::plugin_settings::Settings,
+    registry: &dyn busbar_contract::plugin_rows::PluginRows,
+    secret_resolver: &crate::config::secret::SecretResolver,
+) -> Option<super::relend::Reresolve> {
+    let base = super::relender(settings, registry, module, secret_resolver)?;
+    let browser = login_block(cfg, provider, module).cloned();
+    let slots = registry.secret_slots(module);
+    let (provider, module, resolver) = (
+        provider.to_string(),
+        module.to_string(),
+        secret_resolver.clone(),
+    );
+    Some(Box::new(move || {
+        let mut resolved = base()?;
+        if let Some(cid) = browser.as_ref().and_then(|bl| bl.client_id.clone()) {
+            resolved.default_text("client_id", cid);
+        }
+        super::login::lend_browser_login_secret(
+            &provider,
+            &module,
+            browser.as_ref(),
+            &slots,
+            &resolver,
+            &mut resolved,
+        )?;
+        Ok(resolved)
+    }))
 }
 
 fn login_block<'c>(
