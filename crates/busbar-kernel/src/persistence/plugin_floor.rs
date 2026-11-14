@@ -181,6 +181,12 @@ impl PluginFloor {
                 .map(|v| v.expose(&crate::seal::lend()).as_slice()),
         )
     }
+    /// Checks the loaded set against the host's release keys floor and, when `raise`,
+    /// lifts the floor to the set's LOWEST keys version (LICENSING.md 2.12 rule F1).
+    /// Raising to the highest member would make a host that loads a mixed set (for
+    /// example an enterprise file still sealed at k5 beside public files at k7)
+    /// refuse its own unchanged set on the next boot. A uniform set raises the
+    /// floor exactly as before.
     pub async fn enforce_release_keys(
         &self,
         host: &str,
@@ -191,6 +197,15 @@ impl PluginFloor {
             return Ok(());
         };
         let highest = versions.iter().copied().max().unwrap_or(lowest);
+        if raise && highest > lowest {
+            tracing::warn!(
+                code = "KEYS_MIXED",
+                host,
+                lowest,
+                highest,
+                "first-party plugins are sealed under mixed release keys versions; the keys floor is held at the lowest ({lowest}) until every file is resealed at {highest}"
+            );
+        }
         let _gate = self.records.gate.lock().await;
         self.records.resume().await?;
         let key = floor_key(host, "busbar-release-keys")?;
@@ -208,7 +223,7 @@ impl PluginFloor {
             if lowest < floor {
                 return Err(format!("keys-rollback: release keys-document version {lowest} is below {floor}, the highest this host has accepted; no plugin rollback pin or trust opt-in lowers this floor"));
             }
-            if !raise || highest <= floor {
+            if !raise || lowest <= floor {
                 return Ok(());
             }
             if self
@@ -222,7 +237,7 @@ impl PluginFloor {
                     vec![Mutation::Put {
                         schema: RELEASE_KEYS_FLOOR_SCHEMA.into(),
                         key: key.clone(),
-                        value: Secret::new(highest.to_be_bytes().to_vec()),
+                        value: Secret::new(lowest.to_be_bytes().to_vec()),
                     }],
                 )
                 .await?
