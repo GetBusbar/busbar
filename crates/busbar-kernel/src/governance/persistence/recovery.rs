@@ -386,9 +386,11 @@ async fn bucket_heads(
 
 /// Immutable original frames retained only within one verification attempt.
 /// Both body allocation and entry metadata are bounded by the native page limits.
-#[derive(Default)]
+/// Frames are shared, so carrying the cache to the next verification copies no
+/// body.
+#[derive(Clone, Default)]
 struct HistoryRecords {
-    records: BTreeMap<(u64, u64), (u64, Record)>,
+    records: BTreeMap<(u64, u64), (u64, Arc<Record>)>,
     bytes: usize,
 }
 impl HistoryRecords {
@@ -403,11 +405,38 @@ impl HistoryRecords {
             };
             self.bytes -= removed.body.capacity();
         }
-        if let Some((_, previous)) = self.records.insert(record.identity(), (ordinal, record)) {
+        let identity = record.identity();
+        if let Some((_, previous)) = self.records.insert(identity, (ordinal, Arc::new(record))) {
             self.bytes -= previous.body.capacity();
         }
         self.bytes += bytes;
     }
+    /// The frames of `node` only: the cache a later verification of this
+    /// node's live journal starts from.
+    fn of_node(&self, node: u64) -> Self {
+        let mut kept = Self::default();
+        for (identity, entry) in self.records.range((node, 0)..=(node, u64::MAX)) {
+            kept.bytes += entry.1.body.capacity();
+            kept.records.insert(*identity, entry.clone());
+        }
+        kept
+    }
+}
+
+/// Only a recovery candidate frame is ever looked up by `History::candidate`.
+fn is_candidate_frame(record: &Record) -> bool {
+    JournalRecord::decode(&record.body)
+        .is_ok_and(|frame| frame.class == RecordClass::Reconciliation)
+}
+
+/// The last proof of this node's own journal that was completed by reading its
+/// originals from the Store, with the bounded cache of this node's recovery
+/// frames that reading kept. The next verification beside the live owner
+/// continues from it and reads only the originals appended since.
+#[derive(Clone)]
+struct VerifiedJournal {
+    proof: Arc<VerifiedHead>,
+    records: HistoryRecords,
 }
 
 #[cfg(test)]
@@ -443,8 +472,13 @@ struct History<'a> {
     /// a read-only observation, or this owner's own recovery write. That owner
     /// keeps appending (audit, usage, checkpoints), so this node's proof is
     /// confirmed as a prefix of the owner's current admitted head instead of
-    /// being pinned. The proof itself is still a complete verified replay.
+    /// being pinned. The proof is a verified reading of every original, made
+    /// whole here or continued from `base`.
     live: Option<&'a RuntimeJournal>,
+    /// Beside the live owner only: this node's last proof completed from Store
+    /// originals. This node's proof continues from it, reading only the
+    /// originals appended after it; each must link to the one before.
+    base: Option<Arc<VerifiedHead>>,
 }
 impl<'a> History<'a> {
     fn new(store: &'a CoreStore) -> Self {
@@ -453,6 +487,7 @@ impl<'a> History<'a> {
             proofs: BTreeMap::new(),
             records: HistoryRecords::default(),
             live: None,
+            base: None,
         }
     }
     fn observing(store: &'a CoreStore, journal: &'a RuntimeJournal) -> Self {
@@ -461,27 +496,56 @@ impl<'a> History<'a> {
             ..Self::new(store)
         }
     }
+    /// Beside the live owner, continuing from this node's last verified proof
+    /// and its cached recovery frames. Without one it is a plain observation.
+    fn continuing(
+        store: &'a CoreStore,
+        journal: &'a RuntimeJournal,
+        verified: Option<VerifiedJournal>,
+    ) -> Self {
+        let mut history = Self::observing(store, journal);
+        if let Some(verified) = verified {
+            history.base = Some(verified.proof);
+            history.records = verified.records;
+        }
+        history
+    }
+    /// This node's proof and recovery frames, for the next verification beside
+    /// the live owner to continue from.
+    fn verified(&self) -> Option<VerifiedJournal> {
+        let node = self.live?.node();
+        Some(VerifiedJournal {
+            proof: self.proofs.get(&node)?.clone(),
+            records: self.records.of_node(node),
+        })
+    }
     async fn proof(&mut self, node: u64) -> Result<Arc<VerifiedHead>, RecoveryError> {
         if let Some(proof) = self.proofs.get(&node) {
             return Ok(proof.clone());
         }
         let journal = StoreJournal::new(self.store, node).map_err(unavailable)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "recovery and read-only observation: one cached proof per node"
-        )]
-        let mut cursor = journal.historical_replay().await.map_err(unavailable)?;
+        let local = self.live.is_some_and(|live| live.node() == node);
+        let mut cursor = match self.base.as_deref().filter(|_| local) {
+            Some(base) => journal.historical_replay_after(base).await,
+            None => journal.historical_replay().await,
+        }
+        .map_err(unavailable)?;
         // Keep staging private until the entire prefix and its seal are valid.
         // Taking the old cache also bounds the total retained allocation while
         // proving another node; a failed proof simply discards cached frames.
         let mut staged = std::mem::take(&mut self.records);
         let limits = self.store.limits();
-        let mut ordinal = 0u64;
+        let mut ordinal = cursor.position();
         while let Some(record) = cursor.next().await.map_err(unavailable)? {
             ordinal = ordinal
                 .checked_add(1)
                 .ok_or_else(|| invalid("journal ordinal overflow"))?;
-            staged.insert(ordinal, record, limits.scan_items, limits.scan_bytes);
+            // The live journal also carries audit, usage and checkpoint frames;
+            // only its recovery frames are ever looked up, so only they are
+            // kept, and the bounded cache holds the newest of them.
+            if !local || is_candidate_frame(&record) {
+                staged.insert(ordinal, record, limits.scan_items, limits.scan_bytes);
+            }
         }
         let proof = Arc::new(cursor.finish().map_err(unavailable)?);
         self.records = staged;
@@ -498,10 +562,6 @@ impl<'a> History<'a> {
                 .map_err(unavailable)?;
             return Self::decode_candidate(record);
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "recovery: a record the cached replay did not retain"
-        )]
         let record = journal
             .read_verified_record(&proof, at.sequence)
             .await
@@ -654,6 +714,9 @@ pub struct StoreRecovery {
     node: u64,
     _token: Grant<DurableWrite>,
     state: Mutex<DriverState>,
+    /// This node's last journal proof completed from Store originals, which
+    /// the next persist beside the live owner continues from.
+    verified: Mutex<Option<VerifiedJournal>>,
     retirements: crate::persistence::boot_identity::WriterRetirements,
 }
 struct Driving<'a> {
@@ -686,6 +749,7 @@ impl StoreRecovery {
             node,
             _token: token,
             state: Mutex::new(DriverState::default()),
+            verified: Mutex::new(None),
             retirements: Default::default(),
         })
     }
@@ -729,6 +793,31 @@ impl StoreRecovery {
             pending.selection_proof = Some(proof.clone());
         }
     }
+    /// A History beside this node's live owner that continues from its last
+    /// verified journal proof, so a persist reads only the originals appended
+    /// since instead of replaying the whole journal.
+    fn continuing(&self) -> History<'_> {
+        let verified = self
+            .verified
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        History::continuing(&self.store, &self.journal, verified)
+    }
+    /// Keep `history`'s proof of this node once its whole verification has
+    /// succeeded. A later proof never yields to an earlier one.
+    fn keep_verified(&self, history: &History<'_>) {
+        let Some(verified) = history.verified() else {
+            return;
+        };
+        let mut kept = self.verified.lock().unwrap_or_else(|p| p.into_inner());
+        if kept
+            .as_ref()
+            .is_none_or(|kept| kept.proof.sequence() <= verified.proof.sequence())
+        {
+            *kept = Some(verified);
+        }
+    }
     async fn owned(&self) -> Result<Arc<VerifiedHead>, RecoveryError> {
         let mut history = History::new(&self.store);
         self.owned_with_history(&mut history).await
@@ -743,11 +832,13 @@ impl StoreRecovery {
     }
     /// Confirm this node's `proof` is owned and admitted. A pinned History
     /// requires the exact head. A History beside this node's live owner
-    /// requires a prefix of the owner's admitted head: that owner keeps
-    /// appending on the request path, and every append is a guarded
-    /// Absent-key write by the one admitted owner, so records verified against
-    /// `proof` remain in its current history. Selection itself is guarded
-    /// separately, under the publication driver against the live head.
+    /// requires the owner's admitted head to extend `proof`: that owner keeps
+    /// appending on the request path, so the originals after `proof` are read
+    /// and must link to it and reproduce the live head and its original-byte
+    /// seal exactly, then that head's H and O rows and admission are checked.
+    /// A forked, rewritten or damaged tail, or a fence, epoch or owner change,
+    /// refuses. Selection itself is guarded separately, under the publication
+    /// driver against the live head.
     async fn confirm_local(
         &self,
         history: &History<'_>,
@@ -768,9 +859,11 @@ impl StoreRecovery {
     /// Verify a checkpoint this owner just wrote (or found already written):
     /// complete ancestry and ownership, beside its own live journal.
     async fn verify_written_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        let mut history = History::observing(&self.store, &self.journal);
+        let mut history = self.continuing();
         self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
-            .await
+            .await?;
+        self.keep_verified(&history);
+        Ok(())
     }
     async fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let mut history = History::new(&self.store);
@@ -884,9 +977,13 @@ impl StoreRecovery {
         self.verify_origin_with_history(event, pin, history).await?;
         history.finish().await?;
         if pin == Pin::Strict {
-            // Beside the live owner, `owned_with_history` already confirmed
-            // this proof as a prefix of the admitted head; only a pinned
-            // History rechecks the exact head here.
+            // Beside the live owner, `owned_with_history` already proved this
+            // proof extends to the owner's live head, original by original,
+            // and checked that exact live head's H and O rows and admission in
+            // one read: the exact-head check of the head that now exists. The
+            // owned predicates of this earlier proof would refuse every
+            // request-path append made since. Only a pinned History rechecks
+            // its own exact head here.
             let proof = self.owned_with_history(history).await?;
             if !history
                 .live
@@ -986,8 +1083,9 @@ impl StoreRecovery {
             // One preflight attempt shares immutable evidence only until the
             // staging boundary; every use still confirms live native guards.
             // This node's own journal keeps taking request-path appends while
-            // the proof is verified, so it is confirmed beside the live owner.
-            let mut history = History::observing(&self.store, &self.journal);
+            // the proof is verified, so it is confirmed beside the live owner,
+            // continuing from the last verified proof of this node.
+            let mut history = self.continuing();
             let current = head(&self.store, &event.operation_id).await?;
             let selected = if let Some((tip, _)) = &current {
                 if tip.node != self.node {
@@ -1006,12 +1104,14 @@ impl StoreRecovery {
             if selected.as_ref().is_some_and(|s| s.selected == *event) {
                 self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
                     .await?;
+                self.keep_verified(&history);
                 return Ok(());
             }
             event.follows(selected.as_ref().map(|s| &s.selected))?;
             self.verify_origin_with_history(event, Pin::Strict, &mut history)
                 .await?;
             self.owned_with_history(&mut history).await?;
+            self.keep_verified(&history);
             drop(history);
             let body = body(&Candidate {
                 event: event.clone(),

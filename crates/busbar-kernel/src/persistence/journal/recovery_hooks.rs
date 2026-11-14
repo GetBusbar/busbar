@@ -26,6 +26,74 @@ impl<'a> StoreJournal<'a> {
         Ok(replay)
     }
 
+    /// The historical verifier continued from `base`, a completed proof of this
+    /// node: only the originals after it up to the currently selected head are
+    /// read, under the same rules, and its seal is extended. The first must
+    /// link to `base`'s head, so a forked or rewritten journal fails; a changed
+    /// dataset or owner, or a selected head before `base`, refuses before any
+    /// original is read. An empty unclaimed `base` is a whole replay.
+    pub(crate) async fn historical_replay_after(
+        &self,
+        base: &VerifiedHead,
+    ) -> Result<Replay<'_, 'a>> {
+        let mut replay = self.historical_replay().await?;
+        if base.owner.is_none() && base.head == Head::default() {
+            return Ok(replay);
+        }
+        if base.dataset != replay.target.dataset
+            || base.node != self.node
+            || base.owner.is_none()
+            || base.owner != replay.target.owner
+            || base.head.count > replay.target.head.count
+        {
+            return Err(Error::Authority);
+        }
+        replay.observed = base.head;
+        replay.records_seal = base.records_seal;
+        Ok(replay)
+    }
+
+    /// Prove the selected-head proof `current` extends the completed proof
+    /// `prior` of this node by reading only the originals after `prior`: each
+    /// must link to the one before, and together they must reproduce
+    /// `current`'s head and original-byte seal exactly. A forked, rewritten or
+    /// damaged original after `prior` fails. Custody and admission of
+    /// `current` remain the caller's check.
+    pub(crate) async fn confirm_extends(
+        &self,
+        prior: &VerifiedHead,
+        current: &VerifiedHead,
+    ) -> Result<()> {
+        if prior.dataset != current.dataset
+            || prior.node != self.node
+            || current.node != self.node
+            || prior.head.count > current.head.count
+        {
+            return Err(Error::Authority);
+        }
+        let mut replay = Replay {
+            journal: self,
+            target: VerifiedHead {
+                dataset: current.dataset,
+                node: current.node,
+                head: current.head,
+                selected: current.selected.clone(),
+                owner: current.owner.clone(),
+                records_seal: current.records_seal,
+            },
+            observed: prior.head,
+            failed: false,
+            // The live owner appends contiguous originals only.
+            historical: false,
+            records_seal: prior.records_seal,
+        };
+        while replay.next().await?.is_some() {}
+        if replay.finish()?.records_seal != current.records_seal {
+            return Err(Error::Corrupt);
+        }
+        Ok(())
+    }
+
     pub(crate) fn selected_predicates(&self, proof: &VerifiedHead) -> Result<Vec<Predicate>> {
         Ok(vec![
             self.selected_head_predicate(proof)?,
