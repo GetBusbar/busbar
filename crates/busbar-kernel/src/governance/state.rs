@@ -1969,6 +1969,7 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
 }
 
 pub(super) fn durable_cell(
+    bucket_id: &str,
     row: busbar_contract::records::UsageLedger,
     eras: busbar_contract::records::UsageLedger,
     window: u64,
@@ -1978,7 +1979,7 @@ pub(super) fn durable_cell(
     cell.billable_requests = row.billable_requests;
     cell.flushed_requests = row.requests;
     cell.flushed_billable_requests = row.billable_requests;
-    cell.models = durable_segments(row.models)?;
+    cell.models = durable_segments(bucket_id, row.models)?;
     let (mut fees, mut undated_fees) = (Vec::new(), row.billable_requests);
     for e in eras.models {
         for raw in e.usage_units.values() {
@@ -2039,14 +2040,13 @@ pub(super) fn durable_cell(
             cur.insert(unit, n);
         }
         let model = rest.model.clone();
-        let flushed = BTreeMap::new();
-        cell.models.push(ModelCell {
+        cell.models.extend(ModelCell::new(
             model,
             era,
             cur,
-            flushed,
-            flushed_era: BTreeMap::new(),
-        });
+            BTreeMap::new(),
+            BTreeMap::new(),
+        ));
     }
     for m in &mut cell.models {
         m.flushed = m.cur.clone();
@@ -2058,30 +2058,52 @@ pub(super) fn durable_cell(
 }
 
 fn durable_segments(
+    bucket_id: &str,
     rows: Vec<busbar_contract::records::ModelTokens>,
 ) -> RecordStoreResult<Vec<ModelCell>> {
-    rows.into_iter()
-        .map(|m| {
-            Ok(ModelCell {
-                model: m.model.into(),
-                era: RawRateEra::legacy(0),
-                cur: m
-                    .usage_units
-                    .into_iter()
-                    .map(|(unit, n)| {
-                        let count = Count::from_stored(n, m.scale)
-                            .map_err(|e| RecordStoreError(e.to_string()))?;
-                        if count.is_negative() {
-                            return Err(RecordStoreError("negative durable usage total".into()));
-                        }
-                        Ok((unit, count))
-                    })
-                    .collect::<RecordStoreResult<_>>()?,
-                flushed: BTreeMap::new(),
-                flushed_era: BTreeMap::new(),
-            })
+    let mut dropped = 0usize;
+    let cells = rows
+        .into_iter()
+        .map(|m| -> RecordStoreResult<Option<ModelCell>> {
+            let cur = m
+                .usage_units
+                .into_iter()
+                .map(|(unit, n)| {
+                    let count = Count::from_stored(n, m.scale)
+                        .map_err(|e| RecordStoreError(e.to_string()))?;
+                    if count.is_negative() {
+                        return Err(RecordStoreError("negative durable usage total".into()));
+                    }
+                    Ok((unit, count))
+                })
+                .collect::<RecordStoreResult<_>>()?;
+            Ok(ModelCell::new(
+                m.model.into(),
+                RawRateEra::legacy(0),
+                cur,
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ))
         })
-        .collect()
+        .filter_map(|row| match row {
+            Ok(None) => {
+                dropped += 1;
+                None
+            }
+            Ok(Some(row)) => Some(Ok(row)),
+            Err(e) => Some(Err(e)),
+        })
+        .collect::<RecordStoreResult<Vec<_>>>()?;
+    if dropped != 0 {
+        // A Store written by a pre-fix 1.6.0 rc heals here: the row carries no count and no
+        // flushed baseline, so it owes no money and creates no correction debt (UPG-H2).
+        tracing::warn!(
+            bucket = bucket_id,
+            dropped,
+            "usage ledger load: dropped {dropped} unnamed-lane rows with no counts"
+        );
+    }
+    Ok(cells)
 }
 
 #[path = "money_view.rs"]

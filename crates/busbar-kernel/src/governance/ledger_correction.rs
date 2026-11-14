@@ -969,7 +969,7 @@ impl GovState {
             }) {
                 continue;
             }
-            let (before, _, _) = capture_target(live, &plain, &dated, *window)?;
+            let (before, _, _) = capture_target(bucket, live, &plain, &dated, *window)?;
             cells.insert(bucket.clone(), before);
         }
         Ok(())
@@ -1719,11 +1719,12 @@ impl GovState {
                     let plain = &snapshots[&plain_address];
                     let dated = &snapshots[&dated_address];
                     let (mut before, mut plain_after, mut dated_after) =
-                        prepare!(capture_target(live, plain, dated, *window));
+                        prepare!(capture_target(bucket, live, plain, dated, *window));
                     if let Some(names) = owners.get(bucket) {
                         before.group_owners.extend(names.iter().cloned());
                     }
                     let target = prepare!(durable_cell(
+                        bucket,
                         plain_after.clone(),
                         dated_after.clone(),
                         *window
@@ -1782,6 +1783,7 @@ impl GovState {
                     }
                     let mut accepted = if before.window_start == *window {
                         let mut accepted = prepare!(durable_cell(
+                            bucket,
                             plain_after.clone(),
                             dated_after.clone(),
                             *window
@@ -2019,6 +2021,7 @@ fn has_debt(cell: &BudgetCell) -> bool {
 }
 
 fn capture_target(
+    bucket: &str,
     live: Option<&BudgetCell>,
     plain: &UsageLedger,
     dated: &UsageLedger,
@@ -2075,8 +2078,8 @@ fn capture_target(
                 difference * 1_000_000,
             ))?;
         }
-        let baseline = durable_cell(plain.clone(), dated.clone(), window)?;
-        let mut before = durable_cell(combined.clone(), combined_dated.clone(), window)?;
+        let baseline = durable_cell(bucket, plain.clone(), dated.clone(), window)?;
+        let mut before = durable_cell(bucket, combined.clone(), combined_dated.clone(), window)?;
         copy_custody(&local, &mut before);
         before.flushed_requests = baseline.requests;
         before.flushed_billable_requests = baseline.billable_requests;
@@ -2096,13 +2099,13 @@ fn capture_target(
                 .iter()
                 .any(|model| model.model == base.model && model.era == base.era)
             {
-                before.models.push(ModelCell {
-                    model: base.model,
-                    era: base.era,
-                    cur: BTreeMap::new(),
-                    flushed: base.cur.clone(),
-                    flushed_era: base.cur,
-                });
+                before.models.extend(ModelCell::new(
+                    base.model,
+                    base.era,
+                    BTreeMap::new(),
+                    base.cur.clone(),
+                    base.cur,
+                ));
             }
         }
         before.dirty = has_debt(&before);
