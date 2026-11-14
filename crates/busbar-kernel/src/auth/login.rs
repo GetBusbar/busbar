@@ -252,45 +252,46 @@ impl LoginMethods {
         for (name, mc) in &cfg.methods {
             let refused = |e: String| login_module_refusal(name, &mc.module, e);
             let has_button = mc.browser_login.is_some();
-            let calls = instances.instance(name, || {
-                let mut resolved = super::instances::provider_settings(
-                    cfg,
-                    name,
-                    &mc.module,
-                    &mc.settings,
-                    registry,
-                    secret_resolver,
-                    |e| format!("identity-providers.{name} settings: {e}"),
-                )?;
-                let axis = match &axis {
-                    Some(a) => a.clone(),
-                    None => axis
-                        .insert(open_axis().ok_or_else(|| missing_login_axis(name, &mc.module))?)
-                        .clone(),
-                };
+            let calls = instances.instance(
+                name,
+                &mc.module,
+                registry,
+                || {
+                    let mut resolved = super::instances::provider_settings(
+                        cfg,
+                        name,
+                        &mc.module,
+                        &mc.settings,
+                        registry,
+                        secret_resolver,
+                        |e| format!("identity-providers.{name} settings: {e}"),
+                    )?;
+                    let axis = match &axis {
+                        Some(a) => a.clone(),
+                        None => axis
+                            .insert(
+                                open_axis().ok_or_else(|| missing_login_axis(name, &mc.module))?,
+                            )
+                            .clone(),
+                    };
 
-                if !axis.answers(&mc.module) {
-                    return Err(refused(super::auth_refusal(registry, &mc.module)));
-                }
+                    if !axis.answers(&mc.module) {
+                        return Err(refused(super::auth_refusal(registry, &mc.module)));
+                    }
 
-                super::instances::lend_login_secret(
-                    cfg,
-                    name,
-                    &mc.module,
-                    registry,
-                    secret_resolver,
-                    &mut resolved,
-                )?;
+                    super::instances::lend_login_secret(
+                        cfg,
+                        name,
+                        &mc.module,
+                        registry,
+                        secret_resolver,
+                        &mut resolved,
+                    )?;
 
-                let opened = axis.open(
-                    &mc.module,
-                    &super::instances::instance_label(name),
-                    &resolved,
-                );
-
-                drop(resolved);
-                opened.map_err(&refused)
-            })?;
+                    Ok(super::instances::Prepared { axis, resolved })
+                },
+                &refused,
+            )?;
             let axis = match &axis {
                 Some(a) => a.clone(),
                 None => axis

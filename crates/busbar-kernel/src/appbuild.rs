@@ -1339,7 +1339,11 @@ async fn build_app_native(
 
     // One instance per identity provider for this build, shared by every role that names it
     // (WASTE-AUTH-SECRETS W1): the chain, admin_auth and the hosted login methods look it up.
-    let mut auth_instances = crate::auth::instances::AuthInstances::default();
+    // Carried across builds (W2): an instance whose inputs are unchanged and that reports
+    // `reusable()` is handed over from the prior App, not opened again.
+    let mut auth_instances = crate::auth::instances::AuthInstances::carrying(
+        prior.map(|p| Arc::clone(&p.auth_instances)),
+    );
     let open_auth_axis = || crate::preflight::auth_axis(plugin_registry.clone());
     let auth_mw = Arc::new(
         AuthMiddleware::build_on(
@@ -1371,7 +1375,7 @@ async fn build_app_native(
         )
         .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
     );
-    drop(auth_instances);
+    let auth_instances = auth_instances.sealed();
 
     let store: Arc<dyn busbar_kernel::store::LaneRuntime> = match prior {
         Some(p) => Arc::new(HealthState::new_with_limits_restored(
@@ -1976,6 +1980,7 @@ async fn build_app_native(
             base_hook_names,
             admin_chain,
             admin_modules,
+            auth_instances,
             public_url,
             planes,
             plane_slots,

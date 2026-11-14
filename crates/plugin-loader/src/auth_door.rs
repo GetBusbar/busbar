@@ -569,6 +569,8 @@ pub struct AuthInstance {
     lifecycle: Mutex<()>,
 
     schedule: Option<tokio::task::JoinHandle<()>>,
+    // Set by the tick schedule when it stops without the plugin's own `next_tick_ns == 0`.
+    tick_failed: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for AuthInstance {
@@ -767,8 +769,13 @@ impl AuthInstance {
         }
 
         let plugin = Arc::new(plugin);
-        let schedule =
-            crate::dispatch::auth_ticks::spawn(Arc::clone(&plugin), dispatcher.clone(), 0);
+        let tick_failed = Arc::new(AtomicBool::new(false));
+        let schedule = crate::dispatch::auth_ticks::spawn(
+            Arc::clone(&plugin),
+            dispatcher.clone(),
+            0,
+            Arc::clone(&tick_failed),
+        );
         Ok(Self {
             shared: Arc::new(Shared {
                 plugin,
@@ -784,6 +791,7 @@ impl AuthInstance {
             label: label.to_string(),
             lifecycle: Mutex::new(()),
             schedule,
+            tick_failed,
         })
     }
 
@@ -927,6 +935,18 @@ impl AuthCalls for AuthInstance {
                 recalled: false,
             },
         ))
+    }
+
+    fn answering(&self) -> bool {
+        // The conditions under which a crossing fails closed today: invalid metadata answers
+        // `Failed`, a faulted or closed instance answers FAULT with no crossing.
+        self.metadata_valid.load(Ordering::Acquire)
+            && !self.shared.plugin.is_faulted()
+            && self.shared.plugin.is_open()
+    }
+
+    fn reusable(&self) -> bool {
+        self.answering() && !self.tick_failed.load(Ordering::Acquire)
     }
 
     fn refresh(&self) -> Result<u64, String> {

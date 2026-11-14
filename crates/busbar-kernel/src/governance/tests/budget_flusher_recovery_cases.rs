@@ -192,6 +192,7 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         admin: Default::default(),
         admin_chain: Default::default(),
         admin_modules,
+        auth_instances: Default::default(),
         public_url: Default::default(),
         oauth_as: Default::default(),
         demotion_record: Default::default(),

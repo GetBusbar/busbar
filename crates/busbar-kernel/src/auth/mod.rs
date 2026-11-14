@@ -723,43 +723,49 @@ impl AdminAuthChain {
                              loaded as a `kind: auth` plugin: {e}"
                         )
                     };
-                    let calls = instances.instance(name, || {
-                        let mut resolved = instances::provider_settings(
-                            cfg,
-                            name,
-                            other,
-                            &entry.settings,
-                            registry,
-                            secret_resolver,
-                            |e| format!("identity-providers.{name} settings: {e}"),
-                        )?;
+                    let calls = instances.instance(
+                        name,
+                        other,
+                        registry,
+                        || {
+                            let mut resolved = instances::provider_settings(
+                                cfg,
+                                name,
+                                other,
+                                &entry.settings,
+                                registry,
+                                secret_resolver,
+                                |e| format!("identity-providers.{name} settings: {e}"),
+                            )?;
 
-                        let axis = match &axis {
-                            Some(axis) => axis.clone(),
-                            None => {
-                                let opened = open_axis().ok_or_else(|| {
-                                    refused(format!("no `kind: auth` plugin answers to '{other}'"))
-                                })?;
-                                axis.insert(opened).clone()
+                            let axis = match &axis {
+                                Some(axis) => axis.clone(),
+                                None => {
+                                    let opened = open_axis().ok_or_else(|| {
+                                        refused(format!(
+                                            "no `kind: auth` plugin answers to '{other}'"
+                                        ))
+                                    })?;
+                                    axis.insert(opened).clone()
+                                }
+                            };
+
+                            if !axis.answers(other) {
+                                return Err(refused(auth_refusal(registry, other)));
                             }
-                        };
+                            instances::lend_login_secret(
+                                cfg,
+                                name,
+                                other,
+                                registry,
+                                secret_resolver,
+                                &mut resolved,
+                            )?;
 
-                        if !axis.answers(other) {
-                            return Err(refused(auth_refusal(registry, other)));
-                        }
-                        instances::lend_login_secret(
-                            cfg,
-                            name,
-                            other,
-                            registry,
-                            secret_resolver,
-                            &mut resolved,
-                        )?;
-
-                        let opened = axis.open(other, &instances::instance_label(name), &resolved);
-                        drop(resolved);
-                        opened.map_err(refused)
-                    })?;
+                            Ok(instances::Prepared { axis, resolved })
+                        },
+                        &refused,
+                    )?;
 
                     modules.insert(name.to_string(), AdminModule { calls });
                 }
@@ -820,42 +826,47 @@ impl AuthMiddleware {
                         )
                     };
                     let name = entry.name.as_str();
-                    let calls = instances.instance(name, || {
-                        let mut resolved = instances::provider_settings(
-                            cfg,
-                            name,
-                            other,
-                            &entry.settings,
-                            registry,
-                            secret_resolver,
-                            |e| format!("auth.chain module '{other}' settings: {e}"),
-                        )?;
-                        let axis = match &axis {
-                            Some(axis) => axis.clone(),
-                            None => {
-                                let opened = open_axis().ok_or_else(|| {
-                                    refused(format!("no `kind: auth` plugin answers to '{other}'"))
-                                })?;
-                                axis.insert(opened).clone()
+                    let calls = instances.instance(
+                        name,
+                        other,
+                        registry,
+                        || {
+                            let mut resolved = instances::provider_settings(
+                                cfg,
+                                name,
+                                other,
+                                &entry.settings,
+                                registry,
+                                secret_resolver,
+                                |e| format!("auth.chain module '{other}' settings: {e}"),
+                            )?;
+                            let axis = match &axis {
+                                Some(axis) => axis.clone(),
+                                None => {
+                                    let opened = open_axis().ok_or_else(|| {
+                                        refused(format!(
+                                            "no `kind: auth` plugin answers to '{other}'"
+                                        ))
+                                    })?;
+                                    axis.insert(opened).clone()
+                                }
+                            };
+
+                            if !axis.answers(other) {
+                                return Err(refused(auth_refusal(registry, other)));
                             }
-                        };
-
-                        if !axis.answers(other) {
-                            return Err(refused(auth_refusal(registry, other)));
-                        }
-                        instances::lend_login_secret(
-                            cfg,
-                            name,
-                            other,
-                            registry,
-                            secret_resolver,
-                            &mut resolved,
-                        )?;
-                        let opened = axis.open(other, &instances::instance_label(name), &resolved);
-
-                        drop(resolved);
-                        opened.map_err(refused)
-                    })?;
+                            instances::lend_login_secret(
+                                cfg,
+                                name,
+                                other,
+                                registry,
+                                secret_resolver,
+                                &mut resolved,
+                            )?;
+                            Ok(instances::Prepared { axis, resolved })
+                        },
+                        &refused,
+                    )?;
                     chain.push(ChainEntry {
                         provider: entry.name.clone(),
                         name: calls.name().to_string(),
