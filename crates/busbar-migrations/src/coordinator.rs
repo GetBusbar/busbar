@@ -866,7 +866,7 @@ impl Coordinator {
                 attempt: pending.attempt.candidate().candidate().id,
                 candidate_fingerprint: pending.attempt.candidate().fingerprint(),
                 checkpoint_address: address(pending.next.migration),
-                checkpoint_value_digest: busbar_contract::crypto::sha256(&checkpoint).into(),
+                checkpoint_value_digest: busbar_contract::crypto::sha256(&checkpoint),
                 phase,
             });
             match phase {
@@ -901,7 +901,7 @@ fn completion_marker(
             source: DatasetId(manifest.source.dataset),
             target: DatasetId(manifest.target.dataset),
             checkpoint_address: address(manifest.migration),
-            checkpoint_value_digest: busbar_contract::crypto::sha256(checkpoint).into(),
+            checkpoint_value_digest: busbar_contract::crypto::sha256(checkpoint),
         },
         native::Bounds {
             items: 16,
@@ -991,9 +991,9 @@ pub(super) fn rolling_digest<'a>(
     hash.update(&previous[..]);
     for (key, value) in rows {
         hash.update(&(key.len() as u64).to_le_bytes());
-        hash.update(&key[..]);
+        hash.update(key);
         hash.update(&(value.len() as u64).to_le_bytes());
-        hash.update(&value[..]);
+        hash.update(value);
     }
     hash.finish()
 }
