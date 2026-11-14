@@ -13,7 +13,7 @@ pub(crate) const OPERATOR_BREAK_TAG: &str = "operator-chain-break";
 
 /// One deliberate operator break the chain carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OperatorBreak {
+pub(crate) struct OperatorBreak {
     /// Where on this node's chain the break was sealed.
     pub node_seq: u64,
     /// When, in seconds since the Unix epoch.
