@@ -169,7 +169,7 @@ impl GovState {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "config: one self-serve mint names every part of the binding it writes"
+        reason = "each argument is one part of the binding a self-serve mint writes"
     )]
     async fn write_self_binding(
         &self,
