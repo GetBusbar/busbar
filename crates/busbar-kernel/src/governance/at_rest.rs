@@ -21,10 +21,6 @@ pub const NO_KEY_REFUSAL: &str = "a recoverable credential cannot be minted: no 
      file, then `credentials: { at_rest: { key: { file: /run/secrets/busbar-at-rest.key } } }`), \
      give every node that shares this store the same key, and reload";
 
-pub const REWRAP_CLAIM_KIND: &str = "busbar.credential-at-rest.rewrap";
-
-pub const REWRAP_CLAIM_SECS: u64 = 300;
-
 const PLAIN: &str = "v1:plain:";
 const AEAD: &str = "v1:aead:";
 

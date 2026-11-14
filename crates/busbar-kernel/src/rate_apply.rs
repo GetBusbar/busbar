@@ -72,13 +72,6 @@ pub fn prepare<'a>(
     let origin = crate::config::card::origin::current();
     Box::pin(async move { prepare_with_origin(card, rates, &origin).await })
 }
-pub fn prepare_recovery<'a>(
-    card: &'a CardFields,
-    rates: &'a RawRates<'_>,
-) -> RateFuture<'a, Result<Box<dyn PreparedRates>, String>> {
-    let origin = crate::config::card::origin::current();
-    Box::pin(async move { prepare_recovery_with_origin(card, rates, &origin).await })
-}
 pub async fn prepare_with_origin(
     card: &CardFields,
     rates: &RawRates<'_>,
