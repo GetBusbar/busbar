@@ -370,7 +370,7 @@ async fn final_origin_fold_verifies_unselected_tail_after_all_facts_are_found() 
     damage(&backend, &at, false);
     assert!(recovery.verify_origin(&initial).await.is_err());
 }
-#[path = "checkpoint_final_fold.rs"]
+#[path = "checkpoint_final_fold_tests.rs"]
 mod checkpoint_final_fold;
-#[path = "persist_prefix_fold.rs"]
+#[path = "persist_prefix_fold_tests.rs"]
 mod persist_prefix_fold;
