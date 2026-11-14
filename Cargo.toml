@@ -154,9 +154,9 @@ h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 # YAML: serde-saphyr and granit-parser carry busbar's opt-in serde_yaml-compatibility options
 # (null_scalars_as_text, lowercase_radix_prefixes_only, bom_inside_document_as_content), offered
-# upstream; private forge mirrors of the exact published versions plus those commits.
-serde-saphyr = { git = "https://github.com/GetBusbar/serde-saphyr", rev = "61b12ca45482dbecb3b8461ead62ae05d3777493" }
-granit-parser = { git = "https://github.com/GetBusbar/granit-parser", rev = "8c5ec50275a0056501615a039ca1a8e6be103da3" }
+# upstream; forks of the exact published versions plus those commits.
+serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "61b12ca45482dbecb3b8461ead62ae05d3777493" }
+granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "8c5ec50275a0056501615a039ca1a8e6be103da3" }
 
 [profile.release]
 opt-level = 3        # opt-3 for the CPU-bound in-process work (parse/translate/serialize on the hot

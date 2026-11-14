@@ -1780,7 +1780,7 @@ dependencies = [
 [[package]]
 name = "granit-parser"
 version = "2.1.0"
-source = "git+https://github.com/GetBusbar/granit-parser?rev=8c5ec50275a0056501615a039ca1a8e6be103da3#8c5ec50275a0056501615a039ca1a8e6be103da3"
+source = "git+https://github.com/MattJackson/granit-parser?rev=8c5ec50275a0056501615a039ca1a8e6be103da3#8c5ec50275a0056501615a039ca1a8e6be103da3"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -3391,7 +3391,7 @@ dependencies = [
 [[package]]
 name = "serde-saphyr"
 version = "2.1.1"
-source = "git+https://github.com/GetBusbar/serde-saphyr?rev=61b12ca45482dbecb3b8461ead62ae05d3777493#61b12ca45482dbecb3b8461ead62ae05d3777493"
+source = "git+https://github.com/MattJackson/serde-saphyr?rev=61b12ca45482dbecb3b8461ead62ae05d3777493#61b12ca45482dbecb3b8461ead62ae05d3777493"
 dependencies = [
  "annotate-snippets",
  "base64 0.22.1",
