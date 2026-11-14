@@ -1213,6 +1213,14 @@ fn unnamed_lanes_refusal(
     )
 }
 
+/// One lane a rate card leaves partly unpriced: the BUSBAR-3026 advisory, not a refusal.
+struct UnpricedLane {
+    lane: String,
+    classes: String,
+    card_present: bool,
+    message: String,
+}
+
 fn validate_plane_card(
     d: &crate::plane_driver::registry::PlaneDeclaration,
     card: &std::collections::BTreeMap<String, crate::config::RateEntryCfg>,
@@ -1220,6 +1228,55 @@ fn validate_plane_card(
     lanes: &[String],
     errors: &mut Vec<String>,
 ) {
+    for gap in judge_plane_card(d, card, flat_card, lanes, errors) {
+        diag_warn!(
+            CONFIG_RATE_CARD_MISSING,
+            plane = d.key,
+            section = d.config_section,
+            lane = gap.lane.as_str(),
+            classes = %gap.classes,
+            card_present = gap.card_present,
+            "{}",
+            gap.message
+        );
+    }
+}
+
+/// The BUSBAR-3026 advisories a present rate card raises, as boot logs them. `--validate` runs
+/// before any log subscriber exists, so it prints these through its own report instead.
+pub fn rate_card_advisories(cfg: &RootCfg) -> Vec<String> {
+    let Some(card) = cfg.rate_card.as_ref() else {
+        return Vec::new();
+    };
+    let flat_card = flat_card_present(card.keys().map(|key| split_plane_lane(key).0));
+    let lanes = priced_lanes(cfg);
+    // Refusals are reported by validation itself; only the advisories are wanted here.
+    let mut refusals = Vec::new();
+    crate::plane_driver::registry::plane_decls()
+        .iter()
+        .flat_map(|d| judge_plane_card(&d.declaration, card, flat_card, &lanes, &mut refusals))
+        .map(|gap| gap.message)
+        .collect()
+}
+
+/// Installed planes declare the classes, while their configured definitions enumerate the lanes
+/// whose counts can be priced.
+fn priced_lanes(cfg: &RootCfg) -> Vec<String> {
+    cfg.models
+        .keys()
+        .cloned()
+        .chain(cfg.plane_defs.values().flat_map(|defs| defs.ledger_lanes()))
+        .collect()
+}
+
+fn judge_plane_card(
+    d: &crate::plane_driver::registry::PlaneDeclaration,
+    card: &std::collections::BTreeMap<String, crate::config::RateEntryCfg>,
+    flat_card: bool,
+    lanes: &[String],
+    errors: &mut Vec<String>,
+) -> Vec<UnpricedLane> {
+    let mut gaps = Vec::new();
     let own = if d.fallback { "" } else { d.key };
     let on: Vec<_> = card
         .iter()
@@ -1267,18 +1324,18 @@ fn validate_plane_card(
         } else {
             "no rate card is configured for this plane; usage-based pricing is disabled"
         };
-        diag_warn!(
-            CONFIG_RATE_CARD_MISSING,
-            plane = d.key,
-            section = d.config_section,
-            lane,
-            classes = %missing.join(", "),
-            card_present = present,
-            "{}.rate_card has no configured rate for lane '{}' billable class(es) {}; \
-             {}. Raw counts remain available. Configure a rate for each class \
-             (0 explicitly makes it free).",
-            d.config_section, lane, missing.join(", "), pricing
-        );
+        let classes = missing.join(", ");
+        gaps.push(UnpricedLane {
+            message: format!(
+                "{}.rate_card has no configured rate for lane '{}' billable class(es) {}; \
+                 {}. Raw counts remain available. Configure a rate for each class \
+                 (0 explicitly makes it free).",
+                d.config_section, lane, classes, pricing
+            ),
+            lane: lane.to_owned(),
+            classes,
+            card_present: present,
+        });
     }
     if !unnamed.is_empty() {
         errors.push(unnamed_lanes_refusal(d, &unnamed));
@@ -1299,6 +1356,7 @@ fn validate_plane_card(
                 .unwrap_or_else(|| "none".into())
         ));
     }
+    gaps
 }
 
 fn validate_plane_fees(
@@ -1377,14 +1435,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
-    // Absence is advisory too: installed planes declare the classes, while their
-    // configured definitions enumerate the lanes whose counts can be priced.
-    let lanes: Vec<String> = cfg
-        .models
-        .keys()
-        .cloned()
-        .chain(cfg.plane_defs.values().flat_map(|defs| defs.ledger_lanes()))
-        .collect();
+    // Absence is advisory too.
+    let lanes = priced_lanes(cfg);
     for lane in &lanes {
         if lane.contains(busbar_kernel_ledger::cost::MEASUREMENT_LANE_PREFIX) {
             errors.push(
