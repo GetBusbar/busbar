@@ -20,7 +20,8 @@ pub const TOOL_NAME: &str = "get_weather";
 const TOOL_ID_ANTHROPIC: &str = "toolu_hammer0001";
 const TOOL_ID_OPENAI: &str = "call_hammer0001";
 const TOOL_ID_BEDROCK: &str = "tooluse_hammer0001";
-/// Every answer's text starts with this marker (a `contains:` request checks every body for it).
+/// Every answer's text starts with this marker (a `contains:` request checks expected-status
+/// answers for it).
 pub const MARKER: &str = "hammer-ok";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
