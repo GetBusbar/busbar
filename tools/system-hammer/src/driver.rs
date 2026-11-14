@@ -46,7 +46,8 @@ pub struct Req {
     pub body: Bytes,
     pub expect_status: u16,
     /// Bytes each response with `expect_status` must contain; every such body is checked. A miss
-    /// counts as `body_miss` only in the measured window; warmup and late misses are only logged.
+    /// counts as `body_miss` only for a request started in the measured window; warmup and later
+    /// misses are only logged.
     pub expect_contains: Option<Vec<u8>>,
     /// Relative weight in the case's mix.
     pub weight: u32,
@@ -375,6 +376,9 @@ struct Ctx {
     rate: f64,
     seq: AtomicU64,
     first_error: std::sync::OnceLock<String>,
+    /// h2c: one connection slot per group of `h2_streams` workers, the only place an h2c worker
+    /// gets a connection from (a dead one is redialled once for its whole group).
+    h2: Vec<tokio::sync::Mutex<Option<Sender>>>,
 }
 
 impl Ctx {
@@ -469,6 +473,13 @@ impl Ctx {
     }
 }
 
+/// Whether a worker sends the request scheduled at `started` in a plan that ends at `end`: every
+/// arrival scheduled before the end is sent, also when a worker only frees up after it (the
+/// open-loop backlog), so a stalled gateway shows up as latency.
+fn sends(started: Instant, end: Instant) -> bool {
+    started < end
+}
+
 async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>, group: usize) -> Local {
     let mut local = Local::new(ctx.windows);
     let end = ctx.plan.end();
@@ -491,8 +502,7 @@ async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>, group: usize) -> Loca
         }
         let seq = ctx.seq.fetch_add(1, Ordering::Relaxed);
         let p = &ctx.reqs[(seq % n) as usize];
-        let collect = p.expect_contains.is_some()
-            || (ctx.plan.sample_every > 0 && seq.is_multiple_of(ctx.plan.sample_every));
+        let collect = p.expect_contains.is_some();
         let closed = matches!(&sender, Some(Sender::H2(s)) if s.is_closed());
         if sender.is_none() || closed {
             let got = match ctx.plan.proto {
@@ -563,6 +573,7 @@ pub async fn run(plan: Plan) -> (Outcome, Option<String>) {
         rate,
         seq: AtomicU64::new(0),
         first_error: std::sync::OnceLock::new(),
+        h2: (0..groups).map(|_| tokio::sync::Mutex::new(None)).collect(),
         plan,
     });
 
@@ -652,6 +663,259 @@ pub fn pct_us(h: &Histogram<u64>, q: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    fn req(path: &str) -> Req {
+        Req {
+            method: Method::GET,
+            path: path.into(),
+            headers: Vec::new(),
+            body: Bytes::new(),
+            expect_status: 200,
+            expect_contains: None,
+            weight: 1,
+        }
+    }
+
+    fn plan(addr: SocketAddr, proto: Proto, path: &str) -> Plan {
+        Plan {
+            addr,
+            proto,
+            reqs: vec![req(path)],
+            shape: Shape::Closed { concurrency: 1 },
+            start: Instant::now(),
+            warmup: Duration::from_millis(10),
+            measure: Duration::from_millis(100),
+            timeout: Duration::from_secs(1),
+            h2_streams: 1,
+        }
+    }
+
+    fn ctx(plan: Plan, reqs: Vec<Prepared>, windows: usize) -> Ctx {
+        Ctx {
+            plan,
+            reqs,
+            windows,
+            permits: None,
+            arrivals: AtomicU64::new(0),
+            rate: 0.0,
+            seq: AtomicU64::new(0),
+            first_error: std::sync::OnceLock::new(),
+            h2: Vec::new(),
+        }
+    }
+
+    /// No coordinated omission: a request that STARTS inside the measured window is counted
+    /// (with its full latency) even when it completes after the window closed.
+    #[test]
+    fn a_request_started_in_the_window_counts_when_it_completes_after_it() {
+        let p = plan(([127, 0, 0, 1], 9).into(), Proto::H1, "/");
+        let started = p.measure_start() + Duration::from_millis(50);
+        let done = p.end() + Duration::from_millis(500);
+        let ctx = ctx(
+            p,
+            vec![Prepared {
+                method: Method::GET,
+                uri: Uri::from_static("/"),
+                headers: HeaderMap::new(),
+                body: Bytes::new(),
+                expect_status: 200,
+                expect_contains: None,
+            }],
+            1,
+        );
+        let mut local = Local::new(ctx.windows);
+        let x = Exchange {
+            status: 200,
+            first_byte: Some(done),
+            body: None,
+        };
+        assert!(ctx.record(&mut local, started, done, Ok(Ok(x)), &ctx.reqs[0]));
+        assert_eq!(
+            local.ok, 1,
+            "the late completion of an in-window start is counted"
+        );
+        assert_eq!(local.latency.len(), 1, "and its latency recorded");
+    }
+
+    /// The open-loop backlog: an arrival scheduled before the end is still sent (and measured
+    /// from its scheduled start) when a worker only frees up after the end.
+    #[test]
+    fn an_arrival_scheduled_before_the_end_is_sent_after_the_end() {
+        let started = Instant::now();
+        let end = started + Duration::from_millis(1);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(sends(started, end), "the backlog is sent, not dropped");
+        assert!(!sends(end, end), "an arrival at the end is not");
+    }
+
+    /// A path that is not a URI path is refused with a diagnosis, never sent as `/` (and, over
+    /// h2c, never without its authority).
+    #[test]
+    fn an_unparsable_path_is_refused_not_sent_as_the_root() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // A listener that never answers: whatever is sent to it only times out.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = silent.local_addr().unwrap();
+        for proto in [Proto::H1, Proto::H2c] {
+            let (out, first) = rt.block_on(run(plan(addr, proto, "/v1/chat completions")));
+            assert_eq!(out.ok, 0);
+            assert!(
+                first.as_deref().is_some_and(|e| e.contains("bad path")),
+                "{proto:?}: {first:?}"
+            );
+        }
+        drop(silent);
+    }
+
+    /// The text between `from` and `to` in `src`: the doc comment of the field named by `to`.
+    fn doc_of<'a>(src: &'a str, from: &str, to: &str) -> &'a str {
+        let end = src.find(to).expect("field present");
+        let start = src[..end].rfind(from).expect("previous field present");
+        &src[start..end]
+    }
+
+    /// A `contains:` marker is checked on every answer with the expected status, but a miss is
+    /// counted as `body_miss` (and fails the case) only for a request started inside the
+    /// measured window; warmup and later misses are only logged. The field docs must state
+    /// exactly that scope.
+    #[test]
+    fn contains_miss_counts_only_in_window_and_docs_say_so() {
+        let start = Instant::now();
+        let plan = Plan {
+            addr: "127.0.0.1:9".parse().unwrap(),
+            proto: Proto::H1,
+            reqs: Vec::new(),
+            shape: Shape::Closed { concurrency: 1 },
+            start,
+            warmup: Duration::from_secs(5),
+            measure: Duration::from_secs(5),
+            timeout: Duration::from_secs(1),
+            h2_streams: 1,
+        };
+        let ctx = ctx(plan, Vec::new(), 5);
+        let p = Prepared {
+            method: Method::GET,
+            uri: Uri::from_static("/"),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            expect_status: 200,
+            expect_contains: Some(b"hammer-ok".to_vec()),
+        };
+        let miss =
+            |status: u16| -> Result<Result<Exchange, hyper::Error>, tokio::time::error::Elapsed> {
+                Ok(Ok(Exchange {
+                    status,
+                    first_byte: None,
+                    body: Some(b"no".to_vec()),
+                }))
+            };
+        let mut local = Local::new(ctx.windows);
+        let s = Duration::from_secs;
+        // Warmup miss: logged, not counted.
+        ctx.record(&mut local, start + s(1), start + s(2), miss(200), &p);
+        // Miss of a request started after the window: logged, not counted.
+        ctx.record(&mut local, start + s(10), start + s(11), miss(200), &p);
+        assert_eq!((local.body_total, local.body_miss), (0, 0));
+        assert!(ctx.first_error.get().is_some(), "the miss is logged");
+        // Wrong status in the window: a status error, the body is not checked.
+        ctx.record(&mut local, start + s(6), start + s(7), miss(503), &p);
+        assert_eq!((local.body_total, local.body_miss), (0, 0));
+        // Expected status in the window: checked and counted.
+        ctx.record(&mut local, start + s(6), start + s(7), miss(200), &p);
+        assert_eq!((local.body_total, local.body_miss), (1, 1));
+
+        // The docs state that scope, not "every body, any miss fails".
+        for doc in [
+            doc_of(
+                include_str!("scenario.rs"),
+                "pub expect: u16,",
+                "pub contains: Option<String>",
+            ),
+            doc_of(
+                include_str!("driver.rs"),
+                "pub expect_status: u16,",
+                "pub expect_contains: Option<Vec<u8>>",
+            ),
+        ] {
+            assert!(
+                doc.contains("measured window") && doc.contains("warmup"),
+                "doc must say misses count only in the measured window: {doc}"
+            );
+            assert!(
+                !doc.contains("EVERY"),
+                "doc must not overstate the check: {doc}"
+            );
+        }
+    }
+
+    /// Error text for the first-error report must be built inside the lazy
+    /// `note_error` closure, so an error storm does not allocate per response.
+    #[test]
+    fn note_error_text_built_lazily() {
+        let src = include_str!("driver.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        let mut rest = prod;
+        let mut seen = 0;
+        while let Some(i) = rest.find("from_utf8_lossy") {
+            let before = &rest[..i];
+            let open = before
+                .rfind("note_error(||")
+                .expect("from_utf8_lossy used outside a note_error closure");
+            assert!(
+                !before[open..].contains(';'),
+                "from_utf8_lossy evaluated eagerly before note_error: {}",
+                &before[open.saturating_sub(200)..]
+            );
+            seen += 1;
+            rest = &rest[i + 1..];
+        }
+        assert!(seen > 0, "expected error-text sites in driver.rs");
+    }
+
+    /// h2c keeps `ceil(workers / h2_streams)` connections for the whole run: a stream that times
+    /// out does not break its h2 connection, so no worker dials a private one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn h2c_timeouts_keep_the_shared_connections() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&accepts);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let svc =
+                        hyper::service::service_fn(|_req: Request<hyper::body::Incoming>| async {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            Ok::<_, std::convert::Infallible>(http::Response::new(Full::new(
+                                Bytes::from_static(b"ok"),
+                            )))
+                        });
+                    let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        let plan = Plan {
+            addr,
+            proto: Proto::H2c,
+            reqs: vec![req("/")],
+            shape: Shape::Closed { concurrency: 8 },
+            start: Instant::now() + Duration::from_millis(100),
+            warmup: Duration::ZERO,
+            measure: Duration::from_secs(1),
+            timeout: Duration::from_millis(50),
+            h2_streams: 4,
+        };
+        let (out, _) = run(plan).await;
+        assert!(out.errors.get("timeout").copied().unwrap_or(0) > 0);
+        assert_eq!(accepts.load(Ordering::SeqCst), 2);
+    }
 
     #[tokio::test]
     async fn a_panicking_worker_is_counted_as_an_error_not_dropped() {

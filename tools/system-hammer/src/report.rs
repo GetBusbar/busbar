@@ -336,6 +336,21 @@ pub fn table(r: &RunReport) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn git_sha_override_is_ascii_and_path_safe() {
+        let b = BinaryInfo::of(Path::new("/nonexistent"), Some("abcdefghijké/../x"));
+        assert!(b.git_sha.is_ascii() && !b.git_sha.contains(['/', '.']));
+        let _ = &b.git_sha[..b.git_sha.len().min(12)]; // panicked before: é spans bytes 11..13
+    }
+
+    #[test]
+    fn unreadable_binary_has_no_fabricated_identity() {
+        let b = super::BinaryInfo::of(std::path::Path::new("/nonexistent/busbar-hammer-bin"), None);
+        assert_eq!(b.sha256, "unknown");
+    }
+
     #[test]
     fn stem_part_is_char_safe_and_path_safe() {
         assert_eq!(super::stem_part("abcdefghiéx", 10), "abcdefghi-");

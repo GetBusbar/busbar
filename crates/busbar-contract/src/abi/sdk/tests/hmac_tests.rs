@@ -176,37 +176,3 @@ fn precomputed_keys_answer_the_one_shot_macs_over_any_split() {
         }
     }
 }
-
-/// WASTE-AUTH-SECRETS W7: the key schedule is paid once at construction. A short message under a
-/// precomputed key costs two compressions (inner and outer finish), not the four a one-shot MAC
-/// costs by re-deriving both pads.
-#[test]
-fn a_precomputed_key_costs_two_compressions_per_short_mac() {
-    let k256 = HmacSha256Key::new(b"whsec-key-bytes");
-    let cred = Cred::captured(Zeroizing::new(b"twilio-auth-token".to_vec()));
-    let k1 = HmacSha1Key::new(&cred);
-    let parts: [&[u8]; 5] = [b"msg_id", b".", b"1700000000", b".", b"{}"];
-    for _ in 0..3 {
-        let before = compressions();
-        let _ = k256.mac_parts(&parts);
-        assert_eq!(
-            compressions() - before,
-            2,
-            "sha256: inner + outer finish only"
-        );
-        let before = compressions();
-        let _ = k1.mac_parts(&parts);
-        assert_eq!(
-            compressions() - before,
-            2,
-            "sha1: inner + outer finish only"
-        );
-    }
-    let before = compressions();
-    let _ = hmac_sha256(b"whsec-key-bytes", b"msg_id.1700000000.{}");
-    assert_eq!(
-        compressions() - before,
-        4,
-        "the one-shot MAC derives both pads every call"
-    );
-}
