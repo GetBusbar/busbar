@@ -13,7 +13,6 @@
 </p>
 
 <p align="center">
-<a href="https://codecov.io/gh/GetBusbar/busbar"><img src="https://codecov.io/gh/GetBusbar/busbar/branch/main/graph/badge.svg" alt="Coverage"></a>
 <a href="https://securityscorecards.dev/viewer/?uri=github.com/GetBusbar/busbar"><img src="https://api.securityscorecards.dev/projects/github.com/GetBusbar/busbar/badge" alt="OpenSSF Scorecard"></a>
 <a href="https://www.bestpractices.dev/projects/14739"><img src="https://www.bestpractices.dev/projects/14739/badge" alt="OpenSSF Best Practices"></a>
 <a href="https://github.com/GetBusbar/busbar/releases"><img src="https://img.shields.io/github/v/release/GetBusbar/busbar?include_prereleases" alt="Release"></a>
@@ -21,11 +20,6 @@
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0"></a>
 <a href="https://getbusbar.com"><img src="https://img.shields.io/badge/website-getbusbar.com-0A66C2" alt="Website"></a>
 <a href="https://discord.com/invite/nnK5evXERp"><img src="https://img.shields.io/badge/Discord-join%20chat-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
-</p>
-
-<p align="center">
-<!-- BEGIN conformance-badges (generated from conformance/manifest.json — do not edit; regenerate with `cargo xtask gate conformance-sync --write`) -->
-<!-- END conformance-badges -->
 </p>
 
 Busbar sits between AI applications and the destinations they can reach:
