@@ -10,9 +10,10 @@
 //!
 //! Counted: heap allocations (the test build's counting global allocator), plugin crossings (at
 //! the loader boundary, `busbar_contract::work_count::Work::Crossing`, so the gate keeps working
-//! when MIN-3 replaces the mechanism behind that boundary) and store round trips. A request's
-//! count is the lowest of [`RUNS`] identical requests after [`WARM`] warm-up requests, so lazy
-//! first-use work and stray background work cannot raise it.
+//! when MIN-3 replaces the mechanism behind that boundary), store round trips, and the clock
+//! reads of the connector's drives (`Work::ClockRead`, at its lazy `now`: at most one per drive).
+//! A request's count is the lowest of [`RUNS`] identical requests after [`WARM`] warm-up requests,
+//! so lazy first-use work and stray background work cannot raise it.
 
 use busbar_contract::work_count::Tally;
 
@@ -26,22 +27,28 @@ const WARM: usize = 1;
 const RUNS: usize = 3;
 
 /// The counted items, in the order they are reported, with their names in the budget file.
-const ITEMS: [&str; 3] = ["allocations", "plugin_crossings", "store_round_trips"];
+const ITEMS: [&str; 4] = [
+    "allocations",
+    "plugin_crossings",
+    "store_round_trips",
+    "connector_clock_reads",
+];
 
 fn item(work: Tally, name: &str) -> u64 {
     match name {
         "allocations" => work.allocations,
         "plugin_crossings" => work.crossings,
         "store_round_trips" => work.store_round_trips,
+        "connector_clock_reads" => work.clock_reads,
         other => unreachable!("not a counted item: {other}"),
     }
 }
 
 /// One section of the budget file: `name = number` lines under `[section]`. An item with no line
 /// has no budget yet: it is measured and reported, not enforced.
-fn budget(section: &str) -> [Option<u64>; 3] {
+fn budget(section: &str) -> [Option<u64>; ITEMS.len()] {
     let mut current = "";
-    let mut out = [None; 3];
+    let mut out = [None; ITEMS.len()];
     for line in BUDGET.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -114,12 +121,14 @@ async fn measure(fixture: Fixture) -> Tally {
         allocations: u64::MAX,
         crossings: u64::MAX,
         store_round_trips: u64::MAX,
+        clock_reads: u64::MAX,
     };
     for _ in 0..RUNS {
         let work = counted(&rig, &node, fixture).await;
         low.allocations = low.allocations.min(work.allocations);
         low.crossings = low.crossings.min(work.crossings);
         low.store_round_trips = low.store_round_trips.min(work.store_round_trips);
+        low.clock_reads = low.clock_reads.min(work.clock_reads);
     }
     rig.server.shutdown().await;
     low

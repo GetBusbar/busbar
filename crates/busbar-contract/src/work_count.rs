@@ -5,7 +5,8 @@
 //!
 //! A deterministic count of work, not a timing. The host bumps one counter at each boundary it
 //! owns: [`Work::Crossing`] where the loader calls into a plugin, [`Work::StoreRoundTrip`] where
-//! the loader submits one request to the store plugin. [`Counting`] wraps the global allocator so
+//! the loader submits one request to the store plugin, [`Work::ClockRead`] where a connector
+//! drive reads the clock. [`Counting`] wraps the global allocator so
 //! the gate can count heap allocations too.
 //!
 //! The counters only move when this crate is built with `test-support`, which no shipping build
@@ -21,10 +22,13 @@ pub enum Work {
     Crossing,
     /// One request submitted to the store plugin and answered.
     StoreRoundTrip,
+    /// One clock read by a connector drive (its lazy `now`: at most one per drive).
+    ClockRead,
 }
 
 static CROSSINGS: AtomicU64 = AtomicU64::new(0);
 static STORE_ROUND_TRIPS: AtomicU64 = AtomicU64::new(0);
+static CLOCK_READS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Count one unit of `work`. A no-op unless built with `test-support`.
@@ -35,6 +39,7 @@ pub fn tally(work: Work) {
         let counter = match work {
             Work::Crossing => &CROSSINGS,
             Work::StoreRoundTrip => &STORE_ROUND_TRIPS,
+            Work::ClockRead => &CLOCK_READS,
         };
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -51,6 +56,8 @@ pub struct Tally {
     pub crossings: u64,
     /// Store requests submitted and answered.
     pub store_round_trips: u64,
+    /// Clock reads by connector drives.
+    pub clock_reads: u64,
 }
 
 impl Tally {
@@ -60,6 +67,7 @@ impl Tally {
             allocations: ALLOCATIONS.load(Ordering::Relaxed),
             crossings: CROSSINGS.load(Ordering::Relaxed),
             store_round_trips: STORE_ROUND_TRIPS.load(Ordering::Relaxed),
+            clock_reads: CLOCK_READS.load(Ordering::Relaxed),
         }
     }
 
@@ -71,6 +79,7 @@ impl Tally {
             store_round_trips: self
                 .store_round_trips
                 .wrapping_sub(earlier.store_round_trips),
+            clock_reads: self.clock_reads.wrapping_sub(earlier.clock_reads),
         }
     }
 }
