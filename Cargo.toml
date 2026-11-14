@@ -103,6 +103,9 @@ sha2 = "0.10"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
 sonic-rs = "0.5"
+# The event-stream line parser (`parser::parse_line`) under busbar-contract's SSE framer
+# (DEPENDENCY-LADDER C17); no default features, so no client, JSON or retry layer.
+sseer = { version = "0.3.1", default-features = false }
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory.
 tar = { version = "0.4", default-features = false }

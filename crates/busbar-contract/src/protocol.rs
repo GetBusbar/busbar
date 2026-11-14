@@ -74,31 +74,39 @@ pub type IrError = crate::upstream::CanonicalSignal;
 /// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
 pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
-/// The length of the line terminator starting at `i`, or `None` when `i` does not begin one.
-fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
-    match buf.get(i)? {
-        b'\n' => Some(1),
-        b'\r' => match buf.get(i + 1) {
-            Some(b'\n') => Some(2),
-            Some(_) => Some(1),
-            None => None,
-        },
-        _ => None,
+/// The length of the terminator that ends the complete line whose bytes stop at `end`: CRLF, or a
+/// lone CR or LF. A line holds no CR or LF of its own, so an LF after a CR is always one CRLF.
+fn terminator_before(buf: &[u8], end: usize) -> usize {
+    if end >= 2 && buf[end - 1] == b'\n' && buf[end - 2] == b'\r' {
+        2
+    } else {
+        1
+    }
+}
+
+/// Walk `buf`'s complete lines from the line starting at `line`, read by sseer's `parse_line`
+/// (DEPENDENCY-LADDER C17). A blank line that is not the first line of the frame starting at
+/// `frame` ends the frame: `Ok(its end)`. Otherwise `Err(the start of the first incomplete line)`,
+/// which is where the next walk resumes (a final CR is incomplete: an LF may follow).
+fn blank_line_end(buf: &[u8], mut line: usize, frame: usize) -> Result<usize, usize> {
+    loop {
+        let Some((kind, next)) = sseer::parser::parse_line(&buf[line..]) else {
+            return Err(line);
+        };
+        let end = buf.len() - next.len();
+        if matches!(kind, sseer::parser::RawEventLine::Empty) && line > frame {
+            return Ok(end);
+        }
+        line = end;
     }
 }
 
 /// Find the first event-stream frame terminator (a blank line) in `buf`, returning `(offset,
 pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
-    let mut i = 0;
-    loop {
-        let at = i + memchr::memchr2(b'\r', b'\n', &buf[i..])?;
-        let first = terminator_len(buf, at)?;
-        if let Some(second) = terminator_len(buf, at + first) {
-            return Some((at, first + second));
-        }
-
-        i = at + first;
-    }
+    let end = blank_line_end(buf, 0, 0).ok()?;
+    let blank = end - terminator_before(buf, end);
+    let first = blank - terminator_before(buf, blank);
+    Some((first, end - first))
 }
 
 /// Split event-stream frame text into lines on the event-stream grammar's own line-terminator rule
@@ -112,20 +120,17 @@ pub fn sse_lines(text: &str) -> Vec<&str> {
 /// The `(start, end)` byte span of each line in `bytes` under the event-stream line-terminator
 pub fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match terminator_len(bytes, i).or((bytes[i] == b'\r').then_some(1)) {
-            Some(len) => {
-                spans.push((start, i));
-                i += len;
-                start = i;
-            }
-            None => i += 1,
-        }
+    let mut start = 0;
+    while let Some((_, next)) = sseer::parser::parse_line(&bytes[start..]) {
+        let end = bytes.len() - next.len();
+        spans.push((start, end - terminator_before(bytes, end)));
+        start = end;
     }
-    if start < bytes.len() {
-        spans.push((start, bytes.len()));
+    // The text is whole: a last line with no terminator still counts, and a final CR ends its line
+    // (`parse_line` holds a final CR back in case an LF follows).
+    let rest = &bytes[start..];
+    if !rest.is_empty() {
+        spans.push((start, bytes.len() - usize::from(rest.ends_with(b"\r"))));
     }
     spans
 }
@@ -137,10 +142,10 @@ pub fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
 /// yielded only once the blank line that ends it ([`find_frame_terminator`]) has arrived; the frame
 /// includes its terminator.
 ///
-/// Linear in the bytes fed, however they are chunked: a scan resumes where the last one stopped
-/// (three bytes behind it, as the longest terminator, `\r\n\r\n`, is four), never below the end of
-/// the last frame yielded; and the framed prefix is dropped once per [`push`](Self::push), not once
-/// per frame. A frame is copied nowhere: [`next_frame`](Self::next_frame) lends it, and
+/// Lines are read by sseer's `parse_line` (DEPENDENCY-LADDER C17). Linear in the bytes fed, however
+/// they are chunked: a walk starts at the first line not yet complete, and only once a CR or LF has
+/// arrived past the last probe, so a line is read again at most once more for its terminator; and
+/// the framed prefix is dropped once per [`push`](Self::push), not once per frame. A frame is copied nowhere: [`next_frame`](Self::next_frame) lends it, and
 /// [`next_span`](Self::next_span) names it in [`buffer`](Self::buffer), which holds until the next
 /// push.
 #[derive(Debug, Clone, Default)]
@@ -148,12 +153,11 @@ pub struct SseFrames {
     buf: Vec<u8>,
     /// The end of the last frame yielded.
     consumed: usize,
-    /// How far into `buf` a scan has looked.
+    /// How far into `buf` a probe for a CR or LF has looked.
     scanned: usize,
+    /// The start of the first line not yet complete (the frame's lines before it hold no blank line).
+    line: usize,
 }
-
-/// The longest terminator is four bytes, so a scan resuming three bytes behind the previous end
-const TERMINATOR_REWIND: usize = 3;
 
 impl SseFrames {
     /// An empty reassembler.
@@ -163,6 +167,7 @@ impl SseFrames {
             buf: Vec::new(),
             consumed: 0,
             scanned: 0,
+            line: 0,
         }
     }
 
@@ -175,6 +180,7 @@ impl SseFrames {
             self.buf[remaining..].zeroize();
             self.buf.truncate(remaining);
             self.scanned -= self.consumed;
+            self.line -= self.consumed;
             self.consumed = 0;
         }
         let required = self
@@ -195,21 +201,25 @@ impl SseFrames {
 
     /// The span in [`buffer`](Self::buffer) of the next complete frame (its terminator included),
     pub fn next_span(&mut self) -> Option<std::ops::Range<usize>> {
-        let from = self
-            .scanned
-            .saturating_sub(TERMINATOR_REWIND)
-            .max(self.consumed)
-            .min(self.buf.len());
-        match find_frame_terminator(&self.buf[from..]) {
-            Some((at, len)) => {
+        let line = self.line.max(self.consumed);
+        let probe = self.scanned.max(line).min(self.buf.len());
+        if memchr::memchr2(b'\r', b'\n', &self.buf[probe..]).is_none() {
+            self.line = line;
+            self.scanned = self.buf.len();
+            return None;
+        }
+        match blank_line_end(&self.buf, line, self.consumed) {
+            Ok(end) => {
                 let start = self.consumed;
-                let end = from + at + len;
                 self.consumed = end;
                 self.scanned = end;
+                self.line = end;
                 Some(start..end)
             }
-            None => {
-                self.scanned = self.buf.len();
+            Err(incomplete) => {
+                self.line = incomplete;
+                // A final CR may yet become a CRLF: the next probe looks at it again.
+                self.scanned = self.buf.len() - usize::from(self.buf.last() == Some(&b'\r'));
                 None
             }
         }
