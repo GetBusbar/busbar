@@ -499,7 +499,7 @@ impl HealthState {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl HealthState {
     pub(crate) fn recover_close_if_recoverable(
         &self,

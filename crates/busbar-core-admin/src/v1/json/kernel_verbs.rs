@@ -317,8 +317,8 @@ pub(crate) struct AuditChainRecordView {
 #[derive(Serialize, JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum AuditRecipeValue {
-    Scalar(AuditRecipeScalar),
-    Group(Vec<AuditRecipeElement>),
+    _Scalar(AuditRecipeScalar),
+    _Group(Vec<AuditRecipeElement>),
 }
 
 /// One recipe scalar, always a JSON string: a text field is its text, and a number field (an
@@ -334,8 +334,8 @@ pub(crate) struct AuditRecipeScalar(String);
 #[derive(Serialize, JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum AuditRecipeElement {
-    Scalar(AuditRecipeScalar),
-    Members(BTreeMap<String, AuditRecipeScalar>),
+    _Scalar(AuditRecipeScalar),
+    _Members(BTreeMap<String, AuditRecipeScalar>),
 }
 
 /// `GET /audit/keys`: the public keys the chain is signed with.
@@ -366,24 +366,31 @@ pub(crate) struct AuditChainKeyView {
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct AdjustReq {
     /// The key whose counts are corrected.
-    key: String,
+    #[serde(rename = "key")]
+    _key: String,
     /// The lane (model) the counts were earned on.
-    lane: String,
+    #[serde(rename = "lane")]
+    _lane: String,
     /// The rate-card history entry key the counts were priced with, as 40 hexadecimal digits.
     #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$"))]
-    entry: String,
+    #[serde(rename = "entry")]
+    _entry: String,
     /// The corrected unit's card epoch: its arrival instant, unix milliseconds. The correction
     /// lands in the budget windows, the card entry and the metering day holding it, never in those
     /// current when it is made, and `entry` must be the entry in force at it.
-    card_epoch_ms: u64,
+    #[serde(rename = "card_epoch_ms")]
+    _card_epoch_ms: u64,
     /// The signed delta per billable class: whole counts, never a money figure. At least one class.
-    delta: BTreeMap<String, i64>,
+    #[serde(rename = "delta")]
+    _delta: BTreeMap<String, i64>,
     /// Why. Required and non-blank.
-    reason: String,
+    #[serde(rename = "reason")]
+    _reason: String,
     /// The pool the corrected unit was dispatched through. Required, and it must name a pool this
     /// node has configured: a pool-scoped group budget for that pool takes the correction as well
     /// as the group-wide budgets do.
-    pool: String,
+    #[serde(rename = "pool")]
+    _pool: String,
 }
 
 /// `POST /adjust`'s answer: the correction as applied.
@@ -413,19 +420,21 @@ pub(crate) struct AdjustView {
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct AmendRateHistoryReq {
     /// The start of the corrected window, in the history's instant scale (milliseconds).
-    effective_from: u64,
+    #[serde(rename = "effective_from")]
+    _effective_from: u64,
     /// The end of the corrected window; when present it must lie strictly after
     /// `effective_from`. Absent or null: open-ended.
-    #[serde(default)]
-    effective_until: Option<u64>,
+    #[serde(default, rename = "effective_until")]
+    _effective_until: Option<u64>,
     /// Why. Required and non-empty; the record keeps its SHA-256, not the text.
-    reason: String,
+    #[serde(rename = "reason")]
+    _reason: String,
     /// The corrected flat per-request fee. Never negative.
-    #[serde(default)]
-    per_request_fee: Option<u64>,
+    #[serde(default, rename = "per_request_fee")]
+    _per_request_fee: Option<u64>,
     /// The corrected rates. A correction must move at least one figure: a rate here or the fee.
-    #[serde(default)]
-    rates: Vec<AmendRateRow>,
+    #[serde(default, rename = "rates")]
+    _rates: Vec<AmendRateRow>,
 }
 
 /// One corrected rate.
@@ -433,11 +442,14 @@ pub(crate) struct AmendRateHistoryReq {
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct AmendRateRow {
     /// The lane the rate is written against.
-    lane: String,
+    #[serde(rename = "lane")]
+    _lane: String,
     /// The billable class.
-    class: String,
+    #[serde(rename = "class")]
+    _class: String,
     /// The rate, in micro-units per unit. Finite and non-negative.
-    micro_per_unit: f64,
+    #[serde(rename = "micro_per_unit")]
+    _micro_per_unit: f64,
 }
 
 /// `POST /ledger/amend-rate-history`'s answer: the history entry an invoice will cite. It names no
@@ -542,19 +554,23 @@ pub(crate) struct PlaneFactsServed {
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct PlaneRecordWriteReq {
     /// The key of a plane this node serves.
-    plane: String,
+    #[serde(rename = "plane")]
+    _plane: String,
     /// The record kind.
-    kind: String,
+    #[serde(rename = "kind")]
+    _kind: String,
     /// The record's identity within its kind.
-    id: String,
+    #[serde(rename = "id")]
+    _id: String,
     /// The parent the record hangs off, for a child kind.
-    #[serde(default)]
-    parent: Option<String>,
+    #[serde(default, rename = "parent")]
+    _parent: Option<String>,
     /// Whether retention may drop the record once it is old (default false).
-    #[serde(default)]
-    terminal: Option<bool>,
+    #[serde(default, rename = "terminal")]
+    _terminal: Option<bool>,
     /// The record's row, stored as its JSON bytes and never decoded by the store.
-    body: serde_json::Value,
+    #[serde(rename = "body")]
+    _body: serde_json::Value,
 }
 
 /// `POST /plane-record-write`'s answer: what was written, and when.
@@ -606,14 +622,16 @@ pub(crate) struct TrustListView {
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct TrustKeyReq {
     /// `<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.
-    key: String,
+    #[serde(rename = "key")]
+    _key: String,
     /// Optional compare-and-set guard against this key's current `seen` digest, for both approve
     /// and revoke. Supply the exact digest reviewed from `GET /trust`, not `approved`. A changed
     /// or absent sighting returns 409 without changing the decision. Omission keeps key-only
     /// behavior; an explicitly supplied null, empty string or non-string is invalid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String", regex(pattern = r"\S"))]
-    expected_digest: Option<String>,
+    #[serde(rename = "expected_digest")]
+    _expected_digest: Option<String>,
 }
 
 /// `POST /commit-upgrade`: the release the fleet commits to.
@@ -621,7 +639,8 @@ pub(crate) struct TrustKeyReq {
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct CommitUpgradeReq {
     /// The release this node runs. Any other is refused.
-    version: String,
+    #[serde(rename = "version")]
+    _version: String,
 }
 
 /// `POST /commit-upgrade`'s answer: the committed release and the journal record that seals it.
@@ -642,7 +661,8 @@ pub(crate) struct CommitUpgradeView {
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct StoreRestoreReq {
     /// The backup the operator names. A request that names none is refused before the ceremony.
-    backup_ref: String,
+    #[serde(rename = "backup_ref")]
+    _backup_ref: String,
 }
 
 #[cfg(feature = "openapi-schema")]

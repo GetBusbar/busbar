@@ -35,7 +35,8 @@ const STATEMENT: Statement = Statement {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProbeSettings {
-    path: String,
+    #[serde(rename = "path")]
+    _path: String,
 }
 
 /// The probe sink: it holds nothing.

@@ -536,7 +536,8 @@ mod tests {
             let yaml = format!("api_key: {literal}\n");
             #[derive(Debug, Deserialize)]
             struct Keyed {
-                api_key: SecretRef,
+                #[serde(rename = "api_key")]
+                _api_key: SecretRef,
             }
             let error = deserialize::<Keyed, _>(serde_yaml::Deserializer::from_str(&yaml), &sugars)
                 .unwrap_err();

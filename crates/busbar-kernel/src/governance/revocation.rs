@@ -85,6 +85,7 @@ impl RevocationSync {
             .insert(sub.to_string());
     }
 
+    #[cfg(test)]
     pub(crate) fn synced_at(&self) -> u64 {
         self.synced_at.load(Ordering::Relaxed)
     }

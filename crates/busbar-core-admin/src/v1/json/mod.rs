@@ -270,12 +270,22 @@ pub(crate) fn unconfigured_plane(
     if decl.is_none_or(|d| handle.load().plane_configured(d)) {
         return None;
     }
-    let mut resp = err_json(&AdminError::not_found("resource"));
+    Some(untagged(err_json(&AdminError::not_found("resource"))))
+}
 
-    #[cfg(test)]
+/// Test builds drop the contract tag an unconfigured plane's not-found carries: it declares no
+/// condition of its own.
+#[cfg(test)]
+fn untagged(mut resp: Response) -> Response {
     resp.extensions_mut()
         .remove::<crate::v1::contract::taxonomy::observed::Tag>();
-    Some(resp)
+    resp
+}
+
+/// Production envelopes carry no test tag.
+#[cfg(not(test))]
+fn untagged(resp: Response) -> Response {
+    resp
 }
 
 fn mount_one_admin_spec(

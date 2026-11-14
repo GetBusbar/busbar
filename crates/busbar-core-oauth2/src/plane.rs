@@ -849,14 +849,15 @@ pub(crate) fn seam_build<C: crate::Connections>(
     })
 }
 
+/// Holds the sweep's work alive; the clock task ends when it drops.
 pub(crate) struct Sweeper {
-    work: Arc<SweepWork>,
+    _work: Arc<SweepWork>,
 }
 
 impl Sweeper {
     #[cfg(test)]
     pub(crate) fn probe(&self) -> std::sync::Weak<SweepWork> {
-        Arc::downgrade(&self.work)
+        Arc::downgrade(&self._work)
     }
 }
 
@@ -876,7 +877,7 @@ pub(crate) fn sweep_on_clock(server: &Arc<AsServer>, every: std::time::Duration)
     });
     let on_clock: Arc<dyn busbar_kernel::tick::ClockWork> = Arc::<SweepWork>::clone(&work);
     busbar_kernel::tick::on_clock(Arc::downgrade(&on_clock));
-    Sweeper { work }
+    Sweeper { _work: work }
 }
 
 pub(crate) struct SweepWork {

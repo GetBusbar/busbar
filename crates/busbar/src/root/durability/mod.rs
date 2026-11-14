@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 
-#[cfg(test)]
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditKeySet, AuditRecord,
@@ -11,7 +10,6 @@ use busbar_kernel_audit::{
 };
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, OpenError, RecordClass};
 
-#[cfg(test)]
 use busbar_kernel::persistence::journal::runtime::StagedRun;
 use busbar_kernel::persistence::journal::runtime::{BufferBudget, RuntimeJournal};
 use std::sync::Arc;
