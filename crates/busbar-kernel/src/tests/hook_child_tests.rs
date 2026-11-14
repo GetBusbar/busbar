@@ -76,7 +76,7 @@ async fn child_inherits_principal_and_memoizes_across_invocation_retries() {
     let route = Arc::new(Route::default());
     let (services, caller) = setup(route.clone());
     SCOPE
-        .scope(Scope { services, unit: 7 }, async {
+        .scope(Scope::new(services, 7), async {
             let g = grant();
             let child = invocation("gate", Some(&g), Duration::from_secs(1)).unwrap();
             let answer = request(&*child, &caller, b"payload").unwrap();
@@ -116,45 +116,63 @@ async fn child_inherits_principal_and_memoizes_across_invocation_retries() {
 }
 
 #[tokio::test]
+async fn a_stage_reads_its_units_child_ancestry_once() {
+    let route = Arc::new(Route::default());
+    let (services, caller) = setup(route.clone());
+    let probe = busbar_contract::stage_probe::Scope::open();
+    SCOPE
+        .scope(Scope::new(services, 7), async {
+            assert!(!recursive("gate"));
+            let child = invocation("gate", Some(&grant()), Duration::from_secs(1)).unwrap();
+            assert_eq!(
+                request(&*child, &caller, b"payload").unwrap().bytes,
+                b"answer"
+            );
+        })
+        .await;
+    assert_eq!(
+        probe.count(busbar_contract::stage_probe::Derive::AncestryCheck),
+        1,
+        "the recursion check, the invocation and the child request share one ancestry read"
+    );
+    let calls = route.calls.lock().unwrap();
+    assert_eq!(calls[0].ancestry.as_slice(), &[Arc::<str>::from("gate")]);
+}
+
+#[tokio::test]
 async fn grant_refuses_wrong_caller_kind_payload_scope_and_changed_parent() {
     let route = Arc::new(Route::default());
     let (services, caller) = setup(route.clone());
     SCOPE
-        .scope(
-            Scope {
-                services: services.clone(),
-                unit: 7,
-            },
-            async {
-                let g = grant();
-                let child = invocation("gate", Some(&g), Duration::from_secs(1)).unwrap();
-                for stranger in [
-                    Caller::for_test(Arc::from("other"), KindCode::Hook),
-                    Caller::for_test(Arc::from("gate"), KindCode::Plane),
-                ] {
-                    assert_eq!(
-                        request(&*child, &stranger, b"p").unwrap().outcome,
-                        Outcome::Refused
-                    );
-                }
+        .scope(Scope::new(services.clone(), 7), async {
+            let g = grant();
+            let child = invocation("gate", Some(&g), Duration::from_secs(1)).unwrap();
+            for stranger in [
+                Caller::for_test(Arc::from("other"), KindCode::Hook),
+                Caller::for_test(Arc::from("gate"), KindCode::Plane),
+            ] {
                 assert_eq!(
-                    request(&*child, &caller, &[1; 33]).unwrap().outcome,
+                    request(&*child, &stranger, b"p").unwrap().outcome,
                     Outcome::Refused
                 );
-                services.units().admitted(
-                    7,
-                    UnitRecord {
-                        depth: crate::host_services::NEST_DEPTH_MAX,
-                        ..Default::default()
-                    },
-                );
-                assert_eq!(
-                    request(&*child, &caller, b"p").unwrap().outcome,
-                    Outcome::Refused
-                );
-                assert!(route.calls.lock().unwrap().is_empty());
-            },
-        )
+            }
+            assert_eq!(
+                request(&*child, &caller, &[1; 33]).unwrap().outcome,
+                Outcome::Refused
+            );
+            services.units().admitted(
+                7,
+                UnitRecord {
+                    depth: crate::host_services::NEST_DEPTH_MAX,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                request(&*child, &caller, b"p").unwrap().outcome,
+                Outcome::Refused
+            );
+            assert!(route.calls.lock().unwrap().is_empty());
+        })
         .await;
     assert!(invocation("gate", Some(&grant()), Duration::from_secs(1)).is_none());
 }
@@ -167,23 +185,22 @@ async fn recursive_hook_is_not_invoked_and_no_capability_survives_parent() {
         .units()
         .set_child_ancestry(7, vec![Arc::from("gate")]);
     SCOPE
-        .scope(
-            Scope {
-                services: services.clone(),
-                unit: 7,
-            },
-            async {
-                assert!(recursive("gate"));
-                assert!(invocation("gate", Some(&grant()), Duration::from_secs(1)).is_none());
-                services.units().set_child_ancestry(7, Vec::new());
-                let child = invocation("gate", Some(&grant()), Duration::from_secs(1)).unwrap();
-                services.units().ended(7);
-                assert_eq!(
-                    request(&*child, &caller, b"p").unwrap().outcome,
-                    Outcome::Refused
-                );
-            },
-        )
+        .scope(Scope::new(services.clone(), 7), async {
+            assert!(recursive("gate"));
+            assert!(invocation("gate", Some(&grant()), Duration::from_secs(1)).is_none());
+        })
+        .await;
+    // A unit's ancestry is fixed when it is nested; a stage entry reads it once.
+    services.units().set_child_ancestry(7, Vec::new());
+    SCOPE
+        .scope(Scope::new(services.clone(), 7), async {
+            let child = invocation("gate", Some(&grant()), Duration::from_secs(1)).unwrap();
+            services.units().ended(7);
+            assert_eq!(
+                request(&*child, &caller, b"p").unwrap().outcome,
+                Outcome::Refused
+            );
+        })
         .await;
 }
 
@@ -195,7 +212,7 @@ async fn dropping_invocation_cancels_one_pending_child_without_reissuing_it() {
     });
     let (services, caller) = setup(route.clone());
     SCOPE
-        .scope(Scope { services, unit: 7 }, async {
+        .scope(Scope::new(services, 7), async {
             let g = grant();
             let child = invocation("gate", Some(&g), Duration::from_secs(1)).unwrap();
             assert!(request(&*child, &caller, b"p").is_none());
@@ -238,7 +255,7 @@ async fn depth_deadline_and_output_bounds_fail_closed() {
             );
         }
         SCOPE
-            .scope(Scope { services, unit: 7 }, async {
+            .scope(Scope::new(services, 7), async {
                 let mut g = (*grant()).clone();
                 if case == 2 {
                     g.max_output_bytes = 2;

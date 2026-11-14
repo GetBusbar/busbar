@@ -462,15 +462,6 @@ impl InFlight {
     }
 }
 
-fn snapshot_shards<K, V>(shards: &[Mutex<HashMap<K, Arc<V>>>]) -> Vec<Arc<V>> {
-    let mut all = Vec::new();
-    for shard in shards {
-        let guard = shard.lock().unwrap_or_else(|e| e.into_inner());
-        all.extend(guard.values().map(Arc::clone));
-    }
-    all
-}
-
 /// Whether a session's principal is cached, or re-checked on every unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Binding {
