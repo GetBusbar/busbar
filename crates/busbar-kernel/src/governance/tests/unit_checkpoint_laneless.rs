@@ -295,3 +295,75 @@ async fn a_store_poisoned_by_an_unnamed_lane_row_heals_on_load() {
     gov.try_admit(&cm, &key, "", now)
         .expect("the healed group admits");
 }
+
+/// UPG-H9 (`cooldown__trip_then_serve`): the trip (pool 503) and the in-cooldown breaker
+/// refusal (pool 503, no pick) are two lane-less units in a row; the request after the
+/// cooldown is served on a named lane. Neither refusal may make the bucket refuse the next
+/// admission as exhausted, and only the served unit is billed.
+#[tokio::test]
+async fn laneless_trip_then_refusal_then_serve_keeps_bucket_admissible() {
+    let store = crate::real_store::core().await;
+    let journal = Arc::new(Journal::default());
+    let sink = Arc::new(MemoryCheckpoint::default());
+    let cm = grouped_cost();
+    let key = key("vk_laneless_trip_then_serve", Some("g"));
+    store.identity().put_key(&key).await.unwrap();
+    let now = crate::store::now();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    attach(&gov, &journal, &sink).await;
+
+    // (a) the trip: admitted, refused by the pool before any member binds its lane.
+    let trip = gov
+        .try_admit(&cm, &key, "", now)
+        .expect("nothing spent yet");
+    let unit = laneless_unit(&cm, &key, now, 0x51);
+    let targets = unit.targets.clone();
+    assert_eq!(
+        targets.len(),
+        2,
+        "the key bucket and the group's day bucket"
+    );
+    assert!(gov.finish_unit_checkpoint(unit));
+    drop(trip);
+    assert_no_laneless_rows(&gov, &targets, "after the trip");
+
+    // (b) the in-cooldown request: admitted, then refused by the breaker-open pool.
+    let refused = gov
+        .try_admit(&cm, &key, "", now)
+        .expect("the request inside the cooldown is not refused as exhausted");
+    assert!(gov.finish_unit_checkpoint(laneless_unit(&cm, &key, now, 0x52)));
+    drop(refused);
+    assert_no_laneless_rows(&gov, &targets, "after the in-cooldown refusal");
+
+    // (c) past the cooldown: admitted and served on the named lane.
+    let served = gov
+        .try_admit(&cm, &key, "", now)
+        .expect("the request past the cooldown is not refused as exhausted");
+    gov.record_usage(&cm, &key, "", MODEL, &toks(100, 50), now);
+    drop(served);
+    gov.flush_unit_checkpoints().await.unwrap();
+
+    assert_no_laneless_rows(&gov, &targets, "after the served request");
+    for target in &targets {
+        let map = gov.budget.read(&target.bucket);
+        let cell = map
+            .get(&target.bucket)
+            .expect("the admissions opened the cell");
+        assert_eq!(
+            cell.requests, 3,
+            "bucket `{}`: both refusals and the served request are counted",
+            target.bucket
+        );
+    }
+    let states = gov.budget_state(&cm, &key, now);
+    assert_eq!(states.len(), 2, "the key and the group are priced");
+    for state in states {
+        assert_eq!(
+            state.spend_micros_at_current_rate, 150,
+            "bucket `{}` prices (no LaneUnpriced) at the served unit's spend only",
+            state.bucket_id
+        );
+    }
+}
