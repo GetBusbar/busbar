@@ -550,6 +550,16 @@ mod tests {
         assert_eq!(pieces.len(), 4);
     }
 
+    /// `stream_chunks: 8` means eight content deltas, also when the text does not divide evenly.
+    #[test]
+    fn a_split_yields_exactly_the_asked_number_of_pieces() {
+        let pieces = split("hammer-ok", 8);
+        assert_eq!(pieces.len(), 8, "{pieces:?}");
+        assert_eq!(pieces.concat(), "hammer-ok");
+        assert!(pieces.iter().all(|p| !p.is_empty()), "{pieces:?}");
+        assert_eq!(split("ab", 8).len(), 2, "never more pieces than chars");
+    }
+
     #[test]
     fn path_dialects_round_trip() {
         for d in Dialect::ALL {

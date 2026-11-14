@@ -489,6 +489,30 @@ mod tests {
         }
     }
 
+    /// A request path the driver cannot send as written is refused at load, not replaced by `/`.
+    #[test]
+    fn a_request_path_that_is_not_a_uri_path_is_refused() {
+        for bad in ["/v1/chat completions", "v1/chat/completions", ""] {
+            let r: ReqSpec = serde_yaml::from_str(&format!("path: {bad:?}")).unwrap();
+            assert!(to_req(&r, &BTreeMap::new()).is_err(), "{bad:?}");
+        }
+        let r: ReqSpec =
+            serde_yaml::from_str("path: \"/v1beta/models/m:generateContent?alt=sse\"").unwrap();
+        assert!(to_req(&r, &BTreeMap::new()).is_ok());
+    }
+
+    /// The mock has no streamed tool-call body, so a stream+tools cell would only measure text:
+    /// the matrix refuses it.
+    #[test]
+    fn a_matrix_cell_that_streams_with_tools_is_refused() {
+        let m: LlmMatrix = serde_yaml::from_str(
+            "ingress: [openai]\negress: [anthropic]\nstream: [true]\ntools: [true]\n",
+        )
+        .unwrap();
+        let e = expand_matrix(&m).unwrap_err();
+        assert!(e.contains("stream") && e.contains("tools"), "{e}");
+    }
+
     #[test]
     fn fill_replaces_only_known_tokens() {
         let mut v = BTreeMap::new();

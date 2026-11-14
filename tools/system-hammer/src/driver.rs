@@ -433,6 +433,11 @@ impl Ctx {
     }
 }
 
+/// Whether a worker sends the request scheduled at `started` in a plan that ends at `end`.
+fn sends(started: Instant, end: Instant) -> bool {
+    started < end && Instant::now() < end
+}
+
 async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>) -> Local {
     let mut local = Local::new(ctx.windows);
     let end = ctx.plan.end();
@@ -450,7 +455,7 @@ async fn worker(ctx: Arc<Ctx>, mut sender: Option<Sender>) -> Local {
         } else {
             Instant::now()
         };
-        if started >= end || Instant::now() >= end {
+        if !sends(started, end) {
             break;
         }
         let seq = ctx.seq.fetch_add(1, Ordering::Relaxed);
@@ -577,4 +582,106 @@ pub fn pct_us(h: &Histogram<u64>, q: f64) -> f64 {
         return 0.0;
     }
     h.value_at_quantile(q) as f64 / 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(path: &str) -> Req {
+        Req {
+            method: Method::GET,
+            path: path.into(),
+            headers: Vec::new(),
+            body: Bytes::new(),
+            expect_status: 200,
+            expect_contains: None,
+            weight: 1,
+        }
+    }
+
+    fn plan(addr: SocketAddr, proto: Proto, path: &str) -> Plan {
+        Plan {
+            addr,
+            proto,
+            reqs: vec![req(path)],
+            shape: Shape::Closed { concurrency: 1 },
+            start: Instant::now(),
+            warmup: Duration::from_millis(10),
+            measure: Duration::from_millis(100),
+            timeout: Duration::from_secs(1),
+            h2_streams: 1,
+        }
+    }
+
+    /// No coordinated omission: a request that STARTS inside the measured window is counted
+    /// (with its full latency) even when it completes after the window closed.
+    #[test]
+    fn a_request_started_in_the_window_counts_when_it_completes_after_it() {
+        let p = plan(([127, 0, 0, 1], 9).into(), Proto::H1, "/");
+        let started = p.measure_start() + Duration::from_millis(50);
+        let done = p.end() + Duration::from_millis(500);
+        let ctx = Ctx {
+            reqs: vec![Prepared {
+                method: Method::GET,
+                uri: Uri::from_static("/"),
+                headers: HeaderMap::new(),
+                body: Bytes::new(),
+                expect_status: 200,
+                expect_contains: None,
+            }],
+            windows: 1,
+            permits: None,
+            arrivals: AtomicU64::new(0),
+            rate: 0.0,
+            seq: AtomicU64::new(0),
+            first_error: std::sync::Mutex::new(None),
+            plan: p,
+        };
+        let mut local = Local::new(ctx.windows);
+        let x = Exchange {
+            status: 200,
+            first_byte: Some(done),
+            body: None,
+        };
+        assert!(ctx.record(&mut local, started, done, Ok(Ok(x)), &ctx.reqs[0]));
+        assert_eq!(
+            local.ok, 1,
+            "the late completion of an in-window start is counted"
+        );
+        assert_eq!(local.latency.len(), 1, "and its latency recorded");
+    }
+
+    /// The open-loop backlog: an arrival scheduled before the end is still sent (and measured
+    /// from its scheduled start) when a worker only frees up after the end.
+    #[test]
+    fn an_arrival_scheduled_before_the_end_is_sent_after_the_end() {
+        let started = Instant::now();
+        let end = started + Duration::from_millis(1);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(sends(started, end), "the backlog is sent, not dropped");
+        assert!(!sends(end, end), "an arrival at the end is not");
+    }
+
+    /// A path that is not a URI path is refused with a diagnosis, never sent as `/` (and, over
+    /// h2c, never without its authority).
+    #[test]
+    fn an_unparsable_path_is_refused_not_sent_as_the_root() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // A listener that never answers: whatever is sent to it only times out.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = silent.local_addr().unwrap();
+        for proto in [Proto::H1, Proto::H2c] {
+            let (out, first) = rt.block_on(run(plan(addr, proto, "/v1/chat completions")));
+            assert_eq!(out.ok, 0);
+            assert!(
+                first.as_deref().is_some_and(|e| e.contains("bad path")),
+                "{proto:?}: {first:?}"
+            );
+        }
+        drop(silent);
+    }
 }
