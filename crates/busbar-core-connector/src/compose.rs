@@ -1962,8 +1962,10 @@ impl Connection {
 
     /// One pass: connect, handshake, flush, read, and keep the deadlines. `Ok(true)` = something
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
-        let now = framer::now();
-        self.check_open_deadlines(now)?;
+        #[cfg(test)]
+        clock_reads::drove();
+        let mut now = None;
+        self.check_open_deadlines(&mut now)?;
         let mut moved = false;
         if self.tunnel.as_ref().is_some_and(|t| t.asked) {
             moved |= self.flush(cx)?;
@@ -1974,7 +1976,7 @@ impl Connection {
                     moved = true;
                     if let Some(t) = self.tunnel.as_mut() {
                         t.asked = true;
-                        t.deadline = Some(now + crate::proxy::CONNECT_HANDSHAKE);
+                        t.deadline = Some(clock(&mut now) + crate::proxy::CONNECT_HANDSHAKE);
                         let request = std::mem::take(&mut t.request);
                         self.queue(&request, false)?;
                         moved |= self.flush(cx)?;
@@ -2183,8 +2185,11 @@ impl Connection {
     }
 
     /// The overall open, CONNECT exchange and framer bounds share the earliest worker timer.
-    fn keep_deadlines(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
-        let now = framer::now();
+    fn keep_deadlines(
+        &mut self,
+        cx: &mut Context<'_>,
+        now: &mut Option<Instant>,
+    ) -> Result<bool, Failure> {
         self.check_open_deadlines(now)?;
         if !matches!(self.phase, Phase::Connecting | Phase::Handshaking) && !self.handshaking() {
             self.open_deadline = None;
