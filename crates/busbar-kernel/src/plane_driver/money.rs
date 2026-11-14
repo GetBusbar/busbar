@@ -350,6 +350,9 @@ struct Open {
     rev: u32,
     /// The fold of [`Self::last`] at the revision it was taken (SP-M1).
     fold: Option<(u32, Arc<UsageFold>)>,
+    /// The last changed piece's running checkpoint could not be built (SP-M2): an equal piece
+    /// is judged again rather than passed as unchanged.
+    snapshot_refused: bool,
     ledgered: bool,
     abandoned: bool,
 
@@ -384,6 +387,7 @@ impl Open {
             last: Vec::new(),
             rev: 0,
             fold: None,
+            snapshot_refused: false,
             ledgered: false,
             abandoned: false,
             finished: false,
@@ -1202,6 +1206,15 @@ fn adds_up(classes: &[String], units: &[UnitCount]) -> bool {
     })
 }
 
+/// Whether a piece's counts are exactly the counts last taken.
+fn same_counts(last: &[UnitCount], units: &[UnitCount]) -> bool {
+    last.len() == units.len()
+        && last
+            .iter()
+            .zip(units)
+            .all(|(a, b)| a.class == b.class && a.source == b.source && a.amount == b.amount)
+}
+
 fn usage_only(m: &UnitMoney, counts: &[(u32, Count)]) -> Vec<(u32, Count)> {
     counts
         .iter()
@@ -1242,13 +1255,24 @@ impl MoneySeam for PlaneMoney {
         {
             return Checkpoint::Unpriced;
         }
-        open.last.clear();
-        open.last.extend_from_slice(units);
-        open.rev = open.rev.wrapping_add(1);
-        if let Some(audit) = self.post.checkpoint_facts(ctx.key) {
-            open.checkpoint_audit = Some(audit);
+        // CHECKPOINT ONLY ON CHANGE (SP-M2): a piece whose counts and checkpoint facts equal the
+        // last ones taken replaces nothing and stages nothing; the budget is still asked below.
+        let facts = self.post.checkpoint_facts(ctx.key);
+        let unchanged = open.rev != 0
+            && !open.snapshot_refused
+            && same_counts(&open.last, units)
+            && facts
+                .as_ref()
+                .is_none_or(|audit| open.checkpoint_audit.as_ref() == Some(audit));
+        if !unchanged {
+            open.last.clear();
+            open.last.extend_from_slice(units);
+            open.rev = open.rev.wrapping_add(1);
+            if let Some(audit) = facts {
+                open.checkpoint_audit = Some(audit);
+            }
         }
-        if self.gov.unit_checkpoints_enabled() && !open.ledgered {
+        if !unchanged && self.gov.unit_checkpoints_enabled() && !open.ledgered {
             let counts = reported(units);
             let Some(snapshot) = self.checkpoint_snapshot(
                 ctx.key,
@@ -1256,8 +1280,13 @@ impl MoneySeam for PlaneMoney {
                 &counts,
                 bills(&usage_only(&open.money, &counts)),
             ) else {
+                open.snapshot_refused = true;
                 return Checkpoint::Unpriced;
             };
+            open.snapshot_refused = false;
+            busbar_contract::stage_probe::tick(
+                busbar_contract::stage_probe::Derive::CheckpointStage,
+            );
             self.gov.stage_unit_checkpoint(snapshot);
         }
         if let Some(ceiling) = open.spend_ceiling_micros {
@@ -1462,3 +1491,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/qualified_pool_tests.rs"]
 mod qualified_pool_tests;
+
+#[cfg(test)]
+#[path = "tests/checkpoint_change_tests.rs"]
+mod checkpoint_change_tests;
