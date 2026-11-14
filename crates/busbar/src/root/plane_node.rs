@@ -12,7 +12,6 @@ use busbar_contract::caps::{
     Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Route, VerifiedDestination,
 };
 use busbar_contract::{LaneId, UnitKey};
-use busbar_kernel::plane_driver::PlaneAnswer;
 use busbar_kernel::teller::{
     AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
 };
