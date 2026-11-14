@@ -21,7 +21,7 @@ pub struct SignedHead {
     /// The signature over the digest, absent on a node that seals unsigned.
     pub signature: Option<String>,
     /// Which key minted the signature, absent for the same reason.
-    pub key_id: Option<String>,
+    pub key_id: Option<std::sync::Arc<str>>,
     /// The wall clock the record carried, in unix seconds.
     pub wall: u64,
 }
@@ -30,6 +30,7 @@ impl SignedHead {
     /// The head as it stood after one record was sealed.
     #[must_use]
     pub fn of(record: &AuditRecord) -> Self {
+        // busbar:expect(bp::clone_alloc, reason = "boot: a chain's first head; every later head is rewritten in place")
         SignedHead {
             seq: record.seq,
             hash: record.hash.clone(),
@@ -37,6 +38,15 @@ impl SignedHead {
             key_id: record.key_id.clone(),
             wall: record.wall,
         }
+    }
+
+    /// Become the head `record` leaves, reusing this head's storage.
+    fn overwrite_from(&mut self, record: &AuditRecord) {
+        self.seq = record.seq;
+        self.hash.clone_from(&record.hash);
+        self.signature.clone_from(&record.signature);
+        self.key_id.clone_from(&record.key_id);
+        self.wall = record.wall;
     }
 }
 
@@ -106,15 +116,19 @@ impl HeadHistory {
 
     /// Take the head as it stands after one sealed record.
     pub(crate) fn observe(&mut self, record: &AuditRecord) {
-        let head = SignedHead::of(record);
         let sample_due = match self.series.last() {
             None => true,
             Some(last) => record.wall.saturating_sub(last.wall) >= self.sample_seconds,
         };
-        if sample_due {
-            self.series.push(head.clone());
+        match &mut self.tip {
+            Some(tip) => tip.overwrite_from(record),
+            None => self.tip = Some(SignedHead::of(record)),
         }
-        self.tip = Some(head);
+        if sample_due {
+            if let Some(tip) = &self.tip {
+                self.series.push(tip.clone());
+            }
+        }
     }
 
     /// The permanent sample series, oldest first.
@@ -144,13 +158,23 @@ impl HeadHistory {
     /// THE ANCHOR FOR A WINDOW: the newest anchor at or before a position.
     #[must_use]
     pub fn anchor_at(&self, seq: u64) -> Option<SignedHead> {
-        self.anchors().into_iter().rfind(|h| h.seq <= seq)
+        match self.unsampled_tip() {
+            Some(tip) if tip.seq <= seq => Some(tip.clone()),
+            _ => self.series.iter().rfind(|h| h.seq <= seq).cloned(),
+        }
+    }
+
+    /// The tip, when it is not already the last sample: the one anchor past the series.
+    fn unsampled_tip(&self) -> Option<&SignedHead> {
+        self.tip
+            .as_ref()
+            .filter(|tip| self.series.last().map(|h| h.seq) != Some(tip.seq))
     }
 
     /// How many anchors there are.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.anchors().len()
+        self.series.len() + usize::from(self.unsampled_tip().is_some())
     }
 
     /// Whether this node has sealed anything yet.

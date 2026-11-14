@@ -339,7 +339,7 @@ pub(crate) async fn reload_plugins(
                 let view = AdminService::new(snapshot).reload_store_plugins()?;
                 return Ok(Outcome::Value((None, Ok(view))));
             }
-            let (next, gov_rotate, limits) = rebuild_app_from_disk(&snapshot)
+            let (next, gov_rotate, limits) = Box::pin(rebuild_app_from_disk(&snapshot))
                 .await
                 .map_err(AdminError::Validation)?;
             let installed = Arc::new(next);
@@ -497,7 +497,7 @@ pub(crate) async fn rollback_plugin(
                 )));
             }
             let pin_publication = UnpublishedPluginPin(Some(overlay_path.clone()));
-            let (next, gov_rotate, limits) = match rebuild_app_from_disk(&snapshot).await {
+            let (next, gov_rotate, limits) = match Box::pin(rebuild_app_from_disk(&snapshot)).await {
                 Ok(triple) => triple,
                 Err(e) => {
 
@@ -1330,7 +1330,7 @@ pub(crate) async fn reset_overlay_section(
                     )));
                 }
             }
-            let built = async {
+            let built = Box::pin(async {
                 let mut loaded = loaded_base;
 
 
@@ -1356,7 +1356,7 @@ pub(crate) async fn reset_overlay_section(
                 if let Some(doc) = cleared_doc {
                     busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 }
-                busbar_kernel::build_app_from_config(
+                Box::pin(busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
 
@@ -1366,13 +1366,13 @@ pub(crate) async fn reset_overlay_section(
                     (Some(config_path), Some(loaded.providers_path)),
                     Some(&snapshot),
                     &snapshot.root_rules,
-                ).await.map(|(mut app, rotate, limits)| {
+                )).await.map(|(mut app, rotate, limits)| {
                     busbar_kernel::config::readback::ConfiguredView::capture_documents(
                         &mut app, &loaded.deploy, &loaded.defs,
                     );
                     (app, rotate, limits)
                 })
-            }.await
+            }).await
             .map_err(AdminError::Validation)?;
             let (built, gov_rotate, limits) = built;
             let installed = Arc::new(built);
@@ -1986,7 +1986,7 @@ pub(crate) async fn rebuild_app_from_disk(
         busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
     }
 
-    busbar_kernel::build_app_from_config(
+    Box::pin(busbar_kernel::build_app_from_config(
         cfg,
         loaded.deploy.plugins.clone(),
         loaded.overlay_path,
@@ -1995,7 +1995,7 @@ pub(crate) async fn rebuild_app_from_disk(
         (Some(config_path), Some(loaded.providers_path)),
         Some(current.as_ref()),
         &current.root_rules,
-    )
+    ))
     .await
     .map(|(mut app, rotate, limits)| {
         busbar_kernel::config::readback::ConfiguredView::capture_documents(
@@ -2017,7 +2017,7 @@ pub(crate) async fn reload_config(
     let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.store_write_async(async move {
-            let (next, gov_rotate, limits) = rebuild_app_from_disk(&snapshot)
+            let (next, gov_rotate, limits) = Box::pin(rebuild_app_from_disk(&snapshot))
                 .await
                 .map_err(AdminError::Validation)?;
 
@@ -2213,7 +2213,7 @@ pub(crate) async fn apply_config(
 
                 busbar_kernel::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
             }
-            let next = async {
+            let next = Box::pin(async {
                 let mut cfg = busbar_kernel::config::resolve(&deploy, &providers)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
@@ -2223,7 +2223,7 @@ pub(crate) async fn apply_config(
                 if let Some(doc) = overlay_doc {
                     busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 }
-                busbar_kernel::build_app_from_config(
+                Box::pin(busbar_kernel::build_app_from_config(
                     cfg,
                     deploy.plugins.clone(),
                     snapshot.overlay_path.clone(),
@@ -2235,7 +2235,7 @@ pub(crate) async fn apply_config(
                     ),
                     Some(&snapshot),
                     &snapshot.root_rules,
-                )
+                ))
                 .await
                 .map(|(mut app, rotate, limits)| {
                     busbar_kernel::config::readback::ConfiguredView::capture_documents(
@@ -2243,7 +2243,7 @@ pub(crate) async fn apply_config(
                     );
                     (app, rotate, limits)
                 })
-            }
+            })
             .await
             .map_err(AdminError::Validation)?;
             let (next, gov_rotate, limits) = next;
@@ -2610,7 +2610,7 @@ pub(crate) async fn put_config_settings(
             );
             let merged_for_build = merged.clone();
 
-            let next = async {
+            let next = Box::pin(async {
                 let mut loaded = busbar_kernel::load_config_from_disk_with_store(
                     &config_path,
                     snapshot.providers_override.as_deref(),
@@ -2637,7 +2637,7 @@ pub(crate) async fn put_config_settings(
                 if let Some(doc) = loaded.overlay_doc {
                     busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 }
-                busbar_kernel::build_app_from_config(
+                Box::pin(busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
                     loaded.overlay_path,
@@ -2646,7 +2646,7 @@ pub(crate) async fn put_config_settings(
                     (Some(config_path), Some(loaded.providers_path)),
                     Some(&snapshot),
                     &snapshot.root_rules,
-                )
+                ))
                 .await
                 .map(|(mut app, rotate, limits)| {
                     busbar_kernel::config::readback::ConfiguredView::capture_documents(
@@ -2656,7 +2656,7 @@ pub(crate) async fn put_config_settings(
                     );
                     (app, rotate, limits)
                 })
-            }
+            })
             .await
             .map_err(AdminError::Validation)?;
             let (mut next, gov_rotate, limits) = next;

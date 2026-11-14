@@ -132,7 +132,7 @@ fn normalize(
     }
     // Preserve comments, authored scalar spellings, and read-only source bytes on no-op.
     if before == after && normalized.todos.is_empty() && normalized.warnings.is_empty() {
-        normalized.yaml = raw.to_owned();
+        raw.clone_into(&mut normalized.yaml);
     }
     if normalized.yaml != raw {
         normalized.yaml = templates::render_authored(&normalized.yaml, host)?;

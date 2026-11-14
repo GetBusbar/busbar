@@ -245,7 +245,7 @@ pub struct AuditRecord {
     /// An identifier and not a key, so that a record names what signed it without the record
     /// becoming the place a verifier learns what to trust. The key itself comes from the published
     /// key set, which is a different read, deliberately.
-    pub key_id: Option<String>,
+    pub key_id: Option<std::sync::Arc<str>>,
 }
 
 /// Everything a caller supplies. The position and the two hashes are not here, for the same reason
@@ -363,7 +363,7 @@ impl AuditChain {
             chain.heads.observe(record);
         }
         if let Some(last) = sealed.last() {
-            chain.tail_hash = last.hash.clone();
+            chain.tail_hash.clone_from(&last.hash);
             chain.next_seq = last.seq.saturating_add(1);
         }
         chain
@@ -383,7 +383,7 @@ impl AuditChain {
             }
         }
         if let Some(tip) = heads.tip() {
-            self.tail_hash = tip.hash.clone();
+            self.tail_hash.clone_from(&tip.hash);
             self.next_seq = tip
                 .seq
                 .checked_add(1)
@@ -471,7 +471,7 @@ impl AuditChain {
 
     /// Recompute one record's digest from its own fields — the verification primitive.
     pub fn digest_of(record: &AuditRecord) -> String {
-        crate::recipe::digest_over(&crate::recipe::digest_fields(record))
+        crate::recipe::digest_record(record)
     }
 
     /// VERIFY A WHOLE CHAIN: `records` is oldest-first and starts at the chain's genesis, so the
@@ -488,13 +488,13 @@ impl AuditChain {
         let Some(first) = records.first() else {
             return Ok(());
         };
-        let (mut expected_prev, mut expected_seq) = match anchor {
-            Anchor::Genesis => (String::new(), 1u64),
-            Anchor::Window => (first.prev_hash.clone(), first.seq),
+        let (mut expected_prev, mut expected_seq): (&str, u64) = match anchor {
+            Anchor::Genesis => ("", 1u64),
+            Anchor::Window => (&first.prev_hash, first.seq),
         };
         for (i, record) in records.iter().enumerate() {
             if let Some(kind) =
-                link_break(&record.prev_hash, record.seq, &expected_prev, expected_seq)
+                link_break(&record.prev_hash, record.seq, expected_prev, expected_seq)
             {
                 return Err(AuditBreak {
                     at_index: i + 1,
@@ -507,7 +507,7 @@ impl AuditChain {
                     kind: AuditBreakKind::DigestMismatch,
                 });
             }
-            expected_prev = record.hash.clone();
+            expected_prev = &record.hash;
             expected_seq = expected_seq.saturating_add(1);
         }
         Ok(())
@@ -534,6 +534,7 @@ pub(crate) fn link_break(
 }
 
 /// Where a walk over a run of records starts from.
+#[derive(Clone, Copy)]
 enum Anchor {
     /// The chain's beginning: position one and an empty previous hash are required.
     Genesis,
@@ -587,11 +588,11 @@ impl AuditChain {
         record.hash = AuditChain::digest_of(&record);
 
         if let Some(signer) = &self.signer {
-            record.key_id = Some(signer.key_id().to_string());
+            record.key_id = Some(signer.key_id_shared());
             record.signature = Some(signer.sign_digest(&record.hash));
         }
         let custody = stage(&record)?;
-        self.tail_hash = record.hash.clone();
+        self.tail_hash.clone_from(&record.hash);
         self.next_seq = self.next_seq.saturating_add(1);
         self.sealed += 1;
         self.heads.observe(&record);
@@ -678,43 +679,61 @@ pub(crate) fn step_tag(step: StepName) -> &'static str {
     }
 }
 
-/// The frozen text for one reason code: its wire name in upper camel case, which is exactly what the
-pub(crate) fn reason_tag(reason: ReasonCode) -> String {
-    let mut out = String::with_capacity(reason.as_str().len());
-    let mut start_of_word = true;
-    for ch in reason.as_str().chars() {
-        if ch == '_' {
-            start_of_word = true;
-        } else if start_of_word {
-            out.extend(ch.to_uppercase());
-            start_of_word = false;
-        } else {
-            out.push(ch);
+/// The frozen text for one reason code: its wire name in upper camel case, written straight into
+/// whatever formats it.
+#[derive(Clone, Copy)]
+pub(crate) struct ReasonTag(pub(crate) ReasonCode);
+
+impl std::fmt::Display for ReasonTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        let mut start_of_word = true;
+        for ch in self.0.as_str().chars() {
+            if ch == '_' {
+                start_of_word = true;
+            } else if start_of_word {
+                for upper in ch.to_uppercase() {
+                    f.write_char(upper)?;
+                }
+                start_of_word = false;
+            } else {
+                f.write_char(ch)?;
+            }
         }
+        Ok(())
     }
-    out
 }
 
-/// The frozen text for how a unit was cut short.
-pub(crate) fn abort_tag(abort: Abort) -> String {
-    match abort {
-        Abort::Kernel { reason } => format!("Kernel {{ reason: {} }}", reason_tag(reason)),
-        Abort::Superseded { by } => format!("Superseded {{ by: UnitKey({}) }}", by.get()),
+/// The frozen text for an abort.
+#[derive(Clone, Copy)]
+pub(crate) struct AbortTag(pub(crate) Abort);
+
+impl std::fmt::Display for AbortTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Abort::Kernel { reason } => write!(f, "Kernel {{ reason: {} }}", ReasonTag(reason)),
+            Abort::Superseded { by } => write!(f, "Superseded {{ by: UnitKey({}) }}", by.get()),
+        }
     }
 }
 
 /// The frozen text for how a unit ended.
-pub(crate) fn outcome_tag(outcome: Outcome) -> String {
-    match outcome {
-        Outcome::Completed => "Completed".to_string(),
-        Outcome::Refused(step, reason) => {
-            format!("Refused({}, {})", step_tag(step), reason_tag(reason))
+#[derive(Clone, Copy)]
+pub(crate) struct OutcomeTag(pub(crate) Outcome);
+
+impl std::fmt::Display for OutcomeTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Outcome::Completed => f.write_str("Completed"),
+            Outcome::Refused(step, reason) => {
+                write!(f, "Refused({}, {})", step_tag(step), ReasonTag(reason))
+            }
+            Outcome::Failed(step, reason) => {
+                write!(f, "Failed({}, {})", step_tag(step), ReasonTag(reason))
+            }
+            Outcome::Aborted(abort) => write!(f, "Aborted({})", AbortTag(abort)),
+            Outcome::TimedOut(step) => write!(f, "TimedOut({})", step_tag(step)),
         }
-        Outcome::Failed(step, reason) => {
-            format!("Failed({}, {})", step_tag(step), reason_tag(reason))
-        }
-        Outcome::Aborted(abort) => format!("Aborted({})", abort_tag(abort)),
-        Outcome::TimedOut(step) => format!("TimedOut({})", step_tag(step)),
     }
 }
 
@@ -739,21 +758,31 @@ pub(crate) fn direction_tag(direction: busbar_contract::ClassDirection) -> &'sta
     }
 }
 
-/// The frozen text for where one reported quantity came from.
-pub(crate) fn quantity_source_tag(source: &QuantitySource) -> String {
-    match source {
-        QuantitySource::Locator { direction, ptr } => format!(
-            "Locator {{ direction: {}, ptr: LocatorPtr({:?}) }}",
-            direction_tag(*direction),
-            ptr.as_str()
-        ),
-        QuantitySource::KernelBytes { divisor } => format!("KernelBytes {{ divisor: {divisor} }}"),
-        QuantitySource::KernelFrames { factor } => format!("KernelFrames {{ factor: {factor} }}"),
-        QuantitySource::TransportUnits => "TransportUnits".to_string(),
-        QuantitySource::KernelElapsedMono => "KernelElapsedMono".to_string(),
-        QuantitySource::Count => "Count".to_string(),
-        QuantitySource::PlaneCount { content_fact_key } => {
-            format!("PlaneCount {{ content_fact_key: {content_fact_key:?} }}")
+/// The frozen text for where a usage line's quantity came from.
+#[derive(Clone, Copy)]
+pub(crate) struct QuantitySourceTag<'a>(pub(crate) &'a QuantitySource);
+
+impl std::fmt::Display for QuantitySourceTag<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            QuantitySource::Locator { direction, ptr } => write!(
+                f,
+                "Locator {{ direction: {}, ptr: LocatorPtr({:?}) }}",
+                direction_tag(*direction),
+                ptr.as_str()
+            ),
+            QuantitySource::KernelBytes { divisor } => {
+                write!(f, "KernelBytes {{ divisor: {divisor} }}")
+            }
+            QuantitySource::KernelFrames { factor } => {
+                write!(f, "KernelFrames {{ factor: {factor} }}")
+            }
+            QuantitySource::TransportUnits => f.write_str("TransportUnits"),
+            QuantitySource::KernelElapsedMono => f.write_str("KernelElapsedMono"),
+            QuantitySource::Count => f.write_str("Count"),
+            QuantitySource::PlaneCount { content_fact_key } => {
+                write!(f, "PlaneCount {{ content_fact_key: {content_fact_key:?} }}")
+            }
         }
     }
 }
@@ -768,11 +797,76 @@ pub(crate) fn subject_tag(subject: &Subject) -> &'static str {
     }
 }
 
-/// The subject's own identifier, as one text field.
-pub(crate) fn subject_value(subject: &Subject) -> String {
-    match subject {
-        Subject::PrincipalId(p) => p.clone(),
-        Subject::Arrival | Subject::Aggregate => String::new(),
-        Subject::Node(id) => id.to_string(),
+/// The value half of a subject: the principal, the node number, or nothing.
+#[derive(Clone, Copy)]
+pub(crate) struct SubjectValue<'a>(pub(crate) &'a Subject);
+
+impl std::fmt::Display for SubjectValue<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Subject::PrincipalId(p) => f.write_str(p),
+            Subject::Arrival | Subject::Aggregate => Ok(()),
+            Subject::Node(id) => write!(f, "{id}"),
+        }
     }
+}
+
+/// Bytes as lowercase hexadecimal, written straight into whatever formats them.
+#[derive(Clone, Copy)]
+pub(crate) struct HexBytes<'a>(pub(crate) &'a [u8]);
+
+impl std::fmt::Display for HexBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether `value` formats as exactly `tag`, compared as it is written: nothing is built.
+pub(crate) fn displays_as(value: impl std::fmt::Display, tag: &str) -> bool {
+    /// Eats `rest` as the formatted text arrives; fails on the first byte that differs.
+    struct Matcher<'a> {
+        rest: &'a str,
+    }
+    impl std::fmt::Write for Matcher<'_> {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            match self.rest.strip_prefix(s) {
+                Some(rest) => {
+                    self.rest = rest;
+                    Ok(())
+                }
+                None => Err(std::fmt::Error),
+            }
+        }
+    }
+    let mut matcher = Matcher { rest: tag };
+    std::fmt::write(&mut matcher, format_args!("{value}")).is_ok() && matcher.rest.is_empty()
+}
+
+/// The tags as strings, for the tests that pin their frozen text.
+#[cfg(test)]
+pub(crate) fn reason_tag(reason: ReasonCode) -> String {
+    ReasonTag(reason).to_string()
+}
+
+#[cfg(test)]
+pub(crate) fn abort_tag(abort: Abort) -> String {
+    AbortTag(abort).to_string()
+}
+
+#[cfg(test)]
+pub(crate) fn outcome_tag(outcome: Outcome) -> String {
+    OutcomeTag(outcome).to_string()
+}
+
+#[cfg(test)]
+pub(crate) fn quantity_source_tag(source: &QuantitySource) -> String {
+    QuantitySourceTag(source).to_string()
+}
+
+#[cfg(test)]
+pub(crate) fn subject_value(subject: &Subject) -> String {
+    SubjectValue(subject).to_string()
 }

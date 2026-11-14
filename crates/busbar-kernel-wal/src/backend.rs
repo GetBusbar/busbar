@@ -155,7 +155,7 @@ struct Segments {
     /// The segments somebody is still holding, by index. Keyed rather than indexed, and swept of
     /// dead entries as it goes, so that the table itself does not become the small version of the
     /// same leak on a node that has rolled through segments for a year.
-    slots: std::collections::HashMap<u64, std::sync::Weak<std::sync::Mutex<Vec<u8>>>>,
+    slots: foldhash::HashMap<u64, std::sync::Weak<std::sync::Mutex<Vec<u8>>>>,
     /// Strong references, kept only by a retaining factory.
     retained: Vec<SharedBytes>,
     /// Whether this factory keeps every segment alive itself.
@@ -194,6 +194,10 @@ impl MemoryFactory {
         if let Some(bytes) = held.slots.get(&index).and_then(std::sync::Weak::upgrade) {
             return bytes;
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: runs only when a segment is first opened, at startup or a roll, over a table this sweep keeps to the live segments"
+        )]
         held.slots.retain(|_, slot| slot.strong_count() > 0);
         let bytes = SharedBytes::default();
         held.slots.insert(index, std::sync::Arc::downgrade(&bytes));
@@ -218,11 +222,9 @@ impl MemoryFactory {
 impl MemoryFactory {
     /// Every remainder recovery has set aside on this factory, oldest first.
     pub fn quarantined(&self) -> Vec<QuarantinedBytes> {
-        self.segments
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .quarantined
-            .clone()
+        let held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
+        // busbar:expect(bp::clone_alloc, reason = "error: a copy of what recovery set aside from a corrupt segment")
+        held.quarantined.clone()
     }
 }
 
@@ -233,15 +235,15 @@ impl SegmentFactory for MemoryFactory {
 
     /// The highest index whose bytes are still resident. A slot whose only references are gone is
     fn highest_index(&self) -> io::Result<Option<u64>> {
-        Ok(self
-            .segments
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        let held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
+        // busbar:expect(bp::state_scan, reason = "boot: asked once, when a log opens over this factory")
+        let highest = held
             .slots
             .iter()
             .filter(|(_, slot)| slot.strong_count() > 0)
             .map(|(index, _)| *index)
-            .max())
+            .max();
+        Ok(highest)
     }
 
     /// The bytes of segment `index` while somebody still holds them. A segment a non-retaining
@@ -269,13 +271,19 @@ impl SegmentFactory for MemoryFactory {
         _unix_ms: u64,
         bytes: &[u8],
     ) -> io::Result<Option<PathBuf>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: keeps the damaged remainder recovery found in a corrupt segment"
+        )]
+        let bytes = bytes.to_vec();
         let kept = QuarantinedBytes {
             segment: index,
             offset,
-            bytes: bytes.to_vec(),
+            bytes,
         };
         let mut held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
 
+        // busbar:expect(bp::state_scan, reason = "error: only a corrupt segment is quarantined, and only once")
         if !held.quarantined.contains(&kept) {
             held.quarantined.push(kept);
         }
@@ -386,22 +394,27 @@ impl DirectoryFactory {
 
     /// The path segment `index` lives at.
     pub fn segment_path(&self, index: u64) -> PathBuf {
-        self.dir.join(format!("{index:016}.wal"))
+        let mut name = [0u8; SEGMENT_NAME_MAX];
+        self.dir.join(segment_name(index, &mut name))
     }
 
     /// A quarantine copy of `segment_name` already in the directory that holds exactly `bytes`.
     fn identical_copy(&self, segment_name: &str, bytes: &[u8]) -> io::Result<Option<PathBuf>> {
-        let prefix = format!("{segment_name}.quarantine-");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: lists the quarantine copies beside a corrupt segment"
+        )]
         let mut candidates: Vec<PathBuf> = std::fs::read_dir(&self.dir)?
             .flatten()
             .map(|e| e.path())
             .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with(&prefix))
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.strip_prefix(segment_name)
+                        .is_some_and(|rest| rest.starts_with(".quarantine-"))
+                })
             })
             .collect();
-        candidates.sort();
+        candidates.sort_unstable();
         for path in candidates {
             let same_length = std::fs::metadata(&path)
                 .map(|m| m.len() == bytes.len() as u64)
@@ -473,24 +486,24 @@ impl SegmentFactory for DirectoryFactory {
         unix_ms: u64,
         bytes: &[u8],
     ) -> io::Result<Option<PathBuf>> {
+        use std::fmt::Write as _;
         use std::io::Write as _;
-        let segment = self.segment_path(index);
-        let segment_name = segment
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if let Some(path) = self.identical_copy(&segment_name, bytes)? {
+        let mut segment = [0u8; SEGMENT_NAME_MAX];
+        let segment_name = segment_name(index, &mut segment);
+        if let Some(path) = self.identical_copy(segment_name, bytes)? {
             return Ok(Some(path));
         }
-        let stem = format!("{segment_name}.quarantine-{unix_ms}");
+        // busbar:expect(bp::fresh_buffer, reason = "error: names the copy of a corrupt segment's damaged remainder")
+        let mut name = String::new();
+        let _ = write!(name, "{segment_name}.quarantine-{unix_ms}");
+        let stem = name.len();
         let mut attempt = 0u32;
         let (path, mut file) = loop {
-            let name = if attempt == 0 {
-                stem.clone()
-            } else {
-                format!("{stem}-{attempt}")
-            };
-            let path = self.dir.join(name);
+            name.truncate(stem);
+            if attempt != 0 {
+                let _ = write!(name, "-{attempt}");
+            }
+            let path = self.dir.join(&name);
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -509,6 +522,25 @@ impl SegmentFactory for DirectoryFactory {
         sync_holding_dir(&path)?;
         Ok(Some(path))
     }
+}
+
+/// The longest segment file name: twenty digits of a `u64` and `.wal`.
+const SEGMENT_NAME_MAX: usize = 24;
+
+/// `<index>.wal`, the index zero-padded to sixteen digits, written into `buf` with no allocation.
+fn segment_name(index: u64, buf: &mut [u8; SEGMENT_NAME_MAX]) -> &str {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    let mut rest = index;
+    while rest > 0 || digits.len() - at < 16 {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+    }
+    let len = digits.len() - at;
+    buf[..len].copy_from_slice(&digits[at..]);
+    buf[len..len + 4].copy_from_slice(b".wal");
+    std::str::from_utf8(&buf[..len + 4]).unwrap_or_default()
 }
 
 /// The directory whose ENTRY creating or removing `path` changes. A relative `path` with no parent
@@ -552,22 +584,16 @@ fn fsync_unsupported(e: &io::Error) -> bool {
 
 /// DURABLY create `path` and any missing ancestors: each directory actually created has its PARENT
 fn create_dir_durably(path: &Path) -> io::Result<()> {
-    let mut missing: Vec<&Path> = Vec::new();
-    let mut cur = Some(path);
-    while let Some(p) = cur {
-        if p.as_os_str().is_empty() || p.exists() {
-            break;
-        }
-        missing.push(p);
-        cur = p.parent();
+    if path.as_os_str().is_empty() || path.exists() {
+        return Ok(());
     }
-    for dir in missing.iter().rev() {
-        match std::fs::create_dir(dir) {
-            Ok(()) => sync_holding_dir(dir)?,
+    if let Some(parent) = path.parent() {
+        create_dir_durably(parent)?;
+    }
+    match std::fs::create_dir(path) {
+        Ok(()) => sync_holding_dir(path),
 
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
-        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
     }
-    Ok(())
 }

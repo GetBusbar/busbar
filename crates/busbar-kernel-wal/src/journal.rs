@@ -6,6 +6,7 @@
 use std::collections::VecDeque;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
+use foldhash::{HashMap, HashSet};
 use ring::digest::{Context, SHA256};
 
 use crate::record::Record;
@@ -255,6 +256,20 @@ impl JournalRecord {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut bytes = vec![0u8; JOURNAL_HEADER_BYTES + self.body.len()];
+        self.encode_onto(&mut bytes);
+        bytes
+    }
+
+    /// [`JournalRecord::encode`] into `out`, reusing its allocation: `out` ends up holding exactly
+    /// the encoded bytes.
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        out.clear();
+        out.resize(JOURNAL_HEADER_BYTES + self.body.len(), 0);
+        self.encode_onto(out);
+    }
+
+    /// Write the encoding over `bytes`, which is exactly header plus body long and zeroed.
+    fn encode_onto(&self, bytes: &mut [u8]) {
         bytes[at::MAGIC..at::MAGIC + 4].copy_from_slice(&JOURNAL_MAGIC);
         bytes[at::VERSION..at::VERSION + 2].copy_from_slice(&JOURNAL_VERSION.to_le_bytes());
         bytes[at::CLASS] = self.class.code();
@@ -274,7 +289,6 @@ impl JournalRecord {
         bytes[at::PREV_HASH..at::PREV_HASH + 32].copy_from_slice(&self.prev_hash);
         bytes[at::HASH..at::HASH + 32].copy_from_slice(&self.hash);
         bytes[JOURNAL_HEADER_BYTES..].copy_from_slice(&self.body);
-        bytes
     }
 
     /// Read one record back out of its bytes.
@@ -316,6 +330,11 @@ impl JournalRecord {
                 },
             });
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: decode materialises an owned record for replay and recovery readers"
+        )]
+        let body = bytes[JOURNAL_HEADER_BYTES..].to_vec();
         Ok(JournalRecord {
             class,
             node: u64::from_le_bytes(read8(bytes, at::NODE)),
@@ -324,7 +343,7 @@ impl JournalRecord {
             policy_epoch: u64::from_le_bytes(read8(bytes, at::POLICY_EPOCH)),
             wall: u64::from_le_bytes(read8(bytes, at::WALL)),
             mono: u64::from_le_bytes(read8(bytes, at::MONO)),
-            body: bytes[JOURNAL_HEADER_BYTES..].to_vec(),
+            body,
             body_hash: read32(bytes, at::BODY_HASH),
             prev_hash: read32(bytes, at::PREV_HASH),
             hash: read32(bytes, at::HASH),
@@ -379,15 +398,29 @@ pub fn body_digest(body: &[u8]) -> [u8; 32] {
     crate::record::digest32(hasher)
 }
 
-/// Thirty-two bytes as hexadecimal.
+/// Thirty-two bytes as hexadecimal, written straight into whatever formats it.
 #[must_use]
-pub fn hex(bytes: &[u8; 32]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(64);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
+pub fn hex(bytes: &[u8; 32]) -> Hex<'_> {
+    Hex(bytes)
+}
+
+/// Thirty-two bytes that display as hexadecimal. `Debug` quotes them, as it would the string.
+#[derive(Clone, Copy)]
+pub struct Hex<'a>(pub &'a [u8; 32]);
+
+impl std::fmt::Display for Hex<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
     }
-    out
+}
+
+impl std::fmt::Debug for Hex<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "\"{self}\"")
+    }
 }
 
 fn read4(bytes: &[u8], at: usize) -> [u8; 4] {
@@ -500,17 +533,13 @@ pub fn verify(records: &[JournalRecord]) -> Result<(), JournalBreak> {
 
 /// [`verify`], crossing the holes recovery set aside — those named by a quarantine `ChainBreak` in
 pub fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(), JournalBreak> {
-    let mut bridges: Vec<Bridge> = known.to_vec();
-    bridges.extend(
-        records
-            .iter()
-            .filter(|r| r.class == RecordClass::ChainBreak)
-            .filter_map(|r| QuarantineNote::read(&r.body).and_then(|note| note.bridge)),
-    );
-
-    let anchors: std::collections::HashSet<(u64, u64)> = bridges.iter().map(|b| b.before).collect();
-    let mut anchored: std::collections::HashMap<(u64, u64), [u8; 32]> =
-        std::collections::HashMap::new();
+    let bridged = !known.is_empty() || records.iter().any(|r| r.class == RecordClass::ChainBreak);
+    let (bridges, anchors) = if bridged {
+        bridges_of(records, known)
+    } else {
+        (Vec::new(), HashSet::default())
+    };
+    let mut anchored: HashMap<(u64, u64), [u8; 32]> = HashMap::default();
     let mut previous: Option<&JournalRecord> = None;
     let mut expected_prev = records.first().map(|r| r.prev_hash).unwrap_or([0u8; 32]);
     let mut expected_seq = records.first().map(|r| r.node_seq);
@@ -564,13 +593,35 @@ pub fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(),
     Ok(())
 }
 
+/// The holes a run may cross — `known`, then every quarantine `ChainBreak` in `records` — and the
+/// records they are anchored on. Only a chain that already carries a break gets here.
+fn bridges_of(records: &[JournalRecord], known: &[Bridge]) -> (Vec<Bridge>, HashSet<(u64, u64)>) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: only a chain carrying a quarantine or overflow break has bridges to cross"
+    )]
+    let mut bridges: Vec<Bridge> = known.to_vec();
+    bridges.extend(
+        records
+            .iter()
+            .filter(|r| r.class == RecordClass::ChainBreak)
+            .filter_map(|r| QuarantineNote::read(&r.body).and_then(|note| note.bridge)),
+    );
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: only a chain carrying a quarantine or overflow break has anchors"
+    )]
+    let anchors: HashSet<(u64, u64)> = bridges.iter().map(|b| b.before).collect();
+    (bridges, anchors)
+}
+
 impl Bridge {
     /// Whether `record`, coming after `prev` in a run, crosses this hole. See [`verify_bridged`].
     fn crosses(
         &self,
         prev: &JournalRecord,
         record: &JournalRecord,
-        anchored: &std::collections::HashMap<(u64, u64), [u8; 32]>,
+        anchored: &HashMap<(u64, u64), [u8; 32]>,
     ) -> bool {
         if record.node == self.before.0 && record.node_seq <= self.before.1 {
             return false;
@@ -588,7 +639,11 @@ impl Bridge {
 
 /// Decode a run of log records into journal records, in order.
 pub fn decode_run(records: &[Record]) -> Result<Vec<JournalRecord>, JournalBreak> {
-    records
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a run is decoded whole when a chain is replayed or recovered"
+    )]
+    let decoded = records
         .iter()
         .enumerate()
         .map(|(i, r)| {
@@ -597,7 +652,8 @@ pub fn decode_run(records: &[Record]) -> Result<Vec<JournalRecord>, JournalBreak
                 e
             })
         })
-        .collect()
+        .collect();
+    decoded
 }
 
 /// Where a node's own chain has reached in a run of records: the head to link onto and the sequence
@@ -630,6 +686,7 @@ impl Overflow {
     /// The `ChainBreak` body: how many went, then the two identities that bracket them — five
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
+        // busbar:expect(bp::fresh_buffer, reason = "error: the buffer bound was reached and records were dropped")
         let mut body = Vec::with_capacity(40);
         body.extend_from_slice(&(self.dropped as u64).to_le_bytes());
         body.extend_from_slice(&self.first.0.to_le_bytes());
@@ -668,6 +725,8 @@ pub struct Journal {
     dropped_total: u64,
     /// What reaching the bound does: drop the oldest and seal a break (the default), or keep every
     drop_at_bound: bool,
+    /// The framed log records the last append wrote, kept for the same reason.
+    batch: Vec<Record>,
 }
 
 impl std::fmt::Debug for Journal {
@@ -728,6 +787,7 @@ impl Journal {
             overflows_seen: 0,
             dropped_total: 0,
             drop_at_bound: true,
+            batch: Vec::new(),
         };
 
         if let Ok(records) = decode_run(journal.log.recovered()) {
@@ -783,6 +843,10 @@ impl Journal {
         wall: u64,
     ) -> Result<Option<JournalAck>, DurabilityLost> {
         let noted = self.quarantines_on_chain();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the quarantines recovery found at open go on the chain once"
+        )]
         let entries: Vec<Entry> = self
             .log
             .quarantined()
@@ -797,17 +861,23 @@ impl Journal {
     }
 
     /// Every `(segment, first byte)` a quarantine `ChainBreak` already on the chain names. A log
-    fn quarantines_on_chain(&self) -> std::collections::HashSet<(u64, u64)> {
+    fn quarantines_on_chain(&self) -> HashSet<(u64, u64)> {
         let Ok(back) = self.log.read_back() else {
-            return std::collections::HashSet::new();
+            return HashSet::default();
         };
-        back.records
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: read once at open, to keep a quarantine from going on the chain twice"
+        )]
+        let noted = back
+            .records
             .iter()
             .filter_map(|r| JournalRecord::decode(&r.body).ok())
             .filter(|r| r.class == RecordClass::ChainBreak)
             .filter_map(|r| QuarantineNote::read(&r.body))
             .map(|note| (note.segment, note.offset))
-            .collect()
+            .collect();
+        noted
     }
 
     /// The same journal with a different buffer bound. For batteries that need to reach the bound
@@ -837,7 +907,7 @@ impl Journal {
 
     /// The head in hexadecimal.
     #[must_use]
-    pub fn head_hex(&self) -> String {
+    pub fn head_hex(&self) -> Hex<'_> {
         hex(&self.head)
     }
 
@@ -861,8 +931,8 @@ impl Journal {
 
     /// The most recent times the bound was reached, oldest first, at most
     #[must_use]
-    pub fn overflows(&self) -> Vec<Overflow> {
-        self.overflows.iter().cloned().collect()
+    pub fn overflows(&self) -> &VecDeque<Overflow> {
+        &self.overflows
     }
 
     /// How many times the bound has been reached, including the ones the window has forgotten.
@@ -904,14 +974,22 @@ impl Journal {
             sealed.push(self.seal(entry));
         }
 
-        let batch: Vec<Record> = sealed
-            .iter()
-            .map(|r| Record::new(r.node, r.node_seq, r.encode()))
-            .collect();
+        let mut batch = std::mem::take(&mut self.batch);
+        batch.truncate(sealed.len());
+        for (slot, record) in sealed.iter().enumerate() {
+            if slot == batch.len() {
+                batch.push(Record::new(record.node, record.node_seq, Vec::new()));
+            }
+            let framed = &mut batch[slot];
+            framed.node = record.node;
+            framed.node_seq = record.node_seq;
+            record.encode_into(&mut framed.body);
+        }
 
-        let batch_ack = self.log.append_batch(token, at, &batch)?;
+        let committed = self.log.append_batch(token, at, &batch);
+        self.batch = batch;
         Ok(JournalAck {
-            batch: batch_ack,
+            batch: committed?,
             sealed,
             head: self.head,
             overflow,
@@ -921,6 +999,10 @@ impl Journal {
     /// Read the chain back out of the whole log, every segment oldest first, verifying as it goes.
     pub fn replay(&self) -> std::io::Result<Result<Vec<JournalRecord>, JournalBreak>> {
         let back = self.log.read_back()?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: replay reads the whole chain back once, at open or recovery"
+        )]
         let known: Vec<Bridge> = self
             .log
             .quarantined()
@@ -967,16 +1049,14 @@ impl Journal {
         let excess = wanted.saturating_sub(self.capacity);
         let dropped = self.log.forget_owed(excess);
 
-        let first = dropped.first().map_or((0, 0), Record::identity);
-        let last = dropped.last().map_or((0, 0), Record::identity);
         let overflow = Overflow {
-            dropped: dropped.len(),
-            first,
-            last,
+            dropped: dropped.count,
+            first: dropped.first,
+            last: dropped.last,
             chain_break_seq: self.next_seq,
         };
         self.overflows_seen = self.overflows_seen.saturating_add(1);
-        self.dropped_total = self.dropped_total.saturating_add(dropped.len() as u64);
+        self.dropped_total = self.dropped_total.saturating_add(dropped.count as u64);
         self.overflows.push_back(overflow.clone());
         while self.overflows.len() > OVERFLOW_HISTORY_RECORDS {
             self.overflows.pop_front();
@@ -1006,6 +1086,25 @@ impl BodyWriter {
     /// Add a text field.
     pub fn text(&mut self, value: &str) -> &mut Self {
         self.bytes(value.as_bytes())
+    }
+
+    /// Add a text field formatted straight into the body: the same bytes as [`BodyWriter::text`]
+    /// over the formatted string, with no string built first.
+    pub fn text_fmt(&mut self, value: std::fmt::Arguments<'_>) -> &mut Self {
+        /// Formats into the body's bytes.
+        struct Onto<'a>(&'a mut Vec<u8>);
+        impl std::fmt::Write for Onto<'_> {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                self.0.extend_from_slice(s.as_bytes());
+                Ok(())
+            }
+        }
+        let prefix = self.bytes.len();
+        self.bytes.extend_from_slice(&0u64.to_le_bytes());
+        let _ = std::fmt::Write::write_fmt(&mut Onto(&mut self.bytes), value);
+        let len = (self.bytes.len() - prefix - 8) as u64;
+        self.bytes[prefix..prefix + 8].copy_from_slice(&len.to_le_bytes());
+        self
     }
 
     /// Add a byte field.

@@ -76,11 +76,43 @@ impl Digest {
         self
     }
 
+    /// A text field whose text is `value`, formatted straight into the preimage: the same bytes as
+    /// [`Digest::text`] over the formatted string, with no string built first.
+    pub fn text_fmt(&mut self, value: std::fmt::Arguments<'_>) -> &mut Self {
+        /// Formats into the preimage's bytes.
+        struct Onto<'a>(&'a mut Vec<u8>);
+        impl std::fmt::Write for Onto<'_> {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                self.0.extend_from_slice(s.as_bytes());
+                Ok(())
+            }
+        }
+        match self.framing {
+            Framing::LengthPrefixed => {
+                let prefix = self.buf.len();
+                self.buf.extend_from_slice(&0u64.to_be_bytes());
+                let _ = std::fmt::Write::write_fmt(&mut Onto(&mut self.buf), value);
+                let len = (self.buf.len() - prefix - 8) as u64;
+                self.buf[prefix..prefix + 8].copy_from_slice(&len.to_be_bytes());
+            }
+            Framing::PipeSeparated => {
+                if self.started {
+                    self.buf.push(b'|');
+                }
+                let _ = std::fmt::Write::write_fmt(&mut Onto(&mut self.buf), value);
+            }
+        }
+        self.started = true;
+        self
+    }
+
     /// Feed one integer field.
     pub fn num(&mut self, v: u64) -> &mut Self {
         match self.framing {
             Framing::LengthPrefixed => self.push(&v.to_be_bytes()),
-            Framing::PipeSeparated => self.push(v.to_string().as_bytes()),
+            Framing::PipeSeparated => {
+                self.text_fmt(format_args!("{v}"));
+            }
         }
         self
     }

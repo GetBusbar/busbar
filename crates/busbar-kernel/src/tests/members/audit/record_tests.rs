@@ -123,7 +123,8 @@ fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
 
 #[test]
 fn legacy_v4_retains_its_original_preimage_relative_to_v2() {
-    use busbar_kernel_audit::recipe::{digest_fields, DigestValue};
+    use super::digest_fields;
+    use busbar_kernel_audit::recipe::DigestValue;
     let v4 = digest_fields(&frozen_record());
     let v4_names: Vec<_> = v4.iter().map(|f| f.name).collect();
     let v2: Vec<_> = digest_fields(&frozen_v2_record())
@@ -283,7 +284,8 @@ fn tampering_fails_under_either_recipe_and_so_does_relabelling_one() {
 
 #[test]
 fn the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record() {
-    use busbar_kernel_audit::recipe::{digest_fields, digest_over, DigestField, DigestValue};
+    use super::digest_fields;
+    use busbar_kernel_audit::recipe::{digest_over, DigestField, DigestValue};
     let text = |name: &'static str, v: &str| DigestField {
         name,
         value: DigestValue::Text(v.to_string()),
@@ -578,7 +580,7 @@ fn old_v2_and_v4_fixed_journal_bytes_keep_their_original_hashes_and_ordinal_meta
         let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[42; 32]);
         let mut signed = back.clone();
         signed.signature = Some(signer.sign_digest(&signed.hash));
-        signed.key_id = Some(signer.key_id().to_owned());
+        signed.key_id = Some(signer.key_id().into());
         let signed_bytes = journal_body(&signed).unwrap();
         assert!(from_journal_body(&signed_bytes, &|_| None).is_err());
         let signed_head = head_from_journal_body(&signed_bytes).unwrap().unwrap();

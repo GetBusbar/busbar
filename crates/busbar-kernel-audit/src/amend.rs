@@ -3,7 +3,7 @@
 
 //! The two amendment classes: an access, and an adjustment.
 
-use crate::record::{subject_tag, subject_value, OpClassId, Subject};
+use crate::record::{displays_as, subject_tag, OpClassId, Subject, SubjectValue};
 use busbar_contract::{
     caps::{Audit, DurableWrite, Grant, Pass},
     count::Count,
@@ -77,12 +77,61 @@ impl Reader {
 }
 
 /// A subject as the two frozen fields an amendment digests it by: its tag, then its identifier.
-pub fn subject_fields(subject: &Subject) -> (&'static str, String) {
-    (subject_tag(subject), subject_value(subject))
+pub fn subject_fields(subject: &Subject) -> (&'static str, SubjectText<'_>) {
+    let value = match subject {
+        Subject::PrincipalId(p) => SubjectText::Text(p),
+        Subject::Arrival | Subject::Aggregate => SubjectText::Text(""),
+        Subject::Node(id) => SubjectText::node(*id),
+    };
+    (subject_tag(subject), value)
+}
+
+/// A subject's identifier as text, lent or spelled on the stack: it reads as a `&str`.
+#[derive(Debug, Clone, Copy)]
+pub enum SubjectText<'a> {
+    /// The principal's own text, or nothing.
+    Text(&'a str),
+    /// A node number's decimal digits, right-aligned in the buffer, and how many there are.
+    Digits([u8; 20], u8),
+}
+
+impl SubjectText<'_> {
+    /// A node number in decimal.
+    fn node(id: u64) -> Self {
+        let mut digits = [0u8; 20];
+        let mut at = digits.len();
+        let mut rest = id;
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (rest % 10) as u8;
+            rest /= 10;
+            if rest == 0 {
+                break;
+            }
+        }
+        SubjectText::Digits(digits, (digits.len() - at) as u8)
+    }
+}
+
+impl std::ops::Deref for SubjectText<'_> {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        match self {
+            SubjectText::Text(text) => text,
+            SubjectText::Digits(digits, len) => {
+                std::str::from_utf8(&digits[digits.len() - usize::from(*len)..]).unwrap_or("")
+            }
+        }
+    }
 }
 
 /// The subject [`subject_fields`] wrote, or `None` for a pair it never writes.
 pub fn subject_from_fields(tag: &str, value: &str) -> Option<Subject> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: an amendment's subject is read back from the journal at restore"
+    )]
     let subject = match tag {
         "principal" => Subject::PrincipalId(value.to_string()),
         "arrival" => Subject::Arrival,
@@ -90,7 +139,7 @@ pub fn subject_from_fields(tag: &str, value: &str) -> Option<Subject> {
         "aggregate" => Subject::Aggregate,
         _ => return None,
     };
-    (subject_fields(&subject).1 == value).then_some(subject)
+    displays_as(SubjectValue(&subject), value).then_some(subject)
 }
 
 /// One content access.
@@ -234,7 +283,7 @@ impl AmendChain {
             hash: String::new(),
         };
         amendment.hash = AmendChain::digest_of(&amendment);
-        self.tail_hash = amendment.hash.clone();
+        self.tail_hash.clone_from(&amendment.hash);
         self.next_seq = self.next_seq.saturating_add(1);
         amendment
     }
@@ -250,7 +299,7 @@ impl AmendChain {
                 d.text(a.reader.as_str());
                 d.text(&a.name);
                 d.text(subject_tag(&a.subject));
-                d.text(&subject_value(&a.subject));
+                d.text_fmt(format_args!("{}", SubjectValue(&a.subject)));
                 d.text(a.op_class.as_str());
                 d.num(a.fields.len() as u64);
                 for field in &a.fields {
@@ -261,14 +310,14 @@ impl AmendChain {
             AmendBody::Adjust(a) => {
                 d.text(&a.amends_hash);
                 d.text(subject_tag(&a.subject));
-                d.text(&subject_value(&a.subject));
+                d.text_fmt(format_args!("{}", SubjectValue(&a.subject)));
                 d.text(&a.lane);
                 d.num(a.card_epoch_ms);
                 for side in [&a.was, &a.now] {
                     d.num(side.len() as u64);
                     for (class, count) in side {
                         d.text(class);
-                        d.text(&count.to_decimal_string());
+                        d.text_fmt(format_args!("{count}"));
                     }
                 }
                 d.text(&a.authorised_by);
@@ -285,13 +334,20 @@ impl AmendChain {
 
     /// VERIFY A WHOLE CHAIN of amendments: `amendments` is oldest-first and starts at the chain's
     pub fn verify(amendments: &[Amendment]) -> Result<(), crate::record::AuditBreak> {
-        let mut expected_prev = String::new();
+        Self::verify_run(amendments.iter())
+    }
+
+    /// [`AmendChain::verify`] over any run, borrowed where it lies.
+    fn verify_run<'a>(
+        amendments: impl Iterator<Item = &'a Amendment>,
+    ) -> Result<(), crate::record::AuditBreak> {
+        let mut expected_prev: &str = "";
         let mut expected_seq = 1u64;
-        for (i, amendment) in amendments.iter().enumerate() {
+        for (i, amendment) in amendments.enumerate() {
             if let Some(kind) = crate::record::link_break(
                 &amendment.prev_hash,
                 amendment.seq,
-                &expected_prev,
+                expected_prev,
                 expected_seq,
             ) {
                 return Err(crate::record::AuditBreak {
@@ -305,25 +361,34 @@ impl AmendChain {
                     kind: crate::record::AuditBreakKind::DigestMismatch,
                 });
             }
-            expected_prev = amendment.hash.clone();
+            expected_prev = &amendment.hash;
             expected_seq = expected_seq.saturating_add(1);
         }
         Ok(())
     }
 
-    /// Whether a run of amendments ENDING AT THIS CHAIN'S HEAD is whole: the walk from the genesis,
+    /// Verify `amendments`, then require that they end exactly where this chain's head is.
     pub fn verify_to_head(
         &self,
         amendments: &[Amendment],
     ) -> Result<(), crate::record::AuditBreak> {
-        Self::verify(amendments)?;
+        self.verify_run_to_head(amendments.iter(), amendments.len())
+    }
+
+    /// [`AmendChain::verify_to_head`] over any run of `len` amendments, borrowed where it lies.
+    fn verify_run_to_head<'a>(
+        &self,
+        amendments: impl Iterator<Item = &'a Amendment> + Clone,
+        len: usize,
+    ) -> Result<(), crate::record::AuditBreak> {
+        Self::verify_run(amendments.clone())?;
         let (tail_hash, tail_seq) = amendments
             .last()
             .map(|a| (a.hash.as_str(), a.seq))
             .unwrap_or(("", 0));
         if tail_hash != self.tail_hash || tail_seq.saturating_add(1) != self.next_seq {
             return Err(crate::record::AuditBreak {
-                at_index: amendments.len(),
+                at_index: len,
                 kind: crate::record::AuditBreakKind::LinkMismatch,
             });
         }
@@ -398,12 +463,18 @@ impl AmendJournal {
     pub fn restore(run: Vec<Amendment>) -> Result<AmendJournal, crate::record::AuditBreak> {
         AmendChain::verify(&run)?;
         let chain = run.last().map_or_else(AmendChain::new, |a| {
+            // busbar:expect(bp::clone_alloc, reason = "boot: the amendment chain is restored once, from its journal")
             AmendChain::resume(a.hash.clone(), a.seq.saturating_add(1))
         });
         let released = run.len().saturating_sub(AMENDMENTS_RETAINED);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the amendment chain is restored once, from its journal"
+        )]
+        let recent = run.into_iter().skip(released).collect();
         Ok(AmendJournal {
             chain,
-            recent: run.into_iter().skip(released).collect(),
+            recent,
             released: released as u64,
         })
     }
@@ -415,16 +486,16 @@ impl AmendJournal {
 
     /// The held window: linked, numbered, hashing to its own fields, and ending at the head.
     fn verify_window(&self) -> Result<(), crate::record::AuditBreak> {
-        let run: Vec<Amendment> = self.recent.iter().cloned().collect();
+        let run = &self.recent;
         if self.released == 0 {
-            return self.chain.verify_to_head(&run);
+            return self.chain.verify_run_to_head(run.iter(), run.len());
         }
-        for (i, pair) in run.windows(2).enumerate() {
+        for (i, (earlier, later)) in run.iter().zip(run.iter().skip(1)).enumerate() {
             if let Some(kind) = crate::record::link_break(
-                &pair[1].prev_hash,
-                pair[1].seq,
-                &pair[0].hash,
-                pair[0].seq.saturating_add(1),
+                &later.prev_hash,
+                later.seq,
+                &earlier.hash,
+                earlier.seq.saturating_add(1),
             ) {
                 return Err(crate::record::AuditBreak {
                     at_index: i + 2,
@@ -440,7 +511,7 @@ impl AmendJournal {
                 });
             }
         }
-        let last = run.last().map(|a| (a.hash.as_str(), a.seq));
+        let last = run.back().map(|a| (a.hash.as_str(), a.seq));
         if last.is_some_and(|(h, s)| {
             h != self.chain.head() || s.saturating_add(1) != self.chain.next_seq()
         }) {
@@ -517,7 +588,9 @@ impl NodeAmendments {
     #[doc(hidden)]
     pub fn tamper_for_test(&self) {
         if let Some(last) = self.held().journal.recent.back_mut() {
-            last.hash = "0".repeat(last.hash.len().max(1));
+            let zeros = last.hash.len().max(1);
+            last.hash.clear();
+            last.hash.extend(std::iter::repeat_n('0', zeros));
         }
     }
 
@@ -542,6 +615,7 @@ impl NodeAmendments {
     ) -> Result<(), AmendPersistError> {
         let pending = {
             let mut held = self.held();
+            // busbar:expect(bp::fresh_buffer, reason = "boot: binding the durable sink once replays what it has not journalled")
             let mut pending = Vec::new();
             if let Some(sink) = &sink {
                 for amendment in held
@@ -562,7 +636,10 @@ impl NodeAmendments {
     }
 
     /// Record that `reader` `name` was handed `fields` of a unit's content at `wall` (unix seconds,
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the read names its reader, item, principal, class and fields as the record does"
+    )]
     pub async fn record_read(
         &self,
         _token: &Pass<Audit>,
@@ -600,7 +677,7 @@ impl NodeAmendments {
             let confirmation = sink.sealed(&amendment)?;
             // Commit only after exact original custody is retained; refused
             // memory admission must not create an amendment-chain hole.
-            held.journal.chain.tail_hash = amendment.hash.clone();
+            held.journal.chain.tail_hash.clone_from(&amendment.hash);
             held.journal.chain.next_seq = next;
             if held.journal.recent.len() == AMENDMENTS_RETAINED {
                 held.journal.recent.pop_front();
@@ -616,7 +693,12 @@ impl NodeAmendments {
     /// The amendments the journal holds, oldest first.
     #[must_use]
     pub fn recent(&self) -> Vec<Amendment> {
-        self.held().journal.recent().cloned().collect()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the retained run is copied out whole only to hand it to a restore"
+        )]
+        let run = self.held().journal.recent().cloned().collect();
+        run
     }
 }
 
