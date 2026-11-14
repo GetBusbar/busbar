@@ -312,7 +312,7 @@ fn pools_reserved_section_keys_are_frozen() {
     crate::root::migration_table::install();
     assert_eq!(
         busbar_contract::section::RESERVED_SECTION_KEYS,
-        ["hooks", "upstream_credentials"],
+        ["hooks", "upstream_credentials", "usage_observations"],
         "the `pools:` reserved-key set is CLOSED. A new all-scope knob must go under a reserved \
          `defaults:` sub-key, never a new top-level reserved word — adding one would turn a \
          legal pool NAME into a boot failure."
