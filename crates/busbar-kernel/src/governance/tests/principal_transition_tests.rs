@@ -2435,3 +2435,65 @@ fn linked_product_digest_hashes_the_running_image() {
     ));
     assert_eq!(executable_sha256().expect("running image digest"), expected);
 }
+
+/// A file renamed over the executable's path after start must not stand in for the
+/// running image. The case runs in a fresh process launched from a private copy of the
+/// test binary, so the rename never touches the binary the harness is running and the
+/// digest cache is empty until after the swap.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[test]
+fn linked_product_digest_ignores_a_file_renamed_over_the_executable_path() {
+    const CHILD: &str =
+        "BUSBAR_PRINCIPAL_TRANSITION_DIGEST_IGNORES_A_FILE_RENAMED_OVER_THE_EXECUTABLE_PATH";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::linked_product_digest_ignores_a_file_renamed_over_the_executable_path"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "busbar-running-image-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("private copy directory");
+        let copy = dir.join("running-image-test");
+        std::fs::copy(std::env::current_exe().expect("test binary"), &copy)
+            .expect("copy the test binary");
+        // A concurrent fork elsewhere in the harness can briefly hold the copy's write
+        // descriptor, so exec may report ETXTBSY until that child execs or exits.
+        let mut attempts = 0;
+        let output = loop {
+            match std::process::Command::new(&copy)
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+            {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => break other.expect("run the running-image case from the copy"),
+            }
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let path = std::env::current_exe().expect("copied test binary path");
+    let expected = hex::encode(Sha256::digest(
+        std::fs::read(&path).expect("copied test binary bytes"),
+    ));
+    let junk = path.with_extension("swapped");
+    std::fs::write(&junk, b"not the running product").expect("write the replacement file");
+    std::fs::rename(&junk, &path).expect("rename the replacement over the executable path");
+    assert_eq!(executable_sha256().expect("running image digest"), expected);
+}
