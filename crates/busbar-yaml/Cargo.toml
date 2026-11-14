@@ -18,6 +18,9 @@ ryu = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+# The drop-in proof for yaml_serde (DEPENDENCY-LADDER C1): this crate's whole suite, the serde_yaml_ng
+# 0.10.0 parity corpus included, runs against the crate that replaces it.
+yaml_serde = "=0.10.7"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

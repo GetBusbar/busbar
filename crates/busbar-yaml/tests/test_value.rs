@@ -1,4 +1,4 @@
-// serde_yaml_ng 0.10.0's own test suite (MIT; see this crate's NOTICE), run against busbar-yaml:
+// serde_yaml_ng 0.10.0's own test suite (MIT; see this crate's NOTICE), run against yaml_serde:
 // the same inputs must give the same values, the same output bytes and the same error texts.
 #![allow(
     clippy::derive_partial_eq_without_eq,
@@ -9,18 +9,18 @@
 #[macro_use]
 mod common;
 
-use busbar_yaml::{Number, Value};
 use serde::de::IntoDeserializer;
 use serde::Deserialize;
 use serde::Serialize;
+use yaml_serde::{Number, Value};
 
 #[test]
 fn test_nan() {
-    let pos_nan = busbar_yaml::from_str::<Value>(".nan").unwrap();
+    let pos_nan = yaml_serde::from_str::<Value>(".nan").unwrap();
     assert!(pos_nan.is_f64());
     assert_eq!(pos_nan, pos_nan);
 
-    let neg_fake_nan = busbar_yaml::from_str::<Value>("-.nan").unwrap();
+    let neg_fake_nan = yaml_serde::from_str::<Value>("-.nan").unwrap();
     assert!(neg_fake_nan.is_string());
 
     let significand_mask = 0xF_FFFF_FFFF_FFFF;
@@ -31,7 +31,7 @@ fn test_nan() {
 
 #[test]
 fn test_digits() {
-    let num_string = busbar_yaml::from_str::<Value>("01").unwrap();
+    let num_string = yaml_serde::from_str::<Value>("01").unwrap();
     assert!(num_string.is_string());
 }
 
@@ -43,15 +43,15 @@ fn test_into_deserializer() {
         second: u32,
     }
 
-    let value = busbar_yaml::from_str::<Value>("xyz").unwrap();
+    let value = yaml_serde::from_str::<Value>("xyz").unwrap();
     let s = String::deserialize(value.into_deserializer()).unwrap();
     assert_eq!(s, "xyz");
 
-    let value = busbar_yaml::from_str::<Value>("- first\n- second\n- third").unwrap();
+    let value = yaml_serde::from_str::<Value>("- first\n- second\n- third").unwrap();
     let arr = Vec::<String>::deserialize(value.into_deserializer()).unwrap();
     assert_eq!(arr, &["first", "second", "third"]);
 
-    let value = busbar_yaml::from_str::<Value>("first: abc\nsecond: 99").unwrap();
+    let value = yaml_serde::from_str::<Value>("first: abc\nsecond: 99").unwrap();
     let test = Test::deserialize(value.into_deserializer()).unwrap();
     assert_eq!(
         test,
@@ -95,7 +95,7 @@ fn test_merge() {
           label: center/big
     "};
 
-    let mut value: Value = busbar_yaml::from_str(yaml).unwrap();
+    let mut value: Value = yaml_serde::from_str(yaml).unwrap();
     value.apply_merge().unwrap();
     for i in 5..=7 {
         assert_eq!(value[4], value[i]);
@@ -116,7 +116,7 @@ fn test_debug() {
         Tagged: !tag true
     "};
 
-    let value: Value = busbar_yaml::from_str(yaml).unwrap();
+    let value: Value = yaml_serde::from_str(yaml).unwrap();
     let debug = format!("{:#?}", value);
 
     let expected = indoc! {r#"
@@ -147,11 +147,11 @@ fn test_tagged() {
         Variant(usize),
     }
 
-    let value = busbar_yaml::to_value(Enum::Variant(0)).unwrap();
+    let value = yaml_serde::to_value(Enum::Variant(0)).unwrap();
 
-    let deserialized: busbar_yaml::Value = busbar_yaml::from_value(value.clone()).unwrap();
+    let deserialized: yaml_serde::Value = yaml_serde::from_value(value.clone()).unwrap();
     assert_eq!(value, deserialized);
 
-    let serialized = busbar_yaml::to_value(&value).unwrap();
+    let serialized = yaml_serde::to_value(&value).unwrap();
     assert_eq!(value, serialized);
 }
