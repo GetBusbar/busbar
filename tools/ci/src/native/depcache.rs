@@ -639,11 +639,22 @@ pub trait Registry {
 
 pub struct GitLab {
     pub token: String,
+    /// Generic package name; dependency units unless a caller names another.
+    pub package: &'static str,
 }
 
 impl GitLab {
-    fn file_url(version: &str, name: &str) -> String {
-        format!("{PROJECT_API}/packages/generic/{PACKAGE}/{version}/{name}")
+    pub fn new(token: String) -> GitLab {
+        GitLab {
+            token,
+            package: PACKAGE,
+        }
+    }
+    fn file_url(&self, version: &str, name: &str) -> String {
+        format!(
+            "{PROJECT_API}/packages/generic/{}/{version}/{name}",
+            self.package
+        )
     }
     fn get(&self, url: &str, limit: u64) -> Result<Option<Vec<u8>>, Fallback> {
         match fetch::get(url, &format!("JOB-TOKEN:{}", self.token), limit)? {
@@ -663,7 +674,7 @@ impl GitLab {
 
 impl Registry for GitLab {
     fn read(&mut self, version: &str, name: &str, limit: u64) -> Result<Option<Vec<u8>>, Fallback> {
-        self.get(&Self::file_url(version, name), limit)
+        self.get(&self.file_url(version, name), limit)
     }
     fn json(&mut self, path: &str) -> Result<Value, Fallback> {
         let body = self
@@ -680,7 +691,7 @@ impl Registry for GitLab {
         sha256: &str,
     ) -> Result<(), Fallback> {
         fetch::fetch(
-            &Self::file_url(version, name),
+            &self.file_url(version, name),
             &self.token,
             destination,
             size,
@@ -690,7 +701,7 @@ impl Registry for GitLab {
     fn upload(&mut self, version: &str, name: &str, path: &Path) -> Result<(), Fallback> {
         // The credential reaches curl only through its stdin configuration.
         let mut config = fetch::curl_config(
-            &(Self::file_url(version, name) + "?select=package_file"),
+            &(self.file_url(version, name) + "?select=package_file"),
             &self.token,
         )?;
         config.push_str(&format!(
@@ -736,15 +747,25 @@ pub fn provenance(
     version: &str,
     manifest: &Value,
 ) -> Result<Value, Fallback> {
+    provenance_in(registry, PACKAGE, version, manifest)
+}
+
+/// `provenance` for any generic package core's producer writes.
+pub fn provenance_in(
+    registry: &mut dyn Registry,
+    package: &str,
+    version: &str,
+    manifest: &Value,
+) -> Result<Value, Fallback> {
     let packages = registry.json(&format!(
-        "/packages?package_type=generic&package_name={PACKAGE}&package_version={version}"
+        "/packages?package_type=generic&package_name={package}&package_version={version}"
     ))?;
     let matching: Vec<&Value> = packages
         .as_array()
         .unwrap_or(&[])
         .iter()
         .filter(|p| {
-            p.at("name").as_str() == Some(PACKAGE) && p.at("version").as_str() == Some(version)
+            p.at("name").as_str() == Some(package) && p.at("version").as_str() == Some(version)
         })
         .collect();
     need(
@@ -948,9 +969,7 @@ pub fn restore(q: &mut Q, registry: Option<&mut dyn Registry>) -> R<Option<PathB
     let registry: &mut dyn Registry = match registry {
         Some(registry) => registry,
         None => {
-            owned = GitLab {
-                token: std::env::var("CI_JOB_TOKEN").unwrap_or_default(),
-            };
+            owned = GitLab::new(std::env::var("CI_JOB_TOKEN").unwrap_or_default());
             &mut owned
         }
     };
@@ -1263,9 +1282,7 @@ pub fn produce(q: &mut Q) -> R<()> {
     // This receipt is producer evidence only; it never stands for qualification.
     q.receipt
         .set("schema", "busbar.plugin-dependency-units-producer/1".into());
-    let mut registry = GitLab {
-        token: env("CI_JOB_TOKEN"),
-    };
+    let mut registry = GitLab::new(env("CI_JOB_TOKEN"));
     let vector = sp::read_json(&q.root.join("scripts/ci-product-pins.json"))?;
     let mut rows = Vec::new();
     q.receipt.set(
@@ -1300,6 +1317,33 @@ pub fn produce(q: &mut Q) -> R<()> {
         rows.push(row);
         q.receipt
             .set("dependency_units_produced", Value::Array(rows.clone()));
+        q.save()?;
+    }
+    // The same shard's products also publish their core product-inputs test
+    // image (images.rs), built with the consumer's exact recipe.
+    let shard_products: Vec<Value> = vector
+        .at("products")
+        .as_array()
+        .unwrap_or(&[])
+        .iter()
+        .filter(|p| Some(product_shard(p.at("repo").as_str().unwrap_or(""))) == shard)
+        .cloned()
+        .collect();
+    if let Err(error) = super::images::produce(q, &shard_products, None) {
+        if error.kind == sp::Kind::Interrupted {
+            return Err(error);
+        }
+        // Images are an optimisation; never block the dependency units.
+        q.receipt.set(
+            "product_images_produced",
+            Value::Array(vec![object([
+                ("status", "failed".into()),
+                (
+                    "reason",
+                    error.message.chars().take(500).collect::<String>().into(),
+                ),
+            ])]),
+        );
         q.save()?;
     }
     Ok(())

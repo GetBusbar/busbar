@@ -12,6 +12,7 @@ pub mod cinputs;
 pub mod depcache;
 
 pub mod fixtures;
+pub mod images;
 pub mod junit;
 pub mod oracle;
 pub mod peers;
@@ -110,6 +111,10 @@ pub fn step_build_jobs(name: &str, argv: &[String], scheduling: &Value) -> Value
         && argv[0] == "bash"
         && argv[1].ends_with(&format!("/{script}"))
     {
+        unoptimized = true;
+    }
+    // The trusted image producer runs product-inputs' one dev-profile image build.
+    if name.starts_with("product-image-") && pysteps::is_product_image(argv) {
         unoptimized = true;
     }
     if OPTIMIZED_STEPS.contains(&name)
@@ -532,6 +537,8 @@ pub struct Q {
     pub staged_fixtures: Vec<(String, PathBuf)>,
     host: Option<PathBuf>,
     sdk_checkout: Option<PathBuf>,
+    /// Index of trusted prebuilt product images restored for product-inputs.
+    product_images: Value,
     /// (step index, observation index): `row['container']` is the live observation.
     containers: Vec<(usize, usize)>,
 }
@@ -618,6 +625,7 @@ impl Q {
             env: Dict::default(),
             staged_fixtures: Vec::new(),
             host: None,
+            product_images: Value::Object(Vec::new()),
             sdk_checkout: None,
             containers: Vec::new(),
         };
@@ -1605,6 +1613,20 @@ impl Q {
             ]),
         )?;
         self.receipt.set("sdk_revision", sdk.as_str().into());
+        // Trusted prebuilt pinned plugin images; any miss builds as before.
+        let pins = self.pins()?;
+        let host_revision = self
+            .receipt
+            .at("host_revision")
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        let mut index = Value::Object(Vec::new());
+        self.preparation("product-images", |q| {
+            index = images::restore(q, &pins, &host_revision, None)?;
+            Ok(())
+        })?;
+        self.product_images = index;
         let services = fixtures::Services::open(self, &host)?;
         let body = self.core_services(&host, &sdk);
         let closed = services.close(self);
@@ -1619,7 +1641,9 @@ impl Q {
                 "bash".into(),
                 sp::text(&trusted.join("scripts/ci-product-inputs.sh")),
             ],
-        )?;
+        );
+        images::discard(self);
+        let envfile = envfile?;
         let pins_path = host.join("scripts/ci-product-pins.json");
         let vector = sp::read_json(&pins_path)?;
         let host_revision = self
@@ -1628,6 +1652,8 @@ impl Q {
             .as_str()
             .unwrap_or("")
             .to_owned();
+        let index = std::mem::replace(&mut self.product_images, Value::Object(Vec::new()));
+        images::verify(self, &index, &vector, &host_revision)?;
         let inputs = product::load_product_inputs(
             &envfile,
             &self.work,
@@ -1837,6 +1863,10 @@ impl Q {
                     "busbar-kernel",
                     "--features",
                     "loom-model",
+                    // The txn_loom models are kernel library unit tests; `--lib`
+                    // runs the same two tests without 27 fat-LTO integration
+                    // test links that matched none (see native.py).
+                    "--lib",
                     "txn_loom",
                 ]),
             ),
@@ -2661,6 +2691,15 @@ mod tests {
             ),
             Some(3)
         );
+        let image = [
+            "python3",
+            "/t/scripts/architecture/product_artifacts.py",
+            "--image-only",
+            "busbar-x",
+        ];
+        assert_eq!(jobs("product-image-busbar-x", &image), Some(3));
+        assert_eq!(jobs("other", &image), Some(1));
+        assert_eq!(jobs("product-image-busbar-x", &image[..2]), Some(1));
         for (name, argv) in [
             ("final-binary", &["python3", "x"][..]),
             ("product-inputs", &["bash", "x"]),

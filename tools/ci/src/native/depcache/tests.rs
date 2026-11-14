@@ -148,6 +148,7 @@ fn fixture() -> Fixture {
         staged_fixtures: Vec::new(),
         host: None,
         sdk_checkout: None,
+        product_images: Value::Object(Vec::new()),
         containers: Vec::new(),
     };
     Fixture { base, q }

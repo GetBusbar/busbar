@@ -193,6 +193,9 @@ pub struct Execution {
     pub conformance_inputs_manifest: Option<PathBuf>,
     pub dependency_seed: Option<PathBuf>,
     pub dependency_seed_sha256: Option<String>,
+    /// Controller-owned trusted prebuilt product images (native/images.rs),
+    /// mounted read-only for the product-inputs step only.
+    pub product_images: Option<PathBuf>,
     pub profile: Option<Profile>,
     pub restriction: Option<Restriction>,
     /// Compiler-pool isolate state (`resource_slice`, `compiler_readonly`,
@@ -416,6 +419,7 @@ impl Execution {
             conformance_inputs_manifest: None,
             dependency_seed: None,
             dependency_seed_sha256: None,
+            product_images: None,
             profile: None,
             restriction: None,
             resource_slice: None,
@@ -1213,6 +1217,13 @@ impl Execution {
         }
         if let Some(seed) = &self.dependency_seed {
             mounts.push((seed.clone(), "/__busbar_job_seed".into(), false));
+        }
+        if let Some(images) = &self.product_images {
+            mounts.push((
+                checked_directory(images)?,
+                crate::native::images::MOUNT.into(),
+                false,
+            ));
         }
         let mounted = |target: &str| {
             self.conformance_mounts
