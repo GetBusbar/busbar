@@ -1790,7 +1790,10 @@ pub(crate) async fn put_auth(
             }
         }
         let empty = req.admin_auth.is_empty();
-        if empty {
+        // A protected deployment clearing its chain is judged first, by the kernel's one
+        // admission policy (409 conflict) at commit; the open-posture refusal below applies
+        // only where no protected admin authority is in force.
+        if empty && current.admin_chain.is_empty() {
 
 
 
