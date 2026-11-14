@@ -600,3 +600,59 @@ pub fn pct_us(h: &Histogram<u64>, q: f64) -> f64 {
     }
     h.value_at_quantile(q) as f64 / 1000.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// h2c keeps `ceil(workers / h2_streams)` connections for the whole run: a stream that times
+    /// out does not break its h2 connection, so no worker dials a private one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn h2c_timeouts_keep_the_shared_connections() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&accepts);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let svc =
+                        hyper::service::service_fn(|_req: Request<hyper::body::Incoming>| async {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            Ok::<_, std::convert::Infallible>(http::Response::new(Full::new(
+                                Bytes::from_static(b"ok"),
+                            )))
+                        });
+                    let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        let plan = Plan {
+            addr,
+            proto: Proto::H2c,
+            reqs: vec![Req {
+                method: Method::GET,
+                path: "/".into(),
+                headers: Vec::new(),
+                body: Bytes::new(),
+                expect_status: 200,
+                expect_contains: None,
+                weight: 1,
+            }],
+            shape: Shape::Closed { concurrency: 8 },
+            start: Instant::now() + Duration::from_millis(100),
+            warmup: Duration::ZERO,
+            measure: Duration::from_secs(1),
+            timeout: Duration::from_millis(50),
+            h2_streams: 4,
+            sample_every: 0,
+        };
+        let (out, _) = run(plan).await;
+        assert!(out.errors.get("timeout").copied().unwrap_or(0) > 0);
+        assert_eq!(accepts.load(Ordering::SeqCst), 2);
+    }
+}
