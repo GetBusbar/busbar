@@ -38,7 +38,8 @@ pub use rand::{fill, hkdf_sha256, pbkdf2_hmac_sha256, u64};
 pub use sig::{ecdsa_p256, ed25519, rsa};
 #[cfg(feature = "tls")]
 pub use tls::{
-    approve_client_config, approve_server_config, ticketer, tls_provider, webpki_algs, TLS_VERSIONS,
+    approve_client_config, approve_server_config, ca_used_as_end_entity, ticketer, tls_provider,
+    webpki_algs, TLS_VERSIONS,
 };
 
 /// The backend contract version `busbar-crypto` asserts. Raised on any breaking change to this API.

@@ -198,6 +198,22 @@ extern "Rust" {
     fn __busbar_persistence_root(
         seal: crate::caps::SlotSeal,
     ) -> Box<dyn std::any::Any + Send + Sync>;
+    fn __busbar_commit_root(
+        root: crate::persistence::CommitRoot,
+    ) -> Box<dyn std::any::Any + Send + Sync>;
+}
+
+/// Hand `root` to the kernel's commit custody (`busbar-kernel/src/persistence/commit.rs`), the
+/// one definition of `__busbar_commit_root`; [`crate::persistence::CommitRoot::deliver`] is the
+/// only caller.
+#[inline]
+pub(crate) fn commit_root(
+    root: crate::persistence::CommitRoot,
+) -> Box<dyn std::any::Any + Send + Sync> {
+    // SAFETY: busbar-kernel defines this Rust-ABI symbol exactly once, with this signature and a
+    // private return holder, built by the same compiler in the same workspace, like the kernel
+    // root above. The definition takes the root by value and returns an owned box.
+    unsafe { __busbar_commit_root(root) }
 }
 
 /// Hand `seal` to the kernel's root symbol; [`crate::caps::KernelSeal::deliver`] is the only

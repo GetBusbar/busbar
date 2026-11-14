@@ -83,21 +83,6 @@ pub(crate) enum LiveChange<'a> {
     },
 }
 
-/// A live node journal is contiguous after its last discontinuity: each
-/// append is written at `R(head.count)` with `node_seq == previous + 1`. So a
-/// record of that window sits at `count - (sequence - seq)` for any head of
-/// this journal.
-fn ordinal_of(proof: &VerifiedHead, contiguous_from: u64, sequence: u64) -> Option<u64> {
-    if sequence == 0 || sequence < contiguous_from || sequence > proof.head.sequence {
-        return None;
-    }
-    let ordinal = proof
-        .head
-        .count
-        .checked_sub(proof.head.sequence.checked_sub(sequence)?)?;
-    (ordinal >= 1).then_some(ordinal)
-}
-
 /// `prior` must be a prefix of `current`: same dataset, node and owner, and
 /// no later sequence.
 fn prefix_of(
@@ -164,6 +149,10 @@ impl RuntimeJournal {
             return Err(RuntimeError::Invalid);
         }
         let journal = StoreJournal::new(&store, node).map_err(RuntimeError::from)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the one replay that builds the live head"
+        )]
         let mut replay = journal
             .historical_replay()
             .await
@@ -349,6 +338,10 @@ impl RuntimeJournal {
         budget: BufferBudget,
     ) -> std::result::Result<Vec<JournalRecord>, RuntimeError> {
         let journal = StoreJournal::new(&self.store, node).map_err(RuntimeError::from)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "read-only history of a foreign node, off the live path"
+        )]
         let mut replay = journal
             .historical_replay()
             .await
@@ -480,7 +473,7 @@ impl RuntimeJournal {
                     None => self.confirm_completed(run),
                 }
             }
-            driver = self.driving.lock() => self.drive_locked(driver, target).await,
+            driver = self.driving.lock() => self.drive_locked(&driver, target).await,
         }
     }
 
@@ -491,32 +484,6 @@ impl RuntimeJournal {
             return Err(RuntimeError::Authority);
         }
         Ok(())
-    }
-
-    /// This owner's verified head, without a replay (W1 step 1). It drives the staged runs first,
-    /// so the head includes every append this owner has issued; a run that stays Uncertain or Busy
-    /// is an error, as with `flush`. No `confirm_owned` is issued: every write that uses this proof
-    /// carries the owned H/O predicates in its own commit, and read-only acknowledgements issue
-    /// `confirm_owned_with`, so a stale proof (a foreign takeover) still fails closed there.
-    pub(crate) async fn verified_head(
-        &self,
-    ) -> std::result::Result<Arc<VerifiedHead>, RuntimeError> {
-        if self.has_pending()? {
-            self.flush().await?;
-        }
-        let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
-        if let Some(error) = state.failed {
-            return Err(error);
-        }
-        Ok(state.verified.clone())
-    }
-
-    fn has_pending(&self) -> std::result::Result<bool, RuntimeError> {
-        let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
-        if let Some(error) = state.failed {
-            return Err(error);
-        }
-        Ok(!state.pending.is_empty())
     }
 
     /// The ordinal of this node's frame `sequence` within a proof this owner verified, by
@@ -687,17 +654,6 @@ impl RuntimeJournal {
         Ok(verified)
     }
 
-    /// O(1) original ordinal of this node's record `sequence` within `proof`,
-    /// for records after the last chain discontinuity. `None` means the record
-    /// is outside that window and needs the historical replay.
-    pub(crate) fn locate(&self, proof: &VerifiedHead, sequence: u64) -> Option<u64> {
-        if proof.node != self.node {
-            return None;
-        }
-        let contiguous_from = self.state.lock().ok()?.contiguous_from;
-        ordinal_of(proof, contiguous_from, sequence)
-    }
-
     /// Change a domain's selected row against originals of this node, built and
     /// submitted only while the publication driver is held, so no append can
     /// move the selected head between the proof and the CAS.
@@ -707,8 +663,8 @@ impl RuntimeJournal {
     /// the live head. `retain` is called exactly once, synchronously, under the
     /// driver, with the proof this call will CAS against, before any native
     /// claim; the caller stores it in its retained custody there. No journal
-    /// replay runs while the driver is held: originals before the last chain
-    /// discontinuity are located by replay before the driver is taken.
+    /// replay runs: every original, before or after a chain discontinuity, is
+    /// located by [`Self::locate`] over the open replay's segment map (W1).
     pub(crate) async fn change_live(
         &self,
         records: &[Record],
@@ -717,33 +673,7 @@ impl RuntimeJournal {
         retain: &(dyn Fn(&Arc<VerifiedHead>) + Send + Sync),
     ) -> std::result::Result<(Arc<VerifiedHead>, WriteResult), RuntimeError> {
         let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
-        let (pre, contiguous_from) = {
-            let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
-            if let Some(error) = state.failed {
-                return Err(error);
-            }
-            (state.verified.clone(), state.contiguous_from)
-        };
-        let basis = retained.clone().unwrap_or_else(|| pre.clone());
-        // Cold originals (before a quarantine bridge) are located by the
-        // existing historical replay here, outside the driver.
-        let mut cold = Vec::new();
-        cold.try_reserve_exact(records.len())
-            .map_err(|_| RuntimeError::Budget)?;
-        for record in records {
-            cold.push(if record.node_seq < contiguous_from {
-                let (ordinal, original) = journal
-                    .locate_verified_record(&basis, record.node_seq)
-                    .await
-                    .map_err(RuntimeError::from)?;
-                if original.identity() != record.identity() || original.body != record.body {
-                    return Err(RuntimeError::Corrupt);
-                }
-                Some(ordinal)
-            } else {
-                None
-            });
-        }
+        let pre = self.live_head()?;
         let driver = self.driving.lock().await;
         self.drive_locked(&driver, self.staged_target()?).await?;
         let proof = match retained {
@@ -760,13 +690,8 @@ impl RuntimeJournal {
         located
             .try_reserve_exact(records.len())
             .map_err(|_| RuntimeError::Budget)?;
-        for (record, cold) in records.iter().zip(cold) {
-            let ordinal = match cold {
-                Some(ordinal) => ordinal,
-                None => ordinal_of(&proof, contiguous_from, record.node_seq)
-                    .ok_or(RuntimeError::Invalid)?,
-            };
-            located.push((ordinal, record));
+        for record in records {
+            located.push(self.locate(&proof, record.node_seq)?);
         }
         // Retain before any claim and before the first await below: every
         // later return or cancellation leaves the caller holding the exact
@@ -790,7 +715,14 @@ impl RuntimeJournal {
             ),
         };
         let result = journal
-            .change_selection_at(&proof, &located, selection, delete, guards)
+            .change_selection_at(
+                &proof,
+                records,
+                Some(located.as_slice()),
+                selection,
+                delete,
+                guards,
+            )
             .await
             .map_err(RuntimeError::from)?;
         drop(driver);
@@ -889,17 +821,29 @@ impl RuntimeJournal {
                         )),
                     });
                     let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+                    // Live appends continue the chain contiguously (`checked_record` above); only
+                    // the first frame of an empty journal opens the layout's first segment.
+                    if state.seq_map.is_empty() {
+                        if let Some(first) = runs.iter().copied().flatten().next() {
+                            let ordinal = proof
+                                .head
+                                .count
+                                .checked_add(1)
+                                .ok_or(RuntimeError::Corrupt)?;
+                            state.seq_map.push((ordinal, first.node_seq));
+                        }
+                    }
                     for run in &group {
                         let pending = state.pending.pop_front().ok_or(RuntimeError::Corrupt)?;
                         if !Arc::ptr_eq(&pending.run, run) {
-                            state.failed = Some(RuntimeError::Corrupt);
-                            return Err(RuntimeError::Corrupt);
+                            return Err(self.fail(&mut state, RuntimeError::Corrupt));
                         }
                         state.completed = run.ticket;
                         state.records -= run.records.len();
                         state.bytes -= run.bytes;
                     }
                     state.verified = verified;
+                    self.publish(&state);
                 }
                 super::super::commit::SubmitResult::Decided(_) => {
                     let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;

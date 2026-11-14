@@ -505,19 +505,21 @@ impl<I, O> std::fmt::Debug for Reply<I, O> {
 }
 
 impl<I: InFrame, O: OutFrame> Reply<I, O> {
-    pub fn wait(&self, timeout: Duration) -> Option<Done<I, O>> {
-        let mut g = self.slot.lock();
-        if g.value.is_none() && !timeout.is_zero() {
-            g = self
-                .slot
-                .cv
-                .wait_timeout_while(g, timeout, |s| s.value.is_none())
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
+    test_support_pub! {
+        fn wait(&self, timeout: Duration) -> Option<Done<I, O>> {
+            let mut g = self.slot.lock();
+            if g.value.is_none() && !timeout.is_zero() {
+                g = self
+                    .slot
+                    .cv
+                    .wait_timeout_while(g, timeout, |s| s.value.is_none())
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            }
+            let d = g.value.take()?;
+            drop(g);
+            Some(d.take())
         }
-        let d = g.value.take()?;
-        drop(g);
-        Some(d.take())
     }
 
     test_support_pub! {
@@ -2881,59 +2883,63 @@ impl Dispatcher {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
-    )]
-    pub fn submit_lent<K: Kind, I: InFrame, O: OutFrame>(
-        &self,
-        plugin: &Plugin<K>,
-        ticket: Ticket,
-        s: u32,
-        frame: Frame<I, O>,
-        class: DeadlineClass,
-        deadline_ns: u64,
-        lent: Lent,
-    ) -> Reply<I, O> {
-        self.submit_with(
-            plugin,
-            ticket,
-            s,
-            frame,
-            class,
-            deadline_ns,
-            Some(lent),
-            Duration::ZERO,
-            Admit::Cap,
-        )
+    test_support_pub! {
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
+        )]
+        fn submit_lent<K: Kind, I: InFrame, O: OutFrame>(
+            &self,
+            plugin: &Plugin<K>,
+            ticket: Ticket,
+            s: u32,
+            frame: Frame<I, O>,
+            class: DeadlineClass,
+            deadline_ns: u64,
+            lent: Lent,
+        ) -> Reply<I, O> {
+            self.submit_with(
+                plugin,
+                ticket,
+                s,
+                frame,
+                class,
+                deadline_ns,
+                Some(lent),
+                Duration::ZERO,
+                Admit::Cap,
+            )
+        }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
-    )]
-    pub fn submit_watched<K: Kind, I: InFrame, O: OutFrame>(
-        &self,
-        plugin: &Plugin<K>,
-        ticket: Ticket,
-        s: u32,
-        frame: Frame<I, O>,
-        class: DeadlineClass,
-        deadline_ns: u64,
-        lent: Lent,
-        watch: Duration,
-    ) -> Reply<I, O> {
-        self.submit_with(
-            plugin,
-            ticket,
-            s,
-            frame,
-            class,
-            deadline_ns,
-            Some(lent),
-            watch,
-            Admit::Cap,
-        )
+    test_support_pub! {
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
+        )]
+        fn submit_watched<K: Kind, I: InFrame, O: OutFrame>(
+            &self,
+            plugin: &Plugin<K>,
+            ticket: Ticket,
+            s: u32,
+            frame: Frame<I, O>,
+            class: DeadlineClass,
+            deadline_ns: u64,
+            lent: Lent,
+            watch: Duration,
+        ) -> Reply<I, O> {
+            self.submit_with(
+                plugin,
+                ticket,
+                s,
+                frame,
+                class,
+                deadline_ns,
+                Some(lent),
+                watch,
+                Admit::Cap,
+            )
+        }
     }
 
     #[expect(

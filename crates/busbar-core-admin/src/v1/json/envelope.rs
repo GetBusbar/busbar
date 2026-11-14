@@ -33,10 +33,16 @@ pub fn err_json_cond(e: &AdminError, cond: Cond) -> Response {
 }
 
 fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
-    #[cfg_attr(not(test), allow(unused_mut))]
-    let mut resp =
-        busbar_kernel::admin::gate::admin_error_envelope(e.http_status(), e.code(), &e.message());
-    #[cfg(test)]
+    tagged(
+        busbar_kernel::admin::gate::admin_error_envelope(e.http_status(), e.code(), &e.message()),
+        e,
+        cond,
+    )
+}
+
+/// Test builds tag the envelope with the declared kind and condition the contract tests read back.
+#[cfg(test)]
+fn tagged(mut resp: Response, e: &AdminError, cond: Option<Cond>) -> Response {
     if let Some(kind) = crate::v1::contract::taxonomy::err_kind_of(e) {
         resp.extensions_mut()
             .insert(crate::v1::contract::taxonomy::observed::Tag { kind, cond });

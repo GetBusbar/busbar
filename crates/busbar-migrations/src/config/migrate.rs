@@ -76,13 +76,15 @@ pub(super) mod vocabulary {
         pub const PRIORITY: &str = "priority";
         pub const PROMPT: &str = "prompt";
         pub const PROVIDERS_FILE: &str = "providers_file";
-        pub const RATE_CARD: &str = "rate_card";
-        pub const RATE_SWEEP_INTERVAL: &str = "rate_sweep_interval";
-        pub const REQUESTS: &str = "requests";
-        pub const RESPONSE_HEADERS: &str = "response_headers";
-        pub const ROLE_BINDINGS: &str = "role_bindings";
-        pub const RPM_LIMIT: &str = "rpm_limit";
-        pub const SERVER_TIMING: &str = "server_timing";
+        pub(crate) const RATE_CARD: &str = "rate_card";
+        pub(crate) const RATE_SWEEP_INTERVAL: &str = "rate_sweep_interval";
+        pub(crate) const REFRESH_TTL: &str = "refresh_ttl";
+        pub(crate) const REQUESTS: &str = "requests";
+        pub(crate) const RESPONSE_HEADERS: &str = "response_headers";
+        pub(crate) const ROLE_BINDINGS: &str = "role_bindings";
+        pub(crate) const RPM_LIMIT: &str = "rpm_limit";
+        pub(crate) const SERVER_TIMING: &str = "server_timing";
+        pub(crate) const SERVERS: &str = "servers";
         pub const SETTINGS: &str = "settings";
         pub const SHA256: &str = "sha256";
         pub const SIGNALS: &str = "signals";
@@ -91,13 +93,15 @@ pub(super) mod vocabulary {
         pub(crate) const TIMEOUT_SECS: &str = "timeout_secs";
         pub const TOKENS: &str = "tokens";
         pub const TOKEN: &str = "token";
-        pub const TPM_LIMIT: &str = "tpm_limit";
+        pub(crate) const TOOLS: &str = "tools";
+        pub(crate) const TPM_LIMIT: &str = "tpm_limit";
         pub const TRIP: &str = "trip";
         pub const URL: &str = "url";
         pub(crate) const USAGE_FLUSH_INTERVAL_MS: &str = "usage_flush_interval_ms";
         pub const USER: &str = "user";
-        pub const WINDOW_S: &str = "window_s";
-        pub const WINDOW_SECS: &str = "window_secs";
+        pub(crate) const VERIFY_TTL: &str = "verify_ttl";
+        pub(crate) const WINDOW_S: &str = "window_s";
+        pub(crate) const WINDOW_SECS: &str = "window_secs";
     }
 }
 

@@ -71,38 +71,63 @@ pub(crate) fn spawn(pool: Weak<Pool>, period: Duration, min_budget: Duration) {
             // The sweep's scratch: one buffer for the watchdog thread's life, cleared per scan.
             // busbar:expect(bp::fresh_buffer, reason = "boot: allocated once when the watchdog thread starts and reused by every scan")
             let mut live = Vec::new();
+            let mut next = next_wake(period, min_budget, None);
             loop {
-                std::thread::sleep(period);
+                std::thread::sleep(next);
                 let Some(pool) = pool.upgrade() else {
                     return;
                 };
                 if pool.stop.load(Ordering::Acquire) {
                     return;
                 }
-                scan(&pool, &mut live);
+                next = next_wake(period, min_budget, scan(&pool, &mut live));
             }
         })
         .expect("spawn the dispatch watchdog");
 }
 
-fn scan(pool: &Pool, live: &mut Vec<Arc<Instance>>) {
+/// `max(period, min(earliest, min_budget))`.
+pub(crate) fn next_wake(
+    period: Duration,
+    min_budget: Duration,
+    earliest: Option<Duration>,
+) -> Duration {
+    earliest
+        .map_or(min_budget, |e| e.min(min_budget))
+        .max(period)
+}
+
+/// Scan every slot and ticketless call; answer the time until the earliest deadline still owed.
+fn scan(pool: &Pool, live: &mut Vec<Arc<Instance>>) -> Option<Duration> {
+    pool.env
+        .stats
+        .watchdog_scans
+        .fetch_add(1, Ordering::Relaxed);
     // One clock read per sweep: every crossing and every ticketless call is judged against it.
     let now = super::now_ns();
+    let mut earliest: Option<Duration> = None;
     for (i, slot) in pool.slots.iter().enumerate() {
         let w = slot.get();
         let started = w.crossing_since.load(Ordering::Acquire);
         let budget = w.crossing_budget.load(Ordering::Relaxed);
-        if started != 0 && now.saturating_sub(started) > budget {
+        if started == 0 {
+            continue;
+        }
+        let elapsed = now.saturating_sub(started);
+        if elapsed > budget {
             replace(pool, i, &w, started);
         } else {
             let left = Duration::from_nanos(budget - elapsed);
             earliest = Some(earliest.map_or(left, |e| e.min(left)));
         }
     }
-    ticketless(pool, now, live);
+    if let Some(left) = ticketless(pool, now, live) {
+        earliest = Some(earliest.map_or(left, |e| e.min(left)));
+    }
+    earliest
 }
 
-fn ticketless(pool: &Pool, now: u64, live: &mut Vec<Arc<Instance>>) {
+fn ticketless(pool: &Pool, now: u64, live: &mut Vec<Arc<Instance>>) -> Option<Duration> {
     live.clear();
     let mut adopted = pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
     // One pass both drops the dead adoptions and takes the live ones.
@@ -119,15 +144,18 @@ fn ticketless(pool: &Pool, now: u64, live: &mut Vec<Arc<Instance>>) {
     });
     drop(adopted);
     let now = super::instant_at(now);
+    let mut earliest: Option<Duration> = None;
     for inst in live.drain(..) {
         let fresh = {
             let mut calls = inst.lock_calls();
             let mut fresh = 0;
             for (started, slot, counted) in calls.values_mut() {
-                if !*counted
-                    && now.saturating_duration_since(*started)
-                        > pool.env.budgets.of(*slot, DeadlineClass::Call)
-                {
+                if *counted {
+                    continue;
+                }
+                let budget = pool.env.budgets.of(*slot, DeadlineClass::Call);
+                let elapsed = now.saturating_duration_since(*started);
+                if elapsed > budget {
                     *counted = true;
                     fresh += 1;
                 } else {

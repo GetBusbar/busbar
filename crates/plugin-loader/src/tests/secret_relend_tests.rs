@@ -59,12 +59,17 @@ fn settings(extra: serde_json::Value) -> busbar_contract::plugin_settings::Setti
 
 fn answers(calls: &dyn SecretCalls) -> String {
     let held = calls.resolve(b"{}").expect("the witness answers");
-    String::from_utf8(held.expose(&busbar_contract::plugin::TestKernelSeal).clone()).unwrap()
+    String::from_utf8(
+        held.expose(&busbar_contract::plugin::TestKernelSeal)
+            .clone(),
+    )
+    .unwrap()
 }
 
 fn linked_rows() -> SecretRows {
     let mut rows = SecretRows::new(dispatcher, || None);
-    rows.link(witness::door).expect("the rotating witness links");
+    rows.link(witness::door)
+        .expect("the rotating witness links");
     rows
 }
 
@@ -88,9 +93,16 @@ fn a_rotated_source_credential_is_taken_by_the_plugins_refresh() {
     let rows = linked_rows();
     let source = Source::new("token-1");
     let opened = rows
-        .open(witness::NAME, Some(&settings(serde_json::json!({}))), &source.resolve())
+        .open(
+            witness::NAME,
+            Some(&settings(serde_json::json!({}))),
+            &source.resolve(),
+        )
         .expect("it opens over its lent credential");
-    assert!(opened.relends(), "an instance that lends a reference is polled");
+    assert!(
+        opened.relends(),
+        "an instance that lends a reference is polled"
+    );
     assert_eq!(answers(&*opened), witness::answer_for(b"token-1"));
 
     assert!(matches!(
@@ -108,7 +120,10 @@ fn a_rotated_source_credential_is_taken_by_the_plugins_refresh() {
         "the same instance answers with the rotated credential"
     );
     assert!(
-        matches!(opened.relend(&source.resolve()), Ok(SecretRelent::Unchanged)),
+        matches!(
+            opened.relend(&source.resolve()),
+            Ok(SecretRelent::Unchanged)
+        ),
         "and an unchanged credential is never handed over again"
     );
 }
@@ -137,7 +152,11 @@ fn a_refused_rotation_keeps_the_running_instance() {
         .err()
         .expect("a reference that does not resolve refuses");
     assert_eq!(unresolvable.cause, RelendCause::Unresolvable);
-    assert!(!unresolvable.text.contains("token"), "{}", unresolvable.text);
+    assert!(
+        !unresolvable.text.contains("token"),
+        "{}",
+        unresolvable.text
+    );
 }
 
 // T-B5/T-B6 (B3): a plugin with no refresh is re-opened from the build's own candidate, even after
@@ -208,7 +227,11 @@ async fn a_secret_instance_is_ticked_on_its_schedule() {
     let source = Source::new("token-1");
     let before = witness::TICKED.load(Ordering::SeqCst);
     let opened = rows
-        .open(witness::NAME, Some(&settings(serde_json::json!({}))), &source.resolve())
+        .open(
+            witness::NAME,
+            Some(&settings(serde_json::json!({}))),
+            &source.resolve(),
+        )
         .expect("it opens");
     let until = std::time::Instant::now() + Duration::from_secs(10);
     while witness::TICKED.load(Ordering::SeqCst) < before + 3 && std::time::Instant::now() < until {
