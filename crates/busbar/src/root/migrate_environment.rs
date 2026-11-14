@@ -54,9 +54,8 @@ pub(crate) fn capture(
                 advanced(root)?.insert(Value::from("worker_threads"), Value::from(count.min(128)));
                 changes.push("BUSBAR_WORKER_THREADS -> advanced.worker_threads".into());
             }
-            _ => warnings.push(
-                "BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved".into(),
-            ),
+            _ => warnings
+                .push(busbar_kernel::diagnostics::coded::migrate_worker_threads_ignored().into()),
         }
     }
     for (name, key) in [

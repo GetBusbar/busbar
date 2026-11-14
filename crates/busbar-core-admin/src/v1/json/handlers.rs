@@ -4496,6 +4496,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
+                "code": {"type": "string", "pattern": "^BUSBAR-[0-9]{4}$",
+                    "description": "The catalog code of this refusal; its page is \
+                                    https://getbusbar.com/docs/<major.minor>/errors/<code>."},
                 "error": {
                     "type": "object",
                     "properties": {
@@ -4509,7 +4512,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "required": ["code", "message"]
                 }
             },
-            "required": ["error"]
+            "required": ["code", "error"]
         }),
     );
 

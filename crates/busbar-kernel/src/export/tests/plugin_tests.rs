@@ -379,9 +379,11 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
         vec![
             // Catalog words are declaration data for this diagnostic policy. The actual
             // distribution catalog is covered by export_unknown_module_lists_what_links.rs.
-            "export.audit-tail.module: unknown exporter 'k9-never-registered'; the built-in export \
-             modules are prometheus"
-                .to_string()
+            crate::diagnostics::coded::config_export_invalid(
+                "export.audit-tail.module: unknown exporter 'k9-never-registered'; the built-in \
+                 export modules are prometheus"
+            )
+            .to_string()
         ]
     );
 }

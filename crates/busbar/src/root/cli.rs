@@ -195,7 +195,10 @@ fn ordinary_cli_flags() -> Option<i32> {
         Ok(Some(_)) => return None,
         Ok(None) => {}
         Err(error) => {
-            eprintln!("busbar: {error}. Try 'busbar --help'.");
+            eprintln!(
+                "[error] {}",
+                diagnostics::coded::cli_invalid_arguments(error)
+            );
             return Some(EXIT_USAGE);
         }
     }
@@ -203,7 +206,10 @@ fn ordinary_cli_flags() -> Option<i32> {
         Ok(Some(_)) => return None,
         Ok(None) => {}
         Err(error) => {
-            eprintln!("busbar: {error}. Try 'busbar --help'.");
+            eprintln!(
+                "[error] {}",
+                diagnostics::coded::cli_invalid_arguments(error)
+            );
             return Some(EXIT_USAGE);
         }
     }
@@ -218,7 +224,10 @@ fn ordinary_cli_flags() -> Option<i32> {
             OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS
         ) && values.next().is_none()
         {
-            eprintln!("busbar: {arg} requires a value. Try 'busbar --help'.");
+            eprintln!(
+                "[error] {}",
+                diagnostics::coded::cli_flag_requires_value(arg)
+            );
             return Some(EXIT_USAGE);
         }
     }
@@ -261,20 +270,27 @@ fn ordinary_cli_flags() -> Option<i32> {
                         }
                         Err(_) => {
                             eprintln!(
-                                "warning: {code}: config at {config_path} did not parse; printing the \
-                                 built-in metadata denylist only (security.blocked_metadata_hosts \
-                                 skipped). Run busbar normally to see the parse error.",
-                                code =
-                                    diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                                "warning: {}",
+                                diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.coded(
+                                    format_args!(
+                                    "config at {config_path} did not parse; printing the built-in \
+                                     metadata denylist only (security.blocked_metadata_hosts \
+                                     skipped). Run busbar normally to see the parse error"
+                                )
+                                )
                             );
                         }
                     },
                     Err(_) => {
                         eprintln!(
-                            "warning: {code}: config at {config_path} failed to interpolate; printing \
-                             the built-in metadata denylist only (security.blocked_metadata_hosts \
-                             skipped). Run busbar normally to see the interpolation error.",
-                            code = diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                            "warning: {}",
+                            diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.coded(
+                                format_args!(
+                                    "config at {config_path} failed to interpolate; printing the \
+                                 built-in metadata denylist only (security.blocked_metadata_hosts \
+                                 skipped). Run busbar normally to see the interpolation error"
+                                )
+                            )
                         );
                     }
                 }
@@ -295,10 +311,28 @@ fn ordinary_cli_flags() -> Option<i32> {
             Some(EXIT_SUCCESS)
         }
         Some(other) => {
-            eprintln!("busbar: unrecognized argument '{other}'. Try 'busbar --help'.");
+            eprintln!(
+                "[error] {}",
+                diagnostics::coded::cli_unrecognized_argument(other)
+            );
             Some(EXIT_USAGE)
         }
     }
+}
+
+/// A refusal that carries a list: the coded head line (`[error] BUSBAR-NNNN: <head>. See <link>`)
+/// and one `  - <item>` line per error, each item already carrying its own code and link.
+fn refusal_list(
+    code: &busbar_contract::diagnostic::Diagnostic,
+    head: &str,
+    items: &[String],
+) -> String {
+    let mut out = format!("[error] {}", code.coded(head));
+    for item in items {
+        out.push_str("\n  - ");
+        out.push_str(item);
+    }
+    out
 }
 
 pub(crate) fn validate_config_command() -> i32 {
@@ -315,8 +349,8 @@ pub(crate) fn validate_config_command() -> i32 {
         Ok(l) => l,
         Err(e) => {
             eprintln!(
-                "[error] {}: {e}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+                "[error] {}",
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded(e)
             );
             return EXIT_FAILURE;
         }
@@ -331,9 +365,12 @@ pub(crate) fn validate_config_command() -> i32 {
         Ok(c) => c,
         Err(errs) => {
             eprintln!(
-                "[error] {}: config errors:\n  - {}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
-                errs.join("\n  - ")
+                "{}",
+                refusal_list(
+                    &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
+                    "config errors",
+                    &errs
+                )
             );
             return EXIT_FAILURE;
         }
@@ -358,30 +395,37 @@ pub(crate) fn validate_config_command() -> i32 {
         Ok(r) => r,
         Err(config_validate::Refusal::Config(errs)) => {
             eprintln!(
-                "[error] {}: config validation failed:\n  - {}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
-                errs.join("\n  - ")
+                "{}",
+                refusal_list(
+                    &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
+                    "config validation failed",
+                    &errs
+                )
             );
             return EXIT_FAILURE;
         }
         Err(config_validate::Refusal::Root(e)) => {
             eprintln!(
-                "[error] {}: config validation failed:\n  - {e}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+                "{}",
+                refusal_list(
+                    &diagnostics::CLI_VALIDATE_CONFIG_INVALID,
+                    "config validation failed",
+                    std::slice::from_ref(&e)
+                )
             );
             return EXIT_FAILURE;
         }
         Err(config_validate::Refusal::Plugins(e)) => {
             eprintln!(
-                "[error] {}: {e}",
-                diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+                "[error] {}",
+                diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.coded(e)
             );
             return EXIT_FAILURE;
         }
         Err(config_validate::Refusal::Unresolved(e)) => {
             eprintln!(
-                "[error] {}: {e}",
-                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+                "[error] {}",
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.coded(e)
             );
             return EXIT_FAILURE;
         }
@@ -389,8 +433,9 @@ pub(crate) fn validate_config_command() -> i32 {
 
     let Some(registry) = crate::root::loader::rows::registry_arc(registry) else {
         eprintln!(
-            "[error] {}: the plugin rows are not this root's registry",
-            diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+            "[error] {}",
+            diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED
+                .coded("the plugin rows are not this root's registry")
         );
         return EXIT_FAILURE;
     };
@@ -408,8 +453,8 @@ pub(crate) fn validate_config_command() -> i32 {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
-                "[error] {}: {e}",
-                diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+                "[error] {}",
+                diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.coded(e)
             );
             return EXIT_FAILURE;
         }
@@ -472,8 +517,10 @@ fn list_plugins_command() -> i32 {
         }
         Err(e) => {
             eprintln!(
-                "[warn] {}: config not readable ({e}); using the default plugins block",
-                diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
+                "[warn] {}",
+                diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.coded(format_args!(
+                    "config not readable ({e}); using the default plugins block"
+                ))
             );
             (config::PluginsCfg::default(), None)
         }
@@ -483,8 +530,9 @@ fn list_plugins_command() -> i32 {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
-                "[error] {}: plugins.trust is invalid: {e}",
-                diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
+                "[error] {}",
+                diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID
+                    .coded(format_args!("plugins.trust is invalid: {e}"))
             );
             return EXIT_FAILURE;
         }
@@ -537,15 +585,16 @@ fn list_plugins_command() -> i32 {
 
 fn migrate_config_command(path: Option<String>) -> i32 {
     let Some(path) = path else {
-        eprintln!(
-            "busbar: --migrate-config requires a path: busbar --migrate-config <old-config.yaml>"
-        );
+        eprintln!("[error] {}", diagnostics::coded::migrate_path_missing());
         return EXIT_USAGE;
     };
     let raw = match std::fs::read_to_string(&path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("busbar: cannot read '{path}': {e}");
+            eprintln!(
+                "[error] {}",
+                diagnostics::coded::migrate_source_unreadable(&path, e)
+            );
             return EXIT_FAILURE;
         }
     };
@@ -553,7 +602,10 @@ fn migrate_config_command(path: Option<String>) -> i32 {
     let working_directory = match std::env::current_dir() {
         Ok(directory) => directory,
         Err(error) => {
-            eprintln!("busbar: cannot resolve migration launch directory: {error}");
+            eprintln!(
+                "[error] {}",
+                diagnostics::coded::migrate_launch_directory(error)
+            );
             return EXIT_FAILURE;
         }
     };
@@ -566,7 +618,7 @@ fn migrate_config_command(path: Option<String>) -> i32 {
     ) {
         Ok(captured) => captured,
         Err(error) => {
-            eprintln!("busbar: --migrate-config failed: {error}");
+            eprintln!("[error] {}", diagnostics::coded::migrate_failed(error));
             return EXIT_FAILURE;
         }
     };
@@ -575,7 +627,7 @@ fn migrate_config_command(path: Option<String>) -> i32 {
         match super::overlay_migrate::capture_store(&raw, std::path::Path::new(&path)) {
             Ok(captured) => captured,
             Err(error) => {
-                eprintln!("busbar: --migrate-config failed: {error}");
+                eprintln!("[error] {}", diagnostics::coded::migrate_failed(error));
                 return EXIT_FAILURE;
             }
         };
@@ -630,7 +682,7 @@ Review the output, then run `busbar --config <migrated.yaml> --validate` before 
             EXIT_SUCCESS
         }
         Err(e) => {
-            eprintln!("busbar: --migrate-config failed: {e}");
+            eprintln!("[error] {}", diagnostics::coded::migrate_failed(e));
             EXIT_FAILURE
         }
     }
@@ -712,8 +764,9 @@ fn generate_signing_key_command() -> i32 {
         Ok(h) => h,
         Err(e) => {
             eprintln!(
-                "busbar: {}: could not generate a signing key: {e}",
-                diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
+                "[error] {}",
+                diagnostics::SIGNING_KEY_GENERATION_FAILED
+                    .coded(format_args!("could not generate a signing key: {e}"))
             );
             return EXIT_FAILURE;
         }

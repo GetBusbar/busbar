@@ -1605,7 +1605,7 @@ that registers named entries), a few words belong to Busbar, not to you. A regis
 of them is refused at startup with this message, which names the offending word:
 
 ```text
-a pool may not be named `hooks`: that name is reserved in the `pools:` section. See https://getbusbar.com/docs/configuration#reserved-names for the full list. Rename the pool.
+BUSBAR-3101: a pool may not be named `hooks` (reserved in `pools:`). See https://getbusbar.com/docs/1.6/errors/BUSBAR-3101
 ```
 
 Rename the registration; any other name works.

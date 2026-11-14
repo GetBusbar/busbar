@@ -11,7 +11,18 @@
 # Keys: `name`, `doc`, `code`, `class` and `severity` (their `busbar_contract::diagnostic` variant
 # names), `slug`, `title`, `summary`, `action`; `since` defaults to "1.6.0", `retired` to false. An
 # entry with `reexport = "<path>"` names a const defined at that path instead. Strings are TOML basic
-# strings on one line; `build.rs` reads only this subset and refuses anything else.
+# strings on one line (`\n` for a line break); `build.rs` reads only this subset and refuses anything else.
+#
+# OPERATOR MESSAGES (owner decision 2026-11-12). An entry an operator reads as a message (a config
+# refusal, a CLI error, a migration warning) also carries `text`: the message template, `{name}` per
+# argument, no trailing period. `build.rs` generates `diagnostics::coded::<name in lower case>(..)`,
+# which formats exactly that template (the compiler checks the placeholders) and renders
+# `BUSBAR-NNNN: <text>. See https://getbusbar.com/docs/<major.minor>/errors/BUSBAR-NNNN`. Call sites
+# never spell a code, a link or the template: they call the constructor. Optional `example` (what
+# triggers it) and `example_detail` (the template filled in for it) complete the code's docs page.
+# Config/boot refusals take 3101-3399, migration messages 3401-3499, CLI errors 9101-9199, admin
+# API errors 8101-8199. The pages are generated: `UPDATE_ERROR_PAGES=1 cargo test -p busbar-kernel
+# error_pages`.
 
 [[diagnostic]]
 name = "DEPRECATED_ENV_VAR_HONORED"
@@ -703,6 +714,10 @@ action = "Traffic fails over automatically. Investigate the named upstream's hea
 
 [[diagnostic]]
 name = "USAGE_TAP_DECODE_FAILED"
+reexport = "busbar_contract::diagnostic"
+
+[[diagnostic]]
+name = "CONFIG_RESERVED_NAME"
 reexport = "busbar_contract::diagnostic"
 
 [[diagnostic]]
@@ -1756,3 +1771,717 @@ title = "--generate-signing-key could not mint a key (OS entropy source unavaila
 severity = "Actionable"
 summary = "`busbar --generate-signing-key` could not mint a fresh ed25519 signing secret because the OS entropy source was unavailable, so it printed nothing and exited non-zero. No key was generated and nothing was written."
 action = "Retry on a host with a working RNG (`/dev/urandom` / `getrandom`). A persistent failure points at a broken or blocked entropy source in the environment."
+
+# ---- CLI errors (9101-9199) -------------------------------------------------------------------
+
+[[diagnostic]]
+name = "CLI_UNRECOGNIZED_ARGUMENT"
+code = 9101
+class = "Boot"
+slug = "cli-unrecognized-argument"
+title = "The command line names an argument busbar does not know"
+severity = "Fatal"
+summary = "busbar was started with an argument that is neither a flag it accepts nor the value of one. Nothing ran; the process exited with the usage status (2)."
+action = "Check the spelling against `busbar --help`. Configuration is not passed on the command line: put settings in config.yaml and point busbar at it with `--config <path>`."
+text = "unrecognized argument '{argument}'; try 'busbar --help'"
+example = "busbar --valdiate"
+example_detail = "unrecognized argument '--valdiate'; try 'busbar --help'"
+
+[[diagnostic]]
+name = "CLI_INVALID_ARGUMENTS"
+code = 9102
+class = "Boot"
+slug = "cli-invalid-arguments"
+title = "A command's arguments do not fit together"
+severity = "Fatal"
+summary = "A command-line command (an overlay migration or a principal transition) was given arguments it cannot act on: a missing companion flag, a conflicting pair, or a malformed value. The text after the code names which. Nothing ran; the process exited with the usage status (2)."
+action = "Fix the arguments the message names; `busbar --help` lists every command with its flags."
+text = "{reason}; try 'busbar --help'"
+example = "busbar --migrate-overlay"
+example_detail = "--migrate-overlay requires --overlay <path>; try 'busbar --help'"
+
+[[diagnostic]]
+name = "CLI_FLAG_REQUIRES_VALUE"
+code = 9103
+class = "Boot"
+slug = "cli-flag-requires-value"
+title = "A command-line flag is missing its value"
+severity = "Fatal"
+summary = "A flag that takes a value (such as `--config <path>` or `--providers <path>`) was the last argument, so it has nothing to read. Nothing ran; the process exited with the usage status (2)."
+action = "Give the flag its value, for example `busbar --config /etc/busbar/config.yaml --validate`."
+text = "{flag} requires a value; try 'busbar --help'"
+example = "busbar --validate --config"
+example_detail = "--config requires a value; try 'busbar --help'"
+
+# ---- config migration (3401-3499) -------------------------------------------------------------
+
+[[diagnostic]]
+name = "MIGRATE_PATH_MISSING"
+code = 3401
+class = "Config"
+slug = "migrate-path-missing"
+title = "--migrate-config was given no file to migrate"
+severity = "Fatal"
+summary = "`busbar --migrate-config` converts one old config file and needs its path. None was given, so nothing was read or printed; the process exited with the usage status (2)."
+action = "Name the file: `busbar --migrate-config old-config.yaml > config.yaml`."
+text = "--migrate-config requires a path: busbar --migrate-config <old-config.yaml>"
+example = "busbar --migrate-config"
+example_detail = "--migrate-config requires a path: busbar --migrate-config <old-config.yaml>"
+
+[[diagnostic]]
+name = "MIGRATE_SOURCE_UNREADABLE"
+code = 3402
+class = "Config"
+slug = "migrate-source-unreadable"
+title = "--migrate-config could not read the file it was given"
+severity = "Fatal"
+summary = "The old config file named to `--migrate-config` could not be read: it does not exist, it is not readable by this user, or it is not UTF-8 text. The operating system's reason follows the path. Nothing was migrated."
+action = "Check the path and its permissions, then run the migration again."
+text = "cannot read '{path}': {error}"
+example = "busbar --migrate-config /etc/busbar/old.yaml"
+example_detail = "cannot read '/etc/busbar/old.yaml': No such file or directory (os error 2)"
+
+[[diagnostic]]
+name = "MIGRATE_LAUNCH_DIRECTORY"
+code = 3403
+class = "Config"
+slug = "migrate-launch-directory"
+title = "--migrate-config could not resolve its working directory"
+severity = "Fatal"
+summary = "The migration resolves relative paths (a providers file, a store path) against the directory busbar was launched from, as the old launcher did. The current directory could not be read (it was deleted or is not accessible), so nothing was migrated."
+action = "Run the migration from an existing, readable directory, ideally the one the old deployment was launched from."
+text = "cannot resolve migration launch directory: {error}"
+example = "cd /tmp/gone && rmdir /tmp/gone && busbar --migrate-config old.yaml"
+example_detail = "cannot resolve migration launch directory: No such file or directory (os error 2)"
+
+[[diagnostic]]
+name = "MIGRATE_FAILED"
+code = 3404
+class = "Config"
+slug = "migrate-failed"
+title = "--migrate-config refused the file"
+severity = "Fatal"
+summary = "The old config could not be converted mechanically: it is not valid YAML, it has a shape no busbar release accepted, or it carries a value the migration cannot carry forward without guessing. The reason follows the code. Nothing was printed to stdout, so no half-migrated config can be deployed by accident."
+action = "Fix the reason the message names in the OLD file (or capture the setting by hand), then run the migration again. docs/migration-1-6.md lists every key the migration rewrites."
+text = "--migrate-config failed: {reason}"
+example = "busbar --migrate-config not-yaml.txt"
+example_detail = "--migrate-config failed: config is not a YAML mapping"
+
+[[diagnostic]]
+name = "MIGRATE_REFRESH_TTL_MEANING_CHANGED"
+code = 3405
+class = "Config"
+slug = "migrate-refresh-ttl-meaning-changed"
+title = "Migration carried refresh_ttl over to verify_ttl, whose meaning differs"
+severity = "Actionable"
+summary = "1.5's `refresh_ttl` was a background sweep cadence (default 6h). Its replacement `verify_ttl` is the longest a cached tool listing may be served before a `tools/call` re-verifies the upstream live (default 5s). The migration carried your value over unchanged, which can leave a long drift-serving window on the request path."
+action = "Review the migrated `verify_ttl`: a few seconds is the default, `0` is strict-live, and a large value is an explicit security downgrade."
+text = "{entry}.refresh_ttl -> verify_ttl (value `{value}` carried over). The meaning CHANGED: `refresh_ttl` was a background sweep cadence (default 6h); `verify_ttl` is the MAX staleness before a `tools/call` re-verifies the upstream live (default 5s). Your value is now a drift-serving window on the request path — reconsider it: a few seconds is the new default, `0` is strict-live, and a large value is an explicit security downgrade"
+example = "mcp_servers:\n  search:\n    refresh_ttl: 6h"
+example_detail = "mcp_servers.search.refresh_ttl -> verify_ttl (value `6h` carried over). The meaning CHANGED: `refresh_ttl` was a background sweep cadence (default 6h); `verify_ttl` is the MAX staleness before a `tools/call` re-verifies the upstream live (default 5s). Your value is now a drift-serving window on the request path — reconsider it: a few seconds is the new default, `0` is strict-live, and a large value is an explicit security downgrade"
+
+[[diagnostic]]
+name = "MIGRATE_ADMIN_SCOPE_WIDENED"
+code = 3406
+class = "Config"
+slug = "migrate-admin-scope-widened"
+title = "Migration widened a retired delegated admin scope to full"
+severity = "Actionable"
+summary = "1.5.2 retired the delegated admin scopes. An auth chain entry or role binding that granted one is migrated to `full`, the nearest scope that keeps every call it allowed working, which may be broader than intended."
+action = "Review the named entry and tighten it to `read-only` if `full` is too broad."
+text = "{entry}: {old} -> full (the delegated {old} scope is retired in 1.5.2; tighten to read-only if full is too broad)"
+example = "auth:\n  admin_auth:\n    - oidc: { max_admin_scope: keys }"
+example_detail = "auth.admin_auth entry 'oidc' max_admin_scope: keys -> full (the delegated keys scope is retired in 1.5.2; tighten to read-only if full is too broad)"
+
+[[diagnostic]]
+name = "MIGRATE_EMPTY_ALLOWED_POOLS_FLIPPED"
+code = 3407
+class = "Config"
+slug = "migrate-empty-allowed-pools-flipped"
+title = "An empty allowed_pools list now means no pools"
+severity = "Actionable"
+summary = "Before 1.5.0 an empty `allowed_pools: []` on a role binding meant every pool; since 1.5.0 it means no pool. The migration keeps the list as written, so the role now reaches nothing."
+action = "If the role should reach every pool, delete the `allowed_pools` line (omitted means all). If it should reach none, keep `[]`."
+text = "auth.role_bindings.{module}.{role}.allowed_pools: [] - the MEANING of an empty list FLIPPED in 1.5.0: it used to mean ALL pools, it now means NO pools. If this role should reach every pool, DELETE the allowed_pools line (omitted = all); if it should reach none, keep []"
+example = "auth:\n  role_bindings:\n    oidc:\n      engineers: { allowed_pools: [] }"
+example_detail = "auth.role_bindings.oidc.engineers.allowed_pools: [] - the MEANING of an empty list FLIPPED in 1.5.0: it used to mean ALL pools, it now means NO pools. If this role should reach every pool, DELETE the allowed_pools line (omitted = all); if it should reach none, keep []"
+
+[[diagnostic]]
+name = "MIGRATE_UNGOVERNED_BINDING_ADDED"
+code = 3408
+class = "Config"
+slug = "migrate-ungoverned-binding-added"
+title = "Migration added a binding that keeps 1.5.5's ungoverned access"
+severity = "Actionable"
+summary = "1.5.5 admitted a principal its identity provider recognised even when no role binding granted it anything; 1.6.0 refuses such a principal (401). To keep a migrated deployment serving the same callers, the migration wrote an empty binding for them: every pool, no group, no budget."
+action = "Tighten the named binding (allowed_pools, a group with limits) or remove it to refuse those principals."
+text = "auth.role_bindings.{provider}.\"{role}\" was written by the migration to keep 1.5.5's access: {who} is admitted on every pool with no budget, as 1.5.5 admitted them. Tighten it (allowed_pools, a group with limits) or remove it to refuse them"
+example = "auth:\n  auth_chain: [oidc]"
+example_detail = "auth.role_bindings.oidc.\"*\" was written by the migration to keep 1.5.5's access: every principal it identifies is admitted on every pool with no budget, as 1.5.5 admitted them. Tighten it (allowed_pools, a group with limits) or remove it to refuse them"
+
+[[diagnostic]]
+name = "MIGRATE_WORKER_THREADS_IGNORED"
+code = 3409
+class = "Config"
+slug = "migrate-worker-threads-ignored"
+title = "BUSBAR_WORKER_THREADS was not a positive integer and was not captured"
+severity = "Actionable"
+summary = "The migration captures the old launcher's BUSBAR_WORKER_THREADS into `advanced.worker_threads`. Its value was not a positive integer, which the old launcher also ignored, so nothing was captured and the configured worker count (or TOKIO_WORKER_THREADS) still applies."
+action = "Set `advanced.worker_threads` in the migrated config if you meant to pin the worker count, and remove BUSBAR_WORKER_THREADS from the launcher."
+text = "BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved"
+example = "BUSBAR_WORKER_THREADS=auto busbar --migrate-config old.yaml"
+example_detail = "BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved"
+
+# ---- config / boot refusals (3101-3399) ---------------------------------------------------------
+# One code per refusal family: the subject (a model, a pool's failover block, a provider's
+# credential, ...) and the kind of rule. The specific sentence (which key, which value, why) is the
+# message's detail; the page explains the family and how to fix every member of it.
+# 3101 CONFIG_RESERVED_NAME is contract-owned (busbar_contract::diagnostic), re-exported above.
+
+[[diagnostic]]
+name = "CONFIG_MODEL_INVALID"
+code = 3102
+class = "Config"
+slug = "config-model-invalid"
+title = "A model definition is invalid"
+severity = "Fatal"
+summary = "An entry under `models:` names a provider that is not defined, or sets a per-model value outside its range: `default_max_tokens`, `max_concurrent` or `max_requests` of 0, an `attempt_timeout_ms` of 0 or above the 30-year ceiling, an empty `upstream_model`, or a `context_max` that two pools declare differently. The message names the model and the field."
+action = "Fix the named field under `models.<name>:`: point `provider:` at a provider defined in providers.yaml or `providers:`, use a positive value, or omit the field to take its default. Then run `busbar --validate`."
+text = "{detail}"
+example = "models:\n  gpt-4o:\n    provider: openia     # typo: no such provider"
+example_detail = "model 'gpt-4o' references unknown provider 'openia'"
+
+[[diagnostic]]
+name = "CONFIG_NAME_RESERVED_ROUTE"
+code = 3103
+class = "Config"
+slug = "config-name-reserved-route"
+title = "A model, pool or provider is named after a reserved route prefix"
+severity = "Fatal"
+summary = "Models, pools and providers are reachable at `/<name>/...`. The names `admin` and the native-API root are routed to the operator admin surface before any model, pool or provider route, so an entry with one of those names could never be reached by a client and would bypass its own governance."
+action = "Rename the model, pool or provider the message names, and update every reference to it."
+text = "{detail}"
+example = "pools:\n  admin:\n    members: [gpt-4o]"
+example_detail = "pool name 'admin' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a pool reachable via that path is unreachable to clients and bypasses per-pool governance; rename it"
+
+[[diagnostic]]
+name = "CONFIG_NAME_CONFLICT"
+code = 3104
+class = "Config"
+slug = "config-name-conflict"
+title = "A pool shares its name with a provider or a model"
+severity = "Fatal"
+summary = "Pools, providers and models share one route namespace (`/<name>/...`), so a pool may not take the name of a provider or a model: one of the two would be unreachable."
+action = "Rename the pool (or the provider or model) so every name is distinct, and update the references to it."
+text = "{detail}"
+example = "models:\n  fast: { provider: openai }\npools:\n  fast: { members: [fast] }"
+example_detail = "pool name 'fast' conflicts with model name 'fast'; pools and models must have distinct names"
+
+[[diagnostic]]
+name = "CONFIG_POOL_MEMBERS_INVALID"
+code = 3105
+class = "Config"
+slug = "config-pool-members-invalid"
+title = "A pool's member list is invalid"
+severity = "Fatal"
+summary = "A pool has no members, a member's `weight` is 0, a member's `attempt_timeout_ms` is 0 or above the 30-year ceiling, or a member names a model that is not defined (or whose provider is not). A pool with no routable member answers every request with a misleading 503."
+action = "Fix the member the message names under `pools.<pool>.members:`: name a model defined under `models:`, use a weight of at least 1 and a positive timeout, or remove the pool."
+text = "{detail}"
+example = "pools:\n  default:\n    members: [gpt-4o, claude-sonet]   # typo"
+example_detail = "pool 'default' references unknown model 'claude-sonet'"
+
+[[diagnostic]]
+name = "CONFIG_POOL_FAILOVER_INVALID"
+code = 3106
+class = "Config"
+slug = "config-pool-failover-invalid"
+title = "A pool's failover block is invalid"
+severity = "Fatal"
+summary = "`failover.timeout_secs` is 0 (every request would 503 before its first attempt) or above 24 hours, or `failover.exclusions` names something that is not a member of the pool (so it benches nothing)."
+action = "Set `failover.timeout_secs` between 1 and 86400 and list only the pool's own members under `failover.exclusions`."
+text = "{detail}"
+example = "pools:\n  default:\n    members: [gpt-4o]\n    failover: { timeout_secs: 0 }"
+example_detail = "pool 'default' failover.timeout_secs must be >= 1; a 0 budget rejects the primary attempt before it runs (every request 503s)"
+
+[[diagnostic]]
+name = "CONFIG_POOL_ON_EXHAUSTED_INVALID"
+code = 3107
+class = "Config"
+slug = "config-pool-on-exhausted-invalid"
+title = "A pool's on_exhausted block is invalid"
+severity = "Fatal"
+summary = "`on_exhausted` names a fallback pool that does not exist or the pool itself, or its `queue.max_ms` is 0 or longer than the pool's whole failover budget. Such a setting never engages: the pool 503s exactly as if it had no fallback."
+action = "Point `on_exhausted.fallback_pool` at a different, defined pool, and keep `queue.max_ms` above 0 and at or below the failover budget (or raise `failover.timeout_secs`)."
+text = "{detail}"
+example = "pools:\n  primary:\n    members: [gpt-4o]\n    on_exhausted: { fallback_pool: backup }   # no such pool"
+example_detail = "pool 'primary' on_exhausted references unknown fallback pool 'backup'"
+
+[[diagnostic]]
+name = "CONFIG_POOL_AFFINITY_INVALID"
+code = 3108
+class = "Config"
+slug = "config-pool-affinity-invalid"
+title = "A pool's affinity header name is invalid"
+severity = "Fatal"
+summary = "`affinity.header_name` must be a valid, non-empty, ASCII HTTP field-name of at most 64 characters; anything else would silently disable session affinity."
+action = "Set `affinity.header_name` to a plain header name such as `x-session-id`, or remove the affinity block."
+text = "{detail}"
+example = "pools:\n  chat:\n    members: [gpt-4o]\n    affinity: { mode: header, header_name: \"\" }"
+example_detail = "pool 'chat' affinity.header_name must not be empty (an empty HTTP header field-name silently disables session affinity)"
+
+[[diagnostic]]
+name = "CONFIG_POOL_FALLBACK_CYCLE"
+code = 3109
+class = "Config"
+slug = "config-pool-fallback-cycle"
+title = "Pools' on_exhausted fallbacks form a cycle"
+severity = "Fatal"
+summary = "Following `on_exhausted.fallback_pool` from pool to pool leads back to a pool already visited. The runtime loop guard would cut the ring on re-entry, so every pool in it 503s instead of degrading."
+action = "Break the cycle the message prints: point one pool at a pool outside the ring, or remove its `on_exhausted`."
+text = "{detail}"
+example = "pools:\n  a: { members: [m1], on_exhausted: { fallback_pool: b } }\n  b: { members: [m2], on_exhausted: { fallback_pool: a } }"
+example_detail = "fallback_pool cycle detected: a -> b -> a; on_exhausted fallback chains must not loop — the runtime loop guard terminates a cycle on re-entry, so every pool in the ring 503s instead of degrading. Break the cycle (point one pool at a non-looping pool or remove its on_exhausted)"
+
+[[diagnostic]]
+name = "CONFIG_POOL_BREAKER_INVALID"
+code = 3110
+class = "Config"
+slug = "config-pool-breaker-invalid"
+title = "A pool's circuit-breaker settings are invalid"
+severity = "Fatal"
+summary = "A `breaker:` value is out of range: a cooldown of 0 (which re-admits a tripped backend at once), `max_cooldown_secs` below `base_cooldown_secs`, a trip `min_requests`, `window_secs` or `consecutive_n` of 0, or an error-rate `threshold` outside (0.0, 1.0]."
+action = "Fix the field the message names under `pools.<pool>.breaker:`; docs/circuit-breaker.md gives every default."
+text = "{detail}"
+example = "pools:\n  default:\n    members: [gpt-4o]\n    breaker: { base_cooldown_secs: 0 }"
+example_detail = "pool 'default' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
+
+[[diagnostic]]
+name = "CONFIG_POOL_HOOKS_INVALID"
+code = 3111
+class = "Config"
+slug = "config-pool-hooks-invalid"
+title = "A pool's hook list is invalid"
+severity = "Fatal"
+summary = "A pool's `hooks:` list names a hook that is not defined under top-level `hooks:`, names a tap (only a gate can influence routing), or names a built-in ranking strategy this binary was built without."
+action = "Define the hook under top-level `hooks:`, use a gate, or name a strategy this build carries (`busbar --help` lists the build's features)."
+text = "{detail}"
+example = "pools:\n  default:\n    members: [gpt-4o]\n    hooks: [pii-scrub]   # not defined under hooks:"
+example_detail = "pool 'default' references unknown hook 'pii-scrub'; define it under top-level `hooks:`"
+
+[[diagnostic]]
+name = "CONFIG_HOOK_INVALID"
+code = 3112
+class = "Config"
+slug = "config-hook-invalid"
+title = "A hook definition is invalid"
+severity = "Fatal"
+summary = "An entry under top-level `hooks:` (or `global_hooks:`) cannot work as written: it names no plugin, a tap asks to rewrite or to be the default ordering, it takes a reserved name, more than one hook is the default, its timeout is out of range, or its `on_error` chain names an unknown fallback, a tap, an absent ranking strategy or loops."
+action = "Fix the hook the message names: set `module:` to a `kind: hook` plugin, use `kind: gate` where it must decide, rename it off reserved words, and end every `on_error` chain on nothing, weighted, reject, first or a ranking strategy."
+text = "{detail}"
+example = "hooks:\n  audit-tap:\n    module: audit\n    kind: tap\n    prompt: rw"
+example_detail = "hook 'audit-tap' is a tap with `prompt: rw`, but only a gate can rewrite (a tap never replies). Use `kind: gate`, or lower to `prompt: ro`"
+
+[[diagnostic]]
+name = "CONFIG_AUTH_POLICY_INVALID"
+code = 3113
+class = "Config"
+slug = "config-auth-policy-invalid"
+title = "An auth policy or key lifetime setting is invalid"
+severity = "Fatal"
+summary = "A setting under `auth:` that governs minted keys cannot hold: a duration that does not parse, a default TTL above the maximum, a per-role mint ceiling wider than the deployment-wide policy, a delegated admin scope that does not parse, or a browser-login method without a `public_url:` to build its redirect URLs."
+action = "Fix the named setting: durations are written like `30d` or `12h`, per-role ceilings must stay within `auth.policy`, and a browser login needs top-level `public_url: https://<busbar-host>`."
+text = "{detail}"
+example = "auth:\n  policy: { default_ttl: 90d, max_ttl: 30d }"
+example_detail = "auth.policy.default_ttl ('90d', 7776000s) exceeds auth.policy.max_ttl ('30d', 2592000s); the default a mint falls back to cannot be longer than the ceiling"
+
+[[diagnostic]]
+name = "CONFIG_ROLE_BINDING_INVALID"
+code = 3114
+class = "Config"
+slug = "config-role-binding-invalid"
+title = "A role binding is invalid"
+severity = "Fatal"
+summary = "An entry under `auth.role_bindings` names a module that is in neither auth chain, a role that shadows the reserved operator principal, an unknown admin scope or admin verb, a grant kind no installed plane declares, or a group that does not exist. A binding like that grants nothing, or grants something other than what it says."
+action = "Fix the binding the message names; the message prints the exact YAML to add where a module or group is missing."
+text = "{detail}"
+example = "auth:\n  role_bindings:\n    oidc:\n      engineers: { group: eng }   # no group `eng`"
+example_detail = "role_bindings.oidc.engineers names group 'eng', which does not exist.\nPaste this under groups and set its limits:\n\n  eng:\n    limits:\n      - { requests: 0, per: minute }\n"
+
+[[diagnostic]]
+name = "CONFIG_AUTH_CHAIN_INVALID"
+code = 3115
+class = "Config"
+slug = "config-auth-chain-invalid"
+title = "The auth chain cannot authenticate as configured"
+severity = "Fatal"
+summary = "The data-plane or admin auth chain is incomplete: it names a module that was removed, it verifies busbar-signed keys without an `auth.signing_key` or without any way to mint one, an operator token sits on a module that is not the operator provider, or the operator token has no answer. Busbar refuses rather than start with an auth surface that admits the wrong callers or none."
+action = "Follow the message: generate a signing key with `busbar --generate-signing-key` and reference it from `auth.signing_key`, name `keys` or an IdP plugin in `auth.chain`, and keep the operator token on the operator provider."
+text = "{detail}"
+example = "auth:\n  chain: [keys]          # no signing_key"
+example_detail = "auth.signing_key is required for signed-token auth (auth.chain names the built-in `keys` verifier), but none is set - and busbar no longer auto-generates one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key to a secret reference for it ({file: /path} or {env: VAR} - a SHARED secret across nodes for a fleet)"
+
+[[diagnostic]]
+name = "CONFIG_PLANE_OPEN_TO_ANONYMOUS"
+code = 3116
+class = "Config"
+slug = "config-plane-open-to-anonymous"
+title = "A plane is configured while the data-plane auth chain is empty"
+severity = "Fatal"
+summary = "A plane section (tools, agents and the like) is configured but `auth.chain` is empty, so the plane would serve anonymous callers with wildcard grants over every registered subject, and outbound credentials would have no inbound grant to bind to."
+action = "Close the data-plane chain (`auth: { chain: [keys] }` or an IdP auth plugin), or remove the plane block if this deployment does not serve it."
+text = "{detail}"
+example = "tools:\n  search: { url: https://mcp.example.com }\n# no auth.chain"
+example_detail = "`tools:` is configured but auth.chain is empty, which serves the MCP endpoint to ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it runs with WILDCARD grants over every registered subject on that plane. It also leaves `upstream::authorise` with no inbound grant to bind busbar's outbound credentials to. Close the data-plane chain (`auth: { chain: [keys] }`, or an IdP auth plugin), or remove the `tools:` block if this deployment is not a MCP endpoint"
+
+[[diagnostic]]
+name = "CONFIG_SETTING_OUT_OF_RANGE"
+code = 3117
+class = "Config"
+slug = "config-setting-out-of-range"
+title = "A global limit or timing setting is out of range"
+severity = "Fatal"
+summary = "A value under `limits:`, `health:`, `routing:` or `advanced:` is outside what busbar can run with: a timeout or interval of 0 (which fails or disables the thing it bounds), a size below its floor or above its ceiling, a duration above the 30-year ceiling the runtime's clock arithmetic can hold, or reasoning-effort budgets that are zero or not ascending."
+action = "Set the named key within the range the message states, or omit it to take the default; docs/configuration.md lists every default."
+text = "{detail}"
+example = "limits:\n  upstream_request_timeout_secs: 0"
+example_detail = "limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call instantly)"
+
+[[diagnostic]]
+name = "CONFIG_RATE_CARD_INVALID"
+code = 3118
+class = "Config"
+slug = "config-rate-card-invalid"
+title = "A rate card or fee is invalid"
+severity = "Fatal"
+summary = "A rate card or fee cannot be priced as written: a rate that is negative, not finite or implausibly large, a unit or class the plane does not declare or count, a reserved class priced by name, a card entry for a model that is not defined, or a negative per-request fee."
+action = "Fix the named entry: price only the units and classes the plane declares, keep rates finite and non-negative, and name only defined models."
+text = "{detail}"
+example = "rate_card:\n  gpt-5: { input_utok: 1.25 }   # no model gpt-5"
+example_detail = "rate_card names model 'gpt-5', which is not defined under models:"
+
+[[diagnostic]]
+name = "CONFIG_GROUP_INVALID"
+code = 3119
+class = "Config"
+slug = "config-group-invalid"
+title = "A group's limits are invalid"
+severity = "Fatal"
+summary = "A group under `groups:` sets a limit of 0, which rejects every request through the group instead of bounding it."
+action = "Use a positive limit, or remove the limit to leave that dimension unbounded."
+text = "{detail}"
+example = "groups:\n  eng:\n    limits:\n      - { requests: 0, per: minute }"
+example_detail = "groups.eng has a `requests` limit of 0, which rejects every request through the group from the first admission; set a positive amount, or set `enabled: false` to freeze the group explicitly"
+
+[[diagnostic]]
+name = "CONFIG_STORE_INVALID"
+code = 3120
+class = "Config"
+slug = "config-store-invalid"
+title = "The store block is missing or names no module"
+severity = "Fatal"
+summary = "Busbar keeps keys, budgets, audit and configuration overlays in the store named by top-level `store:`. The block is missing or its `module:` is empty."
+action = "Add `store: { module: <store plugin> }` (for example `sqlite` with a `db_path` setting)."
+text = "{detail}"
+example = "store:\n  module: \"\""
+example_detail = "store.module must be non-empty; name the configured Store plugin"
+
+[[diagnostic]]
+name = "CONFIG_SECRET_REFERENCE_INVALID"
+code = 3121
+class = "Config"
+slug = "config-secret-reference-invalid"
+title = "A secret reference or secret module setting is invalid"
+severity = "Fatal"
+summary = "A secret is referenced in a way busbar cannot resolve safely: `none` where a credential is required, a reference form the setting does not accept, or module-level settings on a built-in secret module that takes none."
+action = "Reference the secret as `{ env: VAR }`, `{ file: /path }` or `{ module: <secret-module>, settings: {...} }`, as the message shows for the setting it names."
+text = "{detail}"
+example = "secrets:\n  env: { prefix: BUSBAR_ }"
+example_detail = "secrets.env: the built-in 'env' secret module takes no module-level settings"
+
+[[diagnostic]]
+name = "CONFIG_METADATA_HOST_ENTRY_INVALID"
+code = 3122
+class = "Config"
+slug = "config-metadata-host-entry-invalid"
+title = "A metadata host list entry can never match"
+severity = "Fatal"
+summary = "`security.blocked_metadata_hosts` and `security.allow_metadata_hosts` are matched by exact IP or hostname. An entry with a CIDR (`/`) or one that maps to no host would silently never match, leaving the protection it was meant to add (or remove) a no-op."
+action = "List exact IPs or hostnames, for example `169.254.169.254`, not `169.254.0.0/16`."
+text = "{detail}"
+example = "security:\n  blocked_metadata_hosts: [169.254.0.0/16]"
+example_detail = "security.blocked_metadata_hosts entry '169.254.0.0/16' contains '/' (CIDR is not supported here): these lists are matched by EXACT IP or hostname, so a CIDR/slash entry silently never matches and is a no-op. List exact IPs/hostnames instead (e.g. '169.254.169.254', not '169.254.0.0/16')"
+
+[[diagnostic]]
+name = "CONFIG_PROVIDER_INVALID"
+code = 3123
+class = "Config"
+slug = "config-provider-invalid"
+title = "A provider definition is invalid"
+severity = "Fatal"
+summary = "A provider's settings cannot work: a health interval or timeout of 0 or above its ceiling, an `error_map` class that does not exist, a `path` or `path_base` that does not begin with `/`, or an option the provider's protocol does not take."
+action = "Fix the field the message names under `providers.<name>:`; docs/providers.md documents every provider field."
+text = "{detail}"
+example = "providers:\n  openai:\n    base_url: https://api.openai.com\n    path: v1/chat/completions"
+example_detail = "provider 'openai' path 'v1/chat/completions' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + 'v1/chat/completions') and can redirect signed traffic to an attacker-controlled host"
+
+[[diagnostic]]
+name = "CONFIG_PROVIDER_DESTINATION_BLOCKED"
+code = 3124
+class = "Config"
+slug = "config-provider-destination-blocked"
+title = "A provider URL targets a blocked cloud-metadata host"
+severity = "Fatal"
+summary = "A provider's `base_url`, `base_url` + `path`, `base_url` + `path_base` or `token_url` resolves to a cloud-metadata (IMDS) endpoint on `security.blocked_metadata_hosts`. Busbar would send credentials there, so it refuses the configuration."
+action = "Point the provider at its real API host. If the host is deliberately reachable, list it under `security.allow_metadata_hosts`."
+text = "{detail}"
+example = "providers:\n  internal:\n    base_url: http://169.254.169.254"
+example_detail = "provider 'internal' base_url 'http://169.254.169.254' targets a blocked cloud-metadata host '169.254.169.254' (cloud-metadata/IMDS endpoints are denied; ...)"
+
+[[diagnostic]]
+name = "CONFIG_PROVIDER_CREDENTIAL_INVALID"
+code = 3125
+class = "Config"
+slug = "config-provider-credential-invalid"
+title = "A provider's credential cannot be used as configured"
+severity = "Fatal"
+summary = "A provider's outbound credential is invalid for its auth style: the referenced secret does not parse (a service-account key, a signing key), required auth settings are missing, or the settings contradict the style. The message names the provider, the style and the secret's source, never its value."
+action = "Fix the secret the message points at (its `env:`, `file:` or module source) or the provider's auth settings, then run `busbar --validate`."
+text = "{detail}"
+example = "providers:\n  vertex:\n    auth: jwt-bearer\n    api_key: { env: VERTEX_SA }   # not a service-account JSON"
+example_detail = "provider 'vertex' jwt-bearer credential (from env:VERTEX_SA) is invalid: service-account key is not JSON"
+
+[[diagnostic]]
+name = "CONFIG_PROVIDER_PROTOCOL_UNKNOWN"
+code = 3126
+class = "Config"
+slug = "config-provider-protocol-unknown"
+title = "A provider names a protocol this build does not speak"
+severity = "Fatal"
+summary = "A provider's `protocol:` is not one this binary carries: it is misspelled, or the build has no plane that speaks it."
+action = "Use one of the protocols the message lists, or run a build that carries the plane for it."
+text = "{detail}"
+example = "providers:\n  claude:\n    protocol: antropic"
+example_detail = "provider 'claude' has unknown protocol 'antropic': must be one of: anthropic, bedrock, cohere, gemini, openai, responses"
+
+[[diagnostic]]
+name = "CONFIG_PLANE_POOL_INVALID"
+code = 3127
+class = "Config"
+slug = "config-plane-pool-invalid"
+title = "A plane section's failover pool is invalid"
+severity = "Fatal"
+summary = "A failover pool inside a plane section (`tools.pools`, `agents.pools`, ...) cannot fail over as written: it has fewer than two members or more than the breaker's lane table holds, it shares its name with a registration, it names a member twice, a member belongs to another plane or is not defined, a member sits in two pools, or a `repeatable:` entry is empty."
+action = "Fix the pool the message names: list two or more distinct members defined in the same plane section, give the pool its own name, and keep each registration in at most one pool."
+text = "{detail}"
+example = "tools:\n  pools:\n    search: { members: [brave] }"
+example_detail = "tools.search: a failover pool needs at least TWO members (it has 1). A pool with one member has nowhere to fail over to, so it changes nothing; remove it or add the second registration"
+
+[[diagnostic]]
+name = "CONFIG_PROVIDER_REFERENCE_UNKNOWN"
+code = 3128
+class = "Config"
+slug = "config-provider-reference-unknown"
+title = "A reference names a provider that is not defined or speaks the wrong protocol"
+severity = "Fatal"
+summary = "config.yaml (or a plane section) names a provider that providers.yaml and `providers:` do not define, or one whose protocol the referencing plane does not speak."
+action = "Define the provider, fix the spelling, or point the reference at a provider of the right protocol; the message lists the valid choices."
+text = "{detail}"
+example = "models:\n  gpt-4o: { provider: openai-eu }   # not in providers.yaml"
+example_detail = "provider 'openai-eu' referenced in config.yaml not found in providers.yaml"
+
+[[diagnostic]]
+name = "CONFIG_SECTION_INVALID"
+code = 3129
+class = "Config"
+slug = "config-section-invalid"
+title = "A configuration section is not valid for this build"
+severity = "Fatal"
+summary = "A top-level section does not parse into its shape, its registry fails its own checks, or it configures a plane (such as `oauth_as:`) whose implementation this binary does not link. The message names the section and the reason."
+action = "Fix the section as the message describes, or remove a section this build does not carry."
+text = "{detail}"
+example = "oauth_as:\n  issuer: https://busbar.example.com"
+example_detail = "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) is not linked into this binary"
+
+[[diagnostic]]
+name = "CONFIG_ADMIN_LISTENER_EXPOSED"
+code = 3130
+class = "Config"
+slug = "config-admin-listener-exposed"
+title = "The admin listener is network-exposed without mTLS"
+severity = "Fatal"
+summary = "`admin_listen` binds a non-loopback address but `admin_tls.client_ca` is unset, so the admin plane would accept connections from the network without client certificates."
+action = "Set `admin_tls.client_ca` to require client certificates, or bind `admin_listen` to a loopback address."
+text = "{detail}"
+example = "admin_listen: 0.0.0.0:9090"
+example_detail = "admin_listen '0.0.0.0:9090' is network-exposed but the admin plane has no mTLS (admin_tls.client_ca is unset). Require client certificates by supplying admin_tls.client_ca, bind admin_listen to loopback, or set admin_require_mtls: false to deliberately run a token-only admin plane (e.g. behind a mesh)"
+
+[[diagnostic]]
+name = "CONFIG_EXPORT_INVALID"
+code = 3131
+class = "Config"
+slug = "config-export-invalid"
+title = "An export sink definition is invalid"
+severity = "Fatal"
+summary = "An entry under `export:` cannot deliver what it promises: an unknown module, settings the module refuses, a stream or field that does not exist, has no producer or that the module cannot carry, a duplicate, an empty list, a pinned field left out, or `durable: true` that this release does not implement."
+action = "Fix the sink the message names; the message lists the valid streams and fields. docs/export.md documents every stream."
+text = "{detail}"
+example = "export:\n  siem:\n    module: otlp\n    streams: [audit]"
+example_detail = "export.siem.streams: `audit` is NOT a stream — it was a use case, not a data type"
+
+[[diagnostic]]
+name = "CONFIG_DESTINATION_REFUSED"
+code = 3132
+class = "Config"
+slug = "config-destination-refused"
+title = "An outbound destination is refused by the egress policy"
+severity = "Fatal"
+summary = "A configured outbound URL (an upstream, a token endpoint, a sink) is not one busbar will send to: it is malformed, uses plaintext for a public host, or targets a blocked cloud-metadata host."
+action = "Use an `https://` URL for a public host, fix the URL the message names, or list a deliberately reachable metadata host under `security.allow_metadata_hosts`."
+text = "{detail}"
+example = "providers:\n  remote: { base_url: http://api.example.com }"
+example_detail = "provider 'remote' base_url must use a secure connection for a public host; plaintext is permitted only for a private/loopback local-model upstream"
+
+# ---- admin API error responses (8101-8199): the `diag` field of the `error` object --------------
+
+[[diagnostic]]
+name = "ADMIN_NOT_FOUND"
+doc = "The admin API error envelope's `diag` for `error.code = not_found`."
+code = 8101
+class = "Governance"
+slug = "admin-not-found"
+title = "The admin resource named in the request does not exist"
+severity = "Actionable"
+summary = "The path names a resource (a key, a group, a hook, an exporter, a plugin) that this deployment does not have, or one that cannot exist in its current mode (a key read with governance disabled). The response's `message` names the missing thing."
+action = "List the collection (for example `GET /api/v1/admin/keys`) to find the right name or id, or create the resource first."
+
+[[diagnostic]]
+name = "ADMIN_UNAUTHORIZED"
+doc = "The admin API error envelope's `diag` for `error.code = unauthorized`."
+code = 8102
+class = "Governance"
+slug = "admin-unauthorized"
+title = "The admin request carries no valid admin credential"
+severity = "Actionable"
+summary = "The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` or `x-admin-token` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`)."
+action = "Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>` or `x-admin-token`. docs/admin-api.md covers the auth chain."
+
+[[diagnostic]]
+name = "ADMIN_METHOD_NOT_ALLOWED"
+doc = "The admin API error envelope's `diag` for `error.code = method_not_allowed`."
+code = 8103
+class = "Governance"
+slug = "admin-method-not-allowed"
+title = "The admin path does not take this HTTP method"
+severity = "Actionable"
+summary = "The path exists on the admin surface, but not with the method the request used (for example a `DELETE` on a read-only collection)."
+action = "Use a method the path documents; the OpenAPI document at /docs/api/ lists every path and method."
+
+[[diagnostic]]
+name = "ADMIN_FORBIDDEN"
+doc = "The admin API error envelope's `diag` for `error.code = forbidden`."
+code = 8104
+class = "Governance"
+slug = "admin-forbidden"
+title = "The admin credential's scope does not cover this call"
+severity = "Actionable"
+summary = "The caller authenticated, but its admin scope (read-only, or a role binding's verb list) does not include this operation. The message names the scope that would have sufficed."
+action = "Call with a credential whose scope covers the operation, or widen the role binding's `admin_scope` or `verbs`."
+
+[[diagnostic]]
+name = "ADMIN_INVALID_REQUEST"
+doc = "The admin API error envelope's `diag` for `error.code = invalid_request`."
+code = 8105
+class = "Governance"
+slug = "admin-invalid-request"
+title = "The admin request is malformed or fails validation"
+severity = "Actionable"
+summary = "The request body or its parameters are not what the operation takes: a malformed JSON body, an unknown or missing field, a value out of range, or a configuration change that fails the same validation `busbar --validate` runs. The message says which."
+action = "Fix the request as the message describes; the OpenAPI document at /docs/api/ gives each operation's schema."
+
+[[diagnostic]]
+name = "ADMIN_VERSION_CONFLICT"
+doc = "The admin API error envelope's `diag` for `error.code = version_conflict`."
+code = 8106
+class = "Governance"
+slug = "admin-version-conflict"
+title = "The If-Match version is stale"
+severity = "Actionable"
+summary = "The request's `If-Match` names a version of the resource that is no longer current: someone else changed it after you read it. This is retryable."
+action = "Re-read the resource, re-apply your change to the current version, and retry with the new `ETag`."
+
+[[diagnostic]]
+name = "ADMIN_CONFLICT"
+doc = "The admin API error envelope's `diag` for `error.code = conflict`."
+code = 8107
+class = "Governance"
+slug = "admin-conflict"
+title = "The admin request contradicts the server's state"
+severity = "Actionable"
+summary = "The request cannot apply to the current state and a retry will not change that: governance is disabled, a base-defined hook cannot be removed, a grant is immutable, a duplicate already exists, or an idempotency key is still in flight. The message says which."
+action = "Change the request (or the state it depends on) as the message describes; this is not a transient error."
+
+[[diagnostic]]
+name = "ADMIN_RATE_LIMITED"
+doc = "The admin API error envelope's `diag` for `error.code = rate_limited`."
+code = 8108
+class = "Governance"
+slug = "admin-rate-limited"
+title = "The admin mutation rate limit is exhausted"
+severity = "Actionable"
+summary = "The caller has used its per-minute budget of admin mutations. Reads are not limited."
+action = "Wait for the window the `retry-after` header gives (at most a minute) and retry; batch changes where the API allows."
+
+[[diagnostic]]
+name = "ADMIN_INTERNAL"
+doc = "The admin API error envelope's `diag` for `error.code = internal`."
+code = 8109
+class = "Governance"
+slug = "admin-internal"
+title = "The admin call failed inside busbar"
+severity = "Actionable"
+summary = "An internal failure (a store or plugin error) stopped the call. The response never carries the cause, which may be sensitive; the server log carries it under its own code."
+action = "Check the busbar log at the time of the call for the error line and its code, then retry once the cause is fixed."
+
+[[diagnostic]]
+name = "ADMIN_UNAVAILABLE"
+doc = "The admin API error envelope's `diag` for `error.code = unavailable`."
+code = 8110
+class = "Governance"
+slug = "admin-unavailable"
+title = "The admin call could not complete within its bound"
+severity = "Actionable"
+summary = "An operation that is normally fast could not start or finish in time (for example the plugin catalog scan), or no administrative surface is mounted on this listener. The call was abandoned rather than left to hang."
+action = "Retry after a short wait. If it persists, check the server log and the store's health."
+
+[[diagnostic]]
+name = "ADMIN_UNPRICED_CLASS"
+doc = "The admin API error envelope's `diag` for `error.code = unpriced_class`."
+code = 8111
+class = "Governance"
+slug = "admin-unpriced-class"
+title = "A usage read names a class the rate card does not price"
+severity = "Actionable"
+summary = "A usage query asked for a class the rate card in force does not price, so there is no amount to report for it."
+action = "Price the class on the plane's rate card, or drop it from the query."
+
+[[diagnostic]]
+name = "ADMIN_REQUEST_TOO_LARGE"
+doc = "The admin API error envelope's `diag` for `error.code = request_too_large`."
+code = 8112
+class = "Governance"
+slug = "admin-request-too-large"
+title = "The admin request body exceeds the configured limit"
+severity = "Actionable"
+summary = "The request body is larger than the admin surface accepts."
+action = "Send a smaller body (split a bulk change into several requests), or raise the configured admin body limit."
+
+[[diagnostic]]
+name = "ADMIN_REQUEST_REFUSED"
+doc = "The admin API error envelope's `diag` for `error.code = (any other)`."
+code = 8199
+class = "Governance"
+slug = "admin-request-refused"
+title = "The admin request was refused"
+severity = "Actionable"
+summary = "The admin surface refused the request for a reason the `error.code` field names. This code covers refusals without a more specific admin code."
+action = "Read `error.code` and `error.message` in the response; docs/admin-api.md lists every error code."

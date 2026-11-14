@@ -821,9 +821,10 @@ fn datagram_line_memory_limit_zero_is_a_config_validation_error() {
     validate_limits(&cfg.limits, &mut errors);
     assert_eq!(
         errors,
-        [
+        [crate::diagnostics::coded::config_setting_out_of_range(
             "limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"
-        ],
+        )
+        .to_string()],
     );
 }
 
@@ -1698,9 +1699,12 @@ fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
     ));
     let errs = validate_cost_metadata(&cfg, declarations)
         .expect_err("a fee unit is no class a card prices");
-    let want = "tools.rate_card configures unit(s) per_request not declared by this plane \
-                (declared: calls, bytes); remove them or fix the name";
-    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+    let want = crate::diagnostics::coded::config_rate_card_invalid(
+        "tools.rate_card configures unit(s) per_request not declared by this plane \
+         (declared: calls, bytes); remove them or fix the name",
+    )
+    .to_string();
+    assert!(errs.contains(&want), "{errs:?}");
 }
 
 #[test]
@@ -1745,10 +1749,13 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
     ));
     let errs =
         validate_cost_metadata(&cfg, declarations).expect_err("typo_class is declared by no plane");
-    let want = "pools.rate_card configures unit(s) typo_class not declared by this plane \
-                (declared: input, output, cache_read, cache_write, search_units, images); remove \
-                them or fix the name";
-    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+    let want = crate::diagnostics::coded::config_rate_card_invalid(
+        "pools.rate_card configures unit(s) typo_class not declared by this plane \
+         (declared: input, output, cache_read, cache_write, search_units, images); remove \
+         them or fix the name",
+    )
+    .to_string();
+    assert!(errs.contains(&want), "{errs:?}");
 
     cfg.rate_card = Some(plane_card(
         "class-plane",
@@ -1757,9 +1764,12 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
     ));
     let errs =
         validate_cost_metadata(&cfg, declarations).expect_err("byts is not a declared tools class");
-    let want = "tools.rate_card configures unit(s) byts not declared by this plane (declared: \
-                calls, bytes); remove them or fix the name";
-    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+    let want = crate::diagnostics::coded::config_rate_card_invalid(
+        "tools.rate_card configures unit(s) byts not declared by this plane (declared: \
+         calls, bytes); remove them or fix the name",
+    )
+    .to_string();
+    assert!(errs.contains(&want), "{errs:?}");
 
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0, images: 0 } }\n",
@@ -1794,14 +1804,17 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
     cfg.plane_fees = fees("session-plane", 2, 40);
     let errs = validate_cost_metadata(&cfg, declarations)
         .expect_err("the session plane counts no request");
-    let want = "streams.fees.per_request is not counted by this plane (counted: per_session); \
-                remove it";
+    let want = crate::diagnostics::coded::config_rate_card_invalid(
+        "streams.fees.per_request is not counted by this plane (counted: per_session); remove it",
+    );
     assert_eq!(errs, vec![want.to_string()]);
 
     cfg.plane_fees = fees("class-plane", 0, 1);
     let errs =
         validate_cost_metadata(&cfg, declarations).expect_err("the class plane counts no fee unit");
-    let want = "tools.fees.per_session is not counted by this plane (counted: none); remove it";
+    let want = crate::diagnostics::coded::config_rate_card_invalid(
+        "tools.fees.per_session is not counted by this plane (counted: none); remove it",
+    );
     assert_eq!(errs, vec![want.to_string()]);
 
     cfg.plane_fees = fees("session-plane", 0, 40);
@@ -1842,9 +1855,12 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     ));
     let errs =
         validate_cost_metadata(&cfg, declarations).expect_err("a card does not price the fee unit");
-    let want = "live.rate_card configures unit(s) per_session not declared by this plane \
-                (declared: calls); remove them or fix the name";
-    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+    let want = crate::diagnostics::coded::config_rate_card_invalid(
+        "live.rate_card configures unit(s) per_session not declared by this plane \
+         (declared: calls); remove them or fix the name",
+    )
+    .to_string();
+    assert!(errs.contains(&want), "{errs:?}");
 }
 
 #[test]

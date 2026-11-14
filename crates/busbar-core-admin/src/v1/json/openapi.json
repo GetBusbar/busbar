@@ -13011,6 +13011,11 @@
       "Error": {
         "type": "object",
         "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^BUSBAR-[0-9]{4}$",
+            "description": "The catalog code of this refusal (owner decision 2026-11-12). Its docs page is https://getbusbar.com/docs/<major.minor>/errors/<code>. `error` keeps 1.5.5's `code` and `message` unchanged."
+          },
           "error": {
             "type": "object",
             "properties": {
@@ -13047,6 +13052,7 @@
           }
         },
         "required": [
+          "code",
           "error"
         ]
       },

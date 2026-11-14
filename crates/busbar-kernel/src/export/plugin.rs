@@ -5,6 +5,7 @@ use super::projection::{resolve_projection, Projection};
 use super::PayloadCache;
 use crate::config::secret::ResolvedSettings;
 use crate::config::ExportCfg;
+use crate::diagnostics::coded;
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
 use busbar_contract::abi::export::{CheckPhase, ExportStream};
@@ -69,12 +70,15 @@ pub(crate) fn configured_instance(
             })
         }
         None => {
-            errors.push(format!(
-                "export.{name}.module: unknown exporter '{}'; the built-in export modules are \
+            errors.push(
+                coded::config_export_invalid(format!(
+                    "export.{name}.module: unknown exporter '{}'; the built-in export modules are \
                  {}",
-                def.module.trim(),
-                linked_modules().join(" | ")
-            ));
+                    def.module.trim(),
+                    linked_modules().join(" | ")
+                ))
+                .into(),
+            );
             None
         }
     }
@@ -358,14 +362,18 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         let settings = match sink_settings(axis, module, &def.settings) {
             Ok(settings) => settings,
             Err(e) => {
-                errors.push(format!("export.{name}.settings: {e}"));
+                errors.push(
+                    coded::config_export_invalid(format!("export.{name}.settings: {e}")).into(),
+                );
                 continue;
             }
         };
         let admitted = busbar_contract::export_calls::ExportOpening::new(def.settings.clone());
         let prepared = admitted.with_settings(settings.clone());
         let opened_sink = axis.open(module, &format!("export.{name}"), &prepared);
-        let Ok(sink) = instance_opened(name, opened_sink).map_err(|e| errors.push(e)) else {
+        let Ok(sink) = instance_opened(name, opened_sink)
+            .map_err(|e| errors.push(coded::config_export_invalid(e).into()))
+        else {
             continue;
         };
 
@@ -385,9 +393,12 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             None
         };
         if opened_recorder != expected_recorder {
-            errors.push(format!(
-                "export.{name}: recorder declaration changed since configuration admission"
-            ));
+            errors.push(
+                coded::config_export_invalid(format!(
+                    "export.{name}: recorder declaration changed since configuration admission"
+                ))
+                .into(),
+            );
             continue;
         }
         let span_record = sink.takes_span_records();
@@ -582,10 +593,10 @@ fn deliver_one(
 }
 
 pub fn start() -> Result<(), String> {
-    let mut errors = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
     for s in sinks() {
         if let Err(e) = s.sink.start() {
-            errors.push(format!("export.{}: {e}", s.name));
+            errors.push(coded::config_export_invalid(format!("export.{}: {e}", s.name)).into());
             continue;
         }
         start_one(s);

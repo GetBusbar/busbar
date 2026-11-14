@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
+    coded, diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
     CONFIG_RATE_CARD_MISSING,
 };
@@ -88,16 +88,19 @@ pub(super) fn validate_with_plugins(
     {
         let b = cfg.limits.reasoning_effort_budgets;
         if b.minimal == 0 || b.low == 0 || b.medium == 0 || b.high == 0 {
-            errors.push(format!(
-                "limits.reasoning_effort_budgets entries must be > 0 (got {}/{}/{}/{})",
-                b.minimal, b.low, b.medium, b.high
-            ));
+            errors.push(
+                coded::config_setting_out_of_range(format!(
+                    "limits.reasoning_effort_budgets entries must be > 0 (got {}/{}/{}/{})",
+                    b.minimal, b.low, b.medium, b.high
+                ))
+                .into(),
+            );
         }
         if !(b.minimal <= b.low && b.low <= b.medium && b.medium <= b.high) {
-            errors.push(format!(
+            errors.push(coded::config_setting_out_of_range(format!(
                 "limits.reasoning_effort_budgets must be ascending (minimal <= low <= medium <= high); got {}/{}/{}/{}",
                 b.minimal, b.low, b.medium, b.high
-            ));
+            )).into());
         }
     }
 
@@ -110,83 +113,89 @@ pub(super) fn validate_with_plugins(
         if let Some(provider_name) = cfg.providers.get(&model_cfg.provider) {
             model_protocols.insert(model_name.as_str(), provider_name.dialect());
         } else {
-            errors.push(format!(
-                "model '{}' references unknown provider '{}'",
-                model_name, model_cfg.provider
-            ));
+            errors.push(
+                coded::config_model_invalid(format!(
+                    "model '{}' references unknown provider '{}'",
+                    model_name, model_cfg.provider
+                ))
+                .into(),
+            );
         }
 
         if model_cfg.default_max_tokens == Some(0) {
-            errors.push(format!(
+            errors.push(coded::config_model_invalid(format!(
                 "model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
                 model_name,
                 crate::config::limits::DEFAULT_MAX_TOKENS
-            ));
+            )).into());
         }
 
         if model_cfg.max_concurrent == Some(0) {
-            errors.push(format!(
+            errors.push(
+                coded::config_model_invalid(format!(
                 "model '{}' has max_concurrent: 0; must be >= 1, or omit it (default = unbounded)",
                 model_name
-            ));
+            ))
+                .into(),
+            );
         }
 
         if let Some(mc_val) = model_cfg.max_concurrent {
             if mc_val > MAX_SEMAPHORE_PERMITS {
-                errors.push(format!(
+                errors.push(coded::config_model_invalid(format!(
                     "model '{}' has max_concurrent: {mc_val}; must be <= {MAX_SEMAPHORE_PERMITS} \
                      (tokio::sync::Semaphore's hard permit ceiling — a value above it panics at \
                      build time instead of failing validation), or omit the field to mean unbounded",
                     model_name
-                ));
+                )).into());
             }
         }
 
         if model_cfg.max_requests == 0 {
-            errors.push(format!(
+            errors.push(coded::config_model_invalid(format!(
                 "model '{}' has max_requests: 0; a lane with a zero lifetime budget never admits a request — use a positive cap, or omit it (default -1 = unlimited)",
                 model_name
-            ));
+            )).into());
         }
 
         if model_cfg.attempt_timeout_ms == Some(0) {
-            errors.push(format!(
+            errors.push(coded::config_model_invalid(format!(
                 "model '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to disable the per-attempt cap",
                 model_name
-            ));
+            )).into());
         }
 
         if let Some(ms) = model_cfg
             .attempt_timeout_ms
             .filter(|ms| *ms > MAX_DURATION_MS)
         {
-            errors.push(format!(
+            errors.push(coded::config_model_invalid(format!(
                 "model '{model_name}' has attempt_timeout_ms: {ms}, above the maximum of \
                  {MAX_DURATION_MS} ms (30 years, the async runtime's own 'never' horizon); a larger \
                  duration overflows the clock arithmetic it feeds — omit it to disable the cap"
-            ));
+            )).into());
         }
 
         if let Some(um) = &model_cfg.upstream_model {
             if um.trim().is_empty() {
-                errors.push(format!(
+                errors.push(coded::config_model_invalid(format!(
                     "model '{}' has an empty upstream_model; set a non-empty provider model id, or omit it to use the config key",
                     model_name
-                ));
+                )).into());
             }
         }
 
         if reserved_legacy_admin_name(model_name) {
-            errors.push(format!(
+            errors.push(coded::config_name_reserved_route(format!(
                 "model name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
                 model_name, model_name
-            ));
+            )).into());
         }
         if reserved_admin_name(model_name) {
-            errors.push(format!(
+            errors.push(coded::config_name_reserved_route(format!(
                 "model name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
                 model_name, admin_root_segment(), admin_root_segment(), admin_root_segment(), model_name
-            ));
+            )).into());
         }
     }
 
@@ -194,44 +203,44 @@ pub(super) fn validate_with_plugins(
 
     for pool_name in cfg.pools.keys() {
         if provider_names.contains(pool_name.as_str()) {
-            errors.push(format!(
+            errors.push(coded::config_name_conflict(format!(
                 "pool name '{}' conflicts with provider name '{}'; pools and providers must have distinct names",
                 pool_name, pool_name
-            ));
+            )).into());
         }
         if model_names.contains(pool_name.as_str()) {
-            errors.push(format!(
+            errors.push(coded::config_name_conflict(format!(
                 "pool name '{}' conflicts with model name '{}'; pools and models must have distinct names",
                 pool_name, pool_name
-            ));
+            )).into());
         }
 
         if reserved_legacy_admin_name(pool_name) {
-            errors.push(format!(
+            errors.push(coded::config_name_reserved_route(format!(
                 "pool name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a pool reachable via that path is unreachable to clients and bypasses per-pool governance; rename it",
                 pool_name
-            ));
+            )).into());
         }
         if reserved_admin_name(pool_name) {
-            errors.push(format!(
+            errors.push(coded::config_name_reserved_route(format!(
                 "pool name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a pool reachable via that path is unreachable to clients and bypasses per-pool governance; rename it",
                 pool_name, admin_root_segment(), admin_root_segment(), admin_root_segment()
-            ));
+            )).into());
         }
     }
 
     for provider_name in cfg.providers.keys() {
         if reserved_legacy_admin_name(provider_name) {
-            errors.push(format!(
+            errors.push(coded::config_name_reserved_route(format!(
                 "provider name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a provider reachable via the adhoc /admin/<model> route is unreachable to clients; rename it",
                 provider_name
-            ));
+            )).into());
         }
         if reserved_admin_name(provider_name) {
-            errors.push(format!(
+            errors.push(coded::config_name_reserved_route(format!(
                 "provider name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a provider reachable via the adhoc /{}/<model> route is unreachable to clients; rename it",
                 provider_name, admin_root_segment(), admin_root_segment(), admin_root_segment(), admin_root_segment()
-            ));
+            )).into());
         }
     }
 
@@ -256,47 +265,53 @@ pub(super) fn validate_with_plugins(
         let mut member_protocols: HashSet<&str> = HashSet::new();
 
         if pool_cfg.members.is_empty() {
-            errors.push(format!(
+            errors.push(coded::config_pool_members_invalid(format!(
                 "pool '{}' has no members; a pool with an empty member list is un-routable — every request to it 503s with a misleading 'overloaded' message. Add at least one member, or remove the pool",
                 pool_name
-            ));
+            )).into());
         }
 
         for member in &pool_cfg.members {
             if member.weight == 0 {
-                errors.push(format!(
-                    "pool '{}' member '{}' weight must be >= 1 (got 0)",
-                    pool_name, member.model
-                ));
+                errors.push(
+                    coded::config_pool_members_invalid(format!(
+                        "pool '{}' member '{}' weight must be >= 1 (got 0)",
+                        pool_name, member.model
+                    ))
+                    .into(),
+                );
             }
 
             if member.attempt_timeout_ms == Some(0) {
-                errors.push(format!(
+                errors.push(coded::config_pool_members_invalid(format!(
                     "pool '{}' member '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to inherit the model's setting",
                     pool_name, member.model
-                ));
+                )).into());
             }
             if let Some(ms) = member.attempt_timeout_ms.filter(|ms| *ms > MAX_DURATION_MS) {
-                errors.push(format!(
+                errors.push(coded::config_pool_members_invalid(format!(
                     "pool '{pool_name}' member '{}' has attempt_timeout_ms: {ms}, above the maximum \
                      of {MAX_DURATION_MS} ms (30 years, the async runtime's own 'never' horizon); a \
                      larger duration overflows the clock arithmetic it feeds",
                     member.model
-                ));
+                )).into());
             }
 
             if let Some(&protocol) = model_protocols.get(member.model.as_str()) {
                 member_protocols.insert(protocol);
             } else if model_names.contains(member.model.as_str()) {
-                errors.push(format!(
+                errors.push(coded::config_pool_members_invalid(format!(
                     "pool '{}' member '{}' references model '{}', which is defined but whose provider is unresolvable; fix that model's provider reference (the model's 'references unknown provider' error is reported separately)",
                     pool_name, member.model, member.model
-                ));
+                )).into());
             } else {
-                errors.push(format!(
-                    "pool '{}' references unknown model '{}'",
-                    pool_name, member.model
-                ));
+                errors.push(
+                    coded::config_pool_members_invalid(format!(
+                        "pool '{}' references unknown model '{}'",
+                        pool_name, member.model
+                    ))
+                    .into(),
+                );
             }
         }
 
@@ -317,17 +332,17 @@ pub(super) fn validate_with_plugins(
 
         if let Some(failover) = &pool_cfg.failover {
             if failover.timeout_secs == 0 {
-                errors.push(format!(
+                errors.push(coded::config_pool_failover_invalid(format!(
                     "pool '{pool_name}' failover.timeout_secs must be >= 1; a 0 budget rejects the primary attempt before it runs (every request 503s)"
-                ));
+                )).into());
             } else if failover.timeout_secs > crate::config::MAX_FAILOVER_DEADLINE_SECS {
-                errors.push(format!(
+                errors.push(coded::config_pool_failover_invalid(format!(
                     "pool '{}' failover.timeout_secs ({}) exceeds the maximum of {} s (24h); a per-request failover budget larger than a day is a fat-finger typo. Lower it to <= {} s",
                     pool_name,
                     failover.timeout_secs,
                     crate::config::MAX_FAILOVER_DEADLINE_SECS,
                     crate::config::MAX_FAILOVER_DEADLINE_SECS
-                ));
+                )).into());
             }
 
             if let Some(exclusions) = &failover.exclusions {
@@ -335,9 +350,9 @@ pub(super) fn validate_with_plugins(
                     pool_cfg.members.iter().map(|m| m.model.as_str()).collect();
                 for excluded in exclusions {
                     if !member_targets.contains(excluded.as_str()) {
-                        errors.push(format!(
+                        errors.push(coded::config_pool_failover_invalid(format!(
                             "pool '{pool_name}' failover.exclusions references '{excluded}', which is not a member of the pool; an exclusion must name one of the pool's members (otherwise it silently benches nothing)"
-                        ));
+                        )).into());
                     }
                 }
             }
@@ -345,13 +360,16 @@ pub(super) fn validate_with_plugins(
 
         if let Some(crate::config::OnExhaustedCfg::FallbackPool(target)) = &pool_cfg.on_exhausted {
             if !cfg.pools.contains_key(target) {
-                errors.push(format!(
+                errors.push(
+                    coded::config_pool_on_exhausted_invalid(format!(
                     "pool '{pool_name}' on_exhausted references unknown fallback pool '{target}'"
-                ));
+                ))
+                    .into(),
+                );
             } else if target == pool_name {
-                errors.push(format!(
+                errors.push(coded::config_pool_on_exhausted_invalid(format!(
                     "pool '{pool_name}' on_exhausted references itself as its fallback pool ('{target}'); a self-referential fallback never engages (the runtime loop guard terminates it on re-entry) so it 503s exactly as having no fallback would. Point it at a different pool or remove on_exhausted"
-                ));
+                )).into());
             }
         }
 
@@ -363,41 +381,47 @@ pub(super) fn validate_with_plugins(
                 .unwrap_or(crate::config::DEFAULT_FAILOVER_DEADLINE_SECS);
             let budget_ms = resolved_timeout_secs.saturating_mul(1000);
             if *max_ms == 0 {
-                errors.push(format!(
+                errors.push(coded::config_pool_on_exhausted_invalid(format!(
                     "pool '{pool_name}' on_exhausted.queue.max_ms must be > 0; a 0 wait never queues (it is just `reject` with extra machinery)"
-                ));
+                )).into());
             } else if *max_ms > budget_ms {
-                errors.push(format!(
+                errors.push(coded::config_pool_on_exhausted_invalid(format!(
                     "pool '{pool_name}' on_exhausted.queue.max_ms ({max_ms} ms) exceeds the resolved failover budget ({resolved_timeout_secs} s = {budget_ms} ms); a queue longer than the whole failover budget is clamped to it at runtime and never reaches its ceiling. Lower max_ms to <= {budget_ms} ms or raise failover.timeout_secs"
-                ));
+                )).into());
             }
         }
 
         if let Some(affinity) = &pool_cfg.affinity {
             if let Some(header_name) = &affinity.header_name {
                 if header_name.is_empty() {
-                    errors.push(format!(
+                    errors.push(coded::config_pool_affinity_invalid(format!(
                         "pool '{pool_name}' affinity.header_name must not be empty (an empty HTTP header field-name silently disables session affinity)"
-                    ));
+                    )).into());
                 }
                 if !header_name.is_ascii() {
-                    errors.push(format!(
+                    errors.push(coded::config_pool_affinity_invalid(format!(
                         "pool '{pool_name}' affinity.header_name '{header_name}' must be ASCII (an HTTP header field-name cannot contain non-ASCII bytes)"
-                    ));
+                    )).into());
                 } else if !header_name.is_empty()
                     && !busbar_contract::header::is_header_name_token(header_name.as_bytes())
                 {
-                    errors.push(format!(
+                    errors.push(
+                        coded::config_pool_affinity_invalid(format!(
                         "pool '{pool_name}' affinity.header_name must be a valid HTTP field-name"
-                    ));
+                    ))
+                        .into(),
+                    );
                 }
                 if header_name.len() > MAX_AFFINITY_HEADER_NAME_LEN {
-                    errors.push(format!(
-                        "pool '{}' affinity.header_name is {} chars; must be <= {}",
-                        pool_name,
-                        header_name.len(),
-                        MAX_AFFINITY_HEADER_NAME_LEN
-                    ));
+                    errors.push(
+                        coded::config_pool_affinity_invalid(format!(
+                            "pool '{}' affinity.header_name is {} chars; must be <= {}",
+                            pool_name,
+                            header_name.len(),
+                            MAX_AFFINITY_HEADER_NAME_LEN
+                        ))
+                        .into(),
+                    );
                 }
             }
         }
@@ -424,10 +448,10 @@ pub(super) fn validate_with_plugins(
                 if pool_name.as_str() == min_member && ring.len() > 1 {
                     let mut display: Vec<&str> = ring.iter().map(String::as_str).collect();
                     display.push(cursor.as_str());
-                    errors.push(format!(
+                    errors.push(coded::config_pool_fallback_cycle(format!(
                         "fallback_pool cycle detected: {}; on_exhausted fallback chains must not loop — the runtime loop guard terminates a cycle on re-entry, so every pool in the ring 503s instead of degrading. Break the cycle (point one pool at a non-looping pool or remove its on_exhausted)",
                         display.join(" -> ")
-                    ));
+                    )).into());
                 }
                 break;
             }
@@ -446,38 +470,44 @@ pub(super) fn validate_with_plugins(
 
     for (hook_name, hook) in &cfg.hooks {
         if let Err(refusal) = validate_hook_timeout(hook_name, hook.timeout_ms) {
-            errors.push(refusal);
+            errors.push(coded::config_hook_invalid(refusal).into());
         }
         if hook.plugin.trim().is_empty() {
-            errors.push(format!(
-                "hook '{hook_name}' names no plugin: set `module:` to a `kind: hook` plugin's \
+            errors.push(
+                coded::config_hook_invalid(format!(
+                    "hook '{hook_name}' names no plugin: set `module:` to a `kind: hook` plugin's \
                  signed-manifest name or alias"
-            ));
+                ))
+                .into(),
+            );
         }
 
         if hook.prompt == crate::config::PromptAccess::Rw
             && hook.kind == crate::config::HookKind::Tap
         {
-            errors.push(format!(
+            errors.push(
+                coded::config_hook_invalid(format!(
                 "hook '{hook_name}' is a tap with `prompt: rw`, but only a gate can rewrite (a tap \
                  never replies). Use `kind: gate`, or lower to `prompt: ro`."
-            ));
+            ))
+                .into(),
+            );
         }
 
         if hook.default && hook.kind == crate::config::HookKind::Tap {
-            errors.push(format!(
+            errors.push(coded::config_hook_invalid(format!(
                 "hook '{hook_name}' is a tap with `default: true`, but a tap cannot be a pool's base \
                  ordering (it never replies). Only a gate can be the default."
-            ));
+            )).into());
         }
     }
 
     for hook_name in cfg.hooks.keys() {
         if crate::config::is_reserved_hook_name(hook_name) {
-            errors.push(format!(
+            errors.push(coded::config_hook_invalid(format!(
                 "hook '{hook_name}' uses a reserved name (a built-in ranking strategy, auth module, \
                  or on_error terminal); rename the hook — a hook can never shadow a reserved word"
-            ));
+            )).into());
         }
     }
 
@@ -490,25 +520,34 @@ pub(super) fn validate_with_plugins(
             .collect();
         if defaults.len() > 1 {
             defaults.sort_unstable();
-            errors.push(format!(
+            errors.push(
+                coded::config_hook_invalid(format!(
                 "more than one hook sets `default: true` ({}); at most one hook may be the default \
                  base ordering",
                 defaults.join(", ")
-            ));
+            ))
+                .into(),
+            );
         }
     }
 
     for (pool_name, pool_cfg) in &cfg.pools {
         for hook_name in &pool_cfg.gates {
             match cfg.hooks.get(hook_name) {
-                None => errors.push(format!(
+                None => errors.push(
+                    coded::config_pool_hooks_invalid(format!(
                     "pool '{pool_name}' references unknown hook '{hook_name}'; define it under \
                      top-level `hooks:`"
-                )),
-                Some(h) if h.kind != crate::config::HookKind::Gate => errors.push(format!(
+                ))
+                    .into(),
+                ),
+                Some(h) if h.kind != crate::config::HookKind::Gate => errors.push(
+                    coded::config_pool_hooks_invalid(format!(
                     "pool '{pool_name}' hook '{hook_name}' is a tap, but a hook named in a pool's \
                      `hooks:` list must be a gate (fire-and-wait); a tap cannot influence routing"
-                )),
+                ))
+                    .into(),
+                ),
                 Some(_) => {}
             }
         }
@@ -524,35 +563,41 @@ pub(super) fn validate_with_plugins(
 
             if crate::config::is_strategy_name(current) {
                 if !crate::preflight::builtin_ranking_known(current) {
-                    errors.push(format!(
+                    errors.push(coded::config_hook_invalid(format!(
                         "hook '{hook_name}' on_error names the built-in ranking strategy \
                          '{current}' but this binary was built WITHOUT the `hooks-ranking` \
                          feature. Rebuild with default features or use nothing|weighted|reject|first."
-                    ));
+                    )).into());
                 }
                 break;
             }
             if visited.contains(&current) {
-                errors.push(format!(
+                errors.push(
+                    coded::config_hook_invalid(format!(
                     "hook on_error chain does not terminate: {} -> {current} is a cycle; every \
                      chain must bottom out on nothing|weighted|reject|first or a ranking strategy",
                     visited.join(" -> ")
-                ));
+                ))
+                    .into(),
+                );
                 break;
             }
             let Some(next) = cfg.hooks.get(current) else {
-                errors.push(format!(
+                errors.push(coded::config_hook_invalid(format!(
                     "hook '{hook_name}' on_error names unknown fallback '{current}'; use a \
                      reserved terminal (nothing|weighted|reject|first), a ranking strategy, or another \
                      gate in the `hooks:` registry"
-                ));
+                )).into());
                 break;
             };
             if next.kind != crate::config::HookKind::Gate {
-                errors.push(format!(
+                errors.push(
+                    coded::config_hook_invalid(format!(
                     "hook '{hook_name}' on_error fallback '{current}' is a tap; a fallback must \
                      be a gate (fire-and-wait) — a tap cannot decide"
-                ));
+                ))
+                    .into(),
+                );
                 break;
             }
             visited.push(current);
@@ -570,17 +615,20 @@ pub(super) fn validate_with_plugins(
             .collect();
 
         if cfg.public_url.is_none() && auth.methods.values().any(|m| m.browser_login.is_some()) {
-            errors.push(
-                "auth.methods has a `browser_login` method but top-level `public_url:` is unset; a \
+            errors.push(coded::config_auth_policy_invalid("auth.methods has a `browser_login` method but top-level `public_url:` is unset; a \
                  hosted login button needs busbar's public base to build the authorize/redirect \
                  URLs — set `public_url: https://<busbar-host>`"
-                    .to_string(),
-            );
+                    ).into());
         }
 
         if let Some(ttl) = auth.key_ttl.as_deref() {
             if let Err(e) = crate::config::parse::parse_duration_secs(ttl) {
-                errors.push(format!("auth.key_ttl '{ttl}' is not a valid duration: {e}"));
+                errors.push(
+                    coded::config_auth_policy_invalid(format!(
+                        "auth.key_ttl '{ttl}' is not a valid duration: {e}"
+                    ))
+                    .into(),
+                );
             }
         }
 
@@ -589,7 +637,12 @@ pub(super) fn validate_with_plugins(
             match crate::config::parse::parse_duration_secs(ttl) {
                 Ok(secs) => Some(secs),
                 Err(e) => {
-                    errors.push(format!("{label} '{ttl}' is not a valid duration: {e}"));
+                    errors.push(
+                        coded::config_auth_policy_invalid(format!(
+                            "{label} '{ttl}' is not a valid duration: {e}"
+                        ))
+                        .into(),
+                    );
                     None
                 }
             }
@@ -604,23 +657,26 @@ pub(super) fn validate_with_plugins(
             .and_then(|t| parse_policy_ttl("auth.policy.max_ttl", t, &mut errors));
         if let (Some(d), Some(m)) = (default_secs, max_secs) {
             if d > m {
-                errors.push(format!(
+                errors.push(coded::config_auth_policy_invalid(format!(
                     "auth.policy.default_ttl ('{}', {d}s) exceeds auth.policy.max_ttl ('{}', {m}s); \
                      the default a mint falls back to cannot be longer than the ceiling",
                     policy.default_ttl.as_deref().unwrap_or(""),
                     policy.max_ttl.as_deref().unwrap_or(""),
-                ));
+                )).into());
             }
         }
         for (role, ceiling) in &policy.mint_ceilings {
             if let (Some(block), Some(modes)) = (&policy.binding_modes, &ceiling.binding_modes) {
                 for mode in modes.iter().filter(|m| !block.contains(m)) {
-                    errors.push(format!(
-                        "auth.policy.mint_ceilings.{role}.binding_modes names '{}', which \
+                    errors.push(
+                        coded::config_auth_policy_invalid(format!(
+                            "auth.policy.mint_ceilings.{role}.binding_modes names '{}', which \
                          auth.policy.binding_modes does not allow; a per-role ceiling cannot \
                          widen the deployment-wide binding modes",
-                        mode.as_str()
-                    ));
+                            mode.as_str()
+                        ))
+                        .into(),
+                    );
                 }
             }
             if let Some(ttl) = ceiling.max_ttl.as_deref() {
@@ -631,11 +687,14 @@ pub(super) fn validate_with_plugins(
                 ) {
                     if let Some(m) = max_secs {
                         if c > m {
-                            errors.push(format!(
+                            errors.push(
+                                coded::config_auth_policy_invalid(format!(
                                 "auth.policy.mint_ceilings.{role}.max_ttl ('{ttl}', {c}s) exceeds \
                                  auth.policy.max_ttl ({m}s); a per-role ceiling cannot exceed the \
                                  deployment-wide mint ceiling"
-                            ));
+                            ))
+                                .into(),
+                            );
                         }
                     }
                 }
@@ -643,45 +702,60 @@ pub(super) fn validate_with_plugins(
         }
         for (module, roles) in &auth.role_bindings {
             if !chain_modules.contains(module.as_str()) {
-                errors.push(format!(
+                errors.push(
+                    coded::config_role_binding_invalid(format!(
                     "role_bindings names module '{module}', which appears in neither auth.chain \
                      nor auth.admin_auth; a binding under an inactive module grants nothing. \
                      Add the module to the chain, e.g.:\n\n    auth:\n      chain:\n        - \
                      {module}: {{ settings: {{}} }}\n"
-                ));
+                ))
+                    .into(),
+                );
             }
             for (role, binding) in roles {
                 if reserved_operator_principal_id(role) {
-                    errors.push(format!(
+                    errors.push(
+                        coded::config_role_binding_invalid(format!(
                         "role_bindings.{module} binds role '{role}', which shadows the reserved \
                          operator principal id; choose another role name"
-                    ));
+                    ))
+                        .into(),
+                    );
                 }
                 if let Some(scope) = binding.admin_scope.as_deref() {
                     if busbar_contract::authz::Scope::parse(scope).is_none() {
-                        errors.push(format!(
-                            "role_bindings.{module}.{role} has unknown admin_scope '{scope}': \
+                        errors.push(
+                            coded::config_role_binding_invalid(format!(
+                                "role_bindings.{module}.{role} has unknown admin_scope '{scope}': \
                              expected read-only or full"
-                        ));
+                            ))
+                            .into(),
+                        );
                     }
                 }
 
                 match binding.verb_grant() {
                     None | Some(Ok(crate::config::VerbGrant::All)) => {}
-                    Some(Err(shape)) => errors.push(format!(
+                    Some(Err(shape)) => errors.push(
+                        coded::config_role_binding_invalid(format!(
                         "role_bindings.{module}.{role}.verbs must be \"{all}\" or a list of admin \
                          verb names, not {shape}",
                         all = crate::config::ALL_ADMIN_VERBS
-                    )),
+                    ))
+                        .into(),
+                    ),
                     Some(Ok(crate::config::VerbGrant::Named(names))) => {
                         for name in names {
                             if crate::admin::seam::admin_verb_rung(&name).is_none() {
-                                errors.push(format!(
+                                errors.push(
+                                    coded::config_role_binding_invalid(format!(
                                     "role_bindings.{module}.{role}.verbs names unknown admin verb \
                                      '{name}': expected \"{all}\" or operation names from the \
                                      admin verb table (e.g. get_keys, post_keys)",
                                     all = crate::config::ALL_ADMIN_VERBS
-                                ));
+                                ))
+                                    .into(),
+                                );
                             }
                         }
                     }
@@ -691,20 +765,26 @@ pub(super) fn validate_with_plugins(
                     let declared = crate::governance::plane_grant_kind(field)
                         .is_some_and(|kind| crate::governance::plane_declares_kind(&kind));
                     if !declared {
-                        errors.push(format!(
-                            "role_bindings.{module}.{role}.{field} grants a scope kind no \
+                        errors.push(
+                            coded::config_role_binding_invalid(format!(
+                                "role_bindings.{module}.{role}.{field} grants a scope kind no \
                              installed plane declares; remove it, or install the plane whose \
                              grants it names"
-                        ));
+                            ))
+                            .into(),
+                        );
                     }
                 }
                 if let Some(group) = binding.group.as_deref() {
                     if !cfg.groups.contains_key(group) {
-                        errors.push(format!(
+                        errors.push(
+                            coded::config_role_binding_invalid(format!(
                             "role_bindings.{module}.{role} names group '{group}', which does not \
                              exist.\nPaste this under groups and set its limits:\n\n    \
                              {group}:\n      limits:\n        - {{ requests: 0, per: minute }}\n"
-                        ));
+                        ))
+                            .into(),
+                        );
                     }
                 }
             }
@@ -716,7 +796,7 @@ pub(super) fn validate_with_plugins(
                     &format!("auth chain entry '{}'", entry.module),
                     scope,
                 ) {
-                    Err(e) => errors.push(e),
+                    Err(e) => errors.push(coded::config_auth_policy_invalid(e).into()),
                     Ok(busbar_contract::authz::Scope::Full) => diag_warn!(
                         CONFIG_AUTH_CHAIN_FULL_SCOPE,
                         module = %entry.module,
@@ -729,19 +809,25 @@ pub(super) fn validate_with_plugins(
             }
 
             if entry.token.is_some() && !crate::config::names_operator(&entry.module) {
-                errors.push(operator::misplaced_token(
-                    operator_provider(),
-                    &entry.module,
-                ));
+                errors.push(
+                    coded::config_auth_chain_invalid(operator::misplaced_token(
+                        operator_provider(),
+                        &entry.module,
+                    ))
+                    .into(),
+                );
             }
         }
     }
 
     for name in &cfg.global_hooks {
         if !cfg.hooks.contains_key(name) {
-            errors.push(format!(
+            errors.push(
+                coded::config_hook_invalid(format!(
                 "global_hooks references unknown hook '{name}'; define it under top-level `hooks:`"
-            ));
+            ))
+                .into(),
+            );
         }
     }
 
@@ -751,13 +837,16 @@ pub(super) fn validate_with_plugins(
             && !plugins_enabled
             && name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n))
         {
-            errors.push(format!(
-                "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
+            errors.push(
+                coded::config_pool_hooks_invalid(format!(
+                    "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
                  WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent. \
                  Rebuild with default features, use `hooks: [weighted]` (or name no strategy), or \
                  reference an external ranking hook.",
-                pool_cfg.policy
-            ));
+                    pool_cfg.policy
+                ))
+                .into(),
+            );
         }
     }
 
@@ -768,26 +857,32 @@ pub(super) fn validate_with_plugins(
         let decl = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section);
         let key = decl.map(|d| d.key).unwrap_or("endpoint");
         let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
-        errors.push(format!(
+        errors.push(
+            coded::config_plane_open_to_anonymous(format!(
             "`{key}:` is configured but auth.chain is empty, which serves the {noun} endpoint to \
              ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it \
              runs with WILDCARD grants over every registered subject on that plane. It also leaves \
              `upstream::authorise` with no inbound grant to bind busbar's outbound credentials to. \
              Close the data-plane chain (`auth: {{ chain: [keys] }}`, or an IdP auth plugin), or \
              remove the `{key}:` block if this deployment is not a {noun}."
-        ));
+        ))
+            .into(),
+        );
     }
 
     if let Some(auth) = &cfg.auth {
         for entry in &auth.chain {
             let name = entry.module.as_str();
             if name == "tokens" || name == "static-tokens" {
-                errors.push(format!(
-                    "auth.chain names '{name}': the static-token allowlist module was REMOVED \
+                errors.push(
+                    coded::config_auth_chain_invalid(format!(
+                        "auth.chain names '{name}': the static-token allowlist module was REMOVED \
                      in 1.5.0. Data-plane auth is `keys` (busbar-signed keys, minted via \
                      POST /api/v1/admin/keys) and IdP auth plugins - write:\n\n    auth:\n      \
                      chain:\n        - keys\n"
-                ));
+                    ))
+                    .into(),
+                );
             }
         }
 
@@ -796,18 +891,19 @@ pub(super) fn validate_with_plugins(
             .iter()
             .any(|e| e.module == crate::config::KEYS_MODULE);
         if verifies_signed_keys && auth.signing_key.is_none() {
-            errors.push(
-                "auth.signing_key is required for signed-token auth (auth.chain names the \
+            errors.push(coded::config_auth_chain_invalid("auth.signing_key is required for signed-token auth (auth.chain names the \
                  built-in `keys` verifier), but none is set - and busbar no longer auto-generates \
                  one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key \
                  to a secret reference for it ({file: /path} or {env: VAR} - a SHARED secret across \
                  nodes for a fleet)."
-                    .to_string(),
-            );
+                    ).into());
         }
 
         if verifies_signed_keys && !auth.usable_mint_path() {
-            errors.push(operator::no_mint_path(operator_provider()));
+            errors.push(
+                coded::config_auth_chain_invalid(operator::no_mint_path(operator_provider()))
+                    .into(),
+            );
         }
         if verifies_signed_keys && auth.admin_auth.is_empty() {
             diag_warn!(
@@ -860,10 +956,10 @@ pub(super) fn validate_with_plugins(
                 if let Some(c) = m.context_max {
                     match seen.get(m.model.as_str()) {
                         Some(existing) if *existing != c => {
-                            errors.push(format!(
+                            errors.push(coded::config_model_invalid(format!(
                                 "model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
                                 m.model, existing, c
-                            ));
+                            )).into());
                         }
                         _ => {
                             seen.insert(m.model.as_str(), c);
@@ -900,48 +996,57 @@ fn check_pool_breaker(
     errors: &mut Vec<String>,
 ) {
     if breaker.base_cooldown_secs == 0 {
-        errors.push(format!(
+        errors.push(coded::config_pool_breaker_invalid(format!(
             "pool '{pool_name}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
-        ));
+        )).into());
     }
     if breaker.max_cooldown_secs == 0 {
-        errors.push(format!(
+        errors.push(coded::config_pool_breaker_invalid(format!(
             "pool '{pool_name}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
-        ));
+        )).into());
     }
 
     if breaker.max_cooldown_secs < breaker.base_cooldown_secs {
-        errors.push(format!(
-            "pool '{}' breaker max_cooldown_secs ({}) must be >= base_cooldown_secs ({})",
-            pool_name, breaker.max_cooldown_secs, breaker.base_cooldown_secs
-        ));
+        errors.push(
+            coded::config_pool_breaker_invalid(format!(
+                "pool '{}' breaker max_cooldown_secs ({}) must be >= base_cooldown_secs ({})",
+                pool_name, breaker.max_cooldown_secs, breaker.base_cooldown_secs
+            ))
+            .into(),
+        );
     }
     if let Some(trip) = &breaker.trip {
         if trip.min_requests == 0 {
-            errors.push(format!(
-                "pool '{pool_name}' breaker trip.min_requests must be >= 1 (got 0)"
-            ));
+            errors.push(
+                coded::config_pool_breaker_invalid(format!(
+                    "pool '{pool_name}' breaker trip.min_requests must be >= 1 (got 0)"
+                ))
+                .into(),
+            );
         }
 
         if trip.window_secs == 0 {
-            errors.push(format!(
-                "pool '{pool_name}' breaker trip.window_secs must be >= 1 (got 0)"
-            ));
+            errors.push(
+                coded::config_pool_breaker_invalid(format!(
+                    "pool '{pool_name}' breaker trip.window_secs must be >= 1 (got 0)"
+                ))
+                .into(),
+            );
         }
         match trip.mode {
             crate::config::BreakerTripMode::ErrorRate => {
                 if !(trip.threshold > 0.0 && trip.threshold <= 1.0) {
-                    errors.push(format!(
+                    errors.push(coded::config_pool_breaker_invalid(format!(
                         "pool '{}' breaker trip.threshold must be in (0.0, 1.0] for error_rate mode (got {})",
                         pool_name, trip.threshold
-                    ));
+                    )).into());
                 }
             }
             crate::config::BreakerTripMode::Consecutive => {
                 if trip.consecutive_n == 0 {
-                    errors.push(format!(
+                    errors.push(coded::config_pool_breaker_invalid(format!(
                         "pool '{pool_name}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)"
-                    ));
+                    )).into());
                 }
             }
         }
@@ -963,113 +1068,105 @@ fn validate_limits_with(
     validate_limit_ceilings(limits, errors);
 
     if limits.upstream_request_timeout_secs < 1 {
-        errors.push(
-            "limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call \
+        errors.push(coded::config_setting_out_of_range("limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call \
              instantly)"
-                .to_string(),
-        );
+                ).into());
     }
     if limits.tls_handshake_timeout_secs < 1 {
-        errors.push(
-            "limits.tls_handshake_timeout_secs must be >= 1 (0 would abort every TLS handshake)"
-                .to_string(),
-        );
+        errors.push(coded::config_setting_out_of_range("limits.tls_handshake_timeout_secs must be >= 1 (0 would abort every TLS handshake)"
+                ).into());
     }
     if limits.request_body_read_timeout_secs < 1 {
-        errors.push(
-            "limits.request_body_read_timeout_secs must be >= 1 (0 would abort every request whose \
+        errors.push(coded::config_setting_out_of_range("limits.request_body_read_timeout_secs must be >= 1 (0 would abort every request whose \
              body is not instantly buffered)"
-                .to_string(),
-        );
+                ).into());
     }
     sinks(errors);
 
     if limits.max_honored_retry_after_secs < 1 {
-        errors.push(
-            "limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every honored \
+        errors.push(coded::config_setting_out_of_range("limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every honored \
              Retry-After to 0)"
-                .to_string(),
-        );
+                ).into());
     }
     if limits.hard_down_cooldown_secs < 1 {
-        errors.push(
-            "limits.hard_down_cooldown_secs must be >= 1 (a 0 sticky cooldown would re-ready a \
+        errors.push(coded::config_setting_out_of_range("limits.hard_down_cooldown_secs must be >= 1 (a 0 sticky cooldown would re-ready a \
              hard-down lane immediately)"
-                .to_string(),
-        );
+                ).into());
     }
 
     if limits.request_body_max_bytes < REQUEST_BODY_MAX_BYTES_FLOOR {
-        errors.push(format!(
+        errors.push(coded::config_setting_out_of_range(format!(
             "limits.request_body_max_bytes ({}) is below the {REQUEST_BODY_MAX_BYTES_FLOOR}-byte floor \
              — too small to admit a minimal request",
             limits.request_body_max_bytes
-        ));
+        )).into());
     }
     if limits.request_body_max_bytes > REQUEST_BODY_MAX_BYTES_CEIL {
-        errors.push(format!(
+        errors.push(coded::config_setting_out_of_range(format!(
             "limits.request_body_max_bytes ({}) exceeds the {REQUEST_BODY_MAX_BYTES_CEIL}-byte ceiling \
              — the body is buffered per request, so this risks memory exhaustion",
             limits.request_body_max_bytes
-        ));
+        )).into());
     }
     if limits.datagram_line_memory_bytes == Some(0) {
-        errors.push(
-            "limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"
-                .to_string(),
-        );
+        errors.push(coded::config_setting_out_of_range("limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"
+                ).into());
     }
 
     if limits.upstream_error_body_max_bytes < 1 {
-        errors.push(
-            "limits.upstream_error_body_max_bytes must be >= 1 (0 would buffer no upstream error body)"
-                .to_string(),
-        );
+        errors.push(coded::config_setting_out_of_range("limits.upstream_error_body_max_bytes must be >= 1 (0 would buffer no upstream error body)"
+                ).into());
     }
 
     if limits.default_max_tokens < 1 {
-        errors.push(
-            "limits.default_max_tokens must be >= 1 (0 would be injected verbatim and rejected upstream)"
-                .to_string(),
-        );
+        errors.push(coded::config_setting_out_of_range("limits.default_max_tokens must be >= 1 (0 would be injected verbatim and rejected upstream)"
+                ).into());
     }
 
     if limits.default_probe_interval_secs < 1 {
-        errors.push("health.default_probe_interval_secs must be >= 1".to_string());
+        errors.push(
+            coded::config_setting_out_of_range("health.default_probe_interval_secs must be >= 1")
+                .into(),
+        );
     }
     if limits.default_probe_timeout_secs < 1 {
-        errors.push("health.default_probe_timeout_secs must be >= 1".to_string());
+        errors.push(
+            coded::config_setting_out_of_range("health.default_probe_timeout_secs must be >= 1")
+                .into(),
+        );
     }
     if limits.default_policy_timeout_ms < 1 {
-        errors.push(
-            "routing.default_policy_timeout_ms must be >= 1 (0 would make every policy decision time \
+        errors.push(coded::config_setting_out_of_range("routing.default_policy_timeout_ms must be >= 1 (0 would make every policy decision time \
              out instantly)"
-                .to_string(),
-        );
+                ).into());
     }
 
     if limits.rate_sweep_interval == 0 {
-        errors.push(
-            "advanced.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the rate-map \
+        errors.push(coded::config_setting_out_of_range("advanced.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the rate-map \
              idle-entry sweep, leaking entries for silent keys until restart. The default is 256 \
              (sweep every 256 admissions); use a larger value to make sweeps rarer."
-                .to_string(),
-        );
+                ).into());
     }
 
     if limits.max_inbound_concurrent > MAX_SEMAPHORE_PERMITS {
-        errors.push(format!(
-            "limits.max_inbound_concurrent must be <= {MAX_SEMAPHORE_PERMITS} (tokio::sync::\
+        errors.push(
+            coded::config_setting_out_of_range(format!(
+                "limits.max_inbound_concurrent must be <= {MAX_SEMAPHORE_PERMITS} (tokio::sync::\
              Semaphore's hard permit ceiling — a value above it panics at build time instead of \
              failing validation), or 0 to disable the inbound-concurrency layer entirely"
-        ));
+            ))
+            .into(),
+        );
     }
 }
 
 fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
     if limits.migration_index_bytes == 0 || limits.migration_value_bytes == 0 {
         errors.push(
-            "limits.migration_index_bytes and limits.migration_value_bytes must be positive".into(),
+            coded::config_setting_out_of_range(
+                "limits.migration_index_bytes and limits.migration_value_bytes must be positive",
+            )
+            .into(),
         );
     }
     let crate::config::LimitsResolved {
@@ -1137,11 +1234,14 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
     ];
     for (name, v) in secs {
         if v > MAX_DURATION_SECS {
-            errors.push(format!(
+            errors.push(
+                coded::config_setting_out_of_range(format!(
                 "{name} ({v}) exceeds the maximum of {MAX_DURATION_SECS} s (30 years, the async \
                  runtime's own 'never' horizon); a larger duration overflows the clock arithmetic \
                  it feeds. Lower it to <= {MAX_DURATION_SECS}"
-            ));
+            ))
+                .into(),
+            );
         }
     }
     let millis = [
@@ -1153,11 +1253,14 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
     ];
     for (name, v) in millis {
         if v > MAX_DURATION_MS {
-            errors.push(format!(
+            errors.push(
+                coded::config_setting_out_of_range(format!(
                 "{name} ({v}) exceeds the maximum of {MAX_DURATION_MS} ms (30 years, the async \
                  runtime's own 'never' horizon); a larger duration overflows the clock arithmetic \
                  it feeds. Lower it to <= {MAX_DURATION_MS}"
-            ));
+            ))
+                .into(),
+            );
         }
     }
 }
@@ -1289,15 +1392,18 @@ fn validate_plane_card(
         .filter(|k| !declared.clone().any(|c| c == *k))
         .collect();
     if !unknown.is_empty() {
-        errors.push(format!(
-            "{}.rate_card configures unit(s) {} not declared by this plane (declared: {}); \
+        errors.push(
+            coded::config_rate_card_invalid(format!(
+                "{}.rate_card configures unit(s) {} not declared by this plane (declared: {}); \
              remove them or fix the name",
-            d.config_section,
-            unknown.into_iter().collect::<Vec<_>>().join(", "),
-            Some(declared.collect::<Vec<_>>().join(", "))
-                .filter(|l| !l.is_empty())
-                .unwrap_or_else(|| "none".into())
-        ));
+                d.config_section,
+                unknown.into_iter().collect::<Vec<_>>().join(", "),
+                Some(declared.collect::<Vec<_>>().join(", "))
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or_else(|| "none".into())
+            ))
+            .into(),
+        );
     }
 }
 
@@ -1309,18 +1415,21 @@ fn validate_plane_fees(
     let counted = Some(d.fee_units.join(", ")).filter(|l| !l.is_empty());
     for (unit, fee) in [(PER_REQUEST, f.per_request), (PER_SESSION, f.per_session)] {
         if fee != 0 && !d.fee_units.contains(&unit) {
-            errors.push(format!(
-                "{}.fees.{unit} is not counted by this plane (counted: {}); remove it",
-                d.config_section,
-                counted.as_deref().unwrap_or("none")
-            ));
+            errors.push(
+                coded::config_rate_card_invalid(format!(
+                    "{}.fees.{unit} is not counted by this plane (counted: {}); remove it",
+                    d.config_section,
+                    counted.as_deref().unwrap_or("none")
+                ))
+                .into(),
+            );
         }
     }
 }
 
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     if let Err(error) = crate::config::measurement_rates::validate(&cfg.plugin_rate_cards) {
-        errors.push(error);
+        errors.push(coded::config_rate_card_invalid(error).into());
     }
     if let Some(card) = &cfg.rate_card {
         for (key, r) in card {
@@ -1339,17 +1448,20 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             ];
             for (tier, v) in tiers {
                 if !v.is_finite() || v < 0.0 {
-                    errors.push(format!(
-                        "{path}.{tier} must be a finite, non-negative \
+                    errors.push(
+                        coded::config_rate_card_invalid(format!(
+                            "{path}.{tier} must be a finite, non-negative \
                          number of micro-units per token (got {v})"
-                    ));
+                        ))
+                        .into(),
+                    );
                 } else if busbar_kernel_ledger::cost::representable_nano_rate(v).is_none() {
-                    errors.push(format!(
+                    errors.push(coded::config_rate_card_invalid(format!(
                         "{path}.{tier} = {v} micro-units per token is a rate the card \
                          cannot hold (a non-zero rate is a whole number of nano-units, at most three \
                          decimal places, up to about 1.8e16; it is never rounded), so the class \
                          would bill as unpriced; configure 0 to make it free, or an exact rate"
-                    ));
+                    )).into());
                 }
             }
 
@@ -1358,9 +1470,12 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 .keys()
                 .filter(|c| busbar_contract::records::RESERVED_UNITS.contains(&c.as_str()))
             {
-                errors.push(format!(
-                    "{path}.units.{class} names a reserved class; price it with {class}_utok"
-                ));
+                errors.push(
+                    coded::config_rate_card_invalid(format!(
+                        "{path}.units.{class} names a reserved class; price it with {class}_utok"
+                    ))
+                    .into(),
+                );
             }
             if !lane.is_empty()
                 && tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0)
@@ -1392,7 +1507,10 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     for lane in &lanes {
         if lane.contains(busbar_kernel_ledger::cost::MEASUREMENT_LANE_PREFIX) {
             errors.push(
-                "legacy lane names must not contain the reserved common measurement prefix".into(),
+                coded::config_rate_card_invalid(
+                    "legacy lane names must not contain the reserved common measurement prefix",
+                )
+                .into(),
             );
         }
     }
@@ -1412,10 +1530,13 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     }
 
     if cfg.per_request_fee < 0 {
-        errors.push(format!(
-            "per_request_fee must be >= 0 (got {}); a negative fee would credit every request",
-            cfg.per_request_fee
-        ));
+        errors.push(
+            coded::config_rate_card_invalid(format!(
+                "per_request_fee must be >= 0 (got {}); a negative fee would credit every request",
+                cfg.per_request_fee
+            ))
+            .into(),
+        );
     }
 
     let fee_decls = (cfg.plane_fees.iter()).filter_map(|(p, f)| Some((plane_decl_for(p)?, f)));
@@ -1427,20 +1548,28 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     for (name, g) in &cfg.groups {
         for limit in &g.limits {
             if limit.amount == 0 {
-                errors.push(format!(
+                errors.push(
+                    coded::config_group_invalid(format!(
                     "groups.{name} has a `{}` limit of 0, which rejects every request through the \
                      group from the first admission; set a positive amount, or set `enabled: \
                      false` to freeze the group explicitly",
                     limit.metric.as_str()
-                ));
+                ))
+                    .into(),
+                );
             }
         }
     }
 
     match &cfg.store {
-        None => errors.push(crate::config::store_required()),
+        None => errors.push(coded::config_store_invalid(crate::config::store_required()).into()),
         Some(store) if store.module.trim().is_empty() => {
-            errors.push("store.module must be non-empty; name the configured Store plugin".into());
+            errors.push(
+                coded::config_store_invalid(
+                    "store.module must be non-empty; name the configured Store plugin",
+                )
+                .into(),
+            );
         }
         Some(_) => {}
     }
@@ -1449,19 +1578,22 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
         if r.is_none() {
             if !keyless_credential_allowed(&what) {
-                errors.push(format!(
+                errors.push(
+                    coded::config_secret_reference_invalid(format!(
                     "{what}: `none` declares that there is NO credential, which is only meaningful \
                      for a provider `api_key` (a keyless local upstream such as ollama or vLLM); \
                      {what} requires a real secret reference, e.g. \
                      {what}: {}",
                     example_reference(&sugars, "MY_SECRET_VAR")
-                ));
+                ))
+                    .into(),
+                );
             }
 
             return;
         }
         if let Some(refusal) = declared_setting_refusal(&sugars, &what, r) {
-            errors.push(refusal);
+            errors.push(coded::config_secret_reference_invalid(refusal).into());
         }
     };
 
@@ -1476,17 +1608,23 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         .join(" / ");
     for module in cfg.secrets.keys() {
         if crate::config::secret::is_linked_secret(module) {
-            errors.push(format!(
+            errors.push(
+                coded::config_secret_reference_invalid(format!(
                 "secrets.{module}: the built-in '{module}' secret module takes no module-level \
                  config; its settings ({per_reference}) belong on each individual secret \
                  reference, not in the top-level `secrets:` block"
-            ));
+            ))
+                .into(),
+            );
         }
     }
 
     let token = cfg.auth.as_ref().and_then(|a| a.admin_token_ref());
     if token.is_some() && !operator::answered(operator_provider()) {
-        errors.push(operator::unanswered_token(operator_provider()));
+        errors.push(
+            coded::config_auth_chain_invalid(operator::unanswered_token(operator_provider()))
+                .into(),
+        );
     }
 }
 
@@ -1536,9 +1674,9 @@ fn resolve_fallback_target(cfg: &RootCfg, pool_name: &str) -> Option<String> {
 fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<String>) {
     for entry in entries {
         if entry.contains('/') {
-            errors.push(format!(
+            errors.push(coded::config_metadata_host_entry_invalid(format!(
                 "{key} entry '{entry}' contains '/' (CIDR is not supported here): these lists are matched by EXACT IP or hostname, so a CIDR/slash entry silently never matches and is a no-op. List exact IPs/hostnames instead (e.g. '169.254.169.254', not '169.254.0.0/16')"
-            ));
+            )).into());
         }
     }
 }
@@ -1546,7 +1684,7 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
 fn reject_unmappable_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<String>) {
     for entry in entries {
         if let Some(line) = unmappable_metadata_refusal(key, entry) {
-            errors.push(line);
+            errors.push(coded::config_metadata_host_entry_invalid(line).into());
         }
     }
 }
@@ -1759,7 +1897,7 @@ fn validate_token_endpoint_fields(
         &posture.blocked_hosts,
     ) {
         let target = busbar_kernel_egress::trust::net::redact_userinfo(target);
-        errors.push(format!("provider '{provider_name}' token_url '{target}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"));
+        errors.push(coded::config_provider_destination_blocked(format!("provider '{provider_name}' token_url '{target}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)")).into());
     }
 }
 
@@ -1780,19 +1918,25 @@ fn validate_providers_with(
         validate_provider_protocol_with(known, provider_name, provider_cfg.dialect(), errors);
 
         if let Err(refusal) = crate::config::providers::judge_options(provider_name, provider_cfg) {
-            errors.push(refusal);
+            errors.push(coded::config_provider_invalid(refusal).into());
         }
 
         if let Some(health) = &provider_cfg.health {
             if health.interval_secs == Some(0) {
-                errors.push(format!(
-                    "provider '{provider_name}' health.interval_secs must be >= 1 (got 0)"
-                ));
+                errors.push(
+                    coded::config_provider_invalid(format!(
+                        "provider '{provider_name}' health.interval_secs must be >= 1 (got 0)"
+                    ))
+                    .into(),
+                );
             }
             if health.timeout_secs == Some(0) {
-                errors.push(format!(
-                    "provider '{provider_name}' health.timeout_secs must be >= 1 (got 0)"
-                ));
+                errors.push(
+                    coded::config_provider_invalid(format!(
+                        "provider '{provider_name}' health.timeout_secs must be >= 1 (got 0)"
+                    ))
+                    .into(),
+                );
             }
 
             for (field, v) in [
@@ -1800,20 +1944,20 @@ fn validate_providers_with(
                 ("timeout_secs", health.timeout_secs),
             ] {
                 if let Some(v) = v.filter(|v| *v > MAX_DURATION_SECS) {
-                    errors.push(format!(
+                    errors.push(coded::config_provider_invalid(format!(
                         "provider '{provider_name}' health.{field} ({v}) exceeds the maximum of \
                          {MAX_DURATION_SECS} s (30 years, the async runtime's own 'never' horizon); \
                          a larger duration overflows the clock arithmetic it feeds"
-                    ));
+                    )).into());
                 }
             }
         }
 
         for (code, mapped_class) in provider_cfg.error_map() {
             if busbar_contract::upstream::StatusClass::parse(mapped_class).is_none() {
-                errors.push(format!(
+                errors.push(coded::config_provider_invalid(format!(
                     "provider '{provider_name}' error_map code '{code}': invalid StatusClass '{mapped_class}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length"
-                ));
+                )).into());
             }
         }
 
@@ -1855,16 +1999,16 @@ fn validate_providers_with(
             .flatten()
         {
             let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
-            errors.push(format!(
+            errors.push(coded::config_provider_destination_blocked(format!(
                 "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
-            ));
+            )).into());
         }
 
         if let Some(path) = &provider_cfg.path {
             if !path.starts_with('/') {
-                errors.push(format!(
+                errors.push(coded::config_provider_invalid(format!(
                     "provider '{provider_name}' path '{path}' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + '{path}') and can redirect signed traffic to an attacker-controlled host"
-                ));
+                )).into());
             } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
                 if let Some(host) = ssrf_blocked_host(
@@ -1874,18 +2018,18 @@ fn validate_providers_with(
                     &cfg.blocked_metadata_hosts,
                 ) {
                     let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
-                    errors.push(format!(
+                    errors.push(coded::config_provider_destination_blocked(format!(
                         "provider '{provider_name}' base_url+path '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
-                    ));
+                    )).into());
                 }
             }
         }
 
         if let Some(path_base) = &provider_cfg.path_base {
             if !path_base.starts_with('/') {
-                errors.push(format!(
+                errors.push(coded::config_provider_invalid(format!(
                     "provider '{provider_name}' path_base '{path_base}' must begin with '/': it is appended to base_url verbatim, so a value that does not start with '/' fuses into the host and can redirect signed traffic to an attacker-controlled host"
-                ));
+                )).into());
             } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
                 if let Some(host) = ssrf_blocked_host(
@@ -1895,9 +2039,9 @@ fn validate_providers_with(
                     &cfg.blocked_metadata_hosts,
                 ) {
                     let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
-                    errors.push(format!(
+                    errors.push(coded::config_provider_destination_blocked(format!(
                         "provider '{provider_name}' base_url+path_base '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
-                    ));
+                    )).into());
                 }
             }
         }
@@ -1936,15 +2080,18 @@ fn validate_providers_with(
             if settings_concrete && (!cred.trim().is_empty() || provider_cfg.api_key.is_none()) {
                 for e in outbound_credential_refusals(style, cred, &params) {
                     if let Some(settings) = e.strip_prefix("settings: ") {
-                        let error = format!("provider '{provider_name}' {settings}");
+                        let error: String = coded::config_provider_credential_invalid(
+                            format_args!("provider '{provider_name}' {settings}"),
+                        )
+                        .into();
                         if !errors.contains(&error) {
                             errors.push(error);
                         }
                     } else {
-                        errors.push(format!(
+                        errors.push(coded::config_provider_credential_invalid(format!(
                             "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
                             provider_cfg.api_key.describe()
-                        ));
+                        )).into());
                     }
                 }
             } else if settings_concrete {
@@ -1953,10 +2100,13 @@ fn validate_providers_with(
                         .check_outbound_settings(style, &params)
                         .unwrap_or_else(|e| vec![e])
                     {
-                        errors.push(format!(
-                            "provider '{provider_name}' {}",
-                            error.strip_prefix("settings: ").unwrap_or(&error)
-                        ));
+                        errors.push(
+                            coded::config_provider_credential_invalid(format!(
+                                "provider '{provider_name}' {}",
+                                error.strip_prefix("settings: ").unwrap_or(&error)
+                            ))
+                            .into(),
+                        );
                     }
                 }
             }
@@ -1964,11 +2114,14 @@ fn validate_providers_with(
 
         if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL != 0 {
             if provider_cfg.api_key.is_none() {
-                errors.push(format!(
-                    "provider '{provider_name}' uses auth: {style} but declares \
+                errors.push(
+                    coded::config_provider_credential_invalid(format!(
+                        "provider '{provider_name}' uses auth: {style} but declares \
                      `api_key: none`; that grant signs its assertion WITH the credential (the \
                      resolved service-account JSON), so there is nothing to declare keyless"
-                ));
+                    ))
+                    .into(),
+                );
             }
             let config_time = busbar_contract::config_time::ConfigScope::config_time();
             let cred = crate::config::secret::resolve_linked_string_at_config(
@@ -2005,10 +2158,13 @@ fn validate_providers_with(
                     }
                 };
                 for e in refusals {
-                    errors.push(format!(
+                    errors.push(
+                        coded::config_provider_credential_invalid(format!(
                         "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
-                    ));
+                    ))
+                        .into(),
+                    );
                 }
             }
         }
@@ -2176,17 +2332,20 @@ fn validate_provider_protocol_with(
     errors: &mut Vec<String>,
 ) {
     if known.is_empty() {
-        errors.push(format!(
+        errors.push(coded::config_provider_protocol_unknown(format!(
             "provider '{provider_name}' names protocol '{protocol}', but this build has NO protocol \
              with a wire codec compiled in, so no provider lane can be served"
-        ));
+        )).into());
     } else if !known.contains(&protocol) {
-        errors.push(format!(
-            "provider '{}' has unknown protocol '{}': must be one of: {}",
-            provider_name,
-            protocol,
-            known.join(", ")
-        ));
+        errors.push(
+            coded::config_provider_protocol_unknown(format!(
+                "provider '{}' has unknown protocol '{}': must be one of: {}",
+                provider_name,
+                protocol,
+                known.join(", ")
+            ))
+            .into(),
+        );
     }
 }
 
