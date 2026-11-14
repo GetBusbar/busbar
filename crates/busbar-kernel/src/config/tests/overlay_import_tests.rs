@@ -45,6 +45,66 @@ async fn old_overlay_import_survives_reopen_and_never_replays_over_admin_changes
 }
 
 #[tokio::test]
+async fn legacy_import_state_agrees_with_the_importer() {
+    use crate::config::overlay::LegacyImportState;
+    let calls = crate::real_store::core().await;
+    let source: [u8; 32] = Sha256::digest(b"legacy probe source").into();
+    let store = OverlayStore::from_core(calls.clone()).unwrap();
+    assert_eq!(
+        store.legacy_import_state_async().await.unwrap(),
+        LegacyImportState::Empty
+    );
+    assert!(store
+        .import_once_async(source, &OverlayDoc::default())
+        .await
+        .unwrap());
+    let reopened = OverlayStore::from_core(calls).unwrap();
+    assert_eq!(
+        reopened.legacy_import_state_async().await.unwrap(),
+        LegacyImportState::Imported(source)
+    );
+
+    let written = OverlayStore::from_core(crate::real_store::core().await).unwrap();
+    written
+        .update_async(|doc| doc.deleted_groups.push("current-revocation".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        written.legacy_import_state_async().await.unwrap(),
+        LegacyImportState::StoreOverlayPresent
+    );
+    assert!(written
+        .import_once_async(source, &OverlayDoc::default())
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn an_unreadable_legacy_import_receipt_is_an_error() {
+    use crate::persistence::scoped::{Outcome, ScopedStore};
+    let calls = crate::real_store::core().await;
+    let schema = "busbar.config.overlay.v1";
+    let owner =
+        ScopedStore::host_private(calls.clone(), "busbar.config.overlay", [schema.into()]).unwrap();
+    assert_eq!(
+        owner
+            .put(
+                schema,
+                b"migration:1.5.5:file",
+                busbar_contract::Secret::new(b"not a receipt".to_vec()),
+            )
+            .await
+            .unwrap(),
+        Outcome::Applied
+    );
+    assert!(OverlayStore::from_core(calls)
+        .unwrap()
+        .legacy_import_state_async()
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn old_overlay_import_refuses_an_unrelated_existing_destination() {
     let store = OverlayStore::from_core(crate::real_store::core().await).unwrap();
     store
