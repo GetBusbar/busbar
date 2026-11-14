@@ -382,3 +382,24 @@ fn credential_owner_migration_resolves_outer_source_once_and_keeps_inline_refere
 
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(config_migrate_export);
+
+#[test]
+fn migrate_config_warns_that_the_retired_stage_profiler_switch_is_ignored() {
+    let raw = "store: { module: memory }\n";
+    let dir = std::env::temp_dir();
+    let env = |set: bool| {
+        move |name: &str| (set && name == "BUSBAR_PROFILE").then(|| std::ffi::OsString::from("1"))
+    };
+    let warned = super::capture_environment(raw, &dir, None, env(true)).unwrap();
+    assert!(
+        warned
+            .warnings
+            .iter()
+            .any(|w| w == "BUSBAR_PROFILE is ignored in 1.6.0; use trace export"),
+        "{:?}",
+        warned.warnings
+    );
+    assert_eq!(warned.yaml, raw, "the switch changes no config");
+    let quiet = super::capture_environment(raw, &dir, None, env(false)).unwrap();
+    assert!(quiet.warnings.is_empty(), "{:?}", quiet.warnings);
+}
