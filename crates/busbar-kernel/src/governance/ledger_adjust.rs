@@ -489,20 +489,8 @@ fn check_epoch(at: u64, now: u64) -> Result<(), AdjustRefused> {
 }
 
 #[cfg(test)]
-mod epoch_tests {
-    use super::*;
-
-    #[test]
-    fn arrival_comparison_preserves_millisecond_precision_and_equality() {
-        let now = 1_234_567;
-        assert_eq!(check_epoch(now - 1, now), Ok(()));
-        assert_eq!(check_epoch(now, now), Ok(()));
-        assert_eq!(
-            check_epoch(now + 1, now),
-            Err(AdjustRefused::FutureEpoch { at: now + 1, now })
-        );
-    }
-}
+#[path = "tests/ledger_adjust_epoch_tests.rs"]
+mod epoch_tests;
 
 fn segment_at(models: &[ModelCell], lane: &str, at_ms: u64) -> Option<usize> {
     (models.iter().enumerate())
@@ -522,69 +510,5 @@ fn moved(count: Count, delta: Count) -> Option<Count> {
 mod view_tests;
 
 #[cfg(test)]
-mod billable_request_count_tests {
-    use super::*;
-    use busbar_contract::count::CountError;
-    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_REQUEST, PER_SESSION};
-
-    #[test]
-    fn ledger_request_fees_include_only_legacy_and_named_request_fee_rows() {
-        let mut cell = BudgetCell::fresh(0);
-        cell.billable_requests = 2;
-        cell.accrue(
-            &plane_fee_lane("decisions"),
-            1,
-            &BTreeMap::from([(PER_REQUEST.into(), 3)]),
-        );
-        cell.accrue(
-            &plane_fee_lane("decisions"),
-            2,
-            &BTreeMap::from([(PER_REQUEST.into(), 4)]),
-        );
-        cell.accrue(
-            &plane_fee_lane("voice"),
-            2,
-            &BTreeMap::from([(PER_SESSION.into(), 9)]),
-        );
-        cell.accrue(
-            "decisions\u{1f}model",
-            2,
-            &BTreeMap::from([(PER_REQUEST.into(), 100)]),
-        );
-        cell.accrue(
-            "legacy-model",
-            2,
-            &BTreeMap::from([(PER_REQUEST.into(), 100)]),
-        );
-        assert_eq!(billable_request_count(&cell), Ok(9));
-    }
-
-    #[test]
-    fn ledger_request_fees_refuse_fraction_negative_and_overflow_without_rounding() {
-        for (count, error) in [
-            (Count::parse("0.5").unwrap(), CountError::NotWhole),
-            (Count::from_micros(-1_000_000), CountError::Negative),
-            (
-                Count::from_integer(i128::from(u64::MAX) + 1).unwrap(),
-                CountError::OutOfRange,
-            ),
-        ] {
-            let mut cell = BudgetCell::fresh(0);
-            cell.accrue(
-                &plane_fee_lane("decisions"),
-                0,
-                &BTreeMap::from([(PER_REQUEST.into(), 1)]),
-            );
-            cell.models[0].cur.insert(PER_REQUEST.into(), count);
-            assert_eq!(billable_request_count(&cell), Err(error));
-        }
-        let mut cell = BudgetCell::fresh(0);
-        cell.billable_requests = u64::MAX;
-        cell.accrue(
-            &plane_fee_lane("decisions"),
-            0,
-            &BTreeMap::from([(PER_REQUEST.into(), 1)]),
-        );
-        assert_eq!(billable_request_count(&cell), Err(CountError::OutOfRange));
-    }
-}
+#[path = "tests/ledger_adjust_billable_request_count_tests.rs"]
+mod billable_request_count_tests;
