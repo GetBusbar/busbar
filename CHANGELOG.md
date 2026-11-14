@@ -24,6 +24,40 @@ All notable changes to Busbar are documented here. The format is based on
 - Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.
 - Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.
 - Cross-dialect Anthropic delivery refuses malformed tool arguments with a native error while retaining provider-reported work.
+- Gemini-dialect clients on reasoning backends: `candidatesTokenCount` counts the answer only and the
+  thinking is reported as `thoughtsTokenCount`, per Google's `UsageMetadata` (total = prompt +
+  candidates + thoughts + toolUsePrompt). `totalTokenCount` and Busbar billing are unchanged. If an
+  upstream reports more reasoning than output, no split is written: candidates keeps the full output,
+  `thoughtsTokenCount` is omitted and a warning is logged.
+- JSON output mode on an Anthropic-dialect lane is carried or refused, never dropped. A JSON output
+  mode with a schema (OpenAI Chat `response_format: json_schema`, Responses `text.format:
+  json_schema`, Gemini `responseMimeType: application/json` with `responseSchema` or
+  `responseJsonSchema`, and the Cohere and Bedrock-Converse equivalents) rides native
+  `output_config.format` on a lane that declares `native_structured_output`, and is refused with 400
+  `invalid_request` and the reason on any other (undeclared lanes default to false: `z.ai`,
+  operator-defined Claude-on-Vertex and any custom `protocol: anthropic` provider). A JSON output mode
+  **without** a schema (`json_object`, Responses `text.format: json_object`, Gemini
+  `responseMimeType: application/json` alone, the schema-less Cohere and Bedrock-Converse forms) has no
+  Anthropic form and is refused with 400 on every Anthropic-dialect lane; send a JSON schema instead.
+  1.5.5 answered 200 with free prose. There is no failover on this refusal: in a pool mixing capable
+  and incapable Anthropic members, the request gets 400 whenever the walk picks an incapable one.
+  Bedrock (`protocol: bedrock`) egress is unchanged. **Migration:** on each `protocol: anthropic`
+  provider you define, add `model_capabilities: [{models: [<globs>], native_structured_output: true}]`
+  for the models whose provider documents `output_config.format` structured outputs (on Vertex, use
+  the Vertex model IDs: `claude-sonnet-4-5@...` matches `claude-sonnet-4-5*`).
+- The shipped `anthropic` provider uses native structured outputs for every model Anthropic documents
+  for them: Mythos 5.x/preview, Haiku 5.5, Haiku 4.5, Opus 4.8, Opus 4.6, Opus 4.5, Sonnet 4.6 and
+  Sonnet 4.5, in addition to Opus 4.7, Opus 5.x, Sonnet 5.x and Fable 5.x. Models Anthropic does not
+  list (Opus 4.1 and older) refuse a JSON output mode with 400.
+- Every request a plane-llm egress refuses as unrepresentable writes a `rejected` audit row, action
+  `egress.unrepresentable`, naming the reason and the member: JSON output mode on Anthropic,
+  tool-input validation, malformed-for-egress requests, requests that cannot be written onto the
+  egress protocol, transcription `srt`/`vtt` and unwritable audio refusals, chat-handle write errors,
+  invalid prompt-cache controls on OpenAI Chat / Responses requests (same-dialect or cross-dialect),
+  an unrewritable routed multipart model, and an Anthropic body with duplicate keys ("ambiguous or
+  malformed request JSON"). Before, no row was written. Status codes and messages are unchanged.
+  These refused requests reached no provider, so under the refused-unspent rule they no longer count
+  against the caller's request-rate limit. Token, fee and spend figures are unchanged.
 
 Busbar 1.6.0 is 1.5.5 plus three more planes. Everything a model-plane request already got — the
 caller's key, its grants, its budget, hooks and the audit chain — applies to an MCP tool call, an
@@ -936,7 +970,9 @@ each dialect translates, field by field, is listed in the generated
   They set how a request that crosses protocols is written for that upstream's models: the
   output-token cap key an OpenAI-protocol upstream receives, and whether an Anthropic-protocol
   upstream gets adaptive thinking and native structured outputs. Each key is optional, and an
-  omitted key sends what 1.5.5 sent. A provider key busbar does not know is still refused in 1.5.5's
+  omitted key sends what 1.5.5 sent, with one exception: `native_structured_output` and JSON output
+  mode. 1.5.5 dropped a JSON output mode an Anthropic upstream could not carry and answered 200 with
+  free prose; 1.6.0 refuses it with 400 (see the JSON output mode entry above). A provider key busbar does not know is still refused in 1.5.5's
   sentence, with the four keys now among the expected fields. A `model_capabilities` rule also
   takes two per-model keys, `reasoning_none` (the model accepts reasoning effort `none`, so a
   reasoning-off ask reaches an OpenAI or Responses upstream as `none` instead of being omitted) and
