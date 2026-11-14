@@ -232,7 +232,7 @@ fn historical_snapshot_preserves_original_prefix_and_quarantine_bridge() {
     let omitted = record(9, hash(&first), vec![2]);
     let after = record(10, hash(&omitted), vec![3]);
     let note = chain_break(11, hash(&after), 8, 10);
-    let records = vec![first, after, note];
+    let records = [first, after, note];
     let snapshot = HistoricalSnapshot::verify(
         7,
         records.clone(),
