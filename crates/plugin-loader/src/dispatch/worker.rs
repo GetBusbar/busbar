@@ -203,30 +203,32 @@ impl Env {
     }
 }
 
-/// One op's completion.
-#[derive(Debug)]
-pub struct Done<I, O> {
-    /// The authoritative outcome.
-    pub outcome: Outcome,
-    /// The error text, copied, for FAILED/REFUSED.
-    pub error: Option<Vec<u8>>,
-    /// A lease for `release`; `0` = none.
-    pub lease: u64,
-    /// The frame, back to its owner; `None` when the op was faulted mid-crossing or detached.
-    pub frame: Option<Frame<I, O>>,
-    /// A WriteBehind op whose caller stopped waiting at its deadline; it runs on.
-    pub detached: bool,
-    /// A FAILED answer the kind calls SHORT: re-submit ONCE on the same ticket with bigger
-    /// buffers; a second short answer is FAULT (the short-buffer rule on `OutHead`).
-    pub short: bool,
-    /// When the op ended through `cancel` (a deadline or a client drop): the kind's disposition
-    /// `CancelOut.disposition` answered (store: 0 UNKNOWN, 1 NOT_APPLIED, 2 APPLIED). A `cancel`
-    /// that FAULTed makes the op FAULT, with no disposition.
-    pub disposition: Option<u32>,
-    /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
-    pub cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
-    /// Host-owned sibling retirement; never supplied by a plugin.
-    pub(crate) retirement: Option<busbar_contract::plane_calls::Retirement>,
+test_support_pub! {
+    /// One op's completion.
+    #[derive(Debug)]
+    struct Done<I, O> {
+        /// The authoritative outcome.
+        pub outcome: Outcome,
+        /// The error text, copied, for FAILED/REFUSED.
+        pub error: Option<Vec<u8>>,
+        /// A lease for `release`; `0` = none.
+        pub lease: u64,
+        /// The frame, back to its owner; `None` when the op was faulted mid-crossing or detached.
+        pub frame: Option<Frame<I, O>>,
+        /// A WriteBehind op whose caller stopped waiting at its deadline; it runs on.
+        pub detached: bool,
+        /// A FAILED answer the kind calls SHORT: re-submit ONCE on the same ticket with bigger
+        /// buffers; a second short answer is FAULT (the short-buffer rule on `OutHead`).
+        pub short: bool,
+        /// When the op ended through `cancel` (a deadline or a client drop): the kind's disposition
+        /// `CancelOut.disposition` answered (store: 0 UNKNOWN, 1 NOT_APPLIED, 2 APPLIED). A `cancel`
+        /// that FAULTed makes the op FAULT, with no disposition.
+        pub disposition: Option<u32>,
+        /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
+        pub cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+        /// Host-owned sibling retirement; never supplied by a plugin.
+        pub(crate) retirement: Option<busbar_contract::plane_calls::Retirement>,
+    }
 }
 
 struct Queued<I, O> {
@@ -474,10 +476,12 @@ impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Queued<I, O>> {
     }
 }
 
-pub struct Reply<I, O> {
-    slot: Arc<ReplySlot<Queued<I, O>>>,
+test_support_pub! {
+    struct Reply<I, O> {
+        slot: Arc<ReplySlot<Queued<I, O>>>,
 
-    owner: Option<(Ticket, Weak<Pool>)>,
+        owner: Option<(Ticket, Weak<Pool>)>,
+    }
 }
 
 impl<I, O> std::fmt::Debug for Reply<I, O> {
@@ -502,14 +506,16 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         Some(d.take())
     }
 
-    pub fn wait_done(&self) -> Done<I, O> {
-        let mut g = self.slot.lock();
-        loop {
-            if let Some(d) = g.value.take() {
-                drop(g);
-                return d.take();
+    test_support_pub! {
+        fn wait_done(&self) -> Done<I, O> {
+            let mut g = self.slot.lock();
+            loop {
+                if let Some(d) = g.value.take() {
+                    drop(g);
+                    return d.take();
+                }
+                g = self.slot.cv.wait(g).unwrap_or_else(|e| e.into_inner());
             }
-            g = self.slot.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
     }
 
@@ -2831,26 +2837,28 @@ impl Dispatcher {
         Some(driver)
     }
 
-    pub fn submit<K: Kind, I: InFrame, O: OutFrame>(
-        &self,
-        plugin: &Plugin<K>,
-        ticket: Ticket,
-        s: u32,
-        frame: Frame<I, O>,
-        class: DeadlineClass,
-        deadline_ns: u64,
-    ) -> Reply<I, O> {
-        self.submit_with(
-            plugin,
-            ticket,
-            s,
-            frame,
-            class,
-            deadline_ns,
-            None,
-            Duration::ZERO,
-            Admit::Cap,
-        )
+    test_support_pub! {
+        fn submit<K: Kind, I: InFrame, O: OutFrame>(
+            &self,
+            plugin: &Plugin<K>,
+            ticket: Ticket,
+            s: u32,
+            frame: Frame<I, O>,
+            class: DeadlineClass,
+            deadline_ns: u64,
+        ) -> Reply<I, O> {
+            self.submit_with(
+                plugin,
+                ticket,
+                s,
+                frame,
+                class,
+                deadline_ns,
+                None,
+                Duration::ZERO,
+                Admit::Cap,
+            )
+        }
     }
 
     #[expect(
@@ -2935,13 +2943,15 @@ impl Dispatcher {
         )
     }
 
-    pub fn tick<K: Kind>(
-        &self,
-        plugin: &Plugin<K>,
-        driver: Ticket,
-        now_ns: u64,
-    ) -> Reply<TickIn, TickOut> {
-        self.tick_with(plugin, driver, now_ns, Admit::Driver)
+    test_support_pub! {
+        fn tick<K: Kind>(
+            &self,
+            plugin: &Plugin<K>,
+            driver: Ticket,
+            now_ns: u64,
+        ) -> Reply<TickIn, TickOut> {
+            self.tick_with(plugin, driver, now_ns, Admit::Driver)
+        }
     }
 
     pub(crate) fn tick_copy<K: Kind>(

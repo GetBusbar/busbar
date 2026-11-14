@@ -3008,7 +3008,7 @@ fn open(
             snapshot: std::ptr::null(),
         },
     );
-    let (called, snapshot) = plugin.open(&mut frame);
+    let (called, snapshot) = plugin.answer_open(&mut frame);
     if called.outcome != AbiOutcome::Ready {
         return Err(called.open_failure(plugin.name()));
     }
