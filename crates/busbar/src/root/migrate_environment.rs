@@ -72,6 +72,9 @@ pub(crate) fn capture(
             changes.push(format!("{name} -> advanced.{key}"));
         }
     }
+    if env("BUSBAR_PROFILE").is_some() {
+        warnings.push("BUSBAR_PROFILE is ignored in 1.6.0; use trace export".into());
+    }
     let yaml = if changes.is_empty() {
         raw.to_owned()
     } else {
