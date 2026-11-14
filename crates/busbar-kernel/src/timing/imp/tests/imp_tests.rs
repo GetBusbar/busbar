@@ -25,47 +25,18 @@ fn bucket_monotonic_and_percentiles_separate_scales() {
 }
 
 #[test]
-fn bucket_of_is_log2() {
-    assert_eq!(bucket_of(0), 0);
-    assert_eq!(bucket_of(1), 1);
-    assert_eq!(bucket_of(2), 2);
-    assert_eq!(bucket_of(3), 2);
-    assert_eq!(bucket_of(4), 3);
-    assert_eq!(bucket_of(1023), 10);
-    assert_eq!(bucket_of(1024), 11);
-}
-
-#[test]
-fn a_bucket_keeps_counting_past_the_32_bit_ceiling() {
-    let ceiling = u64::from(u32::MAX);
-    let idx = bucket_of(500);
-
-    let saturated = || {
-        let mut s = MethodStat {
-            count: ceiling,
-            ..Default::default()
-        };
-        s.buckets[idx] = ceiling;
-        s
-    };
-
-    let mut a = saturated();
-    a.record(500);
-    assert_eq!(
-        a.buckets[idx],
-        ceiling + 1,
-        "the bucket wrapped instead of counting past 2^32"
-    );
-
-    a.merge(&saturated());
-    assert_eq!(
-        a.buckets[idx],
-        2 * ceiling + 1,
-        "merging two saturated per-thread histograms wrapped the fold"
-    );
-
-    a.max_ns = 9_999_999;
-    assert_eq!(a.percentile(0.50), bucket_floor(idx));
+fn merging_per_thread_stats_keeps_the_percentiles_of_the_union() {
+    let mut a = MethodStat::default();
+    let mut b = MethodStat::default();
+    for v in 1..=500u64 {
+        a.record(v * 1_000);
+        b.record((v + 500) * 1_000);
+    }
+    a.merge(&b);
+    assert_eq!(a.count, 1000);
+    let p50 = a.percentile(0.50);
+    assert!(p50.abs_diff(500_000) * 100 <= 500_000, "p50 {p50}");
+    assert_eq!(MethodStat::default().percentile(0.50), 0, "empty reads 0");
 }
 
 #[test]
@@ -189,4 +160,20 @@ fn a_disabled_gate_records_nothing_and_reads_no_clock() {
     assert_eq!(recorded, 0, "a disabled gate must record nothing");
 
     set_enabled(true);
+}
+
+#[test]
+fn percentiles_are_within_one_percent_of_the_true_value_not_a_power_of_two_floor() {
+    let mut s = MethodStat::default();
+    for v in 1..=1000u64 {
+        s.record(v * 1_000);
+    }
+    for (p, truth) in [(0.50, 500_000u64), (0.99, 990_000u64)] {
+        let got = s.percentile(p);
+        assert!(
+            got.abs_diff(truth) * 100 <= truth,
+            "p{} = {got}, true value {truth}",
+            p * 100.0
+        );
+    }
 }
