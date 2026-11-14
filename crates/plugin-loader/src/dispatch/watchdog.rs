@@ -77,6 +77,10 @@ pub(crate) fn spawn(pool: Weak<Pool>, period: Duration) {
 }
 
 fn scan(pool: &Pool) {
+    pool.env
+        .stats
+        .watchdog_scans
+        .fetch_add(1, Ordering::Relaxed);
     for (i, slot) in pool.slots.iter().enumerate() {
         let w = slot.get();
         let started = w.crossing_since.load(Ordering::Acquire);
@@ -183,3 +187,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "watchdog_tests.rs"]
+mod tests;
