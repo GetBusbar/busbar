@@ -68,12 +68,14 @@ fn set_root_epoch(backend: &Backend, epoch: u64) {
         ),
     );
 }
+type ReadProbe = Arc<dyn Fn(&Read) + Send + Sync>;
 #[derive(Default)]
 struct Backend {
     state: Mutex<State>,
     lose_reply: AtomicBool,
     expire_receipt: AtomicBool,
     hang: AtomicBool,
+    on_read: Mutex<Option<ReadProbe>>,
 }
 impl PersistenceBackend for Backend {
     fn info(&self) -> BackendInfo {
@@ -86,6 +88,10 @@ impl PersistenceBackend for Backend {
         }
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        let probe = self.on_read.lock().unwrap().clone();
+        if let Some(probe) = probe {
+            probe(&request);
+        }
         Box::pin(async move {
             let state = self.state.lock().unwrap();
             Ok(ReadResult::Values {
@@ -1438,4 +1444,134 @@ async fn group_retry_after_cancel_is_exact() {
         .iter()
         .chain(&later)
         .all(|run| owner.is_confirmed(run).unwrap()));
+}
+
+/// WHO: a domain owner selecting an original written before a quarantine
+/// bridge (recovery after a chain break). DOES: the live selection locates it
+/// with the historical replay, and every original-frame read of that replay
+/// happens while the publication driver is free; an original after the bridge
+/// is located by arithmetic with no original-frame read. WHY: no journal
+/// replay may run while appends queue behind the driver.
+#[tokio::test]
+async fn cold_record_before_bridge_still_selects() {
+    let backend = Arc::new(Backend::default());
+    let store = Arc::new(attach(backend.clone(), 4).await);
+    let journal = StoreJournal::new(&store, 7).unwrap();
+    let first = record(8, [19; 32], vec![1]);
+    let after = record(10, [20; 32], vec![3]);
+    let note = chain_break(11, hash(&after), 8, 10);
+    let records = vec![first, after, note];
+    {
+        let mut state = backend.state.lock().unwrap();
+        for (index, record) in records.iter().enumerate() {
+            state.rows.insert(
+                journal.address(b'R', index as u64 + 1),
+                Secret::new(record.body.clone()),
+            );
+        }
+        state.rows.insert(
+            journal.address(b'O', 0),
+            owner_bytes(store.authority().unwrap()),
+        );
+        state.rows.insert(
+            journal.address(b'H', 0),
+            Head {
+                count: 3,
+                sequence: 11,
+                hash: hash(&records[2]),
+            }
+            .encode(),
+        );
+    }
+    let live = runtime::RuntimeJournal::open(
+        store.clone(),
+        7,
+        runtime::BufferBudget {
+            records: 8,
+            bytes: 64 * 1024,
+        },
+    )
+    .await
+    .unwrap();
+    let probe: Arc<Mutex<Vec<bool>>> = Arc::default();
+    {
+        let weak = Arc::downgrade(&live);
+        let probe = probe.clone();
+        let originals = journal.address(b'R', 0).key[..JOURNAL.0.len() + 9].to_vec();
+        *backend.on_read.lock().unwrap() = Some(Arc::new(move |read: &Read| {
+            if read
+                .addresses
+                .iter()
+                .any(|address| address.key.starts_with(&originals))
+            {
+                if let Some(live) = weak.upgrade() {
+                    probe.lock().unwrap().push(live.driver_is_free());
+                }
+            }
+        }));
+    }
+    let retained = Mutex::new(None);
+    let (proof, result) = live
+        .change_live(
+            std::slice::from_ref(&records[0]),
+            runtime::LiveChange::Select {
+                selection: selection(1),
+                guards: &[],
+            },
+            None,
+            &|proof: &Arc<VerifiedHead>| *retained.lock().unwrap() = Some(proof.clone()),
+        )
+        .await
+        .unwrap();
+    applied(result);
+    assert_eq!(proof.sequence(), 11);
+    assert!(retained
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|kept| Arc::ptr_eq(kept, &proof)));
+    let seen = std::mem::take(&mut *probe.lock().unwrap());
+    assert!(
+        !seen.is_empty(),
+        "the cold original is located by the historical replay"
+    );
+    assert!(
+        seen.iter().all(|free| *free),
+        "every replay read happens while the publication driver is free"
+    );
+    assert_eq!(
+        backend
+            .state
+            .lock()
+            .unwrap()
+            .rows
+            .get(&selection(1).address),
+        Some(&Secret::new(vec![1]))
+    );
+    let warm = Selection {
+        operation_id: [52; 16],
+        address: Address {
+            namespace: *b"busbar.recover1\0",
+            key: vec![52; 16],
+        },
+        expected: ExpectedValue::Absent,
+        value: Secret::new(vec![2]),
+    };
+    let (_, result) = live
+        .change_live(
+            std::slice::from_ref(&records[1]),
+            runtime::LiveChange::Select {
+                selection: warm,
+                guards: &[],
+            },
+            None,
+            &|_: &Arc<VerifiedHead>| {},
+        )
+        .await
+        .unwrap();
+    applied(result);
+    assert!(
+        probe.lock().unwrap().is_empty(),
+        "an original after the bridge is located without reading frames"
+    );
 }

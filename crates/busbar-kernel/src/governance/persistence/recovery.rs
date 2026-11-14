@@ -13,7 +13,7 @@ use crate::{
         commit::SubmitResult,
         facade::CoreStore,
         journal::{
-            runtime::{RuntimeJournal, StagedRun},
+            runtime::{LiveChange, RuntimeJournal, StagedRun},
             Selection, StoreJournal, VerifiedHead, WriteResult,
         },
         partition,
@@ -692,6 +692,31 @@ impl StoreRecovery {
             operation,
         })
     }
+    /// Save the proof `change_live` will CAS against into the retained entry,
+    /// synchronously under its driver and before any native claim. A resolved
+    /// (missing) entry stays absent.
+    fn retain_pending(&self, operation: [u8; 16], proof: &Arc<VerifiedHead>) {
+        if let Some(pending) = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .pending
+            .get_mut(&operation)
+        {
+            pending.selection_proof = Some(proof.clone());
+        }
+    }
+    fn retain_adoption(&self, operation: [u8; 16], proof: &Arc<VerifiedHead>) {
+        if let Some(pending) = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .adoptions
+            .get_mut(&operation)
+        {
+            pending.selection_proof = Some(proof.clone());
+        }
+    }
     async fn owned(&self) -> Result<Arc<VerifiedHead>, RecoveryError> {
         let mut history = History::new(&self.store);
         self.owned_with_history(&mut history).await
@@ -907,7 +932,7 @@ impl StoreRecovery {
                 .get(&event.operation_id)
                 .cloned()
         };
-        let mut pending = if let Some(saved) = saved {
+        let pending = if let Some(saved) = saved {
             if saved.event != *event {
                 return Err(RecoveryError::Conflict(
                     "another immutable recovery candidate is pending".into(),
@@ -975,18 +1000,11 @@ impl StoreRecovery {
                 .insert(event.operation_id, pending.clone());
             pending
         };
-        let journal = StoreJournal::new(&self.store, self.node).map_err(unavailable)?;
         if pending.selection_proof.is_none() {
             self.journal
                 .confirm(&pending.run)
                 .await
                 .map_err(unavailable)?;
-            pending.selection_proof = Some(self.owned().await?);
-            self.state
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .pending
-                .insert(event.operation_id, pending.clone());
         }
         let selection = Selection {
             operation_id: event.operation_id,
@@ -997,19 +1015,24 @@ impl StoreRecovery {
                 .map_or(ExpectedValue::Absent, ExpectedValue::Exact),
             value: Secret::new(serde_json::to_vec(&pending.head).map_err(invalid)?),
         };
-        let selected = applied(
-            journal
-                .select_verified(
-                    pending
-                        .selection_proof
-                        .as_ref()
-                        .expect("retained selection proof"),
-                    std::slice::from_ref(&pending.record),
+        // Built and submitted under the journal's publication driver against its
+        // live head (or the exact retained proof). The proof is saved into this
+        // pending entry under the driver, before any native claim.
+        let operation = event.operation_id;
+        let (_, result) = self
+            .journal
+            .change_live(
+                std::slice::from_ref(&pending.record),
+                LiveChange::Select {
                     selection,
-                )
-                .await
-                .map_err(unavailable)?,
-        )?;
+                    guards: &[],
+                },
+                pending.selection_proof.clone(),
+                &|proof: &Arc<VerifiedHead>| self.retain_pending(operation, proof),
+            )
+            .await
+            .map_err(unavailable)?;
+        let selected = applied(result)?;
         if !selected {
             // A definitive no-effect may coincide with another exact selector.
             // Its complete current ancestry remains the only acceptable proof.
@@ -1074,7 +1097,7 @@ impl StoreRecovery {
                 .get(&resolution.operation_id)
                 .cloned()
         };
-        let mut pending = if let Some(saved) = saved {
+        let pending = if let Some(saved) = saved {
             if !saved.proof.matches(resolution)
                 || saved.transitions != transitions
                 || saved.guards_digest != guards_digest
@@ -1201,17 +1224,10 @@ impl StoreRecovery {
                 .insert(resolution.operation_id, pending.clone());
             pending
         };
-        let journal = StoreJournal::new(&self.store, self.node).map_err(unavailable)?;
         if pending.selection_proof.is_none() {
             for run in &pending.runs {
                 self.journal.confirm(run).await.map_err(unavailable)?;
             }
-            pending.selection_proof = Some(self.owned().await?);
-            self.state
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .adoptions
-                .insert(resolution.operation_id, pending.clone());
         }
         let selection = Selection {
             operation_id: resolution.operation_id,
@@ -1219,20 +1235,23 @@ impl StoreRecovery {
             expected: ExpectedValue::Exact(pending.predecessor.clone()),
             value: Secret::new(serde_json::to_vec(&pending.target).map_err(invalid)?),
         };
-        let committed = applied(
-            journal
-                .select_verified_with(
-                    pending
-                        .selection_proof
-                        .as_ref()
-                        .expect("retained handover proof"),
-                    &pending.records,
+        // As for `persist_at`: under the publication driver, proof retained in
+        // this adoption entry before any native claim.
+        let operation = resolution.operation_id;
+        let (_, result) = self
+            .journal
+            .change_live(
+                &pending.records,
+                LiveChange::Select {
                     selection,
-                    &pending.guards,
-                )
-                .await
-                .map_err(unavailable)?,
-        )?;
+                    guards: &pending.guards,
+                },
+                pending.selection_proof.clone(),
+                &|proof: &Arc<VerifiedHead>| self.retain_adoption(operation, proof),
+            )
+            .await
+            .map_err(unavailable)?;
+        let committed = applied(result)?;
         let current = head(&self.store, &resolution.operation_id)
             .await?
             .ok_or_else(|| invalid("selected handover disappeared"))?;

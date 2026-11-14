@@ -6,7 +6,7 @@ use crate::persistence::{
     commit::SubmitResult,
     facade::CoreStore,
     journal::{
-        runtime::{RuntimeJournal, StagedRun},
+        runtime::{LiveChange, RuntimeJournal, StagedRun},
         Selection, StoreJournal, VerifiedHead, WriteResult,
     },
     partition,
@@ -87,14 +87,10 @@ impl UnitCheckpointEvidence {
             audit_driving: tokio::sync::Mutex::new(()),
         }
     }
+    /// The runtime's live verified head, confirmed against native custody and
+    /// admission while its publication driver is held. No history is replayed.
     async fn proof(&self) -> RecordStoreResult<Arc<VerifiedHead>> {
-        self.journal.flush().await.map_err(error)?;
-        let journal = StoreJournal::new(&self.store, self.node).map_err(error)?;
-        let mut replay = journal.historical_replay().await.map_err(error)?;
-        while replay.next().await.map_err(error)?.is_some() {}
-        let proof = Arc::new(replay.finish().map_err(error)?);
-        journal.confirm_owned(&proof).await.map_err(error)?;
-        Ok(proof)
+        self.journal.live_proof().await.map_err(error)
     }
     pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<AuditRecord> {
         self.audit_pending
@@ -136,7 +132,12 @@ impl UnitCheckpointEvidence {
             }
         }
         let proof = replay.finish().map_err(error)?;
-        journal.confirm_owned(&proof).await.map_err(error)?;
+        // The scan ran without the driver; confirm its prefix against the live
+        // head so a concurrent append is not mistaken for lost authority.
+        self.journal
+            .confirm_live_owned(Some(&proof))
+            .await
+            .map_err(error)?;
         Ok(found)
     }
     /// Retain the exact signed audit and original sealed frame before native IO.
@@ -199,7 +200,10 @@ struct RemovePending {
     snapshot: UnitCheckpoint,
     record: Record,
     expected: Arc<ExpectedValue>,
-    proof: Arc<VerifiedHead>,
+    // The proof the retained delete attempt CASes against; `None` until the
+    // first attempt (live head) and after a definite no-effect re-arm.
+    proof: Option<Arc<VerifiedHead>>,
+    ordinal: Option<u64>,
     operation: [u8; 16],
 }
 #[derive(Clone)]
@@ -276,16 +280,25 @@ impl StoreUnitCheckpoints {
         id: &[u8; 16],
         raw: &Secret<Vec<u8>>,
         proof: &VerifiedHead,
-    ) -> RecordStoreResult<(Head, UnitCheckpoint, Record)> {
+    ) -> RecordStoreResult<(Head, UnitCheckpoint, Record, Option<u64>)> {
         let head: Head = serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(error)?;
         if head.version != 1 || head.node != self.evidence.node || head.sequence == 0 {
             return Err(refusal("invalid running money head"));
         }
-        let original = StoreJournal::new(&self.evidence.store, head.node)
-            .map_err(error)?
-            .read_verified_record(proof, head.sequence)
-            .await
-            .map_err(error)?;
+        let journal = StoreJournal::new(&self.evidence.store, head.node).map_err(error)?;
+        // Records after the last chain discontinuity are located in O(1) from
+        // the runtime's verified head; only a cold record is replayed.
+        let ordinal = self.evidence.journal.locate(proof, head.sequence);
+        let original = match ordinal {
+            Some(ordinal) => journal
+                .read_located_record(proof, head.sequence, ordinal)
+                .await
+                .map_err(error)?,
+            None => journal
+                .read_verified_record(proof, head.sequence)
+                .await
+                .map_err(error)?,
+        };
         let record = JournalRecord::decode(&original.body).map_err(error)?;
         let mut reader = BodyReader::new(&record.body);
         let tag = reader.text();
@@ -326,7 +339,7 @@ impl StoreUnitCheckpoints {
         if snapshot.id != *id || snapshot.revision != head.revision {
             return Err(refusal("running money head differs from journal evidence"));
         }
-        Ok((head, snapshot, original))
+        Ok((head, snapshot, original, ordinal))
     }
     fn no_foreign_pending(&self) -> RecordStoreResult<()> {
         if self
@@ -350,6 +363,21 @@ impl StoreUnitCheckpoints {
             .unwrap_or_else(|p| p.into_inner())
             .take();
     }
+    /// Write the proof `change_live` will CAS against into the retained slot,
+    /// synchronously under its driver and before any native claim. Only the
+    /// attempt with this exact operation id is touched.
+    fn retain_proof(&self, operation: [u8; 16], proof: &Arc<VerifiedHead>) {
+        let mut slot = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        match slot.as_mut() {
+            Some(Pending::Persist(p)) if p.operation == operation => {
+                p.selection_proof = Some(proof.clone());
+            }
+            Some(Pending::Remove(p)) if p.operation == operation => {
+                p.proof = Some(proof.clone());
+            }
+            _ => {}
+        }
+    }
     async fn complete(&self) -> RecordStoreResult<Option<Pending>> {
         let pending = self
             .pending
@@ -359,45 +387,60 @@ impl StoreUnitCheckpoints {
         let Some(mut pending) = pending else {
             return Ok(None);
         };
-        let journal = StoreJournal::new(&self.evidence.store, self.evidence.node).map_err(error)?;
-        let result = match &mut pending {
+        if let Pending::Persist(p) = &mut pending {
+            if !p.appended {
+                self.evidence.journal.confirm(&p.run).await.map_err(error)?;
+                p.appended = true;
+                self.save(Pending::Persist(p.clone()));
+            }
+        }
+        // The selection is built and submitted under the journal's publication
+        // driver against its live head (or the exact retained proof), so no
+        // append can move the head between the proof and the CAS.
+        let (used, result) = match &pending {
             Pending::Persist(p) => {
-                if !p.appended {
-                    self.evidence.journal.confirm(&p.run).await.map_err(error)?;
-                    p.appended = true;
-                    self.save(Pending::Persist(p.clone()));
-                }
-                if p.selection_proof.is_none() {
-                    p.selection_proof = Some(self.evidence.proof().await?);
-                    self.save(Pending::Persist(p.clone()));
-                }
-                journal
-                    .select_verified(
-                        p.selection_proof
-                            .as_ref()
-                            .expect("retained selection proof"),
+                let operation = p.operation;
+                self.evidence
+                    .journal
+                    .change_live(
                         p.run.records(),
-                        Selection {
-                            operation_id: p.operation,
-                            address: self.address(&p.snapshot.id),
-                            expected: duplicate_expected(&p.expected),
-                            value: Secret::new(serde_json::to_vec(&p.head).map_err(error)?),
+                        LiveChange::Select {
+                            selection: Selection {
+                                operation_id: p.operation,
+                                address: self.address(&p.snapshot.id),
+                                expected: duplicate_expected(&p.expected),
+                                value: Secret::new(serde_json::to_vec(&p.head).map_err(error)?),
+                            },
+                            guards: &[],
                         },
+                        p.selection_proof.clone(),
+                        &|proof: &Arc<VerifiedHead>| self.retain_proof(operation, proof),
                     )
                     .await
                     .map_err(error)?
             }
-            Pending::Remove(p) => journal
-                .delete_verified(
-                    &p.proof,
-                    std::slice::from_ref(&p.record),
-                    p.operation,
-                    self.address(&p.snapshot.id),
-                    duplicate_expected(&p.expected),
-                )
-                .await
-                .map_err(error)?,
+            Pending::Remove(p) => {
+                let operation = p.operation;
+                self.evidence
+                    .journal
+                    .change_live(
+                        std::slice::from_ref(&p.record),
+                        LiveChange::Delete {
+                            operation_id: p.operation,
+                            address: self.address(&p.snapshot.id),
+                            expected: duplicate_expected(&p.expected),
+                        },
+                        p.proof.clone(),
+                        &|proof: &Arc<VerifiedHead>| self.retain_proof(operation, proof),
+                    )
+                    .await
+                    .map_err(error)?
+            }
         };
+        match &mut pending {
+            Pending::Persist(p) => p.selection_proof = Some(used.clone()),
+            Pending::Remove(p) => p.proof = Some(used.clone()),
+        }
         match outcome(result) {
             Ok(()) => {
                 self.clear();
@@ -422,18 +465,46 @@ impl StoreUnitCheckpoints {
                     if !unchanged {
                         return Err(why);
                     }
-                    let proof = self.evidence.proof().await?;
+                    // Under the driver a no-effect is a real fence, epoch or
+                    // foreign change, or changed original bytes: name changed
+                    // originals as such instead of a moved head.
+                    let journal = StoreJournal::new(&self.evidence.store, self.evidence.node)
+                        .map_err(error)?;
+                    let (records, carried) = match &pending {
+                        Pending::Persist(p) => (p.run.records(), None),
+                        Pending::Remove(p) => (std::slice::from_ref(&p.record), p.ordinal),
+                    };
+                    let mut diagnosis = None;
+                    for record in records {
+                        let Some(ordinal) = self
+                            .evidence
+                            .journal
+                            .locate(&used, record.node_seq)
+                            .or(carried)
+                        else {
+                            continue;
+                        };
+                        if let Err(failed) = journal
+                            .confirm_original_record(&used, ordinal, record)
+                            .await
+                        {
+                            diagnosis = Some(error(failed));
+                            break;
+                        }
+                    }
+                    // Re-arm with the live head on the next call.
                     match &mut pending {
                         Pending::Persist(p) => {
-                            p.selection_proof = Some(proof);
+                            p.selection_proof = None;
                             p.operation = crate::door::op_id().0;
                         }
                         Pending::Remove(p) => {
-                            p.proof = proof;
+                            p.proof = None;
                             p.operation = crate::door::op_id().0;
                         }
                     }
                     self.save(pending);
+                    return Err(diagnosis.unwrap_or(why));
                 }
                 Err(why)
             }
@@ -497,17 +568,14 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
         let previous = self.head(&snapshot.id).await?;
         let proof = self.evidence.proof().await?;
         if let Some(raw) = &previous {
-            let (head, selected, _) = self.selected(&snapshot.id, raw, &proof).await?;
+            let (head, selected, _, _) = self.selected(&snapshot.id, raw, &proof).await?;
             if selected == *snapshot {
-                StoreJournal::new(&self.evidence.store, self.evidence.node)
-                    .map_err(error)?
-                    .confirm_owned_with(
-                        &proof,
-                        &[busbar_contract::persistence::Predicate {
-                            address: self.address(&snapshot.id),
-                            expected: ExpectedValue::Exact(raw.clone()),
-                        }],
-                    )
+                self.evidence
+                    .journal
+                    .confirm_live_owned_with(&[busbar_contract::persistence::Predicate {
+                        address: self.address(&snapshot.id),
+                        expected: ExpectedValue::Exact(raw.clone()),
+                    }])
                     .await
                     .map_err(error)?;
                 return Ok(());
@@ -577,22 +645,18 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
             self.audit.confirm(snapshot).await?;
         }
         let Some(raw) = self.head(&snapshot.id).await? else {
-            let proof = self.evidence.proof().await?;
-            StoreJournal::new(&self.evidence.store, self.evidence.node)
-                .map_err(error)?
-                .confirm_owned_with(
-                    &proof,
-                    &[busbar_contract::persistence::Predicate {
-                        address: self.address(&snapshot.id),
-                        expected: ExpectedValue::Absent,
-                    }],
-                )
+            self.evidence
+                .journal
+                .confirm_live_owned_with(&[busbar_contract::persistence::Predicate {
+                    address: self.address(&snapshot.id),
+                    expected: ExpectedValue::Absent,
+                }])
                 .await
                 .map_err(error)?;
             return Ok(());
         };
         let proof = self.evidence.proof().await?;
-        let (_, selected, record) = self.selected(&snapshot.id, &raw, &proof).await?;
+        let (_, selected, record, ordinal) = self.selected(&snapshot.id, &raw, &proof).await?;
         if selected != *snapshot {
             return Err(refusal("terminal running money custody changed"));
         }
@@ -600,7 +664,8 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
             snapshot: snapshot.clone(),
             record,
             expected: Arc::new(ExpectedValue::Exact(raw)),
-            proof,
+            proof: None,
+            ordinal,
             operation: crate::door::op_id().0,
         }));
         self.complete().await.map(|_| ())
@@ -622,15 +687,15 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
                 .ok_or_else(|| refusal("invalid running money key"))?
                 .try_into()
                 .map_err(error)?;
-            let (_, snapshot, _) = self.selected(&id, &raw, &proof).await?;
+            let (_, snapshot, _, _) = self.selected(&id, &raw, &proof).await?;
             if out.insert(id, snapshot).is_some() {
                 return Err(refusal("duplicate running money checkpoint"));
             }
         }
         let guard = crate::persistence::fences::scan_guard(self.namespace(), collection.generation);
-        StoreJournal::new(&self.evidence.store, self.evidence.node)
-            .map_err(error)?
-            .confirm_owned_with(&proof, &[guard])
+        self.evidence
+            .journal
+            .confirm_live_owned_with(&[guard])
             .await
             .map_err(error)?;
         self.no_foreign_pending()?;

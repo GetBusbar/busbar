@@ -181,7 +181,7 @@ impl<'a> StoreJournal<'a> {
         Ok(false)
     }
 
-    async fn locate_verified_record(
+    pub(super) async fn locate_verified_record(
         &self,
         proof: &VerifiedHead,
         sequence: u64,
@@ -241,6 +241,34 @@ impl<'a> StoreJournal<'a> {
         self.locate_verified_record(proof, sequence)
             .await
             .map(|(_, record)| record)
+    }
+
+    /// Read one original at an ordinal located by the live runtime
+    /// (`RuntimeJournal::locate`) within `proof`. One read; its decoded
+    /// sequence must be the requested one. Membership is the runtime's verified
+    /// head; signature and domain checks remain the caller's.
+    pub(crate) async fn read_located_record(
+        &self,
+        proof: &VerifiedHead,
+        sequence: u64,
+        ordinal: u64,
+    ) -> Result<Record> {
+        self.selected_head_predicate(proof)?;
+        if sequence == 0 || sequence > proof.head.sequence {
+            return Err(Error::Invalid);
+        }
+        if ordinal == 0 || ordinal > proof.head.count {
+            return Err(Error::Corrupt);
+        }
+        let (decoded, bytes) = self.original_at(ordinal).await?;
+        if decoded.node_seq != sequence {
+            return Err(Error::Corrupt);
+        }
+        Ok(Record::new(
+            decoded.node,
+            decoded.node_seq,
+            bytes.expose(&crate::seal::lend()).clone(),
+        ))
     }
 
     /// Recheck the exact original at an ordinal retained by a completed replay.
@@ -328,7 +356,9 @@ impl<'a> StoreJournal<'a> {
     /// selection of a two-record adoption. Domain ancestry/verdict validation
     /// remains the recovery owner's responsibility. One immutable candidate
     /// compares the full journal selection, custody and every original frame.
-    pub(crate) async fn select_verified(
+    /// Live domain owners select through `RuntimeJournal::change_live`.
+    #[cfg(test)]
+    pub(in crate::persistence::journal) async fn select_verified(
         &self,
         proof: &VerifiedHead,
         records: &[Record],
@@ -338,21 +368,11 @@ impl<'a> StoreJournal<'a> {
             .await
     }
 
-    pub(crate) async fn select_verified_with(
-        &self,
-        proof: &VerifiedHead,
-        records: &[Record],
-        selection: Selection,
-        guards: &[Predicate],
-    ) -> Result<WriteResult> {
-        self.change_selection(proof, records, selection, false, guards)
-            .await
-    }
-
     /// Preserve a domain's exact selected-row deletion after audit confirmation;
     /// it has the same original-frame/custody guards and retained exact attempt
     /// as selection. This does not introduce a replacement tombstone schema.
-    pub(crate) async fn delete_verified(
+    #[cfg(test)]
+    pub(in crate::persistence::journal) async fn delete_verified(
         &self,
         proof: &VerifiedHead,
         records: &[Record],
@@ -375,10 +395,58 @@ impl<'a> StoreJournal<'a> {
         .await
     }
 
+    /// Locate each original by replaying the proven prefix, after the logical
+    /// claim, exactly as before `change_selection_at` existed.
+    #[cfg(test)]
     async fn change_selection(
         &self,
         proof: &VerifiedHead,
         records: &[Record],
+        selection: Selection,
+        delete: bool,
+        guards: &[Predicate],
+    ) -> Result<WriteResult> {
+        let unlocated: Vec<_> = records.iter().map(|record| (None, record)).collect();
+        self.submit_selection(proof, &unlocated, selection, delete, guards)
+            .await
+    }
+
+    /// Change a selected row against originals whose ordinals the caller
+    /// already established (`RuntimeJournal::change_live`, under its driver).
+    /// The candidate keeps every predicate: H, O, the guards, one exact
+    /// `R(ordinal)` body per record and the selection's expected value. A wrong
+    /// ordinal fails closed as a native condition conflict.
+    pub(in crate::persistence::journal) async fn change_selection_at(
+        &self,
+        proof: &VerifiedHead,
+        located: &[(u64, &Record)],
+        selection: Selection,
+        delete: bool,
+        guards: &[Predicate],
+    ) -> Result<WriteResult> {
+        let mut checked = Vec::new();
+        checked
+            .try_reserve_exact(located.len())
+            .map_err(|_| Error::Budget)?;
+        for (ordinal, record) in located {
+            if *ordinal == 0
+                || *ordinal > proof.head.count
+                || record.node != self.node
+                || record.node_seq > proof.head.sequence
+                || decode_record(self.node, &record.body)?.identity() != record.identity()
+            {
+                return Err(Error::Corrupt);
+            }
+            checked.push((Some(*ordinal), *record));
+        }
+        self.submit_selection(proof, &checked, selection, delete, guards)
+            .await
+    }
+
+    async fn submit_selection(
+        &self,
+        proof: &VerifiedHead,
+        records: &[(Option<u64>, &Record)],
         selection: Selection,
         delete: bool,
         guards: &[Predicate],
@@ -431,7 +499,7 @@ impl<'a> StoreJournal<'a> {
                 }
             }
         }
-        for record in records {
+        for (_, record) in records {
             digest.update(record.node.to_be_bytes());
             digest.update(record.node_seq.to_be_bytes());
             digest.update((record.body.len() as u64).to_be_bytes());
@@ -461,11 +529,18 @@ impl<'a> StoreJournal<'a> {
         predicates
             .try_reserve_exact(records.len() + 1)
             .map_err(|_| Error::Budget)?;
-        for record in records {
-            let (ordinal, original) = self.locate_verified_record(proof, record.node_seq).await?;
-            if original.identity() != record.identity() || original.body != record.body {
-                return Err(Error::Corrupt);
-            }
+        for (located, record) in records {
+            let ordinal = match located {
+                Some(ordinal) => *ordinal,
+                None => {
+                    let (ordinal, original) =
+                        self.locate_verified_record(proof, record.node_seq).await?;
+                    if original.identity() != record.identity() || original.body != record.body {
+                        return Err(Error::Corrupt);
+                    }
+                    ordinal
+                }
+            };
             predicates.push(Predicate {
                 address: self.address(b'R', ordinal),
                 expected: ExpectedValue::Exact(Secret::new(record.body.clone())),
