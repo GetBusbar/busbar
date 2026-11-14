@@ -92,6 +92,19 @@ pub fn redact(text: &str, token: &str) -> String {
 /// Download `url` into a fresh `destination`, enforcing an exact byte count
 /// and SHA-256 while streaming (one pass; no second read of the file).
 pub fn fetch(url: &str, token: &str, destination: &Path, bytes: u64, sha256: &str) -> Result<()> {
+    fetch_timed(url, token, destination, bytes, sha256).map(|_| ())
+}
+
+/// `fetch`, also returning the time spent hashing. The digest is computed over
+/// exactly the bytes written in the one pass, so the file on disk is the
+/// verified file and is never re-read for hashing.
+pub fn fetch_timed(
+    url: &str,
+    token: &str,
+    destination: &Path,
+    bytes: u64,
+    sha256: &str,
+) -> Result<Duration> {
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -104,7 +117,8 @@ pub fn fetch(url: &str, token: &str, destination: &Path, bytes: u64, sha256: &st
         proc::check_interrupted()?;
         output.set_len(0).map_err(|e| e.to_string())?;
         output.rewind().map_err(|e| e.to_string())?;
-        let (code, target, hash, received) = transfer(&current, token, &mut output, bytes)?;
+        let (code, target, hash, received, hashing) =
+            transfer(&current, token, &mut output, bytes)?;
         if (300..400).contains(&code) {
             require(!target.is_empty(), "download redirect has no target")?;
             same_origin(url, &target)?;
@@ -120,7 +134,7 @@ pub fn fetch(url: &str, token: &str, destination: &Path, bytes: u64, sha256: &st
             "downloaded package differs from its protected pin",
         )?;
         output.sync_all().map_err(|e| e.to_string())?;
-        return Ok(());
+        return Ok(hashing);
     }
     Err("package download redirected too often".into())
 }
@@ -130,7 +144,7 @@ fn transfer(
     token: &str,
     output: &mut File,
     limit: u64,
-) -> Result<(u16, String, String, u64)> {
+) -> Result<(u16, String, String, u64, Duration)> {
     let options = proc::Options {
         env: vec![
             ("PATH".into(), proc::HOST_PATH.into()),
@@ -162,6 +176,7 @@ fn transfer(
     let mut stdout = child.stdout.take().unwrap();
     let mut hash = Sha256::new();
     let mut received = 0u64;
+    let mut hashing = Duration::ZERO;
     let mut buffer = vec![0u8; 1 << 20];
     let mut failure = None;
     loop {
@@ -182,7 +197,9 @@ fn transfer(
             failure = Some("package download exceeds its protected size".into());
             break;
         }
+        let tick = std::time::Instant::now();
         hash.update(&buffer[..n]);
+        hashing += tick.elapsed();
         if let Err(error) = output.write_all(&buffer[..n]) {
             failure = Some(error.to_string());
             break;
@@ -214,7 +231,7 @@ fn transfer(
             redact(stderr.lines().next().unwrap_or(""), token)
         ),
     )?;
-    Ok((code, target, hash.hex(), received))
+    Ok((code, target, hash.hex(), received, hashing))
 }
 
 /// Outcome of a bounded in-memory GET.
