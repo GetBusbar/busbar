@@ -85,7 +85,6 @@ impl FramedStream {
         Self::open_bound_kind(door, claim, target, head, &AuthBinding::NONE, scheme, true)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn open_bound_kind(
         door: Arc<dyn FramerDoor>,
         claim: &str,
@@ -97,6 +96,10 @@ impl FramedStream {
     ) -> Result<Self, Refused> {
         binding.ticket_less()?;
         let facts = door.facts();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a refusal names the entry and the claim it does not answer"
+        )]
         let index = facts
             .claims
             .iter()
@@ -164,6 +167,10 @@ impl FramedStream {
     fn observe(&mut self, yielded: &Yielded) -> Result<(), Refused> {
         self.deadline_ns = yielded.deadline_ns;
         if let Some(piece) = yielded.pieces.iter().find(|piece| piece.failed) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a failed stream is refused with the framer's own sentence"
+            )]
             return Err(Refused {
                 outcome: Outcome::Failed,
                 error: String::from_utf8_lossy(&piece.bytes).into_owned(),

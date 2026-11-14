@@ -374,6 +374,7 @@ dependencies = [
  "busbar-plugin-loader",
  "crc32fast",
  "dimpl",
+ "foldhash",
  "futures",
  "libc",
  "rcgen",

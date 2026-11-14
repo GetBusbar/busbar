@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use foldhash::HashMap;
+
 use crate::framer::FramerDoor;
 
 /// One entry, as the view holds it.
@@ -85,58 +87,83 @@ impl std::error::Error for ViewRefusal {}
 #[derive(Debug, Clone, Default)]
 pub struct Transports {
     entries: Vec<Entry>,
+    /// Each claimed scheme: the index of the entry serving it, and of the claim in its claims. Built
+    /// once with the view, so a dial's lookup never walks the entries.
+    by_scheme: HashMap<&'static str, (usize, usize)>,
+    /// The index of the address carrier ([`Self::address_carrier`]), found once with the view.
+    carrier: Option<usize>,
 }
 
 impl Transports {
     /// The view over `entries`.
     pub fn new(entries: Vec<Entry>) -> Result<Self, ViewRefusal> {
-        let view = Self { entries };
-        let mut seen: Vec<(&str, &str)> = Vec::new();
-        for e in &view.entries {
+        let mut by_scheme: HashMap<&'static str, (usize, usize)> = HashMap::default();
+        for (at, e) in entries.iter().enumerate() {
             let facts = e.door.facts();
             if facts.claims.is_empty() {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a load-time refusal names the entry"
+                )]
                 return Err(ViewRefusal::NoClaim {
-                    entry: facts.name.clone(),
+                    entry: facts.name.as_str().to_owned(),
                 });
             }
-            for scheme in &facts.claims {
-                if let Some((_, first)) = seen.iter().find(|(s, _)| s == scheme) {
-                    return Err(ViewRefusal::ClaimedTwice {
-                        scheme: (*scheme).to_owned(),
-                        first: (*first).to_owned(),
-                        second: facts.name.clone(),
-                    });
+            for (claim, &scheme) in facts.claims.iter().enumerate() {
+                match by_scheme.entry(scheme) {
+                    std::collections::hash_map::Entry::Occupied(first) => {
+                        let first = &entries[first.get().0].door.facts().name;
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "error: a load-time refusal names both entries and the scheme"
+                        )]
+                        return Err(ViewRefusal::ClaimedTwice {
+                            scheme: scheme.to_owned(),
+                            first: first.as_str().to_owned(),
+                            second: facts.name.as_str().to_owned(),
+                        });
+                    }
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert((at, claim));
+                    }
                 }
-                seen.push((scheme, &facts.name));
             }
         }
-        for e in &view.entries {
+        for e in &entries {
             let facts = e.door.facts();
             if let Some(layer) = facts
                 .composes_over
                 .iter()
-                .find(|l| !seen.iter().any(|(s, _)| s == *l))
+                .find(|l| !by_scheme.contains_key(*l))
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a load-time refusal names the entry and the layer"
+                )]
                 return Err(ViewRefusal::UnservedLayer {
-                    entry: facts.name.clone(),
+                    entry: facts.name.as_str().to_owned(),
                     layer: (*layer).to_owned(),
                 });
             }
         }
-        Ok(view)
+        let carrier = entries.iter().position(|e| {
+            let f = e.door.facts();
+            f.role == busbar_contract::abi::transport::ROLE_CARRIER && f.ported
+        });
+        Ok(Self {
+            entries,
+            by_scheme,
+            carrier,
+        })
     }
 
     /// The entry serving `scheme`, and as which claim.
     #[must_use]
     pub fn serving(&self, scheme: &str) -> Option<Served<'_>> {
-        self.entries.iter().find_map(|entry| {
-            let claim = entry
-                .door
-                .facts()
-                .claims
-                .iter()
-                .position(|c| *c == scheme)?;
-            Some(Served { entry, claim })
+        let &(at, claim) = self.by_scheme.get(scheme)?;
+        Some(Served {
+            entry: &self.entries[at],
+            claim,
         })
     }
 
@@ -150,13 +177,11 @@ impl Transports {
     /// THE CARRIER OF A NETWORK ADDRESS: the first entry, in registration order, that is a CARRIER
     #[must_use]
     pub fn address_carrier(&self) -> Option<&Entry> {
-        self.entries.iter().find(|e| {
-            let f = e.door.facts();
-            f.role == busbar_contract::abi::transport::ROLE_CARRIER && f.ported
-        })
+        self.carrier.map(|at| &self.entries[at])
     }
 
     /// Every scheme, the entry serving it and its claim index, in registration order.
+    #[cfg(test)]
     #[must_use]
     pub fn view(&self) -> Vec<(String, String, usize)> {
         self.entries

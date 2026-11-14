@@ -3,7 +3,8 @@
 
 //! MEMBER PROGRAMS: ONE long-lived program connection
 
-use std::collections::{HashMap, VecDeque};
+use std::cell::Cell;
+use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Wake, Waker};
 
@@ -16,9 +17,15 @@ use busbar_contract::conn::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
+use foldhash::HashMap;
 
 use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT, RECEIVE_BUFFER_BYTES};
 use crate::map;
+
+thread_local! {
+    /// The calling thread's reused list of wakers a fan wakes once its lock is let go.
+    static WOKEN: Cell<Vec<Arc<Waker>>> = const { Cell::new(Vec::new()) };
+}
 
 /// The wakers of every lease waiting on a member's program, woken together: the program's pipes
 /// are driven with this waker, so a frame read for one lease wakes them all.
@@ -41,16 +48,19 @@ impl Fan {
     }
 
     fn wake_all(&self) {
-        let woken: Vec<Arc<Waker>> = self
-            .wakers
-            .lock()
-            .expect("lease wakers")
-            .drain()
-            .map(|(_, w)| w)
-            .collect();
-        for w in woken {
+        // The thread's reused list: a wake that re-enters a fan gets a list of its own.
+        let mut woken = WOKEN.take();
+        woken.extend(
+            self.wakers
+                .lock()
+                .expect("lease wakers")
+                .drain()
+                .map(|(_, w)| w),
+        );
+        for w in woken.drain(..) {
             w.wake_by_ref();
         }
+        WOKEN.set(woken);
     }
 }
 
@@ -174,7 +184,7 @@ impl Drop for Out<'_> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
             let mut st = self.member.lock();
-            st.ended(self.generation, Some(Failure::Closed));
+            st.ended(self.generation, Some(&Failure::Closed));
             st.doomed.push(conn);
         }
     }
@@ -214,6 +224,9 @@ pub(crate) struct Member {
     fan: Arc<Fan>,
     /// Its supervision key (`DialIn::supervision_key`): minted at [`Member::new`], never `0`, and
     supervision_key: u64,
+    /// What every lease's head carries after its generation line: the instance and identity field
+    /// lines, spelled once with the member.
+    lease_tail: Vec<u8>,
 }
 
 /// The next member's supervision key: process-wide, from `1`.
@@ -269,12 +282,9 @@ impl Expected {
     }
 }
 
-// `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-// MSRV floor is below 1.95, so keep the older name.
-#[allow(deprecated)]
 fn next_supervision_key(counter: &std::sync::atomic::AtomicU64) -> Result<u64, ConnError> {
     counter
-        .fetch_update(
+        .try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |next| if next == 0 { None } else { next.checked_add(1) },
@@ -308,7 +318,7 @@ impl State {
     }
 
     /// The program of `generation` ended (`failure` = how, `None` = its output closed): it is
-    fn ended(&mut self, generation: u64, failure: Option<Failure>) {
+    fn ended(&mut self, generation: u64, failure: Option<&Failure>) {
         if self
             .live
             .as_ref()
@@ -318,7 +328,7 @@ impl State {
         }
         for inbox in self.leases.values_mut() {
             if inbox.generation == generation && inbox.ended.is_none() {
-                inbox.ended = Some(failure.clone());
+                inbox.ended = Some(failure.cloned());
             }
         }
         let missed = std::mem::take(&mut self.missed);
@@ -350,6 +360,7 @@ impl Member {
         alpn: Vec<Vec<u8>>,
     ) -> Result<Self, ConnError> {
         let supervision_key = next_supervision_key(&NEXT_SUPERVISION_KEY)?;
+        let lease_tail = lease_tail(supervision_key, &program);
         Ok(Self {
             program,
             env,
@@ -362,7 +373,7 @@ impl Member {
                 retired: false,
                 key_retired: false,
                 next_lease: 1,
-                leases: HashMap::new(),
+                leases: HashMap::default(),
                 spawning: false,
                 programs_outstanding: 0,
                 missed: Vec::new(),
@@ -374,6 +385,7 @@ impl Member {
             spawned: Condvar::new(),
             fan: Arc::new(Fan::default()),
             supervision_key,
+            lease_tail,
         })
     }
 
@@ -566,23 +578,20 @@ impl Member {
         let mid_frame = st.mid_frame;
         let lease = st.next_lease;
         st.next_lease += 1;
-        let mut head = Vec::new();
+        // The lease's own head: its generation line, then the member's tail, in one exactly sized
+        // buffer the inbox owns.
+        let mut head = Vec::with_capacity(
+            PROGRAM_GENERATION_FIELD.len()
+                + busbar_contract::abi::transport::fields::SEPARATOR.len()
+                + 20
+                + busbar_contract::abi::transport::fields::LINE_END.len()
+                + self.lease_tail.len(),
+        );
         head.extend_from_slice(PROGRAM_GENERATION_FIELD.as_bytes());
         head.extend_from_slice(busbar_contract::abi::transport::fields::SEPARATOR);
-        head.extend_from_slice(generation.to_string().as_bytes());
+        let _ = std::io::Write::write_fmt(&mut head, format_args!("{generation}"));
         head.extend_from_slice(busbar_contract::abi::transport::fields::LINE_END);
-        for (name, value) in [
-            (PROGRAM_INSTANCE_FIELD, self.supervision_key.to_string()),
-            (
-                PROGRAM_IDENTITY_FIELD,
-                base64::engine::general_purpose::STANDARD.encode(self.program.command.as_bytes()),
-            ),
-        ] {
-            head.extend_from_slice(name.as_bytes());
-            head.extend_from_slice(busbar_contract::abi::transport::fields::SEPARATOR);
-            head.extend_from_slice(value.as_bytes());
-            head.extend_from_slice(busbar_contract::abi::transport::fields::LINE_END);
-        }
+        head.extend_from_slice(&self.lease_tail);
         st.leases.insert(
             lease,
             Inbox {
@@ -599,7 +608,7 @@ impl Member {
         let (mut st, flushed) =
             self.flush_unsent(st, lease, &mut Context::from_waker(&waker), &waker);
         if let Err(f) = flushed {
-            st.ended(generation, Some(f.clone()));
+            st.ended(generation, Some(&f));
             st.leases.remove(&lease);
             return Err(map(&f));
         }
@@ -663,7 +672,7 @@ impl Member {
             match flushed {
                 Ok(_) => {}
                 Err(f) => {
-                    st.ended(generation, Some(f));
+                    st.ended(generation, Some(&f));
                     continue;
                 }
             }
@@ -706,7 +715,7 @@ impl Member {
                     st.wake_fan = true;
                 }
                 Poll::Ready(Ok(None)) => st.ended(generation, None),
-                Poll::Ready(Err(f)) => st.ended(generation, Some(f)),
+                Poll::Ready(Err(f)) => st.ended(generation, Some(&f)),
             }
         }
     }
@@ -755,7 +764,7 @@ impl Member {
             Ok(true) => {}
             Ok(false) => return Err(ConnError::Pending),
             Err(f) => {
-                st.ended(generation, Some(f.clone()));
+                st.ended(generation, Some(&f));
                 return Err(map(&f));
             }
         }
@@ -773,7 +782,7 @@ impl Member {
             Ok(true) => Ok(bytes.len()),
             Ok(false) => Err(ConnError::Pending),
             Err(f) => {
-                st.ended(generation, Some(f.clone()));
+                st.ended(generation, Some(&f));
                 Err(map(&f))
             }
         }
@@ -881,6 +890,24 @@ impl Drop for Declaration {
     fn drop(&mut self) {
         self.member.retire();
     }
+}
+
+/// The instance and identity field lines every lease of the member keyed `supervision_key` running
+/// `program` carries in its head.
+fn lease_tail(supervision_key: u64, program: &Program) -> Vec<u8> {
+    use busbar_contract::abi::transport::fields::{LINE_END, SEPARATOR};
+    let identity = base64::engine::general_purpose::STANDARD.encode(program.command.as_bytes());
+    // busbar:expect(bp::fresh_buffer, reason = "config: a member is declared at a config commit; its lease tail is spelled once")
+    let mut tail = Vec::new();
+    tail.extend_from_slice(PROGRAM_INSTANCE_FIELD.as_bytes());
+    tail.extend_from_slice(SEPARATOR);
+    let _ = std::io::Write::write_fmt(&mut tail, format_args!("{supervision_key}"));
+    tail.extend_from_slice(LINE_END);
+    tail.extend_from_slice(PROGRAM_IDENTITY_FIELD.as_bytes());
+    tail.extend_from_slice(SEPARATOR);
+    tail.extend_from_slice(identity.as_bytes());
+    tail.extend_from_slice(LINE_END);
+    tail
 }
 
 /// Declaration custody is distinct from active leases: the last declaring record retires the

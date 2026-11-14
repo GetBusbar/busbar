@@ -45,24 +45,39 @@ pub fn download(
 ) -> Result<Vec<u8>, String> {
     let secured = busbar_kernel::preflight::plugin_fetch_admits(url, blocked)?;
     std::thread::scope(|s| {
-        s.spawn(|| -> Result<Vec<u8>, String> {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| format!("fetch runtime: {e}"))?;
-            rt.block_on(get(table, url, secured, cap))
-        })
-        .join()
-        .map_err(|_| "plugins.fetch download thread panicked".to_string())?
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
+        )]
+        let joined = s
+            .spawn(|| -> Result<Vec<u8>, String> {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
+                )]
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("fetch runtime: {e}"))?;
+                rt.block_on(get(table, url, secured, cap))
+            })
+            .join()
+            .map_err(|_| "plugins.fetch download thread panicked".to_owned());
+        joined?
     })
 }
 
 /// The download's need for the URL's own scheme (`scheme`, lower-cased, as the URL spells it): the
 fn need(scheme: &str) -> ReadNeed {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
+    )]
+    let transport = scheme.to_owned();
     ReadNeed {
         direction: DIRECTION_OUTBOUND,
         egress_class: EGRESS_DEFAULT,
-        transport: scheme.to_owned(),
+        transport,
         auth: String::new(),
         target_from: String::new(),
         trust_from: String::new(),
@@ -92,7 +107,15 @@ impl Drop for Held<'_> {
 
 /// One GET of `url` over `table`, read whole under `cap`.
 async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<u8>, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
+    )]
     let sending = || format!("GET {url}: error sending request for url ({url})");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
+    )]
     let (need_id, scheme) = match url.split_once("://") {
         Some((scheme, _)) if secured => (table.secured_need, scheme.to_ascii_lowercase()),
         Some((scheme, _)) => (table.plain_need, scheme.to_ascii_lowercase()),
@@ -133,6 +156,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
     let (table, conn) = (held.table, held.conn);
     let mut buf = vec![0_u8; 16 * 1024];
     let mut status: Option<u32> = None;
+    // busbar:expect(bp::fresh_buffer, reason = "boot: the plugins.fetch download runs once, at boot stage 3c")
     let mut body: Vec<u8> = Vec::new();
     loop {
         let piece =
@@ -141,6 +165,10 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
             Ok(p) => p,
             Err(_) if status.is_none() => return Err(None),
             Err(_) => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
+                )]
                 return Err(Some(format!(
                     "read body {url}: connection failed mid-download"
                 )));
@@ -164,6 +192,10 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
                         Err(_) => true,
                     };
                     if over {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
+                        )]
                         return Err(Some(format!(
                             "GET {url}: declared Content-Length {len} exceeds the {cap}-byte \
                              plugins.fetch download cap"
@@ -177,6 +209,10 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
                     return Err(None);
                 }
                 if body.len() + piece.len > cap {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
+                    )]
                     return Err(Some(format!(
                         "GET {url}: response exceeded the {cap}-byte plugins.fetch download cap; \
                          refusing to buffer a truncated download"

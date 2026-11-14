@@ -506,6 +506,7 @@ fn storage_pending_and_a_full_channel_queue_do_not_schedule_retry_spins() {
                     &rig.dialled.pairing,
                     &mut Context::from_waker(&rig.waker),
                     None,
+                    std::time::Instant::now(),
                 )
                 .unwrap();
             assert_eq!(rig.woke.count.load(Ordering::SeqCst), 0);

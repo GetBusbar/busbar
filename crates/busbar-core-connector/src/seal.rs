@@ -28,7 +28,7 @@ struct Seal {
 
 /// THE SEALS A CONNECTION HOLDS: those not yet spliced into its wire.
 #[derive(Default)]
-pub(crate) struct Seals(Vec<Seal>);
+pub(crate) struct Seals(Vec<Seal>, Vec<Option<usize>>);
 
 impl std::fmt::Debug for Seals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -224,24 +224,30 @@ impl Seals {
 
     /// SPLICE every pending seal whose filler `wire` holds: the real bytes over the filler, in
     pub(crate) fn splice(&mut self, wire: &mut [u8]) -> Result<(), &'static str> {
-        let mut positions = Vec::with_capacity(self.0.len());
+        // The connection's reused list of where each seal's filler stands in `wire`.
+        let mut positions = std::mem::take(&mut self.1);
+        positions.clear();
         for s in &self.0 {
             let n = s.filler.len();
             let mut at = wire.windows(n).enumerate().filter(|(_, w)| *w == s.filler);
             match (at.next().map(|(i, _)| i), at.next()) {
                 (Some(i), None) => positions.push(Some(i)),
-                (Some(_), Some(_)) => return Err(SEAL_BROKEN),
+                (Some(_), Some(_)) => {
+                    self.1 = positions;
+                    return Err(SEAL_BROKEN);
+                }
                 (None, _) => positions.push(None),
             }
         }
-        let mut positions = positions.into_iter();
-        self.0.retain(|s| match positions.next().flatten() {
+        let mut at = positions.iter();
+        self.0.retain(|s| match at.next().copied().flatten() {
             Some(i) => {
                 wire[i..i + s.filler.len()].copy_from_slice(&s.value);
                 false
             }
             None => true,
         });
+        self.1 = positions;
         Ok(())
     }
 }

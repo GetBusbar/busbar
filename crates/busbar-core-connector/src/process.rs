@@ -3,6 +3,8 @@
 
 //! THE PROCESS'S ONE CONNECTOR, AS THE BOOT PATH BUILDS IT (`BUSBAR-1.6.0.md` THE DESIGN, section 5
 
+use std::borrow::Cow;
+use std::cell::Cell;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
 
@@ -32,11 +34,25 @@ pub fn build_with_secrets(
     pool: PoolPosture,
     spawn_secrets: crate::spawn_env::SpawnSecretFn,
 ) -> Result<Arc<Connector>, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the process builds its one connector once, at boot"
+    )]
     let proxy = crate::proxy::from_env().map_err(|e| format!("its proxy environment: {e}"))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the process builds its one connector once, at boot"
+    )]
     let view = Transports::new(entries()?).map_err(|e| e.to_string())?;
-    Ok(Arc::new(
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the process builds its one connector once, at boot"
+    )]
+    let connector =
         Connector::serving_with_trust(view, judge(dest, own_ports), EgressTrust::default(), wake)
-            .map_err(|e| format!("its connection security: {e}"))?
+            .map_err(|e| format!("its connection security: {e}"))?;
+    Ok(Arc::new(
+        connector
             .pooling(pool)
             .proxying(proxy)
             .resolving_spawn_secrets(spawn_secrets),
@@ -161,22 +177,19 @@ impl GuardJudge {
         located.host().map_err(|_| DEST_NO_HOST)?;
         // Preserve the original spelling until the guard has applied its obfuscated-address rule.
         let (raw_host, raw_port) = target.authority.rsplit_once(':').ok_or(DEST_NO_HOST)?;
-        let host = raw_host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .to_owned();
+        let host = raw_host.trim_start_matches('[').trim_end_matches(']');
         let port = raw_port.parse().map_err(|_| DEST_NO_HOST)?;
         if !target.secure && class == EGRESS_OPEN_WEB {
             return Err(DEST_PLAINTEXT);
         }
         let literal = self
             .guard
-            .judge_name_with(&host, class, strict, reach)
+            .judge_name_with(host, class, strict, reach)
             .map_err(|r| r.verdict)?;
         if literal.is_some() {
-            plaintext_to_loopback(class, target.secure, &host)?;
+            plaintext_to_loopback(class, target.secure, host)?;
         }
-        let host = url_host_to_ascii(&host)
+        let host = url_host_to_ascii(host)
             .map_err(|_| DEST_NO_HOST)?
             .into_owned();
         Ok((host, port, target.secure, literal))
@@ -192,21 +205,34 @@ impl GuardJudge {
         reach: bool,
     ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
         let (host, port, secure) = split(dest)?;
-        let authority = if host.contains(':') {
-            format!("[{host}]:{port}")
-        } else {
-            format!("{host}:{port}")
-        };
-        self.named_target(
-            Destination {
-                authority: &authority,
-                secure,
-                egress_class: class,
-            },
-            strict,
-            reach,
-        )
+        with_scratch(|authority| {
+            use std::fmt::Write as _;
+            let _ = if host.contains(':') {
+                write!(authority, "[{host}]:{port}")
+            } else {
+                write!(authority, "{host}:{port}")
+            };
+            self.named_target(
+                Destination {
+                    authority,
+                    secure,
+                    egress_class: class,
+                },
+                strict,
+                reach,
+            )
+        })
     }
+}
+
+/// A refusal's sentence, spelled only when a destination is refused.
+fn refusal_sentence(refusal: &impl std::fmt::Display) -> String {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a refused destination's sentence, built only on refusal"
+    )]
+    let sentence = refusal.to_string();
+    sentence
 }
 
 /// Loopback-allowed's scheme rule, held once the guard admitted the destination: plaintext only to
@@ -218,12 +244,12 @@ fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64>
 }
 
 /// A destination as `(host, port, https)`: an `http(s)` URL (any other scheme refused, userinfo
-fn split(dest: &str) -> Result<(String, u16, bool), u64> {
-    if let Some((scheme, rest)) = dest.split_once("://") {
-        let lowered = format!("{}://{rest}", scheme.to_ascii_lowercase());
-
-        return match busbar_kernel_egress::trust::net::split_url(&lowered) {
-            Ok((https, host, port, _)) => Ok((host, port, https)),
+fn split(dest: &str) -> Result<(Cow<'_, str>, u16, bool), u64> {
+    // `split_url` matches the scheme ASCII-case-insensitively and lower-cases it itself, so the
+    // destination is handed over as spelled.
+    if dest.contains("://") {
+        return match busbar_kernel_egress::trust::net::split_url(dest) {
+            Ok((https, host, port, _)) => Ok((Cow::Owned(host), port, https)),
             Err(busbar_kernel_egress::trust::net::AddressRefusal::Scheme { .. }) => {
                 Err(DEST_SCHEME)
             }
@@ -253,7 +279,22 @@ fn split(dest: &str) -> Result<(String, u16, bool), u64> {
     if host.is_empty() {
         return Err(DEST_NO_HOST);
     }
-    Ok((host.to_owned(), port, false))
+    Ok((Cow::Borrowed(host), port, false))
+}
+
+thread_local! {
+    /// The calling thread's reused authority buffer ([`with_scratch`]).
+    static SCRATCH: Cell<String> = const { Cell::new(String::new()) };
+}
+
+/// `f` over the calling thread's reused text buffer, handed over empty. A re-entrant call gets a
+/// fresh one; the buffer is kept for the thread's next call.
+fn with_scratch<R>(f: impl FnOnce(&mut String) -> R) -> R {
+    let mut buf = SCRATCH.take();
+    buf.clear();
+    let out = f(&mut buf);
+    SCRATCH.set(buf);
+    out
 }
 
 impl DestJudge for GuardJudge {
@@ -316,7 +357,7 @@ impl DestJudge for GuardJudge {
             .judge_answer(host, addrs, class)
             .map_err(|r| DestRefusal {
                 verdict: r.verdict,
-                reason: r.to_string(),
+                reason: refusal_sentence(&r),
             })
     }
 
@@ -327,7 +368,7 @@ impl DestJudge for GuardJudge {
             .map(|_| ())
             .map_err(|r| DestRefusal {
                 verdict: r.verdict,
-                reason: r.to_string(),
+                reason: refusal_sentence(&r),
             })
     }
 
@@ -386,7 +427,7 @@ impl GuardJudge {
                         .judge_answer_with(&host, &addrs, class, refuse_private, reach)
                         .map_err(|r| Refused {
                             verdict: r.verdict,
-                            detail: r.addr.map(|a| a.to_string()),
+                            detail: r.addr.map(|a| refusal_sentence(&a)),
                         })
                         .and_then(|()| {
                             plaintext_to_loopback(class, https, &host)?;
@@ -472,6 +513,7 @@ impl DialJudge for OneJudge {
     }
 
     fn own_ports_applied(&self, ports: &[u16]) {
+        // busbar:expect(bp::into_alloc, reason = "config: the node's own ports change only on a config commit")
         let next: Arc<[u16]> = ports.into();
         let previous = std::mem::replace(&mut *self.own.write().expect("own ports"), next);
         drop(previous);
@@ -592,10 +634,15 @@ fn not_the_node(
 /// The ports the node listens on, read off its listen addresses (`listen`, `admin_listen`): an
 #[must_use]
 pub fn own_ports(listens: &[&str]) -> Vec<u16> {
-    listens
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the node's own ports are read off its listen addresses once per config"
+    )]
+    let ports = listens
         .iter()
         .filter_map(|l| l.rsplit_once(':').and_then(|(_, p)| p.parse().ok()))
-        .collect()
+        .collect();
+    ports
 }
 
 #[cfg(test)]
