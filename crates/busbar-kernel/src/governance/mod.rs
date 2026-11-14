@@ -1625,6 +1625,10 @@ mod limits_tests;
 mod budget_cell_tests;
 
 #[cfg(test)]
+#[path = "tests/model_cell_constructor_rule.rs"]
+mod model_cell_constructor_rule;
+
+#[cfg(test)]
 #[path = "../tests/key_expires_at_tests.rs"]
 mod key_expires_at_tests;
 
