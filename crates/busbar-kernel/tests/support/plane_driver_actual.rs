@@ -21,6 +21,9 @@ mod close_cases;
 #[path = "plane_driver_session_input_cases.rs"]
 mod session_input_cases;
 
+#[path = "plane_driver_session_route_cases.rs"]
+mod session_route_cases;
+
 #[path = "plane_driver_completion_retirement.rs"]
 mod completion_retirement;
 
@@ -82,6 +85,10 @@ pub(crate) struct Rig {
 impl Rig {
     pub(crate) fn projects(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
         self.plane.projects.lock().unwrap().clone()
+    }
+
+    pub(crate) fn project_flags(&self) -> Vec<u32> {
+        self.plane.project_flags.lock().unwrap().clone()
     }
 
     pub(crate) fn stats(&self) -> [u64; stat::COUNT] {
@@ -230,6 +237,8 @@ struct Double {
     stats: [AtomicU64; stat::COUNT],
     /// `project` crossings, and the bodies each was handed (with the rewrite, when one came).
     projects: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    /// The `ProjectIn::flags` each `project` crossing carried, in crossing order.
+    project_flags: Mutex<Vec<u32>>,
     /// The driver tickets minted, and every ticket recycled.
     drivers: Mutex<Vec<Ticket>>,
     recycled: Mutex<Vec<Ticket>>,
@@ -269,6 +278,8 @@ struct Sessions {
     open: Mutex<Vec<u64>>,
     initials: AtomicU64,
     server_first: AtomicBool,
+    /// A server-first session restates its dial route (verb, target) on every caller frame.
+    restates: AtomicBool,
     read: Mutex<Vec<(u64, Vec<u8>)>>,
     read_at: Mutex<Vec<usize>>,
     collects: AtomicU64,
@@ -820,6 +831,12 @@ impl Double {
                 s.read.lock().unwrap().push((i.stream, body.clone()));
                 if s.server_first.load(Ordering::SeqCst) {
                     reply(o, &body);
+                    if s.restates.load(Ordering::SeqCst) {
+                        let mut at = 0;
+                        o.verb = put(i, &mut at, b"GET");
+                        o.target = put(i, &mut at, b"/open");
+                        o.arena_written = at as u64;
+                    }
                     o.flags = EMIT_TO_FAR_END;
                     return ready(Outcome::Ready);
                 }
@@ -1168,6 +1185,7 @@ impl PlaneCalls for Double {
             .lock()
             .unwrap()
             .push((body.clone(), rewrite.clone()));
+        self.project_flags.lock().unwrap().push(input.flags);
         if (target == b"/faults-rewrite" && !rewrite.is_empty()) || target == b"/unparseable" {
             out.head.outcome = RawOutcome::of(Outcome::Fault);
             out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
