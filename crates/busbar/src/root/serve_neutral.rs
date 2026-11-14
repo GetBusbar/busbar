@@ -563,11 +563,7 @@ impl<C: Output> FramedOutput<C> {
             return;
         }
         // The stream is still crossing the plugin: finish it when it is returned.
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: a unit finishes while its stream is still out only when it is cut short mid-emit"
-        )]
-        let (message, details) = (message.to_vec(), details.to_vec());
+        let (message, details) = crate::root::cold::cut_short_status(message, details);
         let inner = Arc::clone(&self.inner);
         slot.then = Some(Box::new(move |mut stream: FramedStream| {
             if let Ok(closing) = stream.finish_response(status, &message, &details) {

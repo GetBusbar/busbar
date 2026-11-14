@@ -98,11 +98,7 @@ impl LaneNames {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lane(name)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "config: a registered lane's name is keyed once, on its first resolve"
-        )]
-        self.resolved.insert(name.to_owned(), lane);
+        crate::root::cold::first_resolved(&mut self.resolved, name, lane);
         Some(lane)
     }
 
@@ -114,7 +110,7 @@ impl LaneNames {
 
 pub struct Node {
     kernel: Arc<busbar_kernel::teller::Kernel>,
-    inflight: busbar_kernel::inflight::InFlight,
+    pub(in crate::root) inflight: busbar_kernel::inflight::InFlight,
     gauge: busbar_kernel::slice::ConcurrencyGauge,
     canary: busbar_kernel::canary::Canary,
     door: crate::root::kernel::AdmissionDoor,
@@ -260,14 +256,10 @@ impl Node {
     }
     pub(crate) async fn retry_held_journal(&self) -> Result<(), String> {
         if let Some(journal) = self.lane.get() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when the native journal refuses the flush"
-            )]
             journal
                 .flush()
                 .await
-                .map_err(|error| format!("native journal: {error:?}"))?;
+                .map_err(|error| crate::root::cold::native_journal_refused(&error))?;
         }
         Ok(())
     }
@@ -374,97 +366,95 @@ impl Node {
         if self.marked.swap(0, Ordering::AcqRel) == 0 {
             return 0;
         }
-        let mut swept = 0;
-        for slot in self.inflight.snapshot() {
-            if !slot.is_marked() {
-                continue;
-            }
+        self.sweep_marked(now)
+    }
 
-            let Some(lost) = self
-                .lost
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&slot.key())
-            else {
-                continue;
-            };
-            let verdict = busbar_kernel::tick::sweep(
-                &slot,
-                busbar_contract::caps::StepName::Route,
-                now.ms(),
-                busbar_kernel::Millis::MAX,
-                false,
-            );
-
-            let settled = busbar_kernel::tick::sweep_settle(
-                &self.kernel,
-                &slot,
-                verdict,
-                &Evidence::default(),
-                &self.canary,
-                &self.gauge,
-            );
-            if let Some(busbar_kernel::tick::Swept { end, line, audit }) = settled {
-                if let Ok(posted) = end.posted() {
-                    let principal = posted.principal().clone();
-
-                    let entered = lost.arrived;
-
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "error: a lost unit's usage line is gathered only when the tick sweeps a unit that lost its owner"
-                    )]
-                    let lines: Vec<RecordLine> = Registration::meter_class(line.class.as_str())
-                        .filter(|class| *class != busbar_kernel::teller::KERNEL_ACCRUAL_CLASS)
-                        .map(|class| RecordLine { class, ..line })
-                        .into_iter()
-                        .collect();
-                    let (history, op_class, ran) = match lost.open {
-                        Some(open) => (
-                            Some(open.history),
-                            open.sealing
-                                .door
-                                .map_or(lost.op_class, |(facts, _)| facts.op_class),
-                            open.sealing.ran,
-                        ),
-                        None => (None, lost.op_class, Ran::default()),
-                    };
-                    let seal = Some(Sealing {
-                        seal: UnitSeal {
-                            facts: busbar_contract::caps::AuditFacts {
-                                op_class,
-                                finish: busbar_contract::FinishClass::Error,
-                            },
-                            pass: audit,
-                            key: slot.key(),
-                            origin: self.kernel.origin(slot.origin()),
-                            parent: match slot.origin() {
-                                OriginKind::Nested { parent } => Some(parent),
-                                _ => None,
-                            },
-                        },
-                        ran,
-                    });
-                    let card = history.unwrap_or_else(|| crate::root::kernel::ROOT_CARD.pin());
-                    self.seal_end(
-                        &principal,
-                        entered,
-                        card.as_ref(),
-                        busbar_kernel::teller::Ended::Settled {
-                            end,
-
-                            requests: 0,
-                            fee: 0,
-                        },
-                        seal,
-                        lines,
-                    );
-                }
-            }
-            self.inflight.remove(slot.key());
-            swept += 1;
+    /// One slot of the tick's sweep: a marked unit that lost its owner is settled, sealed and
+    /// forgotten (`true`); any other slot is left as it is.
+    pub(in crate::root) fn sweep_slot(
+        &self,
+        slot: Arc<busbar_kernel::inflight::UnitSlot>,
+        now: Arrived,
+    ) -> bool {
+        if !slot.is_marked() {
+            return false;
         }
-        swept
+
+        let Some(lost) = self
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&slot.key())
+        else {
+            return false;
+        };
+        let verdict = busbar_kernel::tick::sweep(
+            &slot,
+            busbar_contract::caps::StepName::Route,
+            now.ms(),
+            busbar_kernel::Millis::MAX,
+            false,
+        );
+
+        let settled = busbar_kernel::tick::sweep_settle(
+            &self.kernel,
+            &slot,
+            verdict,
+            &Evidence::default(),
+            &self.canary,
+            &self.gauge,
+        );
+        if let Some(busbar_kernel::tick::Swept { end, line, audit }) = settled {
+            if let Ok(posted) = end.posted() {
+                let principal = posted.principal().clone();
+
+                let entered = lost.arrived;
+
+                let lines = crate::root::cold::lost_unit_lines(line);
+                let (history, op_class, ran) = match lost.open {
+                    Some(open) => (
+                        Some(open.history),
+                        open.sealing
+                            .door
+                            .map_or(lost.op_class, |(facts, _)| facts.op_class),
+                        open.sealing.ran,
+                    ),
+                    None => (None, lost.op_class, Ran::default()),
+                };
+                let seal = Some(Sealing {
+                    seal: UnitSeal {
+                        facts: busbar_contract::caps::AuditFacts {
+                            op_class,
+                            finish: busbar_contract::FinishClass::Error,
+                        },
+                        pass: audit,
+                        key: slot.key(),
+                        origin: self.kernel.origin(slot.origin()),
+                        parent: match slot.origin() {
+                            OriginKind::Nested { parent } => Some(parent),
+                            _ => None,
+                        },
+                    },
+                    ran,
+                });
+                let card = history.unwrap_or_else(|| crate::root::kernel::ROOT_CARD.pin());
+                self.seal_end(
+                    &principal,
+                    entered,
+                    card.as_ref(),
+                    busbar_kernel::teller::Ended::Settled {
+                        end,
+
+                        requests: 0,
+                        fee: 0,
+                    },
+                    seal,
+                    lines,
+                );
+            }
+        }
+        self.inflight.remove(slot.key());
+        true
     }
 
     #[must_use]
@@ -1216,16 +1206,12 @@ impl http_body::Body for LateBody {
             let terminal = this.fire();
             this.inner = None;
             let journal = this.journal.clone();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "error: the refusal text is spelled only when the terminal audit is unconfirmed"
-            )]
             let confirmation: JournalConfirmation = Box::pin(async move {
                 await_terminal(terminal).await?;
                 journal
                     .flush()
                     .await
-                    .map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
+                    .map_err(|error| crate::root::cold::terminal_audit_unconfirmed(&error))
             });
             this.confirmation = Some(confirmation);
         }
@@ -1566,9 +1552,9 @@ impl RouteAwait for Driven<'_> {
     }
 }
 
-type OpenUnits = HashMap<UnitKey, OpenUnit>;
+pub(in crate::root) type OpenUnits = HashMap<UnitKey, OpenUnit>;
 
-struct OpenUnit {
+pub(in crate::root) struct OpenUnit {
     principal: PrincipalId,
 
     arrived: Arrived,
@@ -1581,8 +1567,8 @@ struct OpenUnit {
 }
 
 pub struct NodeEndPost {
-    node: Arc<Node>,
-    open: Vec<Mutex<OpenUnits>>,
+    pub(in crate::root) node: Arc<Node>,
+    pub(in crate::root) open: Vec<Mutex<OpenUnits>>,
 }
 
 impl std::fmt::Debug for NodeEndPost {
@@ -1606,18 +1592,6 @@ impl busbar_kernel::teller::UnitTaps for NodeEndPost {
 }
 
 impl NodeEndPost {
-    #[must_use]
-    pub fn new(node: Arc<Node>) -> Self {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the open-unit shards are built once, when the node starts"
-        )]
-        let open = (0..busbar_kernel::inflight::SHARDS)
-            .map(|_| Mutex::new(HashMap::default()))
-            .collect();
-        NodeEndPost { node, open }
-    }
-
     fn lock(&self, key: UnitKey) -> std::sync::MutexGuard<'_, OpenUnits> {
         self.open[(key.get() as usize) & (busbar_kernel::inflight::SHARDS - 1)]
             .lock()
