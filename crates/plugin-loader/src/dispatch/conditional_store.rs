@@ -320,6 +320,13 @@ impl ServiceStore {
             super::super::conditional::ReceiptKind::Refused => {
                 Some(super::super::conditional::ReceiptKind::Refused)
             }
+            // A begun commit that did not apply: the only exit is an audited caller-only refusal.
+            super::super::conditional::ReceiptKind::Blocked
+            | super::super::conditional::ReceiptKind::Observed
+                if kept.commit_owed =>
+            {
+                Some(super::super::conditional::ReceiptKind::Abandoned)
+            }
             _ => None,
         }
     }

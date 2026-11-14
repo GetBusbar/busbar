@@ -19,6 +19,9 @@ pub(crate) enum ReceiptKind {
     Observed,
     Refused,
     Blocked,
+    /// A begun commit that did not apply (`Blocked`, or `Observed` while a commit is owed): the
+    /// plane may answer only an audited caller-only refusal, never state, units or effects.
+    Abandoned,
 }
 
 pub(crate) struct Input {
@@ -283,12 +286,36 @@ fn isolated(a: &super::Answer) -> Result<(), ()> {
     }
 }
 
+/// A lost commit cannot be answered silently: at least one record, every one an audit row, and
+/// at least one of them a rejection.
+fn audited_refusal(records: &[busbar_contract::abi::plane::RecordWrite]) -> bool {
+    use busbar_contract::abi::plane::{AUDIT_REJECTED, RECORD_AUDIT};
+    !records.is_empty()
+        && records.iter().all(|record| record.op == RECORD_AUDIT)
+        && records.iter().any(|record| record.kind == AUDIT_REJECTED)
+}
+
+/// The records a refusal may carry: none after a definitive `Refused` receipt, and an
+/// [`audited_refusal`] after an `Abandoned` one.
+fn refusal_records<'a>(
+    abandoned: bool,
+    written: u32,
+    records: impl FnOnce() -> Result<&'a [busbar_contract::abi::plane::RecordWrite], ()>,
+) -> Result<bool, ()> {
+    if abandoned {
+        Ok(audited_refusal(records()?))
+    } else {
+        Ok(written == 0)
+    }
+}
+
 fn nonapplied_output(answer: &super::Answer, receipt: ReceiptKind) -> Result<(), ()> {
     use busbar_contract::abi::mechanism::check::reported;
     use busbar_contract::abi::plane::{
         self, OnPieceIn, OnPieceOut, PlaneDriveOut, ServeIn, ServeOut,
     };
     let observed = receipt == ReceiptKind::Observed;
+    let abandoned = receipt == ReceiptKind::Abandoned;
     match answer.slot {
         plane::slot::ON_PIECE => {
             let input = answer.input::<OnPieceIn>().map_err(|_| ())?;
@@ -314,8 +341,18 @@ fn nonapplied_output(answer: &super::Answer, receipt: ReceiptKind) -> Result<(),
                 {
                     return Err(());
                 }
-            } else if out.records_written != 0
-                || out.units_written != 0
+            } else if !refusal_records(abandoned, out.records_written, || {
+                // SAFETY: as the observed records above.
+                unsafe {
+                    reported(
+                        input.records_buf.cast_const(),
+                        u64::from(out.records_written),
+                        input.records_cap as u64,
+                        "conditional.abandoned.records",
+                    )
+                }
+                .map_err(|_| ())
+            })? || out.units_written != 0
                 || out.units_needed != 0
                 || out.flags
                     & !(plane::EMIT_DONE | plane::EMIT_MESSAGE_END | plane::EMIT_FINAL_STATUS)
@@ -362,6 +399,22 @@ fn nonapplied_output(answer: &super::Answer, receipt: ReceiptKind) -> Result<(),
                 {
                     return Err(());
                 }
+            } else if abandoned {
+                // SAFETY: as ON_PIECE: the host buffer is live and its count is checked here.
+                let records = unsafe {
+                    reported(
+                        input.records_buf.cast_const(),
+                        u64::from(out.records_written),
+                        input.records_cap as u64,
+                        "conditional.abandoned.records",
+                    )
+                }
+                .map_err(|_| ())?;
+                if !audited_refusal(records)
+                    || !matches!(out.audit, plane::AUDIT_NONE | plane::AUDIT_REJECTED)
+                {
+                    return Err(());
+                }
             } else if out.records_written != 0 || out.audit != plane::AUDIT_NONE {
                 return Err(());
             }
@@ -404,7 +457,7 @@ fn output_allowed(
         || store
             .conditional_reply_receipt(caller(wake), ticket, unit)
             .is_some_and(|receipt| {
-                (receipt != ReceiptKind::Refused
+                (!matches!(receipt, ReceiptKind::Refused | ReceiptKind::Abandoned)
                     || busbar_contract::abi::mechanism::extensions::get(
                         extensions,
                         busbar_contract::abi::mechanism::inspection::EXT_REQUEST,

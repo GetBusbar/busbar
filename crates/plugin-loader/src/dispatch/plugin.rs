@@ -1528,6 +1528,19 @@ impl Instance {
         }
     }
 
+    /// One warn for an answer the host's own answer checks (observation, conditional records,
+    /// inspection) refused after the kind's rule passed: the op answers `outcome`, never silently.
+    fn answer_check_failed(&self, s: u32, check: &'static str, outcome: Outcome) {
+        tracing::warn!(
+            plugin = %self.name,
+            kind = ?self.kind,
+            op = (self.op_name)(s),
+            reason = check,
+            outcome = ?outcome,
+            "a plugin answer failed the host's answer check; the op does not complete"
+        );
+    }
+
     /// THE CROSSING: pre-fill the head, call the slot, judge the answer, copy what the host keeps.
     ///
     /// # Safety
@@ -2232,6 +2245,7 @@ impl Instance {
                 &answer,
             )
         } {
+            self.answer_check_failed(s, "observation", error.outcome());
             return Crossed::host(error.outcome()).unread(head.lease);
         }
         // Copy and validate the transaction before any independent inspection effect or lease release.
@@ -2246,6 +2260,7 @@ impl Instance {
                 &answer,
             )
         } {
+            self.answer_check_failed(s, "conditional", error.outcome());
             return Crossed::host(error.outcome()).unread(head.lease);
         }
         // SAFETY: the same validated answer remains live under its lease.
@@ -2254,6 +2269,7 @@ impl Instance {
         }
         .is_err()
         {
+            self.answer_check_failed(s, "inspection", Outcome::Fault);
             return Crossed::host(Outcome::Fault).unread(head.lease);
         }
         if self.kind == KindCode::Transport {
