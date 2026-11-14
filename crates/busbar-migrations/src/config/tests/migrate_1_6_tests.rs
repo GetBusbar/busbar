@@ -157,3 +157,87 @@ fn the_ungoverned_role_binds_exactly_whom_1_5_5_admitted_ungoverned() {
 
     assert!(synthesize_bound_key("sso", &principal(&[]), &bindings("sso: { eng: {} }")).is_none());
 }
+
+/// A root `rate_card.<model>.cache_write_utok: 0` is 1.5.5's "no separate write tariff": every YAML
+/// path removes it (writes then price at `input_utok`, never 0) with one change line and one
+/// notice. `cache_read_utok: 0`, an explicit write rate and a plane block are left as written.
+#[test]
+fn unfold_zero_cache_write_on_every_yaml_path() {
+    use crate::config::migrate::{migrate_config_with, MigrateOutput};
+    use crate::config::migrate_plugins::NoPlugins;
+    const LINE: &str = "rate_card.m.cache_write_utok: 0 removed (1.5.5 spelling of 'no separate \
+                        write tariff'); cache writes price at input_utok";
+    const CARD: &str = "rate_card:\n  m: {input_utok: 2.5, output_utok: 10, cache_read_utok: 0, \
+                        cache_write_utok: 0}\n";
+    let unfolded = |path: &str, out: &MigrateOutput| {
+        let d = doc(&out.yaml);
+        let entry = &d["rate_card"]["m"];
+        assert!(
+            entry.get("cache_write_utok").is_none(),
+            "{path}: the 1.5.5 zero is removed:\n{}",
+            out.yaml
+        );
+        assert_eq!(
+            entry["cache_read_utok"],
+            serde_yaml::Value::from(0),
+            "{path}"
+        );
+        assert_eq!(entry["input_utok"], serde_yaml::Value::from(2.5), "{path}");
+        assert_eq!(
+            out.changes.iter().filter(|c| *c == LINE).count(),
+            1,
+            "{path}: one change line: {:?}",
+            out.changes
+        );
+        assert_eq!(out.notices, [LINE], "{path}: one notice");
+    };
+
+    let memory = format!("store: {{ module: memory }}\n{CARD}");
+    let out = migrate_config_with(&memory, &NoPlugins).expect("migrates");
+    unfolded("--migrate-config", &out);
+    let out = crate::config::normalize_authored_with_detection(&memory, None, &NoPlugins)
+        .expect("fast path normalizes");
+    unfolded("startup fast path", &out);
+    let out =
+        crate::config::normalize_authored(CARD, &NoPlugins).expect("structural branch normalizes");
+    unfolded("startup structural branch", &out);
+    let legacy =
+        format!("config: {{ overlay: overlay.json }}\nstore: {{ module: memory }}\n{CARD}");
+    let proof = crate::config::recognize_authored_schema(&legacy)
+        .expect("detects")
+        .expect("a legacy root grammar");
+    let out = crate::config::normalize_historical_config(&proof, &legacy, &NoPlugins)
+        .expect("historical normalizes");
+    unfolded("startup legacy root", &out);
+
+    // A rerun on the output is a no-op; a re-stated 0 is removed again with the same line.
+    let first = migrate_config_with(&memory, &NoPlugins).expect("migrates");
+    let again = migrate_config_with(&first.yaml, &NoPlugins).expect("reruns");
+    assert!(
+        !again.changes.iter().any(|c| c.contains("cache_write_utok")),
+        "{:?}",
+        again.changes
+    );
+    assert!(again.notices.is_empty());
+    let restated = migrate_config_with(&memory, &NoPlugins).expect("reruns a re-stated zero");
+    unfolded("rerun on a re-stated 0", &restated);
+
+    // An explicit write rate and a plane `rate_card:` block are untouched.
+    let out = migrate_config_with(
+        "store: { module: memory }\n\
+         rate_card:\n  m: {input_utok: 2.5, output_utok: 10, cache_write_utok: 3.125}\n\
+         llm:\n  rate_card:\n    m: {input_utok: 2.5, cache_write_utok: 0}\n",
+        &NoPlugins,
+    )
+    .expect("migrates");
+    let d = doc(&out.yaml);
+    assert_eq!(
+        d["rate_card"]["m"]["cache_write_utok"],
+        serde_yaml::Value::from(3.125)
+    );
+    assert_eq!(
+        d["llm"]["rate_card"]["m"]["cache_write_utok"],
+        serde_yaml::Value::from(0)
+    );
+    assert!(out.notices.is_empty(), "{:?}", out.notices);
+}

@@ -81,6 +81,20 @@ fn yaml(text: &str) -> serde_yaml::Value {
     serde_yaml::from_str(text).expect("YAML")
 }
 
+/// The cache-write TTL units a migrated card prices at the entry's resolved write rate.
+const WRITE_TIER_UNITS: [&str; 2] = ["cache_write_30m", "cache_write_12h"];
+
+/// Why the migrator prices them at that rate, as its change line says.
+const WRITE_UNITS_WHY: &str = "(the entry's cache_write_utok, else input_utok; 1.5.5 billed cache writes inside input, never at 0)";
+
+/// The `--migrate-config` summary line that names both cache-write TTL units of `test-model`.
+fn write_units_line(summary: &str) -> Option<&str> {
+    summary.lines().find(|line| {
+        line.starts_with("  - rate_card.test-model.units: ")
+            && WRITE_TIER_UNITS.iter().all(|unit| line.contains(unit))
+    })
+}
+
 #[test]
 fn a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same() {
     let raw = validate_as_written("rate_card.yaml");
@@ -104,14 +118,33 @@ fn a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same() {
         .as_mapping()
         .unwrap_or_else(|| panic!("units were added:\n{migrated}"));
     assert!(!units.is_empty(), "units were added:\n{migrated}");
-    assert!(
-        units.values().all(|v| v == &yaml("0")),
-        "every added unit is priced at 0, as 1.5.5 billed it:\n{migrated}"
-    );
+    // Owner LEDGER-100 / CHANGELOG "An unpriced class never silently bills 0": 1.5.5 billed cache
+    // writes inside the input, so the two cache-write TTL units take the entry's resolved write
+    // rate (here its input_utok, 3) as an exact UnitRate; every other added unit is 0.
+    for (unit, rate) in units {
+        let unit = unit.as_str().expect("a unit name");
+        let want = if WRITE_TIER_UNITS.contains(&unit) {
+            yaml("3")
+        } else {
+            yaml("0")
+        };
+        assert_eq!(rate, &want, "{unit}:\n{migrated}");
+    }
+    for unit in WRITE_TIER_UNITS {
+        assert!(
+            units.contains_key(serde_yaml::Value::from(unit)),
+            "{unit} is priced:\n{migrated}"
+        );
+    }
     assert!(
         summary.contains("  - rate_card.test-model.units: added ")
             && summary.contains("1.5.5 billed these units at nothing"),
         "one change line names it and why; stderr:\n{summary}"
+    );
+    assert!(
+        write_units_line(&summary)
+            .is_some_and(|line| line.contains(&format!(" at 3 {WRITE_UNITS_WHY}"))),
+        "the write units name their rate and why; stderr:\n{summary}"
     );
 }
 
@@ -195,4 +228,263 @@ fn a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration() {
         assert!(key.allowed_scopes.is_none(), "on every pool, as on 1.5.5");
         assert!(key.group.is_none(), "with no budget, as on 1.5.5");
     }
+}
+
+/// The usage one OpenAI Chat answer reports: `prompt` tokens of which `written` are cache writes,
+/// optionally split by TTL, and `out` completion tokens.
+fn chat_usage(prompt: u64, written: u64, split: Option<(u64, u64)>, out: u64) -> serde_json::Value {
+    let mut details = serde_json::json!({"cache_write_tokens": written});
+    if let Some((ttl_30m, ttl_12h)) = split {
+        details["cached_tokens"] = serde_json::json!(0);
+        details["cache_write_tokens_details"] =
+            serde_json::json!({"ttl_30m_tokens": ttl_30m, "ttl_12h_tokens": ttl_12h});
+    }
+    serde_json::json!({
+        "prompt_tokens": prompt, "completion_tokens": out, "total_tokens": prompt + out,
+        "prompt_tokens_details": details
+    })
+}
+
+/// Boot `doc` (made servable) against a mock Chat upstream answering `usage`, in `dir`.
+fn boot_chat(
+    dir: &Path,
+    mut doc: serde_yaml::Value,
+    usage: serde_json::Value,
+    env: &[(&str, &str)],
+) -> common::chat_spend::Gateway {
+    let (data, admin) = (common::boot::free_port(), common::boot::free_port());
+    let signing = common::chat_spend::signing_key(dir);
+    common::chat_spend::serve(&mut doc, data, admin, &signing);
+    let config = dir.join("config.yaml");
+    std::fs::write(&config, serde_yaml::to_string(&doc).unwrap()).unwrap();
+    let providers = dir.join("providers.yaml");
+    std::fs::write(
+        &providers,
+        common::chat_spend::providers_yaml(common::chat_spend::chat_upstream(usage)),
+    )
+    .unwrap();
+    common::chat_spend::Gateway::spawn(dir, &config, &providers, data, admin, env)
+}
+
+/// A 1.5.5 YAML booted as written (no `--migrate-config`): its root `cache_write_utok: 0` is the
+/// 1.5.5 spelling of "no separate write tariff", so startup removes it with a WARN naming the model,
+/// and the 20 Chat cache writes bill at input_utok, never 0.
+#[test]
+fn a_1_5_5_yaml_zero_cache_write_boots_at_input_rate() {
+    let dir = workdir("zero-write-boot");
+    let doc = yaml(&std::fs::read_to_string(fixture("rate_card_zero_write.yaml")).unwrap());
+    assert_eq!(
+        doc["rate_card"]["test-model"]["cache_write_utok"],
+        yaml("0"),
+        "the fixture states the 1.5.5 zero"
+    );
+    let mut gateway = boot_chat(&dir, doc, chat_usage(100, 20, None, 9), &[]);
+    gateway
+        .ready()
+        .unwrap_or_else(|log| panic!("the 1.5.5 YAML boots; log:\n{log}"));
+    // (100 - 20) x 2.5 + 20 x 2.5 + 9 x 10 micro-units: the writes price at input_utok.
+    assert_eq!(
+        gateway.one_chat_spend_micros(),
+        340,
+        "log:\n{}",
+        gateway.log()
+    );
+    let log = gateway.log();
+    assert!(
+        log.contains("startup converted a 1.5.5 configuration value")
+            && log.contains("rate_card.test-model.cache_write_utok: 0 removed"),
+        "the boot WARN names the removed zero; log:\n{log}"
+    );
+    drop(gateway);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A root `cache_write_utok: 0` that arrives after startup (a reload of an edited config.yaml, or
+/// an env-interpolated value at boot) is refused, audited and explained; it never makes cache
+/// writes free.
+#[test]
+fn reload_refuses_a_root_yaml_zero_cache_write() {
+    const REFUSAL: &str = "rate_card.test-model.cache_write_utok: 0 is refused";
+    const REMEDY: &str = "Remove the key (writes price at input_utok)";
+    let dir = workdir("zero-write-reload");
+    let doc = yaml(
+        "store: { module: memory }\n\
+         providers:\n  mock:\n    api_key: { env: MOCK_KEY }\n\
+         models:\n  test-model:\n    provider: mock\n\
+         rate_card:\n  test-model: { input_utok: 2.5, output_utok: 10 }\n",
+    );
+    let mut gateway = boot_chat(&dir, doc, chat_usage(100, 20, None, 9), &[]);
+    gateway
+        .ready()
+        .unwrap_or_else(|log| panic!("the clean config boots; log:\n{log}"));
+    let version = |gateway: &common::chat_spend::Gateway| {
+        let (status, info) = gateway.admin("GET", "/api/v1/admin/info", None);
+        assert_eq!(status, 200, "{info}");
+        serde_json::from_str::<serde_json::Value>(&info).unwrap()["config_version"].clone()
+    };
+    let before = version(&gateway);
+
+    let config = dir.join("config.yaml");
+    let clean = std::fs::read_to_string(&config).unwrap();
+    let mut edited = yaml(&clean);
+    edited["rate_card"]["test-model"]["cache_write_utok"] = yaml("0");
+    std::fs::write(&config, serde_yaml::to_string(&edited).unwrap()).unwrap();
+    for (path, action) in [
+        ("/api/v1/admin/config/reload", "config.reload"),
+        ("/api/v1/admin/plugins/reload", "plugin.reload"),
+    ] {
+        let (status, body) = gateway.admin("POST", path, None);
+        assert!(
+            (400..500).contains(&status) && body.contains(REFUSAL) && body.contains(REMEDY),
+            "{path} refuses with the reason and the remedy: {status} {body}"
+        );
+        let (status, audit) =
+            gateway.admin("GET", &format!("/api/v1/admin/audit?action={action}"), None);
+        assert_eq!(status, 200, "{audit}");
+        let audit: serde_json::Value = serde_json::from_str(&audit).unwrap();
+        assert!(
+            audit["items"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|e| e["outcome"] == "rejected")),
+            "{path}: the refusal is audited: {audit}"
+        );
+    }
+    assert_eq!(version(&gateway), before, "the running config is unchanged");
+    // The running card still prices the 20 writes at input_utok: (80 + 20) x 2.5 + 9 x 10.
+    assert_eq!(
+        gateway.one_chat_spend_micros(),
+        340,
+        "log:\n{}",
+        gateway.log()
+    );
+    drop(gateway);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // At boot, a root write rate that interpolates to 0 from the environment is refused the same
+    // way (a literal 1.5.5 zero was already unfolded before this reader).
+    let dir = workdir("zero-write-env");
+    let (data, admin) = (common::boot::free_port(), common::boot::free_port());
+    let config = dir.join("config.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "listen: \"127.0.0.1:{data}\"\nadmin_listen: \"127.0.0.1:{admin}\"\n\
+             store: {{ module: memory }}\n\
+             providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\n\
+             models:\n  test-model:\n    provider: mock\n\
+             rate_card:\n  test-model:\n    input_utok: 2.5\n    output_utok: 10\n    \
+             cache_write_utok: ${{BUSBAR_T_ZERO_WRITE}}\n"
+        ),
+    )
+    .unwrap();
+    let providers = dir.join("providers.yaml");
+    std::fs::write(&providers, common::chat_spend::providers_yaml(9)).unwrap();
+    let mut gateway = common::chat_spend::Gateway::spawn(
+        &dir,
+        &config,
+        &providers,
+        data,
+        admin,
+        &[("BUSBAR_T_ZERO_WRITE", "0")],
+    );
+    let log = gateway
+        .ready()
+        .expect_err("a root write rate interpolated to 0 refuses boot");
+    assert!(
+        log.contains(REFUSAL) && log.contains(REMEDY),
+        "the boot refusal names the key and the remedy; log:\n{log}"
+    );
+    drop(gateway);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--migrate-config` prices the two cache-write TTL units at the entry's resolved write rate as an
+/// exact UnitRate (never 0, and never a bare float `units:` would refuse), leaves them unpriced
+/// with a reason when that rate is not an exact number, and the migrated card bills a partitioned
+/// Chat write at that rate.
+#[test]
+fn migrated_ttl_write_units_price_at_the_write_rate() {
+    // The fixture's input_utok 3.0 resolves to the integer 3 (see the pinned rate_card test).
+    let (migrated, summary, _) = migrate_and_validate("rate_card.yaml");
+    let units = &yaml(&migrated)["rate_card"]["test-model"]["units"];
+    for unit in WRITE_TIER_UNITS {
+        assert_eq!(units[unit], yaml("3"), "{unit}:\n{migrated}");
+    }
+    assert!(write_units_line(&summary).is_some(), "{summary}");
+
+    // An explicit write rate wins over input_utok, written as an exact decimal string.
+    let dir = workdir("write-rate");
+    let raw = std::fs::read_to_string(fixture("rate_card.yaml"))
+        .unwrap()
+        .replace(
+            "{ input_utok: 3.0, output_utok: 15.0 }",
+            "{ input_utok: 3.0, output_utok: 15.0, cache_write_utok: 3.75 }",
+        );
+    assert!(raw.contains("cache_write_utok: 3.75"), "{raw}");
+    std::fs::write(dir.join("source.yaml"), &raw).unwrap();
+    let (written, summary) = migrate(&dir.join("source.yaml"));
+    let units = &yaml(&written)["rate_card"]["test-model"]["units"];
+    for unit in WRITE_TIER_UNITS {
+        assert_eq!(units[unit], yaml("'3.75'"), "{unit}:\n{written}");
+        let rate: busbar_kernel_ledger::cost::UnitRate =
+            serde_yaml::from_value(units[unit].clone()).expect("an exact UnitRate");
+        assert_eq!(
+            rate,
+            busbar_kernel_ledger::cost::UnitRate::from_nanos(3_750)
+        );
+    }
+    assert!(
+        write_units_line(&summary).is_some_and(|l| l.contains(" at 3.75 ")),
+        "{summary}"
+    );
+    std::fs::write(dir.join("config.yaml"), &written).unwrap();
+    let out = validate(&dir, &dir.join("config.yaml"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // A rate that is not yet a number leaves both unpriced, and says so.
+    let raw = std::fs::read_to_string(fixture("rate_card.yaml"))
+        .unwrap()
+        .replace(
+            "  test-model: { input_utok: 3.0, output_utok: 15.0 }",
+            "  test-model:\n    input_utok: ${RATE}\n    output_utok: 15.0",
+        );
+    assert!(raw.contains("${RATE}"), "{raw}");
+    std::fs::write(dir.join("placeholder.yaml"), &raw).unwrap();
+    let (held, summary) = migrate(&dir.join("placeholder.yaml"));
+    let units = &yaml(&held)["rate_card"]["test-model"]["units"];
+    for unit in WRITE_TIER_UNITS {
+        assert!(units.get(unit).is_none(), "{unit} stays unpriced:\n{held}");
+    }
+    assert!(
+        write_units_line(&summary)
+            .is_some_and(|l| l.contains("left unpriced: input_utok is not an exact rate")),
+        "{summary}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // The migrated card boots and bills a partitioned Chat write (8 at 30m + 12 at 12h of 100
+    // prompt tokens) at the write rate 3: 80 x 3 + 20 x 3 + 9 x 15 micro-units, never 0.
+    let dir = workdir("ttl-boot");
+    let mut gateway = boot_chat(
+        &dir,
+        yaml(&migrated),
+        chat_usage(100, 20, Some((8, 12)), 9),
+        &[],
+    );
+    gateway
+        .ready()
+        .unwrap_or_else(|log| panic!("the migrated card boots; log:\n{log}"));
+    assert_eq!(
+        gateway.one_chat_spend_micros(),
+        435,
+        "log:\n{}",
+        gateway.log()
+    );
+    drop(gateway);
+    let _ = std::fs::remove_dir_all(&dir);
 }

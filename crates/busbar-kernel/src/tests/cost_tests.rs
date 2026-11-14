@@ -991,3 +991,62 @@ fn the_intake_prices_every_money_fixture_rate_at_its_1_5_5_figure() {
         );
     }
 }
+
+/// An omitted (or `null`) `cache_write_utok` means "no separate write tariff": cache writes price
+/// at the entry's `input_utok`, never 0 (CHANGELOG "An unpriced class never silently bills 0";
+/// OpenAI bills writes at or above the input rate). An explicit rate, `0` included (an admin-API or
+/// version-2-overlay free class), is used as written. Built from config, as a card is.
+#[test]
+fn omitted_cache_write_rate_prices_at_input() {
+    // 50 input, 20 cache-write, 9 output, scaled so each figure is whole cents.
+    let t = toks4(50_000_000, 9_000_000, 0, 20_000_000);
+    let price = |yaml: &str| {
+        let entry: RateEntryCfg = serde_yaml::from_str(yaml).expect("a rate entry");
+        let c = BTreeMap::from([("m".to_string(), entry)]);
+        let cm = resolve_card_fee(Some(&c), 0);
+        let money = bucket_money(&cm, [("m", &t)], 0)
+            .and_then(Money::minor_i64)
+            .expect("the one function prices");
+        (money, cm.routing_price("m", "cache_write"))
+    };
+    // (50 + 20) x 2.5 + 9 x 10 = 265 units.
+    assert_eq!(
+        price("{input_utok: 2.5, output_utok: 10}"),
+        (26_500, Some(2.5)),
+        "an omitted write rate prices the write at input_utok"
+    );
+    assert_eq!(
+        price("{input_utok: 2.5, output_utok: 10, cache_write_utok: null}"),
+        (26_500, Some(2.5)),
+        "a null write rate is omitted"
+    );
+    // 50 x 2.5 + 9 x 10 = 215 units: the configured free class.
+    assert_eq!(
+        price("{input_utok: 2.5, output_utok: 10, cache_write_utok: 0}"),
+        (21_500, Some(0.0)),
+        "an explicit 0 in the kernel type is a deliberate free class"
+    );
+    // 50 x 2.5 + 20 x 3.125 + 9 x 10 = 277.5 units.
+    assert_eq!(
+        price("{input_utok: 2.5, output_utok: 10, cache_write_utok: 3.125}"),
+        (27_750, Some(3.125)),
+        "an explicit write rate is used as written"
+    );
+
+    // A card that omits the key serializes with the key absent, and reads back omitted.
+    let omitted: RateEntryCfg =
+        serde_yaml::from_str("{input_utok: 2.5, output_utok: 10}").expect("a rate entry");
+    let bytes = serde_json::to_value(&omitted).expect("serializes");
+    assert!(
+        bytes.get("cache_write_utok").is_none(),
+        "an unset write rate is not emitted as 0: {bytes}"
+    );
+    let back: RateEntryCfg = serde_json::from_value(bytes).expect("round-trips");
+    assert_eq!(back, omitted);
+    assert_eq!(
+        serde_json::to_value(&back)
+            .expect("serializes")
+            .get("cache_write_utok"),
+        None
+    );
+}

@@ -1,0 +1,14 @@
+# A 1.5.5 deployment whose rate card spells "no separate write tariff" as `cache_write_utok: 0`, as
+# 1.5.5's own paste template and docs wrote it. 1.5.5 billed OpenAI Chat cache writes inside the
+# input, so 1.6.0 removes the 0 (with a WARN) and prices cache writes at input_utok, never 0.
+# Driven by tests/config_migrate_1_5_5.rs.
+listen: "127.0.0.1:0"
+store: { module: memory }
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+rate_card:
+  test-model: { input_utok: 2.5, output_utok: 10, cache_write_utok: 0 }
