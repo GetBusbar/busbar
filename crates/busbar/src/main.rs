@@ -1172,7 +1172,7 @@ async fn run(
         config::overlay::merge_into(&mut cfg, doc);
     }
 
-    config_validate::validate(&cfg).unwrap_or_else(|errors| {
+    config_validate::judge_quietly(&cfg).unwrap_or_else(|errors| {
         die(format!(
             "effective configuration errors: {}",
             errors.join("; ")

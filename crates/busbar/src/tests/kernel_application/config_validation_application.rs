@@ -4385,3 +4385,100 @@ fn source_role(role: &str, value: impl AsRef<str>) -> config::SecretRef {
         .reference_for_role(role, value.as_ref())
         .expect("the admitted source declares the fixture's role")
 }
+
+/// A pool whose two members speak two shipped dialects: the semantic pass advises once per pass.
+fn heterogeneous_pool_cfg(extra_members: &[&str]) -> RootCfg {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "pa".to_string(),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
+    );
+    providers.insert(
+        "pb".to_string(),
+        make_provider(proto_b(), "https://api-b.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert("ma".to_string(), make_model("pa", 10));
+    models.insert("mb".to_string(), make_model("pb", 10));
+    let mut members = vec![make_member("ma"), make_member("mb")];
+    members.extend(extra_members.iter().copied().map(make_member));
+    let mut pools = HashMap::new();
+    pools.insert("mixed".to_string(), make_pool(members));
+    make_root_cfg(providers, models, pools)
+}
+
+/// Runs `f` under a WARN capture and returns its result with the heterogeneous-pool lines.
+fn heterogeneous_warnings<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let out = tracing::subscriber::with_default(subscriber, f);
+    let lines = cap
+        .messages()
+        .into_iter()
+        .filter(|m| m.contains("heterogeneous pool"))
+        .count();
+    (out, lines)
+}
+
+fn boot_admission_check(cfg: &RootCfg) -> Result<(), Refusal> {
+    let plugins = config::PluginsCfg::default();
+    check(
+        cfg,
+        Check {
+            plugins: &plugins,
+            unset_env_vars: &[],
+            root: &no_root_rules,
+            fetch: None,
+            resolve_builtins: false,
+        },
+    )
+    .map(|_| ())
+}
+
+#[test]
+fn boot_narration_is_once_and_admission_outside_boot_still_narrates() {
+    let cfg = heterogeneous_pool_cfg(&[]);
+    assert!(
+        validate(&cfg).is_ok(),
+        "the heterogeneous fixture is a valid config: {:?}",
+        validate(&cfg)
+    );
+
+    // (a) reload, admin apply and --validate: admission outside any boot scope narrates once.
+    let (outside, lines) = heterogeneous_warnings(|| boot_admission_check(&cfg));
+    assert_eq!(lines, 1, "admission outside the boot scope advises once");
+
+    // (a') the boot build: same verdict, no second copy.
+    let (inside, lines) = heterogeneous_warnings(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime")
+            .block_on(after_boot_advice(async { boot_admission_check(&cfg) }))
+    });
+    assert_eq!(lines, 0, "admission inside the boot scope stays silent");
+    assert_eq!(
+        inside.err(),
+        outside.err(),
+        "the boot scope mutes narration, never the verdict"
+    );
+
+    // (a'') the boot gate judges quietly when the config passes.
+    let (judged, lines) = heterogeneous_warnings(|| judge_quietly(&cfg));
+    assert_eq!(judged, Ok(()), "a passing config passes the quiet judge");
+    assert_eq!(lines, 0, "a passing gate prints nothing");
+
+    // ... and narrates once when it refuses, so the refusal keeps its advisories.
+    let refused_cfg = heterogeneous_pool_cfg(&["nope"]);
+    let (judged, lines) = heterogeneous_warnings(|| judge_quietly(&refused_cfg));
+    let errors = judged.expect_err("an unknown pool member is refused");
+    assert!(
+        errors.iter().any(|e| e.contains("unknown model 'nope'")),
+        "the refusal is returned as data: {errors:?}"
+    );
+    assert_eq!(lines, 1, "a refusing gate advises exactly once");
+
+    // (a''') the one boot narration advises once.
+    let ((), lines) = heterogeneous_warnings(|| advise(&cfg));
+    assert_eq!(lines, 1, "the boot narration advises once");
+}
