@@ -117,9 +117,11 @@ fn a_declared_token_endpoint_keeps_host_metadata_policy() {
             errors.iter().any(|e| e.contains("blocked cloud-metadata")),
             "{target}: {errors:?}"
         );
-        assert!(!errors
-            .iter()
-            .any(|e| e.contains("scope") || e.contains("http or https")));
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.contains("scope") || e.contains("http or https"))
+        );
     }
     provider.token_url = Some("foreign://169.254.169.254:443/token".into());
     provider.allow_metadata_hosts.push("169.254.169.254".into());
@@ -169,9 +171,11 @@ fn declared_provider_destinations_are_located_without_a_protocol_allowlist() {
     assert!(validate_provider_destinations(&cfg, &[], &locate).is_ok());
     cfg.providers.get_mut("foreign").unwrap().base_url = "missing://api.example:7443".into();
     let errors = validate_provider_destinations(&cfg, &[], &locate).unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|e| e.contains("provider 'foreign'") && e.contains("claim 'missing'")));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("provider 'foreign'") && e.contains("claim 'missing'"))
+    );
 }
 
 #[test]
@@ -1269,9 +1273,11 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
         validate(&cfg)
     );
 
-    assert!(std::time::Instant::now()
-        .checked_add(std::time::Duration::from_millis(MAX_DURATION_MS))
-        .is_some());
+    assert!(
+        std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(MAX_DURATION_MS))
+            .is_some()
+    );
 }
 
 fn validate_cost_metadata(
@@ -1643,11 +1649,39 @@ fn missing_rate_diagnostic_matches_published_docs() {
     );
     let rendered = render_markdown_for(&[diagnostic]);
     let entry = &rendered[rendered.find("<a id=").unwrap()..];
-    assert!(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/diagnostics.md"
-    ))
-    .contains(entry));
+    assert!(
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/diagnostics.md"
+        ))
+        .contains(entry)
+    );
+}
+
+/// The CHANGELOG upgrade promise for `rate_card` must describe what the validator does: a
+/// present card that leaves out a configured model or lane refuses, a named entry missing an
+/// open class only warns, and a hit on that unpriced class makes usage reads answer 409.
+#[test]
+fn changelog_rate_card_promise_matches_the_validator() {
+    let changelog = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../CHANGELOG.md"))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        changelog.contains("must name every configured model and lane, or boot refuses"),
+        "the CHANGELOG must promise entry completeness, which the validator enforces"
+    );
+    assert!(
+        changelog.contains(
+            "usage and cost reads that cover it refuse with 409 `unpriced_class` until a rate \
+             is configured"
+        ),
+        "the CHANGELOG must state the runtime 409 an operator sees for a hit unpriced class"
+    );
+    assert!(
+        !changelog.contains("must price every billable class the build declares, or boot refuses"),
+        "a missing open class only warns (BUSBAR-3026); the CHANGELOG must not promise a refusal"
+    );
 }
 
 static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDeclaration =
@@ -1773,7 +1807,7 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
 
 #[test]
 fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
-    use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
+    use busbar_kernel_ledger::cost::{PER_SESSION, PlaneFees};
     let session: &'static crate::plane_driver::registry::PlaneDeclaration =
         Box::leak(Box::new(crate::plane_driver::registry::PlaneDeclaration {
             key: "session-plane",
