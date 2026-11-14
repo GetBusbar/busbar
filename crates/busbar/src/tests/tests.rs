@@ -992,3 +992,56 @@ fn store_boot_refusal_prints_the_context_alone_under_a_principal_transition() {
         "a principal transition summary carries no inner detail"
     );
 }
+
+/// BOOT-130: the `store.module` plugin-preflight refusal, built once in
+/// `busbar-kernel` preflight, as `prepare_config_store` returns it.
+const STORE_MODULE_SQLITE_REFUSAL: &str = "store.module: 'sqlite' requires the plugin subsystem, \
+     but plugins.enabled is false (the default). Set plugins.enabled: true and place the signed \
+     'sqlite' store plugin tarball in the plugins directory ('plugins'), or set store.module: memory.";
+
+#[test]
+fn store_boot_refusal_passes_the_store_module_refusal_through() {
+    assert_eq!(
+        store_boot_refusal(false, STORE_MODULE_SQLITE_REFUSAL.to_owned()),
+        STORE_MODULE_SQLITE_REFUSAL,
+        "a plugin-preflight refusal is not a Store overlay anchor failure: an ordinary boot \
+         prints the store.module instruction byte for byte"
+    );
+}
+
+#[test]
+fn store_boot_refusal_transition_does_not_leak_the_store_module_refusal() {
+    let refusal = store_boot_refusal(true, STORE_MODULE_SQLITE_REFUSAL.to_owned());
+    assert_eq!(refusal, "principal transition base Store opening refused");
+    assert!(
+        !refusal.contains(STORE_MODULE_SQLITE_REFUSAL),
+        "a principal transition summary carries no inner detail"
+    );
+}
+
+#[test]
+fn prepare_config_store_refusal_goes_through_store_boot_refusal() {
+    let source: String = include_str!("../main.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let call_site = concat!(
+        "die(store_boot_refusal(",
+        "principal_transition.is_some(),error))"
+    );
+    assert_eq!(
+        source.matches(call_site).count(),
+        1,
+        "the prepare_config_store boot refusal must be printed through store_boot_refusal"
+    );
+    let false_prefix: String = concat!("base Store overlay ", "anchor")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert_eq!(
+        source.matches(false_prefix.as_str()).count(),
+        0,
+        "no boot refusal may carry the 'base Store overlay anchor' prefix: the inner error \
+         already names its own subject"
+    );
+}
