@@ -1065,6 +1065,9 @@ impl Connection {
             early: EarlyWrites::default(),
             flushed: 0,
             read_end: false,
+            prepared_landed: false,
+            wire_kept: false,
+            carrier_lost: false,
 
             open_deadline: framer::now().checked_add(dial.open_timeout),
             framer_deadline: None,
@@ -1359,6 +1362,41 @@ impl Connection {
         self.flushed
     }
 
+    /// Whether the connection failed with bytes it held still deliverable by its carrier (see
+    /// [`Connection::fail`]): nothing queued on it may be sent again on another connection.
+    #[must_use]
+    pub(crate) fn wire_kept(&self) -> bool {
+        self.wire_kept
+    }
+
+    /// Whether a prepared exchange's facts have been published on this connection: sticky, set
+    /// only where [`Connection::poll_prepared`] answers (or would answer) `Ready(Ok)`.
+    #[must_use]
+    pub(crate) fn prepared_landed(&self) -> bool {
+        self.prepared_landed
+    }
+
+    /// THE ONE READINESS CONDITION a prepared exchange's facts wait for, as
+    /// [`Connection::poll_prepared`] tests it after its flush: open past its handshake and framing
+    /// begin (a parked begin owes its opening, which [`Connection::is_open`] already refuses), and
+    /// every byte of protocol output gone to the carrier and flushed.
+    fn prepared_now(&self) -> bool {
+        self.is_open()
+            && !self.handshaking()
+            && self.out.is_empty()
+            && self.ends.is_empty()
+            && !self.unflushed
+            && !self.carried.flushing()
+    }
+
+    /// Latch [`Connection::prepared_landed`] when [`Connection::prepared_now`] holds (no flush, no
+    /// I/O): the connection is at home after its holder's own drive flushed.
+    pub(crate) fn latch_prepared(&mut self) {
+        if self.prepared_now() {
+            self.prepared_landed = true;
+        }
+    }
+
     /// Whether the connection can carry another exchange now: dialled, framed and open, with
     #[must_use]
     pub fn reusable(&self) -> bool {
@@ -1532,8 +1570,11 @@ impl Connection {
         }
         match self.tls.as_mut() {
             Some(tls) => {
-                tls.writer().write_all(bytes).map_err(failed)?;
-                self.tls_out()?;
+                let written = tls.writer().write_all(bytes).map_err(failed);
+                if let Err(f) = written.and_then(|()| self.tls_out()) {
+                    self.fail(f.clone());
+                    return Err(f);
+                }
             }
             None => self.queue(bytes, end)?,
         }
@@ -1686,7 +1727,10 @@ impl Connection {
         self.cause.as_ref()
     }
 
-    /// The connection fails with `f`, in the stage it is in.
+    /// The connection fails with `f`, in the stage it is in. Failed while its carrier could still
+    /// deliver bytes it held (queued and not yet taken, owed by TLS, or a parked emit's), it keeps
+    /// them ([`Connection::wire_kept`]): `close()` may still send them, so no exchange on it is ever
+    /// sent again elsewhere.
     fn fail(&mut self, f: Failure) {
         let emitted = self
             .emit_fault
@@ -1777,11 +1821,8 @@ impl Connection {
                         self.fail(f.clone());
                         return Poll::Ready(Err(f));
                     }
-                    return if self.out.is_empty()
-                        && self.ends.is_empty()
-                        && !self.unflushed
-                        && !self.carried.flushing()
-                    {
+                    return if self.prepared_now() {
+                        self.prepared_landed = true;
                         Poll::Ready(Ok(()))
                     } else {
                         Poll::Pending
@@ -2030,7 +2071,10 @@ impl Connection {
                 match self.carried.poll_flush(cx) {
                     Poll::Pending => return Ok(moved),
                     Poll::Ready(Ok(())) => self.unflushed = false,
-                    Poll::Ready(Err(e)) => return Err(failed(e)),
+                    Poll::Ready(Err(e)) => {
+                        self.carrier_lost = true;
+                        return Err(failed(e));
+                    }
                 }
             }
             if self.out.is_empty() && self.ends.is_empty() {
@@ -2051,7 +2095,10 @@ impl Connection {
                 None => (a, false),
             };
             match self.carried.poll_write(cx, a, end) {
-                Poll::Ready(Ok(0)) if !a.is_empty() => return Err(Failure::Closed),
+                Poll::Ready(Ok(0)) if !a.is_empty() => {
+                    self.carrier_lost = true;
+                    return Err(Failure::Closed);
+                }
                 Poll::Ready(Ok(n)) => {
                     if end && n == a.len() {
                         self.ends.pop_front();
@@ -2064,7 +2111,10 @@ impl Connection {
                     self.unflushed = true;
                     moved = true;
                 }
-                Poll::Ready(Err(e)) => return Err(failed(e)),
+                Poll::Ready(Err(e)) => {
+                    self.carrier_lost = true;
+                    return Err(failed(e));
+                }
                 Poll::Pending => return Ok(moved),
             }
         }
@@ -2100,6 +2150,7 @@ impl Connection {
             _ if pending => Ok(false),
             Ok(0) if !end_of_frame => {
                 self.read_end = true;
+                self.carrier_lost = true;
                 self.feed(&[], true, false)?;
                 Ok(true)
             }

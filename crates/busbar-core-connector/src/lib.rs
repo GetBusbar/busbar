@@ -838,12 +838,31 @@ impl Drop for Reading<'_> {
     }
 }
 
+/// A request prepared on a connection and not yet committed: what its commit must repeat (the
+/// caller's target and member), when it began, and the target it was planned and signed for (the
+/// caller's, else the need's declared one), which its commit re-plans against, never the line's.
+struct Prepared {
+    target: String,
+    member: String,
+    started: std::time::Instant,
+    named: String,
+}
+
 /// One connection the connector holds for its owner: the line it rides and the stream it reads
 struct Held {
     /// A request reserved on this connection but not yet committed.
-    prepared: Mutex<Option<(String, String, std::time::Instant)>>,
+    prepared: Mutex<Option<Prepared>>,
     /// Blocks application I/O until the prepared request has committed successfully.
     uncommitted: AtomicBool,
+    /// The prepared request's facts were served while it was uncommitted: dropped uncommitted
+    /// after that, it rejected them, and its line is never pooled again.
+    facts_served: AtomicBool,
+    /// The prepared opening was handed to [`Line::commit`]: whatever that answered, the line may
+    /// carry a partial request and is never pooled again unless the commit succeeded.
+    handed: AtomicBool,
+    /// The prepared line answered `Ready(Ok)` to [`Line::poll_prepared`] for this exchange: facts
+    /// and the commit no longer ask it again (and never wait on another holder for it).
+    ready: AtomicBool,
     line: Mutex<Option<(Arc<Line>, u64)>>,
     /// Closed while a dial or replay may still have this state out. Published with `line` locked.
     retired: AtomicBool,
@@ -1036,6 +1055,9 @@ impl Held {
         Held {
             prepared: Mutex::new(None),
             uncommitted: AtomicBool::new(false),
+            facts_served: AtomicBool::new(false),
+            handed: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             line: Mutex::new(line),
             retired: AtomicBool::new(false),
             judging: Mutex::new(judging),
@@ -2683,6 +2705,11 @@ impl Connector {
         let Some((line, _)) = home.as_ref() else {
             return Ok(false);
         };
+        // Failed with bytes its carrier may still deliver: what was queued on it may yet reach
+        // its far end, so it is never sent again on another line.
+        if line.wire_kept() {
+            return Ok(false);
+        }
         if kept.as_ref().is_none_or(|r| line.flushed() != r.mark) {
             let spent = kept.take();
             drop(home);
@@ -2735,6 +2762,23 @@ impl Connector {
             Some((shard, key)) if whole => self.pools.release(*shard, key, line),
             Some((shard, key)) => self.pools.drop_line(*shard, key, line),
             None => line.close(),
+        }
+    }
+
+    /// A prepared exchange that never committed leaves `line`. Its opening was handed to the line
+    /// (the commit did not report success: a partial request may be on it) or its facts were
+    /// served (dropping them uncommitted rejects them): the line leaves the pool at once, so no
+    /// later exchange is lent it, and is closed once its last holder leaves. Otherwise none of its
+    /// bytes were written and nothing was judged on the session: it leaves as whole, and the
+    /// pool keeps the line only if it can carry another exchange.
+    fn let_go_prepared(&self, held: &Held, line: &Arc<Line>, stream: u64) {
+        if held.handed.load(Ordering::Acquire) || held.facts_served.load(Ordering::Acquire) {
+            if let Some((shard, key)) = &held.pooled {
+                self.pools.drop_line(*shard, key, line);
+            }
+            self.let_go(held, line, stream, false);
+        } else {
+            self.let_go(held, line, stream, true);
         }
     }
 
@@ -3092,9 +3136,14 @@ impl DeclaredConns for Connector {
         if request_head_is_refused(caller, need, desc, authority_held) {
             return Err(ConnError::Refused);
         }
-        {
+        let named = {
             let prepared = held.prepared.lock().expect("prepared");
-            let (target, member, started) = prepared.as_ref().ok_or(ConnError::Refused)?;
+            let Prepared {
+                target,
+                member,
+                started,
+                named,
+            } = prepared.as_ref().ok_or(ConnError::Refused)?;
             if target != desc.target || member != desc.member {
                 return Err(ConnError::Refused);
             }
@@ -3109,15 +3158,19 @@ impl DeclaredConns for Connector {
                     *due = Some(tighter);
                 }
             }
-        }
+            named.clone()
+        };
         held.within_due()?;
         if !self.settle(&held, None)? {
             return Err(ConnError::Pending);
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
-        match line.poll_prepared(stream, &mut Context::from_waker(Waker::noop())) {
-            Poll::Pending => return Err(ConnError::Pending),
-            Poll::Ready(result) => result.map_err(|f| map(&f))?,
+        if !held.ready.load(Ordering::Acquire) {
+            match line.poll_prepared(stream, &mut Context::from_waker(Waker::noop())) {
+                Poll::Pending => return Err(ConnError::Pending),
+                Poll::Ready(result) => result.map_err(|f| map(&f))?,
+            }
+            held.ready.store(true, Ordering::Release);
         }
         held.landed();
         if require_secure && !line.secured() {
@@ -3137,7 +3190,10 @@ impl DeclaredConns for Connector {
         {
             return Err(ConnError::Refused);
         }
-        let target = line.target().ok_or(ConnError::Closed)?;
+        // The line may have been dialled for another target on the same key: the commit plans
+        // its own. The line's own target is read only as its liveness (a closing line answers
+        // `Closed`).
+        line.target().ok_or(ConnError::Closed)?;
         let planned = self
             .plan_declared(
                 &declared,
@@ -3162,6 +3218,7 @@ impl DeclaredConns for Connector {
         }
         held.within_due()?;
         let (opening, words) = planned.into_opening();
+        held.handed.store(true, Ordering::Release);
         line.commit(stream, opening, words).map_err(|f| map(&f))?;
         held.uncommitted.store(false, Ordering::Release);
         Ok(())
@@ -3402,13 +3459,17 @@ impl DeclaredConns for Connector {
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
         let mut cx = Context::from_waker(&waker);
-        let landed = if held.uncommitted.load(Ordering::Acquire) {
+        let prepared = held.uncommitted.load(Ordering::Acquire);
+        let landed = if prepared {
             line.poll_prepared(stream, &mut cx)
         } else {
             line.poll_landed(stream, &mut cx)
         };
         match landed {
             Poll::Ready(Ok(())) => {
+                if prepared {
+                    held.ready.store(true, Ordering::Release);
+                }
                 held.landed();
                 Ok(())
             }
@@ -3743,7 +3804,7 @@ impl Connector {
         let due = due_at(now, desc.timeout_ms);
 
         let body = dialled::composed_body(desc.fields, &desc.body, description)?;
-        let held = self.dial_exchange(
+        let held = self.dial_rendezvous_exchange(
             caller,
             need,
             &OpenDesc {
@@ -3754,7 +3815,6 @@ impl Connector {
             target,
             (now, open_timeout),
             (egress_class, declared_target, tls),
-            false,
             require_secure,
             false,
             why,
@@ -3769,6 +3829,34 @@ impl Connector {
         reason = "the dialled exchange takes the open's every input as its callers resolved them"
     )]
     fn dial_exchange(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        door: (Arc<dyn FramerDoor>, Vec<Vec<u8>>),
+        target: &str,
+        open_timeout: Duration,
+        declared: (u32, Option<String>, Option<Arc<rustls::ClientConfig>>),
+        require_secure: bool,
+        prepare: bool,
+    ) -> Result<Held, ConnError> {
+        self.dial_exchange_pooling(
+            caller,
+            need,
+            desc,
+            door,
+            target,
+            open_timeout,
+            declared,
+            true,
+            require_secure,
+            prepare,
+        )
+    }
+
+    /// THE DIALLED EXCHANGE over `door` (a framer of a stream, or a carrier carried as itself):
+    #[allow(clippy::too_many_arguments)]
+    fn dial_exchange_pooling(
         &self,
         caller: InstanceId,
         need: NeedId,
@@ -3937,6 +4025,24 @@ impl Connector {
                         *held.redial.lock().expect("redial") = Some(redial);
                         return Ok(held);
                     }
+                } else {
+                    let redial = Redial {
+                        door: Arc::clone(&door),
+                        dial: planned.dial().clone(),
+                        egress_class,
+                        judged_class,
+                        require_secure,
+                        reach,
+                        mark: line.flushed(),
+                    };
+                    let (opening, words) = planned.into_opening();
+                    match line.attach(opening, words) {
+                        Ok(stream) => {
+                            let held = Held::over(Some((line, stream)), None, pooled)
+                                .bounded(desc.timeout_ms);
+                            *held.redial.lock().expect("redial") = Some(redial);
+                            return Ok(held);
+                        }
 
                     Err((stream, _)) if line.flushed() != redial.mark => {
                         let held = Held::over(Some((line, stream)), None, pooled)
@@ -3944,10 +4050,11 @@ impl Connector {
                         return Ok(held);
                     }
 
-                    Err((stream, _)) => {
-                        line.leave(stream, false);
-                        self.pools.drop_line(*shard, key, &line);
-                        planned = self.plan(&redial.door, redial.dial).map_err(|f| map(&f))?;
+                        Err((stream, _)) => {
+                            line.leave(stream, false);
+                            self.pools.drop_line(*shard, key, &line);
+                            planned = self.plan(&redial.door, redial.dial).map_err(|f| map(&f))?;
+                        }
                     }
                 }
             }
@@ -4162,14 +4269,17 @@ impl Connector {
             target,
             (started, open_timeout),
             (egress_class, declared_target, tls),
-            !prepare,
             require_secure,
             prepare,
             why,
         )?;
         if prepare {
-            *held.prepared.lock().expect("prepared") =
-                Some((desc.target.to_owned(), desc.member.to_owned(), started));
+            *held.prepared.lock().expect("prepared") = Some(Prepared {
+                target: desc.target.to_owned(),
+                member: desc.member.to_owned(),
+                started,
+                named,
+            });
             held.uncommitted.store(true, Ordering::Release);
         }
         let rejected = held
@@ -4388,16 +4498,21 @@ impl Conns for Connector {
         if !self.settle(&held, None)? {
             return Err(ConnError::Pending);
         }
-        if held.uncommitted.load(Ordering::Acquire) {
+        let uncommitted = held.uncommitted.load(Ordering::Acquire);
+        if uncommitted && !held.ready.load(Ordering::Acquire) {
             let (line, stream) = held.line().ok_or(ConnError::Closed)?;
             match line.poll_prepared(stream, &mut Context::from_waker(Waker::noop())) {
                 Poll::Pending => return Err(ConnError::Pending),
                 Poll::Ready(result) => result.map_err(|f| map(&f))?,
             }
+            held.ready.store(true, Ordering::Release);
             held.landed();
         }
         let (line, _) = held.line().ok_or(ConnError::Closed)?;
         let e = line.established().ok_or(ConnError::Closed)?;
+        if uncommitted {
+            held.facts_served.store(true, Ordering::Release);
+        }
         Ok(ConnFacts {
             sni: e.offered_name.clone(),
             alpn: e
@@ -4432,7 +4547,11 @@ impl Conns for Connector {
             d.close();
         }
         if let Some((line, stream)) = line {
-            self.let_go(&held, &line, stream, held.whole.load(Ordering::Acquire));
+            if held.uncommitted.load(Ordering::Acquire) {
+                self.let_go_prepared(&held, &line, stream);
+            } else {
+                self.let_go(&held, &line, stream, held.whole.load(Ordering::Acquire));
+            }
         }
         Ok(())
     }
