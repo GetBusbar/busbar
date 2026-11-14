@@ -17,6 +17,7 @@ use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{
     Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
+use busbar_contract::yaml::{MappingExt, ValueExt};
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
 use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable, ServeTables};
@@ -965,7 +966,7 @@ fn bound_conns(
 pub struct DoorLive {
     observations: BTreeMap<String, busbar_kernel::plane_driver::ObservationPolicy>,
     pub(crate) ticket_nonce: Arc<()>,
-    pub section: serde_yaml::Value,
+    pub section: busbar_contract::yaml::Value,
 
     pub generation: u64,
 
@@ -1176,8 +1177,8 @@ impl DoorApply {
 
     async fn refreshed(
         &self,
-        section: &serde_yaml::Value,
-        handed: &serde_yaml::Value,
+        section: &busbar_contract::yaml::Value,
+        handed: &busbar_contract::yaml::Value,
         owned: &serde_json::Map<String, serde_json::Value>,
         generation: u64,
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
@@ -1296,7 +1297,7 @@ pub fn applied_section(
     plane: &str,
     section_key: &str,
     now: &DoorLive,
-) -> serde_yaml::Value {
+) -> busbar_contract::yaml::Value {
     let Some(slot) = app
         .plane_slots
         .get(plane)
@@ -1327,7 +1328,7 @@ impl DoorAppliers {
 
     pub fn refresh_models(
         &self,
-        sections: &BTreeMap<&'static str, serde_yaml::Value>,
+        sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
         egress: &DoorEgress<'_>,
     ) {
         let scope = busbar_contract::config_time::ConfigScope::config_time();
@@ -1719,7 +1720,7 @@ pub async fn compose_served(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
     host: Option<busbar_kernel::plane_driver::GenerationHost>,
@@ -1746,7 +1747,7 @@ pub async fn compose_served_checked(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
     host: Option<busbar_kernel::plane_driver::GenerationHost>,
@@ -1812,7 +1813,7 @@ pub async fn compose_served_checked(
 
 pub fn datagram_binds(
     doors: &[(String, DoorPlane)],
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<Vec<crate::root::loader::boot::InboundBind>, String> {
     let mut binds = Vec::new();
     for (instance, plugin) in doors {
@@ -1830,13 +1831,13 @@ pub(crate) fn need_binds(
     instance: &str,
     section_name: &str,
     needs: &[busbar_contract::abi::mechanism::rendering::ReadNeed],
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<Vec<crate::root::loader::boot::InboundBind>, String> {
     let Some(section) = sections.get(section_name) else {
         return Ok(Vec::new());
     };
     let settings: busbar_contract::plugin_settings::Settings =
-        serde::Deserialize::deserialize(section.clone())
+        busbar_contract::yaml::from_value(section.clone())
             .map_err(|_| format!("{section_name}: settings must be an object"))?;
     let claims =
         busbar_contract::conn::inbound::admit(&busbar_kernel::seal::acquire(), &settings, needs)
@@ -2015,12 +2016,12 @@ impl HookStage {
 
 #[must_use]
 pub fn with_pools(
-    mut sections: BTreeMap<&'static str, serde_yaml::Value>,
+    mut sections: BTreeMap<&'static str, busbar_contract::yaml::Value>,
     pools: &[(
         &'static str,
         BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
-) -> BTreeMap<&'static str, serde_yaml::Value> {
+) -> BTreeMap<&'static str, busbar_contract::yaml::Value> {
     for (key, stated) in pools {
         if let Some(section) = sections.get_mut(key) {
             pools_into(section, stated);
@@ -2060,12 +2061,12 @@ pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
 
 fn section_with_pools(
     key: &str,
-    written: &serde_yaml::Value,
+    written: &busbar_contract::yaml::Value,
     pools: &[(
         &'static str,
         BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
-) -> serde_yaml::Value {
+) -> busbar_contract::yaml::Value {
     let mut section = written.clone();
     for (owner, stated) in pools {
         if *owner == key {
@@ -2075,10 +2076,13 @@ fn section_with_pools(
     section
 }
 
-fn handed_settings(path: &[&str], section: &serde_yaml::Value) -> Result<Vec<u8>, String> {
+fn handed_settings(
+    path: &[&str],
+    section: &busbar_contract::yaml::Value,
+) -> Result<Vec<u8>, String> {
     let mut section = plane_settings(section);
     if let Some(map) = section.as_mapping_mut() {
-        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
+        map.remove_key(busbar_contract::section::RESERVED_WORK_KEY);
     }
     busbar_kernel::config::filled::plane_bound_bytes(path, &section)
         .map_err(|e| format!("its section: {e}"))
@@ -2095,7 +2099,7 @@ fn settings_path(
 }
 
 pub fn pools_into(
-    section: &mut serde_yaml::Value,
+    section: &mut busbar_contract::yaml::Value,
     stated: &BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
 ) {
     use busbar_contract::section::{
@@ -2105,76 +2109,76 @@ pub fn pools_into(
     if stated.is_empty() {
         return;
     }
-    let serde_yaml::Value::Mapping(section) = section else {
+    let busbar_contract::yaml::Value::Map(section) = section else {
         return;
     };
-    let mut map = serde_yaml::Mapping::new();
+    let mut map = busbar_contract::yaml::Mapping::new();
     for (name, pool) in stated {
-        let mut entry = serde_yaml::Mapping::new();
-        entry.insert(
-            POOL_MEMBERS_KEY.into(),
-            serde_yaml::Value::Sequence(
+        let mut entry = busbar_contract::yaml::Mapping::new();
+        entry.insert_key(
+            POOL_MEMBERS_KEY,
+            busbar_contract::yaml::Value::Array(
                 pool.members
                     .iter()
                     .zip(0u64..)
                     .map(|(m, tier)| {
-                        let mut member = serde_yaml::Mapping::new();
-                        member.insert(POOL_MEMBER_NAME_KEY.into(), m.as_str().into());
-                        member.insert(POOL_MEMBER_TIER_KEY.into(), tier.into());
-                        serde_yaml::Value::Mapping(member)
+                        let mut member = busbar_contract::yaml::Mapping::new();
+                        member.insert_key(POOL_MEMBER_NAME_KEY, m.as_str().into());
+                        member.insert_key(POOL_MEMBER_TIER_KEY, tier.into());
+                        busbar_contract::yaml::Value::Map(member)
                     })
                     .collect(),
             ),
         );
-        entry.insert(
-            POOL_REPEATABLE_KEY.into(),
-            serde_yaml::Value::Sequence(
+        entry.insert_key(
+            POOL_REPEATABLE_KEY,
+            busbar_contract::yaml::Value::Array(
                 pool.repeatable.iter().map(|m| m.as_str().into()).collect(),
             ),
         );
-        entry.insert(
-            POOL_MEMBER_GRANTED_KEY.into(),
-            serde_yaml::Value::Bool(true),
+        entry.insert_key(
+            POOL_MEMBER_GRANTED_KEY,
+            busbar_contract::yaml::Value::Bool(true),
         );
 
         if let Some(block) = pool
             .breaker
             .as_ref()
-            .and_then(|b| serde_yaml::to_value(b).ok())
+            .and_then(|b| busbar_contract::yaml::to_value(b).ok())
         {
-            entry.insert(crate::root::door_steps::POOL_BREAKER_KEY.into(), block);
+            entry.insert_key(crate::root::door_steps::POOL_BREAKER_KEY, block);
         }
-        map.insert(name.as_str().into(), serde_yaml::Value::Mapping(entry));
+        map.insert_key(name.as_str(), busbar_contract::yaml::Value::Map(entry));
     }
-    section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
+    section.insert_key(RESERVED_POOLS_KEY, busbar_contract::yaml::Value::Map(map));
 }
 
 #[must_use]
-pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
+pub fn plane_settings(section: &busbar_contract::yaml::Value) -> busbar_contract::yaml::Value {
     use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
     let mut section = section.clone();
     if let Some(map) = section.as_mapping_mut() {
-        map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
+        map.remove_key(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
     }
     let pools = section
         .as_mapping_mut()
-        .and_then(|m| m.get_mut(RESERVED_POOLS_KEY))
-        .and_then(serde_yaml::Value::as_mapping_mut);
+        .and_then(|m| m.get_key_mut(RESERVED_POOLS_KEY))
+        .and_then(busbar_contract::yaml::Value::as_mapping_mut);
     for (_, pool) in pools.into_iter().flat_map(|p| p.iter_mut()) {
         if let Some(pool) = pool.as_mapping_mut() {
-            pool.remove(crate::root::door_steps::POOL_BREAKER_KEY);
+            pool.remove_key(crate::root::door_steps::POOL_BREAKER_KEY);
         }
         let members = pool
             .as_mapping_mut()
-            .and_then(|p| p.get_mut(POOL_MEMBERS_KEY))
-            .and_then(serde_yaml::Value::as_sequence_mut);
+            .and_then(|p| p.get_key_mut(POOL_MEMBERS_KEY))
+            .and_then(busbar_contract::yaml::Value::as_sequence_mut);
         for member in members.into_iter().flat_map(|m| m.iter_mut()) {
             if let Some(name) = member
                 .get(POOL_MEMBER_NAME_KEY)
-                .and_then(serde_yaml::Value::as_str)
+                .and_then(busbar_contract::yaml::Value::as_str)
                 .map(str::to_owned)
             {
-                *member = serde_yaml::Value::String(name);
+                *member = busbar_contract::yaml::Value::Text(name);
             }
         }
     }
@@ -2192,7 +2196,7 @@ pub async fn compose_planes(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
@@ -2226,7 +2230,7 @@ pub(crate) async fn compose_planes_over(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
@@ -2258,7 +2262,7 @@ pub(crate) async fn compose_planes_over(
                 continue;
             }
             let facts = plugin.served();
-            let empty = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+            let empty = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Mapping::new());
             let section = match sections.get(facts.section) {
                 Some(section) => section,
                 None if facts.owns.iter().any(|name| sections.contains_key(name)) => &empty,
@@ -2313,7 +2317,7 @@ pub(crate) async fn compose_planes_over(
     for (instance, plugin) in doors {
         let served_facts = plugin.served();
 
-        let empty = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let empty = busbar_contract::yaml::Value::Map(busbar_contract::yaml::Mapping::new());
         let section = match sections.get(served_facts.section) {
             Some(section) => section,
             None if served_facts.owns.iter().any(|n| sections.contains_key(n)) => &empty,
@@ -2577,17 +2581,17 @@ const MODEL_KEY: &str = "model";
 
 #[must_use]
 pub fn catalog_routes(
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
-) -> serde_yaml::Value {
+) -> busbar_contract::yaml::Value {
     fold_catalog_routes(section, catalog).0
 }
 
 fn fold_catalog_routes(
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
-) -> (serde_yaml::Value, Option<String>) {
-    use serde_yaml::{Mapping, Value};
+) -> (busbar_contract::yaml::Value, Option<String>) {
+    use busbar_contract::yaml::{Mapping, Value};
     let mut routes = section.clone();
     let named = section
         .get(SESSION_KEY)
@@ -2604,23 +2608,23 @@ fn fold_catalog_routes(
         return (routes, None);
     };
     let mut folded = Mapping::new();
-    folded.insert("provider".into(), entry.provider.clone().into());
+    folded.insert_key("provider", entry.provider.clone().into());
     if let Some(upstream) = &entry.upstream_model {
-        folded.insert("upstream_model".into(), upstream.clone().into());
+        folded.insert_key("upstream_model", upstream.clone().into());
     }
     if let Some(ms) = entry.attempt_timeout_ms {
-        folded.insert("attempt_timeout_ms".into(), ms.into());
+        folded.insert_key("attempt_timeout_ms", ms.into());
     }
     let mut models = Mapping::new();
-    models.insert(model.into(), Value::Mapping(folded));
-    map.insert(models_key, Value::Mapping(models));
+    models.insert_key(model, Value::Map(folded));
+    map.insert_key(models_key, Value::Map(models));
     (routes, Some(model.to_string()))
 }
 
 fn routes_of(
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     catalog: Option<&std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
-) -> (serde_yaml::Value, Option<String>) {
+) -> (busbar_contract::yaml::Value, Option<String>) {
     catalog.map_or_else(
         || (section.clone(), None),
         |c| fold_catalog_routes(section, c),
@@ -2658,7 +2662,7 @@ fn seal_live(
     plugin: &DoorPlane,
     served_facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     scope_kinds: &[&str],
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     egress: Option<&DoorEgress<'_>>,
     clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
     generation: u64,
@@ -2843,7 +2847,7 @@ fn arm_probes(
 
 fn owned_sections(
     facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let mut owned = serde_json::Map::new();
     for name in &facts.owns {
@@ -2873,45 +2877,45 @@ fn handed_keyed(facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts
 
 fn settings_of(
     facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
-    section: &serde_yaml::Value,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
-) -> serde_yaml::Value {
+    section: &busbar_contract::yaml::Value,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
+) -> busbar_contract::yaml::Value {
     if !handed_keyed(facts) {
         let mut settings = section.clone();
         if let Some(map) = settings.as_mapping_mut() {
-            map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
+            map.remove_key(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
         }
         return settings;
     }
     let own = if facts.section == busbar_contract::section::RESERVED_POOLS_KEY {
         let mut own = section.clone();
         if let Some(map) = own.as_mapping_mut() {
-            map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
+            map.remove_key(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
         }
         own
     } else {
         let mut own = plane_settings(section);
         if let Some(map) = own.as_mapping_mut() {
-            map.remove(busbar_contract::section::RESERVED_WORK_KEY);
-            map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
+            map.remove_key(busbar_contract::section::RESERVED_WORK_KEY);
+            map.remove_key(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
         }
         own
     };
-    let mut keyed = serde_yaml::Mapping::new();
-    keyed.insert(facts.section.into(), own);
+    let mut keyed = busbar_contract::yaml::Mapping::new();
+    keyed.insert_key(facts.section, own);
     for name in &facts.consumed {
         if let Some(value) = sections.get(name) {
-            keyed.insert((*name).into(), value.clone());
+            keyed.insert_key(*name, value.clone());
         }
     }
-    serde_yaml::Value::Mapping(keyed)
+    busbar_contract::yaml::Value::Map(keyed)
 }
 
 fn walked_section(
     facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
-    section: &serde_yaml::Value,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
-) -> serde_yaml::Value {
+    section: &busbar_contract::yaml::Value,
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
+) -> busbar_contract::yaml::Value {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
     let models = facts
         .consumed
@@ -2920,20 +2924,17 @@ fn walked_section(
         .flatten();
     match models {
         Some(models) if facts.section == RESERVED_POOLS_KEY => {
-            let mut uniform = serde_yaml::Mapping::new();
-            uniform.insert(RESERVED_MODELS_KEY.into(), models.clone());
+            let mut uniform = busbar_contract::yaml::Mapping::new();
+            uniform.insert_key(RESERVED_MODELS_KEY, models.clone());
             let mut pools = section.clone();
             if let Some(policy) = pools
                 .as_mapping_mut()
-                .and_then(|m| m.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY))
+                .and_then(|m| m.remove_key(busbar_contract::section::USAGE_OBSERVATIONS_KEY))
             {
-                uniform.insert(
-                    busbar_contract::section::USAGE_OBSERVATIONS_KEY.into(),
-                    policy,
-                );
+                uniform.insert_key(busbar_contract::section::USAGE_OBSERVATIONS_KEY, policy);
             }
-            uniform.insert(RESERVED_POOLS_KEY.into(), pools);
-            serde_yaml::Value::Mapping(uniform)
+            uniform.insert_key(RESERVED_POOLS_KEY, pools);
+            busbar_contract::yaml::Value::Map(uniform)
         }
         _ => section.clone(),
     }
@@ -2942,7 +2943,7 @@ fn walked_section(
 fn open(
     plugin: &DoorPlane,
     path: &[&str],
-    section: &serde_yaml::Value,
+    section: &busbar_contract::yaml::Value,
     public_url: Option<&str>,
     owned: &serde_json::Map<String, serde_json::Value>,
     dialects: &[busbar_contract::plane_calls::DialectFacts],

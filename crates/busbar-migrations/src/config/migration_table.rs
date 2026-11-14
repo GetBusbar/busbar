@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::yaml::prelude::*;
 pub use busbar_kernel::config::declared_vocabulary::{install, rows, text, Rows};
-use serde_yaml::{Mapping, Value};
 
 pub fn pairs(key: &str) -> Vec<(&'static str, &'static str)> {
     text(key)
@@ -16,14 +16,17 @@ pub fn rewrite_retired(
     section: &mut Mapping,
     apply: bool,
 ) -> Option<(String, &'static str)> {
-    let old = section.get("module").and_then(Value::as_str)?.to_string();
+    let old = section
+        .get_key("module")
+        .and_then(Value::as_str)?
+        .to_string();
     let key = ["retired.", kind_root, ".", &old].concat();
     let alias = text(&key);
     if alias.is_empty() {
         return None;
     }
     if apply {
-        section.insert("module".into(), alias.into());
+        section.insert_key("module", alias.into());
     }
     Some((old, alias))
 }

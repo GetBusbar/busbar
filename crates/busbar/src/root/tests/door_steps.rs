@@ -68,6 +68,7 @@ pub(crate) async fn boot_fixture_prices(app: &busbar_kernel::state::App) {
 use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
 
 use busbar_contract::section::TOOL_CALL_SECTION_KEY;
+use busbar_contract::yaml::{MappingExt, ValueExt};
 
 use super::DoorPools;
 
@@ -76,7 +77,11 @@ fn pools(yaml: &str) -> DoorPools {
 }
 
 fn declared_by(yaml: &str, declared: &str) -> DoorPools {
-    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml"), declared).expect("the pools")
+    DoorPools::of(
+        &busbar_contract::yaml::from_str(yaml).expect("yaml"),
+        declared,
+    )
+    .expect("the pools")
 }
 
 fn routed(p: &DoorPools, class: u8, named: Option<&str>) -> Option<(String, Vec<String>)> {
@@ -707,9 +712,10 @@ fn a_member_with_a_bad_tier_is_refused_at_the_section_build() {
         ("a float", "{name: a, tier: 1.5}"),
         ("wider than u32", "{name: a, tier: 4294967296}"),
     ] {
-        let section: serde_yaml::Value =
-            serde_yaml::from_str(&format!("a: {{}}\npools:\n  u:\n    members: [{member}]"))
-                .expect("yaml");
+        let section: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&format!(
+            "a: {{}}\npools:\n  u:\n    members: [{member}]"
+        ))
+        .expect("yaml");
         let refused = DoorPools::of(&section, TOOL_CALL_SECTION_KEY)
             .err()
             .unwrap_or_else(|| panic!("{what}: a member written {member} built"));
@@ -732,7 +738,8 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
             },
         )]
         .into();
-    let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
+    let mut section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
     let p = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools");
     assert_eq!(
@@ -741,18 +748,25 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
     );
     assert_eq!((p.tier("twins", 0), p.tier("twins", 1)), (0, 1));
     let handed = crate::root::serve::plane_settings(&section);
-    let pool = &handed["pools"]["twins"];
+    let pool = handed.at("pools").at("twins");
     assert_eq!(
-        pool["members"],
-        serde_yaml::from_str::<serde_yaml::Value>("[b, a]").expect("yaml"),
+        *pool.at("members"),
+        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>("[b, a]").expect("yaml"),
         "the plane is handed bare names"
     );
     assert_eq!(
-        pool["repeatable"],
-        serde_yaml::from_str::<serde_yaml::Value>("[read]").expect("yaml")
+        *pool.at("repeatable"),
+        busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>("[read]").expect("yaml")
     );
-    assert_eq!(pool["member_granted"], serde_yaml::Value::Bool(true));
-    assert_eq!(handed["a"], section["a"], "every other key as written");
+    assert_eq!(
+        pool.at("member_granted"),
+        &busbar_contract::yaml::Value::Bool(true)
+    );
+    assert_eq!(
+        handed.at("a"),
+        section.at("a"),
+        "every other key as written"
+    );
 }
 
 #[test]
@@ -781,7 +795,8 @@ fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
         ),
     ]
     .into();
-    let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
+    let mut section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
     let p = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools");
     assert_eq!(
@@ -792,7 +807,8 @@ fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
     assert_eq!(p.breaker("plain"), None, "no block: the defaults");
     let handed = crate::root::serve::plane_settings(&section);
     assert_eq!(
-        handed["pools"]["tuned"], handed["pools"]["plain"],
+        handed.at("pools").at("tuned"),
+        handed.at("pools").at("plain"),
         "the plane is handed the same pool whether or not the host tunes its breaker"
     );
 }
@@ -1105,7 +1121,7 @@ async fn downgrade_book(
         .expect("the door deployment parses");
         let providers = std::collections::HashMap::from([(
             "downgrade-upstream".to_string(),
-            serde_yaml::from_str::<busbar_kernel::config::ProviderDef>(
+            busbar_contract::yaml::from_str::<busbar_kernel::config::ProviderDef>(
                 "protocol: anthropic\nbase_url: https://api.anthropic.com\n",
             )
             .expect("the actual provider declaration parses"),
@@ -1576,7 +1592,8 @@ fn resolve_upgrading(
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
-    let section: serde_yaml::Value = serde_yaml::from_str(section).expect("yaml");
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(section).expect("yaml");
     let providers = providers
         .iter()
         .map(|(n, p)| ((*n).to_string(), p.clone()))
@@ -1724,7 +1741,7 @@ fn a_member_is_bound_under_its_dialects_default_style_on_the_need_that_style_nam
 
 #[test]
 fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
-    let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(
+    let provider: busbar_kernel::config::ProviderCfg = busbar_contract::yaml::from_str(
         "{protocol: d, base_url: 'https://svcuser:hunter2-P4ss@api.example.com:8443/v1', \
          api_key: none, error_map: {}}",
     )
@@ -2416,7 +2433,7 @@ fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
         let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
         super::kernel_sections(&cfg).expect("projectable sections")["limits"]
-            ["request_body_max_bytes"]
+            .at("request_body_max_bytes")
             .as_u64()
     };
     assert_eq!(
@@ -2431,7 +2448,7 @@ fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
 
 fn numeric_projection_config() -> busbar_kernel::config::RootCfg {
     let def: busbar_kernel::config::ProviderDef =
-        serde_yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
+        busbar_contract::yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
             .expect("provider");
     let defs = std::collections::HashMap::from([("p".to_string(), def)]);
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
@@ -2445,7 +2462,7 @@ fn kernel_sections_preserve_numeric_scalars_in_every_projected_section() {
     let mut cfg = numeric_projection_config();
     cfg.models.get_mut("over").unwrap().default_max_tokens = Some(u32::MAX);
     let mut pool: busbar_kernel::config::pools::PoolCfg =
-        serde_yaml::from_str("members: [{model: over}, {model: plain}]").expect("pool");
+        busbar_contract::yaml::from_str("members: [{model: over}, {model: plain}]").expect("pool");
     pool.members[0].context_max = Some(usize::MAX);
     cfg.pools.insert("all".into(), pool);
     cfg.limits.default_max_tokens = u32::MAX;
@@ -2462,29 +2479,36 @@ fn kernel_sections_preserve_numeric_scalars_in_every_projected_section() {
     let sections = super::kernel_sections(&cfg).expect("projectable configuration");
     let models = &sections[busbar_contract::section::RESERVED_MODELS_KEY];
     assert_eq!(
-        models["over"]["default_max_tokens"].as_u64(),
+        models.at("over").at("default_max_tokens").as_u64(),
         Some(u64::from(u32::MAX))
     );
-    assert!(models["plain"].get("default_max_tokens").is_none());
-    let members = &sections[busbar_contract::section::RESERVED_POOLS_KEY]["all"]["members"];
-    assert_eq!(members[0]["context_max"].as_u64(), Some(usize::MAX as u64));
-    assert!(members[1].get("context_max").is_none());
-    let expected: serde_yaml::Value = serde_yaml::from_str(&format!(
+    assert!(models.at("plain").get("default_max_tokens").is_none());
+    let members = sections[busbar_contract::section::RESERVED_POOLS_KEY]
+        .at("all")
+        .at("members");
+    assert_eq!(
+        members.at(0).at("context_max").as_u64(),
+        Some(usize::MAX as u64)
+    );
+    assert!(members.at(1).get("context_max").is_none());
+    let expected: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&format!(
         "default_max_tokens: {}\nrequest_body_max_bytes: {}\ndatagram_line_memory_bytes: {}\nreasoning_effort_budgets: {{minimal: 1, low: 1024, medium: 8192, high: {}}}",
         u32::MAX, usize::MAX, usize::MAX - 1, u32::MAX,
     )).expect("exact limits");
     assert_eq!(sections["limits"], expected);
-    let numbers = &sections[busbar_contract::plugin::Kind::Transport.root()]["p"]["numbers"];
-    assert_eq!(numbers["unsigned"].as_u64(), Some(u64::MAX));
-    assert_eq!(numbers["signed"].as_i64(), Some(-9_007_199_254_740_993));
-    assert_eq!(numbers["nested"][0].as_f64(), Some(0.1));
-    assert!(numbers["nested"][1].is_null());
-    assert_eq!(numbers["nested"][2].as_f64(), Some(1.25));
-    assert_eq!(numbers["nested"][3].as_f64(), Some(100.0));
+    let numbers = sections[busbar_contract::plugin::Kind::Transport.root()]
+        .at("p")
+        .at("numbers");
+    assert_eq!(numbers.at("unsigned").as_u64(), Some(u64::MAX));
+    assert_eq!(numbers.at("signed").as_i64(), Some(-9_007_199_254_740_993));
+    assert_eq!(numbers.at("nested").at(0).as_f64(), Some(0.1));
+    assert!(numbers.at("nested").at(1).is_null());
+    assert_eq!(numbers.at("nested").at(2).as_f64(), Some(1.25));
+    assert_eq!(numbers.at("nested").at(3).as_f64(), Some(100.0));
     cfg.limits.datagram_line_memory_bytes = None;
-    assert!(
-        super::kernel_sections(&cfg).unwrap()["limits"]["datagram_line_memory_bytes"].is_null()
-    );
+    assert!(super::kernel_sections(&cfg).unwrap()["limits"]
+        .at("datagram_line_memory_bytes")
+        .is_null());
 }
 
 #[test]
@@ -2598,8 +2622,8 @@ fn rotate(path: &std::path::Path, value: &str) {
     std::fs::rename(&aside, path).expect("swap it in");
 }
 
-fn registration(path: &std::path::Path, placement: &str) -> serde_yaml::Value {
-    serde_yaml::from_str(&format!(
+fn registration(path: &std::path::Path, placement: &str) -> busbar_contract::yaml::Value {
+    busbar_contract::yaml::from_str(&format!(
         "url: 'https://agent.vendor/planner'\nupstream_credential: {{secret: {{file: '{}'}}{placement}, \
          lease_ttl_ms: 60000}}",
         path.display()
@@ -2668,8 +2692,8 @@ fn a_bearer_placement_presents_the_secret_only_as_the_bearer() {
             "placement `{placement}`"
         );
     }
-    let bare: serde_yaml::Value =
-        serde_yaml::from_str("url: 'https://agent.vendor/planner'").expect("yaml");
+    let bare: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("url: 'https://agent.vendor/planner'").expect("yaml");
     assert!(
         super::upstream_credential_binding(
             "planner",
@@ -2736,15 +2760,16 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
         let mut bare = registration(&path, "");
         let block = bare
             .get_mut(busbar_contract::section::UPSTREAM_CREDENTIAL_KEY)
-            .and_then(serde_yaml::Value::as_mapping_mut)
+            .and_then(busbar_contract::yaml::Value::as_mapping_mut)
             .expect("the block");
-        let key = serde_yaml::Value::from(busbar_contract::section::CREDENTIAL_LEASE_TTL_KEY);
+        let key =
+            busbar_contract::yaml::Value::from(busbar_contract::section::CREDENTIAL_LEASE_TTL_KEY);
         match lease {
             None => {
-                block.remove(&key);
+                block.remove_key(&key);
             }
             Some(ms) => {
-                block.insert(key, serde_yaml::Value::from(ms));
+                block.insert_key(key, busbar_contract::yaml::Value::from(ms));
             }
         }
         let err = refused(super::upstream_credential_binding(
@@ -2873,7 +2898,7 @@ fn a_secret_pasted_as_its_reference_is_never_echoed_in_the_refusal() {
         format!("{{module: file, settings: {SECRET}}}"),
         format!("{{module: [{SECRET}]}}"),
     ] {
-        let registration: serde_yaml::Value = serde_yaml::from_str(&format!(
+        let registration: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&format!(
             "url: 'https://agent.vendor/planner'\nupstream_credential: {{secret: {secret}}}"
         ))
         .expect("yaml");
@@ -3655,8 +3680,8 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         ],
         "the door's own requests on either need carry the member's binding"
     );
-    let section: serde_yaml::Value =
-        serde_yaml::from_str("fs: {url: \"https://far.example/rpc\"}").expect("yaml");
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("fs: {url: \"https://far.example/rpc\"}").expect("yaml");
     let facts = super::door_facts("p", &[], &[], &[], "audit", Vec::new());
     let node = std::sync::Arc::new(crate::root::plane_node::Node::new());
     let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(node));
@@ -3696,7 +3721,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
     use std::sync::Arc;
 
     let facts = super::door_facts("error-cap", &[], &[], &[], "audit", Vec::new());
-    let section = serde_yaml::from_str("{}").expect("empty section");
+    let section = busbar_contract::yaml::from_str("{}").expect("empty section");
     let pools = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("empty pools");
     let serving = ModelServing {
         pools: ModelPools::default(),
@@ -4103,7 +4128,8 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
 #[test]
 fn a_models_protocol_override_is_handed_to_the_plane() {
     let def: busbar_kernel::config::ProviderDef =
-        serde_yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n").expect("a def");
+        busbar_contract::yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
+            .expect("a def");
     let defs = std::collections::HashMap::from([("p".to_string(), def)]);
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nproviders:\n  p:\n    api_key: { env: BUSBAR_TEST_KEY }\n\
@@ -4116,12 +4142,12 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
         .get(busbar_contract::section::RESERVED_MODELS_KEY)
         .expect("the models section");
     assert_eq!(
-        models["over"]["protocol"].as_str(),
+        models.at("over").at("protocol").as_str(),
         Some("dialect-b"),
         "{models:?}"
     );
     assert!(
-        models["plain"].get("protocol").is_none(),
+        models.at("plain").get("protocol").is_none(),
         "a model naming no protocol states none: {models:?}"
     );
 }
@@ -4137,13 +4163,16 @@ fn a_ca_pem() -> String {
 fn an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule() {
     let paths = ["owned.agent_push.ca", "settings.*.client_identity"];
     let with = |ca: Option<&str>| {
-        let mut sections: std::collections::BTreeMap<&'static str, serde_yaml::Value> =
+        let mut sections: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value> =
             std::collections::BTreeMap::new();
         if let Some(ca) = ca {
             sections.insert(
                 "agent_push",
-                serde_yaml::from_str(&format!("ca: {}", serde_json::to_string(ca).unwrap()))
-                    .expect("yaml"),
+                busbar_contract::yaml::from_str(&format!(
+                    "ca: {}",
+                    serde_json::to_string(ca).unwrap()
+                ))
+                .expect("yaml"),
             );
         }
         super::owned_anchors_refusal(&paths, &sections)
@@ -4574,7 +4603,7 @@ fn peer_pinned(key: &str) -> Result<busbar_contract::transport::trust::Anchors, 
         trust_keys: PEER_KEY_PIN.to_vec(),
         ..Default::default()
     };
-    let registration: serde_yaml::Value = serde_yaml::from_str(&format!(
+    let registration: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&format!(
         "url: 'https://far.example/x'\npin: {{mechanism: peer, key: '{key}'}}"
     ))
     .expect("yaml");

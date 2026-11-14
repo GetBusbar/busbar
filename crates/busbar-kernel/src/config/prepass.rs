@@ -75,8 +75,8 @@ pub(crate) struct Lifted {
     declared: DeclaredSections,
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
-    plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
-    declared_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    plane_raw: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
+    declared_raw: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     /// The top-level keys the key reader watches for: the nested key, then every section a
     /// registered plane requires. A key is struck as the document is seen to carry it, so what is
     /// left once the document is read is what it omitted.
@@ -108,12 +108,12 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
         let (key, lifted) = (self.key, self.lifted);
         match self.dest {
             Dest::Endpoint => {
-                let section = serde_yaml::Value::deserialize(de)?;
+                let section = busbar_contract::yaml::Value::deserialize(de)?;
                 if !section.is_null() {
                     lifted.declared_raw.insert(key, section.clone());
                 }
-                lifted.endpoint =
-                    EndpointSection::deserialize(section).map_err(D::Error::custom)?;
+                lifted.endpoint = busbar_contract::yaml::from_value::<EndpointSection>(section)
+                    .map_err(D::Error::custom)?;
             }
             Dest::Declared(metadata) => {
                 let section = plane_remainder_in(key, metadata.key, metadata.noun, de, lifted)?;
@@ -138,19 +138,24 @@ fn plane_remainder_in<'de, D: Deserializer<'de>>(
     noun: &str,
     de: D,
     lifted: &mut Lifted,
-) -> Result<serde_yaml::Value, D::Error> {
+) -> Result<busbar_contract::yaml::Value, D::Error> {
     let [card_key, fees_key] = PLANE_CARD_KEYS;
     let mut section = crate::config_validate::deal::read_section(de, section_key, noun)?;
-    let mut map = section.as_mapping_mut();
-    let mut take = |key: &str| map.as_mut().and_then(|m| m.remove(key));
-    let fail =
-        |key: &str, e: serde_yaml::Error| D::Error::custom(format!("{section_key}.{key}: {e}"));
+    let mut map = busbar_contract::yaml::ValueExt::as_mapping_mut(&mut section);
+    let mut take = |key: &str| {
+        map.as_mut()
+            .and_then(|m| busbar_contract::yaml::MappingExt::remove_key(&mut **m, key))
+    };
+    let fail = |key: &str, e: busbar_contract::yaml::Error| {
+        D::Error::custom(format!("{section_key}.{key}: {e}"))
+    };
     if let Some(card) = take(card_key) {
-        let card = serde_yaml::from_value(card).map_err(|e| fail(card_key, e))?;
+        let card = busbar_contract::yaml::from_value(card).map_err(|e| fail(card_key, e))?;
         lifted.plane_rate_cards.insert(plane.to_string(), card);
     }
     if let Some(fees) = take(fees_key) {
-        let f: super::PlaneFeesCfg = serde_yaml::from_value(fees).map_err(|e| fail(fees_key, e))?;
+        let f: super::PlaneFeesCfg =
+            busbar_contract::yaml::from_value(fees).map_err(|e| fail(fees_key, e))?;
         let (per_request, per_session) = (f.per_request.into(), f.per_session.into());
         let fees = busbar_kernel_ledger::cost::PlaneFees {
             per_request,
@@ -318,8 +323,9 @@ fn read_document<'de, M: MapAccess<'de>, T: Deserialize<'de>>(
     Ok((deploy, lifted))
 }
 
-pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, serde_yaml::Error> {
-    let mut deploy = deploy_from_deserializer(serde_yaml::Deserializer::from_str(text))?;
+pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, busbar_contract::yaml::Error> {
+    let mut deploy =
+        busbar_contract::yaml::with_deserializer(text, |d| deploy_from_deserializer(d))?;
     deploy.authored_routing = super::authored_routing::capture(text, &deploy.pools);
     Ok(deploy)
 }
@@ -337,8 +343,11 @@ pub fn deploy_with_sources<'de, D: Deserializer<'de>>(
     busbar_contract::secret_ref::context::deserialize::<SplitDocument, _>(de, sources).map(|d| d.0)
 }
 
-pub fn deploy_from_yaml_value(value: serde_yaml::Value) -> Result<DeployCfg, serde_yaml::Error> {
-    deploy_from_deserializer(value)
+pub fn deploy_from_yaml_value(
+    value: busbar_contract::yaml::Value,
+) -> Result<DeployCfg, busbar_contract::yaml::Error> {
+    let text = busbar_contract::yaml::to_string(&value)?;
+    busbar_contract::yaml::with_deserializer(&text, |d| deploy_from_deserializer(d))
 }
 
 #[cfg(test)]
@@ -368,7 +377,7 @@ mod source_declarations_tests {
                 "credentials:\n  at_rest:\n    key: {{ {word}: descriptor }}\nidentity-providers:\n  external:\n    module: arbitrary-auth\n    token: {{ {word}: another }}\n"
             );
             let read = |sources: &Sugars| {
-                deploy_with_sources(serde_yaml::Deserializer::from_str(&raw), sources)
+                busbar_contract::yaml::with_deserializer(&raw, |d| deploy_with_sources(d, sources))
             };
             let parsed = read(&sources).unwrap();
             let key = parsed.credentials.at_rest.unwrap().key;

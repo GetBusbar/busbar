@@ -57,7 +57,6 @@ zeroize = { workspace = true }
 tracing = { workspace = true }
 idna_adapter = { workspace = true }
 metrics = { workspace = true }
-serde_yaml = { workspace = true }
 core_affinity = { workspace = true }
 socket2 = { workspace = true }
 

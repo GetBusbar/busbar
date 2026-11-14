@@ -232,7 +232,7 @@ pub(super) fn definitions() -> Map<String, Value> {
         "Plane-specific member interchangeability and repeatable operation validation"
     ]);
     defs.insert("Pool".into(), pool.clone());
-    // split_section deliberately deserializes each entry through serde_yaml::Value. Its sequence
+    // split_section deliberately deserializes each entry through the YAML Value tree. Its sequence
     // and map visitors normalize null to empty; direct JSON deserialization of PoolCfg does not.
     // Keep that document grammar distinct rather than weakening the direct Pool input schema.
     let mut document_member = defs["PoolRichMember"].clone();

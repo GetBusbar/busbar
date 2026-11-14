@@ -238,7 +238,8 @@ impl PlaneDefinition<'_> {
         validate: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         let section = self.section;
-        let entry = serde_yaml::to_value(def).map_err(|e| format!("`{section}.{name}`: {e}"))?;
+        let entry =
+            busbar_contract::yaml::to_value(def).map_err(|e| format!("`{section}.{name}`: {e}"))?;
         crate::config::plane_sections::validate_plane_entry(
             section,
             name,

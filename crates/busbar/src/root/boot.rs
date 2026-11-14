@@ -552,7 +552,7 @@ pub struct ListenerNeeds {
 
 pub fn configured_listener_needs(
     cfg: &busbar_kernel::config::RootCfg,
-    sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<ListenerNeeds, String> {
     let mut listeners = listener_projection(
         listener_candidates(&crate::LINKED)?,
@@ -592,7 +592,7 @@ pub fn configured_root_binds(
 
 pub fn candidate_listener_needs(
     app: &busbar_kernel::state::App,
-    sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     root: Vec<InboundBind>,
 ) -> Option<Result<ListenerNeeds, String>> {
     let registry = super::loader::rows::registry_of(app.hook_env.registry.as_ref())?;
@@ -613,7 +613,7 @@ fn listener_projection(
     candidates: Vec<Candidate>,
     hooks: &std::collections::HashMap<String, busbar_kernel::config::HookCfg>,
     exports: &busbar_kernel::config::ExportDefs,
-    sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     root: Vec<InboundBind>,
 ) -> Result<ListenerNeeds, String> {
     let mut uses = Uses::default();
@@ -640,7 +640,7 @@ fn listener_projection(
                     let settings = sections
                         .get(instance)
                         .map(|source| {
-                            serde::Deserialize::deserialize(source.clone())
+                            busbar_contract::yaml::from_value(source.clone())
                                 .map_err(|_| format!("{instance}: settings must be an object"))
                         })
                         .transpose()?
@@ -1122,11 +1122,13 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
         &mut Vec::new(),
     )
     .ok()?;
-    let doc: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
-    let plugins =
-        serde_yaml::from_value::<busbar_kernel::config::PluginsCfg>(doc.get("plugins")?.clone())
-            .ok()
-            .filter(|p| p.enabled)?;
+    use busbar_contract::yaml::ValueExt;
+    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&text).ok()?;
+    let plugins = busbar_contract::yaml::from_value::<busbar_kernel::config::PluginsCfg>(
+        doc.get("plugins")?.clone(),
+    )
+    .ok()
+    .filter(|p| p.enabled)?;
     let l = &plugins.logs;
     let words = (l.dir.as_deref(), l.level.as_deref(), &l.levels);
     if let Ok(logs) = crate::root::loader::dispatch::PluginLogConfig::from_words(

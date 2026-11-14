@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use busbar_contract::yaml::{MappingExt, Value as Yaml, ValueExt};
 use serde::Deserialize;
 use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
@@ -156,7 +157,8 @@ impl DocumentPatch {
         root: &str,
         value: &T,
     ) -> Result<Vec<String>, PatchError> {
-        let value = WipedYaml(serde_yaml::to_value(value).map_err(|_| PatchError::Encoding)?);
+        let value =
+            WipedYaml(busbar_contract::yaml::to_value(value).map_err(|_| PatchError::Encoding)?);
         let map = value.0.as_mapping().ok_or(PatchError::Shape)?;
         map.keys()
             .map(|key| {
@@ -477,7 +479,7 @@ impl DocumentPatch {
                 continue;
             };
             let typed = WipedYaml(
-                serde_yaml::to_value(deploy.authoring(&crate::seal::acquire()))
+                busbar_contract::yaml::to_value(deploy.authoring(&crate::seal::acquire()))
                     .map_err(|_| PatchError::Encoding)?,
             );
             let typed = typed.0.as_mapping().ok_or(PatchError::Encoding)?;
@@ -530,7 +532,7 @@ impl DocumentPatch {
     /// snapshot: sets replace existing elements, terminal `-` appends, and removals run in
     /// descending index order after sets. Missing object parents are created; missing array
     /// indices, leading zeroes, signed indices, and traversal through `-` are refused.
-    pub fn apply_to(&self, document: &mut serde_yaml::Value) -> Result<(), PatchError> {
+    pub fn apply_to(&self, document: &mut Yaml) -> Result<(), PatchError> {
         if self.0.get("$stages").is_some() {
             let mut guarded = WipedYaml(document.clone());
             for stage in self.stages() {
@@ -539,14 +541,14 @@ impl DocumentPatch {
                     .apply(&mut guarded.0);
             }
             wipe_yaml(document);
-            *document = std::mem::take(&mut guarded.0);
+            *document = std::mem::replace(&mut guarded.0, Yaml::Null);
         } else {
             self.prepare(document)?.apply(document);
         }
         Ok(())
     }
 
-    fn prepare(&self, document: &serde_yaml::Value) -> Result<Prepared, PatchError> {
+    fn prepare(&self, document: &Yaml) -> Result<Prepared, PatchError> {
         let mut prepared = Prepared {
             set: Vec::new(),
             remove: Vec::new(),
@@ -682,7 +684,7 @@ struct Prepared {
     remove: Vec<Zeroizing<Vec<String>>>,
 }
 impl Prepared {
-    fn apply(mut self, document: &mut serde_yaml::Value) {
+    fn apply(mut self, document: &mut Yaml) {
         for (path, value) in &mut self.set {
             set_at(document, path, &mut value.0);
         }
@@ -702,15 +704,11 @@ fn sequence_index(key: &str) -> Result<usize, PatchError> {
     key.parse().map_err(|_| PatchError::Traversal)
 }
 
-fn check_target(
-    mut document: &serde_yaml::Value,
-    path: &mut [String],
-    set: bool,
-) -> Result<(), PatchError> {
+fn check_target(mut document: &Yaml, path: &mut [String], set: bool) -> Result<(), PatchError> {
     let last = path.len() - 1;
     for (depth, key) in path.iter_mut().enumerate() {
         if let Some(map) = document.as_mapping() {
-            match map.get(key.as_str()) {
+            match map.get_key(key.as_str()) {
                 Some(value) => document = value,
                 None => return Ok(()),
             }
@@ -728,15 +726,15 @@ fn check_target(
     Ok(())
 }
 
-fn set_at(document: &mut serde_yaml::Value, path: &[String], value: &mut serde_yaml::Value) {
+fn set_at(document: &mut Yaml, path: &[String], value: &mut Yaml) {
     if let Some(seq) = document.as_sequence_mut() {
         let index = sequence_index(&path[0]).expect("index checked");
         if path.len() == 1 {
             if index == seq.len() {
-                seq.push(std::mem::take(value));
+                seq.push(std::mem::replace(value, Yaml::Null));
             } else {
                 wipe_yaml(&mut seq[index]);
-                seq[index] = std::mem::take(value);
+                seq[index] = std::mem::replace(value, Yaml::Null);
             }
         } else {
             set_at(&mut seq[index], &path[1..], value);
@@ -745,31 +743,28 @@ fn set_at(document: &mut serde_yaml::Value, path: &[String], value: &mut serde_y
     }
     let map = document.as_mapping_mut().expect("traversal checked");
     if path.len() == 1 {
-        if let Some(old) = map.get_mut(path[0].as_str()) {
+        if let Some(old) = map.get_key_mut(path[0].as_str()) {
             wipe_yaml(old);
-            *old = std::mem::take(value);
+            *old = std::mem::replace(value, Yaml::Null);
         } else {
-            map.insert(
-                serde_yaml::Value::String(path[0].clone()),
-                std::mem::take(value),
+            map.insert_key(
+                Yaml::Text(path[0].clone()),
+                std::mem::replace(value, Yaml::Null),
             );
         }
     } else {
         if !map.contains_key(path[0].as_str()) {
-            map.insert(
-                serde_yaml::Value::String(path[0].clone()),
-                serde_yaml::Value::Mapping(Default::default()),
-            );
+            map.insert_key(Yaml::Text(path[0].clone()), Yaml::Map(Vec::new()));
         }
         set_at(
-            map.get_mut(path[0].as_str()).expect("parent inserted"),
+            map.get_key_mut(path[0].as_str()).expect("parent inserted"),
             &path[1..],
             value,
         );
     }
 }
 
-fn remove_at(document: &mut serde_yaml::Value, path: &[String]) {
+fn remove_at(document: &mut Yaml, path: &[String]) {
     if let Some(seq) = document.as_sequence_mut() {
         let index = sequence_index(&path[0]).expect("index checked");
         if path.len() == 1 {
@@ -788,18 +783,17 @@ fn remove_at(document: &mut serde_yaml::Value, path: &[String]) {
                 wipe_yaml(&mut key);
                 wipe_yaml(&mut value);
             } else {
-                map.insert(key, value);
+                map.push((key, value));
             }
         }
-    } else if let Some(child) = map.get_mut(path[0].as_str()) {
+    } else if let Some(child) = map.get_key_mut(path[0].as_str()) {
         remove_at(child, &path[1..]);
     }
 }
 
 // serde_json's arbitrary_precision feature serializes numbers through a private map marker.
 // Convert the data model directly; each partially built container stays under wiping custody.
-fn json_to_yaml(value: &Value) -> Result<serde_yaml::Value, PatchError> {
-    use serde_yaml::Value as Yaml;
+fn json_to_yaml(value: &Value) -> Result<Yaml, PatchError> {
     Ok(match value {
         Value::Null => Yaml::Null,
         Value::Bool(value) => Yaml::Bool(*value),
@@ -807,18 +801,18 @@ fn json_to_yaml(value: &Value) -> Result<serde_yaml::Value, PatchError> {
             // The streaming bridge retains the exact numeric text separately. Its intermediate
             // tree needs only a scalar; it must not reject or round a wider integer on the wire.
             if let Some(value) = value.as_u64() {
-                Yaml::Number(value.into())
+                Yaml::from(value)
             } else if let Some(value) = value.as_i64() {
-                Yaml::Number(value.into())
+                Yaml::from(value)
             } else if let Some(value) = value.as_f64().filter(|value| value.is_finite()) {
-                Yaml::Number(value.into())
+                Yaml::Float(value)
             } else {
-                Yaml::String(value.to_string())
+                Yaml::Text(value.to_string())
             }
         }
-        Value::String(value) => Yaml::String(value.clone()),
+        Value::String(value) => Yaml::Text(value.clone()),
         Value::Array(values) => {
-            let mut result = WipedYaml(Yaml::Sequence(Vec::with_capacity(values.len())));
+            let mut result = WipedYaml(Yaml::Array(Vec::with_capacity(values.len())));
             for value in values {
                 result
                     .0
@@ -826,24 +820,24 @@ fn json_to_yaml(value: &Value) -> Result<serde_yaml::Value, PatchError> {
                     .expect("sequence")
                     .push(json_to_yaml(value)?);
             }
-            std::mem::take(&mut result.0)
+            std::mem::replace(&mut result.0, Yaml::Null)
         }
         Value::Object(values) => {
-            let mut result = WipedYaml(Yaml::Mapping(Default::default()));
+            let mut result = WipedYaml(Yaml::Map(Vec::new()));
             for (key, value) in values {
                 let value = json_to_yaml(value)?;
                 result
                     .0
                     .as_mapping_mut()
                     .expect("mapping")
-                    .insert(Yaml::String(key.clone()), value);
+                    .insert_key(Yaml::Text(key.clone()), value);
             }
-            std::mem::take(&mut result.0)
+            std::mem::replace(&mut result.0, Yaml::Null)
         }
     })
 }
 
-struct WipedYaml(serde_yaml::Value);
+struct WipedYaml(Yaml);
 impl Zeroize for WipedYaml {
     fn zeroize(&mut self) {
         wipe_yaml(&mut self.0);
@@ -869,17 +863,18 @@ fn wipe_json(value: &mut Value) {
     }
 }
 
-fn wipe_yaml(value: &mut serde_yaml::Value) {
+fn wipe_yaml(value: &mut Yaml) {
     match value {
-        serde_yaml::Value::String(text) => text.zeroize(),
-        serde_yaml::Value::Sequence(items) => items.iter_mut().for_each(wipe_yaml),
-        serde_yaml::Value::Mapping(map) => {
+        Yaml::Text(text) => text.zeroize(),
+        Yaml::Bytes(bytes) => bytes.zeroize(),
+        Yaml::Array(items) => items.iter_mut().for_each(wipe_yaml),
+        Yaml::Map(map) => {
             for (mut key, mut value) in std::mem::take(map) {
                 wipe_yaml(&mut key);
                 wipe_yaml(&mut value);
             }
         }
-        serde_yaml::Value::Tagged(tagged) => wipe_yaml(&mut tagged.value),
+        Yaml::Tag(_, value) => wipe_yaml(value),
         _ => {}
     }
 }
@@ -909,18 +904,23 @@ mod tests {
 
     #[test]
     fn source_bridge_preserves_scalar_types_empty_nodes_sequences_and_tags() {
-        let base = "flag: TRUE\nnumber: 0x10\nempty:\nseq:\n  - TRUE\n  - 0x20\n  -\nquoted: \"TRUE\"\ntagged: !Variant TRUE\n!Key 'name: part': value\n";
+        let base = "flag: TRUE\nnumber: 0x10\nempty:\nseq:\n  - TRUE\n  - 0x20\n  -\nquoted: \"TRUE\"\n'name: part': value\n";
+        // Application tags are refused by the shared YAML reader, so the source bridge never
+        // carries one.
+        for tagged in ["tagged: !Variant TRUE\n", "!Key 'name: part': value\n"] {
+            assert!(source::SourceDocument::parse(tagged).is_err(), "{tagged}");
+        }
         let mut document = source::SourceDocument::parse(base).unwrap();
         document
             .apply(&patch(json!({"set": {"/added": 8}})))
             .unwrap();
         let bytes = document.to_yaml_bytes().unwrap();
-        let mut expected: serde_yaml::Value = serde_yaml::from_str(base).unwrap();
-        expected.as_mapping_mut().unwrap().insert(
-            serde_yaml::Value::String("added".into()),
-            serde_yaml::Value::Number(8.into()),
-        );
-        let actual: serde_yaml::Value = serde_yaml::from_slice(&bytes).unwrap();
+        let mut expected: Yaml = busbar_contract::yaml::from_str(base).unwrap();
+        expected
+            .as_mapping_mut()
+            .unwrap()
+            .insert_key(Yaml::Text("added".into()), Yaml::from(8u64));
+        let actual: Yaml = busbar_contract::yaml::from_slice(&bytes).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -1020,8 +1020,8 @@ mod tests {
     fn patch(value: Value) -> DocumentPatch {
         DocumentPatch::from_value(value).unwrap()
     }
-    fn yaml(text: &str) -> serde_yaml::Value {
-        serde_yaml::from_str(text).unwrap()
+    fn yaml(text: &str) -> Yaml {
+        busbar_contract::yaml::from_str(text).unwrap()
     }
 
     #[test]
@@ -1108,10 +1108,10 @@ mod tests {
         patch(json!({"set":{"/pool/timeout":null},"remove":["/pool/stale"]}))
             .apply_to(&mut doc)
             .unwrap();
-        assert_eq!(doc["pool"]["secret"].as_str(), Some("keep-me"));
-        let pool = doc["pool"].as_mapping().unwrap();
+        assert_eq!(doc.at("pool").at("secret").as_str(), Some("keep-me"));
+        let pool = doc.at("pool").as_mapping().unwrap();
         assert!(pool.contains_key("timeout"));
-        assert_eq!(doc["pool"]["timeout"], serde_yaml::Value::Null);
+        assert_eq!(*doc.at("pool").at("timeout"), Yaml::Null);
         assert!(!pool.contains_key("stale"));
     }
 
@@ -1121,8 +1121,8 @@ mod tests {
         patch(json!({"set":{"/a~1b/~0key":7,"/":true}}))
             .apply_to(&mut doc)
             .unwrap();
-        assert_eq!(doc["a/b"]["~key"].as_u64(), Some(7));
-        assert_eq!(doc[""].as_bool(), Some(true));
+        assert_eq!(doc.at("a/b").at("~key").as_u64(), Some(7));
+        assert_eq!(doc.at("").as_bool(), Some(true));
     }
 
     #[test]
@@ -1167,7 +1167,7 @@ mod tests {
         patch(json!({"set":{"/z":["new"]},"remove":["/missing/child"]}))
             .apply_to(&mut doc)
             .unwrap();
-        assert_eq!(doc["z"][0].as_str(), Some("new"));
+        assert_eq!(doc.at("z").at(0).as_str(), Some("new"));
     }
 
     #[test]
@@ -1177,12 +1177,12 @@ mod tests {
         patch(json!({"set": {"/members/0/weight": 3, "/members/-": {"model": "third"}}}))
             .apply_to(&mut doc)
             .unwrap();
-        assert_eq!(doc["members"][0]["weight"].as_u64(), Some(3));
+        assert_eq!(doc.at("members").at(0).at("weight").as_u64(), Some(3));
         assert_eq!(
-            doc["members"][0]["tags"]["private"].as_str(),
+            doc.at("members").at(0).at("tags").at("private").as_str(),
             Some("CANARY")
         );
-        assert_eq!(doc["members"][2]["model"].as_str(), Some("third"));
+        assert_eq!(doc.at("members").at(2).at("model").as_str(), Some("third"));
         for path in [
             "/members/01",
             "/members/-1",
@@ -1248,7 +1248,7 @@ mod tests {
         struct Members {
             members: Vec<Member>,
         }
-        let parsed: Members = serde_yaml::from_str(text).unwrap();
+        let parsed: Members = busbar_contract::yaml::from_str(text).unwrap();
         assert_eq!(parsed.members[0].name, "TRUE");
         assert_eq!(parsed.members[0].code.as_deref(), Some("0x10"));
         assert_eq!(
@@ -1282,17 +1282,17 @@ mod tests {
             edit = serde_json::from_slice(&edit.to_json_bytes().unwrap()).unwrap();
         }
         let bytes = source_text(&edit, base);
-        let doc: serde_yaml::Value = serde_yaml::from_slice(&bytes).unwrap();
-        assert_eq!(doc["members"].as_sequence().unwrap().len(), 3);
-        assert_eq!(doc["members"][0]["model"].as_str(), Some("second"));
-        assert_eq!(doc["members"][0]["weight"].as_u64(), Some(9));
+        let doc: Yaml = busbar_contract::yaml::from_slice(&bytes).unwrap();
+        assert_eq!(doc.at("members").as_sequence().unwrap().len(), 3);
+        assert_eq!(doc.at("members").at(0).at("model").as_str(), Some("second"));
+        assert_eq!(doc.at("members").at(0).at("weight").as_u64(), Some(9));
         assert_eq!(
-            doc["members"][0]["tags"]["private"].as_str(),
+            doc.at("members").at(0).at("tags").at("private").as_str(),
             Some("CANARY")
         );
-        assert_eq!(doc["members"][1]["weight"].as_u64(), Some(7));
-        assert_eq!(doc["members"][2]["model"].as_str(), Some("fourth"));
-        assert_eq!(doc["hooks"], yaml("[two, one]"));
+        assert_eq!(doc.at("members").at(1).at("weight").as_u64(), Some(7));
+        assert_eq!(doc.at("members").at(2).at("model").as_str(), Some("fourth"));
+        assert_eq!(*doc.at("hooks"), yaml("[two, one]"));
         assert!(std::str::from_utf8(&bytes).unwrap().contains("0x10"));
     }
 
@@ -1405,9 +1405,9 @@ mod tests {
         let mut doc = yaml("a: old\nc: old\nd: keep");
         merged.apply_to(&mut doc).unwrap();
         assert!(!doc.as_mapping().unwrap().contains_key("a"));
-        assert_eq!(doc["b"].as_u64(), Some(2));
+        assert_eq!(doc.at("b").as_u64(), Some(2));
         assert!(doc.as_mapping().unwrap().contains_key("c"));
-        assert_eq!(doc["d"].as_str(), Some("keep"));
+        assert_eq!(doc.at("d").as_str(), Some("keep"));
         assert!(first
             .updated(&patch(json!({"set":{"/a/child":1}})))
             .is_err());
@@ -1465,9 +1465,9 @@ mod tests {
             .unwrap();
         let mut doc = yaml("parent: {}\nstale: keep");
         updated.apply_to(&mut doc).unwrap();
-        assert_eq!(doc["parent"]["child"].as_bool(), Some(true));
-        assert_eq!(doc["secret"].as_str(), Some("KEEP"));
-        assert_eq!(doc["stale"].as_str(), Some("keep"));
+        assert_eq!(doc.at("parent").at("child").as_bool(), Some(true));
+        assert_eq!(doc.at("secret").as_str(), Some("KEEP"));
+        assert_eq!(doc.at("stale").as_str(), Some("keep"));
         assert!(prior.without_paths(&["invalid".into()]).is_err());
         assert!(prior.paths().any(|path| path == "/parent"));
     }

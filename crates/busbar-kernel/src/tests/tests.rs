@@ -788,9 +788,10 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
     assert_eq!(v["error"]["code"], "internal", "got {v}");
 }
 
-pub(crate) fn frozen_text(key: &str) -> serde_yaml::Value {
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(include_str!("fixtures/frozen_customer_text.yaml"))
+pub(crate) fn frozen_text(key: &str) -> busbar_contract::yaml::Value {
+    use busbar_contract::yaml::ValueExt as _;
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(include_str!("fixtures/frozen_customer_text.yaml"))
             .expect("the frozen-text fixture parses");
     doc.get(key)
         .cloned()
@@ -799,7 +800,7 @@ pub(crate) fn frozen_text(key: &str) -> serde_yaml::Value {
 
 pub(crate) fn frozen_str(key: &str) -> String {
     let v = frozen_text(key);
-    v.as_str()
+    v.as_text()
         .unwrap_or_else(|| panic!("frozen `{key}` is not a string"))
         .to_string()
 }

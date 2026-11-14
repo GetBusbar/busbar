@@ -4,6 +4,7 @@
 use super::linked_exports;
 use crate::root::loader::boot::Candidate;
 use crate::root::loader::LinkedPlugin;
+use busbar_contract::yaml::ValueExt;
 
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
 
@@ -15,12 +16,13 @@ struct Entry {
 }
 
 fn entries(registry: &str) -> Vec<Entry> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(registry).expect("plugins.yaml parses");
-    let plugins = doc["plugins"].as_sequence().expect("plugins: is a list");
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(registry).expect("plugins.yaml parses");
+    let plugins = doc.at("plugins").as_sequence().expect("plugins: is a list");
     plugins
         .iter()
         .map(|p| {
-            let field = |k: &str| p[k].as_str().map(str::to_string);
+            let field = |k: &str| p.at(k).as_str().map(str::to_string);
             let repo = field("repo").expect("every entry names its repo");
             Entry {
                 kind: field("kind").expect("every entry names its kind"),

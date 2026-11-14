@@ -717,7 +717,7 @@ impl Rig {
             },
             Arc::new(Book),
             Arc::new(busbar_kernel::host_services::KernelServices::new()),
-            ("pools", &serde_yaml::Value::Null),
+            ("pools", &busbar_contract::yaml::Value::Null),
         )
         .await
         .expect("the plane instance is admitted");

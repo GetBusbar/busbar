@@ -205,7 +205,6 @@ tracing = { workspace = true }
 # Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
 idna_adapter = { workspace = true }
 metrics = { workspace = true }
-serde_yaml = { workspace = true }
 # THE THREAD-PER-CORE BOOT SEAM — the one unix data-plane topology (non-unix keeps the classic
 # runtime as a compile-time platform shape; no knob selects either). Binary-only deps — nothing on
 # the request path names them. `core_affinity` advisorily pins the per-worker threads, `socket2`
@@ -1183,9 +1182,10 @@ serde_json = "1"
 # Form-encoding for the engine-built RFC 8693 token exchange — the exact crate reqwest's `.form()`
 # delegated to, so the encoded bytes are identical by construction. Already in the lock via reqwest.
 serde_urlencoded = "0.7"
-# YAML is yaml_serde, as in core's workspace. The `package` rename keeps every `serde_yaml::from_str`
-# call site unchanged and states the substitution once for the whole workspace.
-serde_yaml = { package = "yaml_serde", version = "0.10" }
+# YAML is serde-saphyr behind `busbar_contract::yaml`, as in core's workspace (ciborium's `Value` is
+# the untyped tree).
+serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
+ciborium = "0.2.2"
 # 0.10, the line every dependency that carries RustCrypto ships (oauth-as, sha1 via axum/tungstenite).
 # busbar's own digests and MACs are on ring (the one crypto backend); sha2 stays only where ring
 # would be a new backend in a plugin's closure (busbar-contract) and as the independent witness the

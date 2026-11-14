@@ -57,7 +57,8 @@ const CROSS_PLANE_REFUSAL: &str = "`bays.dock`: `hooks:` may only name hooks fro
      plane may reference an entry on another. Did you mean the hook `siem`?";
 
 fn judge_section(section: &str) -> Result<(), String> {
-    let value: serde_yaml::Value = serde_yaml::from_str(section).map_err(|e| e.to_string())?;
+    let value: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(section).map_err(|e| e.to_string())?;
     validate_plane_section("bays", &value, KEYS, None, BAYS.sections)
 }
 
@@ -113,15 +114,16 @@ fn section_policy_and_the_admin_write_path_judge_an_entrys_timeout() {
         judge_section("  dock:\n    timeout: 10\n"),
         "`bays.dock`: `timeout:` must be a duration `<n><s|m|h|d>`, e.g. `30s`",
     );
-    let entry: serde_yaml::Value = serde_yaml::from_str("timeout: 0m").expect("yaml");
+    let entry: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("timeout: 0m").expect("yaml");
     let refused = validate_plane_entry("bays", "dock", &entry, KEYS, &["bays"]).unwrap_err();
     assert!(
         refused.starts_with("`bays.dock`: `timeout: 0m` is zero"),
         "{refused}"
     );
 
-    let models: serde_yaml::Value =
-        serde_yaml::from_str("models:\n  m1: { timeout: never }\n").expect("yaml");
+    let models: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("models:\n  m1: { timeout: never }\n").expect("yaml");
     let refused = validate_plane_section("bays", &models, KEYS, None, &["bays"]).unwrap_err();
     assert!(
         refused.starts_with("`bays.models.m1`: `timeout:`"),
@@ -185,7 +187,7 @@ fn the_admin_write_path_refuses_a_pin_token_the_declaration_does_not_spell() {
 #[test]
 fn a_section_is_judged_per_registration_in_order_skipping_reserved_words() {
     let sections = ["bays", "export"];
-    let value: serde_yaml::Value = serde_yaml::from_str(
+    let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(
         "hooks: [export.siem]\nupstream_credentials: own\n\
          a:\n  recheck_after: 1m\n\
          dock:\n  recheck_after: soon\n  hooks: [export.siem]\n",
@@ -196,7 +198,8 @@ fn a_section_is_judged_per_registration_in_order_skipping_reserved_words() {
         CADENCE_REFUSAL,
         "the trust keys are judged before the hook list, and the reserved `hooks:` is not an entry"
     );
-    let entry: serde_yaml::Value = serde_yaml::from_str("hooks: [\"a.b\"]").unwrap();
+    let entry: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("hooks: [\"a.b\"]").unwrap();
     assert_eq!(
         validate_plane_entry("bays", "dock", &entry, &[], &sections).unwrap_err(),
         "`bays.dock`: `hooks:` may only name hooks from the top-level `hooks:` map, by bare name. \
@@ -223,9 +226,10 @@ static MOORINGS: PlaneDefinition<'static> = PlaneDefinition {
 #[test]
 fn section_policy_refuses_a_forwarded_caller_credential_in_the_planes_own_words() {
     let moorings = |default: &str| {
-        let value =
-            serde_yaml::from_str(&format!("upstream_credentials: {default}\nberth: {{}}\n"))
-                .map_err(|e| e.to_string())?;
+        let value = busbar_contract::yaml::from_str(&format!(
+            "upstream_credentials: {default}\nberth: {{}}\n"
+        ))
+        .map_err(|e| e.to_string())?;
         validate_plane_section(
             "moorings",
             &value,
@@ -242,8 +246,8 @@ fn section_policy_refuses_a_forwarded_caller_credential_in_the_planes_own_words(
 
 #[test]
 fn the_section_default_is_judged_after_its_registrations() {
-    let value: serde_yaml::Value =
-        serde_yaml::from_str("upstream_credentials: passthrough\nberth: {}\n").unwrap();
+    let value: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("upstream_credentials: passthrough\nberth: {}\n").unwrap();
     assert_eq!(
         validate_plane_section("moorings", &value, &[], Some(FORWARD_REFUSAL), &[]),
         Err(FORWARD_REFUSAL.to_string())
@@ -252,9 +256,10 @@ fn the_section_default_is_judged_after_its_registrations() {
         validate_plane_section("moorings", &value, &[], None, &[]),
         Ok(())
     );
-    let value: serde_yaml::Value =
-        serde_yaml::from_str("upstream_credentials: passthrough\ndock:\n  recheck_after: soon\n")
-            .unwrap();
+    let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(
+        "upstream_credentials: passthrough\ndock:\n  recheck_after: soon\n",
+    )
+    .unwrap();
     assert_eq!(
         validate_plane_section("bays", &value, KEYS, Some(FORWARD_REFUSAL), &[]).unwrap_err(),
         CADENCE_REFUSAL,
@@ -265,7 +270,7 @@ fn the_section_default_is_judged_after_its_registrations() {
 #[test]
 fn a_registrations_own_passthrough_is_refused_in_the_planes_own_words() {
     let moorings = |section: &str| {
-        let value = serde_yaml::from_str(section).map_err(|e| e.to_string())?;
+        let value = busbar_contract::yaml::from_str(section).map_err(|e| e.to_string())?;
         validate_plane_section(
             "moorings",
             &value,

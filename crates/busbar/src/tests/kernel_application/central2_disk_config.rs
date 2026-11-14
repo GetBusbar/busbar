@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+use busbar_contract::yaml::{self, prelude::*};
 use busbar_kernel::appbuild::load_config_from_disk_judged as load_config_from_disk;
 use std::time::{Duration, Instant};
 fn frozen_str(key: &str) -> String {
-    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
+    let doc: Value = yaml::from_str(include_str!(
         "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
     ))
     .expect("the existing customer fixture parses");
     doc.get(key)
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(Value::as_str)
         .expect("existing frozen customer word")
         .to_string()
 }
@@ -355,16 +356,13 @@ fn boot_mutable_historical_overlay_selector_is_normalized_without_changing_value
     )
     .expect("the actual startup normalizes the historical selector")
     .expect("the obsolete field requires a converted document");
-    let normalized: serde_yaml::Value = serde_yaml::from_str(&normalized).unwrap();
+    let normalized: Value = yaml::from_str(&normalized).unwrap();
     assert!(
-        normalized["config"].get("overlay").is_none(),
+        normalized.at("config").get("overlay").is_none(),
         "the converted document contains no obsolete selector"
     );
-    assert_eq!(
-        normalized["config"]["locked"],
-        serde_yaml::Value::Bool(false)
-    );
-    assert_eq!(normalized["store"]["module"].as_str(), Some("memory"));
+    assert_eq!(normalized.at("config").at("locked"), &Value::Bool(false));
+    assert_eq!(normalized.at("store").at("module").as_str(), Some("memory"));
     let loaded = load_config_from_disk(
         &config_path,
         None,

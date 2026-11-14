@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Packaging-declared historical names are converted here, never admitted by runtime.
-use serde_yaml::{Mapping, Value};
+use busbar_contract::yaml::prelude::*;
 
 fn current(old: &str) -> Option<&'static str> {
     let mut selected = None;
@@ -30,23 +30,25 @@ pub(super) fn needed(doc: &Value) -> bool {
             .and_then(Value::as_str)
             .is_some_and(|name| current(name).is_some())
     };
-    if root.get("store").is_some_and(former_module) {
+    if root.get_key("store").is_some_and(former_module) {
         return true;
     }
     for section in ["identity-providers", "secrets", "hooks", "export"] {
         if root
-            .get(section)
+            .get_key(section)
             .and_then(Value::as_mapping)
             .is_some_and(|entries| entries.values().any(former_module))
         {
             return true;
         }
     }
-    let instances = root.get("identity-providers").and_then(Value::as_mapping);
-    if let Some(auth) = root.get("auth").and_then(Value::as_mapping) {
+    let instances = root
+        .get_key("identity-providers")
+        .and_then(Value::as_mapping);
+    if let Some(auth) = root.get_key("auth").and_then(Value::as_mapping) {
         for key in ["chain", "admin_auth"] {
             if auth
-                .get(key)
+                .get_key(key)
                 .and_then(Value::as_sequence)
                 .is_some_and(|entries| {
                     entries.iter().filter_map(Value::as_str).any(|name| {
@@ -59,7 +61,7 @@ pub(super) fn needed(doc: &Value) -> bool {
             }
         }
     }
-    root.get("plugins")
+    root.get_key("plugins")
         .and_then(Value::as_mapping)
         .is_some_and(|plugins| {
             plugins
@@ -70,11 +72,11 @@ pub(super) fn needed(doc: &Value) -> bool {
 }
 
 pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    if let Some(store) = root.get_mut("store").and_then(Value::as_mapping_mut) {
+    if let Some(store) = root.get_key_mut("store").and_then(Value::as_mapping_mut) {
         module(store, "store", changes);
     }
     for section in ["identity-providers", "secrets", "hooks", "export"] {
-        if let Some(entries) = root.get_mut(section).and_then(Value::as_mapping_mut) {
+        if let Some(entries) = root.get_key_mut(section).and_then(Value::as_mapping_mut) {
             for (name, value) in entries {
                 if let Some(definition) = value.as_mapping_mut() {
                     module(
@@ -89,7 +91,7 @@ pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     // A current chain names identity-provider instances. Preserve that identity even
     // when its spelling happens to equal a former module name.
     let instances: Vec<String> = root
-        .get("identity-providers")
+        .get_key("identity-providers")
         .and_then(Value::as_mapping)
         .map(|m| {
             m.keys()
@@ -98,9 +100,9 @@ pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
                 .collect()
         })
         .unwrap_or_default();
-    if let Some(auth) = root.get_mut("auth").and_then(Value::as_mapping_mut) {
+    if let Some(auth) = root.get_key_mut("auth").and_then(Value::as_mapping_mut) {
         for key in ["chain", "admin_auth"] {
-            if let Some(entries) = auth.get_mut(key).and_then(Value::as_sequence_mut) {
+            if let Some(entries) = auth.get_key_mut(key).and_then(Value::as_sequence_mut) {
                 for entry in entries {
                     if let Some(old) = entry.as_str() {
                         if !instances.iter().any(|name| name == old) {
@@ -116,7 +118,7 @@ pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             }
         }
     }
-    if let Some(plugins) = root.get_mut("plugins").and_then(Value::as_mapping_mut) {
+    if let Some(plugins) = root.get_key_mut("plugins").and_then(Value::as_mapping_mut) {
         let renamed: Vec<(Value, &'static str)> = plugins
             .keys()
             .filter_map(|key| Some((key.clone(), current(key.as_str()?)?)))
@@ -124,22 +126,22 @@ pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         for (old, alias) in renamed {
             if plugins.contains_key(alias) {
                 todos.push(format!("plugins: historical module {} and current alias {alias} both have fetch declarations; resolve the collision", old.as_str().unwrap_or("<entry>")));
-            } else if let Some(value) = plugins.remove(&old) {
+            } else if let Some(value) = super::migrate::swap_remove_key(plugins, &old) {
                 changes.push(format!(
                     "plugins: historical module {} -> {alias}",
                     old.as_str().unwrap_or("<entry>")
                 ));
-                plugins.insert(alias.into(), value);
+                plugins.insert_key(alias, value);
             }
         }
     }
 }
 
 fn module(definition: &mut Mapping, path: &str, changes: &mut Vec<String>) {
-    let Some(old) = definition.get("module").and_then(Value::as_str) else {
+    let Some(old) = definition.get_key("module").and_then(Value::as_str) else {
         return;
     };
     let Some(alias) = current(old) else { return };
     changes.push(format!("{path}.module: historical name {old} -> {alias}"));
-    definition.insert("module".into(), alias.into());
+    definition.insert_key("module", alias.into());
 }

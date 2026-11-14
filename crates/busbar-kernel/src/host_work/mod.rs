@@ -44,10 +44,11 @@ impl WorkBounds {
 
     pub fn of_section(
         section: &str,
-        value: &serde_yaml::Value,
+        value: &busbar_contract::yaml::Value,
         fallback: Self,
     ) -> Result<Self, String> {
         use busbar_contract::section::{RESERVED_WORK_KEY, WORK_MAX_LIVE_KEY, WORK_RETAIN_S_KEY};
+        use busbar_contract::yaml::ValueExt as _;
         let Some(work) = value.get(RESERVED_WORK_KEY) else {
             return Ok(fallback);
         };

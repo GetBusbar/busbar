@@ -2,21 +2,24 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{install, MIGRATION_ROWS};
+use busbar_contract::yaml::{MappingExt, ValueExt};
 
-fn golden(n: usize) -> serde_yaml::Value {
-    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!("fixtures/retired_1_5_5.yaml"))
-        .expect("the golden parses");
-    doc["retired"][n].clone()
+fn golden(n: usize) -> busbar_contract::yaml::Value {
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(include_str!("fixtures/retired_1_5_5.yaml"))
+            .expect("the golden parses");
+    doc.at("retired").at(n).clone()
 }
 
-fn field(v: &serde_yaml::Value, k: &str) -> String {
-    v[k].as_str()
+fn field(v: &busbar_contract::yaml::Value, k: &str) -> String {
+    v.at(k)
+        .as_str()
         .unwrap_or_else(|| panic!("golden `{k}` is a string"))
         .to_string()
 }
 
 fn historical_refusal(raw: &str) -> String {
-    let document = serde_yaml::from_str(raw).expect("historical document parses");
+    let document = busbar_contract::yaml::from_str(raw).expect("historical document parses");
     let markers = busbar_migrations::config::migrate::detect_legacy_markers(&document);
     assert!(
         !markers.is_empty(),
@@ -41,10 +44,11 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
     );
 
     let out = busbar_migrations::config::migrate::migrate_config(&raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output parses");
-    assert_eq!(doc["store"]["module"].as_str(), Some(module.as_str()));
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&out.yaml).expect("the output parses");
+    assert_eq!(doc.at("store").at("module").as_str(), Some(module.as_str()));
     assert_eq!(
-        doc["store"]["settings"]["url"].as_str(),
+        doc.at("store").at("settings").at("url").as_str(),
         Some("kv://127.0.0.1:6379/0"),
         "the settings ride through verbatim"
     );
@@ -78,11 +82,28 @@ fn retired_word_3_meets_its_1_5_5_bytes() {
     retired_word_meets_its_1_5_5_bytes(2);
 }
 
-fn observability_golden() -> serde_yaml::Value {
-    serde_yaml::from_str(include_str!(
+fn observability_golden() -> busbar_contract::yaml::Value {
+    busbar_contract::yaml::from_str(include_str!(
         "../../../../../testing/shadow-oracle/fixtures/migrate-observability-1.5.5.yaml"
     ))
     .expect("the golden parses")
+}
+
+/// Two YAML trees are the same document: mappings compare as key sets (1.5.5's comparison
+/// ignored key order), sequences and scalars compare in full.
+fn same_tree(a: &busbar_contract::yaml::Value, b: &busbar_contract::yaml::Value) -> bool {
+    use busbar_contract::yaml::Value;
+    match (a, b) {
+        (Value::Map(a), Value::Map(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(k, v)| b.get_key(k).is_some_and(|w| same_tree(v, w)))
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(v, w)| same_tree(v, w))
+        }
+        _ => a == b,
+    }
 }
 
 fn bullets(text: &str, head: &str, bullet: &str) -> Vec<String> {
@@ -124,13 +145,13 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
             out.todos
         );
     }
-    let was: serde_yaml::Value =
-        serde_yaml::from_str(&text("migrate_stdout")).expect("1.5.5's document parses");
-    let now: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output parses");
+    let was: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&text("migrate_stdout")).expect("1.5.5's document parses");
+    let now: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&out.yaml).expect("the output parses");
     for (key, value) in was.as_mapping().expect("1.5.5's document is a map") {
-        assert_eq!(
-            now.get(key),
-            Some(value),
+        assert!(
+            now.get(key).is_some_and(|now| same_tree(now, value)),
             "`{key:?}` of the migrated document is not 1.5.5's:\n{}",
             out.yaml
         );
@@ -146,7 +167,7 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
         );
     }
 
-    let hints = g["hints"].as_sequence().expect("golden `hints`");
+    let hints = g.at("hints").as_sequence().expect("golden `hints`");
     assert!(!hints.is_empty(), "the golden carries 1.5.5's hints");
     for row in hints {
         let stderr = field(row, "stderr");
@@ -185,13 +206,15 @@ const NOTE: &str = "# THE ROOT MIGRATION TABLE (BUSBAR-1.6.0.md §2), @generated
 # render to paste.\n\
 # build.rs emits it as `MIGRATION_ROWS`, which the root hands to the kernel before any config is read.\n";
 
-fn text(v: &serde_yaml::Value, k: &str) -> Option<String> {
-    v[k].as_str().map(str::to_string)
+fn text(v: &busbar_contract::yaml::Value, k: &str) -> Option<String> {
+    v.at(k).as_str().map(str::to_string)
 }
 
 fn rows(registry: &str) -> Vec<(String, String)> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(registry).expect("plugins.yaml parses");
-    let mut out: Vec<(String, String)> = doc["migration"]
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(registry).expect("plugins.yaml parses");
+    let mut out: Vec<(String, String)> = doc
+        .at("migration")
         .as_mapping()
         .map(|m| {
             m.iter()
@@ -206,8 +229,9 @@ fn rows(registry: &str) -> Vec<(String, String)> {
         })
         .unwrap_or_default();
     out.sort();
-    for p in doc["plugins"].as_sequence().expect("`plugins:`") {
-        let former: Vec<&str> = p["former_names"]
+    for p in doc.at("plugins").as_sequence().expect("`plugins:`") {
+        let former: Vec<&str> = p
+            .at("former_names")
             .as_sequence()
             .map(|s| {
                 s.iter()
@@ -219,7 +243,7 @@ fn rows(registry: &str) -> Vec<(String, String)> {
             let alias = text(p, "alias").expect("`alias`");
             out.push((format!("former.{alias}"), former.join(" ")));
         }
-        let Some(retired) = p["retired"].as_sequence() else {
+        let Some(retired) = p.at("retired").as_sequence() else {
             continue;
         };
         let repo = text(p, "repo").expect("`repo`");

@@ -138,7 +138,11 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     });
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        busbar_contract::yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
@@ -380,7 +384,11 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         });
         let config_path = directory.join("config.yaml");
         let providers_path = directory.join("providers.yaml");
-        std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            busbar_contract::yaml::to_string(&document).unwrap(),
+        )
+        .unwrap();
         std::fs::write(&providers_path, "{}\n").unwrap();
         app.config_path = Some(config_path);
         app.providers_path = Some(providers_path);
@@ -554,7 +562,11 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     });
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        busbar_contract::yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
@@ -761,7 +773,11 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     });
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        busbar_contract::yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
     std::fs::write(
         &providers_path,
         "{}

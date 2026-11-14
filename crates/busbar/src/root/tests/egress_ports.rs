@@ -193,7 +193,7 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
     let mut defs = std::collections::HashMap::new();
     defs.insert(
         "far".to_string(),
-        serde_yaml::from_str::<busbar_kernel::config::ProviderDef>(&format!(
+        busbar_contract::yaml::from_str::<busbar_kernel::config::ProviderDef>(&format!(
             "protocol: {dialect}\nbase_url: https://far.invalid\n"
         ))
         .expect("a provider def"),

@@ -37,5 +37,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "tim
 axum = { workspace = true, features = ["http1"] }
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 tracing-subscriber = { workspace = true }

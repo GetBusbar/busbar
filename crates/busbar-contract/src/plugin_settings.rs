@@ -813,11 +813,12 @@ mod exact_number_tests {
             "$serde_json::private::RawValue": "null",
             "nested": {"a": 1.5, "b": u64::MAX},
         });
-        let direct: Settings = serde_yaml::from_str(yaml).unwrap();
-        let value: Settings = serde_yaml::from_value(serde_yaml::from_str(yaml).unwrap()).unwrap();
+        let direct: Settings = crate::yaml::from_str(yaml).unwrap();
+        let value: Settings =
+            crate::yaml::from_value(crate::yaml::from_str(yaml).unwrap()).unwrap();
         assert_eq!(serde_json::to_value(direct.writing()).unwrap(), expected);
         assert_eq!(serde_json::to_value(value.writing()).unwrap(), expected);
-        assert!(serde_yaml::from_str::<Settings>("value: .inf").is_err());
+        assert!(crate::yaml::from_str::<Settings>("value: .inf").is_err());
     }
 }
 

@@ -2095,7 +2095,11 @@ async fn rollback_reads_the_target_and_merges_pins() {
     document["plugins"] = serde_json::json!({"enabled":true, "dir":directory, "trust":trust_document(&app.plugins_cfg)});
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        busbar_contract::yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
@@ -2127,7 +2131,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
         .expect("the exact rollback archive pin parses");
     std::fs::write(
         app.config_path.as_ref().expect("the operator base config"),
-        serde_yaml::to_string(&document).unwrap(),
+        busbar_contract::yaml::to_string(&document).unwrap(),
     )
     .unwrap();
     let rejected = plugins::seal(manifest, &library);

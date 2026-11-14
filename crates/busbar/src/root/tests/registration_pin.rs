@@ -228,8 +228,8 @@ fn registration(
     url: &str,
     (mechanism, key): (&str, &str),
     identity: Option<(&Path, &Path)>,
-) -> serde_yaml::Value {
-    use serde_yaml::{Mapping, Value};
+) -> busbar_contract::yaml::Value {
+    use busbar_contract::yaml::{Mapping, MappingExt, Value};
     let at = need.0 as usize;
     let target =
         busbar_contract::section::member_target(served.need_targets[at]).expect("a target");
@@ -237,8 +237,8 @@ fn registration(
         busbar_contract::section::member_target(served.need_trust[at]).expect("a trust path");
 
     let file = |p: &Path| -> Value {
-        serde_yaml::to_value(
-            crate::root::test_plugins::source_reference(
+        busbar_contract::yaml::to_value(
+            &crate::root::test_plugins::source_reference(
                 crate::root::linked::secret_rows(),
                 busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
                 p.display().to_string(),
@@ -248,24 +248,24 @@ fn registration(
         .expect("a secret reference")
     };
     let mut pin = Mapping::new();
-    pin.insert("mechanism".into(), mechanism.into());
-    pin.insert("key".into(), key.into());
+    pin.insert_key("mechanism", mechanism.into());
+    pin.insert_key("key", key.into());
     let mut r = Mapping::new();
-    r.insert(target.into(), url.into());
-    r.insert(pin_key(served).0.into(), Value::Mapping(pin));
+    r.insert_key(target, url.into());
+    r.insert_key(pin_key(served).0, Value::Map(pin));
     if let Some((cert, private)) = identity {
         let mut id = Mapping::new();
-        id.insert("cert".into(), file(cert));
-        id.insert("key".into(), file(private));
+        id.insert_key("cert", file(cert));
+        id.insert_key("key", file(private));
 
         let identity = if trust == "tls" {
             "client_identity"
         } else {
             trust
         };
-        r.insert(identity.into(), Value::Mapping(id));
+        r.insert_key(identity, Value::Map(id));
     }
-    Value::Mapping(r)
+    Value::Map(r)
 }
 
 fn seal(
@@ -274,7 +274,7 @@ fn seal(
     need: NeedId,
     entry: &str,
     origin: &str,
-    registration: &serde_yaml::Value,
+    registration: &busbar_contract::yaml::Value,
 ) -> Anchors {
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
@@ -457,7 +457,7 @@ async fn an_mtls_registration_presents_its_client_identity_and_one_with_none_is_
 fn structured_member_tls_validates_certificates_and_does_not_accept_nested_identity() {
     let pki = Pki::new();
     let leaf = pki.leaf("member.example");
-    let registration = serde_yaml::to_value(serde_json::json!({
+    let registration = busbar_contract::yaml::to_value(&serde_json::json!({
         "tls": { "ca_cert_pem": leaf.pem }
     }))
     .expect("registration");
@@ -473,7 +473,8 @@ fn structured_member_tls_validates_certificates_and_does_not_accept_nested_ident
         serde_json::json!({"client_identity": {"cert": "hidden", "key": "hidden"}}),
         serde_json::json!("not a bundle"),
     ] {
-        let registration = serde_yaml::to_value(serde_json::json!({"tls": tls})).unwrap();
+        let registration =
+            busbar_contract::yaml::to_value(&serde_json::json!({"tls": tls})).unwrap();
         let error = super::registration_ca_anchors("member", &registration)
             .expect_err("invalid TLS rejected");
         assert!(error.contains("member"));
@@ -481,7 +482,7 @@ fn structured_member_tls_validates_certificates_and_does_not_accept_nested_ident
         assert!(!error.contains("hidden"));
     }
     for registration in [serde_json::json!({}), serde_json::json!({"tls": {}})] {
-        let registration = serde_yaml::to_value(registration).unwrap();
+        let registration = busbar_contract::yaml::to_value(&registration).unwrap();
         assert!(super::registration_ca_anchors("member", &registration)
             .unwrap()
             .is_empty());
@@ -495,7 +496,7 @@ fn legacy_identity_selector_does_not_parse_member_tls_bundle() {
         need_trust: vec!["settings.*.client_identity"],
         ..Default::default()
     };
-    let registration = serde_yaml::from_str("tls: {ca_cert_pem: malformed}").unwrap();
+    let registration = busbar_contract::yaml::from_str("tls: {ca_cert_pem: malformed}").unwrap();
     let anchors = super::registration_anchors(
         "member",
         &registration,
@@ -510,7 +511,8 @@ fn legacy_identity_selector_does_not_parse_member_tls_bundle() {
 
 #[test]
 fn structured_tls_preserves_sibling_identity_requirements() {
-    let registration = serde_yaml::from_str("tls: {}\nclient_identity: {key: secret-key}").unwrap();
+    let registration =
+        busbar_contract::yaml::from_str("tls: {}\nclient_identity: {key: secret-key}").unwrap();
     for selector in ["settings.*.tls", "settings.*.client_identity"] {
         let served = ServedFacts {
             section: "tools",
@@ -542,8 +544,8 @@ fn member_tls_rules_reject_candidate_before_apply_and_ignore_unselected_sections
     .unwrap();
     let mut cfg =
         busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new()).unwrap();
-    let invalid: serde_yaml::Value =
-        serde_yaml::from_str("member: {tls: {ca_cert_pem: invalid}}").unwrap();
+    let invalid: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("member: {tls: {ca_cert_pem: invalid}}").unwrap();
     cfg.endpoint_resources
         .insert("unrelated", Arc::new(("unrelated", invalid.clone())));
     let rules = super::Rules::default();
@@ -569,7 +571,7 @@ fn member_tls_rules_reject_candidate_before_apply_and_ignore_unselected_sections
         ..Default::default()
     };
     let candidate = cfg.endpoint_resources["tools"]
-        .downcast_ref::<(&'static str, serde_yaml::Value)>()
+        .downcast_ref::<(&'static str, busbar_contract::yaml::Value)>()
         .unwrap();
     assert!(super::member_tls_refusal(&selected, &candidate.1).is_err());
     assert!(super::member_tls_refusal(&legacy, &candidate.1).is_ok());

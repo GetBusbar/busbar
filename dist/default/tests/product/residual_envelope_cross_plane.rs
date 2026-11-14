@@ -59,8 +59,8 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
                 settings.is_object(),
                 "the actual store settings are an object"
             );
-            let mut document: serde_json::Value =
-                serde_yaml::from_str(yaml).expect("the concrete product deployment is valid YAML");
+            let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
+                .expect("the concrete product deployment is valid YAML");
             document["store"] = serde_json::json!({"module": module, "settings": settings});
             document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
             document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
@@ -70,8 +70,10 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
                 &deploy,
                 &std::collections::HashMap::from([(
                     "fixture".to_string(),
-                    serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
-                        .expect("provider definition"),
+                    busbar_contract::yaml::from_str(
+                        "protocol: openai\nbase_url: http://127.0.0.1:9\n",
+                    )
+                    .expect("provider definition"),
                 )]),
             )
             .expect("the product deployment resolves");

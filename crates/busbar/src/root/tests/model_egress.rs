@@ -1290,7 +1290,7 @@ async fn a_keyless_lane_is_not_probed() {
     let mut defs = std::collections::HashMap::new();
     for name in ["keyed", "local"] {
         let def: busbar_kernel::config::ProviderDef =
-            serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
+            busbar_contract::yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
                 .expect("a def");
         defs.insert(name.to_owned(), def);
     }

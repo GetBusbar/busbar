@@ -1,14 +1,15 @@
 use super::*;
+use busbar_contract::yaml::ValueExt;
 
 #[test]
 fn new_pool_strategy_is_structured_and_does_not_rebind_a_bare_hook() {
-    let named: PoolCfg = serde_yaml::from_str("hooks: [operator-order]").unwrap();
+    let named: PoolCfg = busbar_contract::yaml::from_str("hooks: [operator-order]").unwrap();
     assert_eq!(named.policy, PoolPolicy::Weighted);
     assert!(!named.base_named);
     assert_eq!(named.gates, vec!["operator-order"]);
 
     let strategy: PoolCfg =
-        serde_yaml::from_str("hooks: [{strategy: operator-order}, compliance]").unwrap();
+        busbar_contract::yaml::from_str("hooks: [{strategy: operator-order}, compliance]").unwrap();
     assert_eq!(strategy.policy.native_name(), Some("operator-order"));
     assert!(strategy.base_named);
     assert_eq!(strategy.gates, vec!["compliance"]);
@@ -23,9 +24,13 @@ fn structured_pool_strategy_keeps_the_existing_single_base_rule() {
         "hooks: [{strategy: ''}]",
         "hooks: [{strategy: operator-order, typo: true}]",
     ] {
-        assert!(serde_yaml::from_str::<PoolCfg>(yaml).is_err(), "{yaml}");
+        assert!(
+            busbar_contract::yaml::from_str::<PoolCfg>(yaml).is_err(),
+            "{yaml}"
+        );
     }
-    let weighted: PoolCfg = serde_yaml::from_str("hooks: [{strategy: weighted}]").unwrap();
+    let weighted: PoolCfg =
+        busbar_contract::yaml::from_str("hooks: [{strategy: weighted}]").unwrap();
     assert_eq!(weighted.policy, PoolPolicy::Weighted);
     assert!(weighted.base_named);
 }
@@ -113,14 +118,15 @@ pub(crate) fn base_deploy() -> DeployCfg {
 
 #[test]
 fn current_reader_rejects_retired_auth_and_stage_forms() {
-    let err =
-        serde_yaml::from_str::<crate::config::DeployCfg>("providers: {}\nauth:\n  mode: none\n")
-            .map_err(crate::config::augment_config_error)
-            .expect_err("retired auth mode");
+    let err = busbar_contract::yaml::from_str::<crate::config::DeployCfg>(
+        "providers: {}\nauth:\n  mode: none\n",
+    )
+    .map_err(crate::config::augment_config_error)
+    .expect_err("retired auth mode");
     assert!(err.contains("mode"), "{err}");
     for old in ["route", "attempt", "completion"] {
         let yaml = format!("kind: tap\nmodule: p\nphase: [{old}]\n");
-        let err = serde_yaml::from_str::<HookCfg>(&yaml)
+        let err = busbar_contract::yaml::from_str::<HookCfg>(&yaml)
             .map_err(crate::config::augment_config_error)
             .expect_err("retired stage");
         assert!(err.contains(old), "{err}");
@@ -168,7 +174,7 @@ fn test_removed_auth_keys_are_rejected_at_parse() {
         ("upstream_credentials: passthrough", "upstream_credentials"),
         ("methods:\n  oidc:\n    issuer: https://idp", "methods"),
     ] {
-        let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(yaml)
+        let err = busbar_contract::yaml::from_str::<crate::config::AuthDeployCfg>(yaml)
             .expect_err("a removed auth key must be rejected at parse");
         let msg = err.to_string();
         assert!(
@@ -185,7 +191,7 @@ fn test_removed_auth_keys_are_rejected_at_parse() {
 #[test]
 fn test_health_typo_rejected_at_parse() {
     let bad = "default_probe_interval_sec: 5";
-    let err = serde_yaml::from_str::<crate::config::HealthDefaultsCfg>(bad)
+    let err = busbar_contract::yaml::from_str::<crate::config::HealthDefaultsCfg>(bad)
         .expect_err("a typo under health: must be rejected at parse (deny_unknown_fields)");
     let msg = err.to_string();
     assert!(
@@ -197,7 +203,7 @@ fn test_health_typo_rejected_at_parse() {
 #[test]
 fn test_tls_typo_and_removed_keys_rejected_at_parse() {
     let bad = "cert: { module: fixture-source, settings: { slot: /c.pem } }\nkey: { module: fixture-source, settings: { slot: /k.pem } }\nclient_c: { module: fixture-source, settings: { slot: /ca.pem } }";
-    let err = serde_yaml::from_str::<TlsCfg>(bad)
+    let err = busbar_contract::yaml::from_str::<TlsCfg>(bad)
         .expect_err("a typo under tls: must be rejected at parse (deny_unknown_fields)");
     let msg = err.to_string();
     assert!(
@@ -206,12 +212,13 @@ fn test_tls_typo_and_removed_keys_rejected_at_parse() {
     );
 
     let legacy = "cert_file: /c.pem\nkey_file: /k.pem";
-    let err = serde_yaml::from_str::<TlsCfg>(legacy)
+    let err = busbar_contract::yaml::from_str::<TlsCfg>(legacy)
         .expect_err("the removed cert_file/key_file keys must be rejected");
     assert!(err.to_string().contains("unknown field"), "{err}");
 
     let good = "cert: { module: fixture-source, settings: { slot: /c.pem } }\nkey: { module: fixture-source, settings: { slot: TLS_KEY_PEM } }\nclient_ca: { module: fixture-source, settings: { slot: /ca.pem } }";
-    let cfg = serde_yaml::from_str::<TlsCfg>(good).expect("well-formed tls config parses");
+    let cfg =
+        busbar_contract::yaml::from_str::<TlsCfg>(good).expect("well-formed tls config parses");
     assert_eq!(
         cfg.cert,
         crate::config::secret::descriptor_reference("/c.pem")
@@ -232,7 +239,7 @@ fn test_removed_key_aliases_are_rejected() {
         ("mode: consecutive\nwindow_s: 42", "window_s"),
         ("mode: consecutive\nn: 7", "n"),
     ] {
-        let err = serde_yaml::from_str::<BreakerTripConfig>(yaml)
+        let err = busbar_contract::yaml::from_str::<BreakerTripConfig>(yaml)
             .expect_err("a removed trip alias must be rejected");
         let msg = err.to_string();
         assert!(
@@ -241,13 +248,13 @@ fn test_removed_key_aliases_are_rejected() {
         );
     }
     let new: BreakerTripConfig =
-        serde_yaml::from_str("mode: consecutive\nwindow_secs: 42\nconsecutive_n: 7")
+        busbar_contract::yaml::from_str("mode: consecutive\nwindow_secs: 42\nconsecutive_n: 7")
             .expect("canonical trip keys parse");
     assert_eq!(new.window_secs, 42);
     assert_eq!(new.consecutive_n, 7);
 
     for (yaml, alias) in [("deadline_secs: 30", "deadline_secs"), ("cap: 5", "cap")] {
-        let err = serde_yaml::from_str::<FailoverCfg>(yaml)
+        let err = busbar_contract::yaml::from_str::<FailoverCfg>(yaml)
             .expect_err("a removed failover alias must be rejected");
         let msg = err.to_string();
         assert!(
@@ -255,8 +262,8 @@ fn test_removed_key_aliases_are_rejected() {
             "expected an unknown-field error naming `{alias}`; got: {msg}"
         );
     }
-    let new: FailoverCfg =
-        serde_yaml::from_str("timeout_secs: 30\nmax_hops: 5").expect("canonical failover keys");
+    let new: FailoverCfg = busbar_contract::yaml::from_str("timeout_secs: 30\nmax_hops: 5")
+        .expect("canonical failover keys");
     assert_eq!(new.timeout_secs, 30);
     assert_eq!(new.max_hops, 5);
 }
@@ -265,7 +272,7 @@ fn test_removed_key_aliases_are_rejected() {
 fn current_reader_rejects_retired_observability_fields() {
     for key in ["observability", "metrics"] {
         let yaml = format!("{key}: {{}}\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n");
-        let err = serde_yaml::from_str::<DeployCfg>(&yaml)
+        let err = busbar_contract::yaml::from_str::<DeployCfg>(&yaml)
             .map_err(crate::config::augment_config_error)
             .expect_err("retired root field");
         assert!(err.contains("unknown field") && err.contains(key), "{err}");
@@ -274,7 +281,7 @@ fn current_reader_rejects_retired_observability_fields() {
 
 #[test]
 fn test_emit_server_timing_moved_to_advanced_response_headers() {
-    let err = serde_yaml::from_str::<DeployCfg>(
+    let err = busbar_contract::yaml::from_str::<DeployCfg>(
         "observability:\n  emit_server_timing: true\nproviders: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("the removed observability block must be rejected");
@@ -291,13 +298,15 @@ fn test_response_headers_cfg_defaults_and_parses() {
     assert!(!default.server_timing, "server_timing defaults OFF");
     assert!(!default.route_policy, "route_policy defaults OFF");
 
-    let cfg: ResponseHeadersCfg = serde_yaml::from_str("server_timing: true\nroute_policy: true")
-        .expect("both toggles parse");
+    let cfg: ResponseHeadersCfg =
+        busbar_contract::yaml::from_str("server_timing: true\nroute_policy: true")
+            .expect("both toggles parse");
     assert!(cfg.server_timing);
     assert!(cfg.route_policy);
 
-    let err = serde_yaml::from_str::<ResponseHeadersCfg>("server_timing: true\ntypo_field: 1")
-        .expect_err("a typo'd field must be rejected, not silently ignored");
+    let err =
+        busbar_contract::yaml::from_str::<ResponseHeadersCfg>("server_timing: true\ntypo_field: 1")
+            .expect_err("a typo'd field must be rejected, not silently ignored");
     assert!(err.to_string().contains("unknown field"));
 }
 
@@ -313,7 +322,8 @@ models:
     provider: acme
     max_concurrent: 10
 "#;
-    let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("config without pools must parse");
+    let deploy: DeployCfg =
+        busbar_contract::yaml::from_str(yaml).expect("config without pools must parse");
     assert!(deploy.pools.pools.is_empty());
     assert!(deploy.models.contains_key("widget"));
     assert_eq!(
@@ -443,7 +453,8 @@ fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registere
         );
         return;
     }
-    let result = serde_yaml::from_str::<DeployCfg>("providers: {}\nmodels: {}\npools: {}\n");
+    let result =
+        busbar_contract::yaml::from_str::<DeployCfg>("providers: {}\nmodels: {}\npools: {}\n");
     let err = result.expect_err(
         "a config with a pools: section must be REFUSED, not silently accepted, when no plane \
          is registered to own that section",
@@ -490,7 +501,8 @@ fn test_pool_policy_strategies_parse() {
         ("weighted", PoolPolicy::Weighted),
     ] {
         let yaml = format!("hooks: [{name}]\nmembers: []\n");
-        let pool: PoolCfg = serde_yaml::from_str(&yaml).expect("strategy name must parse");
+        let pool: PoolCfg =
+            busbar_contract::yaml::from_str(&yaml).expect("strategy name must parse");
         assert_eq!(pool.policy, expected, "{name} must parse to its strategy");
         assert!(
             pool.gates.is_empty(),
@@ -499,7 +511,7 @@ fn test_pool_policy_strategies_parse() {
         assert!(pool.base_named, "a named strategy names the base");
     }
 
-    let absent: PoolCfg = serde_yaml::from_str("members: []\n").expect("absent parses");
+    let absent: PoolCfg = busbar_contract::yaml::from_str("members: []\n").expect("absent parses");
     assert_eq!(absent.policy, PoolPolicy::Weighted);
     assert!(absent.gates.is_empty());
     assert!(!absent.base_named, "an absent hooks: did not name the base");
@@ -513,7 +525,7 @@ fn test_pool_retired_keys_rejected() {
         ("route: cheapest\nmembers: []\n", "route"),
         ("members: []\npolicy:\n  socket: /s\n", "policy"),
     ] {
-        let e = serde_yaml::from_str::<PoolCfg>(yaml)
+        let e = busbar_contract::yaml::from_str::<PoolCfg>(yaml)
             .expect_err("a retired pool key must be a parse error");
         let msg = e.to_string();
         assert!(
@@ -522,21 +534,23 @@ fn test_pool_retired_keys_rejected() {
         );
     }
 
-    let e = serde_yaml::from_str::<PoolCfg>("hooks: [cheapest]\npolicy: fastest\nmembers: []\n")
-        .expect_err("a retired key alongside hooks: must error");
+    let e = busbar_contract::yaml::from_str::<PoolCfg>(
+        "hooks: [cheapest]\npolicy: fastest\nmembers: []\n",
+    )
+    .expect_err("a retired key alongside hooks: must error");
     assert!(e.to_string().contains("unknown field"), "{e}");
 }
 
 #[test]
 fn test_pool_hooks_list_desugars() {
-    let pool: PoolCfg = serde_yaml::from_str("hooks: [cheapest, pii]\nmembers: []\n")
+    let pool: PoolCfg = busbar_contract::yaml::from_str("hooks: [cheapest, pii]\nmembers: []\n")
         .expect("hooks list must parse");
     assert_eq!(pool.policy, PoolPolicy::Cheapest);
     assert!(pool.base_named, "a named strategy sets base_named");
     assert_eq!(pool.gates, vec!["pii".to_string()]);
 
-    let g: PoolCfg =
-        serde_yaml::from_str("hooks: [pii]\nmembers: []\n").expect("name-only list parses");
+    let g: PoolCfg = busbar_contract::yaml::from_str("hooks: [pii]\nmembers: []\n")
+        .expect("name-only list parses");
     assert_eq!(g.policy, PoolPolicy::Weighted);
     assert_eq!(g.gates, vec!["pii".to_string()]);
     assert!(
@@ -544,15 +558,16 @@ fn test_pool_hooks_list_desugars() {
         "a name-only pool did not name its base ordering"
     );
 
-    let multi: PoolCfg = serde_yaml::from_str("hooks: [cheapest, pii, dlp]\nmembers: []\n")
-        .expect("multi-name list parses");
+    let multi: PoolCfg =
+        busbar_contract::yaml::from_str("hooks: [cheapest, pii, dlp]\nmembers: []\n")
+            .expect("multi-name list parses");
     assert_eq!(multi.policy, PoolPolicy::Cheapest);
     assert_eq!(multi.gates, vec!["pii".to_string(), "dlp".to_string()]);
 }
 
 #[test]
 fn test_pool_hooks_two_strategies_error() {
-    let e = serde_yaml::from_str::<PoolCfg>("hooks: [cheapest, fastest]\nmembers: []\n")
+    let e = busbar_contract::yaml::from_str::<PoolCfg>("hooks: [cheapest, fastest]\nmembers: []\n")
         .expect_err("two strategies must error");
     assert!(
         e.to_string().contains("more than one ordering strategy"),
@@ -562,7 +577,7 @@ fn test_pool_hooks_two_strategies_error() {
 
 #[test]
 fn test_pool_hooks_bare_name_is_a_reference() {
-    let pool: PoolCfg = serde_yaml::from_str("hooks: [pii-guard]\nmembers: []\n")
+    let pool: PoolCfg = busbar_contract::yaml::from_str("hooks: [pii-guard]\nmembers: []\n")
         .expect("a bare hook name is a reference, not an error");
     assert_eq!(pool.gates, vec!["pii-guard".to_string()]);
     assert_eq!(pool.policy, PoolPolicy::Weighted);
@@ -571,7 +586,7 @@ fn test_pool_hooks_bare_name_is_a_reference() {
 
 #[test]
 fn test_hook_definition_unknown_key_rejected() {
-    let e = serde_yaml::from_str::<crate::config::HookDefCfg>(
+    let e = busbar_contract::yaml::from_str::<crate::config::HookDefCfg>(
         "{ module: busbar-phi, url: \"https://a/\" }",
     )
     .expect_err("a stray url key on a hook definition must error");
@@ -581,7 +596,7 @@ fn test_hook_definition_unknown_key_rejected() {
 #[test]
 fn test_pool_member_model_key_and_removed_keys() {
     let m: PoolMember =
-        serde_yaml::from_str("model: widget\nweight: 3\ntier: large\ntags: [opus]\n")
+        busbar_contract::yaml::from_str("model: widget\nweight: 3\ntier: large\ntags: [opus]\n")
             .expect("member with model: parses");
     assert_eq!(m.model, "widget");
     assert_eq!(m.weight, 3);
@@ -592,7 +607,7 @@ fn test_pool_member_model_key_and_removed_keys() {
         ("target: widget\n", "target"),
         ("model: widget\ncost_per_mtok: 15\n", "cost_per_mtok"),
     ] {
-        let e = serde_yaml::from_str::<PoolMember>(yaml)
+        let e = busbar_contract::yaml::from_str::<PoolMember>(yaml)
             .expect_err("a removed member key must be rejected");
         let msg = e.to_string();
         assert!(
@@ -604,15 +619,16 @@ fn test_pool_member_model_key_and_removed_keys() {
 
 #[test]
 fn test_hook_access_grants_parse() {
-    let hook: HookCfg = serde_yaml::from_str("kind: gate\nmodule: p\nprompt: rw\nuser: ro\n")
-        .expect("grants must parse");
+    let hook: HookCfg =
+        busbar_contract::yaml::from_str("kind: gate\nmodule: p\nprompt: rw\nuser: ro\n")
+            .expect("grants must parse");
     assert_eq!(hook.prompt, PromptAccess::Rw);
     assert!(hook.prompt.sends_prompt() && hook.prompt.can_rewrite());
     assert_eq!(hook.user, UserAccess::Ro);
     assert!(hook.user.sends_user());
 
     let bare: HookCfg =
-        serde_yaml::from_str("kind: tap\nmodule: p\n").expect("bare hook must parse");
+        busbar_contract::yaml::from_str("kind: tap\nmodule: p\n").expect("bare hook must parse");
     assert_eq!(bare.prompt, PromptAccess::No, "prompt defaults to no");
     assert_eq!(bare.user, UserAccess::No, "user defaults to no");
     assert!(!bare.prompt.sends_prompt());
@@ -751,59 +767,39 @@ fn test_interpolate_env_multi_occurrence_names_only_the_true_culprit() {
 }
 
 #[test]
-fn structural_shapes_match_compares_tagged_nodes_by_tag_and_inner_shape() {
-    use serde_yaml::value::{Tag, TaggedValue};
-    use serde_yaml::Value;
+fn application_tags_are_refused_before_any_structural_comparison() {
+    use busbar_contract::yaml::Value;
 
-    let tagged_str = |tag: &str, inner: &str| {
-        Value::Tagged(Box::new(TaggedValue {
-            tag: Tag::new(tag),
-            value: Value::String(inner.to_string()),
-        }))
-    };
+    // Tags never reach the shape comparison: the shared reader refuses them outright, so a
+    // `!tag` in a substituted value cannot smuggle a different node in.
+    for text in ["a: !mytag x\n", "!t {k: v}\n", "!t [v]\n"] {
+        assert!(
+            busbar_contract::yaml::from_str::<Value>(text).is_err(),
+            "{text}"
+        );
+    }
 
-    assert!(structural_shapes_match(
-        &tagged_str("mytag", "a"),
-        &tagged_str("mytag", "b"),
-        0
-    ));
-
-    assert!(!structural_shapes_match(
-        &tagged_str("tag_a", "x"),
-        &tagged_str("tag_b", "x"),
-        0
-    ));
-
-    assert!(!structural_shapes_match(
-        &tagged_str("mytag", "x"),
-        &Value::String("x".to_string()),
-        0
-    ));
-
-    let mut map = serde_yaml::Mapping::new();
-    map.insert(Value::String("k".into()), Value::String("v".into()));
-    let tagged_map = Value::Tagged(Box::new(TaggedValue {
-        tag: Tag::new("t"),
-        value: Value::Mapping(map),
-    }));
-    let tagged_seq = Value::Tagged(Box::new(TaggedValue {
-        tag: Tag::new("t"),
-        value: Value::Sequence(vec![Value::String("v".into())]),
-    }));
-    assert!(!structural_shapes_match(&tagged_map, &tagged_seq, 0));
+    let map = Value::Map(vec![(Value::Text("k".into()), Value::Text("v".into()))]);
+    let seq = Value::Array(vec![Value::Text("v".into())]);
+    assert!(!structural_shapes_match(&map, &seq, 0));
+    assert!(!structural_shapes_match(&map, &Value::Text("x".into()), 0));
 }
 
 #[test]
 fn structural_shapes_match_recurses_into_sequence_elements_with_increasing_depth() {
-    let seq_a = serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("a".to_string())]);
-    let seq_b = serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("b".to_string())]);
+    let seq_a = busbar_contract::yaml::Value::Array(vec![busbar_contract::yaml::Value::Text(
+        "a".to_string(),
+    )]);
+    let seq_b = busbar_contract::yaml::Value::Array(vec![busbar_contract::yaml::Value::Text(
+        "b".to_string(),
+    )]);
     assert!(structural_shapes_match(&seq_a, &seq_b, 0));
 }
 
 #[test]
 fn structural_shapes_match_depth_cap_is_a_real_limit_not_an_exact_match() {
-    let a = serde_yaml::Value::String("x".to_string());
-    let b = serde_yaml::Value::String("y".to_string());
+    let a = busbar_contract::yaml::Value::Text("x".to_string());
+    let b = busbar_contract::yaml::Value::Text("y".to_string());
     assert!(
         structural_shapes_match(&a, &b, MAX_STRUCTURAL_COMPARE_DEPTH),
         "at the boundary itself, comparison must still proceed"
@@ -826,9 +822,9 @@ fn structural_placeholder_is_unique_per_occurrence_index() {
 
 #[test]
 fn mapping_key_repr_distinguishes_non_string_keys() {
-    let n1 = serde_yaml::Value::Number(1.into());
-    let n2 = serde_yaml::Value::Number(2.into());
-    let s = serde_yaml::Value::String("1".to_string());
+    let n1 = busbar_contract::yaml::Value::from(1u64);
+    let n2 = busbar_contract::yaml::Value::from(2u64);
+    let s = busbar_contract::yaml::Value::Text("1".to_string());
     assert_ne!(mapping_key_repr(&n1), mapping_key_repr(&n2));
 
     assert_eq!(mapping_key_repr(&s), "1");
@@ -873,7 +869,7 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
     );
 
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
-    let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
+    let deploy: DeployCfg = busbar_contract::yaml::from_str(&unguarded_spliced)
         .expect("unguarded splice must parse and deserialize");
     let written = serde_json::to_value(
         deploy.identity_providers["tokens"]
@@ -920,7 +916,7 @@ fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
     );
 
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
-    let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
+    let deploy: DeployCfg = busbar_contract::yaml::from_str(&unguarded_spliced)
         .expect("unguarded splice must parse and deserialize");
     let settings = &deploy.identity_providers["ad"].settings;
     assert_eq!(
@@ -956,7 +952,7 @@ fn test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fi
         "providers: {{}}\nmodels: {{}}\nplugins: {{ enabled: true, dir: \"${{{var}}}\" }}\n"
     );
     let spliced = template.replace(&format!("${{{var}}}"), redirect_via_unknown_field);
-    let result: Result<DeployCfg, _> = serde_yaml::from_str(&spliced);
+    let result: Result<DeployCfg, _> = busbar_contract::yaml::from_str(&spliced);
     std::env::remove_var(var);
     assert!(
         result.is_err(),
@@ -973,7 +969,8 @@ fn test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fi
         "providers: {{}}\nmodels: {{}}\nplugins: {{ enabled: true, dir: \"${{{var2}}}\" }}\n"
     );
     let spliced2 = template2.replace(&format!("${{{var2}}}"), redirect_via_duplicate_key);
-    let result2: Result<serde_yaml::Value, _> = serde_yaml::from_str(&spliced2);
+    let result2: Result<busbar_contract::yaml::Value, _> =
+        busbar_contract::yaml::from_str(&spliced2);
     std::env::remove_var(var2);
     assert!(
         result2.is_err(),
@@ -1009,8 +1006,9 @@ fn test_structural_check_allows_real_world_special_char_values() {
         );
         let expanded = result.unwrap();
         assert_eq!(expanded, format!("token: '{value}'"));
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&expanded).unwrap();
-        assert_eq!(parsed["token"].as_str(), Some(*value));
+        let parsed: busbar_contract::yaml::Value =
+            busbar_contract::yaml::from_str(&expanded).unwrap();
+        assert_eq!(parsed.at("token").as_str(), Some(*value));
     }
 }
 
@@ -1024,7 +1022,7 @@ fn test_structural_check_allows_numeric_scalar_type_inference_change() {
     std::env::remove_var(var);
     let expanded =
         result.expect("a real numeric value must not be rejected as a structural mismatch");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&expanded).unwrap();
+    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&expanded).unwrap();
     assert_eq!(
         doc.get("port").and_then(|v| v.as_i64()),
         Some(8080),
@@ -1044,7 +1042,8 @@ fn test_anchor_alias_static_usage_not_affected_by_interpolation() {
         "a static anchor/alias unrelated to the interpolated value must not be flagged: {:?}",
         result
     );
-    let doc: serde_yaml::Value = serde_yaml::from_str(&result.unwrap()).unwrap();
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&result.unwrap()).unwrap();
     assert_eq!(doc.get("bar").and_then(|v| v.as_str()), Some("orig"));
 }
 
@@ -1057,8 +1056,8 @@ fn test_anchor_redefinition_injection_is_caught_end_to_end() {
         format!("defaults: &shared orig-scalar\nfoo: {{ a: \"${{{var}}}\" }}\nbar: *shared\n");
 
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(&unguarded_spliced).expect("unguarded splice parses");
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(&unguarded_spliced).expect("unguarded splice parses");
     assert!(
         doc.get("bar").map(|v| v.is_mapping()).unwrap_or(false),
         "sanity: the unguarded anchor-redefinition attack really does turn `bar` into a mapping"
@@ -1145,7 +1144,7 @@ providers:
 models: {}
 "#;
     assert!(
-        serde_yaml::from_str::<DeployCfg>(yaml).is_err(),
+        busbar_contract::yaml::from_str::<DeployCfg>(yaml).is_err(),
         "an inline literal api_key must be rejected at parse"
     );
 
@@ -1155,7 +1154,7 @@ providers:
     api_key_env: MYPROV_KEY
 models: {}
 "#;
-    let err = serde_yaml::from_str::<DeployCfg>(yaml)
+    let err = busbar_contract::yaml::from_str::<DeployCfg>(yaml)
         .expect_err("the removed api_key_env key must be rejected");
     let msg = err.to_string();
     assert!(msg.contains("missing field `api_key`"), "{msg}");
@@ -1172,9 +1171,8 @@ fn an_inline_literal_refusal_names_its_config_position() {
         let yaml = format!(
             "store: {{module: memory}}\nmodels: {{}}\nproviders:\n  myprov:\n    api_key: {literal}\n"
         );
-        let err = deploy_from_yaml_str(&yaml)
-            .expect_err("an inline literal secret is refused")
-            .to_string();
+        let error = deploy_from_yaml_str(&yaml).expect_err("an inline literal secret is refused");
+        let err = error.to_string();
         let value = literal.trim_matches('"');
         assert!(
             !err.contains(value),
@@ -1189,7 +1187,9 @@ fn an_inline_literal_refusal_names_its_config_position() {
             "the refusal names the key path: {err}"
         );
         assert!(
-            err.contains(&format!("at line {line} ")),
+            error.location().map(|at| at.line()) == Some(line)
+                || err.contains(&format!("line {line},"))
+                || err.contains(&format!("line {line} ")),
             "the refusal names the line: {err}"
         );
     }
@@ -1273,16 +1273,16 @@ fn test_resolve_empty_error_map_allowed_in_def() {
 
 #[test]
 fn test_on_exhausted_parses_keywords_and_fallback_pool() {
-    let r: OnExhaustedCfg = serde_yaml::from_str("reject").expect("reject parses");
+    let r: OnExhaustedCfg = busbar_contract::yaml::from_str("reject").expect("reject parses");
     assert_eq!(r, OnExhaustedCfg::Reject);
     assert_eq!(r.to_runtime(), OnExhausted::Status503);
 
-    let l: OnExhaustedCfg = serde_yaml::from_str("least_bad").expect("least_bad parses");
+    let l: OnExhaustedCfg = busbar_contract::yaml::from_str("least_bad").expect("least_bad parses");
     assert_eq!(l, OnExhaustedCfg::LeastBad);
     assert_eq!(l.to_runtime(), OnExhausted::LeastBad);
 
-    let f: OnExhaustedCfg =
-        serde_yaml::from_str("fallback_pool: drain").expect("structured fallback parses");
+    let f: OnExhaustedCfg = busbar_contract::yaml::from_str("fallback_pool: drain")
+        .expect("structured fallback parses");
     assert_eq!(f, OnExhaustedCfg::FallbackPool("drain".to_string()));
     assert_eq!(
         f.to_runtime(),
@@ -1290,7 +1290,7 @@ fn test_on_exhausted_parses_keywords_and_fallback_pool() {
     );
 
     let pool: PoolCfg =
-        serde_yaml::from_str("members: []\non_exhausted: { fallback_pool: cold }\n")
+        busbar_contract::yaml::from_str("members: []\non_exhausted: { fallback_pool: cold }\n")
             .expect("pool with structured on_exhausted parses");
     assert_eq!(
         pool.on_exhausted,
@@ -1300,7 +1300,7 @@ fn test_on_exhausted_parses_keywords_and_fallback_pool() {
 
 #[test]
 fn test_on_exhausted_rejects_unknown_and_legacy_string_form() {
-    let err = serde_yaml::from_str::<OnExhaustedCfg>("invalid_mode")
+    let err = busbar_contract::yaml::from_str::<OnExhaustedCfg>("invalid_mode")
         .expect_err("unknown keyword must error");
     let msg = err.to_string();
     assert!(msg.contains("unknown on_exhausted keyword"), "{msg}");
@@ -1310,30 +1310,31 @@ fn test_on_exhausted_rejects_unknown_and_legacy_string_form() {
         "the error must teach the structured form: {msg}"
     );
 
-    let err = serde_yaml::from_str::<OnExhaustedCfg>("\"fallback_pool:drain\"")
+    let err = busbar_contract::yaml::from_str::<OnExhaustedCfg>("\"fallback_pool:drain\"")
         .expect_err("the retired string form must error");
     assert!(
         err.to_string().contains("unknown on_exhausted keyword"),
         "{err}"
     );
 
-    let err = serde_yaml::from_str::<OnExhaustedCfg>("fallback_pool: \"\"")
+    let err = busbar_contract::yaml::from_str::<OnExhaustedCfg>("fallback_pool: \"\"")
         .expect_err("an empty fallback pool name must error");
     assert!(err.to_string().contains("non-empty"), "{err}");
 
-    assert!(serde_yaml::from_str::<OnExhaustedCfg>("fallback_pols: x").is_err());
+    assert!(busbar_contract::yaml::from_str::<OnExhaustedCfg>("fallback_pols: x").is_err());
 }
 
 #[test]
 fn test_config_parsing_queue_unknown_inner_key_fails() {
-    let result: Result<OnExhaustedCfg, _> = serde_yaml::from_str("{ queue: { max_millis: 250 } }");
+    let result: Result<OnExhaustedCfg, _> =
+        busbar_contract::yaml::from_str("{ queue: { max_millis: 250 } }");
     assert!(
         result.is_err(),
         "an unknown queue inner key must fail parsing"
     );
 
-    let ok: OnExhaustedCfg =
-        serde_yaml::from_str("{ queue: { max_ms: 250 } }").expect("the spelled key parses");
+    let ok: OnExhaustedCfg = busbar_contract::yaml::from_str("{ queue: { max_ms: 250 } }")
+        .expect("the spelled key parses");
     assert_eq!(ok, OnExhaustedCfg::Queue { max_ms: 250 });
     assert_eq!(ok.to_runtime(), OnExhausted::Queue { max_ms: 250 });
 }
@@ -1360,9 +1361,9 @@ fn breaker_cfg_default_matches_serde_default_fns() {
 
 #[test]
 fn breaker_trip_default_matches_an_empty_config_object() {
-    let parsed: BreakerTripConfig = serde_yaml::from_str("{}").unwrap();
+    let parsed: BreakerTripConfig = busbar_contract::yaml::from_str("{}").unwrap();
     assert_eq!(BreakerTripConfig::default(), parsed);
-    let parsed_breaker: BreakerCfg = serde_yaml::from_str("trip: {}").unwrap();
+    let parsed_breaker: BreakerCfg = busbar_contract::yaml::from_str("trip: {}").unwrap();
     assert_eq!(BreakerCfg::default(), parsed_breaker);
 }
 
@@ -1434,7 +1435,7 @@ models:
     max_concurrent: 10
 "#;
     let deploy: DeployCfg =
-        serde_yaml::from_str(yaml).expect("config without a limits block must parse");
+        busbar_contract::yaml::from_str(yaml).expect("config without a limits block must parse");
     assert_eq!(deploy.limits.datagram_line_memory_bytes, None);
     let l = LimitsResolved::from_sections(
         &deploy.limits,
@@ -1528,7 +1529,10 @@ fn datagram_line_memory_limit_refuses_invalid_types_and_out_of_range_values() {
         "18446744073709551616",
     ] {
         let yaml = format!("datagram_line_memory_bytes: {value}");
-        assert!(serde_yaml::from_str::<LimitsCfg>(&yaml).is_err(), "{yaml}");
+        assert!(
+            busbar_contract::yaml::from_str::<LimitsCfg>(&yaml).is_err(),
+            "{yaml}"
+        );
     }
     for value in [
         "-1",
@@ -1582,7 +1586,7 @@ models:
 limits:
   request_body_max_bytes: 5242880
 "#;
-    let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("parse");
+    let deploy: DeployCfg = busbar_contract::yaml::from_str(yaml).expect("parse");
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &AdvancedCfg::default(),
@@ -1625,9 +1629,10 @@ fn test_secret_ref_shorthand_uses_only_its_admitted_owner() {
 
 #[test]
 fn test_secret_ref_canonical_form_parses() {
-    let v: SecretRef =
-        serde_yaml::from_str("module: independent-source\nsettings:\n  slot: descriptor\n")
-            .expect("canonical form parses");
+    let v: SecretRef = busbar_contract::yaml::from_str(
+        "module: independent-source\nsettings:\n  slot: descriptor\n",
+    )
+    .expect("canonical form parses");
     assert_eq!(v.source_module(), Some("independent-source"));
     assert_eq!(
         serde_json::to_value(
@@ -1641,8 +1646,8 @@ fn test_secret_ref_canonical_form_parses() {
     );
     assert!(!v.is_none(), "a canonical source is not keyless");
     assert_eq!(v.describe(), "secret module 'independent-source'");
-    let bare: SecretRef =
-        serde_yaml::from_str("module: independent-source").expect("settings default empty");
+    let bare: SecretRef = busbar_contract::yaml::from_str("module: independent-source")
+        .expect("settings default empty");
     assert!(bare.source().unwrap().settings.is_empty());
 }
 
@@ -1700,7 +1705,7 @@ fn test_secret_ref_text_resolution_and_unknown_source_fail_closed() {
 
 #[test]
 fn test_inline_auth_chain_entry_is_rejected() {
-    let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(
+    let err = busbar_contract::yaml::from_str::<crate::config::AuthDeployCfg>(
         "chain:\n  - ad: { settings: { server: \"ldaps://corp\" } }\n",
     )
     .expect_err("the retired inline chain entry must be rejected");
@@ -1712,7 +1717,7 @@ fn test_inline_auth_chain_entry_is_rejected() {
 
 #[test]
 fn test_identity_provider_typo_rejected_at_parse() {
-    let err = serde_yaml::from_str::<crate::config::IdentityProviders>(
+    let err = busbar_contract::yaml::from_str::<crate::config::IdentityProviders>(
         "ad: { module: ad, max_admin_scop: full }\n",
     )
     .expect_err("a typo'd definition key must error");
@@ -1741,7 +1746,7 @@ fn serde_default_fns_return_their_documented_constants() {
 #[test]
 fn an_omitted_provider_protocol_names_no_dialect_in_the_kernel() {
     let p: ProviderCfg =
-        serde_yaml::from_str("base_url: https://x.example\napi_key: { module: fixture-source, settings: { slot: K } }\nerror_map: {}\n")
+        busbar_contract::yaml::from_str("base_url: https://x.example\napi_key: { module: fixture-source, settings: { slot: K } }\nerror_map: {}\n")
             .expect("a provider entry with no protocol parses");
     assert_eq!(
         p.protocol, "",
@@ -1811,7 +1816,7 @@ role_bindings:
     everyone: {}
 "#;
     let auth: crate::config::AuthDeployCfg =
-        serde_yaml::from_str(yaml).expect("role_bindings parse");
+        busbar_contract::yaml::from_str(yaml).expect("role_bindings parse");
 
     assert_eq!(auth.chain, ["keys", "ad"]);
 
@@ -1842,7 +1847,7 @@ limits:
   - { requests: 9, per: total }
   - { budget: 7, per: day }
 "#;
-    let g: GroupCfg = serde_yaml::from_str(yaml).expect("group parses");
+    let g: GroupCfg = busbar_contract::yaml::from_str(yaml).expect("group parses");
     assert_eq!(g.parent.as_deref(), Some("root"));
     assert!(g.enabled, "enabled defaults to true");
     use crate::config::groups::{LimitMetric, LimitWindow};
@@ -1861,7 +1866,8 @@ limits:
         assert_eq!(g.limits[i].per, per, "limit {i}");
     }
 
-    let frozen: GroupCfg = serde_yaml::from_str("enabled: false\nlimits: []\n").expect("parses");
+    let frozen: GroupCfg =
+        busbar_contract::yaml::from_str("enabled: false\nlimits: []\n").expect("parses");
     assert!(!frozen.enabled);
 }
 
@@ -1869,35 +1875,36 @@ limits:
 fn test_group_limits_malformed_rejected() {
     use crate::config::groups::LimitCfg;
 
-    let err = serde_yaml::from_str::<LimitCfg>("{ concurrent: 5, per: minute }")
+    let err = busbar_contract::yaml::from_str::<LimitCfg>("{ concurrent: 5, per: minute }")
         .expect_err("concurrent + per must error");
     assert!(err.to_string().contains("takes NO `per:`"), "{err}");
 
-    let err = serde_yaml::from_str::<LimitCfg>("{ requests: 5 }")
+    let err = busbar_contract::yaml::from_str::<LimitCfg>("{ requests: 5 }")
         .expect_err("a windowed metric without per must error");
     assert!(
         err.to_string().contains("requires a `per:` window"),
         "{err}"
     );
 
-    let err = serde_yaml::from_str::<LimitCfg>("{ requests: 5, tokens: 2, per: minute }")
-        .expect_err("two metric keys must error");
+    let err =
+        busbar_contract::yaml::from_str::<LimitCfg>("{ requests: 5, tokens: 2, per: minute }")
+            .expect_err("two metric keys must error");
     assert!(err.to_string().contains("exactly ONE metric key"), "{err}");
 
-    let err = serde_yaml::from_str::<LimitCfg>("{ requests: 5, per: fortnight }")
+    let err = busbar_contract::yaml::from_str::<LimitCfg>("{ requests: 5, per: fortnight }")
         .expect_err("an unknown window must error");
     assert!(err.to_string().contains("unknown variant"), "{err}");
 
-    let err = serde_yaml::from_str::<LimitCfg>("{ reqs: 5, per: minute }")
+    let err = busbar_contract::yaml::from_str::<LimitCfg>("{ reqs: 5, per: minute }")
         .expect_err("an unknown metric key must error");
     assert!(err.to_string().contains("unknown field"), "{err}");
 
-    let err = serde_yaml::from_str::<LimitCfg>("{ per: minute }")
+    let err = busbar_contract::yaml::from_str::<LimitCfg>("{ per: minute }")
         .expect_err("a limit with no metric must error");
     assert!(err.to_string().contains("exactly one metric key"), "{err}");
 
-    let err =
-        serde_yaml::from_str::<GroupCfg>("limitz: []").expect_err("a typo'd group key must error");
+    let err = busbar_contract::yaml::from_str::<GroupCfg>("limitz: []")
+        .expect_err("a typo'd group key must error");
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
@@ -1905,23 +1912,26 @@ fn test_group_limits_malformed_rejected() {
 fn test_group_limit_pool_qualifier() {
     use crate::config::groups::LimitCfg;
 
-    let l: LimitCfg = serde_yaml::from_str("{ budget: 5000, per: month, pool: frontier }")
-        .expect("pool-qualified budget parses");
+    let l: LimitCfg =
+        busbar_contract::yaml::from_str("{ budget: 5000, per: month, pool: frontier }")
+            .expect("pool-qualified budget parses");
     assert_eq!(l.scope.as_ref().map(|s| s.value.as_str()), Some("frontier"));
 
-    let plain: LimitCfg = serde_yaml::from_str("{ tokens: 9, per: day }").expect("parses");
+    let plain: LimitCfg =
+        busbar_contract::yaml::from_str("{ tokens: 9, per: day }").expect("parses");
     for orig in [&l, &plain] {
-        let yaml = serde_yaml::to_string(orig).expect("serializes");
-        let back: LimitCfg = serde_yaml::from_str(&yaml).expect("reparses");
+        let yaml = busbar_contract::yaml::to_string(orig).expect("serializes");
+        let back: LimitCfg = busbar_contract::yaml::from_str(&yaml).expect("reparses");
         assert_eq!(&back, orig, "round-trip must be exact: {yaml}");
     }
 
-    let err = serde_yaml::from_str::<LimitCfg>("{ concurrent: 5, pool: frontier }")
+    let err = busbar_contract::yaml::from_str::<LimitCfg>("{ concurrent: 5, pool: frontier }")
         .expect_err("concurrent + pool must error");
     assert!(err.to_string().contains("takes NO `pool:`"), "{err}");
 
-    let err = serde_yaml::from_str::<LimitCfg>("{ budget: 5, per: month, pool: a, pool: b }")
-        .expect_err("a duplicate pool key must error");
+    let err =
+        busbar_contract::yaml::from_str::<LimitCfg>("{ budget: 5, per: month, pool: a, pool: b }")
+            .expect_err("a duplicate pool key must error");
     assert!(err.to_string().contains("duplicate"), "{err}");
 }
 
@@ -1929,7 +1939,7 @@ fn test_group_limit_pool_qualifier() {
 fn test_group_limit_on_exhaust_qualifier() {
     use crate::config::groups::{LimitCfg, OnExhaust};
 
-    let l: LimitCfg = serde_yaml::from_str(
+    let l: LimitCfg = busbar_contract::yaml::from_str(
         "{ budget: 5000, per: month, pool: frontier, on_exhaust: downgrade, downgrade_to: value }",
     )
     .expect("a full downgrade limit parses");
@@ -1938,15 +1948,16 @@ fn test_group_limit_on_exhaust_qualifier() {
         l.downgrade_to.as_ref().map(|s| s.value.as_str()),
         Some("value")
     );
-    let yaml = serde_yaml::to_string(&l).expect("serializes");
-    let back: LimitCfg = serde_yaml::from_str(&yaml).expect("reparses");
+    let yaml = busbar_contract::yaml::to_string(&l).expect("serializes");
+    let back: LimitCfg = busbar_contract::yaml::from_str(&yaml).expect("reparses");
     assert_eq!(back, l, "overlay round-trip must be exact: {yaml}");
 
-    let b: LimitCfg = serde_yaml::from_str("{ budget: 5, per: month, pool: p, on_exhaust: block }")
-        .expect("explicit block parses");
-    let byaml = serde_yaml::to_string(&b).expect("serializes");
+    let b: LimitCfg =
+        busbar_contract::yaml::from_str("{ budget: 5, per: month, pool: p, on_exhaust: block }")
+            .expect("explicit block parses");
+    let byaml = busbar_contract::yaml::to_string(&b).expect("serializes");
     assert_eq!(
-        serde_yaml::from_str::<LimitCfg>(&byaml).expect("reparses"),
+        busbar_contract::yaml::from_str::<LimitCfg>(&byaml).expect("reparses"),
         b
     );
 
@@ -1972,7 +1983,7 @@ fn test_group_limit_on_exhaust_qualifier() {
             "DIFFERENT pool",
         ),
     ] {
-        let err = serde_yaml::from_str::<LimitCfg>(yaml).expect_err(yaml);
+        let err = busbar_contract::yaml::from_str::<LimitCfg>(yaml).expect_err(yaml);
         assert!(err.to_string().contains(needle), "{yaml}: {err}");
     }
 }
@@ -1985,7 +1996,7 @@ fn test_removed_top_level_blocks_rejected() {
         ("admin_auth: [admin-tokens]\n", "admin_auth"),
     ] {
         let yaml = format!("providers: {{}}\nmodels: {{}}\n{block}");
-        let err = serde_yaml::from_str::<DeployCfg>(&yaml)
+        let err = busbar_contract::yaml::from_str::<DeployCfg>(&yaml)
             .expect_err("a removed top-level block must be rejected");
         let msg = err.to_string();
         assert!(
@@ -2022,7 +2033,8 @@ advanced:
   rate_sweep_interval: 64
   usage_flush_interval_ms: 5
 "#;
-    let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("new top-level blocks parse");
+    let deploy: DeployCfg =
+        busbar_contract::yaml::from_str(yaml).expect("new top-level blocks parse");
     let store = deploy.store.as_ref().expect("store block");
     assert_eq!(store.module, "acme-durable");
 
@@ -2054,7 +2066,7 @@ advanced:
     assert_eq!(deploy.advanced.usage_flush_interval_ms, 5);
 
     let bare: DeployCfg =
-        serde_yaml::from_str("providers: {}\nmodels: {}\n").expect("bare deploy parses");
+        busbar_contract::yaml::from_str("providers: {}\nmodels: {}\n").expect("bare deploy parses");
     assert!(bare.store.is_none());
     assert!(bare.rate_card.is_none());
     assert_eq!(bare.per_request_fee, 0, "per_request_fee defaults to 0");
@@ -2073,15 +2085,16 @@ advanced:
 fn test_resolve_builds_registry_from_named_defs() {
     let mut deploy = base_deploy();
 
-    deploy.hooks = serde_yaml::from_str(
+    deploy.hooks = busbar_contract::yaml::from_str(
         "pii-eng:\n  module: busbar-phi\n  kind: gate\n  groups: [engineering]\n  settings: { team: alpha }\n\
          pii-all:\n  module: busbar-phi\n  kind: gate\n\
          audit:\n  module: busbar-audit\n  kind: tap\n  phase: [response]\n",
     )
     .unwrap();
     let pool_a: PoolCfg =
-        serde_yaml::from_str("members: []\nhooks: [cheapest, pii-eng]\n").unwrap();
-    let pool_b: PoolCfg = serde_yaml::from_str("members: []\nhooks: [pii-all]\n").unwrap();
+        busbar_contract::yaml::from_str("members: []\nhooks: [cheapest, pii-eng]\n").unwrap();
+    let pool_b: PoolCfg =
+        busbar_contract::yaml::from_str("members: []\nhooks: [pii-all]\n").unwrap();
     deploy.pools.pools.insert("a".to_string(), pool_a);
     deploy.pools.pools.insert("b".to_string(), pool_b);
     deploy.pools.all_pool_hooks = vec!["audit".to_string()];
@@ -2126,7 +2139,7 @@ fn test_resolve_builds_registry_from_named_defs() {
 #[test]
 fn test_resolve_rejects_bad_hook_defs() {
     let mut deploy = base_deploy();
-    deploy.hooks = serde_yaml::from_str("bad:\n  module: \"  \"\n").unwrap();
+    deploy.hooks = busbar_contract::yaml::from_str("bad:\n  module: \"  \"\n").unwrap();
     let errs = resolve(&deploy, &HashMap::new()).expect_err("empty module must fail resolve");
     let joined = errs.join("\n");
     assert!(
@@ -2135,7 +2148,7 @@ fn test_resolve_rejects_bad_hook_defs() {
     );
 
     let mut deploy = base_deploy();
-    deploy.hooks = serde_yaml::from_str("cheapest:\n  module: busbar-phi\n").unwrap();
+    deploy.hooks = busbar_contract::yaml::from_str("cheapest:\n  module: busbar-phi\n").unwrap();
     let errs = resolve(&deploy, &HashMap::new()).expect_err("reserved def name must fail");
     assert!(errs.join("\n").contains("reserved name"), "{errs:?}");
 }
@@ -2144,14 +2157,15 @@ fn test_resolve_rejects_bad_hook_defs() {
 fn test_caller_in_hook_groups_scope() {
     use crate::config::caller_in_hook_groups;
 
-    let tree: std::collections::BTreeMap<String, crate::config::GroupCfg> = serde_yaml::from_str(
-        "acme: {}\n\
+    let tree: std::collections::BTreeMap<String, crate::config::GroupCfg> =
+        busbar_contract::yaml::from_str(
+            "acme: {}\n\
          engineering: { parent: acme }\n\
          sales: { parent: acme }\n\
          'user:bob': { parent: engineering }\n\
          'user:sue': { parent: sales }\n",
-    )
-    .expect("groups tree parses");
+        )
+        .expect("groups tree parses");
     let eng = ["engineering".to_string()];
 
     assert!(caller_in_hook_groups(Some("user:bob"), &eng, &tree));
@@ -2175,11 +2189,11 @@ fn test_resolve_projects_admin_auth_names() {
     let mut deploy = base_deploy();
     let op = crate::config::operator_provider();
     let auth: crate::config::AuthDeployCfg =
-        serde_yaml::from_str(&format!("chain: [keys]\nadmin_auth: [{op}, ad]\n"))
+        busbar_contract::yaml::from_str(&format!("chain: [keys]\nadmin_auth: [{op}, ad]\n"))
             .expect("auth parses");
     deploy.auth = Some(auth);
 
-    deploy.identity_providers = serde_yaml::from_str(&format!(
+    deploy.identity_providers = busbar_contract::yaml::from_str(&format!(
         "{op}: {{ module: {op}, token: {{ module: fixture-source, settings: {{ slot: BUSBAR_ADMIN_TOKEN }} }} }}\n\
          ad: {{ module: ad, max_admin_scope: read-only }}\n",
     ))
@@ -2195,7 +2209,7 @@ fn test_resolve_projects_admin_auth_names() {
     );
 
     let mut deploy = base_deploy();
-    deploy.auth = Some(serde_yaml::from_str("chain: [keys]\n").expect("auth parses"));
+    deploy.auth = Some(busbar_contract::yaml::from_str("chain: [keys]\n").expect("auth parses"));
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 }
@@ -2208,14 +2222,14 @@ public_url: https://api.busbar.example
 providers: {}
 models: {}
 ";
-    let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("public_url must parse");
+    let deploy: DeployCfg = busbar_contract::yaml::from_str(yaml).expect("public_url must parse");
     assert_eq!(
         deploy.public_url.as_deref(),
         Some("https://api.busbar.example")
     );
 
     let deploy2: DeployCfg =
-        serde_yaml::from_str("listen: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n")
+        busbar_contract::yaml::from_str("listen: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n")
             .expect("absent public_url ⇒ default None");
     assert_eq!(deploy2.public_url, None);
 }
@@ -2233,10 +2247,10 @@ test-idp-double:
     audience: busbar
 ";
     let providers: crate::config::IdentityProviders =
-        serde_yaml::from_str(yaml).expect("the provider definition must parse");
+        busbar_contract::yaml::from_str(yaml).expect("the provider definition must parse");
     let mut errors = Vec::new();
     let auth = crate::config::resolve_auth(
-        &serde_yaml::from_str("chain: [test-idp-double]\n").expect("auth parses"),
+        &busbar_contract::yaml::from_str("chain: [test-idp-double]\n").expect("auth parses"),
         &providers,
         &mut errors,
     );
@@ -2292,7 +2306,7 @@ oidc:
     client_secret: { module: fixture-source, settings: { slot: X } }
     client_idd: oops
 ";
-    let err = serde_yaml::from_str::<crate::config::IdentityProviders>(yaml)
+    let err = busbar_contract::yaml::from_str::<crate::config::IdentityProviders>(yaml)
         .expect_err("typo under browser_login must be rejected");
     assert!(
         err.to_string().contains("client_idd") || err.to_string().contains("unknown field"),
@@ -2312,7 +2326,8 @@ fetch:
   - url: https://host/plugin.tar.gz
   - env: BUSBAR_PLUGIN_URL
 ";
-    let cfg: PluginsCfg = serde_yaml::from_str(yaml).expect("three fetch shapes must parse");
+    let cfg: PluginsCfg =
+        busbar_contract::yaml::from_str(yaml).expect("three fetch shapes must parse");
     assert_eq!(cfg.fetch.len(), 3);
     assert!(
         matches!(&cfg.fetch[0], PluginFetch::Github(g) if g.github == "org/repo@v1.2.3" && g.sha256.as_deref() == Some("abc123"))
@@ -2324,7 +2339,7 @@ fetch:
 
     let bad = "enabled: true\nfetch:\n  - github: org/repo@v1\n    shaa: nope\n";
     assert!(
-        serde_yaml::from_str::<PluginsCfg>(bad).is_err(),
+        busbar_contract::yaml::from_str::<PluginsCfg>(bad).is_err(),
         "typo'd fetch key must be rejected"
     );
 }
@@ -2339,7 +2354,7 @@ fetch:
     sha256: deadbeef
   - url: https://host/plugins/store-durable.tar.gz
 ";
-    let cfg: PluginsCfg = serde_yaml::from_str(yaml).unwrap();
+    let cfg: PluginsCfg = busbar_contract::yaml::from_str(yaml).unwrap();
     let specs = cfg.fetch_targets().expect("fetch_targets resolves");
     assert_eq!(specs.len(), 2);
 
@@ -2404,7 +2419,8 @@ fn test_fetch_env_spec_reads_var() {
     use crate::config::PluginsCfg;
     std::env::set_var("BUSBAR_T_FETCH_URL", "https://host/p/thing.tar.gz@abc123");
     let cfg: PluginsCfg =
-        serde_yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_URL\n").unwrap();
+        busbar_contract::yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_URL\n")
+            .unwrap();
     let specs = cfg.fetch_targets().expect("env spec resolves");
     assert_eq!(specs[0].url, "https://host/p/thing.tar.gz");
     assert_eq!(specs[0].sha256.as_deref(), Some("abc123"));
@@ -2417,7 +2433,8 @@ fn test_fetch_env_spec_unset_is_error() {
     use crate::config::PluginsCfg;
     std::env::remove_var("BUSBAR_T_FETCH_UNSET");
     let cfg: PluginsCfg =
-        serde_yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_UNSET\n").unwrap();
+        busbar_contract::yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_UNSET\n")
+            .unwrap();
     let err = cfg.fetch_targets().expect_err("unset env var must error");
     assert!(
         err.contains("BUSBAR_T_FETCH_UNSET") && err.contains("not set"),
@@ -2439,7 +2456,7 @@ advanced:
   upstream_h2_prior_knowledge: true
 ";
     let d: crate::config::DeployCfg =
-        serde_yaml::from_str(yaml).expect("current management and transport keys parse");
+        busbar_contract::yaml::from_str(yaml).expect("current management and transport keys parse");
     assert!(d.config.locked);
     assert_eq!(d.providers_file.as_deref(), Some("catalog.yaml"));
     assert_eq!(d.advanced.worker_threads, Some(3));
@@ -2467,13 +2484,14 @@ advanced:
             "providers: {{}}\nmodels: {{}}\nconfig: {{locked: true, overlay: {selector}}}\n"
         );
         assert!(
-            serde_yaml::from_str::<crate::config::DeployCfg>(&retired).is_err(),
+            busbar_contract::yaml::from_str::<crate::config::DeployCfg>(&retired).is_err(),
             "current DeployCfg must refuse retired config.overlay: {selector}"
         );
     }
 
     let yaml3 = "providers: {}\nmodels: {}\n";
-    let d3: crate::config::DeployCfg = serde_yaml::from_str(yaml3).expect("absent config parses");
+    let d3: crate::config::DeployCfg =
+        busbar_contract::yaml::from_str(yaml3).expect("absent config parses");
     assert!(!d3.config.locked);
     assert!(d3.providers_file.is_none());
     assert_eq!(d3.advanced.worker_threads, None);
@@ -2520,7 +2538,7 @@ fn reserved_hook_names_are_frozen() {
     let mut deploy = base_deploy();
     deploy.hooks.insert(
         "cheapest".to_string(),
-        serde_yaml::from_str("module: some-hook-plugin").expect("hook def parses"),
+        busbar_contract::yaml::from_str("module: some-hook-plugin").expect("hook def parses"),
     );
     let errs = resolve(&deploy, &HashMap::new())
         .expect_err("a hook named with a reserved word must refuse to boot");
@@ -2535,7 +2553,7 @@ fn reserved_hook_names_are_frozen() {
     let mut deploy = base_deploy();
     deploy.hooks.insert(
         operator.to_string(),
-        serde_yaml::from_str("module: some-hook-plugin").expect("hook def parses"),
+        busbar_contract::yaml::from_str("module: some-hook-plugin").expect("hook def parses"),
     );
     let errs = resolve(&deploy, &HashMap::new())
         .expect_err("a hook named with the operator credential's provider must refuse to boot");
@@ -2549,16 +2567,17 @@ fn reserved_hook_names_are_frozen() {
 #[test]
 fn named_hook_signal_grants_survive_resolution_and_omission_stays_empty() {
     use busbar_contract::signal::Signal;
-    let def: super::HookDefCfg =
-        serde_yaml::from_str("module: fixture\nprompt: ro\nsignals: [request_text_complete]")
-            .unwrap();
+    let def: super::HookDefCfg = busbar_contract::yaml::from_str(
+        "module: fixture\nprompt: ro\nsignals: [request_text_complete]",
+    )
+    .unwrap();
     assert_eq!(
         super::hook_cfg_from_def(&def).unwrap().signals,
         vec![Signal::RequestTextComplete]
     );
-    let def: super::HookDefCfg = serde_yaml::from_str("module: fixture").unwrap();
+    let def: super::HookDefCfg = busbar_contract::yaml::from_str("module: fixture").unwrap();
     assert!(super::hook_cfg_from_def(&def).unwrap().signals.is_empty());
-    assert!(serde_yaml::from_str::<super::HookDefCfg>(
+    assert!(busbar_contract::yaml::from_str::<super::HookDefCfg>(
         "module: fixture\nsignals: [request_text_complet]",
     )
     .is_err());
@@ -2581,7 +2600,7 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
     );
 
     let def: crate::config::HookDefCfg =
-        serde_yaml::from_str("module: h\nkind: tap").expect("hook def parses");
+        busbar_contract::yaml::from_str("module: h\nkind: tap").expect("hook def parses");
     let cfg = super::hook_cfg_from_def(&def).expect("lowers");
     assert!(cfg.phase.is_empty(), "the definition names no phase");
     for stage in crate::config::CORE_HOOK_PHASES {
@@ -2592,7 +2611,7 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
     }
 
     let def: crate::config::HookDefCfg =
-        serde_yaml::from_str("module: h\nkind: tap\nphase: [response]").expect("parses");
+        busbar_contract::yaml::from_str("module: h\nkind: tap\nphase: [response]").expect("parses");
     let cfg = super::hook_cfg_from_def(&def).expect("lowers");
     assert!(cfg.fires_at_stage(HookStage::Response));
     assert!(!cfg.fires_at_stage(HookStage::Request));
@@ -2649,7 +2668,7 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
         let message = error.to_string();
         assert!(message.contains("unknown field `bogus_key`"), "{message}");
         assert!(
-            message.contains("`policy`"),
+            message.contains("policy"),
             "current policy field must be advertised: {message}"
         );
         assert_eq!(error.location().unwrap().line(), line);
@@ -2659,10 +2678,18 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
         .to_string()
         .contains("auth.policy: unknown field `slef_mint`"));
     assert_eq!(typo.location().unwrap().line(), 5);
-    assert!(refusal("auth: 5\n").to_string().contains("invalid type"));
-    assert!(refusal("auth:\n  policy: {}\n  policy: {}\n")
-        .to_string()
-        .contains("duplicate field `policy`"));
+    // The wrong-kind and repeated-key refusals are worded by the YAML reader; pin that they are
+    // refused and name what was wrong, not the library's sentence.
+    let wrong_kind = refusal("auth: 5\n").to_string();
+    assert!(
+        wrong_kind.contains("invalid type") || wrong_kind.contains("mapping"),
+        "{wrong_kind}"
+    );
+    let repeated = refusal("auth:\n  policy: {}\n  policy: {}\n").to_string();
+    assert!(
+        repeated.contains("duplicate") && repeated.contains("policy"),
+        "{repeated}"
+    );
     let empty = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\nauth:\n")
         .expect("an empty auth block parses");
     assert!(empty.auth.is_none());
@@ -2676,11 +2703,11 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
     let error = parse("bogus_key: true\n").expect_err("unknown field");
     let message = error.to_string();
     for field in ["oauth_as", "credentials"] {
-        assert!(message.contains(&format!("`{field}`")), "{message}");
+        assert!(message.contains(field), "{message}");
         let duplicate =
             parse(&format!("{field}: {{}}\n{field}: {{}}\n")).expect_err("duplicate core section");
         assert!(
-            duplicate.to_string().contains("duplicate field"),
+            duplicate.to_string().contains("duplicate") && duplicate.to_string().contains(field),
             "{duplicate}"
         );
     }
@@ -2764,7 +2791,7 @@ struct ProvidersDoc {
 
 #[test]
 fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
-    let doc: ProvidersDoc = serde_yaml::from_str(
+    let doc: ProvidersDoc = busbar_contract::yaml::from_str(
         "providers:\n  p:\n    api_key: { module: fixture-source, settings: { slot: K } }\n    OpenAI-Organization: org-abc\n    \
          api-version: 2024-10-21\n    path: /v1/x\n    organization: o\n",
     )
@@ -2796,7 +2823,7 @@ fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
         )
     );
 
-    let plain: ProvidersDoc = serde_yaml::from_str(
+    let plain: ProvidersDoc = busbar_contract::yaml::from_str(
         "providers:\n  p:\n    api_key: { module: fixture-source, settings: { slot: K } }\n",
     )
     .expect("reads");
@@ -2834,7 +2861,7 @@ fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
     let e = crate::config::providers::catalog_from_str("p:\n  protocol: [1]\n  base_url: x\n")
         .expect_err("a typed key of the wrong type")
         .to_string();
-    assert!(e.starts_with("p.protocol: invalid type: sequence"), "{e}");
+    assert!(e.starts_with("p.protocol: "), "{e}");
 }
 
 #[test]
@@ -2871,15 +2898,12 @@ fn an_unused_catalog_still_requires_valid_core_fields() {
     )
     .expect_err("the core field is typed even for an unused catalog")
     .to_string();
-    assert!(
-        error.starts_with("p.base_url: invalid type: sequence"),
-        "{error}"
-    );
+    assert!(error.starts_with("p.base_url: "), "{error}");
 }
 
 #[test]
 fn an_option_written_twice_is_refused() {
-    let e = serde_yaml::from_str::<ProvidersDoc>(
+    let e = busbar_contract::yaml::from_str::<ProvidersDoc>(
         "providers:\n  p:\n    api_key: { module: fixture-source, settings: { slot: K } }\n    x-a: 1\n    x-a: 2\n",
     )
     .err()
@@ -2906,9 +2930,10 @@ fn the_deploy_keys_are_the_typed_grammars() {
 
 #[test]
 fn an_on_exhausted_naming_both_a_fallback_and_a_queue_is_refused() {
-    let err =
-        serde_yaml::from_str::<OnExhaustedCfg>("{ fallback_pool: cold, queue: { max_ms: 250 } }")
-            .expect_err("both keys present is an error");
+    let err = busbar_contract::yaml::from_str::<OnExhaustedCfg>(
+        "{ fallback_pool: cold, queue: { max_ms: 250 } }",
+    )
+    .expect_err("both keys present is an error");
     assert!(
         err.to_string().contains("exactly one of"),
         "must reject both fallback_pool and queue; got: {err}"

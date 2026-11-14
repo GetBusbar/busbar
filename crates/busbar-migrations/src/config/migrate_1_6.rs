@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use serde_yaml::{Mapping, Value};
+use busbar_contract::yaml::prelude::*;
 
 const LEGACY_UNPRICED_BILLABLE_UNIT_RATE: i32 = 0;
 
@@ -18,21 +18,21 @@ pub(super) fn migrate_bootstrap(root: &mut Mapping, changes: &mut Vec<String>) {
 
 fn drop_overlay_selector(root: &mut Mapping, changes: &mut Vec<String>) {
     if let Some(config) = mapping_mut(root, "config") {
-        if config.remove(Value::from("overlay")).is_some() {
+        if super::swap_remove_key(config, "overlay").is_some() {
             changes.push("config.overlay removed; current management uses config.locked and the configured Store".into());
         }
     }
 }
 
 fn mapping_mut<'a>(m: &'a mut Mapping, key: &str) -> Option<&'a mut Mapping> {
-    match m.get_mut(Value::from(key)) {
-        Some(Value::Mapping(inner)) => Some(inner),
+    match m.get_key_mut(key) {
+        Some(Value::Map(inner)) => Some(inner),
         _ => None,
     }
 }
 
 fn drop_hostless(m: &mut Mapping, list_key: &str, path: &str, changes: &mut Vec<String>) {
-    let Some(Value::Sequence(entries)) = m.get_mut(Value::from(list_key)) else {
+    let Some(Value::Array(entries)) = m.get_key_mut(list_key) else {
         return;
     };
     entries.retain(|entry| {
@@ -61,7 +61,7 @@ fn drop_hostless_metadata_entries(root: &mut Mapping, changes: &mut Vec<String>)
     }
     if let Some(providers) = mapping_mut(root, "providers") {
         for (name, provider) in providers.iter_mut() {
-            let (Some(name), Value::Mapping(provider)) = (name.as_str(), provider) else {
+            let (Some(name), Value::Map(provider)) = (name.as_str(), provider) else {
                 continue;
             };
             let path = format!("providers.{name}.allow_metadata_hosts");
@@ -94,25 +94,20 @@ fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
         if lane.contains(busbar_kernel::governance::PLANE_LANE_SEP) {
             continue;
         }
-        let Value::Mapping(entry) = entry else {
+        let Value::Map(entry) = entry else {
             continue;
         };
-        let units = entry
-            .entry(Value::from("units"))
-            .or_insert_with(|| Value::Mapping(Mapping::new()));
-        let Value::Mapping(units) = units else {
+        let units = entry.entry_or_insert_with("units", || Value::Map(Mapping::new()));
+        let Value::Map(units) = units else {
             continue;
         };
         let added: Vec<&str> = open
             .iter()
             .copied()
-            .filter(|u| !units.contains_key(Value::from(*u)))
+            .filter(|u| !units.contains_key(*u))
             .collect();
         for unit in &added {
-            units.insert(
-                Value::from(*unit),
-                Value::from(LEGACY_UNPRICED_BILLABLE_UNIT_RATE),
-            );
+            units.insert_key(*unit, Value::from(LEGACY_UNPRICED_BILLABLE_UNIT_RATE));
         }
         if !added.is_empty() {
             changes.push(format!(
@@ -136,8 +131,8 @@ fn bind_ungoverned_principals(
     let Some(auth) = mapping_mut(root, "auth") else {
         return;
     };
-    let chain: Vec<String> = match auth.get(Value::from("chain")) {
-        Some(Value::Sequence(seq)) => seq
+    let chain: Vec<String> = match auth.get_key("chain") {
+        Some(Value::Array(seq)) => seq
             .iter()
             .filter_map(|e| e.as_str().map(str::to_string))
             .collect(),
@@ -150,24 +145,20 @@ fn bind_ungoverned_principals(
     if providers.is_empty() {
         return;
     }
-    let bindings = auth
-        .entry(Value::from("role_bindings"))
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
-    let Value::Mapping(bindings) = bindings else {
+    let bindings = auth.entry_or_insert_with("role_bindings", || Value::Map(Mapping::new()));
+    let Value::Map(bindings) = bindings else {
         return;
     };
     for provider in providers {
-        let table = bindings
-            .entry(Value::from(provider.as_str()))
-            .or_insert_with(|| Value::Mapping(Mapping::new()));
-        let Value::Mapping(table) = table else {
+        let table = bindings.entry_or_insert_with(provider.as_str(), || Value::Map(Mapping::new()));
+        let Value::Map(table) = table else {
             continue;
         };
         if table.contains_key(ungoverned_role()) {
             continue;
         }
         let had_roles = !table.is_empty();
-        table.insert(ungoverned_role(), Value::Mapping(Mapping::new()));
+        table.insert_key(ungoverned_role(), Value::Map(Mapping::new()));
         let role = busbar_kernel::config::auth::UNGOVERNED_ROLE;
         let who = if had_roles {
             "a principal it identifies that asserts no roles"
@@ -194,20 +185,21 @@ mod tests;
 #[cfg(test)]
 mod config_management_tests {
     use super::*;
+    use busbar_contract::yaml;
 
     #[test]
     fn one_shot_migration_drops_old_selectors_and_preserves_locked_policy() {
         for locked in [false, true] {
             for selector in ["false", "true", "{file: /old/overlay.json}", "{}", "null"] {
-                let mut root: Mapping = serde_yaml::from_str(&format!(
+                let mut root: Mapping = yaml::mapping_from_str(&format!(
                     "config: {{locked: {locked}, overlay: {selector}}}\n"
                 ))
                 .unwrap();
                 let mut changes = Vec::new();
                 drop_overlay_selector(&mut root, &mut changes);
-                let config = root[Value::from("config")].as_mapping().unwrap();
-                assert!(!config.contains_key(Value::from("overlay")));
-                assert_eq!(config[Value::from("locked")], Value::Bool(locked));
+                let config = root.get_key("config").unwrap().as_mapping().unwrap();
+                assert!(!config.contains_key("overlay"));
+                assert_eq!(config.get_key("locked"), Some(&Value::Bool(locked)));
                 assert_eq!(changes.len(), 1);
                 drop_overlay_selector(&mut root, &mut changes);
                 assert_eq!(changes.len(), 1, "retry is idempotent");
@@ -218,10 +210,10 @@ mod config_management_tests {
     #[test]
     fn dropping_selector_does_not_invent_lock_policy_or_discard_other_keys() {
         let mut root: Mapping =
-            serde_yaml::from_str("config: {overlay: false, unknown: retained}\n").unwrap();
+            yaml::mapping_from_str("config: {overlay: false, unknown: retained}\n").unwrap();
         drop_overlay_selector(&mut root, &mut Vec::new());
-        let config = root[Value::from("config")].as_mapping().unwrap();
-        assert!(!config.contains_key(Value::from("locked")));
-        assert_eq!(config[Value::from("unknown")], Value::from("retained"));
+        let config = root.get_key("config").unwrap().as_mapping().unwrap();
+        assert!(!config.contains_key("locked"));
+        assert_eq!(config.get_key("unknown"), Some(&Value::from("retained")));
     }
 }

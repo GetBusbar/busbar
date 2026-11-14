@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Config grammar evidence is independent of native Store format or product version.
-use serde_yaml::Value;
+use busbar_contract::yaml::{self, prelude::*};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,23 +41,23 @@ impl HistoricalConfigProof {
 
 /// These are actual retired grammar forms, rather than a failed current parse or empty DB.
 pub fn recognize_authored_schema(raw: &str) -> Result<Option<HistoricalConfigProof>, String> {
-    let doc: Value = serde_yaml::from_str(raw).map_err(|_| "configuration is not valid YAML")?;
+    let doc: Value = yaml::from_str(raw).map_err(|_| "configuration is not valid YAML")?;
     let Some(root) = doc.as_mapping() else {
         return Ok(None);
     };
-    let legacy_root = root.get("governance").is_some_and(Value::is_mapping)
-        || root.get("group_map").is_some_and(Value::is_mapping)
+    let legacy_root = root.get_key("governance").is_some_and(Value::is_mapping)
+        || root.get_key("group_map").is_some_and(Value::is_mapping)
         || root
-            .get("auth")
+            .get_key("auth")
             .and_then(|auth| auth.get("mode"))
             .and_then(Value::as_str)
             .is_some_and(|mode| matches!(mode, "none" | "token" | "apikey" | "passthrough"))
         || root
-            .get("auth")
+            .get_key("auth")
             .and_then(|auth| auth.get("client_tokens"))
             .is_some()
         || root
-            .get("config")
+            .get_key("config")
             .and_then(|config| config.get("overlay"))
             .is_some();
     if !legacy_root {

@@ -23,7 +23,7 @@ mod tests {
 
     #[test]
     fn bootstrap_projection_retains_original_hostless_entries() {
-        let deploy: DeployCfg = serde_yaml::from_str("store: {module: memory}\nsecurity: {blocked_metadata_hosts: ['not-an-ip.123', '169.254.169.254'], allow_metadata_hosts: ['not-an-ip.456']}\n").unwrap();
+        let deploy: DeployCfg = busbar_contract::yaml::from_str("store: {module: memory}\nsecurity: {blocked_metadata_hosts: ['not-an-ip.123', '169.254.169.254'], allow_metadata_hosts: ['not-an-ip.456']}\n").unwrap();
         assert!(busbar_kernel::config::bootstrap::resolve_store_bootstrap(&deploy).is_err());
         let projected = bootstrap(&deploy)
             .unwrap_or_else(|errors| panic!("bootstrap projection refused: {errors:?}"));
@@ -38,7 +38,7 @@ mod tests {
 
         // Slash entries are intentionally outside the approved hostless projection.
         // Their existing explicit refusal must survive the temporary bootstrap view.
-        let cidr: DeployCfg = serde_yaml::from_str(
+        let cidr: DeployCfg = busbar_contract::yaml::from_str(
             "store: {module: memory}\nsecurity: {blocked_metadata_hosts: ['169.254.0.0/16']}\n",
         )
         .unwrap();

@@ -313,7 +313,7 @@ fn test_validate_rejects_oversized_inbound_and_webhook_concurrency_limits() {
 
 #[test]
 fn test_minimal_model_config_without_max_concurrent_deserializes() {
-    let m: config::ModelCfg = serde_yaml::from_str("provider: myprovider\n")
+    let m: config::ModelCfg = busbar_contract::yaml::from_str("provider: myprovider\n")
         .expect("a model config with only `provider` must load (max_concurrent is optional)");
     assert_eq!(m.provider, "myprovider");
     assert_eq!(
@@ -342,7 +342,7 @@ models:
     provider: acme
     max_concurrent: 10
 "#;
-    let err = serde_yaml::from_str::<crate::config::DeployCfg>(yaml)
+    let err = busbar_contract::yaml::from_str::<crate::config::DeployCfg>(yaml)
         .expect_err("a config setting the removed auth keys must fail to parse");
     let msg = err.to_string();
     assert!(
@@ -364,7 +364,7 @@ models:
   model-1:
     provider: acme
 "#;
-    let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
+    let err2 = busbar_contract::yaml::from_str::<crate::config::DeployCfg>(yaml2)
         .expect_err("the removed api_key_env key must fail to parse");
     assert!(
         err2.to_string().contains("missing field `api_key`"),
@@ -602,22 +602,25 @@ fn test_ssrf_blocked_host_allows_public_targets() {
 #[test]
 fn test_on_exhausted_is_structured_and_rejects_malformed_at_parse() {
     assert!(
-        serde_yaml::from_str::<config::OnExhaustedCfg>("bogus").is_err(),
+        busbar_contract::yaml::from_str::<config::OnExhaustedCfg>("bogus").is_err(),
         "an unknown on_exhausted keyword must fail to parse"
     );
     assert!(
-        serde_yaml::from_str::<config::OnExhaustedCfg>("\"fallback_pool:backup\"").is_err(),
+        busbar_contract::yaml::from_str::<config::OnExhaustedCfg>("\"fallback_pool:backup\"")
+            .is_err(),
         "the retired string form 'fallback_pool:name' must fail to parse (structured form only)"
     );
     assert!(matches!(
-        serde_yaml::from_str::<config::OnExhaustedCfg>("reject").unwrap(),
+        busbar_contract::yaml::from_str::<config::OnExhaustedCfg>("reject").unwrap(),
         config::OnExhaustedCfg::Reject
     ));
     assert!(matches!(
-        serde_yaml::from_str::<config::OnExhaustedCfg>("least_bad").unwrap(),
+        busbar_contract::yaml::from_str::<config::OnExhaustedCfg>("least_bad").unwrap(),
         config::OnExhaustedCfg::LeastBad
     ));
-    match serde_yaml::from_str::<config::OnExhaustedCfg>("{ fallback_pool: backup }").unwrap() {
+    match busbar_contract::yaml::from_str::<config::OnExhaustedCfg>("{ fallback_pool: backup }")
+        .unwrap()
+    {
         config::OnExhaustedCfg::FallbackPool(name) => assert_eq!(name, "backup"),
         other => panic!("expected FallbackPool, got {other:?}"),
     }
@@ -625,11 +628,13 @@ fn test_on_exhausted_is_structured_and_rejects_malformed_at_parse() {
 
 #[test]
 fn test_queue_config_parses_and_both_keys_conflict() {
-    match serde_yaml::from_str::<config::OnExhaustedCfg>("{ queue: { max_ms: 250 } }").unwrap() {
+    match busbar_contract::yaml::from_str::<config::OnExhaustedCfg>("{ queue: { max_ms: 250 } }")
+        .unwrap()
+    {
         config::OnExhaustedCfg::Queue { max_ms } => assert_eq!(max_ms, 250),
         other => panic!("expected Queue, got {other:?}"),
     }
-    let both = serde_yaml::from_str::<config::OnExhaustedCfg>(
+    let both = busbar_contract::yaml::from_str::<config::OnExhaustedCfg>(
         "{ fallback_pool: cold, queue: { max_ms: 250 } }",
     );
     let err = format!("{}", both.expect_err("both keys must be a conflict error"));
@@ -642,11 +647,11 @@ fn test_queue_config_parses_and_both_keys_conflict() {
 #[test]
 fn test_affinity_mode_is_a_closed_enum() {
     assert_eq!(
-        serde_yaml::from_str::<config::AffinityMode>("session").unwrap(),
+        busbar_contract::yaml::from_str::<config::AffinityMode>("session").unwrap(),
         config::AffinityMode::Session
     );
     assert!(
-        serde_yaml::from_str::<config::AffinityMode>("sticky").is_err(),
+        busbar_contract::yaml::from_str::<config::AffinityMode>("sticky").is_err(),
         "'sticky' is not a supported affinity mode and must fail to deserialize"
     );
 }
@@ -676,7 +681,7 @@ fn test_allow_override_matches_obfuscated_spellings() {
 fn test_removed_member_keys_rejected_at_parse() {
     let legacy_cost =
         "members:\n  - model: m\n    cost_per_mtok: { input_utok: 1.0, output_utok: 2.0 }\n";
-    let err = serde_yaml::from_str::<config::PoolCfg>(legacy_cost)
+    let err = busbar_contract::yaml::from_str::<config::PoolCfg>(legacy_cost)
         .expect_err("the removed cost_per_mtok member key must fail to parse");
     assert!(
         err.to_string().contains("unknown field"),
@@ -684,14 +689,15 @@ fn test_removed_member_keys_rejected_at_parse() {
     );
 
     let legacy_target = "members:\n  - target: m\n";
-    let err = serde_yaml::from_str::<config::PoolCfg>(legacy_target)
+    let err = busbar_contract::yaml::from_str::<config::PoolCfg>(legacy_target)
         .expect_err("the retired target: member key must fail to parse");
     assert!(
         err.to_string().contains("unknown field"),
         "expected an unknown-field error for target; got: {err}"
     );
 
-    let ok = serde_yaml::from_str::<config::PoolCfg>("members:\n  - model: m\n").unwrap();
+    let ok =
+        busbar_contract::yaml::from_str::<config::PoolCfg>("members:\n  - model: m\n").unwrap();
     assert_eq!(ok.members[0].model, "m");
 }
 
@@ -863,7 +869,7 @@ fn parse_auth(yaml: &str) -> config::AuthCfg {
         #[serde(default, rename = "identity-providers")]
         identity_providers: config::IdentityProviders,
     }
-    let doc: Doc = serde_yaml::from_str(yaml).expect("auth yaml parses");
+    let doc: Doc = busbar_contract::yaml::from_str(yaml).expect("auth yaml parses");
     let mut errors = Vec::new();
     let out = config::resolve_auth(&doc.auth, &doc.identity_providers, &mut errors);
     assert!(
@@ -1371,7 +1377,7 @@ static FLAT_PLANE: crate::plane_driver::registry::PlaneDeclaration =
     };
 
 fn card_yaml(y: &str) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
-    serde_yaml::from_str(y).expect("a card parses")
+    busbar_contract::yaml::from_str(y).expect("a card parses")
 }
 
 fn plane_card(
@@ -1383,7 +1389,11 @@ fn plane_card(
         "{plane}{}{lane}",
         busbar_kernel_ledger::cost::PLANE_LANE_SEP
     );
-    [(key, serde_yaml::from_str(entry).expect("an entry parses"))].into()
+    [(
+        key,
+        busbar_contract::yaml::from_str(entry).expect("an entry parses"),
+    )]
+    .into()
 }
 
 #[test]

@@ -312,7 +312,7 @@ impl PreparedSection<'_> {
 fn prepare_admission<'a>(
     d: &InstanceDecl,
     services: &'a KernelServices,
-    section: (&str, &serde_yaml::Value),
+    section: (&str, &busbar_contract::yaml::Value),
 ) -> Result<PreparedSection<'a>, String> {
     if d.conditional_records_optional && !d.conditional_records {
         return Err("optional record transactions require declared protocol support".into());
@@ -363,7 +363,7 @@ impl PlaneDriver {
         config: DriverConfig,
         money: Arc<dyn MoneySeam>,
         services: Arc<KernelServices>,
-        section: (&str, &serde_yaml::Value),
+        section: (&str, &busbar_contract::yaml::Value),
     ) -> Result<Self, String> {
         let d = calls.declared();
         prepare_admission(&d, &services, section)?.commit().await?;
@@ -392,7 +392,7 @@ impl PlaneDriver {
     /// Prepare the same host facts and work bounds as initial admission for a new section.
     pub fn prepare_section(
         &self,
-        section: (&str, &serde_yaml::Value),
+        section: (&str, &busbar_contract::yaml::Value),
     ) -> Result<PreparedSection<'_>, String> {
         prepare_admission(&self.calls.declared(), &self.services, section)
     }
@@ -1890,7 +1890,7 @@ mod section_admission_tests {
             conditional_record_kinds: vec![0],
             ..Default::default()
         };
-        let section = serde_yaml::Value::Null;
+        let section = busbar_contract::yaml::Value::Null;
         assert!(prepare_admission(&declaration, &services, ("sample", &section)).is_err());
         declaration.conditional_records_optional = true;
         let prepared = prepare_admission(&declaration, &services, ("sample", &section)).unwrap();
@@ -1923,8 +1923,8 @@ mod section_admission_tests {
         }
     }
 
-    fn section(key: &str, max_live: usize) -> serde_yaml::Value {
-        serde_yaml::from_str(&format!(
+    fn section(key: &str, max_live: usize) -> busbar_contract::yaml::Value {
+        busbar_contract::yaml::from_str(&format!(
             "peer:\n  pin: {{mechanism: rooted, key: '{key}'}}\nwork: {{max_live: {max_live}, retain_s: 7}}"
         ))
         .expect("the section parses")

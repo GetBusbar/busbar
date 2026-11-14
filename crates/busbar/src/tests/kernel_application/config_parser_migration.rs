@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::yaml::{self, prelude::*};
 use busbar_migrations::config::migrate::*;
 
-fn migrate_to_value(raw: &str) -> (MigrateOutput, serde_yaml::Value) {
+fn migrate_to_value(raw: &str) -> (MigrateOutput, Value) {
     let out = migrate_config(raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let doc: Value = yaml::from_str(&out.yaml).expect("output is valid YAML");
     (out, doc)
 }
 
-fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
+fn dig<'a>(doc: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut cur = doc;
     for k in path {
-        cur = cur.as_mapping()?.get(serde_yaml::Value::from(*k))?;
+        cur = cur.as_mapping()?.get_key(Value::from(*k))?;
     }
     Some(cur)
 }
@@ -56,10 +57,10 @@ fn migrate_preserves_admin_values_when_auth_cannot_accept_them() {
         "auth: opaque\ngovernance: { admin_token: '${ADMIN_TOKEN}' }\n",
         "auth: { admin_auth: opaque }\ngovernance: { admin_token: '${ADMIN_TOKEN}' }\n",
     ] {
-        let original: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+        let original: Value = yaml::from_str(raw).unwrap();
         let (out, doc) = migrate_to_value(raw);
         for (key, value) in original.as_mapping().unwrap() {
-            assert_eq!(doc.as_mapping().unwrap().get(key), Some(value));
+            assert_eq!(doc.as_mapping().unwrap().get_key(key), Some(value));
         }
         assert!(!out.todos.is_empty());
         assert!(!out
@@ -88,11 +89,11 @@ fn migrate_preserves_unrecognized_pool_sections_and_destinations() {
         "agent_pools: { x: { members: [a] } }\nagents: opaque\n",
         "agent_pools: { x: { members: [a] } }\nagents: { pools: opaque }\n",
     ] {
-        let original: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+        let original: Value = yaml::from_str(raw).unwrap();
         let (out, doc) = migrate_to_value(raw);
         for (key, value) in original.as_mapping().unwrap() {
             assert_eq!(
-                doc.as_mapping().unwrap().get(key),
+                doc.as_mapping().unwrap().get_key(key),
                 Some(value),
                 "{}",
                 out.yaml
@@ -114,7 +115,7 @@ fn migrate_preserves_unrecognized_role_entries_and_budget_groups() {
     crate::root::migration_table::install();
     for role in ["opaque", "{ rpm_limit: 3, future_cap: 7 }"] {
         let raw = format!("auth: {{ chain: [test-idp-double] }}\ngroup_map: {{ staff: {role} }}\n");
-        let original: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let original: Value = yaml::from_str(&raw).unwrap();
         let (out, doc) = migrate_to_value(&raw);
         assert_eq!(dig(&doc, &["group_map"]), dig(&original, &["group_map"]));
         assert!(out.todos.iter().any(|t| t.contains("group_map")));
@@ -122,7 +123,7 @@ fn migrate_preserves_unrecognized_role_entries_and_budget_groups() {
     }
     for group in ["opaque", "{ max_budget_cents: 3, future_cap: 7 }"] {
         let raw = format!("governance: {{ budget_groups: {{ staff: {group} }} }}\n");
-        let original: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let original: Value = yaml::from_str(&raw).unwrap();
         let (out, doc) = migrate_to_value(&raw);
         assert_eq!(dig(&doc, &["governance"]), dig(&original, &["governance"]));
         assert!(out.todos.iter().any(|t| t.contains("budget_groups")));
@@ -135,7 +136,7 @@ fn migrate_preserves_non_string_export_keys() {
     crate::dist_root_install::install();
     crate::root::migration_table::install();
     let raw = "export:\n  7: { module: unknown-sink, settings: { keep: original } }\n";
-    let original: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+    let original: Value = yaml::from_str(raw).unwrap();
     let (out, doc) = migrate_to_value(raw);
     assert_eq!(dig(&doc, &["export"]), dig(&original, &["export"]));
     assert!(out.todos.iter().any(|t| t.contains("export")));
@@ -150,10 +151,10 @@ fn migrate_optional_null_auth_preserves_top_level_admin_chain() {
     );
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
-        Some(&vec![serde_yaml::Value::from("test-idp-double")])
+        Some(&vec![Value::from("test-idp-double")])
     );
     assert!(dig(&doc, &["admin_auth"]).is_none());
-    let (_, again) = migrate_to_value(&serde_yaml::to_string(&doc).unwrap());
+    let (_, again) = migrate_to_value(&yaml::to_string(&doc).unwrap());
     assert_eq!(doc, again);
 }
 
@@ -170,14 +171,14 @@ fn migrate_optional_null_auth_preserves_governance_admin_token() {
         let (_, doc) = migrate_to_value(&raw);
         assert_eq!(
             dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
-            Some(&vec![serde_yaml::Value::from(op)])
+            Some(&vec![Value::from(op)])
         );
         assert_eq!(
             dig(&doc, &["identity-providers", op, "token", "env"]).and_then(|v| v.as_str()),
             Some("MIGRATION_ADMIN_TOKEN")
         );
         assert!(dig(&doc, &["governance"]).is_none());
-        let (_, again) = migrate_to_value(&serde_yaml::to_string(&doc).unwrap());
+        let (_, again) = migrate_to_value(&yaml::to_string(&doc).unwrap());
         assert_eq!(doc, again);
     }
 }
@@ -198,7 +199,7 @@ fn migrate_identity_providers_preserves_conflicting_typed_fields() {
              providers: {{}}\nmodels: {{}}\npools: {{}}\n"
         );
         let (out, doc) = migrate_to_value(&raw);
-        let original: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let original: Value = yaml::from_str(&raw).unwrap();
         let admin_name = format!("{module}-admin");
         for (chain, name) in [("chain", module), ("admin_auth", admin_name.as_str())] {
             let original_entry = &dig(&original, &["auth", chain])
@@ -207,7 +208,7 @@ fn migrate_identity_providers_preserves_conflicting_typed_fields() {
                 .unwrap()[0];
             assert_eq!(
                 dig(&doc, &["auth", chain]).and_then(|v| v.as_sequence()),
-                Some(&vec![serde_yaml::Value::from(name)])
+                Some(&vec![Value::from(name)])
             );
             assert_eq!(
                 dig(&doc, &["identity-providers", name, key]),
@@ -220,7 +221,7 @@ fn migrate_identity_providers_preserves_conflicting_typed_fields() {
         }
         assert!(out.todos.iter().any(|t| t.contains(&admin_name)));
         assert!(!out.todos.iter().any(|t| t.contains("ADMIN_TOKEN")));
-        let (_, again) = migrate_to_value(&serde_yaml::to_string(&doc).unwrap());
+        let (_, again) = migrate_to_value(&yaml::to_string(&doc).unwrap());
         assert_eq!(doc, again);
     }
 }
@@ -242,7 +243,7 @@ fn migrate_identity_providers_still_deduplicates_equal_and_complementary_fields(
         let (_, doc) = migrate_to_value(&raw);
         assert_eq!(
             dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
-            Some(&vec![serde_yaml::Value::from(op)])
+            Some(&vec![Value::from(op)])
         );
         assert_eq!(
             dig(&doc, &["identity-providers", op, "token", "env"]).and_then(|v| v.as_str()),
@@ -407,10 +408,7 @@ pools: {}
 
     for k in ["group_map", "admin_auth", "modules"] {
         assert!(
-            doc.as_mapping()
-                .unwrap()
-                .get(serde_yaml::Value::from(k))
-                .is_none(),
+            doc.as_mapping().unwrap().get_key(Value::from(k)).is_none(),
             "top-level `{k}` must be gone after migration"
         );
     }
@@ -483,21 +481,21 @@ models:
 pools: {}
 "#;
     let out = migrate_config(raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    let doc: Value = yaml::from_str(&out.yaml).unwrap();
     let card = doc
         .as_mapping()
         .unwrap()
-        .get(serde_yaml::Value::from("rate_card"))
+        .get_key(Value::from("rate_card"))
         .and_then(|v| v.as_mapping())
         .expect("rate_card synthesized");
     for m in ["m1", "m2"] {
         let entry = card
-            .get(serde_yaml::Value::from(m))
+            .get_key(Value::from(m))
             .and_then(|v| v.as_mapping())
             .unwrap();
         assert_eq!(
             entry
-                .get(serde_yaml::Value::from("input_utok"))
+                .get_key(Value::from("input_utok"))
                 .and_then(|v| v.as_f64()),
             Some(50.0),
             "5 cents/1k = 50 micro-units/token"
@@ -522,14 +520,14 @@ pools:
     policy: cheapest
 "#;
     let out = migrate_config(raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    let doc: Value = yaml::from_str(&out.yaml).unwrap();
     let hooks = doc
         .as_mapping()
-        .and_then(|m| m.get(serde_yaml::Value::from("pools")))
+        .and_then(|m| m.get_key(Value::from("pools")))
         .and_then(|v| v.as_mapping())
-        .and_then(|m| m.get(serde_yaml::Value::from("fast")))
+        .and_then(|m| m.get_key(Value::from("fast")))
         .and_then(|v| v.as_mapping())
-        .and_then(|m| m.get(serde_yaml::Value::from("hooks")))
+        .and_then(|m| m.get_key(Value::from("hooks")))
         .and_then(|v| v.as_sequence())
         .expect("policy became a hooks list");
     assert_eq!(hooks[0].as_str(), Some("cheapest"));
@@ -667,22 +665,22 @@ pools:
       - { target: widget, weight: 1 }
 "#;
     let out = migrate_config(raw).expect("migrates");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let doc: Value = yaml::from_str(&out.yaml).expect("output is valid YAML");
     let auth = doc
         .as_mapping()
         .unwrap()
-        .get(serde_yaml::Value::from("auth"))
+        .get_key(Value::from("auth"))
         .and_then(|v| v.as_mapping())
         .expect("auth mapping");
 
     let bound_scope = auth
-        .get(serde_yaml::Value::from("role_bindings"))
+        .get_key(Value::from("role_bindings"))
         .and_then(|v| v.as_mapping())
-        .and_then(|m| m.get(serde_yaml::Value::from("test-idp-double")))
+        .and_then(|m| m.get_key(Value::from("test-idp-double")))
         .and_then(|v| v.as_mapping())
-        .and_then(|m| m.get(serde_yaml::Value::from("minter")))
+        .and_then(|m| m.get_key(Value::from("minter")))
         .and_then(|v| v.as_mapping())
-        .and_then(|m| m.get(serde_yaml::Value::from("admin_scope")))
+        .and_then(|m| m.get_key(Value::from("admin_scope")))
         .and_then(|v| v.as_str());
     assert_eq!(
         bound_scope,
@@ -701,7 +699,7 @@ pools:
         "the retired `hooks-register` max_admin_scope must be rewritten to `full`; got {oidc_cap:?}"
     );
     let chain = auth
-        .get(serde_yaml::Value::from("chain"))
+        .get_key(Value::from("chain"))
         .and_then(|v| v.as_sequence())
         .expect("chain sequence");
     assert!(
@@ -798,14 +796,14 @@ global_hooks:
         defs.iter().find_map(|(_, d)| {
             let d = d.as_mapping()?;
             let url = d
-                .get(serde_yaml::Value::from("settings"))?
+                .get_key(Value::from("settings"))?
                 .as_mapping()?
-                .get(serde_yaml::Value::from("url"))?
+                .get_key(Value::from("url"))?
                 .as_str()?;
             if !url.ends_with(url_suffix) {
                 return None;
             }
-            let phase = d.get(serde_yaml::Value::from("phase"))?.as_sequence()?;
+            let phase = d.get_key(Value::from("phase"))?.as_sequence()?;
             phase.first()?.as_str().map(str::to_string)
         })
     };
@@ -949,7 +947,7 @@ pools: {}
         out.changes
     );
 
-    let migrated_yaml = serde_yaml::to_string(&doc).unwrap();
+    let migrated_yaml = yaml::to_string(&doc).unwrap();
     let deploy: busbar_kernel::config::DeployCfg =
         busbar_kernel::config::deploy_from_yaml_str(&migrated_yaml)
             .expect("the migrated config must boot-parse");
@@ -990,12 +988,12 @@ fn migrate_never_drops_a_malformed_auth_block() {
                 out.yaml
             )
         });
-        let original: serde_yaml::Value = serde_yaml::from_str(raw_auth).unwrap();
+        let original: Value = yaml::from_str(raw_auth).unwrap();
         assert_eq!(
             Some(kept),
             original
                 .as_mapping()
-                .and_then(|m| m.get(serde_yaml::Value::from("auth"))),
+                .and_then(|m| m.get_key(Value::from("auth"))),
             "a malformed `auth:` ({shape}) must be carried through EXACTLY as written"
         );
         assert!(
@@ -1114,13 +1112,13 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     );
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
-        Some(&vec![serde_yaml::Value::from("test-idp-double-admin")]),
+        Some(&vec![Value::from("test-idp-double-admin")]),
         "the admin plane must REFERENCE the split definition:\n{}",
         out.yaml
     );
     assert_eq!(
         dig(&doc, &["auth", "chain"]).and_then(|v| v.as_sequence()),
-        Some(&vec![serde_yaml::Value::from("test-idp-double")]),
+        Some(&vec![Value::from("test-idp-double")]),
         "the data plane keeps referencing the original definition"
     );
     assert!(
@@ -1140,16 +1138,13 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
         .and_then(|v| v.as_mapping())
         .expect("definitions");
     assert!(
-        defs.contains_key(serde_yaml::Value::from("test-idp-double"))
-            && !defs.contains_key(serde_yaml::Value::from("test-idp-double-admin")),
+        defs.contains_key(Value::from("test-idp-double"))
+            && !defs.contains_key(Value::from("test-idp-double-admin")),
         "identical per-plane settings must still DEDUPE to one definition: {defs:?}"
     );
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
-        Some(&vec![
-            serde_yaml::Value::from("test-idp-double"),
-            serde_yaml::Value::from("tokens")
-        ]),
+        Some(&vec![Value::from("test-idp-double"), Value::from("tokens")]),
         "both planes reference the ONE deduped definition"
     );
 }
@@ -1176,7 +1171,7 @@ pools: {}
             .and_then(|v| v.as_sequence())
             .and_then(|s| s.first())
             .and_then(|l| l.as_mapping())
-            .and_then(|m| m.get(serde_yaml::Value::from("per")))
+            .and_then(|m| m.get_key(Value::from("per")))
             .and_then(|v| v.as_str())
             .unwrap_or("<missing>")
             .to_string()
@@ -1237,7 +1232,7 @@ models: {}
 pools: {}
 ";
     let (out, doc) = migrate_to_value(raw);
-    let limit = |group: &str| -> serde_yaml::Mapping {
+    let limit = |group: &str| -> Mapping {
         dig(&doc, &["groups", group, "limits"])
             .and_then(|v| v.as_sequence())
             .and_then(|s| s.first())
@@ -1245,22 +1240,22 @@ pools: {}
             .cloned()
             .unwrap_or_default()
     };
-    let field = |group: &str, key: &str| -> serde_yaml::Value {
+    let field = |group: &str, key: &str| -> Value {
         limit(group)
-            .get(serde_yaml::Value::from(key))
+            .get_key(Value::from(key))
             .cloned()
-            .unwrap_or(serde_yaml::Value::Null)
+            .unwrap_or(Value::Null)
     };
 
     for group in ["annual-team", "annual-alias"] {
         assert_eq!(
             field(group, "per"),
-            serde_yaml::Value::from("month"),
+            Value::from("month"),
             "{group}: yearly lands on the longest rolling window"
         );
         assert_eq!(
             field(group, "budget"),
-            serde_yaml::Value::from(100000u64),
+            Value::from(100000u64),
             "{group}: 1_200_000/year must become 100_000/month, NOT 1_200_000/month — carrying \
              the amount over unchanged is a 12x cap increase the operator never wrote"
         );
@@ -1268,18 +1263,15 @@ pools: {}
 
     assert_eq!(
         field("tiny-annual", "budget"),
-        serde_yaml::Value::from(1u64),
+        Value::from(1u64),
         "6/year floors to 1/month — tighter than exact, and never the `budget: 0` that would make \
          the migrated config refuse to boot"
     );
 
-    assert_eq!(
-        field("weekly-team", "per"),
-        serde_yaml::Value::from("month")
-    );
+    assert_eq!(field("weekly-team", "per"), Value::from("month"));
     assert_eq!(
         field("weekly-team", "budget"),
-        serde_yaml::Value::from(700000u64),
+        Value::from(700000u64),
         "weekly -> month is already fail-CLOSED; rescaling it would loosen the cap"
     );
 
@@ -1310,31 +1302,28 @@ models: {}
 pools: {}
 ";
     let (out, doc) = migrate_to_value(raw);
-    let field = |group: &str, key: &str| -> serde_yaml::Value {
+    let field = |group: &str, key: &str| -> Value {
         dig(&doc, &["groups", group, "limits"])
             .and_then(|v| v.as_sequence())
             .and_then(|s| s.first())
             .and_then(|l| l.as_mapping())
-            .and_then(|m| m.get(serde_yaml::Value::from(key)))
+            .and_then(|m| m.get_key(Value::from(key)))
             .cloned()
-            .unwrap_or(serde_yaml::Value::Null)
+            .unwrap_or(Value::Null)
     };
 
-    assert_eq!(
-        field("quarter-team", "per"),
-        serde_yaml::Value::from("month")
-    );
+    assert_eq!(field("quarter-team", "per"), Value::from("month"));
     assert_eq!(
         field("quarter-team", "budget"),
-        serde_yaml::Value::from(300000u64),
+        Value::from(300000u64),
         "900_000/quarter must become 300_000/month; carrying it unchanged loosens the cap 3x"
     );
 
     for group in ["biannual-team", "semiannual-team"] {
-        assert_eq!(field(group, "per"), serde_yaml::Value::from("month"));
+        assert_eq!(field(group, "per"), Value::from("month"));
         assert_eq!(
             field(group, "budget"),
-            serde_yaml::Value::from(100000u64),
+            Value::from(100000u64),
             "{group}: 600_000/half-year must become 100_000/month; unchanged loosens the cap 6x"
         );
     }
@@ -1465,7 +1454,7 @@ export:
             .unwrap_or_else(|| panic!("export.{name}.streams was not written"));
         assert_eq!(
             got,
-            &serde_yaml::from_str::<serde_yaml::Value>(&format!("[{stream}]")).unwrap(),
+            &yaml::from_str::<Value>(&format!("[{stream}]")).unwrap(),
             "export.{name}.streams"
         );
         assert!(
@@ -1486,9 +1475,9 @@ export:
         .collect();
     assert_eq!(names, vec!["metrics", "req-log", "tail", "traces"]);
 
-    let migrated_yaml = serde_yaml::to_string(&doc).unwrap();
+    let migrated_yaml = yaml::to_string(&doc).unwrap();
     let defs: busbar_kernel::config::ExportDefs =
-        serde_yaml::from_value(dig(&doc, &["export"]).unwrap().clone())
+        yaml::from_value(dig(&doc, &["export"]).unwrap().clone())
             .expect("the migrated export block must parse");
     let mut errs = Vec::new();
     let export = busbar_kernel::config::resolve_export(&built_ins(&defs), &mut errs);
@@ -1553,7 +1542,7 @@ fn migrate_export_flags_the_retired_audit_stream() {
     let streams = dig(&doc, &["export", "soc2", "streams"]).unwrap();
     assert_eq!(
         streams,
-        &serde_yaml::from_str::<serde_yaml::Value>("[logs, audit]").unwrap(),
+        &yaml::from_str::<Value>("[logs, audit]").unwrap(),
         "the operator's declaration must be left EXACTLY as written"
     );
     assert!(
@@ -1581,12 +1570,12 @@ fn migrate_moves_tool_and_agent_pools_under_their_verb() {
     );
     assert_eq!(
         dig(&doc, &[tools, "pools", "search", "members"]).unwrap(),
-        &serde_yaml::from_str::<serde_yaml::Value>("[search-eu, search-us]").unwrap(),
+        &yaml::from_str::<Value>("[search-eu, search-us]").unwrap(),
         "the tool pool moved under its verb verbatim"
     );
     assert_eq!(
         dig(&doc, &[tools, "pools", "search", "repeatable"]).unwrap(),
-        &serde_yaml::from_str::<serde_yaml::Value>("[find]").unwrap(),
+        &yaml::from_str::<Value>("[find]").unwrap(),
         "the neutral `repeatable:` knob is carried"
     );
     assert!(
@@ -1685,7 +1674,7 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
     let (out, doc) = migrate_to_value(raw);
     assert_eq!(
         dig(&doc, &["hooks", "audit", "phase"]).unwrap(),
-        &serde_yaml::from_str::<serde_yaml::Value>("[response]").unwrap(),
+        &yaml::from_str::<Value>("[response]").unwrap(),
         "the single-stage `at:` became a `phase:` list"
     );
     assert!(
@@ -1714,14 +1703,11 @@ tools:
       pin: { mechanism: unpinned }
 "#;
     let out = migrate_config(raw).expect("migrates");
-    let root: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("valid yaml");
-    let get = |keys: &[&str]| -> serde_yaml::Value {
+    let root: Value = yaml::from_str(&out.yaml).expect("valid yaml");
+    let get = |keys: &[&str]| -> Value {
         let mut v = root.clone();
         for k in keys {
-            v = v
-                .get(serde_yaml::Value::from(*k))
-                .cloned()
-                .unwrap_or(serde_yaml::Value::Null);
+            v = v.get(Value::from(*k)).cloned().unwrap_or(Value::Null);
         }
         v
     };

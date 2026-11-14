@@ -469,7 +469,7 @@ async fn completion_retirement_preserves_primary_settlement_in_both_orders() {
             },
             money.clone(),
             services(),
-            ("test_plane", &serde_yaml::Value::Null),
+            ("test_plane", &busbar_contract::yaml::Value::Null),
         )
         .await
         .unwrap()
@@ -546,7 +546,7 @@ async fn completion_retirement_dropped_before_consumption_sweeps_without_duplica
         },
         money.clone(),
         services(),
-        ("test_plane", &serde_yaml::Value::Null),
+        ("test_plane", &busbar_contract::yaml::Value::Null),
     )
     .await
     .unwrap()

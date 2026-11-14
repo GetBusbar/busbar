@@ -95,6 +95,8 @@ pub mod unit;
 pub mod upstream;
 pub mod vocab;
 pub mod wire;
+/// YAML: serde-saphyr pinned to 1.5.5's meaning, with ciborium's ordered `Value` as the tree.
+pub mod yaml;
 
 /// THE HEADER VOCABULARY the protocol-seam shapes name (`HeaderMap`, `HeaderName`, `HeaderValue`,
 pub use http;

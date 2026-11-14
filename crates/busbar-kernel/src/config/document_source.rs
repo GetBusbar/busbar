@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
-use serde::de::{DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
+use busbar_contract::yaml::{MappingExt, Value, ValueExt};
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
-use serde_yaml::Value;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{wipe_yaml, DocumentPatch, WipedYaml};
@@ -33,7 +33,6 @@ impl<T: Zeroize> Drop for PathMap<T> {
 struct Spellings {
     values: PathMap<Zeroizing<String>>,
     keys: PathMap<Zeroizing<String>>,
-    key_tags: PathMap<WipedYaml>,
     map_names: PathMap<Vec<Zeroizing<String>>>,
 }
 
@@ -45,21 +44,24 @@ pub(super) struct SourceDocument {
 impl SourceDocument {
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut wide = HashSet::new();
-        let value = ReadShape { wide: &mut wide }
-            .deserialize(serde_yaml::Deserializer::from_str(text))
-            .map_err(|_| "invalid configuration YAML".to_owned())?;
+        let value = busbar_contract::yaml::with_deserializer(text, |d| {
+            ReadShape { wide: &mut wide }.deserialize(d)
+        })
+        .map_err(|_| "invalid configuration YAML".to_owned())?;
         let mut source = Self {
             value,
             spellings: Spellings::default(),
         };
         let mut path = Zeroizing::new(Vec::new());
-        ReadSource {
-            shape: &source.value.0,
-            path: &mut path,
-            spellings: &mut source.spellings,
-            wide: &wide,
-        }
-        .deserialize(serde_yaml::Deserializer::from_str(text))
+        busbar_contract::yaml::with_deserializer(text, |d| {
+            ReadSource {
+                shape: &source.value.0,
+                path: &mut path,
+                spellings: &mut source.spellings,
+                wide: &wide,
+            }
+            .deserialize(d)
+        })
         .map_err(|_| "invalid configuration YAML".to_owned())?;
         normalize_keys(&mut source.value.0, &mut path, &source.spellings);
         Ok(source)
@@ -90,7 +92,6 @@ impl SourceDocument {
         }
         forget(&mut self.spellings.values, &changed, false);
         forget(&mut self.spellings.keys, &changed, true);
-        forget(&mut self.spellings.key_tags, &changed, true);
         // Record explicit numeric spelling at the resolved append index before removals shift it.
         if let Some(set) = patch.0.get("set").and_then(serde_json::Value::as_object) {
             for ((_, value), (path, _)) in set.iter().zip(&prepared.set) {
@@ -104,7 +105,6 @@ impl SourceDocument {
             if sequence_parent(&self.value.0, path) {
                 shift_after_remove(&mut self.spellings.values, path);
                 shift_after_remove(&mut self.spellings.keys, path);
-                shift_after_remove(&mut self.spellings.key_tags, path);
             }
         }
         prepared.apply(&mut self.value.0);
@@ -198,7 +198,7 @@ fn first_sequence(mut value: &Value, path: &[String]) -> Option<Zeroizing<Vec<St
         if value.as_sequence().is_some() {
             return Some(Zeroizing::new(path[..depth].to_vec()));
         }
-        value = value.as_mapping()?.get(key.as_str())?;
+        value = value.as_mapping()?.get_key(key.as_str())?;
     }
     None
 }
@@ -209,7 +209,7 @@ fn subtree_bytes(
 ) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     let mut value = &document.value.0;
     for key in prefix {
-        let Some(child) = value.as_mapping().and_then(|map| map.get(key.as_str())) else {
+        let Some(child) = value.as_mapping().and_then(|map| map.get_key(key.as_str())) else {
             return Ok(None);
         };
         value = child;
@@ -229,7 +229,7 @@ fn subtree_bytes(
 fn sequence_parent(mut value: &Value, path: &[String]) -> bool {
     for key in &path[..path.len() - 1] {
         if let Some(map) = value.as_mapping() {
-            let Some(child) = map.get(key.as_str()) else {
+            let Some(child) = map.get_key(key.as_str()) else {
                 return false;
             };
             value = child;
@@ -330,29 +330,29 @@ impl<'de> Visitor<'de> for ReadShape<'_> {
         Ok(WipedYaml(Value::Bool(value)))
     }
     fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<WipedYaml, E> {
-        Ok(WipedYaml(Value::Number(value.into())))
+        Ok(WipedYaml(Value::from(value)))
     }
     fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<WipedYaml, E> {
-        Ok(WipedYaml(Value::Number(value.into())))
+        Ok(WipedYaml(Value::from(value)))
     }
     fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<WipedYaml, E> {
-        Ok(WipedYaml(Value::Number(value.into())))
+        Ok(WipedYaml(Value::Float(value)))
     }
     fn visit_i128<E: serde::de::Error>(self, value: i128) -> Result<WipedYaml, E> {
         let text = value.to_string();
         self.wide.insert(text.as_ptr() as usize);
-        Ok(WipedYaml(Value::String(text)))
+        Ok(WipedYaml(Value::Text(text)))
     }
     fn visit_u128<E: serde::de::Error>(self, value: u128) -> Result<WipedYaml, E> {
         let text = value.to_string();
         self.wide.insert(text.as_ptr() as usize);
-        Ok(WipedYaml(Value::String(text)))
+        Ok(WipedYaml(Value::Text(text)))
     }
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<WipedYaml, E> {
-        Ok(WipedYaml(Value::String(value.to_owned())))
+        Ok(WipedYaml(Value::Text(value.to_owned())))
     }
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<WipedYaml, E> {
-        Ok(WipedYaml(Value::String(value)))
+        Ok(WipedYaml(Value::Text(value)))
     }
     fn visit_unit<E: serde::de::Error>(self) -> Result<WipedYaml, E> {
         Ok(WipedYaml(Value::Null))
@@ -364,40 +364,29 @@ impl<'de> Visitor<'de> for ReadShape<'_> {
         self.deserialize(de)
     }
     fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<WipedYaml, S::Error> {
-        let mut value = WipedYaml(Value::Sequence(Vec::new()));
+        let mut value = WipedYaml(Value::Array(Vec::new()));
         while let Some(mut child) = seq.next_element_seed(ReadShape { wide: self.wide })? {
             value
                 .0
                 .as_sequence_mut()
                 .expect("sequence")
-                .push(std::mem::take(&mut child.0));
+                .push(std::mem::replace(&mut child.0, Value::Null));
         }
         Ok(value)
     }
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<WipedYaml, M::Error> {
-        let mut value = WipedYaml(Value::Mapping(Default::default()));
+        let mut value = WipedYaml(Value::Map(Vec::new()));
         while let Some(mut key) = map.next_key_seed(ReadShape { wide: self.wide })? {
             if value.0.as_mapping().expect("mapping").contains_key(&key.0) {
                 return Err(serde::de::Error::custom("duplicate source map key"));
             }
             let mut child = map.next_value_seed(ReadShape { wide: self.wide })?;
-            value
-                .0
-                .as_mapping_mut()
-                .expect("mapping")
-                .insert(std::mem::take(&mut key.0), std::mem::take(&mut child.0));
+            value.0.as_mapping_mut().expect("mapping").insert_key(
+                std::mem::replace(&mut key.0, Value::Null),
+                std::mem::replace(&mut child.0, Value::Null),
+            );
         }
         Ok(value)
-    }
-    fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<WipedYaml, A::Error> {
-        let (tag, variant) = data.variant::<String>()?;
-        let mut value = variant.newtype_variant_seed(ReadShape { wide: self.wide })?;
-        Ok(WipedYaml(Value::Tagged(Box::new(
-            serde_yaml::value::TaggedValue {
-                tag: serde_yaml::value::Tag::new(tag),
-                value: std::mem::take(&mut value.0),
-            },
-        ))))
     }
 }
 
@@ -411,14 +400,12 @@ impl<'de> DeserializeSeed<'de> for ReadSource<'_> {
     type Value = ();
     fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
         match self.shape {
-            Value::Tagged(tag) => ReadSource {
-                shape: &tag.value,
-                ..self
-            }
-            .deserialize(de),
-            Value::Mapping(_) => de.deserialize_map(self),
-            Value::Sequence(_) => de.deserialize_seq(self),
-            Value::String(value) if !self.wide.contains(&(value.as_ptr() as usize)) => {
+            Value::Map(_) => de.deserialize_map(self),
+            Value::Array(_) => de.deserialize_seq(self),
+            // The reader refuses null into a string, and every null spelling means the same
+            // null, so no spelling is kept: it is written back as the emitter's null.
+            Value::Null => serde::de::IgnoredAny::deserialize(de).map(|_| ()),
+            Value::Text(value) if !self.wide.contains(&(value.as_ptr() as usize)) => {
                 // Decoded string content is already retained by the wiping source tree.
                 let _text = Zeroizing::new(String::deserialize(de)?);
                 Ok(())
@@ -459,12 +446,6 @@ impl<'de> Visitor<'de> for ReadSource<'_> {
                 return Err(serde::de::Error::custom("duplicate source map key"));
             }
             self.path.push((*name).clone());
-            if matches!(key, Value::Tagged(_)) {
-                self.spellings
-                    .key_tags
-                    .0
-                    .insert(self.path.clone(), WipedYaml(key.clone()));
-            }
             if !key.is_string() {
                 self.spellings
                     .keys
@@ -513,18 +494,17 @@ impl<'de> Visitor<'de> for ReadSource<'_> {
 
 fn normalize_keys(value: &mut Value, path: &mut Vec<String>, spellings: &Spellings) {
     match value {
-        Value::Tagged(tag) => normalize_keys(&mut tag.value, path, spellings),
-        Value::Mapping(map) => {
+        Value::Map(map) => {
             let names = &spellings.map_names.0[path.as_slice()];
             for ((mut key, mut value), name) in std::mem::take(map).into_iter().zip(names) {
                 wipe_yaml(&mut key);
                 path.push((**name).clone());
                 normalize_keys(&mut value, path, spellings);
                 path.pop().expect("path member").zeroize();
-                map.insert(Value::String((**name).clone()), value);
+                map.insert_key(Value::Text((**name).clone()), value);
             }
         }
-        Value::Sequence(values) => {
+        Value::Array(values) => {
             for (index, value) in values.iter_mut().enumerate() {
                 path.push(index.to_string());
                 normalize_keys(value, path, spellings);
@@ -543,30 +523,10 @@ fn quoted(bytes: &mut Vec<u8>, text: &str) -> Result<(), ()> {
 }
 fn container(value: &Value) -> bool {
     match value {
-        Value::Mapping(map) => !map.is_empty(),
-        Value::Sequence(seq) => !seq.is_empty(),
-        Value::Tagged(tag) => container(&tag.value),
+        Value::Map(map) => !map.is_empty(),
+        Value::Array(seq) => !seq.is_empty(),
         _ => false,
     }
-}
-fn tags<'a>(mut value: &'a Value, bytes: &mut Vec<u8>) -> Result<&'a Value, ()> {
-    while let Value::Tagged(tagged) = value {
-        // Let the YAML emitter encode tag URIs; the dummy scalar contains no source value.
-        let dummy = Value::Tagged(Box::new(serde_yaml::value::TaggedValue {
-            tag: tagged.tag.clone(),
-            value: Value::Null,
-        }));
-        let mut encoded = Zeroizing::new(Vec::new());
-        serde_yaml::to_writer(&mut *encoded, &dummy).map_err(|_| ())?;
-        let end = encoded
-            .iter()
-            .position(|byte| byte.is_ascii_whitespace())
-            .ok_or(())?;
-        bytes.extend_from_slice(&encoded[..end]);
-        bytes.push(b' ');
-        value = &tagged.value;
-    }
-    Ok(value)
 }
 fn after_marker(
     value: &Value,
@@ -576,12 +536,11 @@ fn after_marker(
     bytes: &mut Vec<u8>,
 ) -> Result<(), ()> {
     bytes.push(b' ');
-    let untagged = tags(value, bytes)?;
-    if container(untagged) {
+    if container(value) {
         bytes.push(b'\n');
-        emit(untagged, path, depth + 2, spellings, bytes)
+        emit(value, path, depth + 2, spellings, bytes)
     } else {
-        scalar(untagged, path, spellings, bytes)?;
+        scalar(value, path, spellings, bytes)?;
         bytes.push(b'\n');
         Ok(())
     }
@@ -593,20 +552,12 @@ fn emit(
     spellings: &Spellings,
     bytes: &mut Vec<u8>,
 ) -> Result<(), ()> {
-    let tagged_container = matches!(value, Value::Tagged(_)) && container(value);
-    let value = tags(value, bytes)?;
-    if tagged_container {
-        bytes.push(b'\n');
-    }
     match value {
-        Value::Mapping(map) if !map.is_empty() => {
+        Value::Map(map) if !map.is_empty() => {
             for (key, value) in map {
                 let key = key.as_str().ok_or(())?;
                 path.push(key.to_owned());
                 indent(bytes, depth);
-                if let Some(tagged) = spellings.key_tags.0.get(path.as_slice()) {
-                    tags(&tagged.0, bytes)?;
-                }
                 if let Some(raw) = spellings.keys.0.get(path.as_slice()) {
                     bytes.extend_from_slice(raw.as_bytes());
                 } else {
@@ -617,7 +568,7 @@ fn emit(
                 path.pop().expect("path member").zeroize();
             }
         }
-        Value::Sequence(values) if !values.is_empty() => {
+        Value::Array(values) if !values.is_empty() => {
             for (index, value) in values.iter().enumerate() {
                 path.push(index.to_string());
                 indent(bytes, depth);
@@ -645,10 +596,10 @@ fn scalar(
         return Ok(());
     }
     match value {
-        Value::String(text) => quoted(bytes, text),
+        Value::Text(text) => quoted(bytes, text),
         _ => {
             let mut encoded = Zeroizing::new(Vec::new());
-            serde_yaml::to_writer(&mut *encoded, value).map_err(|_| ())?;
+            busbar_contract::yaml::to_writer(&mut *encoded, value).map_err(|_| ())?;
             while encoded
                 .last()
                 .is_some_and(|byte| byte.is_ascii_whitespace())

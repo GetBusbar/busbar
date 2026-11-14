@@ -94,10 +94,11 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 serde_urlencoded = "0.7"
-# YAML is yaml_serde, the YAML organization's maintained serde_yaml (the API and libyaml 0.2.5 parser
-# 1.5.5 shipped), under the `serde_yaml` name so call sites are unchanged. busbar-contract's git
-# consumers (the plugins) inherit it through this row.
-serde_yaml = { package = "yaml_serde", version = "0.10" }
+# YAML is serde-saphyr (YAML 1.2, forbid(unsafe_code)) behind `busbar_contract::yaml`, which pins
+# its options to 1.5.5's meaning; the untyped tree is ciborium's `Value` (ordered pairs, no unsafe).
+# busbar-contract's git consumers (the plugins) inherit both through these rows.
+serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
+ciborium = "0.2.2"
 sha2 = "0.10"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
