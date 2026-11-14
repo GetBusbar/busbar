@@ -136,7 +136,7 @@ fn a_model_serving_doors_ledger_lanes_are_its_actual_model_names() {
     );
     for kinds in [vec!["member"], Vec::new()] {
         reg.scope_kinds = kinds;
-        let mut lanes = section.ledger_lanes_for(&declaration_of(&reg));
+        let mut lanes = section.ledger_lanes_for(&declaration_of(Box::leak(Box::new(reg.clone()))));
         lanes.sort();
         assert_eq!(
             lanes,
@@ -152,7 +152,7 @@ fn a_model_serving_doors_ledger_lanes_are_its_actual_model_names() {
 #[test]
 fn a_model_map_owns_the_routed_entries_even_when_empty() {
     let reg = registration("third-party-models", "third_party_models");
-    let decl = declaration_of(&reg);
+    let decl = declaration_of(Box::leak(Box::new(reg.clone())));
     for (models, want) in [
         ("{}", Vec::<&str>::new()),
         (
@@ -189,7 +189,7 @@ fn named_doors_keep_their_explicit_scoped_registration_lanes() {
         )
         .unwrap(),
     );
-    let mut lanes = section.ledger_lanes_for(&declaration_of(&reg));
+    let mut lanes = section.ledger_lanes_for(&declaration_of(Box::leak(Box::new(reg.clone()))));
     lanes.sort();
     assert_eq!(
         lanes,
@@ -205,7 +205,7 @@ fn unpriced_and_fee_only_doors_add_no_resource_price_obligations() {
     let mut reg = registration("third-party-fees", "third_party_fees");
     for classes in [Vec::new(), vec![("request", "count")]] {
         reg.billable_classes = classes;
-        let decl = declaration_of(&reg);
+        let decl = declaration_of(Box::leak(Box::new(reg.clone())));
         for written in [
             "models: { actual-model: { provider: upstream } }\n",
             "actual-member: { url: 'https://example.test' }\n",
@@ -291,7 +291,7 @@ fn two_folds_under_one_key_are_two_rows_each_reading_its_own_door() {
     }
 
     let doorless = PlaneDecl::assemble(
-        declaration_of(&registration("door-fold-twice", NAMED)),
+        declaration_of(Box::leak(Box::new(registration("door-fold-twice", NAMED)))),
         door_hooks(true, false, false),
     );
     assert!(!is_door(&doorless));
@@ -629,10 +629,12 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
     }]);
     assert_eq!(listed(&slots, Some(&granted)), ["alpha"]);
     assert_eq!(
-        listed_for_plane(&slots, Some(&granted), decl.key),
+        listed_for_plane(&slots, Some(&granted), decl.key).collect::<Vec<_>>(),
         ["alpha"]
     );
-    assert!(listed_for_plane(&slots, Some(&granted), "another-plane").is_empty());
+    assert!(listed_for_plane(&slots, Some(&granted), "another-plane")
+        .next()
+        .is_none());
 
     // A name granted under one plane's scope does not grant the same spelling under another.
     let mut other_reg = registration("door-fold-other-listed", NAMED);
@@ -651,10 +653,12 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
         }),
     );
     assert_eq!(
-        listed_for_plane(&colliding, Some(&granted), decl.key),
+        listed_for_plane(&colliding, Some(&granted), decl.key).collect::<Vec<_>>(),
         ["alpha"]
     );
-    assert!(listed_for_plane(&colliding, Some(&granted), other_decl.key).is_empty());
+    assert!(listed_for_plane(&colliding, Some(&granted), other_decl.key)
+        .next()
+        .is_none());
     let pools_only = key(vec![ScopeRef::pool("zeta")]);
     assert!(listed(&slots, Some(&pools_only)).is_empty());
     let empty: std::collections::BTreeMap<
@@ -705,7 +709,7 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
             .expect("a provider")
             .into()
     };
-    let providers: std::collections::HashMap<String, crate::config::providers::ResolvedProvider> = [
+    let providers: crate::config::ResolvedProviders = [
         (
             "eng-a".to_string(),
             provider("protocol: one\nbase_url: http://a\napi_key: {module: fixture-source, settings: {slot: A}}\nerror_map: {'429': rate_limited}\n"),

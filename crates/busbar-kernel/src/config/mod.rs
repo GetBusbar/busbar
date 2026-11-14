@@ -344,6 +344,9 @@ fn mapping_key_repr(key: &serde_yaml::Value) -> String {
     }
 }
 
+/// The resolved providers by name (`RootCfg::providers`).
+pub type ResolvedProviders = foldhash::HashMap<String, ResolvedProvider>;
+
 /// The fully-resolved runtime config. NOT deserialized from YAML: the on-disk shape is `DeployCfg`
 /// (+ provider definitions), and `RootCfg` is constructed exclusively by [`resolve`]. It therefore
 /// carries no `Deserialize` derive and no field-level serde defaults — those would be inert, and
@@ -401,7 +404,7 @@ pub struct RootCfg {
     pub auth: Option<AuthCfg>,
     /// The resolved providers: each catalog definition merged with its deployment, the kernel-owned
     /// keys typed and the plane's an opaque table ([`ResolvedProvider`]).
-    pub providers: HashMap<String, ResolvedProvider>,
+    pub providers: ResolvedProviders,
     pub models: HashMap<String, ModelCfg>,
     pub pools: HashMap<String, PoolCfg>,
     /// The ALL-POOLS `upstream_credentials:` default, resolved from the reserved
@@ -1627,7 +1630,7 @@ pub fn resolve(
 
     let export = resolve_export(&deploy.export, &mut errors);
 
-    let mut resolved_providers: HashMap<String, ResolvedProvider> = HashMap::new();
+    let mut resolved_providers = ResolvedProviders::default();
 
     let resolve_provider_hook = crate::plane_driver::registry::plane_decl_for(
         crate::plane_driver::dispatch::fallback_key(),

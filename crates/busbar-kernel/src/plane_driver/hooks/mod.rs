@@ -26,7 +26,6 @@
 //! walk reports ([`super::FarEnd::candidates`]). A unit no hook binds pays nothing: no projection,
 //! no allocation beyond the binder's answer.
 
-use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -799,11 +798,16 @@ fn veto(status: u16, text: impl Into<String>) -> Stopped {
 }
 
 fn veto_by(status: u16, text: impl Into<String>, hook: &str) -> Stopped {
-    Stopped::Veto(Veto {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a vetoed request names its vetoing hook once, in the refusal"
+    )]
+    let veto = Stopped::Veto(Veto {
         status: u32::from(status),
         text: text.into(),
         hook: Some(hook.to_string()),
-    })
+    });
+    veto
 }
 
 fn stage_at<'a>(
@@ -857,23 +861,85 @@ enum Decided {
     },
 }
 
-static FAULT_WINDOW: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+/// The `(policy, pool)` pairs inside a failure window: a pair's first failure warns, its repeats are
+/// debug, and its next answer closes the window. Keyed by policy, then pool, so a lookup composes
+/// nothing.
+static FAULT_WINDOW: LazyLock<Mutex<foldhash::HashMap<String, foldhash::HashSet<String>>>> =
+    LazyLock::new(Mutex::default);
 
-fn fault_enter(key: &str) -> bool {
-    FAULT_WINDOW
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(key.to_string())
-}
-
-fn fault_clear(key: &str) {
-    let mut set = FAULT_WINDOW
+fn fault_enter(policy: &str, pool: &str) -> bool {
+    let mut window = FAULT_WINDOW
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !set.is_empty() {
-        set.remove(key);
+    if let Some(pools) = window.get_mut(policy) {
+        if pools.contains(pool) {
+            return false;
+        }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "error: a failing (policy, pool) pair is recorded once, when its window opens"
+        )]
+        pools.insert(pool.to_string());
+        return true;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: a failing (policy, pool) pair is recorded once, when its window opens"
+    )]
+    window.insert(
+        policy.to_string(),
+        std::iter::once(pool.to_string()).collect(),
+    );
+    true
+}
+
+fn fault_clear(policy: &str, pool: &str) {
+    let mut window = FAULT_WINDOW
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if window.is_empty() {
+        return;
+    }
+    if let Some(pools) = window.get_mut(policy) {
+        pools.remove(pool);
+    }
+}
+
+/// `raw`, kept in order where it names one of `candidates`, each index once (what
+/// [`RoutingDecision::from_ranked`] keeps), compacted in place.
+fn ranked(mut raw: Vec<usize>, candidates: &[Candidate<'_>]) -> RoutingDecision {
+    let mut kept = 0;
+    for i in 0..raw.len() {
+        let idx = raw[i];
+        if candidates.iter().any(|c| c.idx == idx) && !raw[..kept].contains(&idx) {
+            raw[kept] = idx;
+            kept += 1;
+        }
+    }
+    raw.truncate(kept);
+    if raw.is_empty() {
+        RoutingDecision::Abstain
+    } else {
+        RoutingDecision::Prefer(raw)
+    }
+}
+
+/// `tags`, each trimmed in place, the empty ones dropped, in order.
+fn trimmed_tags(mut tags: Vec<String>) -> Vec<String> {
+    let mut kept = 0;
+    for i in 0..tags.len() {
+        let tag = &mut tags[i];
+        let end = tag.trim_end().len();
+        tag.truncate(end);
+        let start = tag.len() - tag.trim_start().len();
+        tag.drain(..start);
+        if !tag.is_empty() {
+            tags.swap(kept, i);
+            kept += 1;
+        }
+    }
+    tags.truncate(kept);
+    tags
 }
 
 fn map_answer(
@@ -883,20 +949,14 @@ fn map_answer(
     on_empty: &PolicyOnError,
 ) -> Decided {
     match answer {
-        RoutingDecision::Prioritize(set) => {
-            let valid: HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
-            match RoutingDecision::from_ranked(set, &valid) {
-                RoutingDecision::Prefer(candidates) => Decided::Prioritize { candidates, name },
-                _ => Decided::Weighted,
-            }
-        }
-        RoutingDecision::Prefer(order) => {
-            let valid: HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
-            match RoutingDecision::from_ranked(order, &valid) {
-                RoutingDecision::Prefer(order) => Decided::Order { order, name },
-                _ => Decided::Weighted,
-            }
-        }
+        RoutingDecision::Prioritize(set) => match ranked(set, candidates) {
+            RoutingDecision::Prefer(candidates) => Decided::Prioritize { candidates, name },
+            _ => Decided::Weighted,
+        },
+        RoutingDecision::Prefer(order) => match ranked(order, candidates) {
+            RoutingDecision::Prefer(order) => Decided::Order { order, name },
+            _ => Decided::Weighted,
+        },
         RoutingDecision::Abstain => Decided::Weighted,
         RoutingDecision::Reject { status, message } => Decided::RejectRequest {
             status: clamp_reject_status(status),
@@ -920,10 +980,14 @@ fn coerce_on_error(
         return Decided::Reject;
     }
     match on_error {
-        PolicyOnError::First => Decided::Order {
-            order: candidates.iter().map(|c| c.idx).collect(),
-            name,
-        },
+        PolicyOnError::First => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a failed policy falls back to the candidates' own order, once"
+            )]
+            let order = candidates.iter().map(|c| c.idx).collect();
+            Decided::Order { order, name }
+        }
         PolicyOnError::Weighted | PolicyOnError::Reject => Decided::Weighted,
     }
 }
@@ -988,7 +1052,6 @@ impl Asked<'_> {
         {
             return (Decided::Reject, None);
         }
-        let key = format!("{}@{}", policy.name(), self.pool);
         let decided = match tokio::time::timeout(
             *timeout,
             policy.decide(&req, self.candidates, &ctx, *timeout),
@@ -996,13 +1059,13 @@ impl Asked<'_> {
         .await
         {
             Ok(Ok(answer)) => {
-                fault_clear(&key);
+                fault_clear(policy.name(), self.pool);
                 let decided = map_answer(answer, policy.name_arc(), self.candidates, on_empty);
                 let ran = applied(policy.name(), head_of(&decided), false);
                 return (decided, Some(ran));
             }
             Ok(Err(e)) => {
-                if fault_enter(&key) {
+                if fault_enter(policy.name(), self.pool) {
                     crate::diag_warn!(
                         ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
                         policy = policy.name(),
@@ -1023,7 +1086,7 @@ impl Asked<'_> {
                     .await
             }
             Err(_) => {
-                if fault_enter(&key) {
+                if fault_enter(policy.name(), self.pool) {
                     crate::diag_warn!(
                         ROUTING_POLICY_DEADLINE_EXCEEDED,
                         policy = policy.name(),
@@ -1086,7 +1149,6 @@ impl Asked<'_> {
             {
                 return Decided::Reject;
             }
-            let key = format!("{}@{}", fb.policy.name(), self.pool);
             match tokio::time::timeout(
                 fb.timeout,
                 fb.policy.decide(&fb_req, self.candidates, ctx, fb.timeout),
@@ -1094,7 +1156,7 @@ impl Asked<'_> {
             .await
             {
                 Ok(Ok(answer)) => {
-                    fault_clear(&key);
+                    fault_clear(fb.policy.name(), self.pool);
                     crate::diag_debug!(
                         ON_ERROR_FALLBACK_ANSWERED,
                         policy = &failed[..],
@@ -1105,7 +1167,7 @@ impl Asked<'_> {
                     return map_answer(answer, fb.policy.name_arc(), self.candidates, &fb.on_empty);
                 }
                 Ok(Err(e)) => {
-                    if fault_enter(&key) {
+                    if fault_enter(fb.policy.name(), self.pool) {
                         crate::diag_warn!(
                             ON_ERROR_FALLBACK_HOOK_FAILED,
                             fallback = fb.policy.name(),
@@ -1124,7 +1186,7 @@ impl Asked<'_> {
                     }
                 }
                 Err(_) => {
-                    if fault_enter(&key) {
+                    if fault_enter(fb.policy.name(), self.pool) {
                         crate::diag_warn!(
                             ON_ERROR_FALLBACK_DEADLINE_EXCEEDED,
                             fallback = fb.policy.name(),
@@ -1148,14 +1210,9 @@ impl Asked<'_> {
     }
 }
 
-fn candidates_of<'a>(
-    facts: &'a [CandidateFacts],
-    hooks: &UnitHooks,
-    keep: &HashSet<usize>,
-) -> Vec<Candidate<'a>> {
+fn candidates_of<'a>(facts: &'a [CandidateFacts], hooks: &UnitHooks) -> Vec<Candidate<'a>> {
     facts
         .iter()
-        .filter(|c| keep.contains(&c.idx))
         .map(|c| {
             let mut signals = c.route_cost.clone();
             let wants = &hooks.requested;
@@ -1198,17 +1255,21 @@ fn candidates_of<'a>(
         .collect()
 }
 
-fn narrow(keep: &mut HashSet<usize>, facts: &[CandidateFacts], tags_any: &[String]) -> bool {
-    let narrowed: HashSet<usize> = facts
-        .iter()
-        .filter(|c| keep.contains(&c.idx))
-        .filter(|c| c.tags.iter().any(|t| tags_any.iter().any(|w| w == t)))
-        .map(|c| c.idx)
-        .collect();
-    if narrowed.is_empty() {
+/// Narrow the unit's own member list in place to the members carrying one of `tags_any`; `false`
+/// (nothing changed) when none does.
+fn narrow(all: &mut Vec<CandidateFacts>, tags_any: &[String]) -> bool {
+    let carries = |c: &CandidateFacts| c.tags.iter().any(|t| tags_any.iter().any(|w| w == t));
+    if !all.iter().any(carries) {
         return false;
     }
-    *keep = narrowed;
+    let mut kept = 0;
+    for i in 0..all.len() {
+        if carries(&all[i]) {
+            all.swap(kept, i);
+            kept += 1;
+        }
+    }
+    all.truncate(kept);
     true
 }
 
@@ -1667,16 +1728,16 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 
         fire_request_taps(&hooks, &view, &pool);
 
-        let all: Vec<CandidateFacts> = facts.map(|c| c.members).unwrap_or_default();
-        let mut keep: HashSet<usize> = all.iter().map(|c| c.idx).collect();
+        // The unit's own member list, narrowed in place by the gates' and the policy's restricts.
+        let mut all: Vec<CandidateFacts> = facts.map(|c| c.members).unwrap_or_default();
+        let members = all.len();
         let mut constraint = Constraint::default();
         let decided = self
             .decide_route(
                 &hooks,
                 &view,
                 (&pool, named),
-                &all,
-                (&mut keep, &mut constraint),
+                (&mut all, &mut constraint),
                 ran,
             )
             .await;
@@ -1694,12 +1755,12 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 &*hooks.groups,
             );
         }
-        if keep.len() != all.len() {
-            let mut kept: Vec<usize> = keep.iter().copied().collect();
+        if all.len() != members {
+            let mut kept: Vec<usize> = all.iter().map(|c| c.idx).collect();
             kept.sort_unstable();
             constraint.keep = Some(kept);
         }
-        self.lock().route_policy = constraint.policy.clone();
+        self.lock().route_policy.clone_from(&constraint.policy);
         if constraint != Constraint::default() {
             self.far.constrain(token, constraint);
         }
@@ -1712,13 +1773,12 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         hooks: &UnitHooks,
         view: &Projection,
         (pool, named): (&str, bool),
-        all: &[CandidateFacts],
-        (keep, constraint): (&mut HashSet<usize>, &mut Constraint),
+        (all, constraint): (&mut Vec<CandidateFacts>, &mut Constraint),
         ran: &mut Vec<HookApplied>,
     ) -> Result<(), Stopped> {
         let mut gate_order: Option<(Vec<usize>, std::sync::Arc<str>)> = None;
         if !hooks.gates.is_empty() {
-            let shown = candidates_of(all, hooks, keep);
+            let shown = candidates_of(all, hooks);
             let asked = Asked {
                 view,
                 hooks,
@@ -1747,7 +1807,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     } => {
                         metrics::counter!(
                             ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => name.to_string(),
+                            "policy" => Arc::clone(name),
                             "pool" => pool.to_string(),
                             "status" => status.to_string(),
                         )
@@ -1784,10 +1844,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                         on_empty: on_empty.clone(),
                         name: Arc::clone(name),
                     });
-                    if narrow(keep, all, tags_any) {
+                    if narrow(all, tags_any) {
                         metrics::counter!(
                             ROUTE_POLICY_SELECTIONS_TOTAL,
-                            "policy" => name.to_string(),
+                            "policy" => Arc::clone(name),
                             "pool" => pool.to_string(),
                         )
                         .increment(1);
@@ -1803,9 +1863,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     } else {
                         metrics::counter!(
                             ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => name.to_string(),
+                            "policy" => Arc::clone(name),
                             "pool" => pool.to_string(),
-                            "status" => "503".to_string(),
+                            "status" => "503",
                         )
                         .increment(1);
                         crate::diag_debug!(
@@ -1828,29 +1888,31 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     let filtered: Vec<usize> = candidates
                         .iter()
                         .copied()
-                        .filter(|i| keep.contains(i))
+                        .filter(|i| all.iter().any(|c| c.idx == *i))
                         .collect();
                     if !filtered.is_empty() {
                         constraint.prioritize = Some(filtered);
                         constraint.policy = Some(Arc::clone(name));
                         metrics::counter!(
                             ROUTE_POLICY_SELECTIONS_TOTAL,
-                            "policy" => name.to_string(),
+                            "policy" => Arc::clone(name),
                             "pool" => pool.to_string(),
                         )
                         .increment(1);
                     }
                 }
                 if let Decided::Order { order, name } = outcome {
-                    let filtered: Vec<usize> =
-                        order.into_iter().filter(|i| keep.contains(i)).collect();
+                    let filtered: Vec<usize> = order
+                        .into_iter()
+                        .filter(|i| all.iter().any(|c| c.idx == *i))
+                        .collect();
                     gate_order = (!filtered.is_empty()).then_some((filtered, name));
                 }
             }
             if let Some((_, name)) = &gate_order {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
-                    "policy" => name.to_string(),
+                    "policy" => Arc::clone(name),
                     "pool" => pool.to_string(),
                 )
                 .increment(1);
@@ -1864,7 +1926,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let Some(policy) = &hooks.policy else {
             return Ok(());
         };
-        let shown = candidates_of(all, hooks, keep);
+        let shown = candidates_of(all, hooks);
         let asked = Asked {
             view,
             hooks,
@@ -1878,7 +1940,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             Decided::Prioritize { candidates, name } => {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
-                    "policy" => name.to_string(),
+                    "policy" => Arc::clone(&name),
                     "pool" => pool.to_string(),
                 )
                 .increment(1);
@@ -1889,7 +1951,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             Decided::Order { order, name } => {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
-                    "policy" => name.to_string(),
+                    "policy" => Arc::clone(&name),
                     "pool" => pool.to_string(),
                 )
                 .increment(1);
@@ -1909,7 +1971,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             } => {
                 metrics::counter!(
                     ROUTE_POLICY_REJECTIONS_TOTAL,
-                    "policy" => name.to_string(),
+                    "policy" => Arc::clone(&name),
                     "pool" => pool.to_string(),
                     "status" => status.to_string(),
                 )
@@ -1934,10 +1996,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     on_empty: on_empty.clone(),
                     name: Arc::clone(&name),
                 });
-                if narrow(keep, all, &tags_any) {
+                if narrow(all, &tags_any) {
                     metrics::counter!(
                         ROUTE_POLICY_SELECTIONS_TOTAL,
-                        "policy" => name.to_string(),
+                        "policy" => Arc::clone(&name),
                         "pool" => pool.to_string(),
                     )
                     .increment(1);
@@ -1955,9 +2017,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 } else {
                     metrics::counter!(
                         ROUTE_POLICY_REJECTIONS_TOTAL,
-                        "policy" => name.to_string(),
+                        "policy" => Arc::clone(&name),
                         "pool" => pool.to_string(),
-                        "status" => "503".to_string(),
+                        "status" => "503",
                     )
                     .increment(1);
                     crate::diag_debug!(
@@ -2064,13 +2126,12 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
         };
         let Some(tap) = tap else { continue };
         let reads = hooks.reads.clone();
-        let hook_name = hook.name().to_owned();
         let dialect = view.dialect.clone();
         let content = *send_prompt;
         let policy = Arc::clone(hook);
         let budget = *timeout;
         spawn_bounded_tap(async move {
-            if content && (reads)(&hook_name, None, &dialect, false).await.is_err() {
+            if content && (reads)(policy.name(), None, &dialect, false).await.is_err() {
                 return;
             }
             policy.notify(tap, budget).await;
@@ -2286,6 +2347,10 @@ impl SessionStage {
                     );
 
                     if failed_call_refuses(on_error) {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "error: an unavailable required gate stops the stage once, in fixed words"
+                        )]
                         return StageAnswer::Stop {
                             status: REQUIRED_HOOK_UNAVAILABLE_STATUS,
                             words: REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
