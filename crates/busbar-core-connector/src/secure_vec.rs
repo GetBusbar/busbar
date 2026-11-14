@@ -262,10 +262,7 @@ impl Drop for Scratch {
         let Some(mut buf) = self.buf.take() else {
             return;
         };
-        // RED STUB (TRANSPORT-TLS §8 item 4): forget the bytes without wiping them, as today's
-        // stack buffer keeps the response after `read` returns.
-        buf.head = 0;
-        buf.end = 0;
+        buf.clear();
         let _ = self.key.try_with(move |slot| {
             let keep = match slot.take() {
                 Some(other) if other.capacity() >= buf.capacity() => other,
