@@ -672,10 +672,6 @@ criteria = "safe-to-deploy"
 version = "0.7.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.serde_yaml_ng]]
-version = "0.10.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.sha2]]
 version = "0.11.1"
 criteria = "safe-to-deploy"
@@ -840,10 +836,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.unicode-joining-type]]
 version = "1.0.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.unsafe-libyaml]]
-version = "0.2.11"
 criteria = "safe-to-deploy"
 
 [[exemptions.url]]

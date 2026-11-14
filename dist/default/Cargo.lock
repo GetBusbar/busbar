@@ -379,6 +379,7 @@ dependencies = [
  "async-trait",
  "aws-lc-sys",
  "base64 0.22.1",
+ "busbar-yaml",
  "bytes",
  "futures",
  "getrandom 0.3.4",
@@ -392,7 +393,6 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "sha2 0.10.9",
  "smallvec",
  "tracing",
@@ -457,6 +457,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-yaml",
  "bytes",
  "http",
  "http-body-util",
@@ -465,7 +466,6 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "tokio",
  "tracing",
  "zeroize",
@@ -526,6 +526,7 @@ dependencies = [
  "busbar-transport-tcp-plugin",
  "busbar-transport-webrtc",
  "busbar-transport-ws",
+ "busbar-yaml",
  "bytes",
  "core_affinity",
  "ed25519-dalek",
@@ -551,7 +552,6 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "sha2 0.10.9",
  "socket2",
  "tikv-jemalloc-ctl",
@@ -693,6 +693,7 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
+ "busbar-yaml",
  "bytes",
  "crc32fast",
  "ed25519-dalek",
@@ -712,7 +713,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
- "serde_yaml_ng",
  "sha2 0.10.9",
  "sonic-rs",
  "tokio",
@@ -787,11 +787,11 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
+ "busbar-yaml",
  "getrandom 0.3.4",
  "hex",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "sha2 0.10.9",
  "tokio",
  "zeroize",
@@ -1040,6 +1040,16 @@ dependencies = [
  "httpdate",
  "tungstenite",
  "zeroize",
+]
+
+[[package]]
+name = "busbar-yaml"
+version = "1.6.0"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -3342,19 +3352,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml_ng"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3977,12 +3974,6 @@ name = "unicode-properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "993ad287eb20e8ba755312801cfe1413e0f25d604075863acaddca10b04c1833"
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

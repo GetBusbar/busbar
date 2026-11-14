@@ -5,16 +5,16 @@ forbidden_shipping_features = ["test-seal", "test-support"]
 [core."busbar"]
 manifest = "crates/busbar/Cargo.toml"
 dev_allows = ["busbar-core-admin"]
-allows = ["busbar-contract", "busbar-core-admin", "busbar-core-connector", "busbar-core-oauth2", "busbar-kernel", "busbar-kernel-audit", "busbar-kernel-breaker", "busbar-kernel-egress", "busbar-kernel-identity", "busbar-kernel-ledger", "busbar-kernel-wal", "busbar-migrations", "busbar-plugin-loader"]
+allows = ["busbar-contract", "busbar-core-admin", "busbar-core-connector", "busbar-core-oauth2", "busbar-kernel", "busbar-kernel-audit", "busbar-kernel-breaker", "busbar-kernel-egress", "busbar-kernel-identity", "busbar-kernel-ledger", "busbar-kernel-wal", "busbar-migrations", "busbar-plugin-loader", "busbar-yaml"]
 
 [core."busbar-contract"]
 manifest = "crates/busbar-contract/Cargo.toml"
-dev_allows = []
-allows = []
+dev_allows = ["busbar-yaml"]
+allows = ["busbar-yaml"]
 
 [core."busbar-core-admin"]
 manifest = "crates/busbar-core-admin/Cargo.toml"
-dev_allows = ["busbar-kernel", "busbar-kernel-egress"]
+dev_allows = ["busbar-kernel", "busbar-kernel-egress", "busbar-yaml"]
 allows = ["busbar-contract", "busbar-kernel"]
 
 [core."busbar-core-connector"]
@@ -25,12 +25,12 @@ allows = ["busbar-contract", "busbar-kernel", "busbar-kernel-egress", "busbar-pl
 [core."busbar-core-oauth2"]
 manifest = "crates/busbar-core-oauth2/Cargo.toml"
 dev_allows = ["busbar-kernel", "busbar-plugin-loader"]
-allows = ["busbar-contract", "busbar-kernel"]
+allows = ["busbar-contract", "busbar-kernel", "busbar-yaml"]
 
 [core."busbar-kernel"]
 manifest = "crates/busbar-kernel/Cargo.toml"
 dev_allows = ["busbar-contract", "busbar-kernel-audit", "busbar-plugin-loader"]
-allows = ["busbar-contract", "busbar-kernel-audit", "busbar-kernel-breaker", "busbar-kernel-egress", "busbar-kernel-identity", "busbar-kernel-ledger", "busbar-kernel-wal"]
+allows = ["busbar-contract", "busbar-kernel-audit", "busbar-kernel-breaker", "busbar-kernel-egress", "busbar-kernel-identity", "busbar-kernel-ledger", "busbar-kernel-wal", "busbar-yaml"]
 
 [core."busbar-kernel-audit"]
 manifest = "crates/busbar-kernel-audit/Cargo.toml"
@@ -65,12 +65,19 @@ allows = ["busbar-contract"]
 [core."busbar-migrations"]
 manifest = "crates/busbar-migrations/Cargo.toml"
 dev_allows = ["busbar-contract"]
-allows = ["busbar-contract", "busbar-kernel", "busbar-kernel-audit", "busbar-kernel-identity", "busbar-kernel-ledger", "busbar-kernel-wal"]
+allows = ["busbar-contract", "busbar-kernel", "busbar-kernel-audit", "busbar-kernel-identity", "busbar-kernel-ledger", "busbar-kernel-wal", "busbar-yaml"]
 
 [core."busbar-plugin-loader"]
 manifest = "crates/plugin-loader/Cargo.toml"
 dev_allows = ["busbar-contract"]
 allows = ["busbar-contract"]
+
+# The YAML library (serde_yaml_ng 0.10's API on a safe port of libyaml): a leaf every YAML reader
+# above reaches, plugins through busbar-contract.
+[core."busbar-yaml"]
+manifest = "crates/busbar-yaml/Cargo.toml"
+dev_allows = []
+allows = []
 
 [repositories."GetBusbar/busbar-auth-admin-tokens"]
 kind = "auth"
@@ -643,7 +650,9 @@ standalone = true
 name = "busbar-hook-headroom"
 manifest = "Cargo.toml"
 role = "implementation"
-dev_allows = ["busbar-contract", "busbar-plugin-loader"]
+# busbar-yaml (dev): its YAML witnesses share the SDK's one `Value` type at the pin, replacing the
+# vendored serde_yaml_ng/libyaml-safer patch.
+dev_allows = ["busbar-contract", "busbar-plugin-loader", "busbar-yaml"]
 
 [repositories."BusbarInc/busbar-auth-scim"]
 kind = "auth"

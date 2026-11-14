@@ -16,14 +16,6 @@ ignore = [
     # it). Advisory is "unmaintained", not a security hole. Re-evaluate when tikv-jemalloc-ctl
     # drops paste. Tracking: https://github.com/tikv/jemallocator/issues
     "RUSTSEC-2024-0436",
-    # RUSTSEC-2024-0449: `unsafe-libyaml` 0.2.11 is unmaintained. It is pulled in only via
-    # serde_yaml_ng 0.10, busbar's YAML config parser (`cargo tree -i unsafe-libyaml`:
-    # busbar, busbar-a2a, busbar-contract, busbar-kernel, busbar-core-oauth2,
-    # xtask and others -> serde_yaml_ng -> unsafe-libyaml). Advisory is "unmaintained", not a
-    # security hole. There is no safe swap now: a different YAML parser risks 1.5.5 config-parse
-    # parity (customer-visible behaviour, guarded by the oracle). Re-evaluate when serde_yaml_ng
-    # moves off unsafe-libyaml. Tracking: https://rustsec.org/advisories/RUSTSEC-2024-0449.html
-    "RUSTSEC-2024-0449",
 ]
 
 [licenses]
@@ -85,12 +77,15 @@ deny = [
     { crate = "rustls@0.21", reason = "TLS is rustls 0.23" },
     { crate = "rustls@0.22", reason = "TLS is rustls 0.23" },
     { crate = "ring@0.16", reason = "the crypto backend is ring 0.17" },
-    { crate = "serde_yaml", reason = "unmaintained; YAML is serde_yaml_ng" },
+    { crate = "serde_yaml", reason = "unmaintained; YAML is busbar-yaml" },
+    { crate = "serde_yaml_ng", reason = "rests on unsafe-libyaml; YAML is busbar-yaml" },
+    { crate = "unsafe-libyaml", reason = "unmaintained C translation (RUSTSEC-2024-0449); YAML is busbar-yaml's safe port of libyaml" },
     # ONE Ed25519 = ed25519-dalek 3 (ARCHITECT ruling 2026-10-02, DEPS-AUDIT cut #9 REFUSED; moved
     # from 2 to 3 so der 0.7 and pkcs8 0.10 leave the graph). Plugin signatures, the audit-chain
     # seal, token and card signing and the operator signature verify through dalek's
-    # `verify_strict`, which refuses small-order keys and signatures. ring has no such check, and ring plus a hand-written weak-key blocklist would be home-made crypto in a
-    # security-critical verifier; five crates do not pay for that, nor for churning the
+    # `verify_strict`, which refuses small-order keys and signatures. ring has no such check, and
+    # ring plus a hand-written weak-key blocklist would be home-made crypto in a security-critical
+    # verifier; five crates do not pay for that, nor for churning the
     # plugin-facing `busbar_plugin_loader::sign::{SigningKey, VerifyingKey}`. So dalek stays, at ONE
     # version (3.x; `multiple-versions = "deny"` refuses a second), busbar code never calls
     # ring's Ed25519, and no other Ed25519 crate may enter.
