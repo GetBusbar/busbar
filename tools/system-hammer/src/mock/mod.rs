@@ -17,9 +17,10 @@
 //! | `/__echo` | a trivial echo (the driver's self-test) |
 //! | `/__hammer/stats` | per-far-end request counters |
 //!
-//! There is no artificial delay unless [`MockConfig::delay`] or [`MockConfig::chunk_interval`]
-//! says so. Every body is prepared at start except the JSON-RPC id, the token mint counter and
-//! the stats snapshot, which are spliced or serialized per request.
+//! There is no artificial delay unless [`MockConfig::delay_us`] or
+//! [`MockConfig::chunk_interval_us`] says so. Every body is prepared at start except the
+//! JSON-RPC id, the token mint counter and the stats snapshot, which are spliced or serialized
+//! per request.
 
 pub mod llm;
 
@@ -114,10 +115,7 @@ impl Stats {
         for (r, name) in ROLES {
             m.insert(name, self.counts[r as usize].load(Ordering::Relaxed));
         }
-        m.insert(
-            "accept_errors".into(),
-            json!(self.accept_errors.load(Ordering::Relaxed)),
-        );
+        m.insert("accept_errors", self.accept_errors.load(Ordering::Relaxed));
         if let Some(u) = self.unknown.lock().unwrap().clone() {
             m.insert("unknown_last", u.as_str());
         }
@@ -203,10 +201,10 @@ struct State {
     card: Bytes,
     stats: Arc<Stats>,
     mints: AtomicU64,
-    /// `http://127.0.0.1:<port>` of the plaintext listener and `https://...` of the TLS one: the
-    /// base a document names its own URLs under, by the listener that serves it.
-    base: String,
-    tls_base: String,
+    /// The OIDC discovery document of the plaintext listener and of the TLS one: each names its
+    /// own URLs under the listener that serves it, port included.
+    oidc: Bytes,
+    oidc_tls: Bytes,
 }
 
 /// A running mock server.
@@ -243,8 +241,8 @@ impl Mock {
             cfg,
             stats: Arc::clone(&stats),
             mints: AtomicU64::new(0),
-            base: format!("http://{addr}"),
-            tls_base: format!("https://{tls_addr}"),
+            oidc: oidc_config(&format!("http://{addr}")),
+            oidc_tls: oidc_config(&format!("https://{tls_addr}")),
         });
         let (acceptor, spki_pin, cert_pem) = tls_acceptor()?;
         let st_tls = Arc::clone(&state);
@@ -431,7 +429,12 @@ const MCP_TOOLS_CALL: &str =
 const EMPTY_OBJECT: &str = "{}";
 const A2A_SEND: &str = r#"{"task":{"id":"task-0001","contextId":"ctx-0001","status":{"state":"TASK_STATE_COMPLETED","timestamp":"2026-01-01T00:00:00Z"},"artifacts":[{"artifactId":"art-0001","parts":[{"text":"ping"}]}]}}"#;
 const JWKS: &[u8] = br#"{"keys":[]}"#;
-const OIDC_CONFIG: &[u8] = br#"{"issuer":"http://127.0.0.1","jwks_uri":"http://127.0.0.1/jwks","token_endpoint":"http://127.0.0.1/token"}"#;
+/// The OIDC discovery document naming its own URLs under `base` (built once per listener).
+fn oidc_config(base: &str) -> Bytes {
+    Bytes::from(format!(
+        r#"{{"issuer":"{base}","jwks_uri":"{base}/jwks","token_endpoint":"{base}/token"}}"#
+    ))
+}
 const VAULT_SECRET: &[u8] = br#"{"data":{"data":{"api_key":"hammer-vault-key","value":"hammer-vault-key"},"metadata":{"version":1}}}"#;
 const VAULT_HEALTH: &[u8] = br#"{"initialized":true,"sealed":false,"standby":false}"#;
 /// Its `input_tokens` is `IN_TOK_DEC` (a test pins the two together).
@@ -561,7 +564,9 @@ async fn handle(st: &State, req: Request<Incoming>, tls: bool) -> Response<MockB
         }
         (Method::GET, "/.well-known/openid-configuration") => {
             st.stats.hit(Role::Idp);
-            const_reply(OIDC_CONFIG)
+            // The listener that served the document, port included.
+            let doc = if tls { &st.oidc_tls } else { &st.oidc };
+            reply(200, "application/json", doc.clone())
         }
         (Method::GET, p) if p.starts_with("/v1/secret/") || p.starts_with("/v1/kv/") => {
             st.stats.hit(Role::Vault);
@@ -618,6 +623,110 @@ const IN_TOK_DEC: i64 = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn far_end_bodies_are_not_built_per_request() {
+        let src = include_str!("mod.rs");
+        let h = &src[src.find("async fn handle(").unwrap()..src.find("const IN_TOK_DEC").unwrap()];
+        assert!(
+            !h.contains("json!("),
+            "handle() builds a JSON value per request"
+        );
+    }
+
+    fn parse(b: &[u8]) -> serde_json::Value {
+        serde_json::from_slice(b).expect("valid JSON")
+    }
+
+    #[test]
+    fn mcp_bodies_echo_the_id_around_valid_results() {
+        let id = sonic_rs::json!(7);
+        let v = parse(&super::mcp_body("tools/call", &id).unwrap());
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["result"]["content"][0]["text"], "ping: hammer");
+        assert_eq!(v["result"]["isError"], false);
+
+        let id = sonic_rs::json!("req-\"q\"");
+        let v = parse(&super::mcp_body("tools/list", &id).unwrap());
+        assert_eq!(v["id"], "req-\"q\"");
+        let tool = &v["result"]["tools"][0];
+        assert_eq!(tool["name"], "ping");
+        assert_eq!(tool["description"], super::MCP_PING_DESCRIPTION);
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+
+        let v = parse(&super::mcp_body("initialize", &sonic_rs::json!(1)).unwrap());
+        assert_eq!(v["result"]["serverInfo"]["name"], "hammer-mcp");
+        let v = parse(&super::mcp_body("ping", &sonic_rs::json!(2)).unwrap());
+        assert_eq!(v["result"], serde_json::json!({}));
+        let v = parse(&super::mcp_body("other", &sonic_rs::json!(3)).unwrap());
+        assert_eq!(v["result"], serde_json::json!({}));
+        assert!(super::mcp_body("notifications/initialized", &Value::default()).is_none());
+    }
+
+    #[test]
+    fn a2a_body_echoes_the_id() {
+        let v = parse(&super::rpc_body(&sonic_rs::json!("a-1"), super::A2A_SEND));
+        assert_eq!(v["id"], "a-1");
+        assert_eq!(
+            v["result"]["task"]["status"]["state"],
+            "TASK_STATE_COMPLETED"
+        );
+        assert_eq!(
+            v["result"]["task"]["artifacts"][0]["parts"][0]["text"],
+            "ping"
+        );
+    }
+
+    #[test]
+    fn token_body_carries_the_mint_counter() {
+        let v = parse(&super::token_body(42));
+        assert_eq!(v["access_token"], "hammer-minted-42");
+        assert_eq!(v["token_type"], "Bearer");
+        assert_eq!(v["expires_in"], 3600);
+    }
+
+    #[test]
+    fn constant_bodies_are_valid_json() {
+        for b in [
+            super::JWKS,
+            super::VAULT_SECRET,
+            super::VAULT_HEALTH,
+            super::EMPTY_OBJECT.as_bytes(),
+            super::SYSTEMONE,
+            super::EVALUATE,
+            super::CLIENT_SECRET,
+        ] {
+            parse(b);
+        }
+        assert_eq!(
+            parse(super::SYSTEMONE)["usage"]["input_tokens"],
+            super::IN_TOK_DEC
+        );
+        assert_eq!(
+            parse(&super::oidc_config("http://127.0.0.1:9"))["jwks_uri"],
+            "http://127.0.0.1:9/jwks"
+        );
+    }
+
+    /// The OIDC discovery document names the listener that served it, port included, so a
+    /// client following `jwks_uri` / `token_endpoint` reaches this mock and not port 80.
+    #[test]
+    fn the_oidc_discovery_document_names_the_mock_s_own_listener() {
+        let m = Mock::start(MockConfig::default(), 1).unwrap();
+        let r = crate::gateway::call(m.addr, "GET", "/.well-known/openid-configuration", &[], b"")
+            .unwrap();
+        assert_eq!(r.status, 200);
+        let text = r.text();
+        let base = m.base();
+        for want in [
+            format!("\"issuer\":\"{base}\""),
+            format!("\"jwks_uri\":\"{base}/jwks\""),
+            format!("\"token_endpoint\":\"{base}/token\""),
+        ] {
+            assert!(text.contains(&want), "{want} in {text}");
+        }
+    }
 
     #[tokio::test]
     async fn accept_error_is_counted_and_backs_off() {

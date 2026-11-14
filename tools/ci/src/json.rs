@@ -1,7 +1,18 @@
-//! Minimal JSON with Python `json` semantics where the controller depends on them:
-//! object order is preserved (a repeated key keeps its first position and last
-//! value), equality is order-insensitive like `dict ==`, integers compare
-//! numerically, and output matches `json.dumps` (ASCII-escaped).
+//! The one JSON model shared by every busbar-ci command, with Python `json`
+//! semantics where the controller depends on them:
+//!
+//! * objects keep insertion order; a repeated key keeps its first position and
+//!   its last value (`dict` construction); equality is order-insensitive like
+//!   `dict ==`, and integers compare exactly;
+//! * integers keep arbitrary precision as canonical decimal text (`str(int)`:
+//!   no `-0`); other numbers keep their source text;
+//! * output matches `json.dumps` (ASCII-escaped) in the default, `sort_keys`,
+//!   `indent=2` and canonical `sort_keys=True, separators=(',', ':')` forms.
+//!
+//! Two input dialects exist because the two former Python controllers read
+//! different inputs. [`parse`] is the strict reader for protected policy,
+//! Docker and controller documents. [`parse_cpython`] reproduces CPython's
+//! `json.loads(bytes)` for untrusted scanner reports, including its quirks.
 use std::fmt::Write as _;
 
 #[derive(Clone, Debug)]
@@ -182,20 +193,99 @@ impl Value {
             .map(|rows| rows.iter().map(|(k, _)| k.as_str()).collect())
             .unwrap_or_default()
     }
+    /// Python truthiness.
+    pub fn truthy(&self) -> bool {
+        match self {
+            Value::Null => false,
+            Value::Bool(b) => *b,
+            Value::Number(n) if integer_text(n) => n != "0",
+            Value::Number(n) => n.parse::<f64>().is_ok_and(|f| f != 0.0),
+            Value::String(s) => !s.is_empty(),
+            Value::Array(rows) => !rows.is_empty(),
+            Value::Object(rows) => !rows.is_empty(),
+        }
+    }
+    /// Python `value == n` for a small integer n (bool compares as 0/1).
+    pub fn equals_int(&self, n: i64) -> bool {
+        match self {
+            Value::Number(text) if integer_text(text) => *text == n.to_string(),
+            Value::Number(text) => text.parse::<f64>().is_ok_and(|f| f == n as f64),
+            Value::Bool(b) => i64::from(*b) == n,
+            _ => false,
+        }
+    }
 }
 
-pub fn parse(text: &[u8]) -> Result<Value, String> {
-    let text = std::str::from_utf8(text).map_err(|_| "JSON is not UTF-8".to_owned())?;
+/// Parse failure. Excessive nesting is distinct: CPython raises
+/// `RecursionError` there, which the former scanner did not treat as a refusal.
+#[derive(Debug, PartialEq)]
+pub enum ParseError {
+    Invalid(String),
+    TooDeep,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::Invalid(message) => f.write_str(message),
+            ParseError::TooDeep => f.write_str("JSON nesting exceeds bound"),
+        }
+    }
+}
+
+impl From<ParseError> for String {
+    fn from(error: ParseError) -> String {
+        error.to_string()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Dialect {
+    /// Containers deeper than this are refused (TooDeep for CPython).
+    depth: usize,
+    /// UTF-8 BOM, `NaN`, `Infinity`, `-Infinity`, lone surrogates (U+FFFD).
+    cpython: bool,
+}
+
+/// Strict reader for protected controller inputs: no BOM, no non-finite
+/// constants, no lone surrogates, at most 512 nested containers.
+pub fn parse(data: &[u8]) -> Result<Value, String> {
+    let dialect = Dialect {
+        depth: 512,
+        cpython: false,
+    };
+    parse_with(data, dialect).map_err(String::from)
+}
+
+/// CPython 3.12 `json.loads(bytes)`: UTF-8 BOM decoded as utf-8-sig, `NaN`
+/// and `Infinity` accepted, lone surrogates kept (as U+FFFD here: they can never
+/// satisfy a projection pattern or trusted policy value), 9997 nested containers
+/// parse and 9998 raise RecursionError, and the 4300-digit int conversion limit.
+/// UTF-16/32 detection is not reproduced: pinned scanners emit UTF-8.
+pub fn parse_cpython(data: &[u8]) -> Result<Value, ParseError> {
+    let data = data.strip_prefix(b"\xef\xbb\xbf").unwrap_or(data);
+    parse_with(
+        data,
+        Dialect {
+            depth: 9997,
+            cpython: true,
+        },
+    )
+}
+
+fn parse_with(data: &[u8], dialect: Dialect) -> Result<Value, ParseError> {
+    let text = std::str::from_utf8(data).map_err(|_| invalid("JSON is not UTF-8"))?;
     let mut parser = Parser {
         s: text.as_bytes(),
+        text,
         i: 0,
-        depth: 0,
+        dialect,
     };
     parser.ws();
-    let value = parser.value()?;
+    let value = parser.value(0)?;
     parser.ws();
     if parser.i != parser.s.len() {
-        return Err("trailing data after JSON value".into());
+        return Err(invalid("trailing data after JSON value"));
     }
     Ok(value)
 }
@@ -209,8 +299,9 @@ fn invalid(message: &str) -> ParseError {
 
 struct Parser<'a> {
     s: &'a [u8],
+    text: &'a str,
     i: usize,
-    depth: usize,
+    dialect: Dialect,
 }
 
 impl Parser<'_> {
@@ -219,163 +310,128 @@ impl Parser<'_> {
             self.i += 1;
         }
     }
-    fn peek(&self) -> Option<u8> {
-        self.s.get(self.i).copied()
-    }
-    fn expect(&mut self, byte: u8) -> Result<(), String> {
-        if self.peek() == Some(byte) {
-            self.i += 1;
-            Ok(())
+    fn eat(&mut self, literal: &str) -> bool {
+        if self.s[self.i..].starts_with(literal.as_bytes()) {
+            self.i += literal.len();
+            true
         } else {
-            Err(format!("invalid JSON at byte {}", self.i))
+            false
         }
     }
-    fn literal(&mut self, word: &str, value: Value) -> Result<Value, String> {
-        if self.s[self.i..].starts_with(word.as_bytes()) {
-            self.i += word.len();
-            Ok(value)
-        } else {
-            Err(format!("invalid JSON literal at byte {}", self.i))
-        }
+    fn at_error(&self, what: &str) -> ParseError {
+        ParseError::Invalid(format!("invalid JSON {what} at byte {}", self.i))
     }
-    fn value(&mut self) -> Result<Value, String> {
-        self.depth += 1;
-        if self.depth > 512 {
-            return Err("JSON nesting exceeds bound".into());
-        }
-        let result = match self.peek() {
-            Some(b'{') => {
-                self.i += 1;
-                let mut rows: Vec<(String, Value)> = Vec::new();
-                self.ws();
-                if self.peek() == Some(b'}') {
-                    self.i += 1;
-                } else {
-                    loop {
-                        self.ws();
-                        let key = self.string()?;
-                        self.ws();
-                        self.expect(b':')?;
-                        self.ws();
-                        let value = self.value()?;
-                        match rows.iter_mut().find(|(k, _)| *k == key) {
-                            Some(row) => row.1 = value,
-                            None => rows.push((key, value)),
-                        }
-                        self.ws();
-                        match self.peek() {
-                            Some(b',') => self.i += 1,
-                            Some(b'}') => {
-                                self.i += 1;
-                                break;
-                            }
-                            _ => return Err(format!("invalid JSON object at byte {}", self.i)),
-                        }
-                    }
-                }
-                Ok(Value::Object(rows))
-            }
-            Some(b'[') => {
-                self.i += 1;
-                let mut rows = Vec::new();
-                self.ws();
-                if self.peek() == Some(b']') {
-                    self.i += 1;
-                } else {
-                    loop {
-                        self.ws();
-                        rows.push(self.value()?);
-                        self.ws();
-                        match self.peek() {
-                            Some(b',') => self.i += 1,
-                            Some(b']') => {
-                                self.i += 1;
-                                break;
-                            }
-                            _ => return Err(format!("invalid JSON array at byte {}", self.i)),
-                        }
-                    }
-                }
-                Ok(Value::Array(rows))
-            }
-            Some(b'"') => self.string().map(Value::String),
-            Some(b't') => self.literal("true", Value::Bool(true)),
-            Some(b'f') => self.literal("false", Value::Bool(false)),
-            Some(b'n') => self.literal("null", Value::Null),
-            Some(b'-' | b'0'..=b'9') => self.number(),
-            _ => Err(format!("invalid JSON value at byte {}", self.i)),
+    fn value(&mut self, depth: usize) -> Result<Value, ParseError> {
+        let Some(&c) = self.s.get(self.i) else {
+            return Err(self.at_error("value"));
         };
-        self.depth -= 1;
-        result
+        let cpython = self.dialect.cpython;
+        match c {
+            b'{' | b'[' if depth >= self.dialect.depth => Err(ParseError::TooDeep),
+            b'{' => self.object(depth + 1),
+            b'[' => self.array(depth + 1),
+            b'"' => Ok(Value::String(self.string()?)),
+            b'n' if self.eat("null") => Ok(Value::Null),
+            b't' if self.eat("true") => Ok(Value::Bool(true)),
+            b'f' if self.eat("false") => Ok(Value::Bool(false)),
+            b'N' if cpython && self.eat("NaN") => Ok(Value::Number("NaN".into())),
+            b'I' if cpython && self.eat("Infinity") => Ok(Value::Number("Infinity".into())),
+            b'-' if cpython && self.eat("-Infinity") => Ok(Value::Number("-Infinity".into())),
+            b'-' | b'0'..=b'9' => self.number(),
+            _ => Err(self.at_error("value")),
+        }
     }
-    fn number(&mut self) -> Result<Value, String> {
+    fn digits(&mut self) -> usize {
         let start = self.i;
-        if self.peek() == Some(b'-') {
+        while self.i < self.s.len() && self.s[self.i].is_ascii_digit() {
             self.i += 1;
         }
-        let digits = |p: &mut Self| {
-            let begin = p.i;
-            while p.peek().is_some_and(|c| c.is_ascii_digit()) {
-                p.i += 1;
+        self.i - start
+    }
+    fn number(&mut self) -> Result<Value, ParseError> {
+        let start = self.i;
+        let negative = self.s[self.i] == b'-';
+        if negative {
+            self.i += 1;
+        }
+        let int_start = self.i;
+        match self.s.get(self.i) {
+            Some(b'0') => self.i += 1,
+            Some(b'1'..=b'9') => {
+                self.digits();
             }
-            p.i > begin
-        };
-        if self.peek() == Some(b'0') {
-            self.i += 1;
-        } else if !digits(self) {
-            return Err("invalid JSON number".into());
+            _ => return Err(self.at_error("number")),
         }
-        if self.peek() == Some(b'.') {
+        let int_end = self.i;
+        let mut float = false;
+        // CPython's NUMBER_RE leaves an incomplete fraction or exponent
+        // unconsumed; the following byte then fails the enclosing grammar.
+        if self.s.get(self.i) == Some(&b'.')
+            && self.s.get(self.i + 1).is_some_and(u8::is_ascii_digit)
+        {
             self.i += 1;
-            if !digits(self) {
-                return Err("invalid JSON number".into());
-            }
+            self.digits();
+            float = true;
         }
-        if matches!(self.peek(), Some(b'e' | b'E')) {
+        if matches!(self.s.get(self.i), Some(b'e' | b'E')) {
+            let save = self.i;
             self.i += 1;
-            if matches!(self.peek(), Some(b'+' | b'-')) {
+            if matches!(self.s.get(self.i), Some(b'+' | b'-')) {
                 self.i += 1;
             }
-            if !digits(self) {
-                return Err("invalid JSON number".into());
+            if self.digits() == 0 {
+                self.i = save;
+            } else {
+                float = true;
             }
         }
-        Ok(Value::Number(
-            std::str::from_utf8(&self.s[start..self.i])
-                .unwrap()
-                .to_owned(),
-        ))
+        if float {
+            let text = &self.text[start..self.i];
+            text.parse::<f64>().map_err(|_| self.at_error("number"))?;
+            return Ok(Value::Number(text.to_owned()));
+        }
+        let digits = &self.text[int_start..int_end];
+        if self.dialect.cpython && digits.len() > INT_DIGITS_LIMIT {
+            return Err(invalid("integer exceeds the conversion digit limit"));
+        }
+        Ok(Value::Number(if negative && digits != "0" {
+            format!("-{digits}")
+        } else {
+            digits.to_owned()
+        }))
     }
-    fn hex4(&mut self) -> Result<u32, String> {
-        let digits = self
+    fn hex4(&mut self) -> Result<u32, ParseError> {
+        let hex = self
             .s
             .get(self.i..self.i + 4)
-            .ok_or("truncated JSON escape")?;
-        let text = std::str::from_utf8(digits).map_err(|_| "invalid JSON escape")?;
-        let value = u32::from_str_radix(text, 16).map_err(|_| "invalid JSON escape")?;
+            .ok_or_else(|| invalid("truncated JSON escape"))?;
+        if !hex.iter().all(u8::is_ascii_hexdigit) {
+            return Err(invalid("invalid JSON escape"));
+        }
         self.i += 4;
-        Ok(value)
+        let text = std::str::from_utf8(hex).map_err(|_| invalid("invalid JSON escape"))?;
+        u32::from_str_radix(text, 16).map_err(|_| invalid("invalid JSON escape"))
     }
-    fn string(&mut self) -> Result<String, String> {
-        self.expect(b'"')?;
+    fn string(&mut self) -> Result<String, ParseError> {
+        self.i += 1;
         let mut out = String::new();
         loop {
             let start = self.i;
-            while self
-                .peek()
-                .is_some_and(|c| c != b'"' && c != b'\\' && c >= 0x20)
-            {
+            while self.i < self.s.len() && !matches!(self.s[self.i], b'"' | b'\\' | 0..=0x1f) {
                 self.i += 1;
             }
-            out.push_str(std::str::from_utf8(&self.s[start..self.i]).unwrap());
-            match self.peek() {
+            out.push_str(&self.text[start..self.i]);
+            match self.s.get(self.i) {
                 Some(b'"') => {
                     self.i += 1;
                     return Ok(out);
                 }
                 Some(b'\\') => {
                     self.i += 1;
-                    let escape = self.peek().ok_or("truncated JSON string")?;
+                    let escape = *self
+                        .s
+                        .get(self.i)
+                        .ok_or_else(|| invalid("truncated JSON string"))?;
                     self.i += 1;
                     match escape {
                         b'"' => out.push('"'),
@@ -391,20 +447,77 @@ impl Parser<'_> {
                             if (0xd800..0xdc00).contains(&code)
                                 && self.s[self.i..].starts_with(b"\\u")
                             {
+                                let save = self.i;
                                 self.i += 2;
                                 let low = self.hex4()?;
                                 if (0xdc00..0xe000).contains(&low) {
                                     code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
                                 } else {
-                                    return Err("invalid JSON surrogate pair".into());
+                                    self.i = save;
                                 }
                             }
-                            out.push(char::from_u32(code).ok_or("unpaired JSON surrogate")?);
+                            match char::from_u32(code) {
+                                Some(c) => out.push(c),
+                                None if self.dialect.cpython => out.push('\u{fffd}'),
+                                None => return Err(invalid("unpaired JSON surrogate")),
+                            }
                         }
-                        _ => return Err("invalid JSON escape".into()),
+                        _ => return Err(invalid("invalid JSON escape")),
                     }
                 }
-                _ => return Err("invalid or unterminated JSON string".into()),
+                // End of input or an unescaped control character (strict=True).
+                _ => return Err(invalid("invalid or unterminated JSON string")),
+            }
+        }
+    }
+    fn array(&mut self, depth: usize) -> Result<Value, ParseError> {
+        self.i += 1;
+        let mut rows = Vec::new();
+        self.ws();
+        if self.eat("]") {
+            return Ok(Value::Array(rows));
+        }
+        loop {
+            self.ws();
+            rows.push(self.value(depth)?);
+            self.ws();
+            if self.eat("]") {
+                return Ok(Value::Array(rows));
+            }
+            if !self.eat(",") {
+                return Err(self.at_error("array"));
+            }
+        }
+    }
+    fn object(&mut self, depth: usize) -> Result<Value, ParseError> {
+        self.i += 1;
+        let mut rows: Vec<(String, Value)> = Vec::new();
+        self.ws();
+        if self.eat("}") {
+            return Ok(Value::Object(rows));
+        }
+        loop {
+            self.ws();
+            if self.s.get(self.i) != Some(&b'"') {
+                return Err(self.at_error("object"));
+            }
+            let key = self.string()?;
+            self.ws();
+            if !self.eat(":") {
+                return Err(self.at_error("object"));
+            }
+            self.ws();
+            let value = self.value(depth)?;
+            match rows.iter_mut().find(|(k, _)| *k == key) {
+                Some(row) => row.1 = value,
+                None => rows.push((key, value)),
+            }
+            self.ws();
+            if self.eat("}") {
+                return Ok(Value::Object(rows));
+            }
+            if !self.eat(",") {
+                return Err(self.at_error("object"));
             }
         }
     }
@@ -433,12 +546,11 @@ fn quote(out: &mut String, text: &str) {
     out.push('"');
 }
 
-fn sorted(rows: &[(String, Value)], sort: bool) -> Vec<&(String, Value)> {
-    let mut rows: Vec<_> = rows.iter().collect();
-    if sort {
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
-    }
-    rows
+#[derive(Clone, Copy)]
+struct Form {
+    sort: bool,
+    item: &'static str,
+    key: &'static str,
 }
 
 fn compact(out: &mut String, value: &Value, form: Form) {
@@ -468,8 +580,8 @@ fn compact(out: &mut String, value: &Value, form: Form) {
                     out.push_str(form.item);
                 }
                 quote(out, k);
-                out.push_str(": ");
-                compact(out, v, sort);
+                out.push_str(form.key);
+                compact(out, v, form);
             }
             out.push('}');
         }
@@ -530,12 +642,111 @@ pub fn dumps_indent(value: &Value) -> String {
     out
 }
 
+/// `(json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()`.
+pub fn encoded(value: &Value) -> Vec<u8> {
+    let mut out = String::new();
+    let form = Form {
+        sort: true,
+        item: ",",
+        key: ":",
+    };
+    compact(&mut out, value, form);
+    out.push('\n');
+    out.into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn round_trips_python_formats() {
+    fn cpython_parse_semantics() {
+        let int = |n: i64| Value::int(n);
+        assert_eq!(parse_cpython(b" -0 ").unwrap(), int(0));
+        assert!(matches!(parse_cpython(b" -0 ").unwrap(), Value::Number(n) if n == "0"));
+        assert_eq!(parse_cpython(b"\xef\xbb\xbf2").unwrap(), int(2));
+        assert!(parse_cpython(b"1.0").unwrap().as_float().is_some());
+        assert!(!parse_cpython(b"1.0").unwrap().is_int());
+        assert!(parse_cpython(b"NaN").unwrap().as_float().unwrap().is_nan());
+        assert_eq!(
+            parse_cpython(b"-Infinity").unwrap().as_float(),
+            Some(f64::NEG_INFINITY)
+        );
+        assert_eq!(
+            parse_cpython(br#"{"a":1,"a":2}"#).unwrap().get("a"),
+            Some(&int(2))
+        );
+        assert_eq!(
+            parse_cpython(br#""\ud83d\ude00""#).unwrap(),
+            Value::str("\u{1f600}")
+        );
+        assert_eq!(
+            parse_cpython(br#""\ud800x""#).unwrap(),
+            Value::str("\u{fffd}x")
+        );
+        for bad in [
+            &b"01"[..],
+            b"1e",
+            b"1.",
+            b"[1,]",
+            b"{\"a\" 1}",
+            b"\"\x01\"",
+            b"\"\\x\"",
+            b"\"\\u+abc\"",
+            b"",
+            b"tru",
+            b"\xff",
+        ] {
+            assert!(
+                matches!(parse_cpython(bad), Err(ParseError::Invalid(_))),
+                "{bad:?}"
+            );
+        }
+        // Production parses reports on the controller's dedicated large stack.
+        std::thread::Builder::new()
+            .stack_size(512 << 20)
+            .spawn(|| {
+                assert_eq!(parse_cpython(&b"[".repeat(9998)), Err(ParseError::TooDeep));
+                let deep = [b"[".repeat(9997), b"]".repeat(9997)].concat();
+                assert!(parse_cpython(&deep).is_ok());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(parse_cpython(&"9".repeat(4301).into_bytes()).is_err());
+        assert!(parse_cpython(&"9".repeat(4300).into_bytes()).is_ok());
+    }
+
+    #[test]
+    fn strict_dialect_refuses_cpython_extensions() {
+        for bad in [
+            &b"NaN"[..],
+            b"Infinity",
+            b"-Infinity",
+            b"\xef\xbb\xbf1",
+            b"\"\\ud800\"",
+            b"\"\\u+abc\"",
+            b"{",
+            b"[1,]",
+            b"01",
+            b"\"\x01\"",
+            b"{} x",
+            b"nul",
+        ] {
+            assert!(parse(bad).is_err(), "{:?}", String::from_utf8_lossy(bad));
+        }
+        let deep = |n: usize| [b"[".repeat(n), b"]".repeat(n)].concat();
+        assert!(parse(&deep(512)).is_ok());
+        assert_eq!(
+            parse(&deep(513)),
+            Err("JSON nesting exceeds bound".to_owned())
+        );
+        assert_eq!(parse(b"-1").unwrap().as_u64(), None);
+        assert_eq!(parse(b"1.0").unwrap().as_u64(), None);
+    }
+
+    #[test]
+    fn python_dump_forms() {
         let value =
             parse(br#"{"b": [1, {"x": null}], "a": "\u00e9\n", "c": {}, "d": []}"#).unwrap();
         assert_eq!(
@@ -600,7 +811,8 @@ mod tests {
         ] {
             assert_eq!(parse(text.as_bytes()).unwrap().truthy(), truthy, "{text}");
         }
-        assert_eq!(parse(b"-1").unwrap().as_u64(), None);
-        assert_eq!(parse(b"1.0").unwrap().as_u64(), None);
+        assert!(parse(b"0.0").unwrap().equals_int(0));
+        assert!(Value::Bool(true).equals_int(1));
+        assert!(!Value::str("0").equals_int(0));
     }
 }
