@@ -111,12 +111,6 @@ impl Dedupe {
         &self.body
     }
 
-    /// The body a NEW op records, for a text column: 64 lower-case hex digits.
-    #[must_use]
-    pub fn body_hex(&self) -> String {
-        hex::encode(self.body)
-    }
-
     /// What the body recorded under the op's `op_id` (`None`: nothing is) makes of this op. A body
     #[must_use]
     pub fn seen(&self, recorded: Option<&[u8]>) -> Seen {

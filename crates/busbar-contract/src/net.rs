@@ -246,18 +246,6 @@ pub fn expand_alternate_ipv4(host: &str) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::from(addr))
 }
 
-/// Whether `s` is a SOCKET LITERAL: `v4:port` or `[v6]:port`, exactly the grammar
-#[must_use]
-pub fn is_socket_literal(s: &str) -> bool {
-    s.parse::<std::net::SocketAddr>().is_ok()
-}
-
-/// Whether `s` is a bare IP LITERAL, v4 or v6: exactly the grammar `std::net::IpAddr`'s parser
-#[must_use]
-pub fn is_ip_literal(s: &str) -> bool {
-    s.parse::<std::net::IpAddr>().is_ok()
-}
-
 /// The address a normalized host names, in any spelling the resolver accepts as a literal: a
 pub fn host_ip(host: &str) -> Option<IpAddr> {
     let literal = if host.contains(':') {
@@ -786,17 +774,6 @@ fn url_ipv4(host: &str) -> Option<Ipv4Addr> {
 #[must_use]
 pub fn url_host(url: &str) -> Option<String> {
     parse_url(url).ok().map(|p| p.host)
-}
-
-/// The host of a URL of any scheme as SPELLED, read as [`parse_url`] reads the authority but not
-#[must_use]
-pub fn url_host_verbatim(url: &str) -> Option<String> {
-    let (_, spelled) = parse_url_raw(url).ok()?;
-    Some(
-        spelled
-            .parse::<Ipv6Addr>()
-            .map_or(spelled, |addr| addr.to_string()),
-    )
 }
 
 /// The host of a DIAL TARGET, which may be spelled as a URL or as a bare `host`, `host:port`,
