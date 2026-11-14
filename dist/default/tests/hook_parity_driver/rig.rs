@@ -469,12 +469,15 @@ impl AmendSink for NativeAmendments {
     }
 }
 
+/// How many records the native fixture journal may hold unconfirmed.
+const NATIVE_FIXTURE_BUFFER_RECORDS: usize = 8192;
+
 async fn bind_native_amendments(amendments: &amend::NodeAmendments) {
     let journal = busbar_kernel::persistence::journal::RuntimeJournal::open(
         crate::real_store::core().await,
         busbar_kernel::door::op_id().counter(),
         busbar_kernel::persistence::journal::BufferBudget {
-            records: busbar_kernel_wal::MEMORY_BUFFER_RECORDS,
+            records: NATIVE_FIXTURE_BUFFER_RECORDS,
             bytes: 32 * 1024 * 1024,
         },
     )
