@@ -181,7 +181,7 @@ impl<'a> StoreJournal<'a> {
         Ok(false)
     }
 
-    async fn locate_verified_record(
+    pub(super) async fn locate_verified_record(
         &self,
         proof: &VerifiedHead,
         sequence: u64,
@@ -401,7 +401,9 @@ impl<'a> StoreJournal<'a> {
     /// selection of a two-record adoption. Domain ancestry/verdict validation
     /// remains the recovery owner's responsibility. One immutable candidate
     /// compares the full journal selection, custody and every original frame.
-    pub(crate) async fn select_verified(
+    /// Live domain owners select through `RuntimeJournal::change_live`.
+    #[cfg(test)]
+    pub(in crate::persistence::journal) async fn select_verified(
         &self,
         proof: &VerifiedHead,
         records: &[Record],
@@ -428,7 +430,8 @@ impl<'a> StoreJournal<'a> {
     /// Preserve a domain's exact selected-row deletion after audit confirmation;
     /// it has the same original-frame/custody guards and retained exact attempt
     /// as selection. This does not introduce a replacement tombstone schema.
-    pub(crate) async fn delete_verified(
+    #[cfg(test)]
+    pub(in crate::persistence::journal) async fn delete_verified(
         &self,
         proof: &VerifiedHead,
         records: &[Record],
@@ -451,6 +454,9 @@ impl<'a> StoreJournal<'a> {
         .await
     }
 
+    /// Locate each original by replaying the proven prefix, after the logical
+    /// claim, exactly as before `change_selection_at` existed.
+    #[cfg(test)]
     async fn change_selection(
         &self,
         proof: &VerifiedHead,
@@ -520,7 +526,7 @@ impl<'a> StoreJournal<'a> {
                 }
             }
         }
-        for record in records {
+        for (_, record) in records {
             digest.update(record.node.to_be_bytes());
             digest.update(record.node_seq.to_be_bytes());
             digest.update((record.body.len() as u64).to_be_bytes());

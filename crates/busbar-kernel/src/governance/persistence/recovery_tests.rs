@@ -75,6 +75,8 @@ struct Backend {
     state: Mutex<State>,
     lose_reply: AtomicBool,
     hang: AtomicBool,
+    // Park (never forward) the next recovery-row selection candidate.
+    park_selection: AtomicBool,
     clock_seconds: AtomicU64,
     /// One-shot: the next commit that puts this selected row is a definite
     /// ConditionConflict with no effect.
@@ -185,6 +187,10 @@ impl PersistenceBackend for Backend {
         self.state.lock().unwrap().sent.push(prepared.clone());
         Box::pin(async move {
             if self.hang.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            if selects_recovery_row(&prepared) && self.park_selection.swap(false, Ordering::SeqCst)
+            {
                 std::future::pending::<()>().await;
             }
             let mut state = self.state.lock().unwrap();
