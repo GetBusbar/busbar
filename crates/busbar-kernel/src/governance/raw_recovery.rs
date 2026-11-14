@@ -66,10 +66,18 @@ struct Links {
 }
 
 fn invalid(error: impl std::fmt::Display) -> RecordStoreError {
-    RecordStoreError(format!("invalid raw recovery custody: {error}"))
+    rendered_error(
+        RecordStoreError,
+        format_args!("invalid raw recovery custody: {error}"),
+    )
 }
 fn encode<T: Serialize>(value: &T) -> RecordStoreResult<Vec<u8>> {
-    serde_json::to_vec(value).map_err(invalid)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a recovery custody payload is encoded once per durable custody event"
+    )]
+    let payload = serde_json::to_vec(value).map_err(invalid);
+    payload
 }
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> RecordStoreResult<T> {
     serde_json::from_slice(bytes).map_err(invalid)
@@ -78,7 +86,7 @@ fn fingerprint<T: Serialize>(kind: &[u8], value: &T) -> RecordStoreResult<[u8; 3
     use sha2::Digest;
     let mut digest = sha2::Sha256::new();
     digest.update(kind);
-    digest.update(encode(value)?);
+    serde_json::to_writer(DigestWriter(&mut digest), value).map_err(invalid)?;
     Ok(digest.finalize().into())
 }
 fn usage_fingerprint(custody: &UsageCustody) -> RecordStoreResult<[u8; 32]> {
@@ -94,17 +102,24 @@ fn usage_fingerprint(custody: &UsageCustody) -> RecordStoreResult<[u8; 32]> {
 }
 
 fn usage_operation_values(custody: UsageCustody) -> Vec<(String, u64, UsageDelta)> {
-    let mut cells = Vec::new();
-    if !custody.chunk_plain.is_zero() {
-        cells.push((custody.bucket.clone(), custody.window, custody.chunk_plain));
-    }
-    if !custody.chunk_dated.is_zero() {
-        cells.push((
+    // The dated bucket is named from the plain one before the plain name moves into its cell.
+    let dated = (!custody.chunk_dated.is_zero()).then(|| {
+        (
             era_bucket(&custody.bucket),
             custody.window,
             custody.chunk_dated,
-        ));
-    }
+        )
+    });
+    let plain = (!custody.chunk_plain.is_zero()).then_some((
+        custody.bucket,
+        custody.window,
+        custody.chunk_plain,
+    ));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a recovery custody's original cells are rebuilt once per recovered operation"
+    )]
+    let cells = plain.into_iter().chain(dated).collect();
     cells
 }
 
@@ -192,6 +207,7 @@ impl GovState {
             return Ok(None);
         }
         let (chunk_plain, chunk_dated) = SegmentedUsage::of(&plain, &dated)?.chunk();
+        // busbar:expect(bp::into_alloc, reason = "boot: a recovery custody record owns its bucket name, built once per durable custody child")
         let custody = UsageCustody {
             bucket: bucket.into(),
             window,
@@ -275,12 +291,12 @@ impl GovState {
         raw_only: bool,
     ) -> RecordStoreResult<()> {
         let links: Links = decode(&parent.payload)?;
-        let children: Vec<_> = links
+        let mut children = links
             .handoffs
             .into_iter()
             .filter(|child| !raw_only || child.kind != RecoveryKind::Correction)
-            .collect();
-        if children.is_empty() {
+            .peekable();
+        if children.peek().is_none() {
             return Ok(());
         }
         self.verify_recovery_checkpoint(parent).await?;
@@ -309,11 +325,19 @@ impl GovState {
                 {
                     return Err(invalid("child identity already belongs to another handoff"));
                 }
+                #[expect(
+                    clippy::disallowed_types,
+                    reason = "boot: a recovered child is compared field-for-field with its retained descriptor"
+                )]
                 let mut actual: serde_json::Value = decode(&initial.payload)?;
                 actual
                     .as_object_mut()
                     .ok_or_else(|| invalid("child payload is not an object"))?
                     .remove("origin");
+                #[expect(
+                    clippy::disallowed_types,
+                    reason = "boot: a recovered child is compared field-for-field with its retained descriptor"
+                )]
                 let mut expected: serde_json::Value = decode(&child.payload)?;
                 expected
                     .as_object_mut()
@@ -399,6 +423,10 @@ impl GovState {
     pub(super) async fn resume_raw_recovery(&self) -> RecordStoreResult<()> {
         let mut first_error = None;
         loop {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: recovery resume compares the whole selection before and after each pass"
+            )]
             let before: Vec<_> = self
                 .selected_recovery_events()
                 .iter()
@@ -415,6 +443,10 @@ impl GovState {
                     }
                 }
             }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "boot: recovery resume compares the whole selection before and after each pass"
+            )]
             let after: Vec<_> = self
                 .selected_recovery_events()
                 .iter()
@@ -456,6 +488,10 @@ impl GovState {
                 RecoveryKind::Usage => {
                     let custody: UsageCustody = decode(&event.payload)?;
                     let owned = usage_operation_values(custody);
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "boot: a recovered operation resubmits its original cells once"
+                    )]
                     let cells = owned
                         .iter()
                         .map(|(bucket, window, delta)| (bucket.as_str(), *window, delta.clone()))
@@ -589,7 +625,9 @@ impl GovState {
         event: &RecoveryEvent,
         verdict: RawVerdict,
     ) -> Result<Vec<u8>, RecoveryError> {
-        let map = |error: RecordStoreError| RecoveryError::Unavailable(error.to_string());
+        let map = |error: RecordStoreError| {
+            crate::governance::rendered_error(RecoveryError::Unavailable, error)
+        };
         match event.kind {
             RecoveryKind::Usage => {
                 let mut custody: UsageCustody = decode(&event.payload).map_err(map)?;
@@ -646,13 +684,17 @@ impl GovState {
         resolution.validate_quiescence()?;
         let driver = self
             .recovery_driver(resolution.operation_id)
-            .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+            .map_err(|error| {
+                crate::governance::rendered_error(RecoveryError::Unavailable, error)
+            })?;
         let running = driver
             .try_enter()
             .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
         self.confirm_pending_recovery(resolution.operation_id)
             .await
-            .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+            .map_err(|error| {
+                crate::governance::rendered_error(RecoveryError::Unavailable, error)
+            })?;
         let event = self
             .recovery_event(resolution.operation_id)
             .ok_or_else(|| {
@@ -666,7 +708,9 @@ impl GovState {
             actor: resolution.actor.clone(),
             reason: resolution.reason.clone(),
         };
-        let map = |error: RecordStoreError| RecoveryError::Unavailable(error.to_string());
+        let map = |error: RecordStoreError| {
+            crate::governance::rendered_error(RecoveryError::Unavailable, error)
+        };
         let previous_verdict = match event.kind {
             RecoveryKind::Usage => decode::<UsageCustody>(&event.payload).map_err(map)?.verdict,
             RecoveryKind::Metering => {
@@ -746,6 +790,10 @@ impl GovState {
         if epoch != self.recovery_selection_epoch() {
             return Err(invalid("selected raw custody changed during capture"));
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: recovery custody capture indexes the selected operations once per capture"
+        )]
         let owned_snapshot: std::collections::BTreeSet<_> = observations
             .iter()
             .map(|event| event.operation_id)
@@ -760,6 +808,7 @@ impl GovState {
 
         capacity.merge(&allocated);
         let selection_changed = epoch != self.recovery_selection_epoch();
+        // busbar:expect(bp::fresh_buffer, reason = "boot: recovery custody capture lists the owners it must re-stage, once per capture")
         let mut owners = Vec::new();
 
         for event in observations {
@@ -918,6 +967,7 @@ impl GovState {
         parent: &RecoveryEvent,
         verify_current: bool,
     ) -> RecordStoreResult<bool> {
+        // busbar:expect(bp::into_alloc, reason = "boot: a recovery tree walk queues its root once per walk")
         let mut queue = std::collections::VecDeque::from([parent.clone()]);
         let mut seen = std::collections::BTreeSet::new();
         while let Some(event) = queue.pop_front() {
@@ -962,6 +1012,7 @@ impl GovState {
         &self,
         parent: &RecoveryEvent,
     ) -> RecordStoreResult<()> {
+        // busbar:expect(bp::into_alloc, reason = "boot: a recovery tree walk queues its root once per walk")
         let mut queue = std::collections::VecDeque::from([(parent.clone(), true)]);
         let mut seen = std::collections::BTreeSet::new();
         while let Some((snapshot, owned)) = queue.pop_front() {
@@ -1062,7 +1113,10 @@ impl RecoveryEvent {
         serde_json::from_slice::<Links>(&self.payload)
             .map(|links| links.origin)
             .map_err(|error| {
-                RecoveryError::Invalid(format!("invalid recovery origin payload: {error}"))
+                rendered_error(
+                    RecoveryError::Invalid,
+                    format_args!("invalid recovery origin payload: {error}"),
+                )
             })
     }
 
@@ -1079,8 +1133,12 @@ impl RecoveryEvent {
         {
             return Err(invalid("child origin differs from exact parent checkpoint"));
         }
-        let links: Links = serde_json::from_slice(&self.payload)
-            .map_err(|error| invalid(&format!("invalid parent handoff: {error}")))?;
+        let links: Links = serde_json::from_slice(&self.payload).map_err(|error| {
+            rendered_error(
+                RecoveryError::Invalid,
+                format_args!("invalid parent handoff: {error}"),
+            )
+        })?;
         let mut descriptors = links
             .handoffs
             .iter()
@@ -1097,14 +1155,32 @@ impl RecoveryEvent {
         {
             return Err(invalid("child identity differs from exact parent template"));
         }
+        #[expect(
+            clippy::disallowed_types,
+            reason = "boot: a recovered child is compared field-for-field with its parent's template"
+        )]
         let mut actual: serde_json::Value = serde_json::from_slice(&child_genesis.payload)
-            .map_err(|error| invalid(&format!("invalid child payload: {error}")))?;
+            .map_err(|error| {
+                rendered_error(
+                    RecoveryError::Invalid,
+                    format_args!("invalid child payload: {error}"),
+                )
+            })?;
         actual
             .as_object_mut()
             .ok_or_else(|| invalid("child payload is not an object"))?
             .remove("origin");
-        let mut expected: serde_json::Value = serde_json::from_slice(&descriptor.payload)
-            .map_err(|error| invalid(&format!("invalid child template: {error}")))?;
+        #[expect(
+            clippy::disallowed_types,
+            reason = "boot: a recovered child is compared field-for-field with its parent's template"
+        )]
+        let mut expected: serde_json::Value =
+            serde_json::from_slice(&descriptor.payload).map_err(|error| {
+                rendered_error(
+                    RecoveryError::Invalid,
+                    format_args!("invalid child template: {error}"),
+                )
+            })?;
         let expected_object = expected
             .as_object_mut()
             .ok_or_else(|| invalid("child template is not an object"))?;
@@ -1151,7 +1227,7 @@ impl GovState {
             ));
         }
         Self::validate_raw_recovery(event)
-            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+            .map_err(|error| crate::governance::rendered_error(RecoveryError::Invalid, error))?;
         let landed = resolution.verdict == RecoveryVerdict::Landed;
         match event.state {
             RecoveryState::Settled => return Ok(Vec::new()),
@@ -1173,21 +1249,33 @@ impl GovState {
                 ));
             }
         }
-        let preserved: Links =
-            decode(&event.payload).map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+        let preserved: Links = decode(&event.payload)
+            .map_err(|error| crate::governance::rendered_error(RecoveryError::Invalid, error))?;
         let normalize = |payload: Vec<u8>| -> Result<Vec<u8>, RecoveryError> {
             let Some(context) = context else {
                 return Ok(payload);
             };
-            let mut value: serde_json::Value = serde_json::from_slice(&payload)
-                .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+            // The payload is rewritten as a tree so every other field keeps its exact stored form.
+            #[expect(
+                clippy::disallowed_types,
+                reason = "config: an operator's verdict on a migrated foreign operation rewrites its handoffs once"
+            )]
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&payload).map_err(|error| {
+                    crate::governance::rendered_error(RecoveryError::Invalid, error)
+                })?;
+            #[expect(
+                clippy::disallowed_methods,
+                clippy::disallowed_macros,
+                reason = "config: an operator's verdict on a migrated foreign operation rewrites its handoffs once"
+            )]
             let mut handoffs: Vec<RecoveryChild> = serde_json::from_value(
                 value
                     .get("handoffs")
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!([])),
             )
-            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+            .map_err(|error| crate::governance::rendered_error(RecoveryError::Invalid, error))?;
             for (index, child) in handoffs.iter_mut().enumerate() {
                 if !preserved
                     .handoffs
@@ -1206,20 +1294,31 @@ impl GovState {
                     "migrated handoff identity collision".into(),
                 ));
             }
-            value
+            let object = value
                 .as_object_mut()
-                .ok_or_else(|| RecoveryError::Invalid("raw custody is not an object".into()))?
-                .insert(
-                    "handoffs".into(),
-                    serde_json::to_value(handoffs)
-                        .map_err(|error| RecoveryError::Invalid(error.to_string()))?,
-                );
-            serde_json::to_vec(&value).map_err(|error| RecoveryError::Invalid(error.to_string()))
+                .ok_or_else(|| RecoveryError::Invalid("raw custody is not an object".into()))?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an operator's verdict on a migrated foreign operation rewrites its handoffs once"
+            )]
+            let handoffs = serde_json::to_value(handoffs).map_err(|error| {
+                crate::governance::rendered_error(RecoveryError::Invalid, error)
+            })?;
+            object.insert("handoffs".into(), handoffs);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: an operator's verdict on a migrated foreign operation rewrites its handoffs once"
+            )]
+            let normalized = serde_json::to_vec(&value)
+                .map_err(|error| crate::governance::rendered_error(RecoveryError::Invalid, error));
+            normalized
         };
+        // busbar:expect(bp::fresh_buffer, reason = "config: an operator's foreign verdict stages its one or two transitions")
         let mut transitions = Vec::new();
         let unknown = if event.state == RecoveryState::Intent {
-            let payload = Self::quarantined_raw_payload(event, true)
-                .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+            let payload = Self::quarantined_raw_payload(event, true).map_err(|error| {
+                crate::governance::rendered_error(RecoveryError::Invalid, error)
+            })?;
             let unknown = event.checkpoint(RecoveryState::LandedUnknown, normalize(payload)?)?;
             transitions.push(unknown.clone());
             unknown
@@ -1258,6 +1357,11 @@ impl ForeignSettledSnapshot {
 }
 impl RecoveryChild {
     fn intent_with_origin(&self, origin: RecoveryOrigin) -> RecordStoreResult<RecoveryEvent> {
+        // The template is extended as a tree so every field keeps its exact stored form.
+        #[expect(
+            clippy::disallowed_types,
+            reason = "boot: a recovery child's Intent is stamped with its origin once, when recovery selects it"
+        )]
         let mut payload: serde_json::Value = decode(&self.payload)?;
         let object = payload
             .as_object_mut()
@@ -1265,10 +1369,12 @@ impl RecoveryChild {
         if object.get("origin").is_some_and(|origin| !origin.is_null()) {
             return Err(invalid("child template already has an origin"));
         }
-        object.insert(
-            "origin".into(),
-            serde_json::to_value(origin).map_err(invalid)?,
-        );
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a recovery child's Intent is stamped with its origin once, when recovery selects it"
+        )]
+        let origin = serde_json::to_value(origin).map_err(invalid)?;
+        object.insert("origin".into(), origin);
         Ok(RecoveryEvent {
             operation_id: self.operation_id,
             revision: 0,

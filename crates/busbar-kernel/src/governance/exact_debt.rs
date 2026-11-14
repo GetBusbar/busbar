@@ -25,7 +25,11 @@ impl<'de> serde::Deserialize<'de> for ExactModelDelta {
             usage_units: BTreeMap<String, i128>,
         }
         let row = Stored::deserialize(deserializer)?;
-        Ok(Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a stored raw debt row is decoded once, when its custody is restored"
+        )]
+        let built = Ok(Self {
             model: row.model,
             scale: COUNT_SCALE,
             usage_units: row
@@ -37,7 +41,8 @@ impl<'de> serde::Deserialize<'de> for ExactModelDelta {
                         .map_err(serde::de::Error::custom)
                 })
                 .collect::<Result<_, _>>()?,
-        })
+        });
+        built
     }
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -192,49 +197,57 @@ impl ExactUsageDelta {
             if dated && model.era == RawRateEra::legacy(0) {
                 continue;
             }
-            let name = if dated {
-                era_model(model.era, &model.model)
-            } else {
-                model.model.to_string()
-            };
             let flushed = if dated {
                 &model.flushed_era
             } else {
                 &model.flushed
             };
-            for unit in model
-                .cur
-                .keys()
-                .chain(flushed.keys())
-                .collect::<std::collections::BTreeSet<_>>()
-            {
-                debt.unit(
-                    &name,
-                    unit,
-                    model
-                        .cur
-                        .get(unit)
-                        .copied()
-                        .unwrap_or_default()
-                        .checked_sub(flushed.get(unit).copied().unwrap_or_default())
-                        .expect("raw count difference overflow")
-                        .micros(),
-                );
+            // The undated row borrows the model name; the dated row names its era only once a
+            // unit actually carries debt.
+            let mut era_name: Option<String> = None;
+            for unit in crate::governance::sorted_union(model.cur.keys(), flushed.keys()) {
+                let change = model
+                    .cur
+                    .get(unit)
+                    .copied()
+                    .unwrap_or_default()
+                    .checked_sub(flushed.get(unit).copied().unwrap_or_default())
+                    .expect("raw count difference overflow")
+                    .micros();
+                if change == 0 {
+                    continue;
+                }
+                let name = if dated {
+                    era_name
+                        .get_or_insert_with(|| era_model(model.era, &model.model))
+                        .as_str()
+                } else {
+                    &*model.model
+                };
+                debt.unit(name, unit, change);
             }
         }
         if dated {
-            let current: BTreeMap<_, _> = cell.fee_eras.dated().iter().copied().collect();
-            let flushed: BTreeMap<_, _> = cell.flushed_fee_eras.dated().iter().copied().collect();
-            for era in current
-                .keys()
-                .chain(flushed.keys())
-                .collect::<std::collections::BTreeSet<_>>()
+            let (current, flushed) = (cell.fee_eras.dated(), cell.flushed_fee_eras.dated());
+            let count_at = |eras: &[(RawRateEra, u64)], era: RawRateEra| {
+                eras.iter()
+                    .find(|(at, _)| *at == era)
+                    .map_or(0, |(_, n)| *n)
+            };
+            // Each era once, ascending (the order a set union yields), read straight from the
+            // two short era lists.
+            let mut after: Option<RawRateEra> = None;
+            while let Some(era) = (current.iter().chain(flushed))
+                .map(|(at, _)| *at)
+                .filter(|at| after.is_none_or(|last| *at > last))
+                .min()
             {
+                after = Some(era);
                 debt.unit(
-                    &era_tag(*era),
+                    &era_tag(era),
                     ERA_FEE_UNIT,
-                    whole_count(current.get(era).copied().unwrap_or(0))
-                        .checked_sub(whole_count(flushed.get(era).copied().unwrap_or(0)))
+                    whole_count(count_at(current, era))
+                        .checked_sub(whole_count(count_at(flushed, era)))
                         .expect("fee count difference overflow")
                         .micros(),
                 );
@@ -247,7 +260,8 @@ impl ExactUsageDelta {
 mod decimal_count {
     use serde::{Deserialize, Deserializer, Serializer};
     pub fn serialize<S: Serializer>(count: &i128, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&count.to_string())
+        // The decimal text is written straight into the output (the same JSON string).
+        serializer.collect_str(count)
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i128, D::Error> {
         String::deserialize(deserializer)?
@@ -258,20 +272,28 @@ mod decimal_count {
 mod decimal_units {
     use super::BTreeMap;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    /// A count written as its decimal string, in place.
+    struct Decimal<'a>(&'a i128);
+    impl Serialize for Decimal<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(self.0)
+        }
+    }
     pub fn serialize<S: Serializer>(
         units: &BTreeMap<String, i128>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        units
-            .iter()
-            .map(|(unit, count)| (unit, count.to_string()))
-            .collect::<BTreeMap<_, _>>()
-            .serialize(serializer)
+        // The map is already ordered by unit: stream it, each count as its decimal string.
+        serializer.collect_map(units.iter().map(|(unit, count)| (unit, Decimal(count))))
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<BTreeMap<String, i128>, D::Error> {
-        BTreeMap::<String, String>::deserialize(deserializer)?
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: stored raw debt is decoded once, when its custody is restored"
+        )]
+        let units = BTreeMap::<String, String>::deserialize(deserializer)?
             .into_iter()
             .map(|(unit, count)| {
                 count
@@ -279,7 +301,8 @@ mod decimal_units {
                     .map(|count| (unit, count))
                     .map_err(serde::de::Error::custom)
             })
-            .collect()
+            .collect();
+        units
     }
 }
 
@@ -615,6 +638,7 @@ impl GovState {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(bucket.into());
+        // busbar:expect(bp::into_alloc, reason = "config: a deleted bucket is held from flushing once, at key or group deletion")
         BudgetDeleteGuard {
             state: self,
             bucket: bucket.into(),
@@ -768,10 +792,10 @@ impl GovState {
                     if cell.window_start == window {
                         cell.flushed_requests = cell.requests;
                         cell.flushed_billable_requests = cell.billable_requests;
-                        cell.flushed_fee_eras = cell.fee_eras.clone();
+                        cell.flushed_fee_eras.clone_from(&cell.fee_eras);
                         for model in &mut cell.models {
-                            model.flushed = model.cur.clone();
-                            model.flushed_era = model.cur.clone();
+                            model.flushed.clone_from(&model.cur);
+                            model.flushed_era.clone_from(&model.cur);
                         }
                     }
                     park_window(&mut cell.rolled, window, deferred_plain.clone());
@@ -889,12 +913,15 @@ impl GovState {
             {
                 return (confirmed,Some(RecordStoreError("raw usage chunk receipt retention expired; exact debt and identity retained".into())));
             }
-            let era_bucket = era_bucket(&flight.bucket);
-            let mut cells = Vec::new();
+            // At most the plain and the dated row: held inline, and the dated bucket is named only
+            // when it carries debt.
+            let era_bucket = (!chunk.dated.is_zero()).then(|| era_bucket(&flight.bucket));
+            let mut cells: smallvec::SmallVec<[(&str, u64, UsageDelta); 2]> =
+                smallvec::SmallVec::new();
             if !chunk.plain.is_zero() {
                 cells.push((flight.bucket.as_str(), flight.window, chunk.plain.clone()));
             }
-            if !chunk.dated.is_zero() {
+            if let Some(era_bucket) = &era_bucket {
                 cells.push((era_bucket.as_str(), flight.window, chunk.dated.clone()));
             }
 
@@ -930,12 +957,16 @@ impl GovState {
         final_flush: bool,
     ) -> (usize, Vec<String>) {
         let mut confirmed = 0;
+        // busbar:expect(bp::fresh_buffer, reason = "error: the failure list allocates only once a flight has failed")
         let mut errors = Vec::new();
         for flight in flights {
             let (done, error) = self.drive_budget_flush_flight(&flight, final_flush).await;
             confirmed += done;
             if let Some(error) = error {
-                errors.push(format!("{}@{}: {error}", flight.bucket, flight.window));
+                errors.push(rendered_error(
+                    std::convert::identity,
+                    format_args!("{}@{}: {error}", flight.bucket, flight.window),
+                ));
             }
         }
         (confirmed, errors)
@@ -945,6 +976,11 @@ impl GovState {
         &self,
         bucket: &str,
     ) -> RecordStoreResult<()> {
+        // busbar:expect(bp::state_scan, reason = "config: a deleted bucket's in-flight flushes are settled once, at key or group deletion")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a deleted bucket's in-flight flushes are settled once, at key or group deletion"
+        )]
         let flights: Vec<_> = self
             .budget_flushes
             .lock()

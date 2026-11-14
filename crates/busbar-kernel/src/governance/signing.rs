@@ -10,10 +10,6 @@ pub const TOKEN_PREFIX: &str = "bbk_";
 
 pub const TICKET_AUDIENCE: &str = "busbar:ticket";
 
-pub(crate) fn ticket_audience(consumer: &str) -> String {
-    format!("{TICKET_AUDIENCE}:{consumer}")
-}
-
 const ED25519_KEY_INFO_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
@@ -122,6 +118,10 @@ impl TokenSigner {
 
     pub fn generate(kid: impl Into<String>) -> Result<Self, getrandom::Error> {
         let mut bytes = [0u8; 32];
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a signing key is generated once, when none is configured"
+        )]
         getrandom::fill(&mut bytes)?;
         Ok(Self {
             key: SigningKey::from_bytes(&bytes),
@@ -152,22 +152,26 @@ impl TokenSigner {
 
     pub fn subkey_key_info_base64(&self, domain: &str) -> String {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
-        let mut der = Vec::with_capacity(ED25519_KEY_INFO_PREFIX.len() + 32);
-        der.extend_from_slice(&ED25519_KEY_INFO_PREFIX);
-        der.extend_from_slice(key.verifying_key().as_bytes());
+        // The SubjectPublicKeyInfo DER is a fixed 44 bytes: built on the stack.
+        let mut der = [0u8; ED25519_KEY_INFO_PREFIX.len() + 32];
+        der[..ED25519_KEY_INFO_PREFIX.len()].copy_from_slice(&ED25519_KEY_INFO_PREFIX);
+        der[ED25519_KEY_INFO_PREFIX.len()..].copy_from_slice(key.verifying_key().as_bytes());
         base64::engine::general_purpose::STANDARD.encode(der)
     }
 
     pub fn mint(&self, sub: &str, exp: u64, generation: Option<&str>) -> String {
-        self.sign_claims(TokenClaims {
-            sub: sub.to_string(),
-            exp,
-            kid: self.kid.clone(),
-            generation: generation.map(str::to_string),
-            aud: None,
-            cid: None,
-            ticket: None,
-        })
+        self.sign_token(
+            TOKEN_PREFIX,
+            &MintClaims {
+                sub,
+                exp,
+                kid: &self.kid,
+                generation,
+                aud: None,
+                cid: None,
+                ticket: None,
+            },
+        )
     }
 
     pub fn mint_for_audience(
@@ -178,15 +182,18 @@ impl TokenSigner {
         aud: &str,
         cid: Option<&str>,
     ) -> String {
-        self.sign_claims(TokenClaims {
-            sub: sub.to_string(),
-            exp,
-            kid: self.kid.clone(),
-            generation: generation.map(str::to_string),
-            aud: Some(aud.to_string()),
-            cid: cid.map(str::to_string),
-            ticket: None,
-        })
+        self.sign_token(
+            TOKEN_PREFIX,
+            &MintClaims {
+                sub,
+                exp,
+                kid: &self.kid,
+                generation,
+                aud: Some(Audience::Uri(aud)),
+                cid,
+                ticket: None,
+            },
+        )
     }
 
     pub fn mint_ticket_body(
@@ -197,29 +204,87 @@ impl TokenSigner {
         ticket: &str,
         consumer: &str,
     ) -> String {
-        self.sign_body(&TokenClaims {
-            sub: sub.to_string(),
-            exp,
-            kid: self.kid.clone(),
-            generation: generation.map(str::to_string),
-            aud: Some(ticket_audience(consumer)),
-            cid: None,
-            ticket: Some(ticket.to_string()),
-        })
+        self.sign_token(
+            "",
+            &MintClaims {
+                sub,
+                exp,
+                kid: &self.kid,
+                generation,
+                aud: Some(Audience::Ticket(consumer)),
+                cid: None,
+                ticket: Some(ticket),
+            },
+        )
     }
 
-    fn sign_claims(&self, claims: TokenClaims) -> String {
-        format!("{TOKEN_PREFIX}{}", self.sign_body(&claims))
-    }
-
-    fn sign_body(&self, claims: &TokenClaims) -> String {
+    /// `prefix` + base64url(payload) + `.` + base64url(signature), written into the one token
+    /// String with no intermediate encodings.
+    fn sign_token(&self, prefix: &str, claims: &MintClaims<'_>) -> String {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a signed token is minted once per key mint or token exchange (control plane)"
+        )]
         let payload = serde_json::to_vec(claims).expect("TokenClaims serializes");
         let sig: Signature = self.key.sign(&payload);
-        format!(
-            "{}.{}",
-            URL_SAFE_NO_PAD.encode(&payload),
-            URL_SAFE_NO_PAD.encode(sig.to_bytes())
-        )
+        let encoded = |bytes: usize| bytes.div_ceil(3) * 4;
+        // busbar:expect(bp::fresh_buffer, reason = "config: a signed token is minted once per key mint or token exchange (control plane)")
+        let mut token =
+            String::with_capacity(prefix.len() + encoded(payload.len()) + 1 + encoded(64));
+        token.push_str(prefix);
+        URL_SAFE_NO_PAD.encode_string(&payload, &mut token);
+        token.push('.');
+        URL_SAFE_NO_PAD.encode_string(sig.to_bytes(), &mut token);
+        token
+    }
+}
+
+/// The claims a mint signs, borrowed from the caller: the same fields, wire names and order as
+/// [`TokenClaims`], so the signed payload is byte-for-byte what serializing `TokenClaims` writes.
+#[derive(Serialize)]
+struct MintClaims<'a> {
+    sub: &'a str,
+    exp: u64,
+    kid: &'a str,
+    #[serde(rename = "g", skip_serializing_if = "Option::is_none")]
+    generation: Option<&'a str>,
+    #[serde(rename = "a", skip_serializing_if = "Option::is_none")]
+    aud: Option<Audience<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cid: Option<&'a str>,
+    #[serde(rename = "t", skip_serializing_if = "Option::is_none")]
+    ticket: Option<&'a str>,
+}
+
+/// An audience claim: an operator-configured URI, or a ticket audience
+/// (`busbar:ticket:<consumer>`), written in place without composing a String.
+#[derive(Clone, Copy)]
+enum Audience<'a> {
+    Uri(&'a str),
+    Ticket(&'a str),
+}
+
+impl Audience<'_> {
+    fn matches(self, aud: &str) -> bool {
+        match self {
+            Audience::Uri(expected) => expected == aud,
+            Audience::Ticket(consumer) => {
+                aud.strip_prefix(TICKET_AUDIENCE)
+                    .and_then(|rest| rest.strip_prefix(':'))
+                    == Some(consumer)
+            }
+        }
+    }
+}
+
+impl Serialize for Audience<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Audience::Uri(uri) => serializer.serialize_str(uri),
+            Audience::Ticket(consumer) => {
+                serializer.collect_str(&format_args!("{TICKET_AUDIENCE}:{consumer}"))
+            }
+        }
     }
 }
 
@@ -227,12 +292,12 @@ impl TokenSigner {
 /// and a future rotation/keyset drops in without a shape change. 1.5.0 populates it single-key.
 #[derive(Clone)]
 pub struct TokenVerifier {
-    keys: std::collections::HashMap<String, VerifyingKey>,
+    keys: foldhash::HashMap<String, VerifyingKey>,
 }
 
 impl TokenVerifier {
     pub fn single(kid: impl Into<String>, key: VerifyingKey) -> Self {
-        let mut keys = std::collections::HashMap::new();
+        let mut keys = foldhash::HashMap::default();
         keys.insert(kid.into(), key);
         Self { keys }
     }
@@ -255,7 +320,7 @@ impl TokenVerifier {
         now: u64,
         expected_aud: Option<&str>,
     ) -> Result<TokenClaims, VerifyError> {
-        self.verify_body_at(body, Some(now), expected_aud)
+        self.verify_body_at(body, Some(now), expected_aud.map(Audience::Uri))
     }
 
     pub(crate) fn verify_ticket_body(
@@ -263,14 +328,14 @@ impl TokenVerifier {
         body: &str,
         consumer: &str,
     ) -> Result<TokenClaims, VerifyError> {
-        self.verify_body_at(body, None, Some(&ticket_audience(consumer)))
+        self.verify_body_at(body, None, Some(Audience::Ticket(consumer)))
     }
 
     fn verify_body_at(
         &self,
         body: &str,
         expiry_clock: Option<u64>,
-        expected_aud: Option<&str>,
+        expected_aud: Option<Audience<'_>>,
     ) -> Result<TokenClaims, VerifyError> {
         let (payload_b64, sig_b64) = body.split_once('.').ok_or(VerifyError::Malformed)?;
         let payload = URL_SAFE_NO_PAD
@@ -299,7 +364,7 @@ impl TokenVerifier {
         match (expected_aud, claims.aud.as_deref()) {
             (None, None) => {}
 
-            (Some(expected), Some(aud)) if expected == aud => {}
+            (Some(expected), Some(aud)) if expected.matches(aud) => {}
 
             _ => return Err(VerifyError::AudienceMismatch),
         }
@@ -308,9 +373,13 @@ impl TokenVerifier {
 }
 
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
-    busbar_contract::abi::sdk::digest::sha256(
-        &[&b"busbar/subkey/v1"[..], secret, domain.as_bytes()].concat(),
-    )
+    use sha2::Digest;
+    // SHA-256 over the three parts in order: the digest of their concatenation, without one.
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"busbar/subkey/v1");
+    digest.update(secret);
+    digest.update(domain.as_bytes());
+    digest.finalize().into()
 }
 
 #[cfg(test)]
