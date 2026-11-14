@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Audit for local development artifacts before anything leaves this machine.
+#
+# A hook rather than a CI step, and rather than a reminder: it fires automatically, so it cannot be
+# forgotten, and it runs at the only moment that matters — the last point before a commit becomes
+# public. A CI check cannot serve that purpose, because by the time CI sees a commit it is already
+# published.
+#
+# Point BUSBAR_LOCAL_AUDIT at an executable that performs the audit. Unset = this hook does nothing,
+# so a contributor without one is never blocked.
+audit="${BUSBAR_LOCAL_AUDIT:-}"
+[ -n "$audit" ] && [ -x "$audit" ] || exit 0
+if ! "$audit" "$(git rev-parse --show-toplevel)"; then
+  echo "pre-push: local development artifacts found; not pushing. Override with --no-verify." >&2
+  exit 1
+fi

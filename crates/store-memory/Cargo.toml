@@ -1,0 +1,17 @@
+[package]
+name = "busbar-store-memory"
+version = "1.5.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The default in-memory (RAM) backend for busbar's durable governance store — ephemeral, zero-setup."
+license = "Apache-2.0"
+
+[dependencies]
+busbar-api = { path = "../api" }
+
+[dev-dependencies]
+# The shared `Store` contract conformance suite. Core's own reference backend runs it too: if the
+# reference implementation does not pass the checks the plugin backends are held to, the checks are
+# wrong.
+busbar-plugin-testkit = { path = "../plugin-testkit", features = ["store"] }

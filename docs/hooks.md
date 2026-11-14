@@ -393,6 +393,16 @@ installed from its signed release tarball and enabled under `plugins:` in the no
 (`cheapest`, `fastest`, `least_busy`, `usage`). The default build links it, which is what makes those
 bare names work in a pool's `hooks:` list with no plugin installed.
 
+## First-party hook plugins (1.5.0)
+
+Two `kind: hook` plugins ship signed by release CI and are auto-trusted by the embedded key:
+
+**Headroom** (`busbar-headroom-hook`) is a `kind: hook` prompt-compression rewrite gate. It compresses context before dispatch, saving tokens and latency. Deploy it as a `prompt: rw` gate; it fires before dispatch on the normalized IR, token accounting runs on the rewritten body (the savings are real and measured), and a malformed or slow rewrite proceeds with the original body untouched. It reports `chars_saved_total` and related metrics via the `status` op.
+
+**Webrequest** (`busbar-webrequest-hook`) is a `kind: hook` HTTP-forwarder plugin — the migration path for code you don't want in Busbar's address space. It forwards the routing projection over HTTPS to an operator-run sidecar, so you get out-of-process isolation (the sidecar can be any language) without running an untrusted library in-process. The artifact itself is signed and auto-trusted; forwarding is SSRF-guarded; and the sidecar's reply rides the same op-discriminated JSON contract.
+
+Both plugins are installed from the release tarball and enabled under `plugins:` in the normal way. See [plugins.md](./plugins.md) for the artifact and trust model.
+
 ## Managing hooks over the API
 
 Hooks are also lifecycle-managed over the frozen admin API: register, inspect, health-check, and remove at runtime, with a tamper-evident audit trail, and (by default) persistence across restart. See the [Admin API guide](./admin-api.md).
