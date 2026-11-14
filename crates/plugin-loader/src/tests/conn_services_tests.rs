@@ -4305,3 +4305,157 @@ fn cached_connector_cannot_create_work_while_retiring_or_under_another_ticket() 
     assert_eq!(invoke(), Outcome::Ready);
     assert_eq!(table.opened.lock().unwrap().len(), 1);
 }
+
+/// THE KEPT-CYCLE RULE (`dispatch::held`), pinned through the real [`Held`](crate::dispatch::held)
+/// and the connector's kept answers, in the worker's order: a crossing is `enter` (a TICK of a
+/// kept cycle refuses, a drive does not), its service calls, then `leave`. Each call is what
+/// `held` and `slot` run: the guard, the kept answer (or the table), then the pending note.
+mod kept_cycle {
+    use std::cell::Cell;
+
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
+    use busbar_contract::abi::sdk::completion_retirement::Domain;
+
+    use super::super::{lock, Answered, InstanceWake, Kept};
+    use crate::dispatch::services::ServiceStore;
+
+    const DRIVER: Ticket = Ticket {
+        slot: 1,
+        generation: 2,
+    };
+
+    struct Rig {
+        store: ServiceStore,
+        wake: &'static InstanceWake,
+        caller: usize,
+        /// How many calls reached the table (ran rather than being refused or replayed).
+        ran: Cell<u32>,
+    }
+
+    fn rig() -> Rig {
+        let store = ServiceStore::default();
+        let wake: &'static InstanceWake = Box::leak(Box::<InstanceWake>::default());
+        store.held.track(DRIVER);
+        Rig {
+            store,
+            caller: std::ptr::from_ref(wake) as usize,
+            wake,
+            ran: Cell::new(0),
+        }
+    }
+
+    fn handle(seq: u32) -> CompletionHandle {
+        CompletionHandle {
+            ticket: DRIVER,
+            seq,
+            ..CompletionHandle::ZERO
+        }
+    }
+
+    impl Rig {
+        /// One connector service call under `seq` whose table answers `answer`.
+        fn call(&self, seq: u32, answer: Answered) -> Answered {
+            let h = handle(seq);
+            if !self.store.held.call(self.caller, Domain::Connector, h) {
+                return Answered::fault();
+            }
+            let a = self.wake.conn_state.kept(h, None, || {
+                self.ran.set(self.ran.get() + 1);
+                Kept {
+                    answer,
+                    read: None,
+                    delivered: false,
+                }
+            });
+            self.store.held.answered(
+                self.caller,
+                Domain::Connector,
+                h,
+                a.outcome == Outcome::Pending,
+            );
+            a
+        }
+
+        /// One crossing: `tick` of a kept cycle (`refusing`) or a drive.
+        fn crossing<T>(&self, refusing: bool, f: impl FnOnce(&Self) -> T) -> T {
+            self.store.held.enter(DRIVER, refusing);
+            let out = f(self);
+            self.store.held.leave(DRIVER);
+            out
+        }
+    }
+
+    fn pending() -> Answered {
+        Answered::bare(Outcome::Pending, "")
+    }
+
+    #[test]
+    fn a_pending_establish_reissued_at_a_kept_cycle_tick_is_refused_and_never_reaches_the_table() {
+        let r = rig();
+        let first = r.crossing(false, |r| r.call(0, pending()));
+        assert_eq!(first.outcome, Outcome::Pending);
+        assert_eq!(r.store.held.held(DRIVER), 1, "the establish is held");
+
+        let at_tick = r.crossing(true, |r| r.call(0, Answered::ready(7, 0)));
+        assert_eq!(
+            at_tick.outcome,
+            Outcome::Fault,
+            "a kept-cycle tick re-issuing the pending handle is refused"
+        );
+        assert_eq!(
+            r.ran.get(),
+            1,
+            "the refused re-issue never reached the table"
+        );
+
+        let resumed = r.crossing(false, |r| r.call(0, Answered::ready(7, 0)));
+        assert_eq!(
+            (resumed.outcome, resumed.value),
+            (Outcome::Ready, 7),
+            "the drive its wake brings resumes it"
+        );
+        assert_eq!(r.ran.get(), 2);
+    }
+
+    #[test]
+    fn a_fresh_tick_call_reusing_a_pending_seq_is_still_refused() {
+        let r = rig();
+        r.crossing(false, |r| r.call(0, pending()));
+        let other = r.crossing(true, |r| r.call(0, Answered::ready(99, 4)));
+        assert_eq!(
+            other.outcome,
+            Outcome::Fault,
+            "another service under a pending seq is refused at a kept-cycle tick"
+        );
+        assert!(
+            lock(&r.wake.conn_state.kept)
+                .get(&DRIVER)
+                .is_none_or(|kept| !kept.contains_key(&0)),
+            "nothing is kept under the pending seq"
+        );
+        let owner = r.crossing(false, |r| r.call(0, Answered::ready(7, 0)));
+        assert_eq!(
+            (owner.outcome, owner.value),
+            (Outcome::Ready, 7),
+            "the owner's resume gets its own answer, never the other op's"
+        );
+    }
+
+    #[test]
+    fn a_landed_answer_is_not_collected_by_a_kept_cycle_tick() {
+        let r = rig();
+        r.crossing(false, |r| {
+            assert_eq!(r.call(0, Answered::ready(5, 0)).outcome, Outcome::Ready);
+            assert_eq!(r.call(1, pending()).outcome, Outcome::Pending);
+        });
+        assert_eq!(r.store.held.held(DRIVER), 1, "the cycle is kept");
+        let at_tick = r.crossing(true, |r| r.call(0, Answered::ready(6, 0)));
+        assert_eq!(
+            at_tick.outcome,
+            Outcome::Fault,
+            "a kept-cycle tick re-issuing a landed handle is refused, not answered the kept answer"
+        );
+        assert_eq!(r.ran.get(), 2);
+    }
+}

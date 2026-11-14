@@ -178,6 +178,10 @@ impl Conns for Table {
         let (pieces, bytes) = match script {
             Script::Refused => return Err(ConnError::Refused),
             Script::OpenFails(err) => return Err(err),
+            Script::ReadFails(err) => {
+                self.read_fails.lock().unwrap().insert(id, err);
+                (VecDeque::new(), VecDeque::new())
+            }
             Script::Silent => (VecDeque::new(), VecDeque::new()),
             Script::FramerFault(text, outbound) => {
                 self.failing.lock().unwrap().push(id);
@@ -337,6 +341,9 @@ impl PollConns for Table {
             .get_mut(&conn.0)
             .and_then(VecDeque::pop_front)
         else {
+            if let Some(err) = self.read_fails.lock().unwrap().remove(&conn.0) {
+                return Poll::Ready(Err(err));
+            }
             let mut failing = self.failing.lock().unwrap();
             if let Some(at) = failing.iter().position(|c| *c == conn.0) {
                 failing.remove(at);
