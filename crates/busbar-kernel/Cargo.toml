@@ -88,6 +88,9 @@ rcgen = { workspace = true, features = ["pem"] }
 criterion = { workspace = true }
 # Member `test-support` features are enabled here, never in a release build.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
+# The crate's own test-support items (teller::seats, mallctl::ThreadCounter, test hooks) for its
+# integration tests, so they compile without another member turning the feature on.
+busbar-kernel = { path = ".", features = ["test-support"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemalloc-sys = { workspace = true, optional = true }
