@@ -18,7 +18,6 @@ busbar-default::bin/busbar distribution::decisions_hooks::a_gate_named_in_decisi
 busbar-default::bin/busbar distribution::decisions_hooks::a_global_gate_refuses_a_decisions_request_before_its_dial	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::decisions_hooks::with_no_hook_bound_the_provider_receives_the_callers_bytes	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::kernel_application_central2_config_export::test_limits_set_value_overrides_default	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar distribution::kernel_application_central2_linked_products::each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::kernel_application_exports_projection::a_producerless_stream_fails_the_boot_validate_pipeline	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::kernel_application_recovery_flusher_actual::actual_root_flusher_resumes_not_landed_using_the_current_cost_without_blocking_reactor	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::oauth2_application::code_flow_tests::a_request_naming_no_scope_is_shown_the_default_it_is_granted	CDT-KNOWN-RED	stable
@@ -43,7 +42,6 @@ busbar-default::bin/busbar root::door_steps::tests::a_service_account_token_uri_
 busbar-default::bin/busbar root::door_steps::tests::kernel_sections_preserve_numeric_scalars_in_every_projected_section	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::door_steps::tests::kernel_sections_refuse_unrepresentable_provider_numbers_before_application	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::inbound_tests::close_tests::retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_lock	CDT-KNOWN-RED	stable
-busbar-default::bin/busbar root::linked::tests::the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::listener::framed::empty_response_tests::bodyful_rendered_refusal_states_its_length	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::registry::tests::a_linked_transport_row_logs_to_its_own_plugin_log_file	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar root::serve::money_tests::datagram_opening_tests::a_host_head_wait_timeout_retires_real_custody_and_a_ready_plane_response_transfers_it	CDT-KNOWN-RED	stable
