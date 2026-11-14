@@ -171,6 +171,9 @@ mod synthetic {
             };
             verdict.into()
         }
+        fn reload(&self, _: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> {
+            Ok(0)
+        }
     }
     const CARRIERS: &[MarkWord] = &[carrier("authorization")];
     busbar_contract::auth_verify_door!(
@@ -203,7 +206,13 @@ fn synthetic_calls(alias: &str, mode: &str) -> Arc<dyn busbar_contract::auth_cal
         busbar_kernel::host_services::caller_binding(),
     ));
     crate::root::loader::auth_axis::AuthRows::new(synthetic_registry(alias), dispatcher)
-        .open(alias, alias, &serde_json::json!({"mode":mode}))
+        .open(
+            alias,
+            alias,
+            &busbar_contract::plugin_settings::ResolvedSettings::from(
+                serde_json::json!({"mode":mode}),
+            ),
+        )
         .expect("the SDK auth fixture opens")
 }
 fn synthetic_auth(alias: &str, mode: &str) -> busbar_kernel::auth::AuthMiddleware {
@@ -213,7 +222,8 @@ fn synthetic_auth(alias: &str, mode: &str) -> busbar_kernel::auth::AuthMiddlewar
     entry.settings = serde_json::json!({"mode":mode})
         .as_object()
         .unwrap()
-        .clone();
+        .clone()
+        .into();
     busbar_kernel::auth::AuthMiddleware::new(
         &AuthCfg::with_chain(vec![entry]),
         &registry,
@@ -411,15 +421,19 @@ fn the_operator_token_ref_is_checked_by_shape_only() {
         busbar_kernel::config_validate::validate(&cfg)
     };
     assert!(
-        build(SecretRef {
-            module: "planted-plugin-secret-module".to_string(),
-            settings: serde_json::Map::new(),
-        })
+        build(SecretRef::Source(
+            busbar_contract::secret_ref::SourceReference {
+                module: "planted-plugin-secret-module".to_string(),
+                settings: serde_json::Map::new().into(),
+            }
+        ))
         .is_ok(),
         "a plugin-backed secret module is checked at plugin pre-flight, not here"
     );
-    let mut keyless = SecretRef::env("BUSBAR_ADMIN_TOKEN");
-    keyless.settings.clear();
+    let keyless = SecretRef::Source(busbar_contract::secret_ref::SourceReference {
+        module: "env".to_string(),
+        settings: serde_json::Map::new().into(),
+    });
     let errs = build(keyless).expect_err("an env ref without settings.key");
     let path = format!("auth.admin_auth.{}.token", config::operator_provider());
     assert!(
@@ -428,7 +442,7 @@ fn the_operator_token_ref_is_checked_by_shape_only() {
         "expected the env-shape error; got: {errs:?}"
     );
     assert!(
-        build(SecretRef::env("BUSBAR_ADMIN_TOKEN")).is_ok(),
+        build(env_ref("BUSBAR_ADMIN_TOKEN")).is_ok(),
         "a well-formed env admin-token ref must validate"
     );
 }
@@ -479,8 +493,16 @@ async fn credentials_app(
     cfg: config::RootCfg,
     prior: Option<&busbar_kernel::state::App>,
 ) -> Result<busbar_kernel::state::App, String> {
+    let store_settings = serde_json::to_value(
+        cfg.store
+            .as_ref()
+            .expect("explicit native Store")
+            .settings
+            .authoring(&busbar_kernel::seal::acquire()),
+    )
+    .expect("fixture Store settings");
     let database = std::path::PathBuf::from(
-        cfg.store.as_ref().expect("explicit native Store").settings["db_path"]
+        store_settings["db_path"]
             .as_str()
             .expect("fixture SQLite path"),
     );
@@ -501,7 +523,7 @@ async fn credentials_app(
     .await?;
     drop(limits);
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     Ok(app)
 }
@@ -817,7 +839,8 @@ async fn through_the_loop(
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(Answers200),
         crate::root::units_admin::live_admin_door(Arc::clone(handle)),
-    );
+    )
+    .await;
     let node = crate::root::units_admin::AdminNode::new(crate::root::kernel::new_kernel(), units);
     let mut headers = Vec::new();
     if let Some(b) = bearer {
@@ -936,7 +959,8 @@ async fn a_swapped_admin_chain_is_the_loops_next_door() {
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(Answers200),
         crate::root::units_admin::live_admin_door(Arc::clone(&handle)),
-    );
+    )
+    .await;
     let node = crate::root::units_admin::AdminNode::new(crate::root::kernel::new_kernel(), units);
     async fn ask(node: &crate::root::units_admin::AdminNode) -> u16 {
         node.answer(crate::root::units_admin::AdminRequest {
@@ -1225,3 +1249,15 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
 }
 
 type CarrierCase = (&'static str, Vec<(&'static str, String)>, u16);
+
+/// The `{ env: VAR }` reference, written in its canonical `{module, settings}` form.
+fn env_ref(var: &str) -> SecretRef {
+    SecretRef::Source(busbar_contract::secret_ref::SourceReference {
+        module: "env".to_string(),
+        settings: serde_json::json!({ "key": var })
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+            .into(),
+    })
+}
