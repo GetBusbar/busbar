@@ -3,8 +3,30 @@
 
 //! Protected custody of exact current native candidates for offline import.
 
-pub use super::journal::CandidateError;
-use busbar_contract::{persistence::PreparedCandidate, plugin::KernelSeal, Secret};
+use busbar_contract::{
+    persistence::{InvalidCandidate, PreparedCandidate},
+    plugin::KernelSeal,
+    Secret,
+};
+
+/// Content-free protected candidate codec failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateError {
+    /// Unsupported retained candidate version.
+    Version,
+    /// Invalid framing.
+    Malformed,
+    /// Unrepresentable length.
+    Overflow,
+    /// Explicit allocation admission was exceeded.
+    Budget,
+    /// An admitted allocation failed.
+    Allocation,
+    /// The current native candidate is invalid.
+    Invalid(InvalidCandidate),
+    /// The original fingerprint differs.
+    Fingerprint,
+}
 
 /// Encode the immutable candidate with the current guarded codec and explicit
 /// allocation admission. The result retains secret custody.

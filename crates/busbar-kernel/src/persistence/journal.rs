@@ -31,7 +31,6 @@ const HEAD_MAGIC: &[u8; 8] = b"BBJHEAD1";
 const OWNER_MAGIC: &[u8; 8] = b"BBJOWN01";
 
 pub(crate) mod historical;
-pub(crate) mod migration;
 mod transfer;
 #[cfg(test)]
 pub(crate) use transfer::Handover;

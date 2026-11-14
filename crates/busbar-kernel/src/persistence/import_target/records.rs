@@ -121,9 +121,6 @@ pub mod recovery {
     pub fn legacy_head_address(operation: &[u8], value: &[u8]) -> Result<Address, String> {
         owner::legacy_head_address(operation, value).map_err(|error| error.to_string())
     }
-    pub fn legacy_head_authorizes(address: &Address) -> bool {
-        owner::legacy_head_authorizes(address)
-    }
 }
 
 pub const AUDIT_OWNER: &str = crate::audit::auditlog::PERSISTENCE_OWNER;
