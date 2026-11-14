@@ -25,6 +25,12 @@ features = ["sync"]
 repos = ["busbar-auth-ldap"]
 reason = "TESTS ONLY: the LDAP client the ldap auth module's live end-to-end test seeds its directory with, plaintext and no TLS feature. Never in the shipped image: the module speaks LDAP through its own sans-IO codec over the host's connector (busbar-auth-ldap#8; StartTLS through the host, #11), and [net-ban] refuses ldap3 in the shipped closure."
 
+[plugin-deps.multer]
+version = "3.1"
+default-features = false
+repos = ["busbar-plane-llm"]
+reason = "the multipart/form-data parser the llm plane's screened (hook-gated) units parse the caller's form with before rebuilding it canonically, so the upstream reads exactly the form the gate judged; LADDER step 1 (AGREED §4, 209), #![forbid(unsafe_code)], no socket; cargo-vet audit recorded under AGREED 284 (hook-screening canonical forwarding §4)."
+
 [plugin-deps.mysql]
 version = "28"
 default-features = false
