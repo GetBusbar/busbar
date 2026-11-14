@@ -233,7 +233,7 @@ impl Workspace {
                 generated: Vec::new(),
             });
             if production && !entry.production {
-                entry.module = job.module.clone();
+                entry.module.clone_from(&job.module);
             }
             entry.production |= production;
             entry.build_script |= job.build_script;

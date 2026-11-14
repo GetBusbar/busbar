@@ -34,7 +34,7 @@ impl SourceFingerprints {
         digest.update(b"busbar.configuration.sources.1\0");
         digest.update(self.config);
         digest.update(self.catalog);
-        digest.finalize().into()
+        digest.finalize()
     }
 
     pub fn from_sources(config: &str, catalog: &str) -> Self {
@@ -45,7 +45,7 @@ impl SourceFingerprints {
     }
 }
 fn source_digest(text: &str) -> [u8; 32] {
-    crate::hashing::Sha256::digest(text.as_bytes()).into()
+    crate::hashing::Sha256::digest(text.as_bytes())
 }
 
 /// A loader-local refusal flag lets the admin boundary distinguish source drift (409) from
@@ -471,7 +471,7 @@ impl DocumentPatch {
                 continue;
             };
             let typed = WipedYaml(
-                busbar_contract::yaml::to_value(&deploy.authoring(&crate::seal::acquire()))
+                busbar_contract::yaml::to_value(deploy.authoring(&crate::seal::acquire()))
                     .map_err(|_| PatchError::Encoding)?,
             );
             let typed = typed.0.as_mapping().ok_or(PatchError::Encoding)?;

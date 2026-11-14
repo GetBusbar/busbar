@@ -86,7 +86,7 @@ fn fingerprint<T: Serialize>(kind: &[u8], value: &T) -> RecordStoreResult<[u8; 3
     let mut digest = crate::hashing::Sha256::new();
     digest.update(kind);
     serde_json::to_writer(DigestWriter(&mut digest), value).map_err(invalid)?;
-    Ok(digest.finalize().into())
+    Ok(digest.finalize())
 }
 fn usage_fingerprint(custody: &UsageCustody) -> RecordStoreResult<[u8; 32]> {
     fingerprint(

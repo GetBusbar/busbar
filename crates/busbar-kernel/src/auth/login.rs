@@ -363,7 +363,7 @@ impl LoginMethods {
                         ),
                     })
                 },
-                &refused,
+                refused,
             )?;
             let axis = match &axis {
                 Some(a) => a.clone(),

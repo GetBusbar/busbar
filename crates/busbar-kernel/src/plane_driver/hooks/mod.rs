@@ -318,7 +318,7 @@ pub trait CallerFacts: Send + Sync {
     ) -> crate::audit::amend::ReadConfirmation<'a> {
         Box::pin(async move {
             for hook in hooks {
-                self.hook_read(*hook, principal, dialect, identity).await?;
+                self.hook_read(hook, principal, dialect, identity).await?;
             }
             Ok(())
         })

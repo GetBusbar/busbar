@@ -19,7 +19,7 @@ use busbar_contract::{
     },
     Secret,
 };
-use busbar_kernel_wal::{JournalBreak, JournalRecord, Record};
+use busbar_kernel_wal::{JournalRecord, Record};
 
 use super::{
     facade::{AccessError, CoreStore, LogicalClaim, LogicalId, Submission, WriterAuthority},
@@ -491,8 +491,6 @@ fn advance(previous: Head, record: &JournalRecord) -> Result<Head> {
     })
 }
 
-/// Returns one verified original frame at a time. A domain must finish the
-/// cursor before treating a replay as complete or publishing reconstructed state.
 thread_local! {
     static REPLAYS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -509,6 +507,8 @@ pub fn replays_on_this_thread() -> u64 {
     REPLAYS.with(std::cell::Cell::get)
 }
 
+/// Returns one verified original frame at a time. A domain must finish the
+/// cursor before treating a replay as complete or publishing reconstructed state.
 pub(crate) struct Replay<'j, 's> {
     journal: &'j StoreJournal<'s>,
     target: VerifiedHead,

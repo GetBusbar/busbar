@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::future::Future as _;
 use std::sync::Arc;
 
 use crate::auth::{open_operator, AuthMiddleware};

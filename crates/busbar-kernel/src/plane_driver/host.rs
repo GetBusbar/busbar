@@ -64,7 +64,7 @@ pub trait EngineHost: Send + Sync {
     ) -> crate::audit::amend::ReadConfirmation<'a> {
         Box::pin(async move {
             for hook in hooks {
-                self.hook_read(*hook, principal, op, identity).await?;
+                self.hook_read(hook, principal, op, identity).await?;
             }
             Ok(())
         })

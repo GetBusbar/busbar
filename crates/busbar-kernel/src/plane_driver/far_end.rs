@@ -2549,7 +2549,7 @@ impl FarEnd for EgressFarEnd<'_> {
 
     fn unsent(&self, _token: &Pass<Route>) -> Option<RefusalCode> {
         let w = self.lock();
-        w.local.or(w.unsent.filter(|_| !w.sent))
+        w.local.or_else(|| w.unsent.filter(|_| !w.sent))
     }
 
     fn credential_refused(&self, _token: &Pass<Route>) -> bool {

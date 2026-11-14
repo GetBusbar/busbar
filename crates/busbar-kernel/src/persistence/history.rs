@@ -601,7 +601,7 @@ impl<'a> History<'a> {
                     namespace: HISTORY.0,
                     operation,
                 },
-                hash.finalize().into(),
+                hash.finalize(),
             ) {
                 Ok(LogicalClaim::Prepare(permit)) => Some(permit),
                 Ok(LogicalClaim::Retained(id)) => return self.retry(id).await,

@@ -256,7 +256,7 @@ impl RecoveryEvent {
                 format_args!("invalid recovery event: {error}"),
             )
         })?;
-        Ok(digest.finalize().into())
+        Ok(digest.finalize())
     }
 
     pub(super) fn checkpoint(
@@ -1416,7 +1416,7 @@ impl MigratedChildContext {
             RecoveryKind::Metering => 2,
             RecoveryKind::Correction => 3,
         }]);
-        let digest: [u8; 32] = hash.finalize().into();
+        let digest: [u8; 32] = hash.finalize();
         let operation: [u8; 16] = digest[..16].try_into().expect("fixed digest");
         if operation == [0; 16] || operation == parent {
             return Err(RecoveryError::Invalid(

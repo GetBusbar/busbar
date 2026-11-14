@@ -826,7 +826,7 @@ impl AdminAuthChain {
                                 ),
                             })
                         },
-                        &refused,
+                        refused,
                     )?;
 
                     #[expect(
@@ -955,7 +955,7 @@ impl AuthMiddleware {
                                 ),
                             })
                         },
-                        &refused,
+                        refused,
                     )?;
                     #[expect(
                         clippy::disallowed_methods,

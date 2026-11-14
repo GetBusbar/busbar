@@ -48,7 +48,7 @@ async fn old_overlay_import_survives_reopen_and_never_replays_over_admin_changes
 async fn legacy_import_state_agrees_with_the_importer() {
     use crate::config::overlay::LegacyImportState;
     let calls = crate::real_store::core().await;
-    let source: [u8; 32] = Sha256::digest(b"legacy probe source").into();
+    let source: [u8; 32] = Sha256::digest(b"legacy probe source");
     let store = OverlayStore::from_core(calls.clone()).unwrap();
     assert_eq!(
         store.legacy_import_state_async().await.unwrap(),
