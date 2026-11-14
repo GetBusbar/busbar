@@ -120,6 +120,33 @@ fn constant_time_eq_basics() {
     assert!(!constant_time_eq("secret1", "secret2"));
 }
 
+/// Pins `constant_time_eq` before it moves onto `subtle` (DEPENDENCY-LADDER C13): empty inputs are
+/// equal, any length difference is unequal, and a single flipped bit at any position is unequal.
+#[test]
+fn constant_time_eq_pins_every_position_and_length() {
+    assert!(constant_time_eq("", ""));
+    assert!(constant_time_eq(b"", ""));
+    assert!(!constant_time_eq("", "a"));
+    assert!(!constant_time_eq("a", ""));
+    assert!(!constant_time_eq("abc", "abcd"));
+    assert!(!constant_time_eq("abcd", "abc"));
+
+    let base: Vec<u8> = (0u8..=255).collect();
+    assert!(constant_time_eq(&base[..], &base[..]));
+    for i in 0..base.len() {
+        for bit in 0..8 {
+            let mut flipped = base.clone();
+            flipped[i] ^= 1 << bit;
+            assert!(
+                !constant_time_eq(&base[..], &flipped[..]),
+                "a flip of bit {bit} at byte {i} must compare unequal"
+            );
+        }
+    }
+    // A prefix of equal bytes is still unequal when the lengths differ.
+    assert!(!constant_time_eq(&base[..255], &base[..]));
+}
+
 #[test]
 fn sha256_hex_is_lowercase_64() {
     let h = sha256_hex(b"busbar");
