@@ -5,8 +5,7 @@
 //! writes it. A terminal snapshot owns exact raw operation identities until their durable ACKs.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use busbar_contract::Count;
 use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
@@ -113,30 +112,8 @@ use book::{Pending, PendingBook};
 #[derive(Default)]
 pub(super) struct UnitCheckpointBook {
     sink: OnceLock<Arc<dyn UnitCheckpointSink>>,
-    pending: Mutex<BTreeMap<[u8; 16], Pending>>,
-    /// How many `pending` entries are `recovered`, changed only while `pending` is locked: the
-    /// admission check reads it under that lock and skips its scan of the book when it is zero,
-    /// which is every unit outside startup recovery or a failed hot-accounting apply.
-    recovered: AtomicUsize,
+    pending: PendingBook,
     flushing: tokio::sync::Mutex<()>,
-}
-
-impl UnitCheckpointBook {
-    /// Keep [`Self::recovered`] in step with one insert or removal on the locked book.
-    fn counted(&self, added: Option<&Pending>, removed: Option<&Pending>) {
-        if added.is_some_and(|p| p.recovered) {
-            self.recovered.fetch_add(1, AtomicOrdering::Relaxed);
-        }
-        if removed.is_some_and(|p| p.recovered) {
-            self.recovered.fetch_sub(1, AtomicOrdering::Relaxed);
-        }
-    }
-}
-
-struct Pending {
-    snapshot: UnitCheckpoint,
-    persisted: Option<u64>,
-    recovered: bool,
 }
 
 /// A refusal from a lower layer, rendered once on the error path.
@@ -188,32 +165,19 @@ impl GovState {
                         .checked_add(1)
                         .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
                 }
-                let id = snapshot.id;
-                let replaced = pending.insert(
-                    id,
-                    Pending {
-                        snapshot,
-                        persisted,
-                        recovered: true,
-                    },
-                );
-                self.unit_checkpoints
-                    .counted(pending.get(&id), replaced.as_ref());
-                if replaced.is_some() {
+                if pending
+                    .insert(snapshot.id, Pending::recovered(snapshot, persisted))
+                    .is_some()
+                {
                     return Err(error("duplicate running unit checkpoint"));
                 }
             }
         }
         if let Err(failed) = self.flush_unit_checkpoints().await {
-            let pending = self
-                .unit_checkpoints
-                .pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
             // busbar:expect(bp::state_scan, reason = "boot: the sink is attached once, before any unit is admitted")
-            let owned = pending.values().all(|entry| {
-                entry.persisted == Some(entry.snapshot.revision)
-                    && entry.snapshot.terminal.as_ref().is_some_and(|events| {
+            let owned = self.unit_checkpoints.pending.lock().all(|entry| {
+                entry.persisted() == Some(entry.snapshot().revision)
+                    && entry.snapshot().terminal.as_ref().is_some_and(|events| {
                         events
                             .iter()
                             .all(|event| self.recovery_event(event.operation_id).is_some())
@@ -229,27 +193,7 @@ impl GovState {
 
     /// Admission's question, answered from the book's recovered-target index without its lock.
     pub(super) fn unresolved_unit_target(&self, bucket: &str, window: u64) -> bool {
-        let pending = self
-            .unit_checkpoints
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if self
-            .unit_checkpoints
-            .recovered
-            .load(AtomicOrdering::Relaxed)
-            == 0
-        {
-            return false;
-        }
-        pending.values().any(|entry| {
-            entry.recovered
-                && entry
-                    .snapshot
-                    .targets
-                    .iter()
-                    .any(|target| target.bucket == bucket && target.window == window)
-        })
+        self.unit_checkpoints.pending.blocks(bucket, window)
     }
 
     /// Synchronous shutdown barrier: reports and an active native flush retain
@@ -307,15 +251,7 @@ impl GovState {
             }
             Some(_) => {}
             None => {
-                // Never recovered: the book's recovered count is unchanged.
-                pending.insert(
-                    snapshot.id,
-                    Pending {
-                        snapshot,
-                        persisted: None,
-                        recovered: false,
-                    },
-                );
+                pending.insert(snapshot.id, Pending::live(snapshot));
             }
         }
     }
@@ -336,24 +272,19 @@ impl GovState {
         if snapshot.audit.is_none() {
             snapshot.audit = previous.and_then(|p| p.snapshot().audit.clone());
         }
-        let mut recovered = false;
-        if let Err(failed) = self.apply_unit_checkpoint_live(&snapshot) {
-            recovered = true;
-            tracing::error!(unit = snapshot.unit, error = %failed,
-                "terminal unit hot accounting failed; exact durable custody retained");
-        }
-        let persisted = pending.get(&snapshot.id).and_then(|p| p.persisted);
-        let id = snapshot.id;
-        let replaced = pending.insert(
-            id,
-            Pending {
-                snapshot,
-                persisted,
-                recovered,
-            },
-        );
-        self.unit_checkpoints
-            .counted(pending.get(&id), replaced.as_ref());
+        let persisted = previous.and_then(Pending::persisted);
+        // Admission does not take the book's lock, so it may run between a failed apply and the
+        // recovered insert. A failed apply changes no count, and the entry is still the
+        // pre-finish live one, so such an admission sees exactly the pre-finish state.
+        let entry = match self.apply_unit_checkpoint_live(&snapshot) {
+            Ok(()) => Pending::terminal(snapshot, persisted),
+            Err(failed) => {
+                tracing::error!(unit = snapshot.unit, error = %failed,
+                    "terminal unit hot accounting failed; exact durable custody retained");
+                Pending::recovered(snapshot, persisted)
+            }
+        };
+        pending.insert(entry.snapshot().id, entry);
         true
     }
 
@@ -362,18 +293,10 @@ impl GovState {
         let Some(sink) = self.unit_checkpoints.sink.get() else {
             return Ok(());
         };
-        let mut ids = self.unit_checkpoints.flushing.lock().await;
-        ids.clear();
-        ids.extend(
-            self.unit_checkpoints
-                .pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .keys()
-                .copied(),
-        );
+        let _flush = self.unit_checkpoints.flushing.lock().await;
+        let ids = self.unit_checkpoints.pending.lock().ids();
         let mut first_error = None;
-        for &id in ids.iter() {
+        for id in ids {
             if let Err(failed) = self.flush_unit_checkpoint(sink.as_ref(), id).await {
                 tracing::warn!(checkpoint = %hex::encode(id), error = %failed,
                     "running money checkpoint remains unresolved and will retry");
@@ -451,15 +374,7 @@ impl GovState {
             self.refresh_recovered_unit_targets(&snapshot).await?;
         }
         sink.remove(&snapshot).await?;
-        {
-            let mut pending = self
-                .unit_checkpoints
-                .pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let removed = pending.remove(&id);
-            self.unit_checkpoints.counted(None, removed.as_ref());
-        }
+        self.unit_checkpoints.pending.lock().remove(&id);
         for event in events {
             self.forget_confirmed_recovery(event.operation_id);
         }

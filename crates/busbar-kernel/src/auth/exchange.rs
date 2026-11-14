@@ -55,7 +55,7 @@ pub(crate) async fn exchange(
             } else {
                 reason
             };
-            return refusal(ExchangeError::SenderConstraint(reason));
+            return refusal(&ExchangeError::SenderConstraint(reason));
         }
     };
     let (judged, _, claim) = AuthMiddleware::judge_chain_on_request_path_naming(
@@ -95,6 +95,10 @@ pub(crate) async fn exchange(
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a self-serve mint provisions a key once, under the identifying provider's name"
+    )]
     let keys = DeterministicEd25519Keys::new(gov, provider.to_string(), team, pools, provisioner);
     match issue_key(&keys, principal, ttl, false).await {
         Ok(issued) => {
@@ -163,8 +167,43 @@ struct ExchangeOk<'a> {
     key_id: &'a str,
 }
 
-fn refusal(e: ExchangeError) -> Response {
+fn exchange_ok_body<'a>(issued: &'a IssuedKey, base_url: &'a str) -> ExchangeOk<'a> {
+    ExchangeOk {
+        // `.expose(&crate::seal::lend())`: the once-shown mint response is the intended, documented
+        // plaintext egress of the issued token (Secret has no Serialize).
+        api_key: issued.secret.expose(&crate::seal::lend()),
+        base_url,
+        exp: issued.exp,
+        group: &issued.group,
+        key_id: &issued.key_id,
+    }
+}
+
+/// An exchange refusal's body, `{"error":..}`.
+#[derive(serde::Serialize)]
+struct ExchangeRefused {
+    error: std::borrow::Cow<'static, str>,
+}
+
+/// A sender-constraint refusal's body (RFC 9449), `{"error":"sender_constrained",..}`.
+#[derive(serde::Serialize)]
+struct SenderConstrained {
+    error: &'static str,
+    error_description: &'static str,
+}
+
+fn refusal(e: &ExchangeError) -> Response {
     let (status, msg): (StatusCode, std::borrow::Cow<'static, str>) = match e {
+        ExchangeError::SenderConstraint(reason) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(SenderConstrained {
+                    error: "sender_constrained",
+                    error_description: reason.description(false),
+                }),
+            )
+                .into_response();
+        }
         ExchangeError::StaticKeyPresented => (
             StatusCode::BAD_REQUEST,
             "present an IdP identity, not a busbar key".into(),

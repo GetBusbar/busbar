@@ -5,6 +5,7 @@
 //! File failures never reverse the selected Store generation. No original is copied to disk.
 use super::documents::{Documents, Publication, SecretPublication};
 use busbar_contract::crypto::Sha256;
+use busbar_contract::secure::SecureVec;
 use busbar_contract::Secret;
 use busbar_kernel::durable::{DocumentInspection, DocumentReplace, DurableFs};
 use std::{

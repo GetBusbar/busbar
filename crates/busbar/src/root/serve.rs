@@ -106,14 +106,16 @@ pub(crate) struct TicketCustody {
     sweep_reads: std::sync::atomic::AtomicU64,
 }
 
-/// The node's ticket custody. `tickets` is the map; `due` orders it by expiry for the sweep;
-/// `by_key` partitions it per key id as `(expires_at, ticket id)`, and `pending` names each unit's
-/// one ticket not yet ready. Only [`TicketEntries::insert`], [`TicketEntries::remove`],
-/// [`TicketEntries::take_pending`] and [`TicketEntries::take_all`] change them, and each keeps
-/// the four in step.
+/// The node's ticket custody. `tickets` is the map; `by_key` partitions it per key id as
+/// `(expires_at, ticket id)`, `pending` names each unit's one ticket not yet ready, and `due`
+/// orders every held ticket by expiry for the sweep. Only [`TicketEntries::insert`],
+/// [`TicketEntries::remove`], [`TicketEntries::take_pending`] and [`TicketEntries::take_all`]
+/// change them, and each keeps the four in step.
 #[derive(Default)]
 struct TicketEntries {
     tickets: BTreeMap<String, TicketEntry>,
+    by_key: foldhash::HashMap<Box<str>, std::collections::BTreeSet<(u64, Box<str>)>>,
+    pending: foldhash::HashMap<busbar_contract::UnitKey, Box<str>>,
     /// Every held ticket by its expiry (unix seconds), so the sweep reads only the due ones.
     due: std::collections::BTreeSet<(u64, String)>,
     by_key: foldhash::HashMap<Box<str>, std::collections::BTreeSet<(u64, Box<str>)>>,
@@ -125,13 +127,12 @@ struct TicketEntries {
 }
 
 impl TicketEntries {
-    /// Hold `entry` under `id`, indexed by its expiry, its key and, when not ready, by its unit. A
-    /// ticket the map already held under `id` is answered, unindexed, for the caller to drop
+    /// Hold `entry` under `id`, indexed by its key, its expiry and, when not ready, by its unit.
+    /// A ticket the map already held under `id` is answered, unindexed, for the caller to drop
     /// outside the lock.
     fn insert(&mut self, id: String, entry: TicketEntry) -> Option<TicketEntry> {
         let replaced = self.remove(&id);
         let ticket: Box<str> = id.as_str().into();
-        self.due.insert((entry.expires_at, id.clone()));
         self.by_key
             .entry(entry.source.key.id.as_str().into())
             .or_default()
@@ -139,6 +140,7 @@ impl TicketEntries {
         if !entry.ready {
             self.pending.insert(entry.source.unit, ticket);
         }
+        self.due.insert((entry.expires_at, id.clone()));
         self.tickets.insert(id, entry);
         replaced
     }
@@ -146,6 +148,20 @@ impl TicketEntries {
     /// Release the ticket `id`, out of every index.
     fn remove(&mut self, id: &str) -> Option<TicketEntry> {
         let entry = self.tickets.remove(id)?;
+        let key = entry.source.key.id.as_str();
+        if let Some(held) = self.by_key.get_mut(key) {
+            held.remove(&(entry.expires_at, Box::from(id)));
+            if held.is_empty() {
+                self.by_key.remove(key);
+            }
+        }
+        if self
+            .pending
+            .get(&entry.source.unit)
+            .is_some_and(|pending| &**pending == id)
+        {
+            self.pending.remove(&entry.source.unit);
+        }
         self.due.remove(&(entry.expires_at, id.to_owned()));
         let key = entry.source.key.id.as_str();
         if let Some(held) = self.by_key.get_mut(key) {
@@ -172,6 +188,8 @@ impl TicketEntries {
 
     /// Release every ticket.
     fn take_all(&mut self) -> BTreeMap<String, TicketEntry> {
+        self.by_key.clear();
+        self.pending.clear();
         self.due.clear();
         self.by_key.clear();
         self.pending.clear();
