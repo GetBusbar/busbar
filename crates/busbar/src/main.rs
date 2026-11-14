@@ -74,7 +74,7 @@ pub(crate) fn build_info_line() -> String {
 
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("[error] {}", diagnostics::BOOT_FATAL_ERROR.coded(msg));
-    std::process::exit(1);
+    root::exit::exit(1);
 }
 
 /// [`die`] over a list: the coded head line, then one `  - <item>` line per error, each item
@@ -85,7 +85,7 @@ fn die_list<T: std::fmt::Display>(head: &str, items: impl IntoIterator<Item = T>
         out.push_str(&format!("\n  - {item}"));
     }
     eprintln!("{out}");
-    std::process::exit(1);
+    root::exit::exit(1);
 }
 
 const OPTION_IGNORE_OVERLAY: &str = "--ignore-overlay";
@@ -922,7 +922,7 @@ async fn run(
                 root::overlay_migrate::admit_legacy(legacy, &anchor_store, safe_mode).await
             {
                 eprintln!("{line}");
-                std::process::exit(1);
+                root::exit::exit(1);
             }
         }
         let overlay_doc = if safe_mode {
