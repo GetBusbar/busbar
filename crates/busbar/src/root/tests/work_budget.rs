@@ -185,7 +185,7 @@ async fn counted(rig: &NodeRig, fixture: Fixture) -> Tally {
 }
 
 /// Lowest count of each kind over [`RUNS`] requests, after [`WARM`] warm-up requests.
-async fn measure(fixture: Fixture) -> Tally {
+async fn measure(instance: &'static str, fixture: Fixture) -> Tally {
     // The counters are process-wide: only a process running this one test counts its work alone.
     assert_eq!(
         std::env::var("NEXTEST_EXECUTION_MODE").as_deref(),
@@ -193,8 +193,15 @@ async fn measure(fixture: Fixture) -> Tally {
         "the work-budget gate counts process-wide; run it under cargo nextest (one process per \
          test), never a harness that shares the process between tests"
     );
-    let rig = rig(fixture).await;
-    let node = Node::new();
+    let rig = node_rig(
+        instance,
+        far_end(fixture.reply()).await,
+        NodeRigOpts {
+            fee_cents: 1,
+            ..Default::default()
+        },
+    )
+    .await;
     for _ in 0..WARM {
         let _ = counted(&rig, fixture).await;
     }
