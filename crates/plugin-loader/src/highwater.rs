@@ -173,10 +173,7 @@ impl HighWaterMarks {
         crate::durable::write_with(
             path,
             &body,
-            crate::durable::DurableOpts {
-                mode: Some(0o600),
-                exclusive: false,
-            },
+            crate::durable::DurableOpts { mode: Some(0o600) },
         )
     }
 }
