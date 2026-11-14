@@ -2307,3 +2307,11 @@ async fn incremental_scan_rechecks_shape_and_identity_with_unchanged_content() {
         assert!(seen["request"].get("messages").is_none());
     }
 }
+
+#[test]
+fn an_octet_session_key_is_fnv1a_64_over_its_head_then_the_session_id() {
+    assert_eq!(
+        IncrementalScan::derive_session_key_octets(b"ctx-1", "alice", 3),
+        crate::session::SessionKey(crate::store::fnv1a_u64("g=3\u{1f}p5=alice\u{1f}s5=ctx-1"))
+    );
+}

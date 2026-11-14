@@ -2958,3 +2958,14 @@ fn test_recovery_hint_ms() {
     assert!(Unavailable::ProbeInFlight.recovery_hint_ms(now).is_some());
     assert!(Unavailable::Shedding.recovery_hint_ms(now).is_some());
 }
+
+#[test]
+fn fnv1a_u64_matches_the_published_fnv1a_64_vectors() {
+    assert_eq!(fnv1a_u64(""), 0xcbf2_9ce4_8422_2325);
+    assert_eq!(fnv1a_u64("a"), 0xaf63_dc4c_8601_ec8c);
+    assert_eq!(fnv1a_u64("foobar"), 0x8594_4171_f739_67e8);
+    assert_eq!(
+        fnv1a_u64("session-abc"),
+        crate::plane_driver::sticky_hash(b"session-abc")
+    );
+}
