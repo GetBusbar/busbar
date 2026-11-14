@@ -509,6 +509,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
   refusal is a correctly-served response and must not fault a lane. No successful stream changes.
 - **An admin-auth provider is judged by its module, not by its name.** A provider defined under another name with `module: admin-tokens` (e.g. `ops: { module: admin-tokens, token: ... }`) admitted nobody in 1.5.5 — every admin request was a 401 — and now authenticates the operator token; a provider named `admin-tokens` that is backed by another module was never asked in 1.5.5 and is now consulted, under its own `max_admin_scope`. A config that names the operator credential as `admin-tokens: { module: admin-tokens }`, or leaves `admin_auth` at its default, is unchanged.
+- **`GET /v1/models/<model>` retrieves a model.** 1.5.5 answered every `GET /v1/models/<model>` with 405, although OpenAI clients call it to look a model up. It now answers the OpenAI model object (the same object `GET /v1/models` lists) for a model in the caller's visible catalog, and a 404 `model_not_found` that names nothing hidden for any other name. `GET /v1/models` is unchanged.
 - **/metrics families are emitted in a stable sorted order.** 1.5.5 printed the exposition's
   families, and the series inside each family, in its recorder's hash order, so the same metrics
   could scrape to different bytes from one boot to the next. Families now come out by name and
