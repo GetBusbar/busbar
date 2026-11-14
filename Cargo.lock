@@ -436,6 +436,7 @@ dependencies = [
  "dimpl",
  "rustls",
  "rustls-pki-types",
+ "tracing",
  "zeroize",
 ]
 

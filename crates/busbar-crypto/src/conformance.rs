@@ -431,10 +431,10 @@ pub fn tls_handshake() {
         include_bytes!("../fixtures/leaf.key.der").to_vec(),
     ));
     assert!(tls::signing_key(&key).is_ok());
-    let ticketer = tls::ticketer().unwrap();
+    let tickets = tls::ListenerTickets::new("conformance").unwrap();
     let sc = tls::server_config(|b| {
         let mut c = b.with_no_client_auth().with_single_cert(chain, key)?;
-        c.ticketer = ticketer;
+        tickets.install(&mut c);
         Ok(c)
     })
     .unwrap();
