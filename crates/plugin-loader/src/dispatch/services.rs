@@ -853,6 +853,27 @@ pub(crate) fn host_slots(kind: busbar_contract::abi::mechanism::KindCode) -> &'s
             outbound_authorize: busbar_contract::abi::host::access::service(op::OUTBOUND_AUTHORIZE)
                 .filter(|p| p.admits(kind))
                 .map(|_| outbound_authorize as svc::ServiceFn),
+            directory_get: busbar_contract::abi::host::access::service(op::DIRECTORY_GET)
+                .filter(|p| p.admits(kind))
+                .map(|_| directory_get as svc::ServiceFn),
+            directory_lookup: busbar_contract::abi::host::access::service(op::DIRECTORY_LOOKUP)
+                .filter(|p| p.admits(kind))
+                .map(|_| directory_lookup as svc::ServiceFn),
+            directory_scan: busbar_contract::abi::host::access::service(op::DIRECTORY_SCAN)
+                .filter(|p| p.admits(kind))
+                .map(|_| directory_scan as svc::ServiceFn),
+            directory_count: busbar_contract::abi::host::access::service(op::DIRECTORY_COUNT)
+                .filter(|p| p.admits(kind))
+                .map(|_| directory_count as svc::ServiceFn),
+            directory_create: busbar_contract::abi::host::access::service(op::DIRECTORY_CREATE)
+                .filter(|p| p.admits(kind))
+                .map(|_| directory_create as svc::ServiceFn),
+            directory_apply: busbar_contract::abi::host::access::service(op::DIRECTORY_APPLY)
+                .filter(|p| p.admits(kind))
+                .map(|_| directory_apply as svc::ServiceFn),
+            directory_delete: busbar_contract::abi::host::access::service(op::DIRECTORY_DELETE)
+                .filter(|p| p.admits(kind))
+                .map(|_| directory_delete as svc::ServiceFn),
         })
     });
     &tables[kind as usize - 1]
@@ -899,6 +920,13 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     work_status: Some(work_status),
     outbound_authorize: Some(outbound_authorize),
     hook_child: Some(hook_child),
+    directory_get: Some(directory_get),
+    directory_lookup: Some(directory_lookup),
+    directory_scan: Some(directory_scan),
+    directory_count: Some(directory_count),
+    directory_create: Some(directory_create),
+    directory_apply: Some(directory_apply),
+    directory_delete: Some(directory_delete),
 };
 
 pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket) {
@@ -2387,6 +2415,54 @@ service! {
         let req = Fp::of(&[&body]);
         // SAFETY: checked caller-owned response buffers, retained only during this crossing.
         unsafe { pended(&served, &route, &head, req, Some(&i.into), |later| child.request(caller, body, later)) }
+    }
+}
+
+/// `directory.*` (auth v4): only an instance granted provisioning (a Statement stating
+/// `CAP_PROVISION` and a definition carrying a `provisioning:` block) reaches the kernel's
+/// directory; this host grants none, so every caller the access table admits is REFUSED, as the
+/// contract answers any caller without the grant.
+pub const NO_DIRECTORY_GRANT: &str = "no directory grant: this instance is not provisioning";
+
+service! {
+    directory_get, slot, op::DIRECTORY_GET, busbar_contract::abi::host::directory::DirectoryGetIn, |_, _, _, _i| {
+        Answered::bare(Outcome::Refused, NO_DIRECTORY_GRANT)
+    }
+}
+
+service! {
+    directory_lookup, slot, op::DIRECTORY_LOOKUP, busbar_contract::abi::host::directory::DirectoryLookupIn, |_, _, _, _i| {
+        Answered::bare(Outcome::Refused, NO_DIRECTORY_GRANT)
+    }
+}
+
+service! {
+    directory_scan, slot, op::DIRECTORY_SCAN, busbar_contract::abi::host::directory::DirectoryScanIn, |_, _, _, _i| {
+        Answered::bare(Outcome::Refused, NO_DIRECTORY_GRANT)
+    }
+}
+
+service! {
+    directory_count, slot, op::DIRECTORY_COUNT, busbar_contract::abi::host::directory::DirectoryCountIn, |_, _, _, _i| {
+        Answered::bare(Outcome::Refused, NO_DIRECTORY_GRANT)
+    }
+}
+
+service! {
+    directory_create, slot, op::DIRECTORY_CREATE, busbar_contract::abi::host::directory::DirectoryCreateIn, |_, _, _, _i| {
+        Answered::bare(Outcome::Refused, NO_DIRECTORY_GRANT)
+    }
+}
+
+service! {
+    directory_apply, slot, op::DIRECTORY_APPLY, busbar_contract::abi::host::directory::DirectoryApplyIn, |_, _, _, _i| {
+        Answered::bare(Outcome::Refused, NO_DIRECTORY_GRANT)
+    }
+}
+
+service! {
+    directory_delete, slot, op::DIRECTORY_DELETE, busbar_contract::abi::host::directory::DirectoryDeleteIn, |_, _, _, _i| {
+        Answered::bare(Outcome::Refused, NO_DIRECTORY_GRANT)
     }
 }
 

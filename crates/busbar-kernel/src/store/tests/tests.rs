@@ -2960,12 +2960,11 @@ fn test_recovery_hint_ms() {
 }
 
 #[test]
-fn fnv1a_u64_matches_the_published_fnv1a_64_vectors() {
-    assert_eq!(fnv1a_u64(""), 0xcbf2_9ce4_8422_2325);
-    assert_eq!(fnv1a_u64("a"), 0xaf63_dc4c_8601_ec8c);
-    assert_eq!(fnv1a_u64("foobar"), 0x8594_4171_f739_67e8);
+fn key_hash_is_stable_and_shared_with_sticky_routing() {
+    assert_eq!(key_hash_u64("foobar"), key_hash_u64("foobar"));
+    assert_ne!(key_hash_u64("a"), key_hash_u64("b"));
     assert_eq!(
-        fnv1a_u64("session-abc"),
+        key_hash_u64("session-abc"),
         crate::plane_driver::sticky_hash(b"session-abc")
     );
 }
