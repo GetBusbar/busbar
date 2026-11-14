@@ -49,7 +49,7 @@ struct Opened {
 }
 
 // SAFETY: one opened secret instance is shared by the bench threads as core shares its
-// `LoadedSecret` between resolvers; every measured op is a `Plugin::call` on it.
+// `LoadedSecret` between resolvers; every measured op is a `Plugin::answer` on it.
 unsafe impl Sync for Opened {}
 unsafe impl Send for Opened {}
 
@@ -75,7 +75,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
     let settings = cfg.settings.clone().unwrap_or_else(|| b"{}".to_vec());
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
     (f.input.generation, f.input.settings) = (1, json(&settings));
-    let called = plugin.call(life::OPEN, &mut f);
+    let called = plugin.answer(life::OPEN, &mut f);
     if called.outcome != Outcome::Ready {
         return Err(format!(
             "secret open answered {:?}: {}",
@@ -171,7 +171,7 @@ impl Resolve {
         };
         // One untimed resolve: the answer is checked before anything is measured.
         let mut f = r.frame();
-        let called = r.opened.plugin.call(slot::RESOLVE, &mut f);
+        let called = r.opened.plugin.answer(slot::RESOLVE, &mut f);
         r.check(called.outcome, called.error.as_deref(), &f.out)?;
         Ok(r)
     }
@@ -231,7 +231,7 @@ impl Scenario for Resolve {
     fn unit(&mut self, rec: &mut Recorder) -> Result<(), String> {
         let mut f = self.frame();
         let plugin = &self.opened.plugin;
-        let called = rec.time(0, || plugin.call(slot::RESOLVE, &mut f));
+        let called = rec.time(0, || plugin.answer(slot::RESOLVE, &mut f));
         self.check(called.outcome, called.error.as_deref(), &f.out)
     }
 }
@@ -251,7 +251,7 @@ impl Check {
             reason: vec![0; REASON_CAP].into_boxed_slice(),
         };
         let mut f = c.frame();
-        let called = c.opened.plugin.call(slot::CHECK, &mut f);
+        let called = c.opened.plugin.answer(slot::CHECK, &mut f);
         c.verdict(called.outcome, called.error.as_deref())?;
         Ok(c)
     }
@@ -280,7 +280,7 @@ impl Scenario for Check {
     fn unit(&mut self, rec: &mut Recorder) -> Result<(), String> {
         let mut f = self.frame();
         let plugin = &self.opened.plugin;
-        let called = rec.time(0, || plugin.call(slot::CHECK, &mut f));
+        let called = rec.time(0, || plugin.answer(slot::CHECK, &mut f));
         self.verdict(called.outcome, called.error.as_deref())
     }
 }

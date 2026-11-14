@@ -36,7 +36,7 @@ struct Opened {
 }
 
 // SAFETY: one opened plane instance is shared by the bench threads as core shares it between
-// its connection tasks; every measured op is a `Plugin::call` on it.
+// its connection tasks; every measured op is a `Plugin::answer` on it.
 unsafe impl Sync for Opened {}
 unsafe impl Send for Opened {}
 
@@ -87,7 +87,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
     let mut o: OpenIn = f.input.open;
     (o.generation, o.settings) = (1, json_blob(&settings));
     f.input.open = o;
-    let (called, _snapshot) = plugin.open(&mut f);
+    let (called, _snapshot) = plugin.answer_open(&mut f);
     if called.outcome != Outcome::Ready {
         return Err(format!(
             "plane open answered {:?}: {}",
@@ -101,7 +101,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
     for s in [slot::HYDRATE, slot::START] {
         let mut g: Frame<GenIn, OutHead> = Frame::new(input(), output());
         g.input.generation = 1;
-        let _ = plugin.call(s, &mut g);
+        let _ = plugin.answer(s, &mut g);
     }
     Ok(Arc::new(Opened { plugin, _d: d }))
 }
@@ -460,7 +460,7 @@ impl Exchange {
         let plugin = &opened.plugin;
         let mut seen = 0;
         loop {
-            let called = rec.time(op, || plugin.call(slot::ON_PIECE, &mut f));
+            let called = rec.time(op, || plugin.answer(slot::ON_PIECE, &mut f));
             if called.outcome != Outcome::Ready {
                 return Err(format!(
                     "on_piece ({}) answered {:?} fault={} faulted={}: {}",
@@ -490,7 +490,7 @@ impl Scenario for Exchange {
         self.next_unit += 1;
         let mut f = self.arrive_frame(unit);
         let plugin = &self.opened.plugin;
-        let called = rec.time(0, || plugin.call(slot::ARRIVE, &mut f));
+        let called = rec.time(0, || plugin.answer(slot::ARRIVE, &mut f));
         if called.outcome != Outcome::Ready {
             return Err(format!(
                 "arrive answered {:?} refusal={} status={}: {}",

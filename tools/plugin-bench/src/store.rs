@@ -41,7 +41,7 @@ struct Opened {
 }
 
 // SAFETY: the loaded persistence is shared across the bench threads exactly as core shares it
-// across its request tasks; the bench only crosses through `Plugin::call` on it.
+// across its request tasks; the bench only crosses through `Plugin::answer` on it.
 unsafe impl Sync for Opened {}
 unsafe impl Send for Opened {}
 
@@ -217,7 +217,7 @@ impl Commit {
         };
         // The thread's first head: an absent-predicated put, outside the measurement.
         let mut f = c.frame(true);
-        let called = c.opened.plugin().call(wire::slot::COMMIT, &mut f);
+        let called = c.opened.plugin().answer(wire::slot::COMMIT, &mut f);
         check_commit(called.outcome, &f.out, "first head")?;
         c.advance();
         Ok(c)
@@ -326,7 +326,7 @@ impl Scenario for Commit {
     fn unit(&mut self, rec: &mut Recorder) -> Result<(), String> {
         let mut f = self.frame(false);
         let plugin = self.opened.plugin();
-        let called = rec.time(0, || plugin.call(wire::slot::COMMIT, &mut f));
+        let called = rec.time(0, || plugin.answer(wire::slot::COMMIT, &mut f));
         check_commit(called.outcome, &f.out, "measured")?;
         self.advance();
         Ok(())
@@ -347,7 +347,7 @@ impl Read {
         // The read thread's own namespace, given a head and record 1 by one untimed commit.
         let mut seed = Commit::new(opened.clone(), thread + 128, record)?;
         let mut f = seed.frame(false);
-        let called = opened.plugin().call(wire::slot::COMMIT, &mut f);
+        let called = opened.plugin().answer(wire::slot::COMMIT, &mut f);
         check_commit(called.outcome, &f.out, "read seed")?;
         let ns = namespace(thread + 128);
         let mut keys = Box::new([[0u8; 12]; 2]);
@@ -370,7 +370,7 @@ impl Read {
             bytes: vec![0; record + 4096].into_boxed_slice(),
         };
         let mut f = r.frame();
-        let called = r.opened.plugin().call(wire::slot::READ, &mut f);
+        let called = r.opened.plugin().answer(wire::slot::READ, &mut f);
         check_read(called.outcome, &f.out)?;
         Ok(r)
     }
@@ -406,7 +406,7 @@ impl Scenario for Read {
     fn unit(&mut self, rec: &mut Recorder) -> Result<(), String> {
         let mut f = self.frame();
         let plugin = self.opened.plugin();
-        let called = rec.time(0, || plugin.call(wire::slot::READ, &mut f));
+        let called = rec.time(0, || plugin.answer(wire::slot::READ, &mut f));
         check_read(called.outcome, &f.out)
     }
 }
@@ -420,7 +420,7 @@ impl Scenario for Clock {
         i.dataset = self.0.info.dataset.0;
         let mut f: Frame<wire::ClockIn, wire::ClockOut> = Frame::new(i, output());
         let plugin = self.0.plugin();
-        let called = rec.time(0, || plugin.call(wire::slot::CLOCK, &mut f));
+        let called = rec.time(0, || plugin.answer(wire::slot::CLOCK, &mut f));
         if called.outcome != Outcome::Ready {
             return Err(format!("clock answered {:?}", called.outcome));
         }

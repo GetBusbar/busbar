@@ -7,7 +7,7 @@
 //! discovery (`busbar_plugin_door`, [`rendering_of_library`] + [`load_dropped`]) or a compiled-in
 //! door through [`load_linked`], both validated and bound by `busbar-plugin-loader`. Opening the
 //! instance uses the loader's own lifecycle; after that every measured op is ONE host-mediated
-//! inline crossing ([`Plugin::call`]) over frames and lent buffers this crate owns and reuses. No
+//! inline crossing ([`Plugin::answer`]) over frames and lent buffers this crate owns and reuses. No
 //! dispatcher hop, sealing, journal, HTTP or router runs on the measured path.
 //!
 //! It REPORTS and never gates: ns p50/p99 per op, allocations and bytes per op (the counting

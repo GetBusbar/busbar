@@ -20,18 +20,17 @@
 //! - `256 spans`: `MAX_BATCH_LINES`, the flusher's batch under load.
 //!
 //! `deliver` is TICKET-BOUND: the SDK's `exchange()` may pend on the host, so on a ticketless
-//! `Plugin::call` the connector refuses it ("the call runs on no ticket and cannot pend") and the
+//! `Plugin::answer` the connector refuses it ("the call runs on no ticket and cannot pend") and the
 //! batch is dropped. Every delivery therefore crosses inline on the loader's inline-ticket path
-//! (`Plugin::call_inline` under a fresh ticket, standing in for the worker ticket the flusher's
+//! (`Plugin::answer_inline` under a fresh ticket, standing in for the worker ticket the flusher's
 //! `Ticketed` call carries; no worker hop): `deliver` is that one crossing. Retiring the ticket
 //! (the connector forgets what it kept under it) and minting the next delivery's is its own op,
-//! `ticket`, outside `deliver`.
+//! `ticket`, outside `deliver`. The answer's lease is released inside `deliver`'s crossing.
 
 use std::sync::Arc;
 
 use busbar_contract::abi::export::{slot, DeliverIn, ExportStream};
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_JSONL};
-use busbar_contract::abi::mechanism::lifecycle::{slot as lc, ReleaseIn};
 use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::export_calls::ExportCalls;
 use busbar_plugin_loader::dispatch::kinds::export::Export;
@@ -54,7 +53,7 @@ struct Opened {
 }
 
 // SAFETY: one opened export instance is shared by the bench threads as the export flusher shares
-// it between its in-flight deliveries; every measured op is a `Plugin::call` on it.
+// it between its in-flight deliveries; every measured op is a `Plugin::answer_inline` on it.
 unsafe impl Sync for Opened {}
 unsafe impl Send for Opened {}
 
@@ -303,20 +302,6 @@ impl Deliver {
     }
 }
 
-/// Hand an answer's lease back, as the export flusher's `AnswerLease` does.
-fn release(plugin: &Plugin<Export>, lease: u64) -> Result<(), String> {
-    if lease == 0 {
-        return Ok(());
-    }
-    let mut f: Frame<ReleaseIn, OutHead> = Frame::new(input(), output());
-    f.input.lease = lease;
-    let called = plugin.call(lc::RELEASE, &mut f);
-    if called.outcome != Outcome::Ready {
-        return Err(format!("release answered {:?}", called.outcome));
-    }
-    Ok(())
-}
-
 impl Scenario for Deliver {
     fn unit(&mut self, rec: &mut Recorder) -> Result<(), String> {
         let mut f = self.frame();
@@ -325,7 +310,7 @@ impl Scenario for Deliver {
         let ticket = self.ticket.take().ok_or("no ticket held")?;
         let t = ticket.ticket();
         let before = SinkConns::opened_here();
-        let called = rec.time(0, || plugin.call_inline(t, false, slot::DELIVER, &mut f));
+        let called = rec.time(0, || plugin.answer_inline(t, false, slot::DELIVER, &mut f));
         if called.outcome != Outcome::Ready {
             return Err(format!(
                 "deliver answered {:?} (faulted={}): {}",
@@ -334,7 +319,6 @@ impl Scenario for Deliver {
                 String::from_utf8_lossy(called.error.as_deref().unwrap_or_default())
             ));
         }
-        release(plugin, called.lease)?;
         // Retire this delivery's ticket (the connector forgets what it kept under it) and mint
         // the next delivery's: each batch the flusher hands on takes a fresh ticket.
         self.ticket = rec.time(1, || {

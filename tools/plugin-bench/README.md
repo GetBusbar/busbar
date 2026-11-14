@@ -11,7 +11,7 @@ through `LinkedRow` + `load_linked`. The loader validates and binds both.
 
 The instance is opened with the loader's own lifecycle. A store opens through `LoadedPersistence`
 and has its dataset bootstrapped; a plane is opened, readied, hydrated and started. After that,
-every measured op is ONE inline crossing (`Plugin::call`) over frames and lent buffers that the
+every measured op is ONE inline crossing (`Plugin::answer`) over frames and lent buffers that the
 bench allocates once and reuses. The host-mediated crossing costs about 0.2 µs; `store.clock` shows
 that floor.
 
@@ -78,8 +78,9 @@ table that admits the plugin's declared need, takes each framed request whole an
 **transport.** In-memory bytes, no sockets: `begin` / `ingest` / `emit` on the inline-ticket path
 under the connector's framing context, `finish` direct. h1 keep-alive with 1/8/100 KiB request
 bodies and a JSON or 200-chunk SSE response; h2 (prior knowledge) the same; h1
-connection-per-request. Each answer lease is released untimed after the call
-(`BUSBAR_BENCH_TRANSPORT_KEEP_LEASES=1` keeps them, as core's connector currently does).
+connection-per-request. Every crossing goes through the loader's public `answer`/`answer_inline`, as
+core's connector does, which release each answer's lease inside the crossing, so timed ops include
+that RELEASE. Compare numbers only against runs taken after this change.
 
 Adding a kind's workload means a `specs()` module that builds that kind's frames.
 
