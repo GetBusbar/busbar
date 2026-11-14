@@ -23,10 +23,13 @@ fn background_thread_round_trips_where_jemalloc_supports_it() {
             write(c"background_thread", before).expect("background_thread is writable");
             assert_eq!(read::<bool>(c"background_thread").ok(), Some(before));
         }
-        Err(error) => assert!(
-            !cfg!(target_os = "linux"),
-            "Linux jemalloc has background threads, yet background_thread is refused: {error}"
-        ),
+        // Same assertion as before, without a constant-valued assert! (clippy): on Linux a
+        // refusal fails the test; elsewhere it is the documented fallback.
+        Err(error) => {
+            if cfg!(target_os = "linux") {
+                panic!("Linux jemalloc has background threads, yet background_thread is refused: {error}");
+            }
+        }
     }
 }
 
