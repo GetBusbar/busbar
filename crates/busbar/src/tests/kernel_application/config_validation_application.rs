@@ -3150,29 +3150,24 @@ fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::
         .collect()
 }
 
-fn validate_with_rate_warnings(cfg: &RootCfg) -> (Result<(), Vec<String>>, Vec<String>) {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    let capture = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(capture.clone());
-    let result = tracing::subscriber::with_default(subscriber, || validate(cfg));
-    (result, capture.messages())
-}
-
 #[test]
-fn test_validate_missing_rates_warn_but_unknown_models_still_refuse() {
+fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
     let mut cfg = cost_cfg(&["claude-opus-4"]);
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[
         "some-other-model",
     ])));
-    let (result, warnings) = validate_with_rate_warnings(&cfg);
-    let joined = result
-        .expect_err("an unknown rate-card model remains invalid")
-        .join("\n");
+    let errs =
+        validate(&cfg).expect_err("a configured model without a rate entry must fail validation");
+    let joined = errs.join("\n");
     assert!(
-        warnings
-            .iter()
-            .any(|line| line.contains("claude-opus-4") && line.contains("has no configured rate")),
-        "missing configured model has a warning: {warnings:?}"
+        joined.contains("rate_card is present but 1 configured model has no rate entry"),
+        "must state the completeness rule: {joined}"
+    );
+    assert!(
+        joined.contains(
+            "claude-opus-4: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }"
+        ),
+        "must print the paste-ready zeroed stub for exactly the missing model: {joined}"
     );
 
     assert!(
@@ -3194,20 +3189,19 @@ fn test_validate_missing_rates_warn_but_unknown_models_still_refuse() {
 }
 
 #[test]
-fn test_validate_unpriced_class_with_billing_on_warns_without_refusing_boot() {
+fn test_validate_unpriced_class_with_billing_on_refuses_boot() {
     let mut cfg = cost_cfg(&["claude-opus-4"]);
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[
         "some-priced-model",
     ])));
     cfg.models
         .insert("some-priced-model".to_string(), make_model("p", 10));
-    let (result, warnings) = validate_with_rate_warnings(&cfg);
-    result.expect("missing rate is advisory at configuration time");
+    let errs = validate(&cfg)
+        .expect_err("billing on + an unpriced class must REFUSE boot (unpriced ⇒ boot-refusal)");
     assert!(
-        warnings
-            .iter()
-            .any(|line| line.contains("claude-opus-4") && line.contains("classes remain unpriced")),
-        "warning names the unpriced model: {warnings:?}"
+        errs.iter()
+            .any(|e| e.contains("rate_card is present but") && e.contains("no rate entry")),
+        "the refusal must name the completeness rule (unpriced ⇒ boot-refusal): {errs:?}"
     );
 }
 
@@ -3264,18 +3258,20 @@ fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
 }
 
 #[test]
-fn test_validate_rate_card_warns_for_every_missing_model() {
+fn test_validate_rate_card_stubs_every_missing_model() {
     let mut cfg = cost_cfg(&["alpha", "long-model-name"]);
 
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[])));
-    let (result, warnings) = validate_with_rate_warnings(&cfg);
-    result.expect("missing model rates do not prevent boot");
-    for model in ["alpha", "long-model-name"] {
+    let errs = validate(&cfg).expect_err("two unpriced models must fail validation");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("2 configured models have no rate entry"),
+        "the count must be plural and exact: {joined}"
+    );
+    for m in ["alpha:", "long-model-name:"] {
         assert!(
-            warnings
-                .iter()
-                .any(|line| line.contains(model) && line.contains("has no configured rate")),
-            "warning names missing model '{model}': {warnings:?}"
+            joined.contains(m),
+            "the stub must name missing model '{m}': {joined}"
         );
     }
 }
@@ -3295,6 +3291,10 @@ fn test_validate_rate_card_keyed_by_config_name_not_upstream() {
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&["gpt-5"])));
     let errs = validate(&cfg).expect_err("pricing the upstream name must fail");
     let joined = errs.join("\n");
+    assert!(
+        joined.contains("smart:"),
+        "stub names the config model: {joined}"
+    );
     assert!(
         joined.contains("rate_card names model 'gpt-5'"),
         "the upstream-keyed entry is flagged unknown: {joined}"
@@ -4028,8 +4028,8 @@ advanced:
     let joined = errs.join("\n");
 
     assert!(
-        !joined.contains("no rate entry"),
-        "missing rates must not join structural validation errors: {joined}"
+        joined.contains("haiku:") && joined.contains("no rate entry"),
+        "{joined}"
     );
 
     assert!(
