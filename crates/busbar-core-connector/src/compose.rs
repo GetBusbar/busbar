@@ -2078,9 +2078,30 @@ impl Connection {
                     _ => return Err(Failure::Refused("tls: plaintext count mismatch".into())),
                 }
             }
-            // RED STUB (TRANSPORT-TLS §8 item 5): the r2 shape, one exact read and no further
-            // read, so a close_notify or an unclean end is never seen.
-            let _ = &mut closed;
+            // One more read into a NON-EMPTY buffer once the plaintext is drained: rustls'
+            // `Reader::read` answers without checking the close state while plaintext remains or
+            // the buffer is empty; only this read reaches its close_notify / unclean-EOF check.
+            let mut probe = [0_u8; 64];
+            let r = loop {
+                match tls.reader().read(&mut probe) {
+                    // close_notify received.
+                    Ok(0) => {
+                        closed = true;
+                        break Ok(());
+                    }
+                    Ok(k) => {
+                        if plain.extend(&probe[..k]).is_err() {
+                            break Err(Failure::Refused("tls read buffer".into()));
+                        }
+                    }
+                    // A ticket-only record (no plaintext) lands here.
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break Ok(()),
+                    // UnexpectedEof: the truncation guard.
+                    Err(e) => break Err(failed(e)),
+                }
+            };
+            probe.fill(0);
+            r?;
         }
         self.tls_out()?;
         if matches!(self.phase, Phase::Open) && (!plain.is_empty() || closed) {
