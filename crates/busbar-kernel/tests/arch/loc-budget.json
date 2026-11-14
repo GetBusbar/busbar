@@ -2,7 +2,7 @@
   "version": 1,
   "budgets": {
     "busbar": { "budget": 40549 },
-    "busbar-contract": { "budget": 61634 },
+    "busbar-contract": { "budget": 61374 },
     "busbar-core-admin": { "budget": 17070 },
     "busbar-core-connector": { "budget": 22193 },
     "busbar-core-oauth2": { "budget": 6472 },

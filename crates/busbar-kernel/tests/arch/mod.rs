@@ -4,6 +4,7 @@
 //! Shared support for the architecture checks (CORE-ARCHITECTURE-DIET §5 and §7).
 
 mod escapes;
+mod lints;
 pub mod scan;
 
 use std::path::Path;
