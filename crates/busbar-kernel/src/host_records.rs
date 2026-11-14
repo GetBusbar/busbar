@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::{BTreeMap, HashMap};
+use foldhash::HashMap;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -54,6 +55,7 @@ pub const CLAIM_KIND: &str = "busbar.record-claim";
 pub fn record_key(instance: &str, key: &[u8]) -> Vec<u8> {
     let label = instance.as_bytes();
     let len = u16::try_from(label.len()).unwrap_or(u16::MAX);
+    // busbar:expect(bp::fresh_buffer, reason = "config: the scoped key is the store's owned key; callers that only compare use the borrowed parts")
     let mut k = Vec::with_capacity(2 + label.len() + key.len());
     k.extend_from_slice(&len.to_be_bytes());
     k.extend_from_slice(label);
@@ -61,9 +63,18 @@ pub fn record_key(instance: &str, key: &[u8]) -> Vec<u8> {
     k
 }
 
+/// The length of [`record_key`]'s instance scope: what precedes the writer's own key in it.
+#[must_use]
+pub fn record_scope_len(instance: &str) -> usize {
+    2 + instance.len()
+}
+
 type Queued = (u64, Vec<u8>);
 
-type Queues = HashMap<Arc<str>, BTreeMap<(String, Vec<u8>), Queued>>;
+/// One instance's unacknowledged writes, by record kind and then key: a lookup borrows both.
+type KindQueues = BTreeMap<String, BTreeMap<Vec<u8>, Queued>>;
+
+type Queues = HashMap<Arc<str>, KindQueues>;
 
 /// THE OVERLAY of every instance's unacknowledged writes.
 #[derive(Debug, Default)]
@@ -79,47 +90,91 @@ impl PendingRecords {
 
     pub fn enqueue(&self, instance: &str, kind: &str, key: &[u8], value: Vec<u8>) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
-        self.lock()
-            .entry(Arc::from(instance))
-            .or_default()
-            .insert((kind.to_string(), key.to_vec()), (seq, value));
+        let mut map = self.lock();
+        if !map.contains_key(instance) {
+            // busbar:expect(bp::into_alloc, reason = "config: an instance's overlay row is created once, at its first queued write; acks keep it")
+            let row: Arc<str> = Arc::from(instance);
+            map.insert(row, KindQueues::default());
+        }
+        let Some(kinds) = map.get_mut(instance) else {
+            return seq;
+        };
+        let keys = match kinds.get_mut(kind) {
+            Some(keys) => keys,
+            None => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: a record kind's overlay row is created once, at its first queued write; acks keep it"
+                )]
+                let kind = kind.to_string();
+                kinds.entry(kind).or_default()
+            }
+        };
+        match keys.get_mut(key) {
+            Some(queued) => *queued = (seq, value),
+            None => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the overlay owns a queued write's key until the store acks it; the writer's buffer is lent"
+                )]
+                let key = key.to_vec();
+                keys.insert(key, (seq, value));
+            }
+        }
         seq
     }
 
     pub fn acked(&self, instance: &str, kind: &str, key: &[u8], seq: u64) {
         let mut map = self.lock();
-        if let Some(q) = map.get_mut(instance) {
-            let at = (kind.to_string(), key.to_vec());
-            if q.get(&at).is_some_and(|(queued, _)| *queued == seq) {
-                q.remove(&at);
-            }
-            if q.is_empty() {
-                map.remove(instance);
-            }
+        let Some(keys) = map.get_mut(instance).and_then(|kinds| kinds.get_mut(kind)) else {
+            return;
+        };
+        if keys.get(key).is_some_and(|(queued, _)| *queued == seq) {
+            keys.remove(key);
         }
     }
 
     #[must_use]
     pub fn get(&self, instance: &str, kind: &str, key: &[u8]) -> Option<Vec<u8>> {
-        self.lock()
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a read of a still-queued write answers with its own copy of the bytes"
+        )]
+        let value = self
+            .lock()
             .get(instance)?
-            .get(&(kind.to_string(), key.to_vec()))
-            .map(|(_, v)| v.clone())
+            .get(kind)?
+            .get(key)
+            .map(|(_, v)| v.to_vec());
+        value
     }
 
     #[must_use]
     pub fn under(&self, instance: &str, kind: &str, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.lock().get(instance).map_or_else(Vec::new, |q| {
-            q.iter()
-                .filter(|((k, key), _)| k == kind && key.starts_with(prefix))
-                .map(|((_, key), (_, v))| (key.clone(), v.clone()))
-                .collect()
-        })
+        use std::ops::Bound;
+        let map = self.lock();
+        let Some(keys) = map.get(instance).and_then(|kinds| kinds.get(kind)) else {
+            return Vec::new();
+        };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a list over still-queued writes answers with its own copy of the rows"
+        )]
+        let rows = keys
+            .range::<[u8], _>((Bound::Included(prefix), Bound::Unbounded))
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .map(|(key, (_, v))| (key.to_vec(), v.to_vec()))
+            .collect();
+        rows
     }
 
     #[must_use]
     pub fn queued(&self) -> usize {
-        self.lock().values().map(BTreeMap::len).sum()
+        self.lock()
+            .values()
+            .flat_map(BTreeMap::values)
+            .map(BTreeMap::len)
+            .sum()
     }
 }
 
@@ -266,6 +321,7 @@ impl ConditionalWrite {
         mut self,
         rows: &dyn RecordRows,
         book: &crate::host_chains::ChainBook,
+        now: std::time::Instant,
     ) -> Option<Self> {
         if !self.prepared {
             for chain in self.chains.iter() {
@@ -285,8 +341,10 @@ impl ConditionalWrite {
             }
             self.prepared = true;
         }
-        let first = *self.submitted.get_or_insert_with(std::time::Instant::now);
-        if first.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS {
+        let first = *self.submitted.get_or_insert(now);
+        if now.saturating_duration_since(first).as_secs()
+            >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
+        {
             if let Some(acked) = self.owed.acked.take() {
                 acked(ConditionalResult {
                     correlation: self.owed.correlation,
@@ -338,6 +396,10 @@ impl NativeWrite {
         book: &crate::host_chains::ChainBook,
     ) -> Option<Result<(), &'static str>> {
         use crate::persistence::scoped::{Mutation, Outcome, Predicate, Request, ScopedStore};
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the write-behind flusher binds a write's schemas as owned names; persistence::scoped owns them"
+        )]
         let schemas = [
             self.write.schema.as_str().to_string(),
             crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string(),
@@ -386,7 +448,11 @@ impl NativeWrite {
                 };
                 self.positions.push(position);
             } else {
-                self.request = Some(Request {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: the write-behind flusher hands persistence::scoped its own copy of the write"
+                )]
+                let request = Request {
                     op_id: operation,
                     predicates: Vec::<Predicate>::new(),
                     mutations: vec![if self.write.value.as_slice().is_empty() {
@@ -403,7 +469,8 @@ impl NativeWrite {
                             ),
                         }
                     }],
-                });
+                };
+                self.request = Some(request);
             }
         }
         let result = match self.pending {
@@ -451,12 +518,20 @@ fn native_request(
 ) -> Result<crate::persistence::scoped::Request, &'static str> {
     use crate::persistence::scoped::{Expected, Mutation, Predicate, Request};
     let scope = record_key(instance, &[]);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the write-behind flusher translates a record transaction into persistence::scoped's owned request"
+    )]
     let key = |key: &[u8]| {
         key.strip_prefix(scope.as_slice())
             .map(<[u8]>::to_vec)
             .ok_or(WRITE_FAILED)
     };
-    Ok(Request {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the write-behind flusher translates a record transaction into persistence::scoped's owned request"
+    )]
+    return Ok(Request {
         op_id: request.op_id.0,
         predicates: request
             .predicates
@@ -506,7 +581,7 @@ fn native_request(
                 })
             })
             .collect::<Result<_, &'static str>>()?,
-    })
+    });
 }
 
 impl ConditionalWrite {
@@ -516,7 +591,11 @@ impl ConditionalWrite {
         book: &crate::host_chains::ChainBook,
     ) -> Option<Result<conditional::Decision, ConditionalFailure>> {
         use crate::persistence::scoped::Outcome;
-        let mut schemas: std::collections::BTreeSet<String> = self
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the write-behind flusher binds a transaction's schemas as owned names; host_records_async owns them"
+        )]
+        let schemas: std::collections::BTreeSet<String> = self
             .request
             .predicates
             .iter()
@@ -527,11 +606,15 @@ impl ConditionalWrite {
                     .iter()
                     .map(|m| m.address().0.to_string()),
             )
+            .chain(
+                self.chains
+                    .iter()
+                    .map(|chain| chain.schema.as_str().to_string()),
+            )
+            .chain(std::iter::once(
+                crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string(),
+            ))
             .collect();
-        for chain in self.chains.iter() {
-            schemas.insert(chain.schema.as_str().to_string());
-        }
-        schemas.insert(crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string());
         let rows = match crate::host_records_async::AsyncRecords::authorized(
             Arc::clone(store),
             &self.instance,
@@ -545,6 +628,7 @@ impl ConditionalWrite {
             // retained queue custody only after every chain has been prepared;
             // cancellation cannot append a second copy to a partial request.
             let mut request = zeroize::Zeroizing::new((*self.request).clone());
+            // busbar:expect(bp::fresh_buffer, reason = "config: a conditional write's chain positions are prepared once, on the write-behind flusher")
             let mut positions = Vec::new();
             for chain in self.chains.iter() {
                 match chain
@@ -733,6 +817,10 @@ impl WriteBehind {
             let batch = {
                 let mut queue = self.lock();
                 let count = queue.writes.len().min(BATCH_CAP);
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: one batch of up to BATCH_CAP writes per flusher round, not per request"
+                )]
                 let batch: std::collections::VecDeque<_> = queue.writes.drain(..count).collect();
                 queue.in_flight += count;
                 if count == 0 {
@@ -818,11 +906,21 @@ impl WriteBehind {
         rows: &dyn RecordRows,
         chains: &crate::host_chains::ChainBook,
     ) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the write-behind flusher reads the clock once per flush, never per request"
+        )]
+        let now = std::time::Instant::now();
         loop {
+            // busbar:expect(bp::fresh_buffer, reason = "config: one retry list per write-behind batch of up to BATCH_CAP writes, on the flusher")
             let mut unresolved = Vec::new();
             let batch = {
                 let mut q = self.lock();
                 let n = q.writes.len().min(BATCH_CAP);
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "config: one batch of up to BATCH_CAP writes per flusher round, not per request"
+                )]
                 let batch: Vec<QueuedWrite> = q.writes.drain(..n).collect();
                 q.in_flight += batch.len();
                 if batch.is_empty() {
@@ -840,7 +938,7 @@ impl WriteBehind {
                         continue;
                     }
                     QueuedWrite::Conditional(w) => {
-                        if let Some(write) = w.attempt(rows, chains) {
+                        if let Some(write) = w.attempt(rows, chains, now) {
                             unresolved.push(QueuedWrite::Conditional(write));
                         }
                         continue;

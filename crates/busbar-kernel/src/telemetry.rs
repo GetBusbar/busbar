@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::sync::OnceLock;
 
 use crate::state::App;
@@ -65,14 +65,23 @@ impl AppSlots {
             UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL,
         };
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the metric bank is built once per App snapshot, at config load"
+        )]
         let mut ingress_labels: Vec<&str> = pools.iter().map(|(pool, _)| *pool).collect();
         ingress_labels.extend(by_model.iter().map(|(model, _)| *model));
         ingress_labels.push(POOL_LABEL_UNRESOLVED);
         ingress_labels.sort_unstable();
         ingress_labels.dedup();
 
-        let mut request = HashMap::with_capacity(ingress_labels.len());
+        let mut request =
+            HashMap::with_capacity_and_hasher(ingress_labels.len(), Default::default());
         for pool in &ingress_labels {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the metric bank is built once per App snapshot, at config load"
+            )]
             let families: Box<[RequestFamily]> = declared_dialects(plane)
                 .iter()
                 .map(|proto| RequestFamily {
@@ -93,19 +102,27 @@ impl AppSlots {
                     ),
                 })
                 .collect();
-            request.insert(Box::from(*pool), families);
+            // busbar:expect(bp::into_alloc, reason = "config: the metric bank is built once per App snapshot, at config load")
+            let pool: Box<str> = Box::from(*pool);
+            request.insert(pool, families);
         }
 
-        let mut lane_map: HashMap<Box<str>, HashMap<usize, LaneFamily>> = HashMap::new();
+        let mut lane_map: HashMap<Box<str>, HashMap<usize, LaneFamily>> = HashMap::default();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the metric bank is built once per App snapshot, at config load"
+        )]
         let engine_labels: Vec<(&str, Vec<usize>)> = pools
             .iter()
             .map(|(pool, member_idxs)| (*pool, member_idxs.clone()))
             .chain(by_model.iter().map(|(model, idx)| (*model, vec![*idx])))
             .collect();
 
-        let mut failover = HashMap::with_capacity(engine_labels.len());
+        let mut failover =
+            HashMap::with_capacity_and_hasher(engine_labels.len(), Default::default());
         for (pool, member_idxs) in &engine_labels {
-            let mut per_lane = HashMap::with_capacity(member_idxs.len());
+            let mut per_lane =
+                HashMap::with_capacity_and_hasher(member_idxs.len(), Default::default());
             for &idx in member_idxs {
                 let Some(lane_label) = lane_model(idx) else {
                     continue;
@@ -134,11 +151,12 @@ impl AppSlots {
                     },
                 );
             }
-            lane_map
-                .entry(Box::from(*pool))
-                .or_default()
-                .extend(per_lane);
-            failover.entry(Box::from(*pool)).or_insert_with(|| {
+            // busbar:expect(bp::into_alloc, reason = "config: the metric bank is built once per App snapshot, at config load")
+            let key: Box<str> = Box::from(*pool);
+            lane_map.entry(key).or_default().extend(per_lane);
+            // busbar:expect(bp::into_alloc, reason = "config: the metric bank is built once per App snapshot, at config load")
+            let key: Box<str> = Box::from(*pool);
+            failover.entry(key).or_insert_with(|| {
                 std::array::from_fn(|ri| {
                     counter_slot(FAILOVERS_TOTAL, &[("pool", pool), ("reason", REASONS[ri])])
                 })
@@ -147,6 +165,10 @@ impl AppSlots {
 
         // Mounted ingress currently observes response-ready at its middleware boundary, before
         // body consumption, with the fixed unresolved pool label. Never infer producer completion.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the metric bank is built once per App snapshot, at config load"
+        )]
         let mounted_duration = crate::plane_driver::dispatch::plane_keys()
             .filter(|key| !crate::plane_driver::dispatch::is_fallback(key))
             .map(|key| {
@@ -251,7 +273,6 @@ pub fn model_request_finished(
         .export_projections
         .wants_stream(busbar_contract::abi::export::ExportStream::Logs)
     {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         crate::export::deliver_request_log(&crate::export::RequestLogFacts {
             ts: busbar_kernel::store::now(),
             ingress_protocol,
@@ -379,6 +400,10 @@ fn failover_in(slots: &AppSlots, pool_label: &str, reason: &'static str) {
 }
 
 pub fn breaker_trip_on(pool_label: &str, lane_label: &str) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
+    )]
     metrics::counter!(
         crate::snapshot::BREAKER_TRIPS_TOTAL,
         "pool" => pool_label.to_owned(),
@@ -388,6 +413,10 @@ pub fn breaker_trip_on(pool_label: &str, lane_label: &str) {
 }
 
 pub fn failover_on(pool_label: &str, reason: &'static str) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
+    )]
     metrics::counter!(
         crate::snapshot::FAILOVERS_TOTAL,
         "pool" => pool_label.to_owned(),
@@ -397,6 +426,10 @@ pub fn failover_on(pool_label: &str, reason: &'static str) {
 }
 
 pub fn pool_queued_on(pool_label: &str, depth: i64) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
+    )]
     metrics::gauge!(crate::snapshot::POOL_QUEUED, "pool" => pool_label.to_owned())
         .set(depth as f64);
 }
@@ -404,6 +437,7 @@ pub fn pool_queued_on(pool_label: &str, depth: i64) {
 pub fn translation(from: &str, to: &str) {
     static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
     let table = SLOTS.get_or_init(|| {
+        // busbar:expect(bp::fresh_buffer, reason = "boot: the translation slot table is built once per process")
         let mut v = Vec::new();
         let dialects = declared_dialects(crate::plane_driver::dispatch::fallback_key());
         for f in dialects {
@@ -427,12 +461,18 @@ pub fn translation(from: &str, to: &str) {
         .find(|(f, t, slot)| *f == from && *t == to && slot.is_valid())
     {
         Some((_, _, slot)) => slot.incr(),
-        None => metrics::counter!(
-            crate::snapshot::TRANSLATIONS_TOTAL,
-            "from" => from.to_string(),
-            "to" => to.to_string()
-        )
-        .increment(1),
+        None => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "config: the unbanked emission (a dialect pair outside the bank); the metrics registry owns its labels"
+            )]
+            let counter = metrics::counter!(
+                crate::snapshot::TRANSLATIONS_TOTAL,
+                "from" => from.to_string(),
+                "to" => to.to_string()
+            );
+            counter.increment(1);
+        }
     }
 }
 
@@ -468,9 +508,6 @@ pub(crate) fn request_phase_dropped() -> [u64; 2] {
     std::array::from_fn(|i| PHASE_DROPPED[i].load(Ordering::Relaxed))
 }
 
-// `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-// MSRV floor is below 1.95, so keep the older name.
-#[allow(deprecated)]
 fn record_phase_duration(
     slots: Option<[HistogramSlot; OUTCOMES.len()]>,
     outcome: &str,
@@ -485,13 +522,13 @@ fn record_phase_duration(
     match slot {
         Some(slot) if slot.is_valid() => slot.record(seconds),
         Some(_) => {
-            let _ = PHASE_DROPPED[0].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            let _ = PHASE_DROPPED[0].try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 Some(n.saturating_add(1))
             });
             metrics::counter!(REQUEST_PHASE_DROPPED, "reason" => "histogram_capacity").increment(1)
         }
         None => {
-            let _ = PHASE_DROPPED[1].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            let _ = PHASE_DROPPED[1].try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 Some(n.saturating_add(1))
             });
             metrics::counter!(REQUEST_PHASE_DROPPED, "reason" => "unregistered_labels").increment(1)
@@ -512,6 +549,10 @@ pub const UPSTREAM_ATTEMPTS_TOTAL: &str = "busbar_upstream_attempts_total";
 pub const UPSTREAM_FAILURES_TOTAL: &str = "busbar_upstream_failures_total";
 
 pub fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
+    )]
     metrics::counter!(
         UPSTREAM_ATTEMPTS_TOTAL,
         "pool" => pool_label.to_owned(),
@@ -525,6 +566,10 @@ pub fn plugin_label_refused() {
 }
 
 pub fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'static str) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: the unbanked emission (a label outside this generation's bank); the metrics registry owns its labels"
+    )]
     metrics::counter!(
         UPSTREAM_FAILURES_TOTAL,
         "pool" => pool_label.to_owned(),
@@ -685,6 +730,10 @@ impl Drop for LocalBank {
 
         let reg = registry();
         let _flush = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a worker thread's exit releases its bank once"
+        )]
         reg.threads
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -702,11 +751,19 @@ impl Drop for LocalBank {
 }
 
 fn new_counter_chunk() -> Box<[AtomicU64]> {
-    (0..COUNTER_CHUNK).map(|_| AtomicU64::new(0)).collect()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a thread's bank chunk is built once, on its first emission into it"
+    )]
+    return (0..COUNTER_CHUNK).map(|_| AtomicU64::new(0)).collect();
 }
 
 fn new_hist_chunk() -> HistChunk {
-    (0..HIST_CHUNK).map(|_| Mutex::new(Vec::new())).collect()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a thread's bank chunk is built once, on its first emission into it"
+    )]
+    return (0..HIST_CHUNK).map(|_| Mutex::new(Vec::new())).collect();
 }
 
 impl ThreadBank {
@@ -759,7 +816,7 @@ struct SlotTable<H> {
 impl<H> SlotTable<H> {
     fn new() -> Self {
         SlotTable {
-            index: Mutex::new(HashMap::new()),
+            index: Mutex::new(HashMap::default()),
             descs: RwLock::new(Vec::new()),
         }
     }
@@ -770,6 +827,7 @@ impl<H> SlotTable<H> {
         labels: &[(&'static str, &str)],
         max: usize,
     ) -> Option<u32> {
+        // busbar:expect(bp::fresh_buffer, reason = "config: a slot is interned when a bank is built, at config load")
         let mut key = String::with_capacity(name.len() + labels.len() * 16);
         key.push_str(name);
         for (k, v) in labels {
@@ -797,6 +855,10 @@ impl<H> SlotTable<H> {
             return None;
         }
         let id = descs.len() as u32;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: a new slot keeps its labels once, when it is interned"
+        )]
         descs.push(Arc::new(SlotDesc {
             name,
             labels: labels.iter().map(|(k, v)| (*k, (*v).to_string())).collect(),
@@ -855,7 +917,11 @@ fn key_of<H>(desc: &SlotDesc<H>) -> metrics::Key {
         .labels
         .iter()
         .map(|(k, v)| metrics::Label::new(*k, v.clone()));
-    metrics::Key::from_parts(desc.name, labels.collect::<Vec<_>>())
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a slot's recorder handle is minted once, on its first flush"
+    )]
+    return metrics::Key::from_parts(desc.name, labels.collect::<Vec<_>>());
 }
 
 fn mint_counter(desc: &SlotDesc<metrics::Counter>) -> metrics::Counter {
@@ -929,6 +995,10 @@ pub fn flush_to_recorder() {
     let _guard = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
 
     let mut banks = reg.threads.lock().unwrap_or_else(|p| p.into_inner());
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "config: a scrape releases the banks of exited threads; no request runs it"
+    )]
     let exited: Vec<_> = banks
         .extract_if(.., |b| Arc::strong_count(b) == 1)
         .collect();

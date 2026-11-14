@@ -51,6 +51,10 @@ impl Slot {
     }
 }
 
+/// The JSON document a [`ContentItem::Data`] item carries: structured content (tool arguments, a
+/// door's projected body) as the IR exposes it to a screening hook.
+pub type DataValue = Value;
+
 /// One content item, borrowed. The shared pipeline walks these; it never knows which protocol
 /// produced them and never downcasts.
 ///

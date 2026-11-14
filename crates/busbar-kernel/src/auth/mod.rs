@@ -2007,7 +2007,7 @@ pub fn auth_completion_taps(
         crate::hooks::taps::fire_stage_taps_where(
             &app.tap_hooks_response,
             &shape,
-            busbar_contract::hook_wire::HookStageProjection {
+            &busbar_contract::hook_wire::HookStageProjection {
                 at: "response",
                 model: None,
                 attempt_number: None,

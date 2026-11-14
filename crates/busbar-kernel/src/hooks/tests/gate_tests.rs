@@ -930,10 +930,14 @@ fn incremental_scan_requires_the_full_tuple_when_a_cache_index_collides() {
     let items = facts.content();
     let screened = super::ScreenedContent::over(&items);
     let digest = screened.digest(0).unwrap();
-    let clearance = "this-gate";
+    let clearance = super::clearance_of("pool", "this-gate");
     for (session, claimed_clearance, claimed_digest) in [
         (SessionKey(18), clearance, digest.as_str()),
-        (scan.session, "another-gate", digest.as_str()),
+        (
+            scan.session,
+            super::clearance_of("pool", "another-gate"),
+            digest.as_str(),
+        ),
         (scan.session, clearance, "another-digest"),
     ] {
         store.put(
@@ -941,8 +945,8 @@ fn incremental_scan_requires_the_full_tuple_when_a_cache_index_collides() {
             IncrementalScan::OWNER,
             Arc::new(super::ClearedPiece {
                 session,
-                clearance: claimed_clearance.into(),
-                digest: claimed_digest.into(),
+                clearance: claimed_clearance,
+                digest: claimed_digest.to_owned(),
             }),
             0,
             false,

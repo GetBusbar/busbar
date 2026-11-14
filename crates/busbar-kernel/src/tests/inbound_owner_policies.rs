@@ -43,7 +43,7 @@ fn consumed_query_credentials_are_stripped_without_interpreting_the_opaque_targe
 #[test]
 fn list_order_fixes_identity_refusal_and_overload_before_later_answers() {
     let providers = vec!["first".into(), "second".into()];
-    let requests = HashSet::new();
+    let requests = HashSet::default();
     let fixed = |answers: &[Option<Judged>]| fixed_answer_at(answers, &providers, &requests, false);
     assert_eq!(fixed(&[None, Some(Judged::Identity)]), None);
     assert_eq!(
@@ -71,7 +71,7 @@ fn list_order_fixes_identity_refusal_and_overload_before_later_answers() {
 #[test]
 fn peer_answers_wait_for_a_provider_that_also_owns_request_authentication() {
     let providers = vec!["both".into(), "peer".into()];
-    let request_auths = HashSet::from(["both".into()]);
+    let request_auths = HashSet::from_iter(["both".into()]);
     for first in [Judged::Identity, Judged::Pass] {
         assert_eq!(
             fixed_answer_at(
@@ -105,7 +105,7 @@ fn peer_answers_wait_for_a_provider_that_also_owns_request_authentication() {
         fixed_answer_at(
             &[Some(Judged::Pass), Some(Judged::Identity)],
             &providers,
-            &HashSet::new(),
+            &HashSet::default(),
             true
         ),
         Some(Fixed::Admitted(1))

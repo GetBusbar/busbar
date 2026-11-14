@@ -71,6 +71,12 @@ impl RecordBytes {
     pub fn as_slice(&self) -> &[u8] {
         &self.bytes
     }
+
+    /// The bytes, moved out.
+    #[must_use]
+    pub fn into_vec(self) -> Vec<u8> {
+        self.bytes
+    }
 }
 
 /// Where one stream of the journal has reached.

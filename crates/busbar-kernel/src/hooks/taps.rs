@@ -35,7 +35,7 @@ impl<'a> StageShape<'a> {
 pub fn fire_stage_taps_where(
     taps: &[crate::hooks::TapEntry],
     shape: &StageShape<'_>,
-    stage: busbar_contract::hook_wire::HookStageProjection<'_>,
+    stage: &busbar_contract::hook_wire::HookStageProjection<'_>,
     signals: busbar_contract::signal::SignalBag,
     fires: &dyn Fn(&[String]) -> bool,
 ) {
@@ -60,7 +60,7 @@ pub fn fire_stage_taps_where(
         signals,
         session: None,
     };
-    let tap = busbar_contract::abi::host::hook::NotifyFrame::build(&req, Some(&stage), false);
+    let tap = busbar_contract::abi::host::hook::NotifyFrame::build(&req, Some(stage), false);
     for (timeout, _send_prompt, hook, groups) in taps {
         if !fires(groups) {
             continue;

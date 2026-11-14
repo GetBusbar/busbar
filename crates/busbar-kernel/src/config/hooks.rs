@@ -266,6 +266,9 @@ pub const FROZEN_HOOK_NAME_WORD_SPACE: &[&str] = &[
     "weighted",
 ];
 
+/// The runtime hook registry as config owns it: hook name to definition, read at boot and reload.
+pub type HookRegistry = std::collections::HashMap<String, HookCfg>;
+
 /// A named entry in the top-level `hooks:` registry — a single hook (tap or gate) and the `kind: hook`
 /// PLUGIN that backs it. A hook is now a dlopen plugin under the hybrid ABI (the 1.5.0 retirement of
 /// the out-of-process socket/webhook transport): exactly ONE `plugin:` reference names the signed

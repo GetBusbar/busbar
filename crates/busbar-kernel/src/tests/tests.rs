@@ -730,7 +730,7 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
         entry("vendor-sso", "test-idp-double", Some("read-only")),
         entry("test-idp-double", "some-other-module", Some("none")),
     ];
-    let caps = project_auth_scope_caps(&auth);
+    let caps: std::collections::HashMap<String, String> = project_auth_scope_caps(&auth);
 
     assert_eq!(
         caps.get("corp-sso").map(String::as_str),
