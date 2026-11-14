@@ -94,7 +94,7 @@ fn rewrites(
         Duration::from_millis(500),
         Arc::new(Rewrites {
             name,
-            turns: turns.iter().map(|(r, t)| (*r, (*t).to_string())).collect(),
+            turns: turns.iter().map(|(r, t)| (*r, String::from(*t))).collect(),
         }),
     )
 }
@@ -344,10 +344,11 @@ struct Tallied {
 
 impl metrics::CounterFn for Tallied {
     fn increment(&self, value: u64) {
-        let mut seen = self.into.0.lock().unwrap();
-        for _ in 0..value {
-            seen.push(self.key.clone());
-        }
+        self.into
+            .0
+            .lock()
+            .unwrap()
+            .extend((0..value).map(|_| self.key.clone()));
     }
     fn absolute(&self, _: u64) {}
 }

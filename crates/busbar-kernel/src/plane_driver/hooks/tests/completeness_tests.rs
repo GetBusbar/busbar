@@ -3,8 +3,8 @@
 
 use super::*;
 
-fn projected() -> Projection {
-    let mut view = Projection::empty("pool".into(), "neutral".into());
+fn projected() -> Projection<'static> {
+    let mut view = Projection::empty("pool", "neutral");
     view.system = Some("instructions".into());
     view.turns = vec![("user".into(), "question".into())];
     view.message_count = 1;
