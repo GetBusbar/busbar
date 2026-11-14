@@ -714,6 +714,7 @@ extern "C" {
 #define BB_HSVC_FOUND UINT64_C(1) /* `value` of [`op::RECORDS_GET`]: the record is in span `0`. */
 #define BB_HSVC_CLAIM_WON UINT64_C(1) /* `value` of [`op::RECORDS_CLAIM`]: this call made the claim. */
 #define BB_HSVC_CLAIM_TAKEN UINT64_C(2) /* `value` of [`op::RECORDS_CLAIM`]: the key was already claimed. */
+#define BB_HSVC_REFUSED_UNSERVED UINT64_C(0xffffffffffffffff) /* `value` of ANY service's REFUSED answer: the host backs the service for no caller here, so it is */
 #define BB_HSVC_DEST_RESOLVE UINT32_C(1) /* [`DestJudgeIn::flags`]: resolve a name and judge every address it answers, and write the */
 #define BB_HSVC_DEST_REFUSE_PRIVATE UINT32_C(2) /* [`DestJudgeIn::flags`]: refuse every private address (and loopback name) under this judgement, */
 #define BB_HSVC_DEST_EXPLAIN UINT32_C(4) /* [`DestJudgeIn::flags`], with [`DEST_RESOLVE`]: on a refusal an address or the resolution */

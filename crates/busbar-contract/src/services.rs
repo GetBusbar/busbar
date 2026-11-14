@@ -691,6 +691,20 @@ impl Stored {
             ..Self::ready(0)
         }
     }
+
+    /// REFUSED for `why`, read as UNSERVED
+    /// ([`REFUSED_UNSERVED`](crate::abi::host::service::REFUSED_UNSERVED)): the host backs this
+    /// service for no caller here. Answer it only after the caller's own standing is judged, so a
+    /// misconfigured caller is refused, never unserved.
+    #[must_use]
+    pub fn unserved(why: &'static str) -> Self {
+        Self {
+            value: crate::abi::host::service::REFUSED_UNSERVED,
+            bytes: Vec::new(),
+            spans: Vec::new(),
+            ..Self::refused(why)
+        }
+    }
 }
 
 /// What a service body did.
