@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "lib": "busbar-kernel",
+  "lib_workspace_deps": [
+    "busbar-contract",
+    "busbar-kernel-audit",
+    "busbar-kernel-breaker",
+    "busbar-kernel-egress",
+    "busbar-kernel-identity",
+    "busbar-kernel-ledger",
+    "busbar-kernel-wal",
+    "busbar-yaml"
+  ],
+  "allowed_additions": []
+}

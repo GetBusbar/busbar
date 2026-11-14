@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "budgets": {
+    "busbar": { "budget": 40549 },
+    "busbar-contract": { "budget": 61634 },
+    "busbar-core-admin": { "budget": 17070 },
+    "busbar-core-connector": { "budget": 22193 },
+    "busbar-core-oauth2": { "budget": 6472 },
+    "busbar-kernel": { "budget": 101341 },
+    "busbar-kernel-audit": { "budget": 3092 },
+    "busbar-kernel-breaker": { "budget": 1088 },
+    "busbar-kernel-egress": { "budget": 1600 },
+    "busbar-kernel-identity": { "budget": 547 },
+    "busbar-kernel-ledger": { "budget": 2053 },
+    "busbar-kernel-wal": { "budget": 3050 },
+    "busbar-migrations": { "budget": 17867 },
+    "busbar-plugin-loader": { "budget": 39082 },
+    "busbar-yaml": { "budget": 10277 }
+  },
+  "generated": [
+    "crates/busbar-kernel/src/diagnostics/mod.rs:88",
+    "crates/busbar/src/main.rs:273",
+    "crates/busbar/src/main.rs:275",
+    "crates/busbar/src/root/migration_table.rs:4"
+  ]
+}
