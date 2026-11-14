@@ -479,7 +479,7 @@ impl DocumentPatch {
                 continue;
             };
             let typed = WipedYaml(
-                busbar_contract::yaml::to_value(deploy.authoring(&crate::seal::acquire()))
+                busbar_contract::yaml::to_value(&deploy.authoring(&crate::seal::acquire()))
                     .map_err(|_| PatchError::Encoding)?,
             );
             let typed = typed.0.as_mapping().ok_or(PatchError::Encoding)?;
