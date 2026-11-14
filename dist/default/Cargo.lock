@@ -4350,4 +4350,4 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[patch.unused]]
 name = "mysql_common"
 version = "0.35.5"
-source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=c6ac054a87ad22d2121d9948344f70b620f2d95d#c6ac054a87ad22d2121d9948344f70b620f2d95d"
+source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=60c6acb8cd42c9d73d1ec5ffa5001d340ba3d859#60c6acb8cd42c9d73d1ec5ffa5001d340ba3d859"

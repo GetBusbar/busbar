@@ -26,7 +26,7 @@
     {
       "repo": "busbar-auth-ldap",
       "url": "https://github.com/GetBusbar/busbar-auth-ldap",
-      "commit": "326a99526786fc525e694534043ebe46e6cc93b0",
+      "commit": "90e4c867593377de801e9e859c74a2187f712e57",
       "package": "busbar-auth-ldap-plugin",
       "kind": "auth",
       "alias": "ldap",
@@ -334,13 +334,13 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://github.com/GetBusbar/busbar-store-mysql",
-      "commit": "c6ac054a87ad22d2121d9948344f70b620f2d95d",
+      "commit": "60c6acb8cd42c9d73d1ec5ffa5001d340ba3d859",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
       "image": "libbusbar_store_mysql_plugin.so",
       "declares": "store-mysql/declares.json",
-      "lock_sha256": "2a22b44c8429fde8d4c60a7642594c921badecf3d090e7607ec3c4717164ee2c"
+      "lock_sha256": "889e9836fc9a0f77484d75b0e7621b511955dacef10baa250854dda365abcff0"
     },
     {
       "repo": "busbar-store-postgres",
