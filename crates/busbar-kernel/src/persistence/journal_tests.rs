@@ -1462,7 +1462,7 @@ async fn cold_record_before_bridge_still_selects() {
     let first = record(8, [19; 32], vec![1]);
     let after = record(10, [20; 32], vec![3]);
     let note = chain_break(11, hash(&after), 8, 10);
-    let records = vec![first, after, note];
+    let records = [first, after, note];
     {
         let mut state = backend.state.lock().unwrap();
         for (index, record) in records.iter().enumerate() {
