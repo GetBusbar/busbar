@@ -239,13 +239,18 @@ fn queued_wire(fields: HeadFields, body: &[u8]) -> (Vec<u8>, bool, Bytes, bool) 
     let (block, head_end) = match rx.try_recv().unwrap() {
         (
             1,
-            Op::Head {
+            Op::FieldHead {
                 status: 503,
                 fields,
+                timing,
                 end,
                 ..
             },
-        ) => (fields, end),
+        ) => {
+            let mut block = Vec::new();
+            encode_fields(&mut block, &fields, timing.as_deref());
+            (block, end)
+        }
         _ => panic!("expected the refusal head first"),
     };
     let (bytes, data_end) = match rx.try_recv().unwrap() {
@@ -294,7 +299,11 @@ fn queued_refusal_naming_its_framing_is_not_relengthed() {
         let (block, _, bytes, _) = queued_wire(vec![framing.clone()], body);
         assert_eq!(
             block,
-            neutral_fields(&vec![framing]),
+            {
+                let mut block = Vec::new();
+                encode_fields(&mut block, &vec![framing], None);
+                block
+            },
             "a stated framing passes through unchanged"
         );
         assert_eq!(&bytes[..], body);
