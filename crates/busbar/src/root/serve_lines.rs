@@ -383,6 +383,10 @@ where
             return 1;
         }
     };
+    // The session's credential, moved into the one shared zeroising buffer each line's request
+    // clones (SP-AU6), never copied per line.
+    let credential =
+        credential.map(|c| busbar_kernel::auth::CallerCredential::from(c.into_bytes()));
     run_io(carrier, reader, writer, stop, move |caller| {
         #[expect(
             clippy::disallowed_methods,
@@ -416,9 +420,7 @@ where
                 body: axum::body::Bytes::from(line),
                 gov: gov.clone(),
 
-                credential: credential
-                    .as_ref()
-                    .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
+                credential: credential.clone(),
 
                 ticket: None,
                 host_ticket_admission: None,

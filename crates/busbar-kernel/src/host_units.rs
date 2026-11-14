@@ -63,7 +63,7 @@ struct UnitEntry {
     outbound: Option<crate::host_outbound::Bound>,
     record: Option<Arc<UnitRecord>>,
     stage: Option<Arc<dyn UnitHookStage>>,
-    lent: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    lent: Option<crate::auth::CallerCredential>,
     /// What admitted the unit, for `ticket.take`: `Some(Some(record))` the record of the ticket
     /// the gate spent admitting it, `Some(None)` a key; `None` never stated, or taken. The unit's
     /// end drops what was never taken.
@@ -179,7 +179,7 @@ impl UnitRecords {
         self.lock(unit).get_mut(&unit)?.ticket.take()
     }
 
-    pub fn lend(&self, unit: u64, credential: busbar_contract::redacted::Secret<Vec<u8>>) {
+    pub fn lend(&self, unit: u64, credential: crate::auth::CallerCredential) {
         self.lock(unit).entry(unit).or_default().lent = Some(credential);
     }
 
@@ -208,6 +208,10 @@ impl UnitRecords {
 
 impl busbar_contract::conn::LendCredential for UnitRecords {
     fn lent(&self, unit: u64) -> Option<busbar_contract::redacted::Secret<Vec<u8>>> {
-        self.lock(unit).get(&unit)?.lent.clone()
+        self.lock(unit)
+            .get(&unit)?
+            .lent
+            .as_ref()
+            .map(crate::auth::CallerCredential::lend)
     }
 }

@@ -3749,7 +3749,7 @@ pub struct DoorRequest {
 
     pub gov: busbar_contract::records::PlaneRequestCtx,
 
-    pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    pub credential: Option<busbar_kernel::auth::CallerCredential>,
 
     pub ticket: Option<Vec<u8>>,
 
@@ -7217,7 +7217,7 @@ struct DoorFar<'d, 's> {
     steps: &'d DoorSteps<'s>,
     unit: busbar_contract::UnitKey,
 
-    credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    credential: Option<busbar_kernel::auth::CallerCredential>,
     authorization: Arc<busbar_kernel::host_units::UnitRecords>,
     far: OnceLock<Option<EgressFarEnd<'d>>>,
 }
@@ -7548,7 +7548,7 @@ struct SessionDoor {
     key: Option<Arc<busbar_contract::records::VirtualKey>>,
     open: bool,
 
-    credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    credential: Option<busbar_kernel::auth::CallerCredential>,
 
     ticket: Option<Vec<u8>>,
     host_ticket_admission: Option<busbar_kernel::host_services::HostTicketAdmission>,
@@ -7945,7 +7945,7 @@ impl IngressReply {
 type UnitCaller = (
     PrincipalId,
     Option<Arc<busbar_contract::records::VirtualKey>>,
-    Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    Option<busbar_kernel::auth::CallerCredential>,
     Option<Vec<u8>>,
     Option<busbar_kernel::host_services::HostTicketAdmission>,
 );

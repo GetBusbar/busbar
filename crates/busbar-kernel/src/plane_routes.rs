@@ -158,7 +158,7 @@ pub struct PlaneReqCtx {
 
     pub principal: Option<busbar_contract::auth::AuthPrincipal>,
 
-    pub caller_credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    pub caller_credential: Option<crate::auth::CallerCredential>,
 
     pub ticket: Option<Vec<u8>>,
 

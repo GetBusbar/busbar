@@ -18,6 +18,9 @@ mod inbound_peer_points;
 #[path = "inbound_reader_deadline.rs"]
 mod inbound_reader_deadline;
 
+#[path = "inbound_caller_secret.rs"]
+mod inbound_caller_secret;
+
 struct Script {
     points: AuthPoints,
     answer: VerifyAnswer,
@@ -1284,10 +1287,18 @@ fn an_adopted_session_moves_owner_token_and_mac_without_reauthenticating_or_chan
         assert_eq!(script.calls(), 1);
         assert!(Arc::ptr_eq(&admission.app(), &k.app));
         assert!(futures::executor::block_on(admission.claim_replay()));
+        assert!(
+            k.inbound.with_credential(old.id, |_| ()).is_none(),
+            "the claim moved the unit's credential into the claimed request (SP-AU6)"
+        );
         assert_eq!(
-            k.inbound
-                .with_credential(old.id, |c| c.expose(&crate::seal::lend()).clone()),
-            Some("credential".to_string())
+            admission
+                .inner
+                .credential
+                .as_ref()
+                .map(|c| c.expose(&crate::seal::lend()).clone()),
+            Some("credential".to_string()),
+            "the claimed request keeps the credential across the session transfer"
         );
         k.inbound.framing_ended(19);
         assert!(k.inbound.unit_secret(destination_owner, old.id).is_none());
