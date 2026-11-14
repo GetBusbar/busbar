@@ -1079,20 +1079,6 @@ pub fn first_party_signer_for<'k>(
     Ok(&keys[index])
 }
 
-pub fn first_party_signer_for_with_crypto<'k>(
-    manifest: &Manifest,
-    bytes: &[u8],
-    keys: &'k [RawFirstPartyKey],
-    checks: crate::release_trust::Checks,
-    target: &str,
-    crypto: &dyn ReleaseCrypto,
-) -> Result<&'k RawFirstPartyKey, WithCryptoError<FirstPartyUnverified>> {
-    validate_roots_with_crypto(keys, crypto)
-        .map_err(|e| e.map_rejection(FirstPartyUnverified::Malformed))?;
-    first_party_signer_evidence_with_crypto(manifest, bytes, keys, checks, target, crypto)
-        .map(|(key, _)| key)
-}
-
 fn first_party_signer_evidence_with_crypto<'k>(
     manifest: &Manifest,
     bytes: &[u8],
@@ -1487,26 +1473,6 @@ fn evaluate_against_with_evidence(
     ))
 }
 
-pub fn evaluate_with_crypto(
-    bytes: &[u8],
-    manifest: &Manifest,
-    policy: &RawTrustPolicy,
-    crypto: &dyn ReleaseCrypto,
-) -> Result<Verdict, WithCryptoError<Rejected>> {
-    evaluate_with_evidence_with_crypto(bytes, manifest, policy, crypto).map(|(verdict, _)| verdict)
-}
-
-pub fn evaluate_with_evidence_with_crypto(
-    bytes: &[u8],
-    manifest: &Manifest,
-    policy: &RawTrustPolicy,
-    crypto: &dyn ReleaseCrypto,
-) -> Result<(Verdict, Option<u64>), WithCryptoError<Rejected>> {
-    validate_policy_keys_with_crypto(policy, crypto)
-        .map_err(|e| e.map_rejection(|why| Rejected::new(RejectKind::Tampered, why)))?;
-    evaluate_against_with_crypto(bytes, manifest, policy, RETIRED_RELEASE_KEYS, crypto)
-}
-
 fn evaluate_against_with_crypto(
     bytes: &[u8],
     manifest: &Manifest,
@@ -1889,36 +1855,4 @@ impl From<FirstPartyUnverified> for WithCryptoError<FirstPartyUnverified> {
     fn from(error: FirstPartyUnverified) -> Self {
         Self::Rejected(error)
     }
-}
-
-/// Validate all configured keys at native entry boundaries, including unused policy entries.
-/// Standard entrypoints preserve their established policy-key construction/acceptance behavior.
-pub(crate) fn validate_roots_with_crypto(
-    roots: &[RawFirstPartyKey],
-    crypto: &dyn ReleaseCrypto,
-) -> Result<(), WithCryptoError<String>> {
-    for root in roots {
-        if !crypto.validate_public_key(root.key.public_key())? {
-            return Err(format!("invalid release root public key '{}'", root.id).into());
-        }
-    }
-    Ok(())
-}
-
-fn validate_policy_keys_with_crypto(
-    policy: &RawTrustPolicy,
-    crypto: &dyn ReleaseCrypto,
-) -> Result<(), WithCryptoError<String>> {
-    validate_roots_with_crypto(&policy.first_party_keys, crypto)?;
-    if let Some(key) = &policy.first_party_key {
-        if !crypto.validate_public_key(PublicKey::Ed25519(key))? {
-            return Err("invalid first-party public key".into());
-        }
-    }
-    for (name, key) in &policy.publishers {
-        if !crypto.validate_public_key(PublicKey::Ed25519(key))? {
-            return Err(format!("invalid publisher public key '{name}'").into());
-        }
-    }
-    Ok(())
 }
