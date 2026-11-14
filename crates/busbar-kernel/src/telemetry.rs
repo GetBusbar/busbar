@@ -989,11 +989,5 @@ pub(crate) fn this_threads_bank() -> std::sync::Weak<dyn std::any::Any + Send + 
 }
 
 #[cfg(test)]
-pub mod bank_internals {
-    pub use super::HIST_DRAIN_THRESHOLD;
-
-    pub fn hist_chunk_materialized(slot: super::HistogramSlot) -> bool {
-        let idx = slot.0 as usize;
-        super::BANK.with(|bank| bank.hists[idx / super::HIST_CHUNK].get().is_some())
-    }
-}
+#[path = "tests/telemetry_bank_internals_tests.rs"]
+pub mod bank_internals;
