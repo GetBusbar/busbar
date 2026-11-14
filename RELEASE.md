@@ -13,8 +13,7 @@ restored to reconstruct a release workflow.
 - [Product input builder](scripts/ci-product-inputs.sh) and
   [immutable input pins](scripts/ci-product-pins.json): build the actual artifacts
   used by product tests.
-- [Conformance registry](conformance/registry.toml) and
-  [manifest renderer](scripts/conformance/sync.py): bind conformance evidence to the
+- [Conformance registry](conformance/registry.toml): binds conformance evidence to the
   release and shipped plugin revisions.
 - [Release verifier](scripts/release/release_verifier.py) and
   [native provenance](scripts/release/native_provenance.py): verify a release's signed
@@ -38,5 +37,4 @@ and fix failures. A publication or green claim must identify the exact final pro
 its dependencies and the passing evidence; a source build alone does not establish it.
 
 Maintain [CHANGELOG.md](CHANGELOG.md) for release notes. Preserve historical migration
-fixtures and published signed evidence. [CoreFix.md](CoreFix.md) is a forward design
-on dev, not an implemented release or permission to promote QA/main.
+fixtures and published signed evidence.
