@@ -120,7 +120,6 @@ pub mod probe;
 )]
 pub mod pump;
 pub mod registry;
-pub mod scratch;
 pub mod seal;
 // busbar:request-path
 #[cfg_attr(

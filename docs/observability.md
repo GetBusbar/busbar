@@ -269,9 +269,6 @@ Its cost is gated once per unit: below `DEBUG` the unit asks `observability::req
 allocated, timed or formatted. The same release stopped the request path computing disabled span
 fields: the `forward` span's pool (a lock and an allocation), the `forward_once` span's lane (a
 lock), and each attempt's clock reads now run only when those spans are enabled.
-`cargo bench -p busbar-kernel --features test-support --bench request_debug_overhead` measures the
-per-request instrumentation at each level.
-
 **Event macros (`info!`/`warn!`/`error!`) are a documented convention, not lint-enforced.** In the
 hot modules (proxy/auth/governance/ingress) every `info!`/`warn!` fires only on an error, rejection,
 degraded, or boot/config condition, never on the per-request happy path. The convention: a `debug!`/`trace!`
