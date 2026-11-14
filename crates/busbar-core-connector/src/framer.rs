@@ -1433,6 +1433,7 @@ fn locate_as(
 ) -> Result<Located, Refused> {
     if !accept {
         door.facts().require_dial()?;
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::Locate);
     }
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
     let mut defaults_cap = 256_usize;
