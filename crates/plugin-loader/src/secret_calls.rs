@@ -443,8 +443,12 @@ impl LoadedSecret {
         }
         drop(opened);
         let plugin = Arc::new(plugin);
-        let schedule =
-            crate::dispatch::ticks::spawn(Arc::clone(&plugin), Arc::clone(&dispatcher), 0);
+        let schedule = crate::dispatch::ticks::spawn(
+            Arc::clone(&plugin),
+            Arc::clone(&dispatcher),
+            0,
+            Arc::default(),
+        );
         Ok(Self {
             opened: Arc::new(Opened {
                 plugin,
